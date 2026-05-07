@@ -1,0 +1,528 @@
+/* カスタムラジオ (形状のみ円形) */
+.gb-check input[type=radio],
+input[type=radio].gb-radio {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-bg-app);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+.gb-check input[type=radio]:checked,
+input[type=radio].gb-radio:checked {
+  border-color: var(--ui-accent);
+}
+.gb-check input[type=radio]:checked::after,
+input[type=radio].gb-radio:checked::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-accent);
+  transform: translate(-50%, -50%);
+}
+.gb-check input[type=radio]:focus-visible,
+input[type=radio].gb-radio:focus-visible {
+  outline: 1px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+
+/* レンジスライダー (設定ダイアログ等で使用) */
+.gb-range {
+  flex: 1 1 auto;
+  cursor: pointer;
+  accent-color: var(--ui-range-fill-bg);
+}
+
+/* アクセント色リンク (セクション内の「→」などのリンク) */
+.gb-link {
+  font-size: var(--ui-font-11);
+  color: var(--ui-accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.gb-link:hover { text-decoration: underline; }
+
+/* ============================================================
+   Range Slider
+   ============================================================ */
+input[type="range"] {
+  --gb-range-fill-pct: 0%;
+  --gb-range-track-height: 4px;
+  --gb-range-thumb-size: 14px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  accent-color: var(--ui-range-fill-bg);
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: var(--gb-range-track-height);
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--ui-range-fill-bg) 0%,
+    var(--ui-range-fill-bg) var(--gb-range-fill-pct),
+    var(--ui-range-track-bg) var(--gb-range-fill-pct),
+    var(--ui-range-track-bg) 100%
+  );
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--gb-range-thumb-size);
+  height: var(--gb-range-thumb-size);
+  margin-top: calc((var(--gb-range-track-height) - var(--gb-range-thumb-size)) / 2);
+  border: 0;
+  border-radius: 999px;
+  background: var(--ui-range-fill-bg);
+}
+
+input[type="range"]::-moz-range-track {
+  height: var(--gb-range-track-height);
+  border: 0;
+  border-radius: 999px;
+  background: var(--ui-range-track-bg);
+}
+
+input[type="range"]::-moz-range-progress {
+  height: var(--gb-range-track-height);
+  border-radius: 999px;
+  background: var(--ui-range-fill-bg);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: var(--gb-range-thumb-size);
+  height: var(--gb-range-thumb-size);
+  border: 0;
+  border-radius: 999px;
+  background: var(--ui-range-fill-bg);
+}
+
+/* ============================================================
+   Phase 2: Format Button (書式トグル)
+   ============================================================ */
+.gb-fmt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  padding: 0;
+  font-size: var(--ui-font-11);
+  font-family: inherit;
+  color: var(--ui-fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.gb-fmt-btn:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+  border-color: var(--ui-border);
+}
+.gb-fmt-btn.active,
+.gb-fmt-btn.is-active {
+  background: var(--ui-bg-control-active);
+  border-color: var(--ui-accent);
+  color: var(--ui-fg-default);
+}
+.gb-fmt-btn:focus-visible {
+  outline: none;
+  border-color: var(--ui-accent);
+}
+.gb-fmt-btn:disabled,
+.gb-fmt-btn[disabled] { opacity: 0.45; pointer-events: none; }
+
+/* ============================================================
+   Phase 2: Reset Button (オーバーライドリセット)
+   ============================================================ */
+.gb-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: var(--ui-font-11);
+  line-height: 1;
+  box-sizing: border-box;
+}
+.gb-reset-btn:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+}
+
+/* ============================================================
+   Phase 2: Inline Actions
+   ============================================================ */
+.gb-inline-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: var(--ui-space-1);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ============================================================
+   Phase 2: Style Trigger (選択中スタイル表示ボタン)
+   ============================================================ */
+.gb-style-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  min-height: 56px;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  background: var(--ui-bg-control);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--ui-fg-default);
+  text-align: left;
+  box-sizing: border-box;
+}
+.gb-style-trigger:hover { border-color: var(--ui-accent); }
+.gb-style-trigger-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 140px;
+  height: 44px;
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  flex-shrink: 0;
+}
+.gb-card-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 28px;
+  font-size: var(--ui-font-13);
+  background: var(--ui-bg-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+}
+.gb-style-trigger-label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.gb-style-trigger-label > .name {
+  font-size: var(--ui-font-12);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-fg-default);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-style-trigger-label > .meta {
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-style-trigger > .caret {
+  margin-left: auto;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   Phase 2: Data Table
+   ============================================================ */
+.gb-data-table-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.gb-data-table-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  min-height: 0;
+}
+.gb-data-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--ui-font-12);
+  table-layout: fixed;
+  color: var(--ui-fg-default);
+}
+.gb-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ui-header-bg);
+  border-bottom: 1px solid var(--ui-border);
+  padding: var(--ui-space-2) var(--ui-space-3);
+  font-size: var(--ui-font-11);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-header-fg);
+  text-align: left;
+}
+.gb-data-table tbody td {
+  padding: var(--ui-space-1) var(--ui-space-3);
+  border-bottom: 1px solid var(--ui-border);
+  vertical-align: middle;
+}
+.gb-data-table tbody tr:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-data-table tbody tr.selected,
+.gb-data-table tbody tr.is-selected {
+  background: var(--ui-selection-bg);
+  color: var(--ui-selection-fg);
+}
+.gb-data-cell-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-2);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  box-sizing: border-box;
+}
+.gb-data-inline-input {
+  width: 100%;
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-2);
+  font-size: var(--ui-font-11);
+  font-family: inherit;
+  color: var(--ui-fg-default);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  outline: none;
+  box-sizing: border-box;
+}
+.gb-data-inline-input:hover,
+.gb-data-inline-input:focus {
+  background: var(--ui-bg-app);
+  border-color: var(--ui-border);
+}
+.gb-data-inline-input:focus { border-color: var(--ui-accent); }
+.gb-data-table-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: var(--ui-h-sm);
+  padding: var(--ui-space-2) var(--ui-space-4);
+  background: var(--ui-bg-panel);
+  border-top: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  box-sizing: border-box;
+}
+.gb-data-table-actions > .sep {
+  width: 1px;
+  height: 16px;
+  background: var(--ui-border);
+  margin: 0 var(--ui-space-1);
+}
+
+/* ============================================================
+   Phase 2: Modal / Dialog
+   ============================================================ */
+.gb-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--ui-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--ui-z-modal);
+}
+.gb-modal {
+  display: flex;
+  flex-direction: column;
+  background: var(--ui-bg-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  box-shadow: var(--ui-shadow-lg);
+  max-width: 90vw;
+  max-height: 90vh;
+  min-width: 320px;
+  overflow: hidden;
+}
+.gb-modal-header {
+  display: flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 var(--ui-space-6);
+  background: var(--ui-header-bg);
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.gb-modal-title {
+  font-size: var(--ui-font-16);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-header-fg);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-modal-header .gb-modal-close,
+.gb-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--ui-fg-muted);
+  cursor: pointer;
+  border-radius: var(--ui-radius-xs);
+  flex-shrink: 0;
+}
+.gb-modal-close:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+}
+.gb-modal-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: var(--ui-space-6);
+  background: var(--ui-bg-surface);
+  overflow: auto;
+}
+.gb-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ui-space-4);
+  height: 52px;
+  padding: 0 var(--ui-space-6);
+  background: var(--ui-bg-panel);
+  border-top: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.gb-modal-footer .gb-btn { min-width: 88px; }
+.gb-modal-footer .gb-btn-icon { min-width: 0; }
+.gb-modal-footer .gb-modal-footer-left {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+}
+
+/* ------------------------------------------------------------
+   シンプル確認ダイアログ (cfConfirm / cfAlert / cfPrompt 共通)
+   v0.5.250: .modal (大型ダイアログ殻) を使わず、短い問いかけに最適化した
+   コンパクト構造。ヘッダー / フッター分割を持たず、メッセージとアクション行だけ。
+   ------------------------------------------------------------ */
+.gb-confirm {
+  background: var(--ui-bg-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  box-shadow: var(--ui-shadow-lg);
+  min-width: 320px;
+  max-width: 450px;
+  padding: var(--ui-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-5);
+  box-sizing: border-box;
+}
+/* 連続するメッセージ (2 行メッセージのタイトル + 本文) は近接配置 */
+.gb-confirm-message + .gb-confirm-message { margin-top: calc(-1 * var(--ui-space-3)); }
+.gb-confirm-message {
+  font-size: var(--ui-font-14);
+  line-height: 1.6;
+  color: var(--ui-fg-default);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.gb-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ui-space-4);
+}
+.gb-confirm-actions .gb-btn { min-width: 72px; }
+.gb-confirm-input {
+  width: 100%;
+  padding: var(--ui-space-2) var(--ui-space-4);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  font-size: var(--ui-font-14);
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+/* ------------------------------------------------------------
+   Context Menu / Badge / Empty State / Loading は Phase 2 範囲外
+   理由:
+   - 仕様書 Phase 2 リストに含まれない (Menu/Badge/Empty/Loading)
+   - .gb-context-menu, .gb-context-menu-item, .gb-context-menu-sep は
+     gb-tools.css に既存定義があり、100箇所超で使用中
+   - .gb-empty-state, .gb-empty-icon は gb-tools.css に既存定義あり、
+     gb-app.js / gb-history.js / gb-pane-bridge.js で使用中
+   - .gb-spinner / @keyframes gb-spin は gb-tools.css に既存定義あり
+   これらは Phase 5 (ダイアログ・メニュー移行) 以降で扱う
+   ------------------------------------------------------------ */
+
+/* ============================================================
+   ユーティリティ (狭い修飾)
+   ============================================================ */
+.gb-visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0);
+  white-space: nowrap; border: 0;
+}
+/* 数値入力欄のスピンボタンは hover/focus 時のみ表示する */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  opacity: 0;
+  margin: 0;
+  transition: opacity 0.12s ease;
+}
+
+input[type="number"]:hover::-webkit-outer-spin-button,
+input[type="number"]:hover::-webkit-inner-spin-button,
+input[type="number"]:focus::-webkit-outer-spin-button,
+input[type="number"]:focus::-webkit-inner-spin-button,
+input[type="number"]:focus-visible::-webkit-outer-spin-button,
+input[type="number"]:focus-visible::-webkit-inner-spin-button {
+  opacity: 1;
+}

@@ -1,0 +1,136 @@
+/* Meldex accessibility baseline. */
+
+:root {
+  --a11y-focus-ring: #ffd166;
+  --a11y-focus-shadow: rgba(255, 209, 102, 0.35);
+  --a11y-focus-shadow: color-mix(in srgb, var(--a11y-focus-ring) 35%, transparent);
+  --a11y-warning-bg: #3a2f12;
+  --a11y-warning-fg: #fff3bf;
+  --a11y-warning-border: #f59f00;
+}
+
+:focus-visible {
+  outline: 2px solid var(--a11y-focus-ring) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 3px var(--a11y-focus-shadow) !important;
+}
+
+.bd-node:focus-visible,
+.gb-split-handle:focus-visible,
+.col-resize-handle:focus-visible {
+  outline-offset: 3px !important;
+}
+
+#status-bar[role="status"] #sb-msg[data-status-kind="error"]::before,
+#status-bar[role="status"] #sb-warn:not(:empty)::before {
+  content: "エラー: ";
+  font-weight: 700;
+}
+
+#status-bar[role="status"] #sb-msg[data-status-kind="success"]::before {
+  content: "状態: ";
+  font-weight: 700;
+}
+
+.db-range-selected {
+  background-color: rgba(86, 156, 214, 0.32) !important;
+  background-color: color-mix(in srgb, var(--selection, #264f78) 55%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--accent, #569cd6);
+}
+
+.meldex-browser-warning {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  z-index: 100500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--a11y-warning-fg);
+  background: var(--a11y-warning-bg);
+  border: 1px solid var(--a11y-warning-border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meldex-browser-warning button {
+  margin-left: auto;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+html.meldex-high-contrast,
+html.meldex-high-contrast body {
+  --bg: #000000;
+  --bg2: #0b0b0b;
+  --bg3: #171717;
+  --bg4: #2b2b2b;
+  --fg: #ffffff;
+  --fg2: #d6d6d6;
+  --accent: #7cc7ff;
+  --accent2: #7fffd4;
+  --red: #ff8080;
+  --green: #b8ff8a;
+  --border: #f2f2f2;
+  --selection: #005fcc;
+  --a11y-focus-ring: #ffff00;
+  color-scheme: dark;
+}
+
+html.meldex-colorblind-safe {
+  --red: #d55e00;
+  --green: #0072b2;
+  --orange: #e69f00;
+  --blue: #56b4e9;
+  --accent: #0072b2;
+  --accent2: #009e73;
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --bg: #000000;
+    --bg2: #0b0b0b;
+    --bg3: #171717;
+    --bg4: #2b2b2b;
+    --fg: #ffffff;
+    --fg2: #d6d6d6;
+    --accent: #7cc7ff;
+    --accent2: #7fffd4;
+    --red: #ff8080;
+    --green: #b8ff8a;
+    --border: #f2f2f2;
+    --selection: #005fcc;
+    --a11y-focus-ring: #ffff00;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html.meldex-reduced-motion *,
+html.meldex-reduced-motion *::before,
+html.meldex-reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+@media (min-resolution: 2dppx) {
+  .tb-icon-btn,
+  .left-chrome-icon-btn,
+  .right-activity-bar button {
+    min-width: 28px;
+    min-height: 28px;
+  }
+}

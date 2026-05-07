@@ -1,0 +1,427 @@
+/**
+ * gb-db-calendar-mapping.js
+ * 任意DBの日付プロパティをカレンダー表示へマッピングし、日時変更を書き戻す
+ */
+
+function _normalizeCalendarMapping(mapping) {
+  if (!mapping || typeof mapping !== 'object') return null;
+  const norm = {
+    startProp: String(mapping.startProp || '').trim(),
+    endProp: String(mapping.endProp || '').trim(),
+    titleProp: String(mapping.titleProp || '').trim(),
+    colorProp: String(mapping.colorProp || '').trim(),
+    descriptionProp: String(mapping.descriptionProp || '').trim(),
+    locationProp: String(mapping.locationProp || '').trim(),
+    urlProp: String(mapping.urlProp || '').trim(),
+    calendarIdProp: String(mapping.calendarIdProp || '').trim(),
+  };
+  return norm.startProp ? norm : null;
+}
+
+function getCalendarMapping(dbPath) {
+  if (state.currentDbPath === dbPath && state.dbMetadata && Object.prototype.hasOwnProperty.call(state.dbMetadata, 'calendar_mapping')) {
+    const metadataMapping = _normalizeCalendarMapping(state.dbMetadata?.calendar_mapping);
+    if (metadataMapping) return metadataMapping;
+  }
+  const local = _normalizeCalendarMapping(getCurrentDbViewTypeSpecific(dbPath, 'calendar')?.mapping);
+  return local || null;
+}
+
+function _dbHasCalendarMapping(dbPath, pivotData) {
+  const mapping = getCalendarMapping(dbPath);
+  if (!mapping?.startProp) return false;
+  const props = pivotData?.properties || state.pivotData?.properties || [];
+  return props.includes(mapping.startProp);
+}
+
+function _getCalendarIntegrationInfo(dbPath, pivotData) {
+  const data = pivotData || state.pivotData;
+  const mapping = getCalendarMapping(dbPath);
+  const isCalendarSource = !!data?.calendar_db;
+  const hasMapping = !isCalendarSource && _dbHasCalendarMapping(dbPath, data);
+  return {
+    kind: isCalendarSource ? 'calendar-db' : hasMapping ? 'mapped-db' : 'none',
+    isMappedDb: hasMapping,
+    canEditDates: hasMapping,
+    canCreateEvents: isCalendarSource,
+    canDeleteEvents: isCalendarSource,
+    canSyncExternal: isCalendarSource,
+    mapping: hasMapping ? mapping : null,
+  };
+}
+
+function _canRenderCalendarFromDb(dbPath, pivotData) {
+  const info = _getCalendarIntegrationInfo(dbPath, pivotData);
+  return info.kind !== 'none';
+}
+
+function _getAllowedCalendarModes(dbPath, pivotData) {
+  return [
+    { v: 'month', l: '月' },
+    { v: 'week', l: '週' },
+    { v: 'day', l: '日' },
+  ];
+}
+
+function _normalizeCalendarModeForDb(dbPath, mode, pivotData) {
+  const allowed = new Set(_getAllowedCalendarModes(dbPath, pivotData).map(m => m.v));
+  return allowed.has(mode) ? mode : 'month';
+}
+
+function _calendarPropValue(props, propName) {
+  const ref = _calendarPropRef(props, propName);
+  return ref ? (ref.value || '') : '';
+}
+
+function _calendarPropRef(props, propName) {
+  if (!propName) return null;
+  const vals = typeof filterValues === 'function' ? filterValues(props[propName] || []) : (props[propName] || []);
+  if (!vals.length) return null;
+  if (typeof getAdoptedValueForWrite === 'function') return getAdoptedValueForWrite(vals) || vals[0];
+  return vals.find(v => v && (v.status === '採用' || v.status === '掲載済み')) || vals[0];
+}
+
+function _collectMappedCalendarEvents(dbPath, data) {
+  const info = _getCalendarIntegrationInfo(dbPath, data);
+  const mapping = info.mapping;
+  if (!mapping) return [];
+  const propTypes = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
+  const startPtc = propTypes[mapping.startProp] || {};
+  const events = [];
+
+  for (const [entityName, props] of Object.entries(data.entities || {})) {
+    const startRaw = _calendarPropValue(props, mapping.startProp);
+    if (!startRaw) continue;
+    const startParsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(startRaw) : null;
+    const startToken = startParsed?.start || startRaw;
+    if (!startToken) continue;
+    const start = (typeof parseLocalDate === 'function') ? parseLocalDate(startToken) : new Date(startToken);
+    if (Number.isNaN(start.getTime())) continue;
+
+    let endToken = '';
+    if (mapping.endProp) {
+      const endRaw = _calendarPropValue(props, mapping.endProp);
+      if (mapping.endProp === mapping.startProp && startParsed?.range) {
+        endToken = startParsed.end || '';
+      } else if (typeof _dbDateGetComparableValue === 'function') {
+        endToken = _dbDateGetComparableValue(endRaw, true) || '';
+      } else {
+        endToken = endRaw;
+      }
+    } else if (startParsed?.range) {
+      endToken = startParsed.end || '';
+    }
+    let end = endToken
+      ? ((typeof parseLocalDate === 'function') ? parseLocalDate(endToken) : new Date(endToken))
+      : new Date(start);
+    if (Number.isNaN(end.getTime()) || end < start) end = new Date(start);
+
+    const hasTime = !!startPtc.withTime
+      || (typeof _dbDateHasTimeToken === 'function' && (_dbDateHasTimeToken(startToken) || _dbDateHasTimeToken(endToken)));
+    const supportsEnd = !!(mapping.endProp || startPtc.range || startParsed?.range);
+    const title = _calendarPropValue(props, mapping.titleProp) || entityName;
+    const color = _calendarPropValue(props, mapping.colorProp) || '#569cd6';
+    const description = _calendarPropValue(props, mapping.descriptionProp) || '';
+    const location = _calendarPropValue(props, mapping.locationProp) || '';
+    const url = _calendarPropValue(props, mapping.urlProp) || '';
+    const calendarId = _calendarPropValue(props, mapping.calendarIdProp) || 'default';
+    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
+    const startRef = _calendarPropRef(props, mapping.startProp);
+
+    events.push({
+      name: title,
+      entityName,
+      entityPath,
+      file: startRef?.file || entityPath,
+      start,
+      end,
+      color,
+      allDay: !hasTime,
+      location,
+      description,
+      calendarId,
+      url,
+      alertMinutes: -1,
+      recurrence: '',
+      _mapped: true,
+      _mappedDbPath: dbPath,
+      _mappedPivotData: data,
+      _mappedMapping: mapping,
+      _mappedEntityData: props,
+      _mappedSupportsEnd: supportsEnd,
+    });
+  }
+
+  return events;
+}
+
+function _collectCalendarEventsForDb(dbPath, data) {
+  const info = _getCalendarIntegrationInfo(dbPath, data);
+  if (info.kind === 'calendar-db') return typeof _collectCalendarEvents === 'function' ? _collectCalendarEvents(data) : [];
+  if (info.kind === 'mapped-db') return _collectMappedCalendarEvents(dbPath, data);
+  return [];
+}
+
+function _getMappedCalendarUpdateContext(dbPath, ev) {
+  if (!ev?._mapped) return null;
+  const sourceDbPath = ev._mappedDbPath || dbPath;
+  const pivotData = ev._mappedPivotData
+    || (state.currentDbPath === sourceDbPath ? state.pivotData : null)
+    || null;
+  const info = ev._mappedMapping
+    ? { kind: 'mapped-db', isMappedDb: true, canEditDates: true, mapping: ev._mappedMapping }
+    : _getCalendarIntegrationInfo(sourceDbPath, pivotData);
+  const mapping = info.mapping;
+  const entityData = ev._mappedEntityData || pivotData?.entities?.[ev.entityName];
+  if (!mapping || !entityData) return null;
+  const propTypes = typeof getPropertyTypes === 'function' ? getPropertyTypes(sourceDbPath) : {};
+  const startPtc = propTypes[mapping.startProp] || {};
+  const startVal = _calendarPropRef(entityData, mapping.startProp);
+  if (!startVal) return null;
+  const startRaw = startVal.value || '';
+  const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(startRaw) : null;
+  const inlineRange = mapping.endProp === mapping.startProp || (!mapping.endProp && (startPtc.range || parsed?.range));
+  const endVal = mapping.endProp && mapping.endProp !== mapping.startProp ? _calendarPropRef(entityData, mapping.endProp) : null;
+  const endPtc = mapping.endProp && mapping.endProp !== mapping.startProp ? (propTypes[mapping.endProp] || {}) : startPtc;
+  return {
+    info,
+    mapping,
+    entityData,
+    propTypes,
+    startPtc,
+    endPtc,
+    startVal,
+    endVal,
+    inlineRange,
+    startRaw,
+    endRaw: inlineRange ? (parsed?.end || '') : (endVal?.value || ''),
+    entityPath: ev.entityPath || (typeof _entityPath === 'function' ? _entityPath(sourceDbPath, ev.entityName) : ''),
+  };
+}
+
+function _mappedCalendarDateValue(date, ptc, oldRaw) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const withTime = !!ptc?.withTime || (typeof _dbDateHasTimeToken === 'function' && _dbDateHasTimeToken(oldRaw || ''));
+  // フォールバックはローカル日時に揃える（toISOString は UTC 出力で日付ズレを起こす）
+  if (typeof _dbDateValueFromDate === 'function') return _dbDateValueFromDate(date, withTime);
+  if (withTime && typeof formatLocalDateTime === 'function') return formatLocalDateTime(date);
+  if (typeof formatLocalDate === 'function') return formatLocalDate(date);
+  return '';
+}
+
+async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options = {}) {
+  const ctx = _getMappedCalendarUpdateContext(dbPath, ev);
+  if (!ctx) throw new Error('マッピング元の日時プロパティを解決できません');
+  const startValue = _mappedCalendarDateValue(startDate, ctx.startPtc, ctx.startRaw);
+  const preserveEmptyEnd = !!options.preserveMissingEndIfZeroDuration
+    && !ctx.endRaw
+    && (!(endDate instanceof Date) || Number.isNaN(endDate.getTime()) || endDate.getTime() === startDate.getTime());
+  let endValue = '';
+  if (ctx.inlineRange) {
+    endValue = preserveEmptyEnd ? '' : _mappedCalendarDateValue(endDate || startDate, ctx.endPtc, ctx.endRaw);
+  } else if (ctx.mapping.endProp) {
+    endValue = preserveEmptyEnd ? '' : _mappedCalendarDateValue(endDate || startDate, ctx.endPtc, ctx.endRaw);
+  }
+  const newStartRaw = ctx.inlineRange
+    ? _dbDateSerializeValue(startValue, endValue, ctx.startPtc, ctx.startRaw)
+    : startValue;
+
+  const dbPathForHistory = dbPath;
+  const startRef = { file: ctx.startVal.file, property: ctx.startVal.property, candidate_index: ctx.startVal.candidate_index };
+  const oldStartRaw = ctx.startRaw;
+  const oldEndRaw = ctx.endRaw;
+  let createdEndRef = null;
+
+  const applyValues = async (startRaw, endRaw, mode) => {
+    await _apiPutValue(startRef, { new_value: startRaw });
+    if (!ctx.inlineRange && ctx.mapping.endProp) {
+      if (ctx.endVal) {
+        await _apiPutValue({ file: ctx.endVal.file, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
+      } else if (endRaw && (mode === 'redo' || mode === 'apply')) {
+        const res = await _apiPostValue(ctx.entityPath, ctx.mapping.endProp, endRaw, '採用', '');
+        createdEndRef = { file: res?.path, property: res?.property || ctx.mapping.endProp, candidate_index: res?.candidate_index };
+      }
+    }
+  };
+
+  await applyValues(newStartRaw, endValue, 'apply');
+
+  if (typeof historyPush === 'function' && typeof _dbScope === 'function') {
+    historyPush(
+      'カレンダー日時更新: ' + (ev.name || ev.entityName || ''),
+      async () => {
+        await _apiPutValue(startRef, { new_value: oldStartRaw });
+        if (!ctx.inlineRange && ctx.mapping.endProp) {
+          if (ctx.endVal) {
+            await _apiPutValue({ file: ctx.endVal.file, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: oldEndRaw });
+          } else if (createdEndRef) {
+            await _apiPutValue(createdEndRef, { _delete: true });
+          }
+        }
+        await selectDatabase(dbPathForHistory);
+      },
+      async () => {
+        await applyValues(newStartRaw, endValue, 'redo');
+        await selectDatabase(dbPathForHistory);
+      },
+      _dbScope()
+    );
+  }
+
+  if (!options.skipReload) await selectDatabase(dbPath);
+  return { startRaw: newStartRaw, endRaw: endValue };
+}
+
+function _buildMappedCalendarInput(label, value, withTime) {
+  const wrap = document.createElement('label');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;font-size:12px;';
+  const title = document.createElement('span');
+  title.textContent = label;
+  const input = document.createElement('input');
+  input.type = withTime ? 'datetime-local' : 'date';
+  input.value = typeof _dbDateToInputValue === 'function' ? _dbDateToInputValue(value, withTime) : (value || '');
+  input.style.cssText = 'width:100%;padding:4px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;box-sizing:border-box;';
+  wrap.appendChild(title);
+  wrap.appendChild(input);
+  return { wrap, input };
+}
+
+function _openMappedCalendarEventPanel(dbPath, ev) {
+  const ctx = _getMappedCalendarUpdateContext(dbPath, ev);
+  if (!ctx) {
+    showStatus('マッピング元の日時プロパティを解決できません', true);
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.cssText = 'min-width:420px;max-width:520px;';
+  const startWithTime = !!ctx.startPtc.withTime || (typeof _dbDateHasTimeToken === 'function' && _dbDateHasTimeToken(ctx.startRaw));
+  const endWithTime = !!ctx.endPtc.withTime || (typeof _dbDateHasTimeToken === 'function' && _dbDateHasTimeToken(ctx.endRaw));
+  const startField = _buildMappedCalendarInput('開始', ctx.startRaw, startWithTime);
+  const endField = (ctx.inlineRange || ctx.mapping.endProp || ev._mappedSupportsEnd)
+    ? _buildMappedCalendarInput('終了', ctx.inlineRange ? ctx.endRaw : ctx.endRaw, endWithTime || startWithTime)
+    : null;
+
+  modal.innerHTML = `
+    <h3>${esc(ev.name || ev.entityName || '予定')}</h3>
+    <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">
+      このシートでは日時のみカレンダーから編集できます。タイトルや色は元エントリ側で変更してください。
+    </div>
+    <div id="mapped-cal-fields" style="display:flex;flex-direction:column;gap:8px;"></div>
+    <div class="btn-row" style="justify-content:space-between;margin-top:12px;">
+      <button id="mapped-cal-open">エントリを開く</button>
+      <div style="display:flex;gap:8px;">
+        <button id="mapped-cal-cancel">キャンセル</button>
+        <button class="primary" id="mapped-cal-save">保存</button>
+      </div>
+    </div>
+  `;
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+
+  const fields = modal.querySelector('#mapped-cal-fields');
+  fields.appendChild(startField.wrap);
+  if (endField) fields.appendChild(endField.wrap);
+
+  modal.querySelector('#mapped-cal-open')?.addEventListener('click', () => {
+    overlay.remove();
+    if (ctx.entityPath && typeof selectEntity === 'function') selectEntity(ctx.entityPath);
+  });
+  modal.querySelector('#mapped-cal-cancel')?.addEventListener('click', () => overlay.remove());
+  modal.querySelector('#mapped-cal-save')?.addEventListener('click', async () => {
+    const startVal = startField.input.value;
+    const endVal = endField ? endField.input.value.trim() : '';
+    if (!startVal) { showStatus('開始日時を入力してください', true); return; }
+    try {
+      const parseInputDate = (raw) => {
+        if (!raw) return null;
+        return (typeof parseLocalDate === 'function') ? parseLocalDate(raw) : new Date(raw);
+      };
+      await _saveMappedCalendarDates(dbPath, ev, parseInputDate(startVal), endVal ? parseInputDate(endVal) : null, {
+        preserveMissingEndIfZeroDuration: !endVal,
+      });
+      overlay.remove();
+      showStatus('日時を更新しました');
+    } catch (e) {
+      showStatus('日時の更新に失敗: ' + (e?.message || e), true);
+    }
+  });
+  setTimeout(() => startField.input.focus(), 30);
+}
+
+function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, currentMapping) {
+  const current = _normalizeCalendarMapping(currentMapping);
+  const dateProps = props.filter(p => (propTypes[p]?.type || '') === 'date');
+  const textLikeProps = props.filter(p => ['text', 'select', 'multi-select', 'url', 'number', 'date'].includes(propTypes[p]?.type || 'text'));
+
+  const rowSelect = (id, label, options, value, placeholder = '(なし)') => `
+    <div class="field" style="margin-top:6px;">
+      <label>${label}</label>
+      <select id="${id}" style="width:100%;">
+        <option value="">${placeholder}</option>
+        ${options.map(p => `<option value="${esc(p)}" ${value===p?'selected':''}>${esc(p)}</option>`).join('')}
+      </select>
+    </div>`;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'dbcfg-calendar-mapping';
+  wrap.className = 'field';
+  wrap.style.marginTop = '10px';
+  wrap.innerHTML = `
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+      <input id="dbcfg-calmap-enabled" type="checkbox" ${current?.startProp ? 'checked' : ''} ${dateProps.length === 0 ? 'disabled' : ''}>
+      任意シートをカレンダー表示に連携する（編集のみ／作成・削除はカレンダーDBで行う）
+    </label>
+    <div style="font-size:11px;color:var(--fg2);margin-top:4px;">
+      連携した通常シートでは既存イベントの日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーDB側で行います。
+    </div>
+    <div id="dbcfg-calendar-mapping-fields" style="margin-top:6px;${current?.startProp ? '' : 'display:none;'}">
+      ${rowSelect('dbcfg-calmap-start', '開始プロパティ', dateProps, current?.startProp || '', '(必須)')}
+      ${rowSelect('dbcfg-calmap-end', '終了プロパティ', dateProps, current?.endProp || '')}
+      ${rowSelect('dbcfg-calmap-title', 'タイトルプロパティ', textLikeProps, current?.titleProp || '', '(エントリ名)')}
+      ${rowSelect('dbcfg-calmap-color', '色プロパティ', textLikeProps, current?.colorProp || '')}
+      ${rowSelect('dbcfg-calmap-desc', '説明プロパティ', textLikeProps, current?.descriptionProp || '')}
+      ${rowSelect('dbcfg-calmap-location', '場所プロパティ', textLikeProps, current?.locationProp || '')}
+      ${rowSelect('dbcfg-calmap-url', 'URLプロパティ', textLikeProps, current?.urlProp || '')}
+      ${rowSelect('dbcfg-calmap-calid', 'カレンダー分類プロパティ', textLikeProps, current?.calendarIdProp || '')}
+      <div style="font-size:11px;color:var(--fg2);margin-top:6px;">
+        開始プロパティが期間付き日付なら、終了プロパティを空にしても終了日時を拾います。
+      </div>
+    </div>
+  `;
+
+  if (dateProps.length === 0) {
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:11px;color:var(--red);margin-top:6px;';
+    note.textContent = '日付プロパティがないため、カレンダー連携は設定できません。';
+    wrap.appendChild(note);
+  }
+
+  const enabled = wrap.querySelector('#dbcfg-calmap-enabled');
+  const fields = wrap.querySelector('#dbcfg-calendar-mapping-fields');
+  enabled?.addEventListener('change', () => {
+    if (fields) fields.style.display = enabled.checked ? '' : 'none';
+  });
+
+  host.appendChild(wrap);
+}
+
+function _collectCalendarMappingConfig(modalEl) {
+  const enabled = modalEl.querySelector('#dbcfg-calmap-enabled');
+  if (!enabled || !enabled.checked) return null;
+  const mapping = _normalizeCalendarMapping({
+    startProp: modalEl.querySelector('#dbcfg-calmap-start')?.value || '',
+    endProp: modalEl.querySelector('#dbcfg-calmap-end')?.value || '',
+    titleProp: modalEl.querySelector('#dbcfg-calmap-title')?.value || '',
+    colorProp: modalEl.querySelector('#dbcfg-calmap-color')?.value || '',
+    descriptionProp: modalEl.querySelector('#dbcfg-calmap-desc')?.value || '',
+    locationProp: modalEl.querySelector('#dbcfg-calmap-location')?.value || '',
+    urlProp: modalEl.querySelector('#dbcfg-calmap-url')?.value || '',
+    calendarIdProp: modalEl.querySelector('#dbcfg-calmap-calid')?.value || '',
+  });
+  if (!mapping?.startProp) throw new Error('開始プロパティを選択してください');
+  return mapping;
+}

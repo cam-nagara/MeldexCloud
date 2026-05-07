@@ -1,0 +1,174 @@
+/* ==============================
+   リセット・基本
+   ============================== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color-scheme: dark;
+  scrollbar-color: var(--ui-scrollbar-thumb-bg, var(--bg4)) var(--ui-scrollbar-track-bg, var(--bg2));
+}
+html[data-desktop-launch="1"] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+}
+html[data-desktop-launch="1"] body {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+}
+body {
+  display: flex; flex-direction: row; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden;
+  /* 通常文字の書式設定（--ui-text-*）をアプリ全体に反映。
+     未設定時は既存のフォント/サイズ/ウェイトに戻る */
+  background-color: var(--ui-text-bg, transparent);
+  font-size: var(--ui-text-font-size, inherit);
+  font-weight: var(--ui-text-bold, inherit);
+  font-style: var(--ui-text-italic, inherit);
+}
+html.light-theme { color-scheme: light; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--ui-scrollbar-track-bg, var(--bg2)); }
+::-webkit-scrollbar-thumb { background: var(--ui-scrollbar-thumb-bg, var(--bg4)); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ui-scrollbar-thumb-hover-bg, var(--fg2)); }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+/* カスタムツールチップ */
+.gb-tooltip {
+  position: fixed; z-index: 99999; pointer-events: none;
+  background: var(--ui-tooltip-bg, var(--ui-popup-bg, var(--bg2, #252525))); color: var(--ui-tooltip-fg, var(--fg, #d4d4d4));
+  border: 1px solid var(--ui-tooltip-border, var(--border, #333333)); border-radius: 3px;
+  padding: 3px 8px; font-size: 11px; white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  opacity: 0; transition: opacity 0.15s;
+}
+.gb-tooltip.visible { opacity: 1; }
+
+:root {
+  --bg: #1e1e1e; --bg2: #252525; --bg3: #2d2d2d; --bg4: #3e3e3e;
+  --fg: #d4d4d4; --fg2: #969696; --accent: #569cd6; --accent2: #4ec9b0;
+  --red: #f44747; --green: #6a9955; --orange: #ce9178; --blue: #6fa8dc;
+  --border: #333333; --selection: #264f78;
+  --content-bg: var(--bg);
+  --page-text-bg: var(--content-bg); --sn2-page-bg: var(--content-bg);
+  --db-row-bg: var(--content-bg); --bd-bg: var(--content-bg);
+  --ui-tooltip-bg: var(--ui-popup-bg, var(--bg2)); --ui-tooltip-fg: var(--fg); --ui-tooltip-border: var(--border);
+  --ui-scrollbar-track-bg: var(--bg2); --ui-scrollbar-thumb-bg: var(--bg4); --ui-scrollbar-thumb-hover-bg: var(--fg2);
+  --ui-pane-tabbar-bg: var(--bg2); --ui-pane-tab-active-bg: var(--bg);
+  --ui-panelset-tabbar-bg: var(--ui-pane-tabbar-bg); --ui-collapsed-tabbar-bg: var(--ui-pane-tabbar-bg); --ui-dockbar-bg: var(--ui-pane-tabbar-bg);
+  --ui-header-fg: #969696; --ui-header-bg: #2d2d2d;
+  --ui-toolbar-fg: #d4d4d4; --ui-toolbar-bg: #252525;
+  --ui-muted-font: inherit; --ui-header-font: inherit; --ui-toolbar-font: inherit;
+  --ui-hover-fg: #d4d4d4; --ui-hover-bg: #3e3e3e;
+  --ui-fg-strong: #ffffff;
+  --ui-selection-fg: #ffffff; --ui-selection-bg: #264f78;
+  --ui-range-fill-bg: #569cd6; --ui-range-track-bg: #333333;
+  --editor-caret-color: var(--accent); --editor-caret-width: 2px;
+  --fg-primary: var(--fg); --fg-secondary: var(--fg2); --fg-dim: var(--fg2); --fg-white: var(--ui-fg-strong);
+  --bg-medium: var(--bg2); --bg-widget: var(--bg3);
+  --border-dark: var(--border); --border-light: var(--ui-border, var(--border)); --danger: var(--red);
+  /* 補助系パネル */
+  --outliner-bg: #252525; --outliner-fg: #d4d4d4; --outliner-muted-fg: #969696;
+  --outliner-section-bg: #2d2d2d; --outliner-section-fg: #969696;
+  --outliner-item-bg: #252525; --outliner-item-fg: #d4d4d4; --outliner-item-hover-bg: #3e3e3e; --outliner-item-hover-fg: #d4d4d4;
+  --outliner-item-selected-bg: #264f78; --outliner-item-selected-fg: #ffffff; --outliner-border: #333333; --outliner-accent: #569cd6;
+  --preview-bg: var(--content-bg); --preview-card-bg: #252525; --preview-fg: #d4d4d4; --preview-muted-fg: #969696;
+  --preview-border: #333333; --preview-hover-bg: #3e3e3e; --preview-accent: #569cd6;
+  --detail-bg: var(--content-bg); --detail-panel-bg: #1e1e1e; --detail-fg: #d4d4d4; --detail-muted-fg: #969696;
+  --detail-border: #333333; --detail-hover-bg: #3e3e3e; --detail-active-bg: #264f78; --detail-active-fg: #ffffff; --detail-accent: #569cd6;
+  --chat-bg: var(--content-bg); --chat-panel-bg: #252525; --chat-message-bg: #2d2d2d; --chat-input-bg: var(--content-bg); --chat-input-fg: #d4d4d4;
+  --chat-fg: #d4d4d4; --chat-muted-fg: #969696; --chat-border: #333333; --chat-hover-bg: #3e3e3e; --chat-active-bg: #569cd6; --chat-active-fg: #ffffff; --chat-accent: #569cd6;
+  --timer-bg: var(--content-bg); --timer-panel-bg: #252525; --timer-display-bg: var(--content-bg); --timer-fg: #d4d4d4; --timer-muted-fg: #969696;
+  --timer-border: #333333; --timer-hover-bg: #3e3e3e; --timer-active-bg: #569cd6; --timer-active-fg: #ffffff; --timer-accent: #569cd6;
+  --history-bg: var(--content-bg); --history-row-bg: #252525; --history-fg: #d4d4d4; --history-muted-fg: #969696;
+  --history-border: #333333; --history-hover-bg: #3e3e3e; --history-active-bg: #264f78; --history-active-fg: #ffffff; --history-accent: #569cd6;
+  --annotation-bg: var(--content-bg); --annotation-card-bg: #252525; --annotation-fg: #d4d4d4; --annotation-muted-fg: #969696;
+  --annotation-border: #333333; --annotation-hover-bg: #3e3e3e; --annotation-note-bg: #c48080; --annotation-note-fg: #333333; --annotation-accent: #569cd6;
+  --search-bg: var(--content-bg); --search-panel-bg: #252525; --search-fg: #d4d4d4; --search-muted-fg: #969696;
+  --search-border: #333333; --search-hover-bg: #3e3e3e; --search-active-bg: #264f78; --search-active-fg: #ffffff; --search-accent: #569cd6;
+  --version-bg: var(--content-bg); --version-row-bg: #252525; --version-fg: #d4d4d4; --version-muted-fg: #969696;
+  --version-border: #333333; --version-hover-bg: #3e3e3e; --version-active-bg: #569cd6; --version-active-fg: #ffffff; --version-accent: #569cd6;
+  /* データベースビュー */
+  --db-th-fg: #969696; --db-th-bg: #2d2d2d; --db-th-bold: normal; --db-th-italic: normal; --db-th-font: inherit;
+  --db-entity-fg: #d4d4d4; --db-entity-bg: var(--content-bg); --db-entity-bold: bold; --db-entity-italic: normal; --db-entity-font: inherit;
+  --db-cell-fg: #d4d4d4; --db-cell-bg: transparent; --db-cell-bold: normal; --db-cell-italic: normal; --db-cell-font: inherit;
+  --db-active-color: var(--editor-caret-color); --db-active-width: var(--editor-caret-width); --db-selection-fg: var(--ui-selection-fg);
+  --db-grid-border: var(--border); --db-show-grid: 1px;
+  /* ページビュー */
+  --page-title-fg: #d4d4d4; --page-title-bg: transparent; --page-title-bold: bold; --page-title-italic: normal;
+  --page-h1-fg: var(--theme-palette-0, #569cd6); --page-h1-bold: bold; --page-h1-italic: normal;
+  --page-h2-fg: var(--theme-palette-1, #4ec9b0); --page-h2-bold: bold; --page-h2-italic: normal;
+  --page-h3-fg: var(--theme-palette-2, #dcdcaa); --page-h3-bold: bold; --page-h3-italic: normal;
+  --page-h4-fg: var(--theme-palette-3, #6a9955); --page-h4-bold: bold; --page-h4-italic: normal;
+  --page-h5-fg: var(--theme-palette-4, #ce9178); --page-h5-bold: bold; --page-h5-italic: normal;
+  --page-h6-fg: var(--theme-palette-5, #6fa8dc); --page-h6-bold: normal; --page-h6-italic: italic;
+  --page-h1-bg: transparent; --page-h2-bg: transparent; --page-h3-bg: transparent;
+  --page-h4-bg: transparent; --page-h5-bg: transparent; --page-h6-bg: transparent;
+  --page-h1-font: ; --page-h2-font: ; --page-h3-font: ; --page-h4-font: ; --page-h5-font: ; --page-h6-font: ;
+  --page-text-font: ; --page-title-font: ;
+  --page-hr-color: var(--border);
+  --page-h2-indent: 8px; --page-h3-indent: 16px;
+  --page-h4-indent: 24px; --page-h5-indent: 32px; --page-h6-indent: 40px;
+  --page-table-header-fg: var(--page-text-fg); --page-table-header-bg: var(--bg3); --page-table-header-bold: bold; --page-table-header-italic: normal; --page-table-header-font: inherit; --page-table-header-font-size: inherit;
+  --page-table-cell-fg: var(--page-text-fg); --page-table-cell-bg: transparent; --page-table-cell-bold: normal; --page-table-cell-italic: normal; --page-table-cell-font: inherit; --page-table-cell-font-size: inherit;
+  --page-table-border-color: var(--border); --page-table-border-width: 1px; --page-table-row-hover-bg: var(--bg2); --page-table-row-hover-fg: var(--page-table-cell-fg);
+  --page-table-cell-padding-y: 6px; --page-table-cell-padding-x: 10px; --page-table-margin-y: 8px; --page-table-font-size: 13px;
+  --page-table-control-fg: var(--fg2); --page-table-control-bg: var(--bg2); --page-table-control-border: var(--border); --page-table-control-border-width: 1px; --page-table-control-radius: 999px;
+  --page-table-control-hover-fg: var(--fg); --page-table-control-hover-bg: var(--bg3); --page-table-control-hover-border: var(--border); --page-table-control-shadow: rgba(0,0,0,0.25); --page-table-control-bold: normal; --page-table-control-italic: normal; --page-table-control-font: inherit; --page-table-control-font-size: 12px;
+  --page-table-toolbar-fg: var(--fg); --page-table-toolbar-bg: var(--bg2); --page-table-toolbar-border: var(--border); --page-table-toolbar-border-width: 1px; --page-table-toolbar-radius: 4px;
+  --page-table-toolbar-button-bg: var(--bg3); --page-table-toolbar-button-border: var(--border); --page-table-toolbar-button-border-width: 1px; --page-table-toolbar-button-radius: 2px; --page-table-toolbar-button-hover-bg: var(--bg4); --page-table-toolbar-hover-fg: var(--fg); --page-table-toolbar-bold: normal; --page-table-toolbar-italic: normal; --page-table-toolbar-font: inherit; --page-table-toolbar-font-size: 11px;
+  --page-cell-edit-outline-color: var(--accent); --page-cell-edit-outline-width: 2px;
+  --page-callout-fg: var(--page-text-fg); --page-callout-bg: var(--bg3); --page-callout-border: var(--border); --page-callout-border-width: 1px; --page-callout-radius: 6px; --page-callout-gap: 10px; --page-callout-padding-y: 12px; --page-callout-padding-x: 14px; --page-callout-margin-y: 8px;
+  --page-callout-icon-fg: var(--page-callout-fg); --page-callout-body-fg: var(--page-callout-fg); --page-callout-body-bold: normal; --page-callout-body-italic: normal; --page-callout-body-font: inherit; --page-callout-body-font-size: inherit;
+  --page-callout-info-bg: rgba(56,152,236,0.1); --page-callout-info-border: rgba(56,152,236,0.3);
+  --page-callout-warning-bg: rgba(236,180,56,0.1); --page-callout-warning-border: rgba(236,180,56,0.3);
+  --page-callout-danger-bg: rgba(236,56,56,0.1); --page-callout-danger-border: rgba(236,56,56,0.3);
+  --page-callout-success-bg: rgba(56,180,80,0.1); --page-callout-success-border: rgba(56,180,80,0.3);
+  --page-copy-button-fg: var(--fg2); --page-copy-button-bg: var(--bg3); --page-copy-button-border: var(--border); --page-copy-button-border-width: 1px; --page-copy-button-radius: 4px; --page-copy-button-opacity: 0.7; --page-copy-button-hover-bg: var(--bg4); --page-copy-button-hover-fg: var(--fg); --page-copy-button-bold: normal; --page-copy-button-italic: normal; --page-copy-button-font: inherit; --page-copy-button-font-size: inherit;
+  --page-quote-cite-fg: var(--fg2); --page-quote-cite-opacity: 0.6; --page-quote-cite-hover-opacity: 1; --page-quote-cite-link-fg: var(--accent); --page-quote-cite-bold: normal; --page-quote-cite-italic: italic; --page-quote-cite-font: inherit; --page-quote-cite-font-size: 0.85em; --page-quote-cite-stroke-color: transparent; --page-quote-cite-stroke-width: 0px; --page-quote-cite-underline: none; --page-quote-cite-accent-color: currentColor; --page-quote-cite-link-bold: inherit; --page-quote-cite-link-italic: inherit; --page-quote-cite-link-font: inherit; --page-quote-cite-link-font-size: inherit;
+  --page-link-hover-bg: var(--bg3); --page-link-hover-radius: 2px;
+  --page-code-block-border: var(--border); --page-code-block-border-width: 1px; --page-code-block-radius: 4px;
+  --page-kbd-fg: var(--fg); --page-kbd-bg: var(--bg3); --page-kbd-border: var(--border); --page-kbd-border-width: 1px; --page-kbd-border-bottom-width: 2px; --page-kbd-radius: 4px; --page-kbd-shadow: var(--border); --page-kbd-bold: normal; --page-kbd-italic: normal; --page-kbd-font: inherit; --page-kbd-font-size: 0.85em;
+  --page-details-bg: transparent; --page-details-border: var(--border); --page-details-border-width: 1px; --page-details-radius: 4px;
+  --page-details-summary-fg: var(--fg); --page-details-summary-bg: var(--bg2); --page-details-summary-hover-fg: var(--fg); --page-details-summary-hover-bg: var(--bg3); --page-details-open-border: var(--border); --page-details-open-border-width: 1px; --page-details-summary-bold: bold; --page-details-summary-italic: normal; --page-details-summary-font: inherit; --page-details-summary-font-size: inherit;
+  --page-heading-icon-fg: var(--accent); --page-heading-icon-opacity: 0.8; --page-heading-icon-bold: normal; --page-heading-icon-italic: normal; --page-heading-icon-font: inherit; --page-heading-icon-font-size: inherit;
+  --page-drag-guide-color: var(--accent); --page-drag-guide-width: 2px; --page-dragging-opacity: 0.4;
+  --page-text-fg: #d4d4d4; --page-text-bg: var(--content-bg); --page-text-bold: normal; --page-text-italic: normal;
+  --page-selection-fg: var(--ui-selection-fg); --page-caret-width: var(--editor-caret-width);
+  --page-link-fg: var(--accent2); --page-link-bold: normal; --page-link-italic: normal;
+  --page-quote-fg: #969696; --page-quote-bg: rgba(255,255,255,0.03); --page-quote-border: var(--border); --page-quote-bold: normal; --page-quote-italic: normal;
+  font-family: var(--ui-font,
+    'Noto Sans JP',
+    -apple-system, BlinkMacSystemFont,
+    'Hiragino Sans', 'ヒラギノ角ゴシック',
+    'Segoe UI', 'Yu Gothic UI', 'Meiryo',
+    'Noto Sans CJK JP',
+    Roboto, 'Helvetica Neue', Arial, sans-serif);
+  font-size: var(--ui-font-size, 15px);
+  color: var(--fg);
+  background: var(--bg);
+}
+
+[data-theme-palette-index="0"] { --theme-slot-color: var(--theme-palette-0); }
+[data-theme-palette-index="1"] { --theme-slot-color: var(--theme-palette-1); }
+[data-theme-palette-index="2"] { --theme-slot-color: var(--theme-palette-2); }
+[data-theme-palette-index="3"] { --theme-slot-color: var(--theme-palette-3); }
+[data-theme-palette-index="4"] { --theme-slot-color: var(--theme-palette-4); }
+[data-theme-palette-index="5"] { --theme-slot-color: var(--theme-palette-5); }
+[data-theme-palette-index="6"] { --theme-slot-color: var(--theme-palette-6); }
+[data-theme-palette-index="7"] { --theme-slot-color: var(--theme-palette-7); }
+[data-theme-palette-index="8"] { --theme-slot-color: var(--theme-palette-8); }
+[data-theme-palette-index="9"] { --theme-slot-color: var(--theme-palette-9); }
+
+.ico { display: inline-block; width: 20px; height: 20px; vertical-align: -4px; }

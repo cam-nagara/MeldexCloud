@@ -1,0 +1,242 @@
+/* gb-icon-assets.css - shared Lucide / Noto Emoji picker */
+
+@font-face {
+  font-family: 'Meldex Noto Emoji';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/NotoColorEmoji_WindowsCompatible.ttf') format('truetype');
+}
+
+.gb-icon-render {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--gb-icon-size, 20px);
+  height: var(--gb-icon-size, 20px);
+  line-height: 1;
+  vertical-align: -0.2em;
+  flex-shrink: 0;
+}
+
+.gb-noto-emoji {
+  font-family: 'Meldex Noto Emoji', 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+  font-size: var(--gb-icon-size, 20px);
+  color: initial;
+}
+
+.gb-icon-text {
+  font-size: calc(var(--gb-icon-size, 20px) * 0.72);
+  color: currentColor;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gb-icon-picker,
+.gb-context-menu.gb-icon-picker {
+  width: min(420px, calc(100vw - 16px));
+  max-height: min(680px, 72vh);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* gb-context-menu の padding (4px 0) を確実に上書きするため 2 クラスセレクタで指定 */
+  padding: 10px;
+  background: var(--ui-popup-bg, var(--bg2));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+/* gb-context-menu のグローバルルール (.gb-context-menu > div / :hover) が
+   ヘッダ・タブ・検索欄・グリッド等の段落全体に padding や hover 背景を被せてしまうのを無効化。
+   picker 本体の段落は menu-item ではないため、hover 背景は各セル (.gb-icon-picker-cell
+   / .gb-icon-picker-preset / .gb-icon-picker-close) 側の定義だけに任せる。 */
+.gb-context-menu.gb-icon-picker > div { padding: 0; cursor: default; font-size: inherit; }
+.gb-context-menu.gb-icon-picker > div:hover { background: transparent; }
+
+.gb-icon-picker-header,
+.gb-icon-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.gb-icon-picker-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.gb-icon-picker-close {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  color: var(--fg2);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.gb-icon-picker-close:hover {
+  background: var(--bg3);
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.gb-icon-picker-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.gb-icon-picker-tab {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  background: var(--bg3);
+  color: var(--fg2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.gb-icon-picker-tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.gb-icon-picker-search {
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.gb-icon-picker-grid {
+  min-height: 160px;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.gb-icon-picker-cell {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.gb-icon-picker-cell:hover,
+.gb-icon-picker-preset:hover {
+  background: var(--bg4);
+}
+
+.gb-icon-picker-cell.is-selected,
+.gb-icon-picker-preset.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.gb-icon-picker-empty {
+  grid-column: 1 / -1;
+  padding: 20px 8px;
+  color: var(--fg2);
+  font-size: 12px;
+  text-align: center;
+}
+
+.gb-icon-picker-more {
+  grid-column: 1 / -1;
+  min-height: 30px;
+  padding: 5px 8px;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.gb-icon-picker-more:hover {
+  background: var(--bg4);
+}
+
+.gb-icon-picker-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  max-height: 132px;
+  overflow: auto;
+  flex-shrink: 0;
+  padding-bottom: 2px;
+}
+
+.gb-icon-picker-preset {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.gb-icon-picker-preset span:last-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.gb-icon-picker-preset-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.gb-icon-picker-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.gb-icon-picker-credit {
+  min-width: 0;
+  color: var(--fg2);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gb-icon-picker-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}

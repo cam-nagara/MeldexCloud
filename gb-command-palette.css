@@ -1,0 +1,421 @@
+/* Command palette and left chrome footer */
+
+#sidebar .left-chrome-command,
+#sidebar .left-chrome-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--outliner-border, var(--border));
+  background: var(--outliner-bg, var(--bg2));
+}
+
+#sidebar {
+  container-type: inline-size;
+}
+
+.left-chrome-command {
+  padding: 6px;
+}
+
+.left-chrome-command-trigger,
+.left-chrome-user,
+.left-chrome-help,
+.left-chrome-trash,
+.left-chrome-settings,
+.left-chrome-floating-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--outliner-fg, var(--fg));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  font: inherit;
+}
+
+.left-chrome-command-trigger:hover,
+.left-chrome-user:hover,
+.left-chrome-help:hover,
+.left-chrome-trash:hover,
+.left-chrome-settings:hover,
+.left-chrome-floating-btn:hover {
+  background: var(--outliner-item-hover-bg, var(--ui-bg-control-hover));
+  color: var(--outliner-item-hover-fg, var(--fg));
+  border-color: var(--outliner-border, var(--border));
+}
+
+.left-chrome-command-trigger .ico,
+.left-chrome-help .ico,
+.left-chrome-trash .ico,
+.left-chrome-settings .ico,
+.left-chrome-floating-btn .ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.left-chrome-label,
+.left-chrome-user-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.left-chrome-label {
+  flex: 1 1 auto;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.left-chrome-shortcut {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--outliner-border, var(--border));
+  border-radius: var(--ui-radius-xs, 3px);
+  color: var(--outliner-muted-fg, var(--fg2));
+  background: var(--outliner-section-bg, var(--bg3));
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.left-chrome-icon-btn .left-chrome-label,
+.left-chrome-icon-btn .left-chrome-shortcut {
+  display: none;
+}
+
+.left-chrome-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  min-width: 0;
+}
+
+.left-chrome-user {
+  flex: 1 1 auto;
+  min-height: 34px;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: var(--ui-radius-sm, 4px);
+}
+
+.left-chrome-user-name {
+  display: none;
+}
+
+.left-chrome-icon-btn,
+.left-chrome-settings {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: var(--ui-radius-sm, 4px);
+  padding: 0;
+}
+
+.left-chrome-avatar {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.left-chrome-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+@container (max-width: 190px) {
+  .left-chrome-user {
+    padding: 0 5px;
+  }
+
+  .left-chrome-user .meldex-beta-badge {
+    display: none;
+  }
+}
+
+.left-chrome-floating {
+  position: fixed;
+  left: max(0px, env(safe-area-inset-left));
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 32px;
+  gap: 2px;
+  padding: 2px 0 4px;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg2);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body[data-statusbar-hidden="1"] .left-chrome-floating {
+  bottom: env(safe-area-inset-bottom);
+}
+
+body[data-left-chrome-sidebar-visible="1"] .left-chrome-floating,
+body[data-link-modal-open="1"] .left-chrome-floating,
+body[data-pane-maximized="1"] .left-chrome-floating,
+html[data-single-window="1"] .left-chrome-floating {
+  display: none !important;
+}
+
+#sidebar[data-link-modal-host="1"] .left-chrome-footer,
+.gb-dock-popup #sidebar .left-chrome-footer {
+  display: none !important;
+}
+
+.left-chrome-floating-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--ui-radius-sm, 4px);
+  flex: 0 0 28px;
+  padding: 0;
+}
+
+.left-chrome-floating.is-docked {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 100%;
+  max-width: 32px;
+  box-sizing: border-box;
+  margin-top: auto;
+  background: transparent;
+}
+
+.gb-split-collapsed-horizontal > .left-chrome-floating.is-docked {
+  width: 24px;
+  max-width: 24px;
+  padding: 2px 0 3px;
+}
+
+.gb-split-collapsed-horizontal > .left-chrome-floating.is-docked .left-chrome-floating-btn {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+}
+
+.left-chrome-floating.is-docked .left-chrome-avatar {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+}
+
+.cmd-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 11000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(12vh, 88px) 16px 16px;
+  background: rgba(0, 0, 0, 0.36);
+}
+
+.cmd-palette-overlay[hidden] {
+  display: none !important;
+}
+
+.cmd-palette {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(680px, calc(100vh - 112px));
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-md, 6px);
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.42);
+}
+
+.cmd-palette-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.cmd-palette-header .ico {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--fg2);
+}
+
+.cmd-palette-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 42px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 16px;
+}
+
+.cmd-palette-scope {
+  flex: 0 0 auto;
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.cmd-palette-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.cmd-palette-group {
+  padding: 8px 8px 5px;
+  color: var(--fg2);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.cmd-palette-item {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm, 4px);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.cmd-palette-item:hover,
+.cmd-palette-item.is-active {
+  background: var(--ui-bg-control-hover, var(--bg3));
+  border-color: var(--border);
+}
+
+.cmd-palette-item-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+}
+
+.cmd-palette-item-icon svg,
+.cmd-palette-item-icon .ico {
+  width: 18px;
+  height: 18px;
+}
+
+.cmd-palette-item-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cmd-palette-item-label,
+.cmd-palette-item-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-palette-item-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cmd-palette-item-subtitle {
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.cmd-palette-item-meta {
+  color: var(--fg2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cmd-palette-empty {
+  padding: 32px 12px;
+  color: var(--fg2);
+  text-align: center;
+  font-size: 13px;
+}
+
+.cmd-palette-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.cmd-palette-footer span {
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .left-chrome-floating {
+    left: max(0px, env(safe-area-inset-left));
+    bottom: calc(22px + env(safe-area-inset-bottom));
+  }
+
+  body[data-statusbar-hidden="1"] .left-chrome-floating {
+    bottom: env(safe-area-inset-bottom);
+  }
+
+  .cmd-palette-overlay {
+    align-items: flex-start;
+    padding: 12px 8px;
+  }
+
+  .cmd-palette {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .cmd-palette-footer {
+    display: none;
+  }
+
+  .cmd-palette-item {
+    min-height: 48px;
+  }
+}

@@ -1,0 +1,27 @@
+/* gb-fonts.css: Noto Sans JP 同梱 (default-font 計画) */
+/* 日本語サブセット 3 ウェイト (Regular/Medium/Bold) を app/fonts/ から配信 */
+/* Noto Sans JP, Copyright 2014-2024 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. SIL OFL 1.1. */
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/NotoSansJP-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/NotoSansJP-Medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/NotoSansJP-Bold.woff2') format('woff2');
+}

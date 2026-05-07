@@ -1,0 +1,138 @@
+.meldex-beta-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg2));
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.left-chrome-user .meldex-beta-badge {
+  margin-left: 2px;
+  align-self: center;
+  flex: 0 0 auto;
+}
+
+.meldex-beta-consent-overlay {
+  z-index: 10090;
+}
+
+.meldex-beta-consent-modal {
+  width: min(560px, 92vw);
+  max-height: min(620px, 88vh);
+  padding: 0;
+}
+
+.meldex-beta-consent-modal > h3 {
+  margin: 0;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.meldex-beta-consent-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px 0;
+}
+
+.meldex-beta-consent-modal > .btn-row {
+  margin-top: 0;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.meldex-beta-consent-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.meldex-beta-consent-checks {
+  display: grid;
+  gap: 10px;
+}
+
+.meldex-beta-consent-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.meldex-beta-consent-check input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+.meldex-beta-consent-muted,
+.settings-about-muted {
+  color: var(--fg2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-about-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.settings-about-grid dt {
+  color: var(--fg2);
+}
+
+.settings-about-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+
+.settings-about-credit-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 768px) {
+  .meldex-beta-consent-modal {
+    width: 94vw;
+    max-height: 90vh;
+  }
+
+  .meldex-beta-consent-modal > h3,
+  .meldex-beta-consent-modal .modal-body,
+  .meldex-beta-consent-modal > .btn-row {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .settings-about-grid {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}

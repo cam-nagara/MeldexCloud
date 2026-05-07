@@ -1,0 +1,991 @@
+/* ==============================
+   キャンバスコンポーネント (.bd-*)
+   Phase C: canvas.html → gb-tool-canvas.js
+   ============================== */
+.gb-canvas-root { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+/* .bd-toolbar → .gb-toolbar.gb-toolbar-board (Phase 4-d 完了)。
+   ベーススタイルは gb-ui.css .gb-toolbar + .gb-toolbar-board modifier で提供。
+   以下はボード固有の追加ルールのみ。 */
+.gb-toolbar-board.bd-toolbar-bottom { border-top: 1px solid var(--ui-border); border-bottom: 0; justify-content: flex-start; }
+/* 2026-04-18: ツールバーのタイトル欄を .tb-title 標準（12px / weight 600 / padding 0 6px / 枠なし）に統一 */
+.bd-toolbar-title { display: inline-flex; align-items: center; flex: 1 1 auto; min-width: 0; padding: 0 var(--ui-space-3); background: transparent; color: var(--ui-fg-default); font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-toolbar-group { display: flex; align-items: center; gap: 4px; min-height: 28px; }
+.bd-toolbar-group-meta { margin-left: auto; }
+.bd-toolbar-label { font-size: 11px; color: var(--fg2); white-space: nowrap; }
+.bd-toolbar-select { min-width: 118px; padding: 3px 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
+.bd-toolbar-btn.active { background: var(--accent); color: var(--ui-fg-strong); border-color: var(--accent); }
+.bd-toolbar-icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: 3px 6px; }
+/* ツールバーのスタイルプレビュー (#bd-card-style-preview / #bd-line-style-preview) */
+/* 横幅はピッカートリガーの縮小に合わせて従来の半分に縮める。内部の SVG/span は親幅に追従。 */
+.bd-style-preview { display: inline-flex; align-items: center; justify-content: center; flex: 1 1 auto; width: 100%; min-width: 0; min-height: 24px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); overflow: hidden; }
+.bd-style-preview > svg { width: 100%; height: auto; max-height: 20px; }
+.bd-style-preview > .bd-style-card-preview { width: 64px; height: 20px; max-width: 100%; }
+.bd-style-card-preview { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 16px; font-size: 10px; letter-spacing: 0.02em; }
+.bd-style-card-preview--path-shape { box-sizing: border-box; isolation: isolate; }
+.bd-style-card-preview--path-shape .bd-style-card-preview-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 0; pointer-events: none; }
+.bd-style-card-preview--path-shape .bd-style-card-preview-text { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 100%; pointer-events: none; }
+.bd-style-preview-line { padding: 0 2px; }
+.bd-style-picker-trigger { display: inline-flex; align-items: center; gap: 8px; min-width: 90px; justify-content: space-between; }
+.bd-style-picker-caret { font-size: 10px; color: var(--fg2); }
+.ab-dropdown.bd-style-picker-menu,
+.bd-style-picker-menu { display: grid; gap: 4px; min-width: 240px; padding: 6px; z-index: 10010; }
+
+/* --- in-panel スタイル管理タブ: タブ上部ピッカー & ドロップダウンポップアップ --- */
+.bd-style-in-panel { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+.bd-style-in-panel .bd-style-editor-fields--fmt { display: flex; flex-direction: column; gap: var(--ui-space-3); }
+.bd-depth-style-field-group { display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0; }
+/* スタイル管理タブ内では設定項目を縦 1 カラムに固定する。
+   既定の .bd-detail-section は repeat(auto-fill, minmax(120px, 1fr)) で
+   横幅が広いと 2 カラム化し、左カラムに大きな空白プレビュー枠が見える挙動を起こしていた。 */
+.bd-style-in-panel .bd-detail-section { grid-template-columns: 1fr; padding-right: 0; margin-top: var(--ui-space-3); }
+.bd-style-in-panel .bd-detail-section:first-child { margin-top: 0; }
+.bd-style-panel-picker {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg2);
+  color: var(--fg); cursor: pointer; text-align: left;
+  /* プレビューがピッカー枠を超えて溢れないように、ピッカー側で確実にクリップする */
+  overflow: hidden;
+}
+.bd-style-panel-picker:hover { background: var(--bg3); }
+.bd-style-panel-picker .bd-style-picker-preview {
+  flex: 0 0 96px; min-height: 54px; height: 54px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg); padding: 6px;
+  /* 中身 (SVG/カードプレビュー) が枠を超えてはみ出さないようにする */
+  overflow: hidden; box-sizing: border-box;
+}
+/* 階層別スタイルタブ: ピッカープレビューはカード+ライン 2 つ並ぶので枠を広げる */
+.bd-depth-in-panel .bd-style-panel-picker .bd-style-picker-preview { flex: 0 0 200px; min-width: 200px; }
+.bd-depth-in-panel .bd-style-panel-picker .bd-style-picker-preview .bd-depth-preview-group { width: 100%; height: 100%; }
+.bd-depth-in-panel .bd-style-panel-picker .bd-style-picker-preview .bd-depth-preview-swatch { width: 50%; flex: 1 1 0; min-width: 0; }
+.bd-style-panel-picker .bd-style-picker-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+.bd-style-panel-picker .bd-style-picker-caret { color: var(--fg2); font-size: 12px; }
+.bd-style-panel-picker:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* タブ底部ピッカーから開くポップアップ */
+.bd-style-manager-popup {
+  position: fixed; z-index: 10010;
+  display: flex; flex-direction: column; gap: 6px;
+  min-width: 280px; max-width: 420px; max-height: 60vh;
+  padding: 8px; box-sizing: border-box;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+}
+.bd-style-manager-popup-list { display: flex; flex-direction: column; gap: 6px; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.bd-style-manager-popup-actions { display: flex; gap: 4px; justify-content: flex-start; padding-top: 6px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.bd-style-manager-popup-actions .bd-detail-style-action { flex: 0 0 auto; }
+.bd-style-manager-popup-close { margin-left: auto; }
+.bd-style-picker-item { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; width: 100%; padding: 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--fg); text-align: left; cursor: pointer; }
+.bd-style-picker-item:hover { background: var(--bg3); }
+.bd-style-picker-item.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg2)); }
+.bd-style-picker-preview { display: inline-flex; align-items: center; justify-content: center; min-height: 54px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 6px; }
+.bd-style-picker-item .bd-style-picker-preview { width: 96px; height: 54px; box-sizing: border-box; overflow: hidden; }
+.bd-style-picker-item .bd-style-picker-preview .bd-style-card-preview,
+.bd-style-panel-picker .bd-style-picker-preview .bd-style-card-preview,
+.bd-detail-style-trigger-preview .bd-style-card-preview { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; max-height: none; font-size: 16px; letter-spacing: 0; }
+.bd-style-picker-item .bd-style-picker-preview svg,
+.bd-style-panel-picker .bd-style-picker-preview svg,
+.bd-detail-style-trigger-preview svg { width: 100%; height: 100%; max-width: none; max-height: none; display: block; }
+.bd-style-picker-label { font-size: 12px; font-weight: 600; color: var(--fg); }
+.bd-style-card-preview-large { width: 312px; height: 40px; font-size: 13px; }
+.bd-style-line-preview-large { width: 336px; height: 28px; }
+#bd-card-style-preview .bd-style-card-preview { width: 100%; height: 18px; }
+#bd-line-style-preview svg { width: 100%; display: block; }
+.bd-filter-badge { display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; min-width: 16px; height: 16px; border-radius: 999px; background: var(--accent); color: var(--ui-fg-strong); font-size: 10px; }
+.bd-toolbar-meta { font-size: 12px; color: var(--fg2); min-width: 36px; text-align: center; }
+#bd-zoom-label { cursor: pointer; user-select: none; }
+#bd-zoom-label:hover { color: var(--fg); }
+.bd-toolbar-range { width: 82px; height: 14px; cursor: pointer; accent-color: var(--ui-range-fill-bg); }
+.bd-toolbar-range-rot { width: 62px; }
+.bd-toolbar-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+.bd-bg-swatch { width: 22px; height: 22px; border: 2px solid var(--border); border-radius: 4px; cursor: pointer; background: var(--bg); box-sizing: border-box; flex-shrink: 0; }
+.gb-canvas-root { min-height: 0; }
+[data-bd-role="canvas"] { cursor: default; overflow: hidden; position: relative; touch-action: none; min-height: 0; background: var(--bd-bg, var(--bg)); }
+[data-bd-role="canvas"].bd-panning { cursor: grabbing; }
+[data-bd-role="canvas"].bd-node-dragging { cursor: default; }
+[data-bd-role="canvas"].bd-tool-add-card { cursor: copy; }
+[data-bd-role="canvas"].bd-tool-add-line { cursor: crosshair; }
+[data-bd-role="canvas"].bd-tool-erase { cursor: cell; }
+[data-bd-role="canvas"].bd-tool-add-card .bd-node,
+[data-bd-role="canvas"].bd-tool-add-card .bd-node *,
+[data-bd-role="canvas"].bd-tool-add-card .bd-resize,
+[data-bd-role="canvas"].bd-tool-add-card .bd-card-menu-btn,
+[data-bd-role="canvas"].bd-tool-add-card [data-bd-role="svg"] path.bd-conn-hit { cursor: copy !important; }
+[data-bd-role="canvas"].bd-tool-add-line .bd-node,
+[data-bd-role="canvas"].bd-tool-add-line .bd-node *,
+[data-bd-role="canvas"].bd-tool-add-line .bd-resize,
+[data-bd-role="canvas"].bd-tool-add-line .bd-card-menu-btn,
+[data-bd-role="canvas"].bd-tool-add-line [data-bd-role="svg"] path.bd-conn-hit { cursor: crosshair !important; }
+[data-bd-role="canvas"].bd-tool-erase .bd-node,
+[data-bd-role="canvas"].bd-tool-erase .bd-node *,
+[data-bd-role="canvas"].bd-tool-erase .bd-resize,
+[data-bd-role="canvas"].bd-tool-erase .bd-card-menu-btn,
+[data-bd-role="canvas"].bd-tool-erase [data-bd-role="svg"] path.bd-conn-hit { cursor: cell !important; }
+.bd-node { position: absolute; min-width: 40px; min-height: 28px; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); background: var(--bd-node-bg, var(--bg4)); border: 2px solid transparent; color: var(--fg); cursor: grab; user-select: none; white-space: pre-wrap; word-break: break-word; box-sizing: border-box; overflow: hidden; isolation: isolate; }
+.bd-node:has(.bd-img) { padding: 0; border-width: 0; }
+/* hover 時のフィードバックは「カードメニューボタン」(.bd-card-menu-btn) の表示のみとし、
+   カードを囲う矩形 (旧 box-shadow 1px outline) は出さない (v0.5.246)。z-index は前面化のため維持。 */
+.bd-node:hover { z-index: 5; }
+.bd-node.bd-selected { box-shadow: none; outline: none; z-index: 6; }
+/* カード選択ハイライト:
+   v0.5.244 から、形状 (clip-path) に追従する内側オーバーレイをやめて、
+   カード bbox の周囲に余白付きの矩形枠 (`.bd-selection-rect`) を出す方式に変更。
+   雲・トゲ・八角など clip-path で輪郭を変えるカードでも、選択時は形状非依存の矩形が表示される。
+   実体は `bdSyncResizeHandles` (gb-canvas-engine.part01.js) が `#bd-resize-layer` に
+   兄弟要素として描く。`.bd-selection-ring` は後方互換のため定義は残すが常に非表示。 */
+.bd-node { filter: var(--bd-base-filter, none) var(--bd-group-hi-filter,); }
+.bd-node[data-bd-group-color] {
+  outline: 3px solid var(--bd-group-hi, currentColor);
+  outline-offset: 1px;
+}
+.bd-node[data-bd-group-color]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bd-group-hi, currentColor);
+  opacity: 0.12;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 0;
+}
+.bd-node.bd-selected[data-bd-group-color],
+.bd-node.bd-group-hi-clip[data-bd-group-color] {
+  outline: none;
+}
+/* デフォルトでは `.bd-selection-ring` は非表示 (新方式 `.bd-selection-rect` を使うため) */
+.bd-selection-ring { display: none !important; }
+/* コンテナ内ノードは `node.contained` で `bdSyncResizeHandles` のスキップ対象なので
+   `.bd-selection-rect` が描かれない。代わりに従来の `.bd-selection-ring` 内側オーバーレイを
+   コンテナ配下のときだけ復活させる。 */
+.bd-inner-nodes .bd-node.bd-selected .bd-selection-ring {
+  display: block !important;
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bd-selection-color, #4a90d9) 70%, transparent);
+  pointer-events: none;
+  z-index: 6;
+  border-radius: inherit;
+}
+.bd-selection-rect {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid var(--bd-selection-color, #4a90d9);
+  border-radius: 4px;
+  box-sizing: border-box;
+  display: none;
+  z-index: 5;
+}
+.bd-selection-rect.is-visible { display: block; }
+.bd-selection-rect.is-editing { display: none !important; }
+.bd-node.bd-editing { cursor: default; z-index: 10; }
+/* 編集中はネイティブキャレットを透明化し、カスタムキャレット (.bd-custom-caret) を表示する。
+   これでカーソル太さ (--bd-caret-width) が設定可能になる。 */
+.bd-node.bd-editing .bd-text { outline: none; cursor: text; user-select: text; caret-color: transparent; }
+.bd-node.bd-editing .bd-text::selection { background: color-mix(in srgb, var(--bd-selection-color, #4a90d9) 70%, transparent); color: var(--bd-selection-fg, var(--ui-selection-fg)); }
+.bd-node.bd-editing .bd-selection-ring { opacity: 0 !important; }
+/* カスタムキャレット (横書き想定、縦線で点滅)
+   v0.5.250: --bd-caret-width が 0 / 空でも必ず見えるよう min-width を保証。
+   JS の updateCaret で height をセットする前の初回描画でも視認できるよう、
+   フォールバック height を明示する。 */
+.bd-custom-caret {
+  position: absolute;
+  width: var(--bd-caret-width, var(--editor-caret-width, 2px));
+  min-width: 2px;
+  height: 1em;
+  background: var(--bd-caret-color, var(--editor-caret-color, var(--fg, #000)));
+  pointer-events: none;
+  z-index: 12;
+  animation: bd-caret-blink 1s step-end infinite;
+  /* 親の overflow: hidden でも見切れないよう、編集中のカードは overflow: visible に (下の規則で指定) */
+  will-change: left, top, height;
+}
+/* 編集中のカードは overflow: visible にして、カード端ぎりぎりのキャレットが
+   clip されないようにする。元の bd-node.overflow は hover/非編集時のみ hidden。 */
+.bd-node.bd-editing { overflow: visible; }
+@keyframes bd-caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+/* 影オン時は SVG 全体に drop-shadow を適用してラインに影を付ける (カードと同じ色を共有) */
+[data-bd-role="canvas"].bd-shadow-on [data-bd-role="svg"] { filter: drop-shadow(0 3px 5px var(--bd-shadow-color, rgba(0,0,0,0.25))); }
+.bd-text { position: relative; z-index: 9; display: block; pointer-events: none; line-height: 1.5; }
+.bd-link-card-content { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 6px; min-width: 0; }
+.bd-link-card-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; min-width: 22px; padding-top: 1px; color: var(--fg2); opacity: 0.9; line-height: 1; }
+.bd-link-card-icon svg { width: 18px; height: 18px; }
+.bd-link-card-label { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.bd-link-tooltip { position: fixed; z-index: 9999; background: var(--ui-popup-bg, var(--bg2)); color: var(--fg2); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: none; }
+.bd-node.bd-selected .bd-text, .bd-node.bd-editing .bd-text { pointer-events: auto; }
+.bd-node .bd-img { position: relative; z-index: 1; width: 100%; height: auto; max-width: 100%; border-radius: 3px; display: block; pointer-events: none; }
+.bd-node:has(.bd-img) .bd-text { padding: 2px 6px 4px; }
+.bd-node .bd-caption { font-size: 12px; color: var(--fg2); margin-top: 4px; }
+.bd-resize { position: absolute; width: calc(18px / var(--bd-current-zoom, 1)); height: calc(18px / var(--bd-current-zoom, 1)); cursor: nwse-resize; opacity: 0; z-index: 12; transform: translate(-35%, -35%); pointer-events: none; }
+.bd-resize.is-visible { opacity: 0.88; pointer-events: auto; }
+.bd-resize::after { content: ''; position: absolute; right: calc(3px / var(--bd-current-zoom, 1)); bottom: calc(3px / var(--bd-current-zoom, 1)); width: calc(7px / var(--bd-current-zoom, 1)); height: calc(7px / var(--bd-current-zoom, 1)); border-right: calc(2px / var(--bd-current-zoom, 1)) solid var(--fg2); border-bottom: calc(2px / var(--bd-current-zoom, 1)) solid var(--fg2); }
+/* v0.5.249: カード上の折りたたみ・展開ボタン (.bd-collapse-btn) を廃止。
+   操作はコンテキストメニューの「構造」サブメニューに移行。 */
+.bd-node.bd-collapsed { opacity: 0.85; }
+.bd-node.bd-container { min-width: 200px; min-height: 100px; padding-bottom: 20px; }
+.bd-node.bd-container .bd-inner-nodes { position: relative; margin-top: 8px; min-height: 40px; }
+.bd-node.bd-drop-target { outline: 3px dashed var(--accent) !important; background: color-mix(in srgb, var(--ui-selection-bg) 35%, transparent) !important; }
+/* --- 検索・置換バー --- */
+.bd-find-bar { position: absolute; top: 8px; right: 16px; z-index: 200; background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 4px; font-size: 13px; min-width: 320px; }
+.bd-find-bar-row { display: flex; gap: 4px; align-items: center; }
+.bd-find-bar .bd-find-input { flex: 1; min-width: 160px; padding: 4px 6px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; font-size: 13px; outline: none; }
+.bd-find-bar .bd-find-input:focus { border-color: var(--accent); }
+.bd-find-bar .bd-find-count { font-size: 11px; color: var(--fg2); min-width: 50px; text-align: right; }
+.bd-find-bar .bd-find-btn { padding: 3px 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; cursor: pointer; font-size: 12px; min-width: 28px; line-height: 1; }
+.bd-find-bar .bd-find-btn:hover { background: var(--bg3); }
+/* 検索マッチのワードハイライト (カード全体ではなく、該当ワード部分だけに mark を挿入)。
+   text-shadow によるテキストフチがハイライトの背景を覆い隠すため、mark 部分のフチを無効化する。 */
+.bd-find-hl { background: rgba(255, 220, 50, 0.50); color: inherit; padding: 0 1px; border-radius: 2px; text-shadow: none !important; }
+.bd-find-hl-current { background: rgba(255, 140, 0, 0.80); color: #1a1a1a; text-shadow: none !important; }
+.bd-node.bd-minimized { max-height: 32px; overflow: hidden; opacity: 0.8; }
+.bd-node.bd-minimized .bd-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bd-node.bd-minimized .bd-img { display: none; }
+.bd-node.bd-minimized .bd-resize { display: none; }
+/* `.bd-conn-action-btn` (ライン用「...」ボタン) と同じ明度に揃える: color: var(--fg) (v0.5.246) */
+/* v0.5.250: z-index を 8 → 11 に引き上げて bd-text (z-index:9) の上に出す。
+   カード選択中 (.bd-selected .bd-text) は pointer-events:auto になるため、
+   z-index が下だと bd-text にイベントを奪われ、ボタン左側が押せなくなる現象が発生していた。 */
+.bd-card-menu-btn { position: absolute; top: 4px; right: 12px; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--bg2) 96%, transparent); color: var(--fg); font-size: 11px; line-height: 1; cursor: pointer; opacity: 0; pointer-events: auto; z-index: 11; transition: opacity 0.15s ease, background 0.15s ease; }
+.bd-card-menu-btn:hover { background: var(--bg3); color: var(--fg); }
+/* 楕円カードは雲・トゲと同じく overflow: visible にして、メニューボタン (.bd-card-menu-btn) を
+   bbox の右上角 (= ellipse の外側) に配置できるようにする (v0.5.248)。
+   画像 (.bd-img) は border-radius 50% を継承させて image 自体を楕円に切り抜く。
+   背景色は `background-clip: border-box` 既定 + `border-radius: 50%` で楕円形にクリップされるため、
+   overflow: visible にしても bg は楕円形のまま保たれる。 */
+.bd-node[data-shape="ellipse"] { overflow: visible; }
+.bd-node[data-shape="ellipse"] .bd-img { border-radius: 50%; }
+.bd-node:hover .bd-card-menu-btn { opacity: 1; }
+
+/* ============================================================================
+   カードHUD 新仕様
+   右下: マーカー (.bd-marker-hud)、左上: ステータス (.bd-status-hud)、
+   左下: コメント (.bd-comment-hud)、カード外 4 点: アンカー (.bd-anchor-hud)。
+   - ステータス/マーカー/コメントは設定済みのときのみ描画 + 常時表示 (カードテキスト背面)。
+   - アンカーだけは非ホバー時に opacity:0 で隠し、未選択カードのインタラクト時だけ露出。
+   - カード外に張り出すアンカーのため、選択/ホバー時は overflow: visible に切り替える。
+   ============================================================================ */
+/* アンカー HUD だけは非ホバー/非選択時に隠す (カード追加ボタンなので
+   インタラクト時にのみ露出させる)。
+   ステータス / マーカー / コメント HUD は「存在するとき = 設定済み」なので
+   常時表示 (空状態は JS 側で描画自体を省略 or CSS で display:none)。 */
+/* v0.5.321: 選択中でもカーソルオーバー時はアンカーを露出する。
+   キーボード操作で選択が移動しているだけ（非ホバー）のときは隠す。
+   - 非選択 + 非ホバー: 透明
+   - 非選択 + ホバー   : 表示 (従来)
+   - 選択中 + 非ホバー : 非表示 (キーボード選択切替中)
+   - 選択中 + ホバー   : 表示 (新動作、ライン作成のため) */
+.bd-node:not(:hover):not(.bd-selected) .bd-anchor-hud { opacity: 0; pointer-events: none; }
+.bd-node.bd-selected:not(:hover) .bd-anchor-hud { display: none !important; }
+.bd-node .bd-anchor-hud { transition: opacity 0.15s ease; }
+.bd-node:hover, .bd-node.bd-selected { overflow: visible; }
+.bd-node.bd-editing .bd-anchor-hud { opacity: 1; pointer-events: auto; }
+
+/* 左上: ステータスドット (旧 8px ドットを HUD 化して 14px に拡大)。
+   z-index 8: カードテキスト (.bd-text = z-index 9) より背面に置く。 */
+.bd-status-hud {
+  position: absolute; top: 4px; left: 4px;
+  width: 14px; height: 14px; border-radius: 50%;
+  cursor: pointer; z-index: 8;
+  border: 1.5px solid rgba(255,255,255,0.12);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
+}
+.bd-status-hud:hover { filter: brightness(1.2); }
+
+/* 右下: マーカー (カテゴリごとのアイコン)。z-index 8 でテキスト背面 */
+.bd-marker-hud {
+  position: absolute; bottom: 4px; right: 4px;
+  display: flex; gap: 2px; z-index: 8; cursor: pointer;
+}
+.bd-marker-hud .mk {
+  width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
+.bd-marker-hud.empty {
+  width: 14px; height: 14px; opacity: 0.35;
+  border: 1px dashed var(--fg2); border-radius: 3px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--fg2);
+}
+.bd-marker-hud.empty svg { width: 10px; height: 10px; }
+
+/* 左下: コメント (件数ありのみ表示。z-index 8 でテキスト背面) */
+.bd-comment-hud {
+  position: absolute; bottom: 4px; left: 4px;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; line-height: 1; z-index: 8; cursor: pointer;
+  color: var(--ui-fg-strong); background: var(--accent); border-radius: 7px;
+}
+/* 件数 0 の空状態は非表示 (「コメントを追加」ボタンは廃止してポップアップメニューへ移設)。
+   HUD 要素自体は DOM に残しておく (CommentBadges.refreshBoard が find して件数を更新する想定) */
+.bd-comment-hud.empty { display: none; }
+.bd-comment-hud:hover { filter: brightness(1.15); }
+
+/* カード外 4 点アンカー: 4 辺中央。pointerdown でライン作成モードに入る。
+   2026-04-18: 内側の「◯+」は lucide の circle-plus SVG で描画する (円と + が
+   SVG viewBox 内で完全整列するため、CSS 疑似要素の subpixel ずれを避けられる)。
+   色は `--bd-anchor-color` を currentColor 経由で stroke に反映。未設定時は
+   `--accent` にフォールバック。 */
+.bd-anchor-hud {
+  position: absolute; width: 18px; height: 18px;
+  color: var(--bd-anchor-color, var(--accent));
+  background: transparent; border: none;
+  z-index: 11; cursor: crosshair;
+  transform: translate(-50%, -50%);
+  display: flex; align-items: center; justify-content: center;
+}
+.bd-anchor-hud.top    { top: 0%;   left: 50%;  }
+.bd-anchor-hud.bottom { top: 100%; left: 50%;  }
+.bd-anchor-hud.left   { top: 50%;  left: 0%;   }
+.bd-anchor-hud.right  { top: 50%;  left: 100%; }
+.bd-anchor-hud svg {
+  display: block; width: 100%; height: 100%;
+  pointer-events: none;
+}
+/* デフォルトで「円の内側を塗りつぶし + 白抜きの＋」(UX 上ボタンであることを一目で示す) */
+.bd-anchor-hud svg circle { fill: currentColor; transition: fill 0.1s ease-in-out; }
+.bd-anchor-hud svg path { stroke: #fff; }
+/* ホバー時は明度だけ変える (塗りつぶしは既に適用済みのため) */
+.bd-anchor-hud:hover { filter: brightness(1.2); }
+/* ライン選択中は「+」だけ隠し、円は塗りなしの枠線に戻す (旧ライン作成モードの見た目を維持) */
+[data-bd-role="canvas"].bd-has-conn-selection .bd-anchor-hud svg circle { fill: none; }
+[data-bd-role="canvas"].bd-has-conn-selection .bd-anchor-hud svg path { display: none; }
+
+/* 折りたたみ中は右上のカードメニューボタンだけ残し、他の HUD を隠す (§9.5) */
+.bd-node.bd-minimized .bd-status-hud,
+.bd-node.bd-minimized .bd-marker-hud,
+.bd-node.bd-minimized .bd-comment-hud,
+.bd-node.bd-minimized .bd-anchor-hud { display: none; }
+
+/* ロック中のカードはアンカーのみ非表示 (移動/接続編集不可のため、§9.4) */
+.bd-node[data-locked="1"] .bd-anchor-hud { display: none; }
+
+/* Gap-1 §9.6: マルチ選択時は個別カードの 8 点アンカーを非表示にし、
+   選択グループ bbox の統合アンカーに一本化する。 */
+[data-bd-role="canvas"].bd-has-multi-selection .bd-node .bd-anchor-hud { display: none; }
+
+/* 2026-04-18: 選択中ラインの始点/終点カードでは、アンカー HUD を完全に非表示にする。
+   - クリックが SVG 端点ハンドルへ通るようにする (新規ライン作成と端点ドラッグの競合回避)
+   - 固定側ハンドルがカードアンカーと重なって二重丸に見える視覚的な問題を回避
+   端点ハンドル (SVG circle.bd-conn-selection-end) はそのまま表示され、端点ドラッグ可能。 */
+.bd-node.bd-line-endpoint .bd-anchor-hud { display: none !important; }
+
+/* 2026-04-18: ライン端点ドラッグ中は全カードのアンカー HUD を一時非表示にする。
+   ドラッグ中のハンドル円と移動先カードのアンカーが同じ位置に来て二重丸に見える問題を防ぐ。
+   ドラッグ終了 (pointerup / pointercancel) でクラスが外れて通常状態に戻る。 */
+[data-bd-role="canvas"].bd-endpoint-dragging .bd-anchor-hud { display: none !important; }
+
+/* 選択グループの bbox を囲むアンカー容器 (位置のみ役割、pointer-events はアンカーに委ねる) */
+.bd-selection-group-anchors { position: absolute; pointer-events: none; z-index: 11; }
+
+/* マルチ選択 bbox の 4 辺中央アンカー。2026-04-18: 四隅を廃止 + 内側透明 + カラーはスタイルタブで設定可 */
+.bd-group-anchor {
+  position: absolute; width: 10px; height: 10px;
+  background: transparent; border: 1.5px solid var(--bd-anchor-color, var(--accent));
+  border-radius: 50%; cursor: crosshair;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+.bd-group-anchor:hover { border-width: 2.5px; }
+.bd-group-anchor.top    { top: 0%;   left: 50%;  }
+.bd-group-anchor.bottom { top: 100%; left: 50%;  }
+.bd-group-anchor.left   { top: 50%;  left: 0%;   }
+.bd-group-anchor.right  { top: 50%;  left: 100%; }
+
+/* 画像カードは HUD が画像上に乗るため、背景を半透明＋blur で視認性を確保 (§9.5) */
+.bd-node:has(.bd-img) .bd-status-hud,
+.bd-node:has(.bd-img) .bd-marker-hud,
+.bd-node:has(.bd-img) .bd-comment-hud {
+  background-color: color-mix(in srgb, var(--bg2) 75%, transparent);
+  backdrop-filter: blur(4px);
+}
+/* 矩形選択 (左ドラッグ) — スタイルタブで `--bd-select-rect-color` で上書き可能 (v0.5.249) */
+.bd-select-rect { position: absolute; border: 1px dashed var(--bd-select-rect-color, var(--accent)); background: color-mix(in srgb, var(--bd-select-rect-color, var(--accent)) 12%, transparent); pointer-events: none; z-index: 100; }
+/* 2026-04-18: ライン/矢印をカードの背面に配置 (カードを隠さない)。
+   元は z-index: 11 でカードより前面だった。 */
+[data-bd-role="svg"] { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: visible; z-index: 0; pointer-events: none; }
+[data-bd-role="resize-layer"] { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 12; }
+[data-bd-role="svg"] path.bd-conn-hit { pointer-events: stroke; cursor: pointer; stroke: transparent; stroke-width: 16px; fill: none; }
+[data-bd-role="world"] { min-width: 100%; min-height: 100%; }
+[data-bd-role="nodes"] { position: relative; z-index: 1; min-width: 100%; min-height: 100%; }
+[data-bd-role="svg"] path.bd-conn-path { fill: none; stroke: var(--accent2, var(--accent)); stroke-width: 2; opacity: 1; }
+[data-bd-role="svg"] path.bd-conn-path.bd-selected { filter: none; opacity: 1; }
+[data-bd-role="svg"] .bd-conn-selection { fill: none; pointer-events: none; stroke-linecap: round; stroke-linejoin: round; }
+/* 選択表示: ラインに半透明のアクセント色を重ねるだけのシンプルな描画 (裏線・drop-shadow は廃止) */
+[data-bd-role="svg"] .bd-conn-selection-back { stroke: transparent; }
+[data-bd-role="svg"] .bd-conn-selection-front { stroke: color-mix(in srgb, var(--ui-selection-bg) 75%, transparent); }
+[data-bd-role="svg"] .bd-conn-selection-handle { pointer-events: none; }
+/* Phase 3: 端点ハンドルはドラッグ可能 (接続先カード変更) */
+[data-bd-role="svg"] .bd-conn-selection-end { fill: var(--accent); stroke: var(--ui-fg-strong); pointer-events: all; cursor: grab; }
+[data-bd-role="svg"] .bd-conn-selection-end:active { cursor: grabbing; }
+[data-bd-role="svg"] .bd-conn-selection-mid { fill: var(--ui-fg-strong); stroke: var(--accent); }
+/* Phase 5-2: SVG textPath ラベル */
+[data-bd-role="svg"] .bd-conn-label-path { font-size: 13px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); fill: var(--fg); cursor: text; user-select: none; pointer-events: all; }
+/* Free Bezier 編集: 8 アンカー候補点 / 2 ハンドル / ハンドル接続線 */
+[data-bd-role="svg"] .bd-anchor-candidate {
+  fill: #fff;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  cursor: pointer;
+  pointer-events: all;
+  opacity: 0.85;
+}
+[data-bd-role="svg"] .bd-anchor-candidate:hover { fill: var(--accent); opacity: 1; }
+[data-bd-role="svg"] .bd-anchor-candidate.bd-active { fill: var(--accent); stroke: var(--ui-fg-strong); stroke-width: 2; opacity: 1; }
+[data-bd-role="svg"] .bd-anchor-candidate.bd-active-to { fill: var(--accent2, var(--accent)); stroke: var(--ui-fg-strong); stroke-width: 2; opacity: 1; }
+[data-bd-role="svg"] .bd-curve-handle {
+  fill: #fff;
+  stroke: var(--accent2, var(--accent));
+  stroke-width: 2;
+  cursor: grab;
+  pointer-events: all;
+}
+[data-bd-role="svg"] .bd-curve-handle:active { cursor: grabbing; fill: var(--accent2, var(--accent)); }
+[data-bd-role="svg"] .bd-curve-handle-line {
+  stroke: var(--accent2, var(--accent));
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  fill: none;
+  pointer-events: none;
+  opacity: 0.55;
+}
+[data-bd-role="svg"] .bd-conn-arrow { stroke: none; pointer-events: none; }
+[data-bd-role="svg"] .bd-conn-arrow.bd-selected { filter: none; }
+/* キャンバスメニュー固有（bd-cm-sep等） — 基本スタイルは .gb-context-menu */
+.gb-context-menu .bd-cm-sep { height: 1px; background: var(--border); margin: 3px 0; cursor: default; padding: 0; }
+.gb-context-menu .bd-cm-sep:hover { background: var(--border); }
+/* グループ枠 — スタイルタブで `--bd-group-color` で上書き可能 (v0.5.249) */
+.bd-frame { position: absolute; border: 2px dashed var(--bd-group-color, var(--accent)); border-radius: 8px; background: color-mix(in srgb, var(--bd-group-color, var(--accent)) 6%, transparent); pointer-events: none; }
+.bd-frame-label { position: absolute; top: -18px; left: 8px; font-size: 11px; color: var(--bd-group-color, var(--accent)); font-weight: bold; pointer-events: auto; cursor: default; padding: 0 4px; border-radius: 2px; }
+.bd-frame-label:hover { background: var(--bg3); }
+.bd-frame-label[contenteditable="true"] { outline: none; cursor: text; color: var(--fg); }
+.bd-conn-action-btn { position: absolute; transform: translate(-50%, -50%); min-width: 28px; height: 22px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg2) 96%, transparent); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--fg); z-index: 10; padding: 0 8px; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+.bd-conn-label { position: absolute; transform: translate(-50%, -50%); transform-origin: center center; font-size: 11px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); color: var(--fg2); background: color-mix(in srgb, var(--bg) 92%, transparent); padding: 1px 6px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap; cursor: default; pointer-events: auto; z-index: 4; }
+.bd-conn-label:hover { border-color: var(--border); }
+.bd-conn-label[contenteditable="true"] { border-color: var(--accent); outline: none; cursor: text; color: var(--fg); }
+.ann-note.ann-note-embedded { z-index: 6; }
+.bd-preview-loading,
+.bd-preview-card { width: 100%; height: 100%; display: flex; flex-direction: column; }
+.bd-preview-loading { align-items: center; justify-content: center; gap: 8px; color: var(--preview-muted-fg); font-size: 13px; }
+.bd-preview-card { gap: 8px; padding: 12px; box-sizing: border-box; color: var(--preview-fg); background: var(--preview-card-bg); border: 1px solid var(--preview-border); border-radius: var(--ui-radius-sm); }
+.bd-preview-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; }
+.bd-preview-path { font-size: 11px; color: var(--preview-muted-fg); word-break: break-all; }
+.bd-preview-body { flex: 1; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.6; overflow: auto; color: var(--preview-muted-fg); }
+/* Phase 3d-Q: .bd-detail-* はクラス名を維持しつつ --ui-* トークン経由に書き直し (ui-design-system-spec-v2.md §4.2) */
+/* 2026-04-17: detail-panel-section-unification-plan.md に基づき、枠なし・アクセントバー方式に統一 */
+.bd-detail-panel { display: grid; gap: var(--ui-space-3); }
+.bd-detail-panel.bd-style-in-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+.bd-detail-heading { font-size: var(--ui-font-12); font-weight: var(--ui-weight-bold); color: var(--ui-fg-default); }
+.bd-detail-hint { font-size: var(--ui-font-11); color: var(--ui-fg-muted); }
+.bd-detail-tabs { display: flex; flex-wrap: wrap; gap: var(--ui-space-2); }
+/* .bd-detail-tab-btn の pill 形状 (999px) はタブの意味付けとして維持 */
+.bd-detail-tab-btn { padding: 3px var(--ui-space-4); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-pill); background: var(--ui-bg-panel); color: var(--ui-fg-muted); font-size: var(--ui-font-12); cursor: pointer; }
+.bd-detail-tab-btn.active { background: var(--ui-accent); border-color: var(--ui-accent); color: var(--ui-fg-strong); }
+.bd-detail-tab-panel { display: none; }
+.bd-detail-tab-panel.active { display: block; }
+.bd-detail-section { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--ui-space-1) var(--ui-space-3); margin-top: var(--ui-space-5); padding-right: 1em; box-sizing: border-box; }
+.bd-detail-section:first-child { margin-top: 0; }
+.bd-detail-section-title { grid-column: 1 / -1; font-size: var(--ui-font-11); font-weight: var(--ui-weight-bold); color: var(--ui-fg-default); border-left: 2px solid var(--ui-accent); padding-left: var(--ui-space-3); line-height: 1.2; margin-bottom: var(--ui-space-2); }
+.bd-detail-section > *:not(.bd-detail-section-title) { margin-left: 1em; }
+.bd-detail-field,
+.bd-detail-check { display: flex; flex-direction: row; align-items: center; gap: var(--ui-space-2); font-size: var(--ui-font-11); color: var(--ui-fg-muted); }
+.bd-detail-field > span:first-child { flex-shrink: 0; min-width: 56px; /* ラベル幅の特殊寸法 */ }
+.bd-detail-field input,
+.bd-detail-field select { flex: 1; min-width: 0; padding: var(--ui-space-1) var(--ui-space-2); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); background: var(--ui-bg-app); color: var(--ui-fg-default); font: inherit; box-sizing: border-box; font-size: var(--ui-font-11); }
+/* 数値入力 (gb-fmt-num) は UI 共通ルールに従い 70px 固定幅。flex:1 を打ち消す。 */
+.bd-detail-field input.gb-fmt-num { flex: 0 0 auto; width: 70px; }
+.bd-detail-field textarea { flex: 1; min-width: 0; padding: var(--ui-space-1) var(--ui-space-2); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); background: var(--ui-bg-app); color: var(--ui-fg-default); font: inherit; box-sizing: border-box; font-size: var(--ui-font-11); min-height: 54px; resize: vertical; }
+.bd-detail-field-wide { grid-column: 1 / -1; }
+.bd-detail-check { gap: 3px; min-height: 20px; /* カスタム checkbox サイズ。v1 .gb-check と同一 */ }
+.bd-detail-color { display: flex; gap: var(--ui-space-2); }
+.bd-detail-swatch-row { display: flex; align-items: center; gap: var(--ui-space-2); }
+.bd-color-swatch { width: 20px; height: 20px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); box-sizing: border-box; cursor: pointer; background: var(--ui-bg-app); }
+.bd-color-swatch.is-set { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12); }
+.bd-detail-reset-btn { padding: 1px var(--ui-space-3); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); background: var(--ui-bg-app); color: var(--ui-fg-muted); cursor: pointer; font-size: var(--ui-font-10); }
+.bd-detail-reset-btn:disabled { opacity: 0.45; cursor: default; }
+.bd-detail-style-trigger { width: 100%; display: flex; align-items: center; gap: var(--ui-space-3); padding: 3px var(--ui-space-3); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); background: var(--ui-bg-app); color: var(--ui-fg-default); cursor: pointer; text-align: left; }
+.bd-detail-style-trigger-preview { display: inline-flex; align-items: center; justify-content: center; min-width: 72px; min-height: 26px; padding: var(--ui-space-1); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); background: var(--ui-bg-panel); }
+.bd-detail-style-trigger-label { flex: 1; min-width: 0; font-size: var(--ui-font-11); font-weight: var(--ui-weight-semibold); }
+/* ボード/ノード/接続線の詳細パネル内のスタイルトリガーは、ドロップダウン
+   (bd-style-picker-preview) と完全に同じ visual にする。
+   bd-detail-style-trigger は flex で preview が引き伸ばされるため、
+   width/flex を固定値で指定して picker の grid 列幅 96px と一致させる。 */
+[data-bd-detail-root="board"] .bd-detail-style-trigger-preview,
+[data-bd-detail-root="node"] .bd-detail-style-trigger-preview,
+[data-bd-detail-root="connection"] .bd-detail-style-trigger-preview {
+  width: 96px;
+  height: 54px;
+  min-width: 96px;
+  min-height: 54px;
+  flex: 0 0 96px;
+  padding: 6px;
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.bd-detail-style-row { display: flex; align-items: stretch; gap: var(--ui-space-2); width: 100%; grid-column: 1 / -1; }
+.bd-detail-section > .bd-style-summary-card { grid-column: 1 / -1; }
+.bd-detail-style-row .bd-detail-style-trigger { flex: 1; min-width: 0; }
+/* 2026-04-17: アイコンボタンはゴースト化 (枠なし・hover で浮かす) */
+.bd-detail-style-action { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; padding: 0 var(--ui-space-2); border: 1px solid transparent; border-radius: var(--ui-radius-xs); background: transparent; color: var(--ui-fg-muted); cursor: pointer; }
+.bd-detail-style-action:hover { background: var(--ui-bg-control-hover, rgba(255,255,255,0.08)); border-color: var(--ui-border); color: var(--ui-fg-default); }
+.bd-detail-style-action:disabled { opacity: 0.4; cursor: not-allowed; }
+.bd-detail-style-action--danger:hover { color: var(--danger, #e57373); border-color: var(--danger, #e57373); }
+/* 2026-04-17: セクション内のネストしたカード枠を削除 (枠の入れ子回避) */
+.bd-style-summary-card { display: grid; gap: var(--ui-space-2); width: 100%; }
+.bd-style-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--ui-space-1) var(--ui-space-4); font-size: var(--ui-font-11); color: var(--ui-fg-muted); }
+.bd-style-summary-grid > div { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-2); }
+/* v2 §4.2 要求: 丸型スウォッチを四角統一 (旧 999px → radius-sm) */
+.bd-inline-swatch { width: 16px; height: 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); box-sizing: border-box; flex-shrink: 0; }
+.bd-detail-range { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: var(--ui-space-2); align-items: center; }
+.bd-detail-range input[type="range"] { padding: 0; }
+.bd-detail-range input[type="number"] { text-align: right; padding: var(--ui-space-1) var(--ui-space-2); font-size: var(--ui-font-11); }
+.bd-detail-inline-actions { grid-column: 1 / -1; display: flex; gap: var(--ui-space-2); flex-wrap: wrap; }
+.bd-detail-inline-actions button { padding: 3px var(--ui-space-4); font-size: var(--ui-font-11); }
+/* 左 240px (リスト+プレビュー枠 96px に必要な最小幅) + 右 320px (編集フィールド) */
+.bd-style-manager { display: grid; grid-template-columns: 240px 320px; gap: 12px; flex: 1 1 auto; min-height: 0; }
+.bd-style-list,
+.bd-style-editor { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
+.bd-style-list-items { display: flex; flex-direction: column; gap: 6px; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.bd-style-list-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); color: var(--fg); cursor: pointer; }
+.bd-style-list-item:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-selection-bg) 70%, transparent); }
+.bd-style-list-item.active { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-selection-bg) 55%, transparent); }
+/* 現在ボードに適用中（active style）のスタイル — 左の縦帯で目印に。selected.active の選択枠とは独立。 */
+.bd-style-list-item.is-applied { box-shadow: inset 3px 0 0 var(--accent); }
+.bd-style-list-item.active.is-applied { box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-selection-bg) 55%, transparent), inset 3px 0 0 var(--accent); }
+.bd-style-list-item.bd-style-list-item--draggable.dragging { opacity: 0.55; }
+.bd-style-list-item.bd-style-list-item--draggable.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-selection-bg) 60%, transparent); }
+/* カード/ライン管理ダイアログのリストプレビュー枠は、詳細パネル基本タブのスタイルピッカートリガー
+   (`.bd-detail-style-trigger-preview` 96×54) と同サイズに揃える */
+.bd-style-list-preview { display: inline-flex; align-items: stretch; justify-content: stretch; width: 96px; height: 54px; min-width: 96px; flex-shrink: 0; padding: 6px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); background: var(--ui-bg-panel); box-sizing: border-box; overflow: hidden; }
+/* プレビュー要素を枠 (内側 84×42) いっぱいに広げる。font-size は枠サイズに合わせ縮小して中央配置 */
+.bd-style-list-preview .bd-style-card-preview { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; max-height: none; font-size: 16px; letter-spacing: 0.02em; }
+.bd-style-list-preview svg { width: 100%; height: 100%; max-width: none; max-height: none; }
+/* カード/ライン管理ダイアログの 1 行ラベル (深さ管理の 2 行ラベルと区別する) */
+.bd-style-list-name { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.bd-style-list-handle { color: var(--fg2); cursor: grab; user-select: none; letter-spacing: -1px; flex-shrink: 0; }
+.bd-style-list-item.bd-style-list-item--draggable:active .bd-style-list-handle { cursor: grabbing; }
+.bd-style-applied-mark { flex-shrink: 0; padding: 1px 6px; font-size: 10px; line-height: 1.4; color: var(--accent); background: color-mix(in srgb, var(--ui-selection-bg) 35%, transparent); border-radius: 999px; }
+.bd-style-editor-preview { min-height: 120px; flex: 0 0 auto; border: 1px dashed var(--border); border-radius: 8px; display: flex; align-items: stretch; justify-content: center; background: var(--bg); padding: 12px; }
+/* カード/ライン管理ダイアログの編集中プレビューだけ枠いっぱいに広げる */
+.bd-style-manager:not(.bd-depth-style-manager) .bd-style-editor-preview > * { flex: 1 1 auto; width: 100%; }
+.bd-style-manager:not(.bd-depth-style-manager) .bd-style-editor-preview .bd-style-card-preview {
+  width: 100%; height: auto; min-height: 96px; max-width: none; font-size: 32px; letter-spacing: 0.05em;
+}
+.bd-style-manager:not(.bd-depth-style-manager) .bd-style-editor-preview svg {
+  width: 100%; height: 100%; min-height: 64px; max-width: none;
+}
+.bd-style-editor-meta { font-size: 11px; color: var(--fg2); padding: 0 2px; }
+.bd-style-editor-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 2px 8px; align-items: center; }
+.bd-style-editor-fields.bd-style-editor-fields--fmt { display: flex; flex-direction: column; gap: var(--ui-space-3); grid-template-columns: initial; align-items: stretch; overflow: auto; min-height: 0; flex: 1; }
+.bd-style-editor-fields.bd-style-editor-fields--fmt > .gb-fmt-popup-row { justify-content: flex-start; }
+.bd-style-name-row { display: flex; align-items: center; gap: var(--ui-space-2); }
+.bd-style-name-row .bd-style-name-input { flex: 1; min-width: 0; height: 22px; padding: 0 var(--ui-space-2); box-sizing: border-box; line-height: 1; border: 1px solid var(--border); border-radius: var(--ui-radius-sm); background: var(--bg3); color: var(--fg); font-size: var(--ui-font-12); }
+.bd-depth-style-ref-row .gb-fmt-sel { flex: 1 1 180px; min-width: 160px; }
+.bd-depth-style-item.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-selection-bg) 60%, transparent); }
+.bd-depth-style-item.dragging { opacity: 0.55; }
+/* 階層別スタイル: リストアイテムのプレビューでカードとラインを横並びに。
+   旧 .bd-depth-style-manager に加え、in-panel ポップアップの .bd-depth-manager-popup
+   にも同じスタイルを当てないとプレビューが 1 枠分しか表示されない。 */
+.bd-depth-style-manager .bd-style-list-preview,
+.bd-depth-manager-popup .bd-style-list-preview { width: 200px; height: 54px; min-width: 200px; padding: 0; border: 0; background: transparent; overflow: visible; align-items: center; justify-content: center; }
+.bd-depth-preview-group { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 100%; overflow: visible; }
+.bd-depth-preview-swatch { display: inline-flex; align-items: stretch; justify-content: stretch; width: 96px; height: 54px; min-width: 96px; flex: 0 0 96px; padding: 6px; border: 1px solid var(--ui-border); border-radius: 8px; background: var(--bg); box-sizing: border-box; overflow: hidden; }
+.bd-depth-preview-swatch .bd-style-card-preview { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; max-height: none; font-size: 16px; letter-spacing: 0.02em; }
+.bd-depth-preview-swatch svg { width: 100%; height: 100%; max-width: none; max-height: none; }
+.bd-style-editor-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.bd-style-list-actions { display: flex; flex: 0 0 auto; }
+.bd-style-list-actions > .gb-btn { width: 100%; justify-content: center; }
+@media (pointer: coarse) {
+  .bd-toolbar-title { width: 100%; flex-basis: 100%; }
+}
+@media (max-width: 900px) {
+  .bd-style-manager { grid-template-columns: 1fr; }
+  .bd-detail-section,
+  .bd-style-editor-fields { grid-template-columns: 1fr; }
+  .bd-style-summary-grid,
+  .bd-detail-range { grid-template-columns: 1fr; }
+}
+
+/* === Note styling: heading empty-line removal === */
+#page-content h1 + div:has(> br:only-child),
+#page-content h2 + div:has(> br:only-child),
+#page-content h3 + div:has(> br:only-child),
+#page-content h4 + div:has(> br:only-child),
+#page-content h5 + div:has(> br:only-child),
+#page-content h6 + div:has(> br:only-child),
+#entity-freetext h1 + div:has(> br:only-child),
+#entity-freetext h2 + div:has(> br:only-child),
+#entity-freetext h3 + div:has(> br:only-child),
+#entity-freetext h4 + div:has(> br:only-child),
+#entity-freetext h5 + div:has(> br:only-child),
+#entity-freetext h6 + div:has(> br:only-child) {
+  display: none;
+}
+
+/* === Note styling: table === */
+#page-content table, #entity-freetext table, #dp-editable table, #board-note-editable table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: var(--page-table-margin-y, 8px) 0;
+  font-size: var(--page-table-font-size, 13px);
+}
+#page-content th, #entity-freetext th, #dp-editable th, #board-note-editable th {
+  background: var(--page-table-header-bg, var(--bg3)) !important;
+  color: var(--page-table-header-fg, var(--page-text-fg, var(--fg))) !important;
+  font-weight: var(--page-table-header-bold, bold);
+  font-style: var(--page-table-header-italic, normal);
+  font-family: var(--page-table-header-font, inherit);
+  font-size: var(--page-table-header-font-size, inherit);
+  text-align: left;
+}
+#page-content td, #entity-freetext td, #dp-editable td, #board-note-editable td {
+  background: var(--page-table-cell-bg, transparent) !important;
+  color: var(--page-table-cell-fg, var(--page-text-fg, var(--fg))) !important;
+  font-weight: var(--page-table-cell-bold, normal);
+  font-style: var(--page-table-cell-italic, normal);
+  font-family: var(--page-table-cell-font, inherit);
+  font-size: var(--page-table-cell-font-size, inherit);
+}
+#page-content th, #page-content td,
+#entity-freetext th, #entity-freetext td,
+#dp-editable th, #dp-editable td,
+#board-note-editable th, #board-note-editable td {
+  padding: var(--page-table-cell-padding-y, 6px) var(--page-table-cell-padding-x, 10px) !important;
+  border: var(--page-table-border-width, 1px) solid var(--page-table-border-color, var(--border)) !important;
+  min-width: 1em;
+  height: calc(1em * var(--page-text-line-height, 1.6));
+}
+#page-content td:empty::before, #page-content th:empty::before,
+#entity-freetext td:empty::before, #entity-freetext th:empty::before,
+#dp-editable td:empty::before, #dp-editable th:empty::before,
+#board-note-editable td:empty::before, #board-note-editable th:empty::before {
+  content: '\200B';
+}
+#page-content tr:hover td, #entity-freetext tr:hover td, #dp-editable tr:hover td, #board-note-editable tr:hover td {
+  background: var(--page-table-row-hover-bg, var(--bg2)) !important;
+  color: var(--page-table-row-hover-fg, var(--page-table-cell-fg, var(--page-text-fg, var(--fg)))) !important;
+}
+
+/* === Note styling: copy button === */
+.copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: var(--page-copy-button-bg, var(--bg3));
+  border: var(--page-copy-button-border-width, 1px) solid var(--page-copy-button-border, var(--border));
+  border-radius: var(--page-copy-button-radius, 4px);
+  padding: 3px 5px;
+  cursor: pointer;
+  color: var(--page-copy-button-fg, var(--fg2));
+  font-size: var(--page-copy-button-font-size, inherit);
+  font-family: var(--page-copy-button-font, inherit);
+  font-weight: var(--page-copy-button-bold, normal);
+  font-style: var(--page-copy-button-italic, normal);
+  opacity: var(--page-copy-button-opacity, 0.7);
+  transition: opacity 0.15s;
+  z-index: 5;
+  line-height: 1;
+}
+.copy-btn:hover {
+  opacity: 1;
+  background: var(--page-copy-button-hover-bg, var(--bg4));
+  color: var(--page-copy-button-hover-fg, var(--page-copy-button-fg, var(--fg)));
+}
+
+/* === Note styling: table add buttons === */
+.table-add-row,
+.table-add-col {
+  position: fixed;
+  z-index: 10000;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 24px;
+  padding: 0 8px;
+  margin: 0;
+  background: var(--page-table-control-bg, var(--bg2));
+  border: var(--page-table-control-border-width, 1px) dashed var(--page-table-control-border, var(--border));
+  border-radius: var(--page-table-control-radius, 999px);
+  color: var(--page-table-control-fg, var(--fg2));
+  font-size: var(--page-table-control-font-size, 12px);
+  font-family: var(--page-table-control-font, inherit);
+  font-weight: var(--page-table-control-bold, normal);
+  font-style: var(--page-table-control-italic, normal);
+  line-height: 1;
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 2px 8px var(--page-table-control-shadow, rgba(0,0,0,0.25));
+  user-select: none;
+  white-space: nowrap;
+}
+.table-add-row:hover,
+.table-add-col:hover {
+  background: var(--page-table-control-hover-bg, var(--bg3));
+  color: var(--page-table-control-hover-fg, var(--fg));
+  border-color: var(--page-table-control-hover-border, var(--page-table-control-border, var(--border)));
+}
+.table-mini-toolbar {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--page-table-toolbar-bg, var(--page-table-control-bg, var(--bg2)));
+  border: var(--page-table-toolbar-border-width, 1px) solid var(--page-table-toolbar-border, var(--page-table-control-border, var(--border)));
+  border-radius: var(--page-table-toolbar-radius, 4px);
+  box-shadow: 0 2px 10px var(--page-table-toolbar-shadow, rgba(0,0,0,0.28));
+  font-size: var(--page-table-toolbar-font-size, 11px);
+  font-family: var(--page-table-toolbar-font, inherit);
+  font-weight: var(--page-table-toolbar-bold, normal);
+  font-style: var(--page-table-toolbar-italic, normal);
+  line-height: 1;
+  user-select: none;
+}
+.table-mini-toolbar-btn {
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  background: var(--page-table-toolbar-button-bg, var(--bg3));
+  border: var(--page-table-toolbar-button-border-width, 1px) solid var(--page-table-toolbar-button-border, var(--border));
+  border-radius: var(--page-table-toolbar-button-radius, 2px);
+  cursor: pointer;
+  color: var(--page-table-toolbar-fg, var(--fg));
+}
+.table-mini-toolbar-btn:hover {
+  background: var(--page-table-toolbar-button-hover-bg, var(--bg4));
+  color: var(--page-table-toolbar-hover-fg, var(--page-table-toolbar-fg, var(--fg)));
+}
+td:has(.cell-edit), th:has(.cell-edit) {
+  outline: var(--page-cell-edit-outline-width, 2px) solid var(--page-cell-edit-outline-color, var(--accent));
+}
+
+/* === Note styling: blockquote citation === */
+blockquote .quote-cite {
+  display: block;
+  margin-top: 8px;
+  font-size: var(--page-quote-cite-font-size, 0.85em);
+  font-family: var(--page-quote-cite-font, inherit);
+  font-weight: var(--page-quote-cite-bold, normal);
+  color: var(--page-quote-cite-fg, var(--fg2));
+  font-style: var(--page-quote-cite-italic, italic);
+  -webkit-text-stroke-color: var(--page-quote-cite-stroke-color, transparent);
+  -webkit-text-stroke-width: var(--page-quote-cite-stroke-width, 0px);
+  paint-order: stroke fill;
+  text-decoration-line: var(--page-quote-cite-underline, none);
+  text-decoration-color: var(--page-quote-cite-accent-color, currentColor);
+  opacity: var(--page-quote-cite-opacity, 0.6);
+  transition: opacity 0.2s;
+}
+blockquote:hover .quote-cite {
+  opacity: var(--page-quote-cite-hover-opacity, 1);
+}
+blockquote .quote-cite a {
+  color: var(--page-quote-cite-link-fg, var(--accent));
+  font-size: var(--page-quote-cite-link-font-size, inherit);
+  font-family: var(--page-quote-cite-link-font, inherit);
+  font-weight: var(--page-quote-cite-link-bold, inherit);
+  font-style: var(--page-quote-cite-link-italic, inherit);
+  text-decoration: underline;
+}
+
+/* === Note styling: horizontal rule === */
+#page-content hr, #entity-freetext hr, #dp-editable hr, #board-note-editable hr {
+  border: none;
+  border-top: 1px solid var(--page-hr-color, var(--border));
+  margin: 20px 0;
+}
+
+/* === Note styling: link hover === */
+#page-content .auto-link:hover, #entity-freetext .auto-link:hover, #dp-editable .auto-link:hover, #board-note-editable .auto-link:hover {
+  background: var(--page-link-hover-bg, var(--bg3));
+  border-radius: var(--page-link-hover-radius, 2px);
+}
+
+/* === Note styling: code block === */
+#page-content pre, #entity-freetext pre, #dp-editable pre, #board-note-editable pre {
+  border-radius: var(--page-code-block-radius, 4px);
+  border: var(--page-code-block-border-width, 1px) solid var(--page-code-block-border, var(--border));
+}
+
+/* === Note styling: list markers === */
+#page-content ul, #entity-freetext ul, #dp-editable ul, #board-note-editable ul {
+  list-style-type: disc;
+}
+#page-content ul ul, #entity-freetext ul ul, #dp-editable ul ul, #board-note-editable ul ul {
+  list-style-type: circle;
+}
+
+/* === Note styling: kbd (keyboard shortcut) === */
+#page-content kbd,
+#entity-freetext kbd,
+#dp-editable kbd,
+#board-note-editable kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: var(--page-kbd-font-size, 0.85em);
+  font-family: var(--page-kbd-font, inherit);
+  font-weight: var(--page-kbd-bold, normal);
+  font-style: var(--page-kbd-italic, normal);
+  color: var(--page-kbd-fg, var(--fg));
+  background: var(--page-kbd-bg, var(--bg3));
+  border: var(--page-kbd-border-width, 1px) solid var(--page-kbd-border, var(--border));
+  border-bottom-width: var(--page-kbd-border-bottom-width, 2px);
+  border-radius: var(--page-kbd-radius, 4px);
+  box-shadow: 0 1px 0 var(--page-kbd-shadow, var(--border));
+  vertical-align: middle;
+  line-height: 1.4;
+}
+
+/* === Note styling: details/summary (collapsible) === */
+#page-content details,
+#entity-freetext details,
+#dp-editable details,
+#board-note-editable details {
+  margin: 8px 0;
+  border: var(--page-details-border-width, 1px) solid var(--page-details-border, var(--border));
+  border-radius: var(--page-details-radius, 4px);
+  overflow: hidden;
+  background: var(--page-details-bg, transparent);
+}
+#page-content details summary,
+#entity-freetext details summary,
+#dp-editable details summary,
+#board-note-editable details summary {
+  padding: 8px 12px;
+  background: var(--page-details-summary-bg, var(--bg2));
+  color: var(--page-details-summary-fg, var(--fg));
+  font-size: var(--page-details-summary-font-size, inherit);
+  font-family: var(--page-details-summary-font, inherit);
+  cursor: pointer;
+  font-weight: var(--page-details-summary-bold, bold);
+  font-style: var(--page-details-summary-italic, normal);
+  user-select: none;
+}
+#page-content details summary:hover,
+#entity-freetext details summary:hover,
+#dp-editable details summary:hover,
+#board-note-editable details summary:hover {
+  background: var(--page-details-summary-hover-bg, var(--bg3));
+  color: var(--page-details-summary-hover-fg, var(--page-details-summary-fg, var(--fg)));
+}
+#page-content details[open] summary,
+#entity-freetext details[open] summary,
+#dp-editable details[open] summary,
+#board-note-editable details[open] summary {
+  border-bottom: var(--page-details-open-border-width, 1px) solid var(--page-details-open-border, var(--page-details-border, var(--border)));
+}
+#page-content details > :not(summary),
+#entity-freetext details > :not(summary),
+#dp-editable details > :not(summary),
+#board-note-editable details > :not(summary) {
+  padding: 8px 12px;
+}
+
+/* === Note styling: heading icon === */
+#page-content .heading-icon,
+#entity-freetext .heading-icon,
+#dp-editable .heading-icon,
+#board-note-editable .heading-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 4px;
+  color: var(--page-heading-icon-fg, var(--accent));
+  font-size: var(--page-heading-icon-font-size, inherit);
+  font-family: var(--page-heading-icon-font, inherit);
+  font-weight: var(--page-heading-icon-bold, normal);
+  font-style: var(--page-heading-icon-italic, normal);
+  opacity: var(--page-heading-icon-opacity, 0.8);
+}
+
+/* === Note styling: title heading block === */
+#page-content .note-title,
+#entity-freetext .note-title,
+#dp-editable .note-title,
+#board-note-editable .note-title {
+  font-size: var(--page-title-font-size, 28px);
+  font-weight: var(--page-title-bold, bold);
+  font-style: var(--page-title-italic, normal);
+  font-family: var(--page-title-font, inherit);
+  color: var(--page-title-fg);
+  background: var(--page-title-bg, transparent);
+  -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
+  -webkit-text-stroke-width: var(--page-title-stroke-width, 0px);
+  paint-order: stroke fill;
+  box-shadow: calc(-1 * var(--page-title-left-accent, 0px)) 0 0 0 var(--page-title-accent-color, var(--page-title-fg));
+  border-bottom: var(--page-title-underline, 0px) solid var(--page-title-accent-color, currentColor);
+  padding-left: var(--page-title-left-accent, 0px);
+  margin: 16px 0 8px;
+}
+
+/* === Note styling: toolbar file name edit ===
+   ツールバー上のファイル名欄は UI 部品として扱い、本文の「タイトル」書式は適用しない。 */
+#page-rt-toolbar #page-title {
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  font-style: normal;
+  font-size: var(--ui-font-12);
+  background: transparent;
+  -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
+  -webkit-text-stroke-width: 0;
+  paint-order: stroke fill;
+  box-shadow: none;
+  border-bottom: 0;
+  padding-left: var(--ui-space-3);
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#page-rt-toolbar #page-title:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ui-fg-muted);
+}
+
+/* === Note styling: block drag handle === */
+#page-content .dragging { opacity: var(--page-dragging-opacity, 0.4); }
+#page-content .drag-guide-top { border-top: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important; }
+#page-content .drag-guide-bottom { border-bottom: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important; }
+
+/* === Note styling: heading indent sections === */
+.heading-section {
+  margin-left: 4px;
+  padding-left: 16px;
+}
+.heading-section.level-5,
+.heading-section.level-6 { padding-left: 12px; }
+/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする
+   #page-content h2等にpadding-leftがあるため、ID付きで上書きする */
+#page-content .heading-section > h1,
+#page-content .heading-section > h2,
+#page-content .heading-section > h3,
+#page-content .heading-section > h4,
+#entity-freetext .heading-section > h1,
+#entity-freetext .heading-section > h2,
+#entity-freetext .heading-section > h3,
+#entity-freetext .heading-section > h4 {
+  margin-left: -12px;
+  padding-left: 4px;
+}
+#page-content .heading-section > h5,
+#page-content .heading-section > h6,
+#entity-freetext .heading-section > h5,
+#entity-freetext .heading-section > h6 {
+  margin-left: -8px;
+  padding-left: 4px;
+}

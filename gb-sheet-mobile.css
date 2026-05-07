@@ -1,0 +1,91 @@
+/* シート専用モバイル補正 */
+
+.entry-prop-values > .cell-add-btn {
+  position: static;
+  display: inline-flex;
+  width: fit-content;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+@media (pointer: coarse) {
+  .row-add-btn,
+  .row-drag-handle,
+  .row-select-cb {
+    opacity: 1;
+    min-width: 28px;
+    min-height: 28px;
+  }
+
+  .status-dot {
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+  }
+
+  .cell-add-btn {
+    display: inline-flex;
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .cell-value-more,
+  .th-more-btn,
+  .view-tab-more {
+    opacity: 1 !important;
+    min-width: 32px;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .view-tabs,
+  .db-view-tabs {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    overflow: visible;
+  }
+
+  .view-tab,
+  .view-tab-add {
+    min-height: 36px;
+  }
+
+  .modal,
+  .col-vis-modal,
+  .pt-modal {
+    min-width: 0 !important;
+    max-width: 95vw !important;
+    width: min(var(--sheet-modal-width, 640px), 95vw) !important;
+    box-sizing: border-box;
+  }
+
+  .db-bulk-edit-bar {
+    bottom: max(12px, env(safe-area-inset-bottom)) !important;
+    max-width: calc(100vw - 16px) !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 768px) {
+  #tb-db {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  #tb-db .sep,
+  #tb-db > button:not(.tool-menu-btn):not(#btn-filter):not([data-e2e-id="sheet-reload-current"]):not(#btn-db-detail) {
+    display: none !important;
+  }
+
+  #tb-db .tb-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Meldex PDFビューワー</title>
+<script src="gb-runtime-adapter.js"></script>
+<script src="gb-resource-url.js"></script>
+<script src="gb-config.js"></script>
+<script src="gb-dropbox-auth.js"></script>
+<script src="gb-storage-adapter.js"></script>
+<script src="gb-storage-adapter-localfs.js"></script>
+<script src="gb-data-access.js"></script>
+<script src="gb-data-access-dropbox-fileops.js"></script>
+<script src="gb-cloud-fetch.js"></script>
+<script src="gb-cloud-file-url.js"></script>
+<!-- PDF.js — Copyright Mozilla Foundation. Licensed under Apache License 2.0: https://github.com/mozilla/pdf.js/blob/master/LICENSE -->
+<style>
+:root {
+  --bg: #1e1e1e; --bg2: #252525; --border: #333; --fg: #d4d4d4; --fg2: #969696; --accent: #569cd6;
+  --bg4: #3e3e3e;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--ui-scrollbar-track-bg, var(--bg)); }
+::-webkit-scrollbar-thumb { background: var(--ui-scrollbar-thumb-bg, var(--bg4)); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ui-scrollbar-thumb-hover-bg, var(--fg2)); }
+html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; overflow: hidden; display: flex; flex-direction: column; }
+
+#toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 13px;
+}
+#toolbar button {
+  background: none; border: 1px solid var(--border); color: var(--fg); padding: 4px 10px;
+  border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+#toolbar button:hover { background: rgba(255,255,255,0.08); }
+#toolbar button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+#toolbar select, #toolbar input {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 6px; font-size: 12px;
+}
+#toolbar .sep { width: 1px; height: 20px; background: var(--border); }
+
+#viewer {
+  flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start;
+  padding: 16px; gap: 8px; flex-wrap: wrap;
+}
+#viewer.single-mode { flex-wrap: nowrap; }
+#viewer.spread-mode { flex-wrap: nowrap; gap: 4px; }
+
+.page-canvas {
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5); background: #fff; display: block;
+}
+
+#loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--fg2); font-size: 16px; z-index: 100;
+}
+#loading.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <span id="title" style="font-weight:bold;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+  <div class="sep"></div>
+  <button id="btn-prev" title="前のページ (←)">◀</button>
+  <span id="page-info">0 / 0</span>
+  <button id="btn-next" title="次のページ (→)">▶</button>
+  <div class="sep"></div>
+  <select id="sel-mode" title="表示モード">
+    <option value="single">単ページ</option>
+    <option value="spread">見開き</option>
+    <option value="manga" selected>マンガ（右→左）</option>
+  </select>
+  <div class="sep"></div>
+  <button id="btn-zoom-out" title="縮小">−</button>
+  <span id="zoom-label" style="min-width:40px;text-align:center;">100%</span>
+  <button id="btn-zoom-in" title="拡大">+</button>
+  <button id="btn-fit" title="フィット">フィット</button>
+  <div class="sep"></div>
+  <button id="btn-slideshow" title="スライドショーモード">▶ スライドショー</button>
+</div>
+
+<div id="viewer"></div>
+<div id="loading">読み込み中...</div>
+
+<script type="module">
+// PDF.js v4.4.168 — Copyright Mozilla Foundation, Apache 2.0 (vendor/pdfjs/LICENSE, NOTICE)
+const pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
+pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
+
+const API = '/api';
+const params = new URLSearchParams(location.search);
+const filePath = params.get('path') || '';
+
+let pdfDoc = null;
+let pageNum = 1;
+let totalPages = 0;
+let zoom = 1;
+let mode = localStorage.getItem('pdf-mode') || 'manga';
+let renderedPages = new Map(); // pageNum → canvas
+let showPagesToken = 0;
+
+document.getElementById('sel-mode').value = mode;
+document.getElementById('title').textContent = filePath.split('/').pop() || 'PDF';
+
+async function init() {
+  if (!filePath) { document.getElementById('loading').textContent = 'パスが指定されていません'; return; }
+  try {
+    const url = API + '/file-raw?path=' + encodeURIComponent(filePath);
+    pdfDoc = await pdfjsLib.getDocument(url).promise;
+    totalPages = pdfDoc.numPages;
+    document.getElementById('loading').classList.add('hidden');
+    await fitZoom();
+    showPages();
+  } catch (e) {
+    document.getElementById('loading').textContent = '読み込み失敗: ' + e.message;
+  }
+}
+
+async function renderPage(num) {
+  const cacheKey = num + '_' + zoom.toFixed(4);
+  if (renderedPages.has(cacheKey)) return renderedPages.get(cacheKey);
+  try {
+    const page = await pdfDoc.getPage(num);
+    const viewport = page.getViewport({ scale: zoom * (window.devicePixelRatio || 1) });
+    const canvas = document.createElement('canvas');
+    canvas.className = 'page-canvas';
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = (viewport.width / (window.devicePixelRatio || 1)) + 'px';
+    canvas.style.height = (viewport.height / (window.devicePixelRatio || 1)) + 'px';
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    renderedPages.set(cacheKey, canvas);
+    return canvas;
+  } catch (e) {
+    renderedPages.delete(cacheKey);
+    throw e;
+  }
+}
+
+async function showPages() {
+  const token = ++showPagesToken;
+  const viewer = document.getElementById('viewer');
+  viewer.innerHTML = '';
+  viewer.className = mode === 'single' ? 'single-mode' : 'spread-mode';
+
+  try {
+    if (mode === 'single') {
+      const canvas = await renderPage(pageNum);
+      if (token !== showPagesToken) return;
+      viewer.appendChild(canvas);
+    } else {
+      // 見開き/マンガ: 2ページ表示（1ページ目は単体、以降は2ページずつ）
+      const pages = [];
+      if (pageNum === 1) {
+        pages.push(pageNum);
+      } else {
+        // 偶数ページ開始に調整
+        const start = pageNum % 2 === 0 ? pageNum : pageNum - 1;
+        pages.push(start);
+        if (start + 1 <= totalPages) pages.push(start + 1);
+        pageNum = start;
+      }
+
+      const canvases = await Promise.all(pages.map(p => renderPage(p)));
+      if (token !== showPagesToken) return;
+      if (mode === 'manga') canvases.reverse();
+      canvases.forEach(c => viewer.appendChild(c));
+    }
+    updateUI();
+  } catch (e) {
+    if (token !== showPagesToken) return;
+    viewer.textContent = '表示失敗: ' + (e?.message || e);
+  }
+}
+
+function updateUI() {
+  const endPage = mode !== 'single' && pageNum > 1 && pageNum + 1 <= totalPages ? pageNum + 1 : pageNum;
+  document.getElementById('page-info').textContent = (pageNum === endPage ? pageNum : pageNum + '-' + endPage) + ' / ' + totalPages;
+  document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
+}
+
+async function fitZoom() {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(1);
+  const vp = page.getViewport({ scale: 1 });
+  const viewer = document.getElementById('viewer');
+  const vh = viewer.clientHeight - 32;
+  const gap = mode === 'single' ? 0 : 4;
+  const vw = mode === 'single' ? viewer.clientWidth - 32 : (viewer.clientWidth - 32 - gap) / 2;
+  zoom = Math.min(vw / vp.width, vh / vp.height);
+  renderedPages.clear();
+}
+
+function nextPage() {
+  if (mode === 'single') { if (pageNum < totalPages) pageNum++; }
+  else {
+    const step = pageNum === 1 ? 1 : 2;
+    if (pageNum + step <= totalPages) pageNum += step;
+  }
+  showPages();
+}
+function prevPage() {
+  if (mode === 'single') { if (pageNum > 1) pageNum--; }
+  else {
+    if (pageNum <= 1) return;
+    if (pageNum === 2) pageNum = 1;
+    else pageNum -= 2;
+  }
+  showPages();
+}
+
+// コントロール
+document.getElementById('btn-prev').onclick = prevPage;
+document.getElementById('btn-next').onclick = nextPage;
+document.getElementById('sel-mode').onchange = async function() {
+  mode = this.value;
+  localStorage.setItem('pdf-mode', mode);
+  await fitZoom();
+  showPages();
+};
+document.getElementById('btn-zoom-in').onclick = () => { zoom = Math.min(5, zoom * 1.2); renderedPages.clear(); showPages(); };
+document.getElementById('btn-zoom-out').onclick = () => { zoom = Math.max(0.2, zoom / 1.2); renderedPages.clear(); showPages(); };
+document.getElementById('btn-fit').onclick = async () => { await fitZoom(); showPages(); };
+document.getElementById('btn-slideshow').onclick = () => {
+  // PDFの全ページを画像としてスライドショーで開く
+  alert('PDFスライドショーは今後のバージョンで対応予定です');
+};
+
+// キーボード
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') { mode === 'manga' ? prevPage() : nextPage(); }
+  else if (e.key === 'ArrowLeft') { mode === 'manga' ? nextPage() : prevPage(); }
+  else if (e.key === 'ArrowDown' || e.key === 'PageDown') nextPage();
+  else if (e.key === 'ArrowUp' || e.key === 'PageUp') prevPage();
+  else if (e.key === 'Home') { pageNum = 1; showPages(); }
+  else if (e.key === 'End') { pageNum = totalPages; showPages(); }
+  else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoom = Math.min(5, zoom * 1.2); renderedPages.clear(); showPages(); }
+  else if (e.key === '-') { e.preventDefault(); zoom = Math.max(0.2, zoom / 1.2); renderedPages.clear(); showPages(); }
+  else if (e.key === 'f' || e.key === 'F') {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  }
+});
+
+// マウスホイール（Ctrl+ホイールでズーム、通常ホイールでページ送り）
+document.getElementById('viewer').addEventListener('wheel', e => {
+  if (e.ctrlKey) {
+    e.preventDefault();
+    zoom = Math.max(0.2, Math.min(5, zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    renderedPages.clear();
+    showPages();
+  }
+}, { passive: false });
+
+init();
+</script>
+</body>
+</html>

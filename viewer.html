@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Meldex ビューワー</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='18' x='3' y='3' rx='2'/><circle cx='9' cy='9' r='2'/><path d='m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'/></svg>">
+<script src="gb-runtime-adapter.js"></script>
+<script src="gb-resource-url.js"></script>
+<script src="gb-config.js"></script>
+<script src="gb-dropbox-auth.js"></script>
+<script src="gb-storage-adapter.js"></script>
+<script src="gb-storage-adapter-localfs.js"></script>
+<script src="gb-data-access.js"></script>
+<script src="gb-data-access-dropbox-fileops.js"></script>
+<script src="gb-cloud-fetch.js"></script>
+<script src="gb-cloud-file-url.js"></script>
+<script src="meldex-core.js"></script>
+<!-- PDF.js — Copyright Mozilla Foundation. Licensed under Apache License 2.0: https://github.com/mozilla/pdf.js/blob/master/LICENSE -->
+<style>
+:root {
+  --fade-ms: 300ms;
+  --bg: #0a0e14; --bg2: #151922;
+  --panel-bg: rgba(20,25,35,0.92);
+  --border: rgba(100,100,120,0.3);
+  --accent: #569cd6; --fg: #e5e7eb; --fg2: #9ca3af;
+  --bg4: #3e3e3e;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--ui-scrollbar-track-bg, var(--bg)); }
+::-webkit-scrollbar-thumb { background: var(--ui-scrollbar-thumb-bg, var(--bg4)); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ui-scrollbar-thumb-hover-bg, var(--fg2)); }
+html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; overflow: hidden; display: flex; flex-direction: column; }
+
+/* 背景ブラー */
+.bg-layer { position: absolute; inset: 0; background-size: cover; background-position: center; filter: blur(20px) brightness(0.4) saturate(1.2); transform: scale(1.1); opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; z-index: 0; }
+.bg-layer.show { opacity: 1; }
+
+/* 表示エリア */
+#display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; z-index: 1; }
+.layer { position: absolute; inset: 0; display: flex; opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; overflow: auto; }
+.layer.show { opacity: 1; pointer-events: auto; }
+.img-single { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; margin: auto; }
+.spread { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px; margin: auto; }
+.spread img, .spread canvas { max-height: 100%; object-fit: contain; user-select: none; }
+.page-canvas { box-shadow: 0 2px 12px rgba(0,0,0,0.5); background: #fff; }
+
+/* 右クリックメニュー */
+.viewer-ctx { position: fixed; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; min-width: 200px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
+.viewer-ctx-item { padding: 5px 16px; font-size: 13px; color: var(--fg); cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; position: relative; }
+.viewer-ctx-item:hover { background: rgba(255,255,255,0.08); }
+.viewer-ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
+.viewer-ctx-item .ctx-key { margin-left: auto; font-size: 11px; color: var(--fg2); }
+.viewer-ctx-sub { display: none; position: absolute; left: 100%; top: -4px; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; min-width: 160px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
+.viewer-ctx-item:hover > .viewer-ctx-sub { display: block; }
+
+/* ドラッグ移動 */
+#display.panning { cursor: grab; }
+#display.panning:active { cursor: grabbing; }
+/* 左右ナビエリア */
+.nav-area { position: absolute; top: 0; bottom: 0; width: 60px; z-index: 5; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.2s; cursor: pointer; }
+.nav-area:hover { opacity: 1; }
+.nav-area.left { left: 0; }
+.nav-area.right { right: 0; }
+.nav-area svg { filter: drop-shadow(0 0 4px rgba(0,0,0,0.8)); }
+
+/* HUD */
+#hud { position: absolute; top: 12px; right: 12px; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; user-select: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 20; transition: opacity 0.3s; max-width: 300px; }
+#hud.hidden { opacity: 0; pointer-events: none; }
+#hud-status { color: var(--accent); font-weight: bold; margin-bottom: 4px; }
+#hud-info { color: var(--fg2); font-size: 11px; line-height: 1.5; }
+
+/* コントロールバー */
+#controls { position: relative; background: var(--panel-bg); border-top: 1px solid var(--border); padding: 4px 8px; display: flex; align-items: center; gap: 4px; font-size: 12px; z-index: 20; transition: opacity 0.3s; flex-shrink: 0; flex-wrap: nowrap; overflow: hidden; }
+#controls.hidden { opacity: 0; pointer-events: none; }
+#controls button { background: none; border: 1px solid var(--border); color: var(--fg); padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+#controls button:hover { background: rgba(255,255,255,0.08); border-color: var(--accent); }
+#controls button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+#controls select { font-size: 11px; flex-shrink: 1; min-width: 0; }
+#controls label { flex-shrink: 1; min-width: 0; overflow: hidden; }
+#controls .zoom-label, #controls .speed-label { min-width: 28px; }
+/* 狭い時に優先度の低い要素を非表示 */
+@media (max-width: 700px) {
+  #controls #sel-mode, #controls label, #controls .zoom-label, #controls .speed-label { display: none; }
+  #controls #btn-bg, #controls #btn-hud { display: none; }
+}
+@media (max-width: 500px) {
+  #controls #btn-flip-h, #controls #btn-flip-v, #controls #btn-rotate, #controls #btn-original { display: none; }
+  #controls #btn-shift-back, #controls #btn-shift-fwd { display: none; }
+}
+#controls select { background: var(--bg, #1a1e26); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+#controls input[type=range] { width: 70px; accent-color: var(--accent); }
+#seek-bar { flex: 1; }
+#counter { color: var(--fg2); font-size: 11px; white-space: nowrap; }
+.speed-label { display: inline-block; width: 32px; text-align: right; font-size: 11px; color: var(--fg2); }
+.zoom-label { display: inline-block; width: 40px; text-align: center; font-size: 11px; color: var(--fg2); }
+</style>
+</head>
+<body>
+<div class="bg-layer" id="bgA"></div>
+<div class="bg-layer" id="bgB"></div>
+<div id="display">
+  <div class="layer" id="layerA"></div>
+  <div class="layer" id="layerB"></div>
+  <div class="nav-area left" id="nav-prev-area"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></div>
+  <div class="nav-area right" id="nav-next-area"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></div>
+</div>
+
+<div id="hud">
+  <div id="hud-status">ビューワー</div>
+  <div id="hud-info"></div>
+</div>
+
+<div id="controls">
+  <button id="btn-prev" title="前へ (←)">&larr;</button>
+  <button id="btn-play" title="再生/一時停止 (Space)">▶</button>
+  <button id="btn-next" title="次へ (→)">&rarr;</button>
+  <input type="range" id="seek-bar" min="0" max="0" value="0" title="シークバー" style="flex:1;height:4px;cursor:pointer;accent-color:var(--accent);">
+  <span id="counter">0 / 0</span>
+  <select id="sel-mode" title="表示モード">
+    <option value="single" selected>単体</option>
+    <option value="spread">見開き</option>
+    <option value="manga">マンガ（右→左）</option>
+  </select>
+  <button id="btn-zoom-out" title="縮小">−</button>
+  <span class="zoom-label" id="zoom-label">100%</span>
+  <button id="btn-zoom-in" title="拡大">+</button>
+  <button id="btn-fit" title="フィット">フィット</button>
+  <button id="btn-flip-h" title="左右反転 (M)">↔</button>
+  <button id="btn-flip-v" title="上下反転">↕</button>
+  <button id="btn-rotate" title="回転 (R)">↻</button>
+  <button id="btn-fullscreen" title="全画面 (F)">全画面</button>
+  <button id="btn-markup" title="注釈 (A)">✎</button>
+</div>
+<!-- 非表示の要素（JS参照用に維持） -->
+<input type="range" id="speed" min="0.5" max="15" step="0.5" value="3" style="display:none;">
+<span id="speed-label" style="display:none;">3.0s</span>
+<button id="btn-prev-folder" style="display:none;"></button>
+<button id="btn-next-folder" style="display:none;"></button>
+<button id="btn-shift-back" style="display:none;"></button>
+<button id="btn-shift-fwd" style="display:none;"></button>
+<button id="btn-bg" style="display:none;"></button>
+<button id="btn-hud" style="display:none;"></button>
+<button id="btn-original" style="display:none;"></button>
+
+<script type="module">
+const API = '/api';
+const params = new URLSearchParams(location.search);
+const folderPath = params.get('folder') || '';
+const pdfPath = params.get('pdf') || '';
+const singleFile = params.get('file') || '';  // 単一ファイル表示
+const multiFilePaths = parseFilesParam(); // 複数ファイル
+const isPdf = !!pdfPath;
+const isSingle = !!singleFile;
+const isMulti = multiFilePaths.length > 0;
+const isSlideshow = !!folderPath;  // フォルダ→再生状態で開始
+const isEmbed = params.get('embed') === '1'; // プレビュー埋め込みモード
+if (isEmbed) {
+  // 埋め込み時: コントロールを非表示にし、ホバーで表示
+  document.getElementById('controls').classList.add('hidden');
+  document.body.addEventListener('mouseenter', () => document.getElementById('controls').classList.remove('hidden'));
+  document.body.addEventListener('mouseleave', () => document.getElementById('controls').classList.add('hidden'));
+}
+
+let items = [];
+let idx = 0;
+let playing = false;
+let reversePlay = false;  // 逆再生
+let timer = null;
+let activeLayer = 'A';
+let mode = localStorage.getItem('viewer-mode') || 'single';
+let speed = parseFloat(localStorage.getItem('viewer-speed') || '3');
+let fadeMs = parseInt(localStorage.getItem('viewer-fade') || '300');
+let bgBlur = localStorage.getItem('viewer-bg') !== 'false';
+let hudVisible = localStorage.getItem('viewer-hud') === 'true';
+let zoom = 1;
+let fitMode = 'contain'; // 'contain' | 'width' | 'height' | 'none'
+let flipH = false, flipV = false, rotateDeg = 0;
+let pdfDoc = null;
+let showGroupToken = 0;
+
+document.getElementById('sel-mode').value = mode;
+document.getElementById('speed').value = speed;
+document.getElementById('speed-label').textContent = speed.toFixed(1) + 's';
+if (!hudVisible) document.getElementById('hud').classList.add('hidden');
+document.getElementById('btn-bg').classList.toggle('active', bgBlur);
+document.getElementById('btn-hud').classList.toggle('active', hudVisible);
+
+// PDF.js読み込み（PDF時のみ）
+let pdfjsLib = null;
+if (isPdf) {
+  // PDF.js v4.4.168 — Apache 2.0 (vendor/pdfjs/LICENSE, NOTICE)
+  pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
+}
+
+function parseFilesParam() {
+  const repeated = params.getAll('files');
+  if (repeated.length > 1) return repeated.filter(Boolean);
+  const raw = params.get('files') || '';
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+  } catch {}
+  return raw.split(',').filter(Boolean);
+}
+
+async function fetchJsonChecked(url) {
+  const response = await fetch(url);
+  let data = null;
+  try { data = await response.json(); } catch {}
+  if (!response.ok) {
+    throw new Error((data && (data.detail || data.error || data.message)) || response.statusText || ('HTTP ' + response.status));
+  }
+  return data;
+}
+
+async function init() {
+  if (isPdf) {
+    try {
+      pdfDoc = await pdfjsLib.getDocument(API + '/file-raw?path=' + encodeURIComponent(pdfPath)).promise;
+      for (let i = 1; i <= pdfDoc.numPages; i++) items.push({type: 'pdf-page', pageNum: i, url: '', w: 0, h: 0, path: pdfPath});
+      const p1 = await pdfDoc.getPage(1);
+      const vp = p1.getViewport({scale: 1});
+      items[0].w = vp.width; items[0].h = vp.height;
+      applyFit();
+    } catch (e) {
+      document.getElementById('hud-info').textContent = 'PDF読み込み失敗: ' + e.message;
+      return;
+    }
+  } else if (isMulti) {
+    // 複数ファイル選択 → 選択されたファイルだけを再生
+    items = multiFilePaths.map(p => ({type: 'image', name: p.split('/').pop(), url: API + '/file-raw?path=' + encodeURIComponent(p), w: 0, h: 0, path: p}));
+    await Promise.all(items.slice(0, 6).map(loadImageMeta));
+    items.slice(6).forEach(img => loadImageMeta(img));
+  } else if (singleFile) {
+    // 単一ファイル: そのファイルのフォルダ全体を読み込み、該当ファイルの位置から表示
+    const fileParts = singleFile.split('/');
+    const fileName = fileParts.pop();
+    const parentFolder = fileParts.join('/');
+    if (parentFolder) {
+      try {
+        const data = await fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(parentFolder));
+        items = data.map(it => ({type: 'image', name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0, path: it.path}));
+      } catch (e) {
+        flashStatus('画像一覧読み込みエラー');
+      }
+    }
+    if (items.length === 0) {
+      // フォールバック: 単一ファイルのみ
+      items = [{type: 'image', name: fileName, url: API + '/file-raw?path=' + encodeURIComponent(singleFile), w: 0, h: 0, path: singleFile}];
+    }
+    // 指定ファイルの位置を検索
+    const startIdx = items.findIndex(it => it.name === fileName);
+    idx = startIdx >= 0 ? startIdx : 0;
+    await Promise.all(items.slice(0, 6).map(loadImageMeta));
+    items.slice(6).forEach(img => loadImageMeta(img));
+  } else if (folderPath) {
+    let data = [];
+    try {
+      data = await fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(folderPath));
+    } catch (e) {
+      document.getElementById('hud-info').textContent = '画像一覧読み込み失敗: ' + (e?.message || e);
+      return;
+    }
+    items = data.map(it => ({type: 'image', name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0, path: it.path}));
+    if (items.length === 0) { document.getElementById('hud-info').textContent = '画像がありません'; return; }
+    await Promise.all(items.slice(0, 6).map(loadImageMeta));
+    items.slice(6).forEach(img => loadImageMeta(img));
+  }
+  if (items.length > 0) {
+    await showGroup(idx);
+    updateHud();
+    // フォルダまたは複数選択モードは自動再生。単一ファイルとPDFは停止状態
+    if ((isSlideshow || isMulti) && !isSingle) play();
+  }
+}
+
+function loadImageMeta(img) {
+  return new Promise(resolve => {
+    if (img.w && img.h || img.type !== 'image') { resolve(); return; }
+    const i = new Image();
+    i.onload = () => { img.w = i.naturalWidth; img.h = i.naturalHeight; resolve(); };
+    i.onerror = () => resolve();
+    i.src = img.url;
+  });
+}
+
+function isPortrait(it) { return it.h > it.w; }
+
+function getGroup(startIdx) {
+  if (items.length === 0) return [];
+  if (startIdx < 0 || startIdx >= items.length) startIdx = 0;
+  if (mode === 'single') return [startIdx];
+  const a = items[startIdx];
+  if (!a) return [startIdx];
+  if (isPdf) {
+    // PDF: 1ページ目は単体、以降は2ページずつ
+    if (startIdx === 0) return [0];
+    if (startIdx + 1 < items.length) return [startIdx, startIdx + 1];
+    return [startIdx];
+  }
+  // 画像: 縦長2枚連続→見開き
+  if (!isPortrait(a) || startIdx + 1 >= items.length) return [startIdx];
+  const b = items[startIdx + 1];
+  if (!b || !isPortrait(b)) return [startIdx];
+  return [startIdx, startIdx + 1];
+}
+
+const renderCache = new Map();
+
+async function renderPdfPage(pageNum) {
+  const key = pageNum + '_' + zoom.toFixed(4);
+  if (renderCache.has(key)) return renderCache.get(key);
+  const page = await pdfDoc.getPage(pageNum);
+  const viewport = page.getViewport({scale: zoom * (window.devicePixelRatio || 1)});
+  const canvas = document.createElement('canvas');
+  canvas.className = 'page-canvas';
+  canvas.width = viewport.width; canvas.height = viewport.height;
+  canvas.style.width = (viewport.width / (window.devicePixelRatio || 1)) + 'px';
+  canvas.style.height = (viewport.height / (window.devicePixelRatio || 1)) + 'px';
+  await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+  renderCache.set(key, canvas);
+  return canvas;
+}
+
+async function showGroup(newIdx) {
+  if (items.length === 0) return;
+  const token = ++showGroupToken;
+  resetPan();
+  if (newIdx < 0) newIdx = items.length - 1;
+  if (newIdx >= items.length) newIdx = 0;
+  // PDF見開き: 1ページ目は単体、以降は 2-3 / 4-5 相当の組に調整
+  if (isPdf && mode !== 'single' && newIdx > 0 && newIdx % 2 === 0) newIdx--;
+  idx = newIdx;
+  const group = getGroup(idx);
+  if (group.length === 0) return;
+  const target = activeLayer === 'A' ? 'B' : 'A';
+  const layer = document.getElementById('layer' + target);
+  layer.innerHTML = '';
+
+  if (group.length === 1) {
+    if (isPdf) {
+      const canvas = await renderPdfPage(items[group[0]].pageNum);
+      if (token !== showGroupToken) return;
+      layer.appendChild(canvas);
+    } else {
+      const img = document.createElement('img');
+      img.className = 'img-single'; img.src = items[group[0]].url; img.draggable = true;
+      img.addEventListener('dragstart', (ev) => {
+        const item = items[group[0]];
+        ev.dataTransfer.setData('text/plain', item.url);
+        ev.dataTransfer.setData('text/uri-list', location.origin + item.url);
+        ev.dataTransfer.setData('application/x-meldex-node', JSON.stringify({ name: item.name || item.path, path: item.path || '', type: 'image' }));
+      });
+      applyImageFitStyle(img, false);
+      layer.appendChild(img);
+    }
+  } else {
+    const spread = document.createElement('div');
+    spread.className = 'spread';
+    const order = mode === 'manga' ? [group[1], group[0]] : group;
+    for (const i of order) {
+      if (isPdf) {
+        const canvas = await renderPdfPage(items[i].pageNum);
+        if (token !== showGroupToken) return;
+        spread.appendChild(canvas);
+      } else {
+        const img = document.createElement('img');
+        img.src = items[i].url; img.draggable = true;
+        img.addEventListener('dragstart', (ev) => {
+          const item = items[i];
+          ev.dataTransfer.setData('text/plain', item.url);
+          ev.dataTransfer.setData('text/uri-list', location.origin + item.url);
+          ev.dataTransfer.setData('application/x-meldex-node', JSON.stringify({ name: item.name || item.path, path: item.path || '', type: 'image' }));
+        });
+        applyImageFitStyle(img, true);
+        spread.appendChild(img);
+      }
+    }
+    layer.appendChild(spread);
+  }
+
+  // 背景ブラー（画像のみ）
+  if (bgBlur && !isPdf) {
+    const bgT = activeLayer === 'A' ? 'bgB' : 'bgA';
+    const bgO = activeLayer === 'A' ? 'bgA' : 'bgB';
+    document.getElementById(bgT).style.backgroundImage = 'url(' + items[group[0]].url + ')';
+    document.getElementById(bgT).classList.add('show');
+    document.getElementById(bgO).classList.remove('show');
+  }
+
+  // 画像ロード完了後にレイヤー切り替え（白フラッシュ防止）
+  const imgs = layer.querySelectorAll('img');
+  const swapLayers = () => {
+    if (token !== showGroupToken) return;
+    document.getElementById('layer' + activeLayer).classList.remove('show');
+    layer.classList.add('show');
+    activeLayer = target;
+  };
+  if (imgs.length > 0 && ![...imgs].every(img => img.complete)) {
+    let loaded = 0;
+    imgs.forEach(img => {
+      const onDone = () => { if (++loaded >= imgs.length) swapLayers(); };
+      if (img.complete) onDone();
+      else { img.addEventListener('load', onDone); img.addEventListener('error', onDone); }
+    });
+  } else {
+    swapLayers();
+  }
+  if (token !== showGroupToken) return;
+  document.getElementById('counter').textContent = (idx + 1) + ' / ' + items.length;
+  const seekBar = document.getElementById('seek-bar');
+  seekBar.max = Math.max(0, items.length - 1);
+  seekBar.value = idx;
+  document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
+  updateHud();
+  if (_markup) _markup.loadAnnotations(getCurrentImagePath());
+}
+
+function nextGroup() {
+  const group = getGroup(idx);
+  showGroup(idx + group.length);
+}
+function prevGroup() {
+  if (items.length === 0) return;
+  let prev = idx - 1;
+  if (prev < 0) prev = items.length - 1;
+  if (mode !== 'single' && !isPdf && prev > 0 && items[prev] && items[prev-1] && isPortrait(items[prev]) && isPortrait(items[prev-1])) prev--;
+  if (isPdf && mode !== 'single' && prev > 0) { prev = prev % 2 === 1 ? prev : prev - 1; }
+  showGroup(prev);
+}
+
+function play() { playing = true; document.getElementById('btn-play').textContent = '⏸'; scheduleNext(); }
+function pause() { playing = false; clearTimeout(timer); document.getElementById('btn-play').textContent = '▶'; }
+function togglePlay() { playing ? pause() : play(); }
+function scheduleNext() {
+  clearTimeout(timer);
+  if (!playing) return;
+  timer = setTimeout(() => { reversePlay ? prevGroup() : nextGroup(); scheduleNext(); }, speed * 1000);
+}
+
+// 1枚ずつシフト（見開き時に見開きの組み合わせを1枚ずらす）
+function shiftForward() {
+  if (mode === 'single') { nextGroup(); return; }
+  showGroup(idx + 1);
+}
+function shiftBackward() {
+  if (mode === 'single') { prevGroup(); return; }
+  showGroup(idx - 1);
+}
+
+// 画像要素にフィットモード+ズームを適用（width/heightで直接サイズ指定）
+function applyImageFitStyle(img, isSpread) {
+  const d = document.getElementById('display');
+  const vw = isSpread ? (d.clientWidth - 24) / 2 : d.clientWidth;
+  const vh = d.clientHeight;
+
+  const apply = () => {
+    const nw = img.naturalWidth || img.width;
+    const nh = img.naturalHeight || img.height;
+    if (!nw || !nh) return;
+
+    let w, h;
+    if (fitMode === 'contain') {
+      const scale = Math.min(vw / nw, vh / nh); // 長い方の辺をパネルにフィット
+      w = nw * scale; h = nh * scale;
+    } else if (fitMode === 'width') {
+      w = vw; h = nh * (vw / nw);
+    } else if (fitMode === 'height') {
+      h = vh; w = nw * (vh / nh);
+    } else {
+      // none（原寸）
+      w = nw; h = nh;
+    }
+    // ズーム倍率を適用
+    w *= zoom; h *= zoom;
+    img.style.width = w + 'px';
+    img.style.height = h + 'px';
+    img.style.maxWidth = 'none';
+    img.style.maxHeight = 'none';
+  };
+
+  if (img.naturalWidth) apply();
+  else img.onload = apply;
+}
+
+function applyFit() {
+  if (isPdf && items.length > 0 && items[0].w) {
+    const d = document.getElementById('display');
+    const pageW = items[0].w, pageH = items[0].h;
+    const vw = mode === 'single' ? d.clientWidth - 16 : (d.clientWidth - 24) / 2;
+    const vh = d.clientHeight - 16;
+    if (fitMode === 'contain') zoom = Math.min(vw / pageW, vh / pageH);
+    else if (fitMode === 'width') zoom = vw / pageW;
+    else if (fitMode === 'height') zoom = vh / pageH;
+    else zoom = 1; // 'none' = 原寸
+    renderCache.clear();
+  } else {
+    zoom = 1;
+  }
+}
+
+function setFitUI() {
+  const fitLabels = {contain:'フィット',height:'高さフィット',width:'幅フィット',none:'原寸'};
+  const btn = document.getElementById('btn-fit');
+  btn.classList.toggle('active', fitMode !== 'contain');
+  btn.textContent = fitLabels[fitMode] || 'フィット';
+  flashStatus(({contain:'全体フィット',height:'高さフィット',width:'幅フィット',none:'原寸表示'})[fitMode]);
+}
+
+function flashStatus(msg, ms=1500) {
+  const el = document.getElementById('hud-status');
+  const prev = el.textContent;
+  el.textContent = msg;
+  document.getElementById('hud').classList.remove('hidden');
+  setTimeout(() => { el.textContent = prev; if (!hudVisible) document.getElementById('hud').classList.add('hidden'); }, ms);
+}
+
+function setHudInfo(lines) {
+  const el = document.getElementById('hud-info');
+  el.replaceChildren();
+  lines.forEach((line, i) => {
+    if (i > 0) el.appendChild(document.createElement('br'));
+    el.appendChild(document.createTextNode(line));
+  });
+}
+
+function updateHud() {
+  const fitLabels = {contain:'全体',width:'幅',height:'高さ',none:'原寸'};
+  const info = [isPdf ? 'PDF: ' + pdfPath.split('/').pop() : isSingle ? singleFile.split('/').pop() : '画像: ' + items.length + '枚'];
+  info.push('モード: ' + ({single:'単体',spread:'見開き',manga:'マンガ'}[mode] || mode));
+  info.push('フィット: ' + (fitLabels[fitMode] || fitMode));
+  if (!isPdf) info.push('再生速度: ' + speed.toFixed(1) + 's' + (reversePlay ? ' (逆順)' : ''));
+  if (isPdf) info.push('ズーム: ' + Math.round(zoom * 100) + '%');
+  setHudInfo(info);
+  document.getElementById('hud-status').textContent = playing ? (reversePlay ? '◀ 逆再生中' : '▶ 再生中') : '⏸ 停止';
+}
+
+// コントロール
+document.getElementById('nav-prev-area').addEventListener('click', () => { pause(); prevGroup(); });
+document.getElementById('nav-next-area').addEventListener('click', () => { pause(); nextGroup(); });
+document.getElementById('btn-prev').onclick = () => { pause(); prevGroup(); };
+document.getElementById('btn-next').onclick = () => { pause(); nextGroup(); };
+document.getElementById('btn-shift-back').onclick = () => { pause(); shiftBackward(); };
+document.getElementById('btn-shift-fwd').onclick = () => { pause(); shiftForward(); };
+document.getElementById('btn-play').onclick = togglePlay;
+document.getElementById('sel-mode').onchange = function() { mode = this.value; localStorage.setItem('viewer-mode', mode); if (isPdf) { applyFit(); } showGroup(idx); };
+document.getElementById('speed').oninput = function() { speed = parseFloat(this.value); document.getElementById('speed-label').textContent = speed.toFixed(1) + 's'; localStorage.setItem('viewer-speed', speed); if (playing) scheduleNext(); };
+document.getElementById('btn-bg').onclick = function() { bgBlur = !bgBlur; this.classList.toggle('active', bgBlur); localStorage.setItem('viewer-bg', bgBlur); if (!bgBlur) { document.getElementById('bgA').classList.remove('show'); document.getElementById('bgB').classList.remove('show'); } else if (!isPdf) showGroup(idx); };
+document.getElementById('btn-fullscreen').onclick = function() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+};
+document.addEventListener('fullscreenchange', () => {
+  document.getElementById('btn-fullscreen').classList.toggle('active', !!document.fullscreenElement);
+});
+document.getElementById('btn-hud').onclick = function() {
+  hudVisible = !hudVisible;
+  document.getElementById('hud').classList.toggle('hidden', !hudVisible);
+  this.classList.toggle('active', hudVisible);
+  localStorage.setItem('viewer-hud', hudVisible);
+};
+document.getElementById('btn-zoom-in').onclick = () => { zoom = Math.min(5, zoom * 1.2); renderCache.clear(); showGroup(idx); };
+document.getElementById('btn-zoom-out').onclick = () => { zoom = Math.max(0.2, zoom / 1.2); renderCache.clear(); showGroup(idx); };
+document.getElementById('btn-fit').onclick = () => {
+  const modes = ['contain', 'height', 'width', 'none'];
+  fitMode = modes[(modes.indexOf(fitMode) + 1) % modes.length];
+  applyFit(); setFitUI(); showGroup(idx);
+};
+document.getElementById('btn-original').onclick = () => {
+  fitMode = 'none'; zoom = 1; renderCache.clear(); applyFit(); setFitUI(); showGroup(idx);
+};
+document.getElementById('btn-flip-h').onclick = () => {
+  flipH = !flipH;
+  document.getElementById('btn-flip-h').classList.toggle('active', flipH);
+  applyViewerTransform();
+};
+document.getElementById('btn-flip-v').onclick = () => {
+  flipV = !flipV;
+  document.getElementById('btn-flip-v').classList.toggle('active', flipV);
+  applyViewerTransform();
+};
+document.getElementById('btn-rotate').onclick = () => {
+  rotateDeg = (rotateDeg + 90) % 360;
+  applyViewerTransform();
+};
+function applyViewerTransform() {
+  const display = document.getElementById('display');
+  const sx = flipH ? -1 : 1;
+  const sy = flipV ? -1 : 1;
+  display.style.transform = `scale(${sx},${sy}) rotate(${rotateDeg}deg)`;
+}
+document.getElementById('seek-bar').addEventListener('input', function() { pause(); showGroup(parseInt(this.value)); });
+
+// フォルダナビゲーション（前/次のフォルダ）
+let _currentFolderPath = folderPath || '';
+let _siblingFolders = [];
+let _siblingIdx = -1;
+
+async function loadSiblingFolders() {
+  if (!_currentFolderPath) {
+    // singleFileからフォルダパスを推定
+    if (singleFile) {
+      const parts = singleFile.split('/');
+      parts.pop();
+      _currentFolderPath = parts.join('/');
+    }
+  }
+  if (!_currentFolderPath) {
+    document.getElementById('btn-prev-folder').disabled = true;
+    document.getElementById('btn-next-folder').disabled = true;
+    return;
+  }
+  // 親フォルダを取得
+  const parts = _currentFolderPath.split('/');
+  parts.pop();
+  const parentPath = parts.join('/');
+  if (!parentPath) {
+    document.getElementById('btn-prev-folder').disabled = true;
+    document.getElementById('btn-next-folder').disabled = true;
+    return;
+  }
+  try {
+    const items = await fetch(API + '/browse?path=' + encodeURIComponent(parentPath) + '&all_files=true').then(r => r.json());
+    _siblingFolders = items.filter(it => it.type === 'folder').map(it => it.path);
+    _siblingIdx = _siblingFolders.indexOf(_currentFolderPath);
+    if (_siblingIdx < 0) {
+      // 絶対パスの場合、名前で一致を試みる
+      const curName = _currentFolderPath.split('/').pop();
+      _siblingIdx = _siblingFolders.findIndex(p => p.split('/').pop() === curName);
+    }
+    updateFolderNavButtons();
+  } catch(e) {
+    document.getElementById('btn-prev-folder').disabled = true;
+    document.getElementById('btn-next-folder').disabled = true;
+  }
+}
+
+function updateFolderNavButtons() {
+  document.getElementById('btn-prev-folder').disabled = _siblingIdx <= 0;
+  document.getElementById('btn-next-folder').disabled = _siblingIdx < 0 || _siblingIdx >= _siblingFolders.length - 1;
+}
+
+async function goToFolder(folderPath) {
+  pause();
+  _currentFolderPath = folderPath;
+  flashStatus('フォルダ: ' + folderPath.split('/').pop());
+  // 新しいフォルダの画像を読み込み
+  try {
+    const data = await fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(folderPath));
+    items = data.map(it => ({type: 'image', name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0, path: it.path}));
+    if (items.length === 0) { flashStatus('画像がありません'); return; }
+    idx = 0;
+    await Promise.all(items.slice(0, 6).map(loadImageMeta));
+    items.slice(6).forEach(img => loadImageMeta(img));
+    showGroup(0);
+    updateHud();
+    // 兄弟フォルダ一覧を更新
+    loadSiblingFolders();
+  } catch(e) {
+    flashStatus('フォルダ読み込みエラー');
+  }
+}
+
+function prevFolder() {
+  if (_siblingIdx > 0) goToFolder(_siblingFolders[_siblingIdx - 1]);
+}
+function nextFolder() {
+  if (_siblingIdx >= 0 && _siblingIdx < _siblingFolders.length - 1) goToFolder(_siblingFolders[_siblingIdx + 1]);
+}
+
+document.getElementById('btn-prev-folder').onclick = prevFolder;
+document.getElementById('btn-next-folder').onclick = nextFolder;
+
+// 初期化時に兄弟フォルダも読み込み
+loadSiblingFolders();
+
+// キーボード（Eagle互換）
+document.addEventListener('keydown', e => {
+  const target = e.target;
+  if (target && (target.closest('input, textarea, select, button') || target.isContentEditable)) return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  // 上下矢印: フォルダ移動
+  else if (e.key === 'ArrowUp') { e.preventDefault(); prevFolder(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); nextFolder(); }
+  // Shift+矢印: 1枚ずつシフト
+  else if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); shiftForward(); }
+  else if (e.key === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); shiftBackward(); }
+  // 矢印: グループ送り（マンガモードでも常に右=次、左=前）
+  else if (e.key === 'ArrowRight') { nextGroup(); if (playing) scheduleNext(); }
+  else if (e.key === 'ArrowLeft') { prevGroup(); if (playing) scheduleNext(); }
+  // H: HUD表示トグル
+  else if (e.key === 'h' || e.key === 'H') { document.getElementById('btn-hud').click(); }
+  // F: フルスクリーン
+  else if (e.key === 'f' || e.key === 'F') { document.getElementById('btn-fullscreen').click(); }
+  // R: 逆再生トグル
+  else if (e.key === 'r' || e.key === 'R') { if (!e.shiftKey) { reversePlay = !reversePlay; flashStatus(reversePlay ? '逆順再生: ON' : '逆順再生: OFF'); updateHud(); } }
+  else if (e.key === 'm' || e.key === 'M') { document.getElementById('btn-flip-h').click(); flashStatus('左右反転: ' + (flipH ? 'ON' : 'OFF')); }
+  else if (e.key === 'o' || e.key === 'O') { document.getElementById('btn-original').click(); flashStatus('原寸表示'); }
+  else if (e.key === 'q' || e.key === 'Q') { document.getElementById('btn-rotate').click(); flashStatus('回転: ' + rotateDeg + '°'); }
+  // +/-: ズーム
+  else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoom = Math.min(5, zoom * 1.2); renderCache.clear(); showGroup(idx); }
+  else if (e.key === '-') { e.preventDefault(); zoom = Math.max(0.2, zoom / 1.2); renderCache.clear(); showGroup(idx); }
+  // 0: フィットリセット
+  else if (e.key === '0') { fitMode = 'contain'; setFitUI(); applyFit(); showGroup(idx); }
+  // 1-4: フィットモード切替
+  else if (e.key === '1') { fitMode = 'contain'; setFitUI(); applyFit(); showGroup(idx); }
+  else if (e.key === '2') { fitMode = 'height'; setFitUI(); applyFit(); showGroup(idx); }
+  else if (e.key === '3') { fitMode = 'width'; setFitUI(); applyFit(); showGroup(idx); }
+  else if (e.key === '4') { fitMode = 'none'; setFitUI(); zoom = 1; renderCache.clear(); showGroup(idx); }
+  else if (e.key === 'a' || e.key === 'A') { if (!_markup?.ann.active || !_markup?.ann.drawing) toggleMarkup(); }
+  else if (e.key === 'Escape') { if (_markup?.ann.active) { toggleMarkup(); } else if (document.fullscreenElement) document.exitFullscreen(); }
+});
+
+// ホイール
+// ホイール: 常にズーム
+document.getElementById('display').addEventListener('wheel', e => {
+  e.preventDefault();
+  zoom = Math.max(0.2, Math.min(5, zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+  renderCache.clear();
+  showGroup(idx);
+}, {passive: false});
+
+// ドラッグで画像位置移動（transform方式: 画像がウィンドウ内に収まっていてもパン可能）
+let panX = 0, panY = 0;
+function applyPan() {
+  const layer = document.getElementById('layer' + activeLayer);
+  if (layer) layer.style.transform = `translate(${panX}px, ${panY}px)`;
+}
+function resetPan() { panX = 0; panY = 0; document.getElementById('layerA').style.transform = ''; document.getElementById('layerB').style.transform = ''; }
+(function() {
+  const display = document.getElementById('display');
+  let panning = false, startX = 0, startY = 0, panX0 = 0, panY0 = 0;
+  display.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.nav-area') || e.target.closest('.sa-toolbar') || e.target.closest('.sa-note') || e.target.closest('svg') || (_markup && _markup.ann.active) || e.button !== 0) return;
+    panning = true; startX = e.clientX; startY = e.clientY;
+    panX0 = panX; panY0 = panY;
+    display.classList.add('panning');
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!panning) return;
+    panX = panX0 + (e.clientX - startX);
+    panY = panY0 + (e.clientY - startY);
+    applyPan();
+  });
+  document.addEventListener('mouseup', () => { panning = false; display.classList.remove('panning'); });
+})();
+
+// コントロール自動非表示
+let ctrlTimer;
+function showControls() { document.getElementById('controls').classList.remove('hidden'); clearTimeout(ctrlTimer); ctrlTimer = setTimeout(() => { if (playing) document.getElementById('controls').classList.add('hidden'); }, 3000); }
+document.addEventListener('mousemove', showControls);
+
+// 右クリックメニュー
+document.getElementById('display').addEventListener('contextmenu', e => {
+  e.preventDefault();
+  document.querySelectorAll('.viewer-ctx').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'viewer-ctx';
+
+  function addItem(label, fn, key) {
+    const item = document.createElement('div');
+    item.className = 'viewer-ctx-item';
+    item.innerHTML = label + (key ? `<span class="ctx-key">${key}</span>` : '');
+    item.onclick = () => { menu.remove(); fn(); };
+    menu.appendChild(item);
+  }
+  function addSep() { const s = document.createElement('div'); s.className = 'viewer-ctx-sep'; menu.appendChild(s); }
+
+  function addSub(label) {
+    const item = document.createElement('div');
+    item.className = 'viewer-ctx-item';
+    item.innerHTML = label + ' <span class="ctx-key">▸</span>';
+    const sub = document.createElement('div');
+    sub.className = 'viewer-ctx-sub';
+    item.appendChild(sub);
+    menu.appendChild(item);
+    return sub;
+  }
+  function addSubItem(sub, label, fn, key) {
+    const item = document.createElement('div');
+    item.className = 'viewer-ctx-item';
+    item.innerHTML = label + (key ? `<span class="ctx-key">${key}</span>` : '');
+    item.onclick = () => { menu.remove(); fn(); };
+    sub.appendChild(item);
+  }
+
+  addItem('前へ', () => { pause(); prevGroup(); }, '←');
+  addItem('次へ', () => { pause(); nextGroup(); }, '→');
+  addItem('1枚戻る', () => { pause(); shiftBackward(); }, 'Shift+←');
+  addItem('1枚進む', () => { pause(); shiftForward(); }, 'Shift+→');
+  addSep();
+  addItem('前のフォルダ', prevFolder, '↑');
+  addItem('次のフォルダ', nextFolder, '↓');
+  addSep();
+  addItem(playing ? '⏸ 一時停止' : '▶ 再生', togglePlay, 'Space');
+  addSep();
+  addItem('ズームイン', () => { zoom = Math.min(5, zoom * 1.2); renderCache.clear(); showGroup(idx); }, '+');
+  addItem('ズームアウト', () => { zoom = Math.max(0.2, zoom / 1.2); renderCache.clear(); showGroup(idx); }, '−');
+  // フィット サブメニュー
+  const fitSub = addSub('フィット');
+  addSubItem(fitSub, '全体フィット', () => { fitMode='contain'; setFitUI(); applyFit(); showGroup(idx); }, '1');
+  addSubItem(fitSub, '高さフィット', () => { fitMode='height'; setFitUI(); applyFit(); showGroup(idx); }, '2');
+  addSubItem(fitSub, '幅フィット', () => { fitMode='width'; setFitUI(); applyFit(); showGroup(idx); }, '3');
+  addSubItem(fitSub, '原寸', () => { fitMode='none'; zoom=1; renderCache.clear(); setFitUI(); showGroup(idx); }, '4');
+  addSep();
+  // 表示モード サブメニュー
+  const modeSub = addSub('表示モード');
+  const _setMode = m => { mode=m; document.getElementById('sel-mode').value=m; localStorage.setItem('viewer-mode',m); if(isPdf){applyFit();} showGroup(idx); };
+  addSubItem(modeSub, (mode==='single'?'● ':'') + '単体', () => _setMode('single'));
+  addSubItem(modeSub, (mode==='spread'?'● ':'') + '見開き', () => _setMode('spread'));
+  addSubItem(modeSub, (mode==='manga'?'● ':'') + 'マンガ（右→左）', () => _setMode('manga'));
+  // 回転・反転 サブメニュー
+  const flipSub = addSub('回転・反転');
+  addSubItem(flipSub, '左右反転', () => { document.getElementById('btn-flip-h').click(); }, 'M');
+  addSubItem(flipSub, '上下反転', () => { document.getElementById('btn-flip-v').click(); });
+  addSubItem(flipSub, '回転', () => { document.getElementById('btn-rotate').click(); }, 'Q');
+  addSep();
+  // 再生速度（スライダー）
+  const speedItem = document.createElement('div');
+  speedItem.className = 'viewer-ctx-item';
+  speedItem.append('再生速度: ');
+  const speedInput = document.createElement('input');
+  speedInput.type = 'range';
+  speedInput.min = '0.5';
+  speedInput.max = '15';
+  speedInput.step = '0.5';
+  speedInput.value = String(speed);
+  speedInput.style.cssText = 'width:80px;accent-color:var(--accent);';
+  const speedValue = document.createElement('span');
+  speedValue.style.cssText = 'font-size:11px;min-width:28px;';
+  speedValue.textContent = speed.toFixed(1) + 's';
+  speedInput.addEventListener('input', () => {
+    speedValue.textContent = parseFloat(speedInput.value).toFixed(1) + 's';
+  });
+  speedInput.addEventListener('change', () => {
+    speed = parseFloat(speedInput.value);
+    document.getElementById('speed').value = speed;
+    document.getElementById('speed-label').textContent = speed.toFixed(1) + 's';
+    localStorage.setItem('viewer-speed', speed);
+    if (playing) scheduleNext();
+  });
+  speedItem.append(speedInput, speedValue);
+  speedItem.addEventListener('click', (ev) => ev.stopPropagation());
+  menu.appendChild(speedItem);
+  // フェード時間（スライダー）
+  const fadeItem = document.createElement('div');
+  fadeItem.className = 'viewer-ctx-item';
+  fadeItem.append('フェード: ');
+  const fadeInput = document.createElement('input');
+  fadeInput.type = 'range';
+  fadeInput.min = '0';
+  fadeInput.max = '2000';
+  fadeInput.step = '100';
+  fadeInput.value = String(fadeMs);
+  fadeInput.style.cssText = 'width:80px;accent-color:var(--accent);';
+  const fadeValue = document.createElement('span');
+  fadeValue.style.cssText = 'font-size:11px;min-width:28px;';
+  fadeValue.textContent = (fadeMs / 1000).toFixed(1) + 's';
+  fadeInput.addEventListener('input', () => {
+    fadeValue.textContent = (parseFloat(fadeInput.value) / 1000).toFixed(1) + 's';
+  });
+  fadeInput.addEventListener('change', () => {
+    fadeMs = parseInt(fadeInput.value, 10);
+    document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms');
+    localStorage.setItem('viewer-fade', fadeMs);
+  });
+  fadeItem.append(fadeInput, fadeValue);
+  fadeItem.addEventListener('click', (ev) => ev.stopPropagation());
+  menu.appendChild(fadeItem);
+  addSep();
+  // エフェクト サブメニュー
+  const fxSub = addSub('エフェクト');
+  addSubItem(fxSub, '背景ブラー ' + (bgBlur ? 'ON' : 'OFF'), () => { document.getElementById('btn-bg').click(); });
+  addSubItem(fxSub, 'HUD ' + (hudVisible ? 'ON' : 'OFF'), () => { document.getElementById('btn-hud').click(); }, 'H');
+  addSubItem(fxSub, '全画面', () => { document.getElementById('btn-fullscreen').click(); }, 'F');
+  addSep();
+  addItem('注釈', toggleMarkup, 'A');
+
+  document.body.appendChild(menu);
+  menu.style.left = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 4) + 'px';
+  // サブメニューが画面端でオーバーフローしないよう調整
+  menu.querySelectorAll('.viewer-ctx-sub').forEach(sub => {
+    sub.parentElement.addEventListener('mouseenter', () => {
+      sub.style.left = ''; sub.style.right = '';
+      const pr = sub.parentElement.getBoundingClientRect();
+      if (pr.right + sub.offsetWidth > window.innerWidth) { sub.style.left = 'auto'; sub.style.right = '100%'; }
+      else { sub.style.left = '100%'; }
+      // 縦方向も調整
+      requestAnimationFrame(() => {
+        const sr = sub.getBoundingClientRect();
+        if (sr.bottom > window.innerHeight) sub.style.top = -(sr.bottom - window.innerHeight + 4) + 'px';
+      });
+    });
+  });
+  setTimeout(() => {
+    document.addEventListener('mousedown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', cl); } });
+  }, 0);
+});
+
+// fadeMsの初期反映
+document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms');
+
+// メモ（アノテーション）
+let _markup = null;
+let _markupToolbar = null;
+const autoMarkup = params.get('markup') === '1';
+
+function getCurrentImagePath() {
+  if (items.length === 0) return '';
+  const item = items[idx];
+  if (isPdf) return (item?.path || pdfPath || '') + '#page=' + (item?.pageNum || idx + 1);
+  return item?.path || pdfPath || singleFile || '';
+}
+
+function toggleMarkup() {
+  if (!_markup) {
+    _markup = initStandaloneMarkup(document.getElementById('display'), getCurrentImagePath);
+    _markupToolbar = createMarkupToolbar(_markup, document.body);
+  }
+  const willActivate = !_markup.ann.active;
+  _markup.toggle(willActivate);
+  if (_markupToolbar) _markupToolbar.style.display = willActivate ? 'flex' : 'none';
+  document.getElementById('btn-markup').classList.toggle('active', willActivate);
+  if (willActivate) _markup.loadAnnotations(getCurrentImagePath());
+}
+
+document.getElementById('btn-markup').onclick = toggleMarkup;
+
+// 親ウィンドウのテーマ色を継承（meldex-core.js提供）
+try {
+  if (typeof inheritParentTheme === 'function') inheritParentTheme();
+  const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg2').trim() || '#252525';
+  document.documentElement.style.setProperty('--panel-bg', bg2 + 'ee');
+} catch(e) {}
+
+init().then(() => {
+  if (autoMarkup) toggleMarkup();
+});
+</script>
+</body>
+</html>

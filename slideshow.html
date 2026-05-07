@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Meldex スライドショー</title>
+<script src="gb-runtime-adapter.js"></script>
+<script src="gb-resource-url.js"></script>
+<script src="gb-config.js"></script>
+<script src="gb-dropbox-auth.js"></script>
+<script src="gb-storage-adapter.js"></script>
+<script src="gb-storage-adapter-localfs.js"></script>
+<script src="gb-data-access.js"></script>
+<script src="gb-data-access-dropbox-fileops.js"></script>
+<script src="gb-cloud-fetch.js"></script>
+<script src="gb-cloud-file-url.js"></script>
+<style>
+:root {
+  --fade-ms: 800ms;
+  --gap: 12px;
+  --bg: #0a0e14;
+  --panel-bg: rgba(20,25,35,0.9);
+  --border: rgba(100,100,120,0.3);
+  --accent: #569cd6;
+  --fg: #e5e7eb;
+  --fg2: #9ca3af;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; overflow: hidden; }
+
+/* 背景ブラー */
+.bg-layer { position: absolute; inset: 0; background-size: cover; background-position: center; filter: blur(20px) brightness(0.4) saturate(1.2); transform: scale(1.1); opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; }
+.bg-layer.show { opacity: 1; }
+
+/* 表示レイヤ（A/B交互クロスフェード） */
+.layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; }
+.layer.show { opacity: 1; pointer-events: auto; }
+
+/* 単体表示 */
+.img-single { max-width: 100%; max-height: 100%; object-fit: contain; cursor: grab; user-select: none; }
+.img-single.grabbing { cursor: grabbing; }
+
+/* 見開き表示 */
+.spread { display: flex; align-items: center; justify-content: center; gap: var(--gap); height: 100%; padding: 0 var(--gap); }
+.spread img { max-height: 100%; object-fit: contain; user-select: none; }
+
+/* HUD */
+#hud {
+  position: absolute; top: 12px; right: 12px;
+  background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; font-size: 12px; user-select: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5); transition: opacity 0.3s;
+  max-width: 300px; z-index: 10;
+}
+#hud.hidden { opacity: 0; pointer-events: none; }
+#hud-status { color: var(--accent); font-weight: bold; margin-bottom: 4px; }
+#hud-info { color: var(--fg2); font-size: 11px; line-height: 1.5; }
+
+/* コントロールバー */
+#controls {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: var(--panel-bg); border-top: 1px solid var(--border);
+  padding: 8px 16px; display: flex; align-items: center; gap: 12px;
+  font-size: 13px; z-index: 10; transition: opacity 0.3s;
+}
+#controls.hidden { opacity: 0; pointer-events: none; }
+#controls button {
+  background: none; border: 1px solid var(--border); color: var(--fg); padding: 4px 10px;
+  border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+#controls button:hover { background: rgba(255,255,255,0.08); border-color: var(--accent); }
+#controls button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+#controls select { background: #1a1e26; color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+#controls input[type=range] { width: 80px; accent-color: var(--accent); }
+#progress-bar { flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; cursor: pointer; position: relative; }
+#progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+#counter { color: var(--fg2); font-size: 11px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="bg-layer" id="bgA"></div>
+<div class="bg-layer" id="bgB"></div>
+<div class="layer" id="layerA"></div>
+<div class="layer" id="layerB"></div>
+
+<div id="hud">
+  <div id="hud-status">スライドショー</div>
+  <div id="hud-info"></div>
+</div>
+
+<div id="controls">
+  <button id="btn-prev" title="前へ (←)">◀</button>
+  <button id="btn-play" title="再生/一時停止 (Space)">▶</button>
+  <button id="btn-next" title="次へ (→)">▶</button>
+  <div id="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
+  <span id="counter">0 / 0</span>
+  <select id="sel-mode" title="表示モード">
+    <option value="single">単体</option>
+    <option value="spread">見開き</option>
+    <option value="manga" selected>マンガ（右→左）</option>
+  </select>
+  <label style="font-size:11px;color:var(--fg2);display:flex;align-items:center;gap:4px;">
+    速度 <input type="range" id="speed" min="0.5" max="15" step="0.5" value="3">
+    <span id="speed-label">3s</span>
+  </label>
+  <label style="font-size:11px;color:var(--fg2);display:flex;align-items:center;gap:4px;">
+    フェード <input type="range" id="fade" min="0" max="3" step="0.1" value="0.8">
+  </label>
+  <button id="btn-bg" title="背景ブラー">背景</button>
+  <button id="btn-hud" title="情報表示 (H)">情報</button>
+</div>
+
+<script>
+const API = '/api';
+const params = new URLSearchParams(location.search);
+const folderPath = params.get('folder') || '';
+const filePaths = parseFilesParam();
+
+let images = [];
+let idx = 0;
+let playing = false;
+let timer = null;
+let activeLayer = 'A';
+let mode = localStorage.getItem('ss-mode') || 'manga';
+let speed = parseFloat(localStorage.getItem('ss-speed') || '3');
+let fadeMs = parseFloat(localStorage.getItem('ss-fade') || '0.8') * 1000;
+let bgBlur = localStorage.getItem('ss-bg') !== 'false';
+let hudVisible = localStorage.getItem('ss-hud') !== 'false';
+
+document.getElementById('sel-mode').value = mode;
+document.getElementById('speed').value = speed;
+document.getElementById('speed-label').textContent = speed + 's';
+document.getElementById('fade').value = fadeMs / 1000;
+document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms');
+if (!hudVisible) document.getElementById('hud').classList.add('hidden');
+document.getElementById('btn-bg').classList.toggle('active', bgBlur);
+
+async function init() {
+  if (folderPath) {
+    const items = await fetch(API + '/images-in-folder?path=' + encodeURIComponent(folderPath)).then(r => r.json());
+    images = items.map(it => ({ name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0 }));
+  } else if (filePaths.length) {
+    images = filePaths.map(p => ({ name: p.split('/').pop(), url: API + '/file-raw?path=' + encodeURIComponent(p), w: 0, h: 0 }));
+  }
+  if (images.length === 0) {
+    document.getElementById('hud-info').textContent = '画像がありません';
+    return;
+  }
+  // 画像サイズをプリロード
+  await Promise.all(images.slice(0, 6).map(loadMeta));
+  showGroup(0);
+  updateHud();
+  // 残りを非同期でプリロード
+  images.slice(6).forEach(img => loadMeta(img));
+}
+
+function parseFilesParam() {
+  const repeated = params.getAll('files');
+  if (repeated.length > 1) return repeated.filter(Boolean);
+  const raw = params.get('files') || '';
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+  } catch {}
+  return raw.split(',').filter(Boolean);
+}
+
+function loadMeta(img) {
+  return new Promise(resolve => {
+    if (img.w && img.h) { resolve(); return; }
+    const i = new Image();
+    i.onload = () => { img.w = i.naturalWidth; img.h = i.naturalHeight; resolve(); };
+    i.onerror = () => resolve();
+    i.src = img.url;
+  });
+}
+
+function isPortrait(img) { return img.h > img.w; }
+
+function getGroup(startIdx) {
+  if (images.length === 0) return [];
+  if (startIdx < 0 || startIdx >= images.length) startIdx = 0;
+  if (mode === 'single') return [startIdx];
+  // 見開き/マンガ: 縦長2枚を並べる
+  const a = images[startIdx];
+  if (!a || !isPortrait(a) || startIdx + 1 >= images.length) return [startIdx];
+  const b = images[startIdx + 1];
+  if (!b || !isPortrait(b)) return [startIdx];
+  return [startIdx, startIdx + 1];
+}
+
+function showGroup(newIdx) {
+  if (images.length === 0) return;
+  if (newIdx < 0) newIdx = images.length - 1;
+  if (newIdx >= images.length) newIdx = 0;
+  idx = newIdx;
+  const group = getGroup(idx);
+  if (group.length === 0) return;
+  const target = activeLayer === 'A' ? 'B' : 'A';
+
+  const layer = document.getElementById('layer' + target);
+  layer.innerHTML = '';
+
+  if (group.length === 1) {
+    const img = document.createElement('img');
+    img.className = 'img-single';
+    img.src = images[group[0]].url;
+    img.draggable = false;
+    layer.appendChild(img);
+  } else {
+    const spread = document.createElement('div');
+    spread.className = 'spread';
+    const order = mode === 'manga' ? [group[1], group[0]] : group;
+    order.forEach(i => {
+      const img = document.createElement('img');
+      img.src = images[i].url;
+      img.draggable = false;
+      img.style.maxHeight = '100%';
+      spread.appendChild(img);
+    });
+    layer.appendChild(spread);
+  }
+
+  // 背景ブラー
+  if (bgBlur) {
+    const bgTarget = activeLayer === 'A' ? 'bgB' : 'bgA';
+    const bgOld = activeLayer === 'A' ? 'bgA' : 'bgB';
+    document.getElementById(bgTarget).style.backgroundImage = 'url(' + images[group[0]].url + ')';
+    document.getElementById(bgTarget).classList.add('show');
+    document.getElementById(bgOld).classList.remove('show');
+  }
+
+  // クロスフェード
+  document.getElementById('layer' + activeLayer).classList.remove('show');
+  layer.classList.add('show');
+  activeLayer = target;
+
+  // UI更新
+  const total = images.length;
+  document.getElementById('counter').textContent = (idx + 1) + ' / ' + total;
+  document.getElementById('progress-fill').style.width = ((idx + 1) / total * 100) + '%';
+  updateHud();
+}
+
+function nextGroup() {
+  const group = getGroup(idx);
+  showGroup(idx + group.length);
+}
+function prevGroup() {
+  if (images.length === 0) return;
+  let prev = idx - 1;
+  if (prev < 0) prev = images.length - 1;
+  // 見開き: 前が縦長ペアなら2つ前に戻る
+  if (mode !== 'single' && prev > 0 && images[prev] && images[prev-1] && isPortrait(images[prev]) && isPortrait(images[prev-1])) prev--;
+  showGroup(prev);
+}
+
+function play() { if (images.length === 0) return; playing = true; document.getElementById('btn-play').textContent = '⏸'; scheduleNext(); }
+function pause() { playing = false; clearTimeout(timer); document.getElementById('btn-play').textContent = '▶'; }
+function togglePlay() { playing ? pause() : play(); }
+
+function scheduleNext() {
+  clearTimeout(timer);
+  if (!playing || images.length === 0) return;
+  timer = setTimeout(() => { nextGroup(); scheduleNext(); }, speed * 1000);
+}
+
+function setHudInfo(lines) {
+  const el = document.getElementById('hud-info');
+  el.replaceChildren();
+  lines.forEach((line, i) => {
+    if (i > 0) el.appendChild(document.createElement('br'));
+    el.appendChild(document.createTextNode(line));
+  });
+}
+
+function updateHud() {
+  const info = [];
+  info.push('画像: ' + images.length + '枚');
+  info.push('モード: ' + {single:'単体',spread:'見開き',manga:'マンガ'}[mode]);
+  info.push('速度: ' + speed + 's');
+  if (folderPath) info.push('フォルダ: ' + folderPath.split('/').pop());
+  setHudInfo(info);
+  document.getElementById('hud-status').textContent = playing ? '▶ 再生中' : '⏸ 一時停止';
+}
+
+// コントロール
+document.getElementById('btn-prev').onclick = () => { pause(); prevGroup(); };
+document.getElementById('btn-next').onclick = () => { pause(); nextGroup(); };
+document.getElementById('btn-play').onclick = togglePlay;
+document.getElementById('sel-mode').onchange = function() { mode = this.value; localStorage.setItem('ss-mode', mode); showGroup(idx); };
+document.getElementById('speed').oninput = function() { speed = parseFloat(this.value); document.getElementById('speed-label').textContent = speed + 's'; localStorage.setItem('ss-speed', speed); if (playing) scheduleNext(); };
+document.getElementById('fade').oninput = function() { fadeMs = parseFloat(this.value) * 1000; document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms'); localStorage.setItem('ss-fade', this.value); };
+document.getElementById('btn-bg').onclick = function() { bgBlur = !bgBlur; this.classList.toggle('active', bgBlur); localStorage.setItem('ss-bg', bgBlur); if (!bgBlur) { document.getElementById('bgA').classList.remove('show'); document.getElementById('bgB').classList.remove('show'); } else showGroup(idx); };
+document.getElementById('btn-hud').onclick = function() { hudVisible = !hudVisible; document.getElementById('hud').classList.toggle('hidden', !hudVisible); localStorage.setItem('ss-hud', hudVisible); };
+document.getElementById('progress-bar').onclick = function(e) {
+  if (images.length === 0) return;
+  const r = this.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  showGroup(Math.min(images.length - 1, Math.floor(pct * images.length)));
+};
+
+// キーボード
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input,select,textarea,button')) return;
+  if (e.key === 'ArrowRight') { pause(); nextGroup(); }
+  else if (e.key === 'ArrowLeft') { pause(); prevGroup(); }
+  else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'h' || e.key === 'H') { hudVisible = !hudVisible; document.getElementById('hud').classList.toggle('hidden', !hudVisible); }
+  else if (e.key === 'f' || e.key === 'F') {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  }
+  else if (e.key === 'Escape') { if (document.fullscreenElement) document.exitFullscreen(); else window.close(); }
+});
+
+// マウスホイール: 前後移動
+document.addEventListener('wheel', e => { e.deltaY > 0 ? nextGroup() : prevGroup(); });
+
+// コントロールバーの自動非表示
+let ctrlTimer;
+function showControls() { document.getElementById('controls').classList.remove('hidden'); clearTimeout(ctrlTimer); ctrlTimer = setTimeout(() => { if (playing) document.getElementById('controls').classList.add('hidden'); }, 3000); }
+document.addEventListener('mousemove', showControls);
+document.addEventListener('click', showControls);
+
+init();
+</script>
+</body>
+</html>

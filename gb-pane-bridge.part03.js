@@ -1,0 +1,441 @@
+      page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
+      board: 'ボード', calendar: 'カレンダー',
+      'smart-db': 'スマートシート', folder: 'フォルダ',
+      };
+      const containerId = LEGACY_CONTAINERS[toolType];
+      if (!containerId) return;
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      const label = labels[toolType] || toolType;
+      // 空状態オーバーレイを表示（既存コンテンツの上に）
+      let emptyEl = el.querySelector('.gb-empty-state');
+      if (!emptyEl) {
+        emptyEl = document.createElement('div');
+        emptyEl.className = 'gb-empty-state';
+        emptyEl.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bg);z-index:5;gap:12px;';
+        el.style.position = 'relative';
+        el.appendChild(emptyEl);
+      }
+      emptyEl.innerHTML = '<div style="font-size:36px;color:var(--fg2);">' + (typeof lucide === 'function' ? lucide(GBTabs.tabIcon(toolType), 48) : '') + '</div>'
+        + '<div style="font-size:16px;color:var(--fg);">' + label + '</div>'
+        + '<div style="font-size:13px;color:var(--fg2);">ファイルを開くか、新規作成してください</div>'
+        + '<button class="gb-empty-create-btn" style="margin-top:8px;padding:6px 16px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:6px;cursor:pointer;font-size:13px;">+ 新規作成</button>';
+      emptyEl.querySelector('.gb-empty-create-btn').addEventListener('click', () => {
+        emptyEl.remove();
+        if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(toolType);
+      });
+    }
+
+    // サイドバートグル → フォルダツリーペインの開閉
+    window.toggleSidebar = function() {
+      if (window.MeldexCloudMobile?.toggleSidebarDrawer?.()) return;
+      _openToolPane('outliner', { toggleExisting: true });
+    };
+
+    // オプションパネルトグル → 詳細タブとして開く
+    window.toggleOptionPanel = function() {
+      _openToolPane('detail', { toggleExisting: true });
+    };
+    window.toggleDetailPanel = window.toggleOptionPanel;
+  }
+
+  // ================================================================
+  // 右パネル廃止 → ペインタブ化
+  // ================================================================
+  function _overrideRightPanel() {
+    // 右パネルを非表示
+    const rp = document.getElementById('right-panel');
+    const rrh = document.getElementById('right-resize-handle');
+    const rab = document.getElementById('activity-bar-right');
+    if (rp) rp.style.display = 'none';
+    if (rrh) rrh.style.display = 'none';
+    // 右アクティビティバーは残す（ペインタブ開きのトリガーとして使う）
+
+    // toggleRightPanelTab → ペインにツールを開く
+    window.toggleRightPanelTab = function(tabName) {
+      _openToolPane(tabName, { toggleExisting: true });
+    };
+    window.openRightPanelTab = function(tabName) {
+      _openToolPane(tabName);
+    };
+    window.toggleRightPanel = function() {
+      const rightPanelTypes = ['chat', 'calendar', 'timer', 'history', 'annotation', 'preview', 'detail'];
+      let closed = 0;
+      rightPanelTypes.forEach((type) => {
+        for (let guard = 0; guard < 20; guard += 1) {
+          const found = GBTabs.findPaneWithTab(type, '');
+          if (!found) break;
+          GBTabs.closeTab(found.paneId, found.tabId);
+          closed += 1;
+        }
+      });
+      if (!closed) {
+        _openToolPane('chat');
+      }
+    };
+
+    // switchRightTab → ペインタブ切替
+    window.switchRightTab = function(tabName) {
+      _openToolPane(tabName);
+    };
+
+    // 旧スプリットビュー → ペイン分割に置換
+    let _legacySplitPair = null;
+    function _findDirectParentSplit(root, paneId) {
+      if (!root || root.type !== 'split') return null;
+      for (const child of (root.children || [])) {
+        if (!child) continue;
+        if (child.id === paneId) return root;
+        if (child.type === 'split') {
+          const found = _findDirectParentSplit(child, paneId);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    function _getLegacySplitPair() {
+      if (!_legacySplitPair?.sourcePaneId || !_legacySplitPair?.splitPaneId) {
+        _legacySplitPair = null;
+        return null;
+      }
+      const sourcePane = GBLayout.findNode(GBLayout.root, _legacySplitPair.sourcePaneId)?.node;
+      const splitPane = GBLayout.findNode(GBLayout.root, _legacySplitPair.splitPaneId)?.node;
+      if (!sourcePane || !splitPane || sourcePane.type !== 'pane' || splitPane.type !== 'pane') {
+        _legacySplitPair = null;
+        return null;
+      }
+      const sourceParent = _findDirectParentSplit(GBLayout.root, sourcePane.id);
+      const splitParent = _findDirectParentSplit(GBLayout.root, splitPane.id);
+      if (!sourceParent || sourceParent !== splitParent) {
+        _legacySplitPair = null;
+        return null;
+      }
+      return { sourcePane, splitPane };
+    }
+    function _disposePaneTabs(pane) {
+      pane?.tabs?.forEach(t => {
+        if (typeof removeComponentInstance === 'function') removeComponentInstance(t.id);
+      });
+    }
+    function _entryFromSplitArg(splitArg) {
+      if (!splitArg) return null;
+      if (typeof splitArg === 'object') {
+        const path = splitArg.path || splitArg.dbPath || '';
+        return {
+          label: splitArg.label || path.split('/').pop() || '(無題)',
+          type: splitArg.type || 'pivot',
+          path,
+        };
+      }
+      const path = String(splitArg || '');
+      return { label: path.split('/').pop() || path || '(無題)', type: 'pivot', path };
+    }
+    function _replacePaneWithEntry(pane, entry) {
+      if (!pane || pane.type !== 'pane' || !entry) return false;
+      _disposePaneTabs(pane);
+      pane.tabs = [GBTabs.createTab(entry.label, entry.type, entry.path)];
+      pane.activeTabIndex = 0;
+      GBLayout.render();
+      GBLayout.saveLayout();
+      GBLayout.setActivePane(pane.id);
+      return true;
+    }
+    function _activateLegacySplitView(splitArg) {
+      if (GBLayout.isMaximized()) { GBLayout.restoreMaximizedPane(); return false; }
+      const requestedEntry = _entryFromSplitArg(splitArg);
+      const existingPair = _getLegacySplitPair();
+      if (existingPair) {
+        if (requestedEntry) _replacePaneWithEntry(existingPair.splitPane, requestedEntry);
+        return true;
+      }
+      const paneId = GBLayout.activePane;
+      if (!paneId) return false;
+      const activeTab = GBTabs.getActiveTab(paneId);
+      const entry = requestedEntry || {
+        label: activeTab ? activeTab.label : '(無題)',
+        type: activeTab ? activeTab.type : 'welcome',
+        path: activeTab ? activeTab.path : '',
+      };
+      const tab = GBTabs.createTab(entry.label, entry.type, entry.path);
+      const newPane = GBLayout.createPaneNode(null, [tab], 0);
+      const splitPaneId = GBLayout.splitPane(paneId, 'horizontal', 'right', newPane);
+      if (!splitPaneId) return false;
+      _legacySplitPair = { sourcePaneId: paneId, splitPaneId };
+      GBLayout.setActivePane(splitPaneId);
+      return true;
+    }
+    function _deactivateLegacySplitView() {
+      if (GBLayout.isMaximized()) { GBLayout.restoreMaximizedPane(); return false; }
+      const pair = _getLegacySplitPair();
+      if (!pair) return false;
+      _disposePaneTabs(pair.splitPane);
+      GBLayout.removePane(pair.splitPane.id);
+      _legacySplitPair = null;
+      if (GBLayout.findNode(GBLayout.root, pair.sourcePane.id)?.node) {
+        GBLayout.setActivePane(pair.sourcePane.id);
+      }
+      return true;
+    }
+    window.toggleSplitView = function() {
+      if (!_deactivateLegacySplitView()) _activateLegacySplitView();
+    };
+    window.activateSplitView = function(splitArg) {
+      _activateLegacySplitView(splitArg);
+    };
+    window.deactivateSplitView = function() {
+      _deactivateLegacySplitView();
+    };
+    window.isSplitActive = function() {
+      return !!_getLegacySplitPair();
+    };
+    window.openInNewSplit = function(dbPath) {
+      return _activateLegacySplitView(_entryFromSplitArg(dbPath));
+    };
+    window.openDbInOtherPane = function(dbPath) {
+      const entry = _entryFromSplitArg(dbPath);
+      const pair = _getLegacySplitPair();
+      if (!pair) return _activateLegacySplitView(entry);
+      const targetPane = GBLayout.activePane === pair.splitPane.id ? pair.sourcePane : pair.splitPane;
+      return _replacePaneWithEntry(targetPane, entry);
+    };
+  }
+
+  function _findToolPaneInAnyGroup(toolType) {
+    const targetPath = '';
+    function walk(node, panelsetNode, groupId) {
+      if (!node) return null;
+      if (node.type === 'pane') {
+        const tab = (node.tabs || []).find(t => t.type === toolType && (t.path || '') === targetPath);
+        return tab ? { paneId: node.id, tabId: tab.id, panelsetNode, groupId } : null;
+      }
+      if (node.type === 'split' && Array.isArray(node.children)) {
+        for (const child of node.children) {
+          const found = walk(child, panelsetNode, groupId);
+          if (found) return found;
+        }
+      } else if (node.type === 'panelset' && Array.isArray(node.groups)) {
+        for (const group of node.groups) {
+          const found = walk(group?.root, node, group?.id || '');
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    return walk(GBLayout.root, null, '') || null;
+  }
+
+  function _activateToolPaneMatch(match) {
+    if (!match?.paneId || !match?.tabId) return;
+    if (match.panelsetNode && match.groupId && match.panelsetNode.activeGroupId !== match.groupId) {
+      match.panelsetNode.activeGroupId = match.groupId;
+    }
+    GBTabs.activateTab(match.paneId, match.tabId);
+  }
+
+  function _toolLabel(toolType) {
+    return TOOL_LABELS[toolType] || toolType || '';
+  }
+
+  // ツール（chat/calendar/annotation/history等）をペインタブとして開く
+  function _openToolPane(toolType, options) {
+    const openOpts = options || {};
+    const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;
+    if (typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.activateTabType === 'function') {
+      if (GBDockPopup.activateTabType(popupToolType, '')) return;
+    }
+
+    // 既に開いているか確認
+    const existing = GBTabs.findPaneWithTab(toolType, '') || _findToolPaneInAnyGroup(toolType);
+    if (existing) {
+      const paneId = existing.paneId;
+      const activePane = GBLayout.activePane;
+      // toggleRightPanelTab() だけが同一ペイン時のクローズを許可する。
+      // openRightPanelTab()/switchRightTab() は既存タブを必ずアクティブ化する。
+      if (!openOpts.toggleExisting || paneId !== activePane) {
+        _activateToolPaneMatch(existing);
+      } else {
+        GBTabs.closeTab(paneId, existing.tabId);
+      }
+      return;
+    }
+
+    // 新規作成
+    const paneId = GBLayout.activePane;
+    if (!paneId) return;
+    const tab = GBTabs.createTab(_toolLabel(toolType), toolType, '');
+    const newPane = GBLayout.createPaneNode(null, [tab], 0);
+
+    if (NAV_PANE_TYPES.has(toolType)) {
+      // ナビペインは常に左に配置
+      const newPaneId = GBLayout.splitPane(paneId, 'horizontal', 'left', newPane);
+      if (newPaneId) GBLayout.setActivePane(newPaneId);
+    } else {
+      // 通常ツールは右に配置
+      const allPanes = GBLayout.getAllPanes(GBLayout.root);
+      if (allPanes.length <= 1) {
+        const newPaneId = GBLayout.splitPane(paneId, 'horizontal', 'right', newPane);
+        if (newPaneId) GBLayout.setActivePane(newPaneId);
+      } else {
+        const lastPane = allPanes[allPanes.length - 1];
+        GBTabs.addTab(lastPane.id, _toolLabel(toolType), toolType, '');
+      }
+    }
+  }
+
+  // ================================================================
+  // 新規作成ドロップダウンメニュー
+  // ================================================================
+  function _toggleNewMenu(e) {
+    const existing = document.querySelector('.gb-new-menu');
+    if (existing) { existing.remove(); return; }
+
+    const menu = document.createElement('div');
+    menu.className = 'gb-new-menu gb-context-menu';
+    const items = [
+      ['ノート', 'page', () => openToolTab('page')],
+      ['シナリオ', 'bookOpenText', () => openToolTab('scriptnote')],
+      ['シート', 'db', () => openToolTab('database')],
+      ['ボード', 'presentation', () => openToolTab('board')],
+      ['カレンダー', 'calendar', () => openToolTab('calendar')],
+      ['スマートシート', 'databaseSearch', () => openToolTab('smart-db')],
+      ['---'],
+      ['フォルダ', 'folder', () => openToolTab('folder')],
+      ['XLSX取込', (typeof uiTransferIconName === 'function' ? uiTransferIconName('import') : 'download'), () => { if (typeof importXlsxToOutliner === 'function') importXlsxToOutliner(); }],
+      ['ゴミ箱', 'trash2', () => { if (typeof showTrashModal === 'function') showTrashModal(); }],
+    ];
+    for (const item of items) {
+      if (item[0] === '---') {
+        const s = document.createElement('div');
+        s.style.cssText = 'height:1px;background:var(--border);margin:4px 0;';
+        menu.appendChild(s);
+        continue;
+      }
+      const mi = document.createElement('div');
+      mi.style.cssText = 'padding:5px 14px;cursor:pointer;font-size:13px;white-space:nowrap;display:flex;align-items:center;gap:6px;';
+      mi.innerHTML = (typeof lucide === 'function' ? lucide(item[1], 14) : '') + ' ' + item[0];
+      mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; };
+      mi.onmouseleave = () => { mi.style.background = ''; };
+      mi.addEventListener('click', () => { menu.remove(); item[2](); });
+      menu.appendChild(mi);
+    }
+
+    document.body.appendChild(menu);
+    const btn = (e && e.target) ? e.target.closest('button') || document.getElementById('btn-new-menu') : document.getElementById('btn-new-menu');
+    const rect = btn.getBoundingClientRect();
+    { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 2) + 'px'; }
+    requestAnimationFrame(() => {
+      const z = _getZoom(); const mr = menu.getBoundingClientRect();
+      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
+      if (mr.right > window.innerWidth) menu.style.left = ((window.innerWidth - mr.width - 4) / z) + 'px';
+    });
+    setTimeout(() => {
+      document.addEventListener('pointerdown', function cl(ev) {
+        if (!menu.contains(ev.target) && ev.target !== btn) { menu.remove(); document.removeEventListener('pointerdown', cl, true); }
+      }, true);
+    }, 0);
+  }
+
+  // ================================================================
+  // キーボードルーティング
+  // ================================================================
+  function _setupKeyboardRouting() {
+    // Ctrl+Shift+M, Ctrl+W → gb-shortcuts.js の中央ハンドラに移行済み
+    // コンポーネントへのキー委譲のみ残存
+    document.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented) return;
+      const activeTab = GBTabs.getActiveTab();
+      if (activeTab) {
+        const component = getComponentInstance(activeTab.id);
+        if (component && component.handleKeyDown && component.handleKeyDown(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+    });
+  }
+
+  function _capturePaneComponentStates(pane) {
+    for (const tab of (pane?.tabs || [])) {
+      const comp = getComponentInstance(tab.id);
+      if (!comp || typeof comp.getState !== 'function') continue;
+      try {
+        tab.state = comp.getState();
+      } catch (e) {
+        console.warn('[PaneBridge] getState failed:', tab.id, e);
+      }
+    }
+  }
+
+  function _refreshMountedPane(paneId, options) {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root || !paneId) return;
+    const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node || null;
+    if (!pane || pane.type !== 'pane') return;
+    _capturePaneComponentStates(pane);
+    _mountPaneContent(pane, options);
+  }
+
+  function _mountVirtualPane(pane, contentEl, options) {
+    if (typeof GBLayout === 'undefined' || !pane?.id || !contentEl) return false;
+    const paneMap = GBLayout.paneMap;
+    if (!paneMap) return false;
+    paneMap[pane.id] = {
+      node: pane,
+      el: contentEl.closest?.('.gb-subpanel') || contentEl,
+      contentEl,
+    };
+    _mountPaneContent(pane, { ...(options || {}), subPanel: true });
+    return true;
+  }
+
+  function _refreshPaneAfterTabSwitch(paneId, options) {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root) return;
+    _refreshMountedPane(paneId, options);
+    const previousActivePane = options?.previousActivePane || null;
+    if (previousActivePane && previousActivePane !== paneId) {
+      _refreshMountedPane(previousActivePane);
+    }
+    _syncStateView();
+    _mountFloatingAnnotationUi();
+    _syncDetailForActivePane(GBLayout.activePane || paneId);
+    _syncToolButtonStates();
+    if (typeof GBAppLayouts !== 'undefined' && typeof GBAppLayouts.syncButtons === 'function') {
+      GBAppLayouts.syncButtons();
+    }
+    if (typeof replaceIcons === 'function') replaceIcons();
+  }
+
+  function _retractPaneContent(paneId) {
+    const contentEl = GBLayout?.paneMap?.[paneId]?.contentEl || null;
+    if (!contentEl) return false;
+    _retractLegacyFromPane(contentEl);
+    return true;
+  }
+
+  function _resetDefaultLayout(options) {
+    const before = !options?.skipHistory && typeof GBLayout.captureLayoutSnapshot === 'function'
+      ? GBLayout.captureLayoutSnapshot()
+      : null;
+    _buildDefaultLayout(GBLayout.createPaneNode('pane-main', [], -1));
+    if (before && typeof GBLayout.pushLayoutHistory === 'function') {
+      GBLayout.pushLayoutHistory('レイアウト: 初期化', before, GBLayout.captureLayoutSnapshot(), '標準レイアウトへ戻す');
+    }
+  }
+
+  // ================================================================
+  // Public API
+  // ================================================================
+  return {
+    init,
+    mountAllPanes: _mountAllPanes,
+    mountFloatingAnnotationUi: _mountFloatingAnnotationUi,
+    mountVirtualPane: _mountVirtualPane,
+    activateAnnotationFabForPane: _activateAnnotationFabForPane,
+    refreshPaneAfterTabSwitch: _refreshPaneAfterTabSwitch,
+    retractPaneContent: _retractPaneContent,
+    toolLabel: _toolLabel,
+    toggleNewMenu: _toggleNewMenu,
+    clearDetailPaneShell: _clearDetailPaneShell,
+    resetDefaultLayout: _resetDefaultLayout,
+    get initialized() { return _initialized; },
+  };
+})();

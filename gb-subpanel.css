@@ -1,0 +1,192 @@
+/* gb-subpanel.css: persistent floating subpanel */
+
+.gb-subpanel {
+  position: fixed;
+  z-index: 10045;
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  min-height: 180px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 16px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  user-select: none;
+}
+
+.gb-subpanel[hidden] {
+  display: none;
+}
+
+.gb-subpanel-titlebar {
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px 0 10px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+}
+
+.gb-subpanel-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.gb-subpanel-title-icon {
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+}
+
+.gb-subpanel-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-subpanel-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.gb-subpanel-button {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg2);
+  cursor: pointer;
+}
+
+.gb-subpanel-button:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.gb-subpanel-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  user-select: text;
+}
+
+.gb-subpanel-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--fg2);
+  font-size: 13px;
+}
+
+.gb-subpanel.is-minimized {
+  height: 34px !important;
+  min-height: 34px;
+}
+
+.gb-subpanel.is-minimized .gb-subpanel-content,
+.gb-subpanel.is-minimized .gb-subpanel-resize {
+  display: none;
+}
+
+.gb-subpanel.is-maximized {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
+}
+
+.gb-subpanel-resize {
+  position: absolute;
+  z-index: 1;
+}
+
+.gb-subpanel-resize-n,
+.gb-subpanel-resize-s {
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.gb-subpanel-resize-e,
+.gb-subpanel-resize-w {
+  top: 8px;
+  bottom: 8px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.gb-subpanel-resize-n {
+  top: -4px;
+}
+
+.gb-subpanel-resize-s {
+  bottom: -4px;
+}
+
+.gb-subpanel-resize-e {
+  right: -4px;
+}
+
+.gb-subpanel-resize-w {
+  left: -4px;
+}
+
+.gb-subpanel-resize-ne,
+.gb-subpanel-resize-nw,
+.gb-subpanel-resize-se,
+.gb-subpanel-resize-sw {
+  width: 12px;
+  height: 12px;
+}
+
+.gb-subpanel-resize-ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+
+.gb-subpanel-resize-nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+
+.gb-subpanel-resize-se {
+  right: -4px;
+  bottom: -4px;
+  cursor: nwse-resize;
+}
+
+.gb-subpanel-resize-sw {
+  left: -4px;
+  bottom: -4px;
+  cursor: nesw-resize;
+}
+
+.gb-subpanel.is-maximized .gb-subpanel-resize {
+  display: none;
+}

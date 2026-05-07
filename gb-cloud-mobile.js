@@ -1,0 +1,541 @@
+(function () {
+  if (window.__MeldexCloudMobileInstalled) return;
+  window.__MeldexCloudMobileInstalled = true;
+
+  const MOBILE_QUERY = '(max-width: 1024px), (pointer: coarse)';
+  const KEYBOARD_THRESHOLD = 120;
+  const EDGE_SWIPE_ZONE = 28;
+  const EDGE_SWIPE_MIN_X = 72;
+  const EDGE_SWIPE_MAX_Y = 64;
+  const LOCAL_MOBILE_UI_STORAGE_KEY = 'meldex-local-mobile-ui';
+  const media = window.matchMedia ? window.matchMedia(MOBILE_QUERY) : null;
+  let _desktopToggleSidebar = null;
+  let _layoutHookInstalled = false;
+  let _sanitizingLayout = false;
+  let _lastTreeOpenAt = 0;
+  let _paneBackObserverInstalled = false;
+  let _sidebarDrawerReturnSlot = null;
+
+  function _isDropboxMode() {
+    return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+  }
+
+  function _isLocalMobileUiAllowed() {
+    try {
+      return localStorage.getItem(LOCAL_MOBILE_UI_STORAGE_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  function _isMobileUiAllowed() {
+    return _isDropboxMode() || _isLocalMobileUiAllowed();
+  }
+
+  function _isMobileViewport() {
+    return media ? media.matches : window.innerWidth <= 1024;
+  }
+
+  function _isSingleWindow() {
+    return !!window._gbSingleWindow || document.documentElement?.dataset?.singleWindow === '1';
+  }
+
+  function _isFocusedTextInput() {
+    const active = document.activeElement;
+    return !!active?.matches?.('input, textarea, [contenteditable="true"]');
+  }
+
+  function _setDatasetFlag(name, enabled) {
+    if (!document.body) return;
+    if (enabled) document.body.dataset[name] = '1';
+    else delete document.body.dataset[name];
+  }
+
+  function isMobileEditingUiEnabled() {
+    return _isMobileUiAllowed() && _isMobileViewport() && !_isSingleWindow();
+  }
+
+  function shouldUseSidebarDrawer() {
+    return _isMobileUiAllowed() && _isMobileViewport() && !_isSingleWindow();
+  }
+
+  function _sidebarElements() {
+    return {
+      sidebar: document.getElementById('sidebar'),
+      backdrop: document.getElementById('sidebar-backdrop'),
+    };
+  }
+
+  function _isTreeScreenOpen() {
+    return document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
+  }
+
+  function _iconHtml(name, size, fallback) {
+    return typeof lucide === 'function'
+      ? lucide(name, size || 18)
+      : `<span aria-hidden="true">${fallback || ''}</span>`;
+  }
+
+  function _openSidebarFromMobileControl(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    const now = Date.now();
+    if (now - _lastTreeOpenAt < 300) return false;
+    _lastTreeOpenAt = now;
+    return openSidebarDrawer(true);
+  }
+
+  function _openMobileMenuSheet(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (_isTreeScreenOpen()) closeSidebarDrawer();
+    if (window.MeldexCloudMobileEditBar?.openMenu) {
+      window.MeldexCloudMobileEditBar.openMenu();
+      return true;
+    }
+    if (typeof showStatus === 'function') showStatus('スマホ用メニューを読み込み中です', true);
+    return false;
+  }
+
+  function _openSettingsPanel(panelName, event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (_isTreeScreenOpen()) closeSidebarDrawer();
+    if (typeof showSettingsModal === 'function') {
+      showSettingsModal(panelName ? { panel: panelName } : undefined);
+      return true;
+    }
+    return false;
+  }
+
+  function _refreshTreeHeaderUserIcon(header) {
+    const userButton = header?.querySelector?.('.cloud-mobile-tree-user');
+    if (!userButton) return;
+    const username = typeof getUsername === 'function' ? getUsername() : 'anonymous';
+    userButton.title = username || 'ユーザー';
+    userButton.setAttribute('aria-label', `${username || 'ユーザー'}の設定を開く`);
+    if (typeof getUserAvatarHtml === 'function') {
+      userButton.innerHTML = getUserAvatarHtml(username || 'anonymous', 24);
+    } else {
+      userButton.innerHTML = _iconHtml('userRound', 20, 'U');
+    }
+  }
+
+  function _bindMobileControlActivation(button, action) {
+    let lastRunAt = 0;
+    const run = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const now = Date.now();
+      if (now - lastRunAt < 300) return;
+      lastRunAt = now;
+      action(event);
+    };
+    button.addEventListener('pointerup', run);
+    button.addEventListener('click', run);
+  }
+
+  function closeSidebarDrawer() {
+    const { sidebar, backdrop } = _sidebarElements();
+    if (!sidebar) return false;
+    sidebar.classList.remove('open', 'cloud-mobile-tree-screen-open');
+    sidebar.setAttribute('aria-hidden', 'true');
+    document.body?.classList?.remove('cloud-mobile-tree-screen-active');
+    if (!shouldUseSidebarDrawer()) sidebar.style.removeProperty('display');
+    if (backdrop) {
+      backdrop.classList.remove('open');
+      backdrop.style.setProperty('display', 'none', 'important');
+    }
+    _restoreSidebarDrawerHost(sidebar);
+    return true;
+  }
+
+  function openSidebarDrawer(withFolderView) {
+    const { sidebar, backdrop } = _sidebarElements();
+    if (!sidebar) return false;
+    _ensureTreeScreenHeader();
+    _dockSidebarForDrawer(sidebar);
+    sidebar.style.setProperty('display', 'flex', 'important');
+    sidebar.setAttribute('aria-hidden', 'false');
+    sidebar.classList.add('open', 'cloud-mobile-tree-screen-open');
+    document.body?.classList?.add('cloud-mobile-tree-screen-active');
+    if (backdrop) {
+      backdrop.style.setProperty('display', 'block', 'important');
+      backdrop.classList.add('open');
+    }
+    if (withFolderView && typeof showFolderViewForSidebar === 'function') showFolderViewForSidebar();
+    return true;
+  }
+
+  function _dockSidebarForDrawer(sidebar) {
+    if (!shouldUseSidebarDrawer() || !document.body || !sidebar) return;
+    if (sidebar.parentNode === document.body) return;
+    _sidebarDrawerReturnSlot = {
+      parent: sidebar.parentNode,
+      nextSibling: sidebar.nextSibling,
+    };
+    sidebar.dataset.cloudMobileDrawerDocked = '1';
+    document.body.appendChild(sidebar);
+  }
+
+  function _restoreSidebarDrawerHost(sidebar) {
+    if (!sidebar || sidebar.dataset.cloudMobileDrawerDocked !== '1') return;
+    const slot = _sidebarDrawerReturnSlot;
+    _sidebarDrawerReturnSlot = null;
+    delete sidebar.dataset.cloudMobileDrawerDocked;
+    if (!slot?.parent?.isConnected || sidebar.parentNode !== document.body) return;
+    if (slot.nextSibling && slot.nextSibling.parentNode === slot.parent) {
+      slot.parent.insertBefore(sidebar, slot.nextSibling);
+    } else {
+      slot.parent.appendChild(sidebar);
+    }
+  }
+
+  function toggleSidebarDrawer(withFolderView) {
+    if (!shouldUseSidebarDrawer()) return false;
+    const { sidebar } = _sidebarElements();
+    if (sidebar?.classList?.contains('cloud-mobile-tree-screen-open') || sidebar?.classList?.contains('open')) closeSidebarDrawer();
+    else openSidebarDrawer(withFolderView);
+    return true;
+  }
+
+  function _ensureTreeScreenHeader() {
+    const sidebar = document.getElementById('sidebar');
+    if (!shouldUseSidebarDrawer()) return;
+    if (!sidebar) return;
+    let header = sidebar.querySelector('.cloud-mobile-tree-screen-header');
+    if (!header) {
+      header = document.createElement('div');
+      header.className = 'cloud-mobile-tree-screen-header';
+      sidebar.prepend(header);
+    }
+    if (header.dataset.cloudMobileHeaderVersion !== '2') {
+      header.dataset.cloudMobileHeaderVersion = '2';
+      header.replaceChildren();
+
+      const menuButton = document.createElement('button');
+      menuButton.type = 'button';
+      menuButton.className = 'cloud-mobile-tree-menu';
+      menuButton.title = 'メニュー';
+      menuButton.setAttribute('aria-label', 'メニューを開く');
+      menuButton.innerHTML = _iconHtml('menu', 20, '≡');
+      _bindMobileControlActivation(menuButton, _openMobileMenuSheet);
+
+      const title = document.createElement('strong');
+      title.className = 'cloud-mobile-tree-screen-title';
+      title.textContent = 'フォルダツリー / BETA';
+
+      const actions = document.createElement('div');
+      actions.className = 'cloud-mobile-tree-actions';
+
+      const userButton = document.createElement('button');
+      userButton.type = 'button';
+      userButton.className = 'cloud-mobile-tree-user';
+      userButton.title = 'ユーザー';
+      _bindMobileControlActivation(userButton, (event) => _openSettingsPanel('ユーザー', event));
+
+      const settingsButton = document.createElement('button');
+      settingsButton.type = 'button';
+      settingsButton.className = 'cloud-mobile-tree-settings';
+      settingsButton.title = '設定';
+      settingsButton.setAttribute('aria-label', '設定を開く');
+      settingsButton.innerHTML = _iconHtml('settings', 20, '⚙');
+      _bindMobileControlActivation(settingsButton, (event) => _openSettingsPanel('', event));
+
+      actions.appendChild(userButton);
+      actions.appendChild(settingsButton);
+      header.appendChild(menuButton);
+      header.appendChild(title);
+      header.appendChild(actions);
+    }
+    _refreshTreeHeaderUserIcon(header);
+  }
+
+  function _ensurePaneTreeBackButtons() {
+    if (!document.body) return;
+    document.querySelectorAll('.gb-pane-tabs').forEach((tabBar) => {
+      let button = Array.from(tabBar.children).find(el => el.classList?.contains('cloud-mobile-pane-tree-back'));
+      if (!button) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'cloud-mobile-pane-tree-back';
+        button.title = 'フォルダツリーへ戻る';
+        button.setAttribute('aria-label', 'フォルダツリーへ戻る');
+        button.innerHTML = _iconHtml('chevronLeft', 20, '＜');
+        button.addEventListener('pointerdown', (event) => {
+          event.stopPropagation();
+        });
+        _bindMobileControlActivation(button, _openSidebarFromMobileControl);
+        tabBar.insertBefore(button, tabBar.firstChild);
+      }
+      const paneId = tabBar.closest?.('.gb-pane')?.dataset?.paneId || 'pane';
+      button.dataset.e2eId = `cloud-mobile-pane-tree-back-${paneId}`;
+      button.hidden = !shouldUseSidebarDrawer();
+    });
+  }
+
+  function _installPaneBackButtonObserver() {
+    if (_paneBackObserverInstalled) return;
+    _paneBackObserverInstalled = true;
+    const root = document.getElementById('gb-layout-root') || document.body;
+    if (!root) return;
+    new MutationObserver(() => {
+      if (shouldUseSidebarDrawer()) _ensurePaneTreeBackButtons();
+    }).observe(root, { childList: true, subtree: true });
+  }
+
+  function _installEdgeSwipeBack() {
+    if (document.__MeldexCloudMobileEdgeSwipeInstalled) return;
+    document.__MeldexCloudMobileEdgeSwipeInstalled = true;
+    let swipe = null;
+
+    const reset = () => { swipe = null; };
+    const isBlockedTarget = (target) => !!target?.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay, .cloud-mobile-menu-overlay, .cloud-mobile-overflow-overlay, .cloud-conflict-resolver-overlay, [role="dialog"]');
+
+    document.addEventListener('pointerdown', (event) => {
+      if (!shouldUseSidebarDrawer() || _isTreeScreenOpen() || isBlockedTarget(event.target)) return;
+      if (event.pointerType === 'mouse') return;
+      if (event.clientX > EDGE_SWIPE_ZONE) return;
+      swipe = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        tracking: true,
+      };
+    }, { capture: true });
+
+    document.addEventListener('pointermove', (event) => {
+      if (!swipe || event.pointerId !== swipe.id) return;
+      const dx = event.clientX - swipe.x;
+      const dy = event.clientY - swipe.y;
+      if (dx > 16 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+        event.preventDefault();
+      }
+    }, { capture: true });
+
+    document.addEventListener('pointerup', (event) => {
+      if (!swipe || event.pointerId !== swipe.id) return;
+      const dx = event.clientX - swipe.x;
+      const dy = event.clientY - swipe.y;
+      const shouldOpen = dx >= EDGE_SWIPE_MIN_X && Math.abs(dy) <= EDGE_SWIPE_MAX_Y;
+      reset();
+      if (shouldOpen) _openSidebarFromMobileControl(event);
+    }, { capture: true });
+
+    document.addEventListener('pointercancel', reset, { capture: true });
+  }
+
+  function _activePaneType(pane) {
+    return pane?.tabs?.[pane.activeTabIndex]?.type || '';
+  }
+
+  function _isOutlinerPane(pane) {
+    const tabs = pane?.tabs || [];
+    return _activePaneType(pane) === 'outliner' || (tabs.length > 0 && tabs.every(tab => tab?.type === 'outliner'));
+  }
+
+  function _findMobileContentPane() {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
+    const panes = GBLayout.getAllPanes(GBLayout.root, { activeOnly: true });
+    return panes.find(pane => !_isOutlinerPane(pane)) || panes[0] || null;
+  }
+
+  function _collapseOutlinerColumns() {
+    if (!shouldUseSidebarDrawer()) return { changed: false, nextActivePaneId: '' };
+    if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') {
+      return { changed: false, nextActivePaneId: '' };
+    }
+    const panes = GBLayout.getAllPanes(GBLayout.root);
+    let changed = false;
+    for (const pane of panes) {
+      if (!_isOutlinerPane(pane)) continue;
+      const columnId = typeof GBLayout._findColumnAncestorId === 'function'
+        ? GBLayout._findColumnAncestorId(pane.id)
+        : '';
+      const targetInfo = columnId
+        ? GBLayout.findNode?.(GBLayout.root, columnId)
+        : GBLayout.findNode?.(GBLayout.root, pane.id);
+      const target = targetInfo?.node;
+      if (target && !target.collapsed) {
+        target.collapsed = true;
+        changed = true;
+      }
+    }
+    let nextActivePaneId = '';
+    const activeInfo = GBLayout.activePane ? GBLayout.findNode?.(GBLayout.root, GBLayout.activePane) : null;
+    if (activeInfo?.node && _isOutlinerPane(activeInfo.node)) {
+      const nextPane = _findMobileContentPane();
+      if (nextPane && nextPane.id !== GBLayout.activePane) {
+        nextActivePaneId = nextPane.id;
+      }
+    }
+    return { changed, nextActivePaneId };
+  }
+
+  function sanitizeLayoutForMobile() {
+    if (!shouldUseSidebarDrawer()) return;
+    if (_sanitizingLayout) return;
+    _sanitizingLayout = true;
+    try {
+      const keepSidebarOpen = document.getElementById('sidebar')?.classList?.contains('open');
+      const result = _collapseOutlinerColumns();
+      if (
+        result.nextActivePaneId &&
+        typeof GBLayout !== 'undefined' &&
+        typeof GBLayout.exportLayout === 'function' &&
+        typeof GBLayout.applyLayoutTree === 'function'
+      ) {
+        GBLayout.applyLayoutTree(GBLayout.exportLayout(), { activePaneId: result.nextActivePaneId, skipSave: true });
+      } else if (result.changed && typeof GBLayout !== 'undefined') {
+        GBLayout.render?.();
+      }
+      if (keepSidebarOpen) openSidebarDrawer(false);
+    } finally {
+      _sanitizingLayout = false;
+    }
+  }
+
+  function _scheduleLayoutSanitize() {
+    if (!shouldUseSidebarDrawer()) return;
+    setTimeout(sanitizeLayoutForMobile, 0);
+    setTimeout(sanitizeLayoutForMobile, 80);
+  }
+
+  function _installSidebarOverride() {
+    if (window.toggleSidebar?.__cloudMobileSidebarWrapped) return;
+    _desktopToggleSidebar = window.toggleSidebar || _desktopToggleSidebar;
+    const wrapped = function (withFolderView) {
+      if (toggleSidebarDrawer(withFolderView)) return;
+      return _desktopToggleSidebar?.apply(this, arguments);
+    };
+    wrapped.__cloudMobileSidebarWrapped = true;
+    window.toggleSidebar = wrapped;
+
+    const backdrop = document.getElementById('sidebar-backdrop');
+    backdrop?.addEventListener('click', (event) => {
+      if (!shouldUseSidebarDrawer()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      closeSidebarDrawer();
+    }, true);
+  }
+
+  function _installLayoutRenderHook() {
+    if (_layoutHookInstalled || typeof GBLayout === 'undefined' || typeof GBLayout.render !== 'function') return;
+    _layoutHookInstalled = true;
+    const originalRender = GBLayout.render;
+    GBLayout.render = function () {
+      const result = originalRender.apply(this, arguments);
+      _ensurePaneTreeBackButtons();
+      if (!_sanitizingLayout) setTimeout(sanitizeLayoutForMobile, 0);
+      return result;
+    };
+  }
+
+  function _installTreeScreenAutoClose() {
+    if (document.__MeldexCloudMobileTreeAutoCloseInstalled) return;
+    document.__MeldexCloudMobileTreeAutoCloseInstalled = true;
+    document.addEventListener('click', (event) => {
+      if (!shouldUseSidebarDrawer()) return;
+      const sidebar = document.getElementById('sidebar');
+      if (!sidebar?.classList?.contains('cloud-mobile-tree-screen-open')) return;
+      if (event.target?.closest?.('.tree-toggle, .tree-hover-btn, .tree-hover-btns, button, input, select, textarea')) return;
+      const row = event.target?.closest?.('.tree-node-row, .fav-item, .sidebar-item');
+      if (!row || !sidebar.contains(row)) return;
+      const node = row.closest?.('.tree-node');
+      const data = node?._nodeData || row._nodeData || null;
+      const type = String(data?.type || '').toLowerCase();
+      if (!data || type === 'folder') return;
+      setTimeout(closeSidebarDrawer, 180);
+    }, true);
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open')) {
+        closeSidebarDrawer();
+      }
+    });
+  }
+
+  function refreshCloudMobileViewport() {
+    if (!document.body) return;
+    const visualViewport = window.visualViewport || null;
+    const visibleHeight = Math.max(1, Math.round(visualViewport?.height || window.innerHeight || 1));
+    const offsetTop = Math.max(0, Math.round(visualViewport?.offsetTop || 0));
+    const innerHeight = Math.max(1, Math.round(window.innerHeight || visibleHeight));
+    const keyboardGap = visualViewport
+      ? Math.max(0, Math.round(innerHeight - visibleHeight - offsetTop))
+      : 0;
+    document.documentElement.style.setProperty('--cloud-visual-vh', `${visibleHeight}px`);
+    document.documentElement.style.setProperty('--cloud-visual-offset-top', `${offsetTop}px`);
+
+    const dropboxMode = _isDropboxMode();
+    const localMobileMode = !dropboxMode && _isLocalMobileUiAllowed();
+    const mobile = (dropboxMode || localMobileMode) && _isMobileViewport() && !_isSingleWindow();
+    const editingUiEnabled = isMobileEditingUiEnabled();
+    _setDatasetFlag('cloudMobile', mobile);
+    _setDatasetFlag('cloudMobileEditingUi', editingUiEnabled);
+    _setDatasetFlag('mobileUi', mobile);
+    _setDatasetFlag('mobileUiLocal', mobile && localMobileMode);
+    _setDatasetFlag('mobileEditingUi', editingUiEnabled);
+    _ensurePaneTreeBackButtons();
+    const keyboardOpen = mobile && (
+      visualViewport
+        ? (keyboardGap > KEYBOARD_THRESHOLD || (_isFocusedTextInput() && keyboardGap > 40))
+        : _isFocusedTextInput()
+    );
+    _setDatasetFlag('cloudMobileKeyboard', keyboardOpen);
+    const detail = {
+      mobile,
+      editingUiEnabled,
+      keyboardOpen,
+      visualHeight: visibleHeight,
+      offsetTop,
+      innerHeight,
+      keyboardGap,
+      singleWindow: _isSingleWindow(),
+      dropboxMode,
+      localMobileMode,
+    };
+    window.MeldexCloudMobileState = detail;
+    document.dispatchEvent(new CustomEvent('meldex-cloud-mobile-viewport', { detail }));
+    if (mobile) _scheduleLayoutSanitize();
+    else closeSidebarDrawer();
+  }
+
+  function _bind() {
+    _ensureTreeScreenHeader();
+    _ensurePaneTreeBackButtons();
+    _installSidebarOverride();
+    _installLayoutRenderHook();
+    _installTreeScreenAutoClose();
+    _installPaneBackButtonObserver();
+    _installEdgeSwipeBack();
+    refreshCloudMobileViewport();
+    window.addEventListener('resize', refreshCloudMobileViewport, { passive: true });
+    window.addEventListener('orientationchange', refreshCloudMobileViewport, { passive: true });
+    window.visualViewport?.addEventListener('resize', refreshCloudMobileViewport, { passive: true });
+    window.visualViewport?.addEventListener('scroll', refreshCloudMobileViewport, { passive: true });
+    if (media?.addEventListener) media.addEventListener('change', refreshCloudMobileViewport);
+    else media?.addListener?.(refreshCloudMobileViewport);
+    new MutationObserver(refreshCloudMobileViewport).observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-cloud-mode'],
+    });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _bind, { once: true });
+  else _bind();
+
+  window.MeldexCloudMobile = {
+    refresh: refreshCloudMobileViewport,
+    shouldUseSidebarDrawer,
+    isMobileEditingUiEnabled,
+    isSingleWindow: _isSingleWindow,
+    getState: () => ({ ...(window.MeldexCloudMobileState || {}) }),
+    openSidebar: openSidebarDrawer,
+    closeSidebar: closeSidebarDrawer,
+    toggleSidebarDrawer,
+    afterLayoutApplied: _scheduleLayoutSanitize,
+  };
+})();

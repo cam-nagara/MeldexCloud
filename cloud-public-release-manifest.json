@@ -1,0 +1,15 @@
+{
+  "type": "meldex-cloud-beta-static",
+  "generatedAt": "2026-05-07T00:47:09.717871+00:00",
+  "semver": "0.5.424",
+  "variant": "cloud-beta",
+  "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
+  "cloudBackupUrl": "",
+  "files": {
+    "Meldex.html": "b69ed0c25b0e8832c3641ef94f6dcfec3e9cd57d9e9d75362eff52724b9c648e",
+    "manifest.json": "540a12333910757bcf27946e93a1009257278558b11d16e4e2c70089c72342af",
+    "sw.js": "39d0038c8c766a221be61a4200fe40e62c55ecb0c134439d7f34c27c89c0b5da",
+    "gb-config.js": "20c4f8362533c20fcd2a083301a13b627d15323a1e736ddb4c8515b2dc09770b",
+    "gb-cloud-runtime-config.js": "5b2c3e595ac02999020d47f0246978ccb7d2c3ff2478ed9a456883d88ac0ab59"
+  }
+}

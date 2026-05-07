@@ -1,0 +1,25 @@
+Twemoji License
+
+Graphics (SVG / PNG files):
+  CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+
+Code (JavaScript source of twemoji package):
+  MIT License
+
+Attribution required:
+  Twemoji by Twitter, Inc. and contributors,
+  licensed under CC-BY 4.0.
+  https://github.com/twitter/twemoji
+
+Version embedded in this sprite: 14.0.2
+Sourced via: https://cdn.jsdelivr.net/gh/twitter/twemoji@v14.0.2/assets/svg/
+
+---
+
+CC-BY 4.0 summary:
+  You may share, copy, redistribute, adapt, remix, transform, and build upon
+  the material for any purpose, even commercially, under the following terms:
+  - Attribution: You must give appropriate credit, provide a link to the
+    license, and indicate if changes were made.
+
+Full text: https://creativecommons.org/licenses/by/4.0/legalcode

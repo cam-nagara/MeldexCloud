@@ -1,0 +1,281 @@
+/* ==============================
+   gb-format-popup.css
+   書式設定ポップアップ共通スタイル
+
+   仕様: app/docs/format-popup-ui-unification-plan.md §2-2-A（サイズ統一ルール）
+   全インタラクティブ要素の高さを 22px に統一する。
+   （2026-04-16 フェーズE-2 完了: 旧 .sn2-* エイリアスは全削除済み）
+   ============================== */
+
+.gb-fmt-popup {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-3);
+  background: var(--ui-popup-bg, var(--bg2));
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  font-size: var(--ui-font-12);
+  color: var(--fg);
+}
+
+/* モディファイア（フェーズE-2 で sn2-* から移行） */
+.gb-fmt-popup--colbulk { min-width: 220px; }
+.gb-fmt-popup--bulk-edit {
+  z-index: 10000;
+  min-width: 280px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.gb-fmt-popup--role-opts {
+  z-index: 10000;
+  min-width: 340px;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.gb-fmt-popup-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4); /* 8px ペア間 */
+}
+
+.gb-fmt-popup-row--specific {
+  border-top: 1px solid var(--border);
+  padding-top: var(--ui-space-3);
+}
+
+.gb-fmt-popup-row--wrap {
+  flex-wrap: wrap;
+  row-gap: var(--ui-space-3); /* 6px 縦方向 */
+}
+
+.gb-fmt-popup-row--bordered {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--ui-space-3);
+}
+
+/* ペア（ラベル+入力欄）グループ */
+.gb-fmt-popup-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1); /* 2px ペア内（密着） */
+}
+
+/* スウォッチ（背景色・文字色・枠線色・フチ色） */
+.gb-fmt-swatch,
+.gb-fmt-swatch-bg,
+.gb-fmt-swatch-fg {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+/* 文字色系スウォッチは対象要素の背景色を JS で反映する。透明時は共通背景色に戻す。 */
+.gb-fmt-swatch-fg {
+  font-weight: bold;
+  font-size: var(--ui-font-12);
+  background: var(--bg);
+}
+.gb-fmt-swatch-fg svg {
+  pointer-events: none;
+}
+
+.gb-fmt-swatch:disabled,
+.gb-fmt-swatch[disabled],
+.gb-fmt-swatch[aria-disabled="true"],
+.gb-fmt-swatch.is-disabled,
+.gb-fmt-swatch-bg:disabled,
+.gb-fmt-swatch-bg[disabled],
+.gb-fmt-swatch-bg[aria-disabled="true"],
+.gb-fmt-swatch-bg.is-disabled,
+.gb-fmt-swatch-fg:disabled,
+.gb-fmt-swatch-fg[disabled],
+.gb-fmt-swatch-fg[aria-disabled="true"],
+.gb-fmt-swatch-fg.is-disabled {
+  background: var(--ui-disabled-bg, #555) !important;
+  border-color: var(--ui-disabled-border, #666) !important;
+  color: var(--ui-disabled-fg, #888) !important;
+  filter: grayscale(1) saturate(0) !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}
+
+/* スウォッチサイズモディファイア（フェーズE-2 で旧 sn2-*--xs / swatch-sm から移行） */
+.gb-fmt-swatch--xs {
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+}
+.gb-fmt-swatch--sm {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+}
+
+/* 書式トグルボタン（B/I/U/S） */
+.gb-fmt-btn {
+  height: 22px;
+  min-width: 22px;
+  padding: 0 var(--ui-space-2);
+  box-sizing: border-box;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+}
+.gb-fmt-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ui-fg-strong);
+}
+.gb-fmt-btn:disabled,
+.gb-fmt-btn[disabled],
+.gb-fmt-btn[aria-disabled="true"],
+.gb-fmt-btn.is-disabled {
+  background: var(--ui-disabled-bg, #555) !important;
+  border-color: var(--ui-disabled-border, #666) !important;
+  color: var(--ui-disabled-fg, #888) !important;
+  filter: grayscale(1) saturate(0) !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}
+
+/* 数値入力（フォントサイズ等） */
+input.gb-fmt-num {
+  height: 22px;
+  width: 70px;
+  padding: 0 var(--ui-space-2);
+  box-sizing: border-box;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: var(--ui-font-12);
+  -moz-appearance: number-input;
+}
+/* スピンボックスは hover/focus でのみ表示（テーマは html の color-scheme で追従） */
+input.gb-fmt-num::-webkit-outer-spin-button,
+input.gb-fmt-num::-webkit-inner-spin-button {
+  -webkit-appearance: auto;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+input.gb-fmt-num:hover::-webkit-outer-spin-button,
+input.gb-fmt-num:hover::-webkit-inner-spin-button,
+input.gb-fmt-num:focus::-webkit-outer-spin-button,
+input.gb-fmt-num:focus::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
+.gb-fs-range-number {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  max-width: 100%;
+  min-width: 0;
+}
+.gb-fs-range-number__slider {
+  flex: 1 1 120px;
+  min-width: 90px;
+  width: 160px;
+  max-width: 100%;
+  accent-color: var(--ui-range-fill-bg, var(--accent));
+}
+.gb-fs-range-number__input {
+  flex: 0 0 auto;
+}
+
+/* テキスト入力（前/後） */
+.gb-fmt-text {
+  height: 22px;
+  width: 36px;
+  padding: 0 var(--ui-space-2);
+  box-sizing: border-box;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: var(--ui-font-12);
+}
+
+/* select（配置・折返・形状等） */
+.gb-fmt-sel {
+  height: 22px;
+  padding: 0 var(--ui-space-2);
+  box-sizing: border-box;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: var(--ui-font-12);
+}
+
+.gb-fmt-sel--font {
+  max-width: 170px;
+}
+
+/* ラベル（前/後/水平/垂直/px 等） */
+.gb-fmt-label {
+  font-family: var(--ui-muted-font, var(--ui-font, inherit));
+  font-size: var(--ui-font-12);
+  color: var(--fg2);
+  line-height: 1;
+  white-space: nowrap;
+}
+/* グループ見出しラベル（行頭の「ボード背景」「選択色」等）。
+   UI 共通ルールに合わせて通常ウェイト。min-width で整列、色は fg2（他の項目名と同じ）。 */
+.gb-fmt-label--group {
+  color: var(--fg2);
+  min-width: 5em;
+}
+
+/* リセットボタン（末尾に1個） */
+.gb-fmt-reset {
+  height: 22px;
+  padding: 0 var(--ui-space-3);
+  box-sizing: border-box;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  color: var(--fg2);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+  margin-left: auto; /* Row 2 の右端に寄せる */
+}
+.gb-fmt-reset:hover {
+  background: var(--bg);
+  color: var(--fg);
+}

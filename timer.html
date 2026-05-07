@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Meldex タイマー</title>
+<script src="/meldex-core.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+body { background: var(--bg, #1e1e1e); color: var(--fg, #d4d4d4); font-family: -apple-system, "Segoe UI", sans-serif; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
+#timer-controls { position: fixed; bottom: 12px; display: flex; gap: 8px; z-index: 10; }
+#timer-controls button { padding: 8px 20px; border: 1px solid var(--border, #333); border-radius: 6px; background: var(--bg3, #2d2d2d); color: var(--fg, #d4d4d4); cursor: pointer; font-size: 14px; }
+#timer-controls button:hover { background: var(--bg4, #3e3e3e); }
+#timer-controls button.active { background: var(--accent, #569cd6); color: #fff; }
+#timer-display { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
+#mode-selector { position: fixed; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 10; }
+#mode-selector button { padding: 4px 8px; border: 1px solid var(--border, #333); border-radius: 4px; background: var(--bg3, #2d2d2d); color: var(--fg2, #969696); cursor: pointer; font-size: 11px; }
+#mode-selector button.active { background: var(--accent, #569cd6); color: #fff; }
+#time-input { position: fixed; top: 8px; left: 8px; display: flex; gap: 4px; align-items: center; z-index: 10; font-size: 12px; color: var(--fg2); }
+#time-input input { width: 50px; padding: 3px; background: var(--bg, #1e1e1e); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; text-align: center; font-size: 12px; }
+canvas { max-width: 100%; max-height: 100%; }
+</style>
+</head>
+<body>
+
+<div id="time-input">
+  <input id="inp-h" type="number" min="0" max="99" value="0">h
+  <input id="inp-m" type="number" min="0" max="59" value="5">m
+  <input id="inp-s" type="number" min="0" max="59" value="0">s
+  <label style="margin-left:8px;"><input id="inp-countup" type="checkbox"> カウントアップ</label>
+</div>
+
+<div id="mode-selector">
+  <button class="active" data-mode="digital">デジタル</button>
+  <button data-mode="analog">アナログ</button>
+  <button data-mode="circle">円形</button>
+  <button data-mode="bar">バー</button>
+</div>
+
+<div id="timer-display">
+  <canvas id="timer-canvas"></canvas>
+</div>
+
+<div id="timer-controls">
+  <button id="btn-start" data-action="start">開始</button>
+  <button data-action="pause">一時停止</button>
+  <button data-action="reset">リセット</button>
+</div>
+
+<script>
+try { if (typeof inheritParentTheme === 'function') inheritParentTheme(); } catch {}
+
+let displayMode = 'digital';
+let timerRunning = false;
+let totalSeconds = 300; // 5分
+let elapsed = 0;
+let countUp = false;
+let timerInterval = null;
+let timerStarted = false;
+let timerStartMs = 0;
+let elapsedAtStart = 0;
+const canvas = document.getElementById('timer-canvas');
+const ctx = canvas.getContext('2d');
+
+function setDisplayMode(mode) {
+  displayMode = mode;
+  document.querySelectorAll('#mode-selector button').forEach(b => b.classList.toggle('active', b.textContent === {digital:'デジタル',analog:'アナログ',circle:'円形',bar:'バー'}[mode]));
+  drawTimer();
+}
+
+function getRemaining() { return countUp ? elapsed : Math.max(0, totalSeconds - elapsed); }
+function formatTime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return (h > 0 ? String(h).padStart(2,'0') + ':' : '') + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+}
+
+function drawTimer() {
+  const w = window.innerWidth, h = window.innerHeight - 80;
+  canvas.width = w; canvas.height = h;
+  const remaining = getRemaining();
+  const progress = totalSeconds > 0 ? (countUp ? elapsed / totalSeconds : remaining / totalSeconds) : 0;
+  const fg = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#d4d4d4';
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#569cd6';
+  const bg3 = getComputedStyle(document.documentElement).getPropertyValue('--bg3').trim() || '#2d2d2d';
+
+  ctx.clearRect(0, 0, w, h);
+
+  if (displayMode === 'digital') {
+    const size = Math.min(w / 4, h / 1.5);
+    ctx.font = `bold ${size}px monospace`;
+    ctx.fillStyle = fg;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(formatTime(remaining), w/2, h/2);
+  } else if (displayMode === 'analog') {
+    const r = Math.min(w, h) / 2.5;
+    const cx = w/2, cy = h/2;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.strokeStyle = bg3; ctx.lineWidth = 4; ctx.stroke();
+    // 進捗アーク
+    ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + Math.PI*2*progress); ctx.strokeStyle = accent; ctx.lineWidth = 8; ctx.stroke();
+    // 時刻テキスト
+    ctx.font = `bold ${r/2.5}px monospace`; ctx.fillStyle = fg; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(formatTime(remaining), cx, cy);
+  } else if (displayMode === 'circle') {
+    const r = Math.min(w, h) / 2.5;
+    const cx = w/2, cy = h/2;
+    // 背景円
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.fillStyle = bg3; ctx.fill();
+    // 進捗セクター
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + Math.PI*2*progress);
+    ctx.closePath(); ctx.fillStyle = accent; ctx.globalAlpha = 0.7; ctx.fill(); ctx.globalAlpha = 1;
+    // テキスト
+    ctx.font = `bold ${r/2.5}px monospace`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(formatTime(remaining), cx, cy);
+  } else if (displayMode === 'bar') {
+    const barH = Math.min(60, h / 4);
+    const barW = w * 0.8;
+    const x = (w - barW) / 2, y = h / 2 - barH / 2;
+    ctx.fillStyle = bg3; ctx.fillRect(x, y, barW, barH);
+    ctx.fillStyle = accent; ctx.fillRect(x, y, barW * progress, barH);
+    ctx.font = `bold ${barH * 0.7}px monospace`; ctx.fillStyle = fg; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(formatTime(remaining), w/2, y + barH/2);
+  }
+}
+
+function startTimer() {
+  if (timerRunning) return;
+  const h = parseInt(document.getElementById('inp-h').value) || 0;
+  const m = parseInt(document.getElementById('inp-m').value) || 0;
+  const s = parseInt(document.getElementById('inp-s').value) || 0;
+  const nextTotalSeconds = h * 3600 + m * 60 + s;
+  const nextCountUp = document.getElementById('inp-countup').checked;
+  if (!timerStarted || nextTotalSeconds !== totalSeconds || nextCountUp !== countUp || (!nextCountUp && elapsed >= nextTotalSeconds)) {
+    elapsed = 0;
+  }
+  totalSeconds = nextTotalSeconds;
+  countUp = nextCountUp;
+  if (totalSeconds <= 0 && !countUp) return;
+  timerRunning = true;
+  timerStarted = true;
+  elapsedAtStart = elapsed;
+  timerStartMs = Date.now();
+  const tick = () => {
+    elapsed = elapsedAtStart + Math.floor((Date.now() - timerStartMs) / 1000);
+    if (!countUp && elapsed >= totalSeconds) {
+      elapsed = totalSeconds;
+      clearInterval(timerInterval); timerRunning = false;
+      timerStarted = false;
+      // アラーム音
+      try { new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU').play().catch(()=>{}); } catch {}
+      if ('Notification' in window && Notification.permission === 'granted') new Notification('タイマー完了', { body: formatTime(totalSeconds) + ' 経過' });
+      document.title = '⏰ タイマー完了';
+      drawTimer();
+      return;
+    }
+    drawTimer();
+    document.title = formatTime(getRemaining()) + ' - タイマー';
+  };
+  tick();
+  timerInterval = setInterval(tick, 1000);
+}
+
+function pauseTimer() { clearInterval(timerInterval); timerRunning = false; }
+function resetTimer() { pauseTimer(); elapsed = 0; timerStarted = false; drawTimer(); document.title = 'Meldex タイマー'; }
+
+document.querySelectorAll('#mode-selector [data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => setDisplayMode(btn.dataset.mode));
+});
+document.querySelectorAll('#timer-controls [data-action]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const action = btn.dataset.action;
+    if (action === 'start') startTimer();
+    else if (action === 'pause') pauseTimer();
+    else if (action === 'reset') resetTimer();
+  });
+});
+
+window.addEventListener('resize', drawTimer);
+drawTimer();
+</script>
+</body>
+</html>

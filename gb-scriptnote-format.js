@@ -1,0 +1,571 @@
+/* gb-scriptnote-format.js: シナリオエディタ専用フォーマット */
+
+const SCRIPTNOTE_FILE_TYPE = 'meldex-scriptnote';
+const SCRIPTNOTE_FILE_VERSION = 1;
+
+function isScriptNoteFileDoc(value) {
+  return !!(value && typeof value === 'object' && value.fileType === SCRIPTNOTE_FILE_TYPE);
+}
+
+function _scriptNoteNormalizeLayout(layout) {
+  return ['manga', 'drama', 'afureko', 'stage'].includes(layout) ? layout : 'manga';
+}
+
+function convertScenarioDocToScriptNoteDoc(sourceDoc = {}, options = {}) {
+  const src = typeof cloneSeData === 'function' ? cloneSeData(sourceDoc) : JSON.parse(JSON.stringify(sourceDoc || {}));
+  const settings = typeof ensureScenarioSettings === 'function'
+    ? ensureScenarioSettings(src)
+    : (src.settings || {});
+  const layoutMode = _scriptNoteNormalizeLayout(
+    options.layoutMode
+      || settings.noteLayoutMode
+      || (typeof _guessScenarioNoteLayoutMode === 'function' ? _guessScenarioNoteLayoutMode(settings.modeName || '') : 'manga')
+  );
+  const rows = Array.isArray(src.rows) ? src.rows.map((row, idx) => ({
+    id: row?.id || `sn-row-${idx + 1}`,
+    role: typeof getScenarioCharacterDisplayValue === 'function'
+      ? getScenarioCharacterDisplayValue(row || {})
+      : String(row?.pageSetting || row?.character || ''),
+    status: String(row?.status || ''),
+    text: String(row?.text || ''),
+    columns: row?.columns && typeof row.columns === 'object'
+      ? JSON.parse(JSON.stringify(row.columns))
+      : {},
+  })) : [];
+  return {
+    fileType: SCRIPTNOTE_FILE_TYPE,
+    version: SCRIPTNOTE_FILE_VERSION,
+    title: String(src.title || ''),
+    layoutMode,
+    editor: {
+      viewMode: settings.viewMode || 'horizontal',
+      wrapMode: settings.wrapMode ?? true,
+      textWidth: settings.textWidth ?? 20,
+      baseTextLineHeightH: settings.lineHeightH ?? settings.lineHeight ?? 1.5,
+      baseTextLineHeightV: settings.lineHeightV ?? settings.lineHeight ?? 1.5,
+      baseTextLetterSpacingH: settings.letterSpacingH ?? settings.letterSpacing ?? 0.02,
+      baseTextLetterSpacingV: settings.letterSpacingV ?? settings.letterSpacing ?? 0.02,
+      fontH: settings.fontH || '',
+      fontV: settings.fontV || '',
+      colors: settings.colors || null,
+    },
+    characters: Array.isArray(src.characters) ? src.characters : [],
+    characterDb: Array.isArray(src.characterDb) ? src.characterDb : [],
+    notes: Array.isArray(src.notes) ? src.notes : [],
+    rows,
+    source: {
+      importedFrom: options.sourcePath || '',
+      modeName: settings.modeName || '',
+    }
+  };
+}
+
+function convertScriptNoteDocToScenarioDoc(scriptDoc = {}, options = {}) {
+  const baseDoc = typeof createEmptyDoc === 'function' ? createEmptyDoc() : { rows: [], notes: [], characters: [], characterDb: [], settings: {} };
+  const nextDoc = { ...baseDoc };
+  nextDoc.title = String(scriptDoc.title || '');
+  nextDoc.rows = [];
+  nextDoc.notes = Array.isArray(scriptDoc.notes) ? scriptDoc.notes.map(note => ({ ...note })) : [];
+  nextDoc.characters = Array.isArray(scriptDoc.characters) ? scriptDoc.characters.map(ch => ({ ...ch })) : [];
+  nextDoc.characterDb = Array.isArray(scriptDoc.characterDb) ? [...scriptDoc.characterDb] : [];
+  nextDoc.settings = typeof ensureScenarioSettings === 'function' ? ensureScenarioSettings(nextDoc) : (nextDoc.settings || {});
+  const editor = scriptDoc.editor || {};
+  nextDoc.settings.viewMode = editor.viewMode || 'horizontal';
+  nextDoc.settings.wrapMode = editor.wrapMode ?? true;
+  nextDoc.settings.textWidth = editor.textWidth ?? 20;
+  nextDoc.settings.plotWidth = nextDoc.settings.textWidth;
+  const lineHeightH = editor.baseTextLineHeightH ?? editor.baseTextLineHeight ?? 1.5;
+  const lineHeightV = editor.baseTextLineHeightV ?? editor.baseTextLineHeight ?? lineHeightH;
+  const letterSpacingH = editor.baseTextLetterSpacingH ?? editor.baseTextLetterSpacing ?? 0.02;
+  const letterSpacingV = editor.baseTextLetterSpacingV ?? editor.baseTextLetterSpacing ?? letterSpacingH;
+  nextDoc.settings.lineHeightH = lineHeightH;
+  nextDoc.settings.lineHeightV = lineHeightV;
+  nextDoc.settings.letterSpacingH = letterSpacingH;
+  nextDoc.settings.letterSpacingV = letterSpacingV;
+  nextDoc.settings.lineHeight = nextDoc.settings.viewMode === 'vertical' ? lineHeightV : lineHeightH;
+  nextDoc.settings.letterSpacing = nextDoc.settings.viewMode === 'vertical' ? letterSpacingV : letterSpacingH;
+  nextDoc.settings.fontH = editor.fontH || '';
+  nextDoc.settings.fontV = editor.fontV || '';
+  nextDoc.settings.colors = editor.colors || null;
+  nextDoc.settings.noteLayoutMode = _scriptNoteNormalizeLayout(scriptDoc.layoutMode);
+  nextDoc.settings.editorSurface = 'note';
+  if (scriptDoc?.source?.modeName) nextDoc.settings.modeName = scriptDoc.source.modeName;
+
+  (Array.isArray(scriptDoc.rows) ? scriptDoc.rows : []).forEach((item, idx) => {
+    const role = String(item?.role || '').trim();
+    const row = typeof createRow === 'function' ? createRow('', '', String(item?.text || '')) : {
+      id: item?.id || `row-${idx + 1}`,
+      pageSetting: '',
+      character: '',
+      text: String(item?.text || '')
+    };
+    row.id = item?.id || row.id;
+    if (item?.status) row.status = String(item.status);
+    if (item?.columns && typeof item.columns === 'object') {
+      row.columns = JSON.parse(JSON.stringify(item.columns));
+    }
+    if (typeof syncScenarioRowPageSettingFromCharacter === 'function') syncScenarioRowPageSettingFromCharacter(row, role);
+    else if (row) row.character = role;
+    nextDoc.rows.push(row);
+  });
+
+  return nextDoc;
+}
+
+function suggestScriptNotePath(path = '', title = '') {
+  const base = String(path || '').trim();
+  if (base) return base.replace(/\.(json|csv|xlsx|xls)$/i, '') + '.scriptnote.json';
+  const safeTitle = String(title || '無題シナリオ').trim() || '無題シナリオ';
+  return safeTitle + '.scriptnote.json';
+}
+
+function _sn2GetActiveSaveContext() {
+  const comp = typeof getActiveScriptNoteComponent === 'function' ? getActiveScriptNoteComponent() : null;
+  const editor = comp?._editor?.doc
+    ? comp._editor
+    : (typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null);
+  if (!editor?.doc) return null;
+  return { comp, editor };
+}
+
+function _sn2NormalizeScriptNoteFileName(name = '') {
+  const raw = String(name || '').trim();
+  const base = raw || '無題シナリオ';
+  if (/\.scriptnote\.json$/i.test(base)) return base;
+  if (/\.json$/i.test(base)) return base.replace(/\.json$/i, '.scriptnote.json');
+  return base.replace(/\.[^./\\]+$/i, '') + '.scriptnote.json';
+}
+
+function _sn2JoinPath(folder = '', fileName = '') {
+  const f = String(folder || '').replace(/[\\/]+$/g, '');
+  const n = String(fileName || '').replace(/^[\\/]+/g, '');
+  return f ? f + '/' + n : n;
+}
+
+function _sn2SetActiveScriptNotePath(ctx, targetPath) {
+  const { comp, editor } = ctx || {};
+  if (!editor || !targetPath) return;
+  const oldPath = editor._path || '';
+  if (editor._saveTimer) {
+    clearTimeout(editor._saveTimer);
+    editor._saveTimer = null;
+  }
+  if (oldPath && oldPath !== targetPath && typeof _sn2Editors !== 'undefined') delete _sn2Editors[oldPath];
+  editor._path = targetPath;
+  editor._dirty = false;
+  if (typeof createScriptNoteRowIdSet === 'function') editor._lastSavedRowIds = createScriptNoteRowIdSet(editor.doc);
+  if (typeof _sn2Editors !== 'undefined') _sn2Editors[targetPath] = editor;
+  const label = typeof getScriptNoteLabelFromPath === 'function'
+    ? getScriptNoteLabelFromPath(targetPath, editor.doc?.title || '')
+    : (targetPath.split('/').pop() || targetPath).replace(/\.scriptnote\.json$/i, '');
+  if (comp?.state) {
+    comp.state.scenarioPath = targetPath;
+    comp.state.label = label;
+  }
+  if (typeof GBTabs !== 'undefined' && comp?.tabId) GBTabs.setTabLabel?.(comp.tabId, label);
+  if (typeof historySetScope === 'function' && typeof editor._historyScope === 'function') historySetScope(editor._historyScope());
+  if (typeof startAutoVersion === 'function') startAutoVersion(targetPath, 'file');
+}
+
+async function _sn2FetchCssWithImports(url, seen = new Set()) {
+  const resolved = new URL(url, window.location.href);
+  const seenKey = resolved.href.replace(/[?#].*$/, '');
+  if (seen.has(seenKey)) return '';
+  seen.add(seenKey);
+  const fetchUrl = new URL(resolved.href);
+  fetchUrl.searchParams.set('_', String(Date.now()));
+  const res = await fetch(fetchUrl.href, { cache: 'no-store' });
+  if (!res.ok) return '';
+  const css = await res.text();
+  const importRe = /@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?\s*;/g;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = importRe.exec(css)) !== null) {
+    out += css.slice(last, match.index);
+    const importUrl = match[1] || '';
+    if (/^(https?:|data:)/i.test(importUrl)) out += match[0];
+    else out += await _sn2FetchCssWithImports(new URL(importUrl, resolved).href, seen);
+    last = importRe.lastIndex;
+  }
+  out += css.slice(last);
+  return out;
+}
+
+async function saveCurrentScriptNoteAs(path) {
+  const targetPath = String(path || '').trim();
+  if (!targetPath) return false;
+  const ctx = _sn2GetActiveSaveContext();
+  if (!ctx) {
+    if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
+    return false;
+  }
+  const { editor } = ctx;
+  if (typeof editor._syncAllFromDom === 'function') editor._syncAllFromDom();
+  const exportDoc = typeof editor.collectDoc === 'function'
+    ? editor.collectDoc()
+    : (typeof serializeScriptNoteDoc === 'function' ? serializeScriptNoteDoc(editor.doc) : editor.doc);
+  await apiPut('/file?path=' + encodeURIComponent(targetPath), {
+    content: JSON.stringify(exportDoc, null, 2)
+  });
+  _sn2SetActiveScriptNotePath(ctx, targetPath);
+  return true;
+}
+
+async function promptSaveCurrentScriptNoteAs() {
+  const ctx = _sn2GetActiveSaveContext();
+  if (!ctx) {
+    if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
+    return false;
+  }
+  const srcPath = ctx.editor._path || ctx.comp?.state?.scenarioPath || '';
+  const defaultName = _sn2NormalizeScriptNoteFileName(srcPath ? srcPath.split('/').pop() : (ctx.editor.doc?.title || ''));
+  const srcFolder = srcPath.includes('/') ? srcPath.substring(0, srcPath.lastIndexOf('/')) : '';
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal" style="min-width:420px;max-width:520px;">
+      <h3>シナリオ形式として保存</h3>
+      <div class="field"><label>ファイル名</label><input id="sn-save-name" type="text" value="${typeof esc === 'function' ? esc(defaultName) : defaultName}" style="width:100%;"></div>
+      <div class="field"><label>保存先フォルダ</label>
+        <div id="sn-save-folder-display" style="padding:6px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+          <span id="sn-save-folder-label">${typeof esc === 'function' ? esc(srcFolder || '(ルート)') : (srcFolder || '(ルート)')}</span>
+          <span style="margin-left:auto;opacity:0.5;">${lucide('chevronDown', 10)}</span>
+        </div>
+        <div id="sn-save-folder-tree" style="display:none;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;margin-top:4px;background:var(--bg);"></div>
+      </div>
+      <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button id="sn-save-cancel" class="btn">キャンセル</button>
+        <button id="sn-save-ok" class="btn btn-primary">保存</button>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    const nameInput = overlay.querySelector('#sn-save-name');
+    const folderDisplay = overlay.querySelector('#sn-save-folder-display');
+    const folderTree = overlay.querySelector('#sn-save-folder-tree');
+    const folderLabel = overlay.querySelector('#sn-save-folder-label');
+    let selectedFolder = srcFolder;
+    const escCss = (value) => (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
+    const selectFolder = (path, label) => {
+      selectedFolder = path;
+      folderLabel.textContent = label || path || '(ルート)';
+      folderTree.style.display = 'none';
+    };
+    const createRow = (name, path, depth, icon = 'folder') => {
+      const row = document.createElement('div');
+      row.dataset.snFolderPath = path;
+      row.dataset.depth = String(depth);
+      row.style.cssText = `padding:4px 8px 4px ${8 + depth * 16}px;cursor:pointer;font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:4px;border-radius:3px;`;
+      if (path === selectedFolder) {
+        row.dataset.selected = '1';
+        row.style.background = 'var(--accent)';
+        row.style.color = '#fff';
+      }
+      const iconWrap = document.createElement('span');
+      iconWrap.innerHTML = typeof lucide === 'function' ? lucide(icon, 12) : '';
+      row.appendChild(iconWrap);
+      const label = document.createElement('span');
+      label.textContent = name || '(ルート)';
+      row.appendChild(label);
+      row.addEventListener('click', () => {
+        folderTree.querySelectorAll('[data-sn-folder-path]').forEach(el => {
+          delete el.dataset.selected;
+          el.style.background = '';
+          el.style.color = '';
+        });
+        row.dataset.selected = '1';
+        row.style.background = 'var(--accent)';
+        row.style.color = '#fff';
+        selectFolder(path, name || '(ルート)');
+      });
+      row.addEventListener('mouseenter', () => { if (!row.dataset.selected) row.style.background = 'var(--bg3)'; });
+      row.addEventListener('mouseleave', () => { if (!row.dataset.selected) row.style.background = ''; });
+      return row;
+    };
+    const expandFolder = async (parentPath, depth) => {
+      const parentRow = folderTree.querySelector(`[data-sn-folder-path="${escCss(parentPath)}"]`);
+      let insertAfter = parentRow || null;
+      try {
+        const data = await apiFetch('/browse?path=' + encodeURIComponent(parentPath) + '&folders_only=1&sort=name&order=asc');
+        const folders = (Array.isArray(data) ? data : (data.items || [])).filter(i => i.type === 'folder');
+        for (const f of folders) {
+          if (folderTree.querySelector(`[data-sn-folder-path="${escCss(f.path)}"]`)) continue;
+          const row = createRow(f.name, f.path, depth + 1);
+          const toggle = document.createElement('span');
+          toggle.style.cssText = 'cursor:pointer;opacity:0.65;flex-shrink:0;';
+          toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
+          toggle.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const expanded = toggle.dataset.expanded === '1';
+            if (expanded) {
+              const d = Number(row.dataset.depth || 0);
+              let next = row.nextElementSibling;
+              while (next && Number(next.dataset.depth || 0) > d) {
+                const rm = next;
+                next = next.nextElementSibling;
+                rm.remove();
+              }
+              toggle.dataset.expanded = '0';
+              toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
+              return;
+            }
+            await expandFolder(f.path, depth + 1);
+            toggle.dataset.expanded = '1';
+            toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronDown', 10) : 'v';
+          });
+          row.prepend(toggle);
+          if (insertAfter?.nextSibling) folderTree.insertBefore(row, insertAfter.nextSibling);
+          else folderTree.appendChild(row);
+          insertAfter = row;
+        }
+      } catch {
+        if (!folderTree.children.length) folderTree.innerHTML = '<div style="padding:8px;color:var(--red);">フォルダ一覧の取得に失敗</div>';
+      }
+    };
+    // フォルダツリー展開
+    folderDisplay.addEventListener('click', async () => {
+      if (folderTree.style.display !== 'none') { folderTree.style.display = 'none'; return; }
+      folderTree.style.display = 'block';
+      folderTree.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
+      folderTree.innerHTML = '';
+      folderTree.appendChild(createRow('(ルート)', '', 0, 'home'));
+      await expandFolder('', 0);
+    });
+    const doSave = async () => {
+      const name = _sn2NormalizeScriptNoteFileName(nameInput.value);
+      if (!name) return;
+      nameInput.value = name;
+      const targetPath = _sn2JoinPath(selectedFolder, name);
+      try {
+        await saveCurrentScriptNoteAs(targetPath);
+        if (typeof saveLastView === 'function') {
+          const label = typeof getScriptNoteLabelFromPath === 'function'
+            ? getScriptNoteLabelFromPath(targetPath)
+            : targetPath.split('/').pop().replace(/\.scriptnote\.json$/i, '').replace(/\.\w+$/, '');
+          saveLastView({ type: 'scriptnote', label, path: targetPath });
+        }
+        overlay.remove();
+        if (typeof showStatus === 'function') showStatus('シナリオ形式で保存しました', false, { showSaveDialog: true });
+        resolve(true);
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (err?.message || err), true);
+      }
+    };
+    overlay.querySelector('#sn-save-ok').addEventListener('click', doSave);
+    overlay.querySelector('#sn-save-cancel').addEventListener('click', () => { overlay.remove(); resolve(false); });
+    nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSave(); });
+    nameInput.focus(); nameInput.select();
+  });
+}
+
+// シナリオエディタの現在ビュー（フィルタ・テーマ・縦/横/折返し設定すべて反映済み）を
+// 操作不可の静的 HTML として保存する。embed-font: Regular の woff2 を data URI で
+// 埋め込んで自己完結させる。
+async function exportCurrentScriptNoteAsHtml() {
+  if (typeof _sn2GetActiveEditor !== 'function') {
+    if (typeof showStatus === 'function') showStatus('シナリオエディタが利用できません', true);
+    return;
+  }
+  const editor = _sn2GetActiveEditor();
+  if (!editor?.doc) {
+    if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
+    return;
+  }
+  // 最新状態でレンダリング
+  try { editor._syncAllFromDom?.(); } catch {}
+  try { editor._render(); } catch {}
+  // _render() は縦書きモードで requestAnimationFrame 内で行の style.height と
+  // style.minWidth を設定する。クローン前に rAF を 2 回待ってこれらの JS 同期
+  // 処理が完了してから DOM スナップショットを取る (これを待たないと行高さが
+  // 未設定のままクローンされ、エクスポート HTML でテキストが潰れる)。
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const scroll = editor.host?.querySelector('.sn2-scroll');
+  if (!scroll) {
+    if (typeof showStatus === 'function') showStatus('レンダリング結果が見つかりません', true);
+    return;
+  }
+
+  // ステータス表示
+  if (typeof showStatus === 'function') showStatus('HTML を生成中...');
+
+  // クローンしてインタラクティブな属性を除去
+  const clone = scroll.cloneNode(true);
+  // フローティング UI / ドラッグハンドル系を除去
+  clone.querySelectorAll('.sn2-row-bulk-bar, .sn2-handle-zone, .sn2-handle, .sn2-add-row, .sn2-add-col-btn').forEach(el => el.remove());
+  // contenteditable / inputs / data-action を完全除去
+  clone.querySelectorAll('[contenteditable]').forEach(el => {
+    el.removeAttribute('contenteditable');
+    el.setAttribute('data-readonly', '1');
+  });
+  clone.querySelectorAll('[data-action], [data-sn-action]').forEach(el => {
+    el.removeAttribute('data-action');
+    el.removeAttribute('data-sn-action');
+  });
+  clone.querySelectorAll('input, textarea, select, button').forEach(el => {
+    if (el.tagName === 'BUTTON') {
+      // タイプボタンは見た目だけ残してクリック不可に
+      el.setAttribute('disabled', 'disabled');
+      el.style.pointerEvents = 'none';
+    } else {
+      const span = document.createElement('span');
+      span.className = el.className;
+      span.textContent = el.value || el.textContent || '';
+      el.replaceWith(span);
+    }
+  });
+  clone.querySelectorAll('[tabindex]').forEach(el => el.removeAttribute('tabindex'));
+  clone.querySelectorAll('[draggable]').forEach(el => el.removeAttribute('draggable'));
+
+  // span[data-ruby] / .auto-link[data-ruby] を HTML 標準の <ruby><rt> に置換する。
+  // 元の実装は ::after 擬似要素で描画していたが、iOS Safari や Gmail/Dropbox の
+  // 内蔵ブラウザでは ::after ルビの位置計算が壊れて二重描画になるケースがあった。
+  // ネイティブ ruby は全ブラウザで安定して縦書きルビが描画される。
+  clone.querySelectorAll('[data-ruby]').forEach(el => {
+    const rubyText = el.getAttribute('data-ruby');
+    if (!rubyText) return;
+    const baseText = el.textContent || '';
+    const ruby = document.createElement('ruby');
+    ruby.appendChild(document.createTextNode(baseText));
+    const rt = document.createElement('rt');
+    rt.textContent = rubyText;
+    ruby.appendChild(rt);
+    // auto-link も含め、クラス名は保持しない (ネイティブ ruby に任せる)
+    el.replaceWith(ruby);
+  });
+
+  // CSS を取得（gb-fonts.css は woff2 埋め込みに置き換えるので除外）
+  // cache-buster + no-store でブラウザ・中間キャッシュを完全回避する
+  let editorCss = '';
+  try {
+    editorCss = await _sn2FetchCssWithImports('gb-scriptnote-editor.css');
+  } catch {}
+
+  // CSS 変数を :root から収集
+  const rootStyle = getComputedStyle(document.documentElement);
+  const varNames = [
+    '--bg', '--bg2', '--bg3', '--bg4',
+    '--fg', '--fg2', '--accent', '--accent2',
+    '--border', '--selection',
+    '--ui-header-fg', '--ui-header-bg',
+    '--ui-header-font',
+    '--ui-toolbar-fg', '--ui-toolbar-bg',
+    '--ui-toolbar-font', '--ui-muted-font',
+    '--ui-hover-fg', '--ui-hover-bg',
+    '--ui-fg-strong',
+    '--ui-selection-fg', '--ui-selection-bg',
+    '--ui-range-fill-bg', '--ui-range-track-bg',
+    '--ui-scrollbar-track-bg', '--ui-scrollbar-thumb-bg', '--ui-scrollbar-thumb-hover-bg',
+    '--ui-font', '--ui-font-size',
+  ];
+  const varDecls = varNames
+    .map(v => {
+      const val = rootStyle.getPropertyValue(v).trim();
+      return val ? `${v}: ${val};` : '';
+    })
+    .filter(Boolean)
+    .join(' ');
+
+  // Noto Sans JP Regular を data URI で埋め込み（自己完結 HTML 化）
+  let fontFaceCss = '';
+  try {
+    const r = await fetch('fonts/NotoSansJP-Regular.woff2');
+    if (r.ok) {
+      const buf = await r.arrayBuffer();
+      const bin = new Uint8Array(buf);
+      let s = '';
+      for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i]);
+      const b64 = btoa(s);
+      fontFaceCss = `@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: 400; src: url('data:font/woff2;base64,${b64}') format('woff2'); }`;
+    }
+  } catch {}
+
+  const title = (editor.doc.title || 'シナリオ').toString();
+  const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
+  const escHtml = (s) => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="dark light">
+<title>${escHtml(title)}</title>
+<style>
+${fontFaceCss}
+:root { ${varDecls} }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg, #1e1e1e);
+  color: var(--fg, #d4d4d4);
+  font-family: var(--ui-font, 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif);
+  font-size: var(--ui-font-size, 15px);
+}
+${editorCss}
+/* 静的エクスポート用の上書き: 操作 UI を完全に隠す */
+/* .sn2-scroll は通常 flex:1 で親に張り付くが、エクスポートではコンテンツに
+   ぴったり合わせて body 直下に並べる。縦書き row-reverse でもはみ出さない
+   よう幅を fit-content にしてブラウザのスクロールに任せる */
+.sn2-scroll {
+  flex: none !important;
+  overflow: visible !important;
+  height: auto !important;
+  max-height: none !important;
+  width: fit-content !important;
+  max-width: none !important;
+}
+.sn2-row-bulk-bar, .sn2-handle, .sn2-handle-zone, .sn2-add-row, .sn2-add-col-btn,
+.sn2-resizer, .sn2-col-resizer, .sn2-row-resizer { display: none !important; }
+.sn2-row { cursor: default !important; }
+*, *::before, *::after { user-select: text !important; -webkit-user-select: text !important; }
+[disabled] { cursor: default !important; opacity: 1 !important; }
+
+/* iOS Safari / Gmail/Dropbox 内蔵ブラウザ向けの互換 CSS */
+/* ネイティブ ruby を iOS でも正しく縦書きにレンダリングさせる */
+ruby {
+  ruby-position: over;
+}
+.sn2-scroll.sn2-vertical ruby {
+  ruby-position: inter-character;
+}
+rt {
+  font-size: 0.55em;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.75;
+}
+/* iOS で縦書きのグリフが一部横になる対策。writing-mode を -webkit- プレフィックス
+   でも指定し、text-combine-upright で数字・記号を縦中横にする */
+.sn2-scroll.sn2-vertical .sn2-text,
+.sn2-scroll.sn2-vertical .sn2-gutter,
+.sn2-scroll.sn2-vertical .sn2-custom-text {
+  -webkit-writing-mode: vertical-rl;
+  -webkit-text-orientation: upright;
+}
+.sn2-scroll.sn2-vertical .sn2-role-btn {
+  -webkit-writing-mode: vertical-rl;
+  -webkit-text-orientation: mixed;
+}
+.sn2-tcy,
+.sn2-tcy-wide {
+  -webkit-text-combine: horizontal;
+}
+</style>
+</head>
+<body>
+${clone.outerHTML}
+</body>
+</html>`;
+
+  // OS ネイティブの「名前を付けて保存」ダイアログをサーバー側 (Meldex.py)
+  // で開き、選択されたパスに直接書き込む。
+  if (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveText === 'function') {
+    await MeldexExportSave.saveText(html, {
+      title: safeTitle,
+      extension: '.html',
+      dialogTitle: 'HTMLとして保存',
+      filetypes: [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
+      bom: true,
+      okMessage: 'HTML として保存しました',
+      errorMessage: 'HTML の保存に失敗しました',
+    });
+  }
+}

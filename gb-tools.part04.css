@@ -1,0 +1,399 @@
+/* === Note styling: slash command menu === */
+#slash-menu {
+  position: fixed;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  padding: 4px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 100;
+}
+#slash-menu .slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--fg);
+}
+#slash-menu .slash-item:hover,
+#slash-menu .slash-item.selected {
+  background: var(--bg4);
+}
+#slash-menu .slash-item .slash-icon {
+  color: var(--fg2);
+  width: 18px;
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   共通ドロップダウン
+   ============================================================ */
+.gb-select {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  outline: none;
+}
+.gb-select:hover { background: var(--bg4); }
+.gb-select:focus { border-color: var(--accent); }
+.gb-select-sm { font-size: 11px; padding: 1px 4px; }
+
+/* ============================================================
+   共通コンテキストメニュー
+   ============================================================ */
+.gb-context-menu {
+  position: fixed;
+  z-index: 200;
+  /* ポップアップ視認性向上: 背景は --ui-popup-bg（テーマで変更可）、未定義時は --ui-bg-control (bg3) にフォールバック。
+     border を --ui-border-strong で強化、外側に強い影 + 内側に薄い白ハイライトを重ねて
+     ダークテーマでも境界が明瞭に見えるようにする */
+  background: var(--ui-popup-bg, var(--ui-bg-control));
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-md);
+  padding: var(--ui-space-2) 0;
+  min-width: 160px;
+  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
+  font-size: var(--ui-font-13);
+}
+/* 詳細度を上げて gb-tools.css:1081 の `.gb-context-menu > div { padding: 4px 12px }` に勝つ。
+   そうしないと padding が上書きされ、sep は 1px + padding で太い横線になり、item も意図外の padding になる。*/
+.gb-context-menu > .gb-context-menu-item,
+.gb-context-menu-item {
+  padding: 5px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+  color: var(--ui-fg-default);
+  white-space: nowrap;
+}
+/* 背景が bg3 に上がったので、hover は控えめの accent 混色に寄せてコントラストを確保 */
+.gb-context-menu-item:hover { background: var(--ui-bg-control-active); }
+.gb-context-menu-item.disabled { opacity: 0.55; pointer-events: none; color: var(--ui-fg-muted); }
+.gb-context-menu > .gb-context-menu-sep,
+.gb-context-menu-sep {
+  height: 1px;
+  padding: 0;
+  background: var(--ui-border-strong);
+  margin: 3px var(--ui-space-4);
+}
+.gb-context-menu-item .menu-icon { width: 16px; flex-shrink: 0; color: var(--ui-fg-muted); }
+.gb-context-menu-item .menu-shortcut { margin-left: auto; color: var(--ui-fg-muted); font-size: var(--ui-font-11); }
+.gb-context-menu-item.has-submenu::after {
+  content: '▶';
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg2);
+}
+/* 危険項目 (列削除等) */
+.gb-context-menu-item.danger { color: var(--ui-danger); }
+.gb-context-menu-item.danger:hover { background: rgba(244,71,71,0.15); }
+
+/* ノート表: 選択セルの周囲に出す行/列追加コントロール */
+.note-table-cell-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 10020;
+  pointer-events: none;
+}
+.note-table-cell-frame {
+  position: fixed;
+  border: var(--page-cell-edit-outline-width, 2px) solid var(--page-cell-edit-outline-color, var(--accent));
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--page-cell-edit-outline-color, var(--accent)) 35%, transparent);
+  pointer-events: none;
+}
+.note-table-cell-plus,
+.note-table-cell-menu-btn {
+  position: fixed;
+  z-index: 10021;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  background: var(--page-table-control-bg, var(--bg2));
+  border: var(--page-table-control-border-width, 1px) solid var(--page-table-control-border, var(--border));
+  color: var(--page-table-control-fg, var(--fg2));
+  font-family: var(--page-table-control-font, inherit);
+  font-weight: var(--page-table-control-bold, normal);
+  font-style: var(--page-table-control-italic, normal);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px var(--page-table-control-shadow, rgba(0,0,0,0.25));
+  user-select: none;
+  pointer-events: auto;
+}
+.note-table-cell-plus {
+  border-radius: 999px;
+  font-size: 16px;
+}
+.note-table-cell-menu-btn {
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.note-table-cell-plus:hover,
+.note-table-cell-menu-btn:hover {
+  background: var(--page-table-control-hover-bg, var(--bg3));
+  color: var(--page-table-control-hover-fg, var(--fg));
+  border-color: var(--page-table-control-hover-border, var(--page-table-control-border, var(--border)));
+}
+/* メニュー内リネーム入力欄 */
+.gb-menu-rename-row {
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg-app);
+}
+.gb-menu-rename-row input {
+  width: 100%;
+  padding: var(--ui-space-2) var(--ui-space-4);
+  background: var(--ui-bg-panel);
+  color: var(--ui-fg-default);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  font-size: var(--ui-font-12);
+  box-sizing: border-box;
+  outline: none;
+}
+.gb-menu-rename-row input:focus {
+  border-color: var(--ui-accent);
+}
+
+/* ============================================================
+   空状態表示
+   ============================================================ */
+.gb-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  color: var(--fg2);
+  gap: 12px;
+  min-height: 200px;
+}
+.gb-empty-icon { opacity: 0.3; }
+.gb-empty-message { font-size: 15px; font-weight: bold; }
+.gb-empty-hint { font-size: 12px; opacity: 0.6; }
+
+/* ============================================================
+   ローディングスピナー
+   ============================================================ */
+.gb-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: gb-spin 0.6s linear infinite;
+  vertical-align: middle;
+}
+@keyframes gb-spin { to { transform: rotate(360deg); } }
+
+.gb-loading-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-global-loading {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 8px 12px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--bg2) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.gb-global-loading[hidden] { display: none !important; }
+.gb-global-loading .gb-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+#sb-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+@media (max-width: 768px) {
+  .gb-global-loading {
+    bottom: 12px;
+    max-width: calc(100vw - 24px);
+  }
+}
+
+/* ==============================
+   CSVビューア
+   ============================== */
+.csv-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.csv-table th, .csv-table td {
+  border: 1px solid var(--border); padding: 4px 8px; text-align: left;
+  white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+}
+.csv-table th {
+  background: var(--bg3); font-weight: bold; position: sticky; top: 0; z-index: 1; cursor: pointer;
+}
+.csv-table td:hover { background: var(--bg3); }
+.csv-row-num {
+  width: 40px; text-align: center; color: var(--fg2); font-size: 11px;
+  background: var(--bg2); user-select: none;
+}
+.csv-cell-input {
+  width: 100%; padding: 2px 4px; font-size: 13px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--accent); border-radius: 2px; outline: none; box-sizing: border-box;
+}
+/* Part 2-1: CSV セル選択状態 */
+.csv-cell-selected { outline: 2px solid var(--accent); }
+
+/* === タッチフレンドリー: pointer:coarse === */
+@media (pointer: coarse) {
+  /* Part 3-2: DB行選択チェックボックス */
+  .row-select-cb { opacity: 0.5; }
+  /* Part 3-3: キャンバスノードリサイズハンドル */
+  .bd-resize.is-visible { opacity: 0.7; }
+  /* Part 3-7: コードブロックコピーボタン */
+  .copy-btn { opacity: 0.5; }
+  /* Part 1-1: ツリーホバーボタンは選択状態では固定表示しない */
+  /* Part 1-6: ギャラリーカード「...」ボタン */
+  .card-more-btn { display: block !important; }
+  /* テーブル行「...」ボタン */
+  .entity-row-more-btn { opacity: 0.85 !important; pointer-events: auto !important; }
+  /* Part 1-7: 付箋ノート「...」メニューボタン */
+  .note-more-btn { display: block !important; }
+}
+
+/* Part 1-6: ギャラリーカード「...」ボタン */
+.card-more-btn { display: none; }
+.gallery-card:hover .card-more-btn { display: block; }
+
+/* テーブル行「...」ボタン */
+.entity-row-more-btn {
+  position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; cursor: pointer;
+  color: var(--fg2); background: var(--bg2); border-radius: 3px; font-size: 14px; user-select: none;
+  opacity: 0; pointer-events: none; transition: opacity 0.1s, background 0.1s, color 0.1s;
+  z-index: 2;
+}
+.entity-row-more-btn:hover { background: var(--bg3); color: var(--fg); }
+.entity-row-more-btn svg { width: 12px; height: 12px; display: block; }
+#pivot-table tr:hover td.col-entity .entity-row-more-btn,
+#pivot-table td.col-entity:focus-within .entity-row-more-btn {
+  opacity: 1; pointer-events: auto;
+}
+
+/* Part 1-7: 付箋ノート「...」メニューボタン */
+.note-more-btn { display: none; }
+.ann-note:hover .note-more-btn { display: block; }
+
+/* ボタンプロパティ */
+.db-action-btn {
+  padding: 3px 10px; font-size: 12px; background: var(--accent); color: var(--ui-fg-strong);
+  border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.db-action-btn:hover { opacity: 0.85; }
+.db-action-btn:active { opacity: 0.7; }
+
+/* マルチソースリレーション */
+.msr-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.msr-tag {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: var(--bg3); border-radius: 3px;
+  font-size: 12px; cursor: pointer;
+  padding: 1px 6px 1px 2px;
+}
+.msr-tag:hover { background: var(--bg4); }
+.msr-badge {
+  font-size: 10px; padding: 0 4px; border-radius: 2px;
+  color: var(--ui-fg-strong); font-weight: bold; white-space: nowrap;
+}
+.msr-badge-0 { background: var(--db-msr-badge-0-bg, var(--accent)); }
+.msr-badge-1 { background: var(--db-msr-badge-1-bg, var(--blue)); }
+.msr-badge-2 { background: var(--db-msr-badge-2-bg, var(--green)); }
+.msr-badge-3 { background: var(--db-msr-badge-3-bg, var(--orange)); }
+.msr-badge-4 { background: var(--db-msr-badge-4-bg, var(--red)); }
+
+/* チャットプロパティ */
+.chat-prop-link:hover { background: var(--bg4) !important; }
+.db-chat-add-btn:hover { background: var(--bg4) !important; color: var(--fg) !important; }
+
+.gb-prop-layout-toolbar,
+.gb-prop-group-title { grid-column: 1 / -1; }
+.gb-prop-layout-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
+.gb-prop-group-title { margin: 8px 0 2px; padding-bottom: 3px; border-bottom: 1px solid var(--border); color: var(--fg2); font-size: 12px; }
+.entry-prop-card.layout-editing { border-color: var(--border); }
+.gb-prop-hide-btn { align-self: flex-start; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--fg2); cursor: pointer; }
+
+.gb-image-cell { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 3px; border: 1px dashed transparent; border-radius: 4px; cursor: pointer; }
+.gb-image-cell-empty { color: var(--fg2); border-color: var(--border); }
+.gb-image-thumb-stack { display: inline-flex; align-items: center; min-width: 64px; }
+.gb-image-thumb { width: 48px; height: 48px; object-fit: cover; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); margin-left: -10px; }
+.gb-image-thumb:first-child { margin-left: 0; }
+.gb-image-more { margin-left: 4px; padding: 1px 6px; border-radius: 10px; background: var(--bg4); color: var(--fg2); font-size: 11px; }
+.gb-cell-dropzone-active { border-color: var(--accent) !important; outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.gb-image-gallery-modal { width: min(820px, 92vw); max-height: 86vh; }
+.gb-image-gallery-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.gb-image-gallery-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; min-height: 160px; max-height: 56vh; overflow: auto; }
+.gb-image-gallery-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); overflow: hidden; }
+.gb-image-gallery-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--bg3); }
+.gb-image-gallery-meta { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
+.gb-image-gallery-actions { display: flex; gap: 4px; }
+.gb-image-gallery-empty { grid-column: 1 / -1; display: grid; place-items: center; border: 1px dashed var(--border); border-radius: 6px; color: var(--fg2); }
+
+.form-view,
+.gb-form-view { flex-direction: column; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
+.gb-form-toolbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.gb-form-editor { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 12px; padding: 12px; min-height: 0; }
+.gb-form-field-palette,
+.gb-form-preview,
+.gb-form-answer { border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); padding: 12px; }
+.gb-form-field-palette { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.gb-form-prop-row label { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.gb-form-prop-row span,
+.gb-form-type { margin-left: auto; color: var(--fg2); font-size: 11px; }
+.gb-form-fields-editor { display: flex; flex-direction: column; gap: 10px; }
+.gb-form-field-editor-row { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg); }
+.gb-form-field-head,
+.gb-form-field-actions { display: flex; align-items: center; gap: 4px; }
+.gb-form-field-head { justify-content: space-between; font-weight: 600; }
+.gb-form-submit-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.gb-form-answer { max-width: 720px; margin: 16px auto; display: flex; flex-direction: column; gap: 12px; }
+.gb-form-input-row { display: flex; flex-direction: column; gap: 5px; }
+.gb-form-input-label { font-weight: 600; }
+.gb-form-input-label[data-required="1"]::after { content: " *"; color: var(--red); }
+.gb-form-input-desc { color: var(--fg2); font-size: 12px; }
+.gb-form-input-row input,
+.gb-form-input-row select { padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
+.gb-form-submit-message { color: var(--accent); min-height: 18px; }
+@media (max-width: 760px) {
+  .gb-form-editor { grid-template-columns: 1fr; }
+  .gb-form-submit-editor { grid-template-columns: 1fr; }
+}

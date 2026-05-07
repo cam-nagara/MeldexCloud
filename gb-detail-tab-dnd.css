@@ -1,0 +1,20 @@
+/* オプションパネル内タブの並べ替え */
+#detail-tab-bar .detail-tab[draggable="true"] {
+  cursor: grab;
+}
+
+#detail-tab-bar .detail-tab[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+#detail-tab-bar .detail-tab.dragging {
+  opacity: 0.45;
+}
+
+#detail-tab-bar .detail-tab.drag-over-left {
+  box-shadow: inset 3px 0 0 var(--ui-accent, var(--accent));
+}
+
+#detail-tab-bar .detail-tab.drag-over-right {
+  box-shadow: inset -3px 0 0 var(--ui-accent, var(--accent));
+}

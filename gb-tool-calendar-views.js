@@ -1,0 +1,1149 @@
+/* ==============================
+   gb-tool-calendar-views.js: CalendarComponent描画・CRUD・モーダル
+   gb-tool-calendar.js のプロトタイプ拡張
+   ============================== */
+
+// === 月表示 ===
+CalendarComponent.prototype._renderMonth = function() {
+  const el = this._contentEl;
+  const y = this._date.getFullYear(), m = this._date.getMonth();
+  const rawFirst = new Date(y, m, 1).getDay();
+  const firstDay = (rawFirst - this._startDay + 7) % 7;
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const todayStr = this._localDateStr();
+  let html = '<div class="gb-cal-month">';
+  const dayNames = this._getDayNames();
+  dayNames.forEach((d, i) => {
+    const dow = (this._startDay + i) % 7;
+    html += `<div class="gb-cal-month-header" data-cal-dow="${dow}">${d}</div>`;
+  });
+  const prevDays = new Date(y, m, 0).getDate();
+  const prevM = m === 0 ? 12 : m, prevY = m === 0 ? y - 1 : y;
+  for (let i = firstDay - 1; i >= 0; i--) { const day = prevDays - i; const ds = `${prevY}-${String(prevM).padStart(2,'0')}-${String(day).padStart(2,'0')}`; html += this._monthDayCell(ds, day, ds === todayStr, true); }
+  for (let d = 1; d <= daysInMonth; d++) { const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; html += this._monthDayCell(ds, d, ds === todayStr, false); }
+  const total = firstDay + daysInMonth, rem = (7 - total % 7) % 7;
+  const nextM = m + 2 > 12 ? 1 : m + 2, nextY = m + 2 > 12 ? y + 1 : y;
+  for (let i = 1; i <= rem; i++) { const ds = `${nextY}-${String(nextM).padStart(2,'0')}-${String(i).padStart(2,'0')}`; html += this._monthDayCell(ds, i, ds === todayStr, true); }
+  html += '</div>';
+  el.innerHTML = html;
+  // イベント委譲（前回リスナーを除去してから追加）
+  if (el._calClickHandler) el.removeEventListener('click', el._calClickHandler);
+  el._calClickHandler = (e) => {
+    const evEl = e.target.closest('.gb-cal-day-event');
+    if (evEl) { e.stopPropagation(); const eid = evEl.dataset.eventId; const tid = evEl.dataset.taskId; if (eid) this._openEventInPanel(eid); else if (tid) this._showTaskModal(tid); return; }
+    const dayEl = e.target.closest('.gb-cal-day');
+    if (dayEl) this._onDayClick(dayEl.dataset.date);
+  };
+  el.addEventListener('click', el._calClickHandler);
+  // 月表示イベントのdragstart（日付間D&D移動用）
+  el.querySelectorAll('.gb-cal-day-event[data-event-id]').forEach(evEl => {
+    evEl.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/x-cal-event', evEl.dataset.eventId);
+      e.dataTransfer.effectAllowed = 'move';
+      evEl.style.opacity = '0.4';
+    });
+    evEl.addEventListener('dragend', () => { evEl.style.opacity = ''; });
+  });
+  // 月表示D&D（日セルへのドロップ）
+  el.querySelectorAll('.gb-cal-day').forEach(dayEl => {
+    dayEl.addEventListener('dragover', (e) => { e.preventDefault(); dayEl.style.outline = '2px solid var(--cal-accent, var(--accent))'; });
+    dayEl.addEventListener('dragleave', () => { dayEl.style.outline = ''; });
+    dayEl.addEventListener('drop', (e) => { e.preventDefault(); dayEl.style.outline = ''; this._onMonthDayDrop(e, dayEl.dataset.date); });
+  });
+};
+
+CalendarComponent.prototype._eventIntersectsDay = function(ev, dateStr) {
+  if (!ev?.start) return false;
+  const dayStart = new Date(dateStr + 'T00:00');
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const evStart = new Date(ev.start);
+  const evEnd = ev.end ? new Date(ev.end) : new Date(evStart.getTime() + 3600000);
+  return evStart < dayEnd && evEnd > dayStart;
+};
+
+CalendarComponent.prototype._eventSegmentForDay = function(ev, dateStr) {
+  if (!ev?.start) return null;
+  const dayStart = new Date(dateStr + 'T00:00');
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const evStart = new Date(ev.start);
+  const evEnd = ev.end ? new Date(ev.end) : new Date(evStart.getTime() + 3600000);
+  if (!(evStart < dayEnd && evEnd > dayStart)) return null;
+  const segStart = evStart > dayStart ? evStart : dayStart;
+  const segEnd = evEnd < dayEnd ? evEnd : dayEnd;
+  const startH = segStart.getHours() + segStart.getMinutes() / 60;
+  let endH = segEnd.getHours() + segEnd.getMinutes() / 60;
+  if (segEnd >= dayEnd) endH = 24;
+  if (endH <= startH) endH = Math.min(24, startH + 0.25);
+  return { dayStart, segStart, segEnd, startH, endH };
+};
+
+CalendarComponent.prototype._sanitizeEventColor = function(color) {
+  const raw = String(color || '').trim();
+  if (!raw) return 'var(--cal-event-bg, var(--cal-accent, var(--accent)))';
+  if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(raw)) return raw;
+  if (/^var\(--[-_a-zA-Z0-9]+\)$/.test(raw)) return raw;
+  return 'var(--cal-event-bg, var(--cal-accent, var(--accent)))';
+};
+
+CalendarComponent.prototype._monthDayCell = function(dateStr, dayNum, isToday, isOther) {
+  const dayEvents = this._events.filter(e => this._eventIntersectsDay(e, dateStr) && this._isCalVisible(e));
+  const dayTasks = this._tasks.filter(t => t.due_date === dateStr);
+  const dow = this._parseLocalDate(dateStr).getDay();
+  let html = `<div class="gb-cal-day${isToday?' gb-cal-today':''}${isOther?' gb-cal-other-month':''}" data-date="${dateStr}" data-cal-dow="${dow}">`;
+  html += `<div class="gb-cal-day-num">${dayNum}</div>`;
+  dayEvents.forEach(e => {
+    const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(e, 14) : '';
+    html += `<div class="gb-cal-day-event" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}"><span class="gb-cal-event-title">${esc(e.title)}</span>${avatars}</div>`;
+  });
+  dayTasks.forEach(t => {
+    const pc = {urgent:'var(--red)',high:'var(--orange)',medium:'var(--blue)',low:'var(--cal-control-bg, var(--bg3))'}[t.priority] || 'var(--cal-control-bg, var(--bg3))';
+    html += `<div class="gb-cal-day-event" data-task-id="${t.id}" style="background:${pc};color:var(--cal-event-fg, #fff);" title="${esc(t.title)}">${lucide('square', 10)} ${esc(t.title)}</div>`;
+  });
+  return html + '</div>';
+};
+
+CalendarComponent.prototype._onDayClick = function(dateStr) {
+  if (this._view === 'month') {
+    this._openEventInPanel(null, dateStr + 'T00:00', dateStr + 'T23:59', true);
+  } else {
+    this._date = this._parseLocalDate(dateStr); this.setView('day');
+  }
+};
+
+CalendarComponent.prototype._snapshotEventLocal = function(eventId) {
+  const ev = (this._events || []).find(x => x.id === eventId);
+  return ev ? JSON.parse(JSON.stringify(ev)) : null;
+};
+
+CalendarComponent.prototype._applyEventLocal = function(eventId, patch) {
+  const ev = (this._events || []).find(x => x.id === eventId);
+  if (!ev) return null;
+  Object.assign(ev, patch || {});
+  return ev;
+};
+
+CalendarComponent.prototype._restoreEventLocal = function(snapshot) {
+  if (!snapshot?.id) return;
+  const idx = (this._events || []).findIndex(x => x.id === snapshot.id);
+  if (idx >= 0) this._events[idx] = snapshot;
+};
+
+CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
+  const eventId = e.dataTransfer.getData('application/x-cal-event');
+  if (!eventId) return;
+  const ev = this._events.find(x => x.id === eventId);
+  if (!ev) return;
+  const oldStart = ev.start || '', timePart = oldStart.includes('T') ? oldStart.substring(10) : 'T00:00';
+  const newStart = dateStr + timePart;
+  let newEnd = '';
+  if (ev.end) {
+    const dur = new Date(ev.end) - new Date(oldStart);
+    newEnd = this._localDateTimeStr(new Date(new Date(newStart).getTime() + dur));
+  }
+  if (newStart === oldStart && (!ev.end || newEnd === ev.end)) return;
+  const before = this._snapshotEventLocal(eventId);
+  try {
+    this._pushUndo('イベント移動');
+    this._applyEventLocal(eventId, { start: newStart, end: newEnd || ev.end || '' });
+    this._render();
+    await apiPut('/cal/events/' + eventId, { start: newStart, end: newEnd || undefined });
+    await this._loadEvents(); this._render();
+  } catch {
+    this._restoreEventLocal(before);
+    this._render();
+    this._showStatus('イベント移動に失敗', true);
+  }
+};
+
+// === 週表示 ===
+CalendarComponent.prototype._timedEventSegmentsForDay = function(dateStr) {
+  const segments = [];
+  (this._events || []).forEach(ev => {
+    if (!ev.start || ev.all_day || !this._isCalVisible(ev)) return;
+    const seg = this._eventSegmentForDay(ev, dateStr);
+    if (!seg) return;
+    segments.push({
+      ev,
+      dateStr,
+      segStart: seg.segStart,
+      startH: seg.startH,
+      endH: Math.max(seg.startH + 0.25, seg.endH),
+    });
+  });
+  return segments.sort((a, b) => (a.startH - b.startH) || (b.endH - a.endH));
+};
+
+CalendarComponent.prototype._allDayEventsForDay = function(dateStr) {
+  return (this._events || [])
+    .filter(ev => ev?.all_day && this._isCalVisible(ev) && this._eventIntersectsDay(ev, dateStr))
+    .sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')) || String(a.title || '').localeCompare(String(b.title || '')));
+};
+
+CalendarComponent.prototype._allDayStripHtml = function(dateStrs) {
+  const cols = Array.isArray(dateStrs) && dateStrs.length ? dateStrs : [];
+  if (!cols.length) return '';
+  let html = `<div class="gb-cal-all-day-strip" style="display:grid;grid-template-columns:60px repeat(${cols.length}, minmax(0,1fr));border-bottom:1px solid var(--cal-grid-line, var(--border));">`;
+  html += '<div class="gb-cal-week-time" style="padding-top:6px;">終日</div>';
+  cols.forEach(dateStr => {
+    html += `<div class="gb-cal-all-day-cell" data-date="${dateStr}" style="min-height:30px;padding:2px;border-left:1px solid var(--cal-grid-line, var(--border));">`;
+    this._allDayEventsForDay(dateStr).forEach(ev => {
+      const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : '';
+      html += `<div class="gb-cal-day-event gb-cal-all-day-event" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}"><span class="gb-cal-event-title">${esc(ev.title || '')}</span>${avatars}</div>`;
+    });
+    html += '</div>';
+  });
+  return html + '</div>';
+};
+
+CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
+  rootEl.querySelectorAll('.gb-cal-all-day-event[data-event-id]').forEach(evEl => {
+    evEl.addEventListener('click', (e) => { e.stopPropagation(); this._openEventInPanel(evEl.dataset.eventId); });
+    evEl.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/x-cal-move', JSON.stringify({ id: evEl.dataset.eventId, startH: 0, allDay: true }));
+      e.dataTransfer.effectAllowed = 'move';
+      evEl.style.opacity = '0.4';
+    });
+    evEl.addEventListener('dragend', () => { evEl.style.opacity = ''; });
+  });
+  rootEl.querySelectorAll('.gb-cal-all-day-cell').forEach(cell => {
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.12)'; });
+    cell.addEventListener('dragleave', () => { cell.style.background = ''; });
+    cell.addEventListener('drop', (e) => {
+      e.preventDefault(); cell.style.background = '';
+      const d = e.dataTransfer.getData('application/x-cal-move');
+      if (!d) return;
+      const { id } = JSON.parse(d);
+      const ev = this._events.find(x => x.id === id);
+      if (!ev) return;
+      const dateStr = cell.dataset.date;
+      const before = this._snapshotEventLocal(id);
+      this._pushUndo('イベント移動');
+      this._applyEventLocal(id, { start: dateStr + 'T00:00', end: dateStr + 'T23:59', all_day: 1 });
+      this._render();
+      apiPut('/cal/events/' + id, { start: dateStr + 'T00:00', end: dateStr + 'T23:59', all_day: 1 })
+        .then(() => this._loadEvents())
+        .then(() => this._render())
+        .catch(() => {
+          this._restoreEventLocal(before);
+          this._render();
+          this._showStatus('イベント移動に失敗', true);
+        });
+    });
+  });
+};
+
+CalendarComponent.prototype._layoutTimedEventSegments = function(segments) {
+  const out = [];
+  let group = [];
+  let groupEnd = -1;
+  const flush = () => {
+    if (!group.length) return;
+    const laneEnds = [];
+    group.forEach(item => {
+      let lane = laneEnds.findIndex(end => end <= item.startH);
+      if (lane < 0) lane = laneEnds.length;
+      laneEnds[lane] = item.endH;
+      item._overlapLane = lane;
+    });
+    const laneCount = Math.max(1, laneEnds.length);
+    group.forEach(item => {
+      const visibleLane = Math.min(item._overlapLane, 5);
+      const visibleCount = Math.min(laneCount, 6);
+      out.push({
+        ...item,
+        overlapLane: visibleLane,
+        overlapCount: visibleCount,
+      });
+    });
+    group = [];
+    groupEnd = -1;
+  };
+  (segments || []).forEach(item => {
+    if (!group.length || item.startH < groupEnd) {
+      group.push(item);
+      groupEnd = Math.max(groupEnd, item.endH);
+    } else {
+      flush();
+      group.push(item);
+      groupEnd = item.endH;
+    }
+  });
+  flush();
+  return out;
+};
+
+CalendarComponent.prototype._renderTimedEventSegmentsForDay = function(rootEl, dateStr) {
+  const segments = this._layoutTimedEventSegments(this._timedEventSegmentsForDay(dateStr));
+  segments.forEach(seg => {
+    const cell = rootEl.querySelector(`.gb-cal-week-cell[data-date="${dateStr}"][data-hour="${Math.floor(seg.startH)}"]`);
+    if (!cell) return;
+    const card = this._createEventCard(seg.ev, seg.segStart, seg.startH, seg.endH, seg);
+    cell.appendChild(card);
+  });
+};
+
+CalendarComponent.prototype._renderWeek = function() {
+  const el = this._contentEl;
+  const start = new Date(this._date);
+  start.setDate(start.getDate() - ((start.getDay() - this._startDay + 7) % 7));
+  const today = this._localDateStr();
+  const dayNames = this._getDayNames();
+  const dateStrs = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start); d.setDate(d.getDate() + i);
+    dateStrs.push(this._localDateStr(d));
+  }
+  let html = this._allDayStripHtml(dateStrs) + '<div class="gb-cal-week"><div></div>';
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start); d.setDate(d.getDate() + i);
+    const ds = this._localDateStr(d);
+    const dow = d.getDay();
+    html += `<div class="gb-cal-week-header" data-cal-dow="${dow}" data-date="${ds}"${ds===today?' data-today="1"':''}>${dayNames[i]} ${d.getDate()}</div>`;
+  }
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="gb-cal-week-time">${h}:00</div>`;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start); d.setDate(d.getDate() + i);
+      html += `<div class="gb-cal-week-cell" data-date="${this._localDateStr(d)}" data-hour="${h}"></div>`;
+    }
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start); d.setDate(d.getDate() + i);
+    this._renderTimedEventSegmentsForDay(el, this._localDateStr(d));
+  }
+  this._bindAllDayStripEvents(el);
+  this._initWeekDrag(el);
+  this._syncNowLineTimer();
+};
+
+// === 日表示 ===
+CalendarComponent.prototype._renderDay = function() {
+  const el = this._contentEl;
+  const ds = this._localDateStr(this._date);
+  let html = this._allDayStripHtml([ds]) + '<div style="display:grid;grid-template-columns:60px 1fr;">';
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="gb-cal-week-time">${h}:00</div>`;
+    html += `<div class="gb-cal-week-cell" data-date="${ds}" data-hour="${h}"></div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  this._renderTimedEventSegmentsForDay(el, ds);
+  this._bindAllDayStripEvents(el);
+  this._initWeekDrag(el);
+  this._syncNowLineTimer();
+};
+
+// === イベントカード生成 ===
+CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, endH, layout) {
+  const card = document.createElement('div');
+  card.className = 'gb-cal-week-event gb-cal-day-event';
+  card.dataset.eventId = ev.id;
+  card.dataset.calendarId = ev.calendar_id || '_calendar';
+  card.style.background = this._sanitizeEventColor(ev.color);
+  card.style.top = ((startH % 1) * 40) + 'px';
+  card.style.height = Math.max(20, (endH - startH) * 40) + 'px';
+  card.style.position = 'absolute';
+  const lane = Math.max(0, layout?.overlapLane || 0);
+  const count = Math.max(1, layout?.overlapCount || 1);
+  const offset = lane * 12;
+  const rightReserve = 18 + Math.max(0, count - lane - 1) * 12;
+  card.style.left = (2 + offset) + 'px';
+  card.style.right = rightReserve + 'px';
+  card.style.zIndex = String(2 + lane);
+  card.innerHTML = `<span class="gb-cal-event-title">${esc(ev.title || '')}</span>${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : ''}`;
+  card.title = ev.title + '\n' + (ev.start||'').substring(11,16) + '–' + (ev.end||'').substring(11,16);
+  card.addEventListener('click', (e) => { e.stopPropagation(); this._openEventInPanel(ev.id); });
+  // リサイズハンドル
+  const resBot = document.createElement('div'); resBot.className = 'gb-cal-ev-resize-bottom';
+  const resTop = document.createElement('div'); resTop.className = 'gb-cal-ev-resize-top';
+  card.appendChild(resTop); card.appendChild(resBot);
+  resBot.addEventListener('pointerdown', (e) => { this._handleResize(e, card, ev, evStart, startH, 'bottom'); });
+  resTop.addEventListener('pointerdown', (e) => { this._handleResize(e, card, ev, evStart, startH, 'top'); });
+  // D&D
+  card.draggable = true;
+  card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-cal-move', JSON.stringify({ id: ev.id, startH })); e.dataTransfer.effectAllowed = 'move'; card.style.opacity = '0.4'; });
+  card.addEventListener('dragend', () => { card.style.opacity = ''; });
+  return card;
+};
+
+CalendarComponent.prototype._handleResize = function(e, card, ev, evStart, startH, direction) {
+  e.stopPropagation(); e.preventDefault();
+  const sy = e.clientY, origTop = parseFloat(card.style.top), origH = card.offsetHeight;
+  // 15分刻み: 40px = 1時間、10px = 15分
+  const snap15 = (px) => Math.round(px / 10) * 10;
+  document.body.style.userSelect = 'none';
+  const onMove = (e2) => {
+    if (direction === 'bottom') card.style.height = Math.max(10, snap15(origH + e2.clientY - sy)) + 'px';
+    else { const dy = snap15(e2.clientY - sy); card.style.top = (origTop + dy) + 'px'; card.style.height = Math.max(10, origH - dy) + 'px'; }
+  };
+  const snap15min = (h) => Math.round(h * 4) / 4; // 15分単位に丸め
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp);
+    document.body.style.userSelect = ''; card.style.touchAction = '';
+    this._pushUndo('イベントリサイズ');
+    const minDurationMs = 15 * 60000;
+    const originalStart = new Date(ev.start || evStart);
+    const originalEnd = ev.end ? new Date(ev.end) : new Date(originalStart.getTime() + 3600000);
+    if (direction === 'bottom') {
+      const newEndH = snap15min(startH + card.offsetHeight / 40);
+      const ne = new Date(evStart); ne.setHours(Math.floor(newEndH), (newEndH % 1) * 60);
+      if (ne <= originalStart) ne.setTime(originalStart.getTime() + minDurationMs);
+      apiPut('/cal/events/' + ev.id, { end: this._localDateTimeStr(ne) }).then(() => { this._loadEvents().then(() => this._render()); });
+    } else {
+      const newStartH = snap15min(Math.floor(startH) + parseFloat(card.style.top) / 40);
+      const ns = new Date(evStart); ns.setHours(Math.floor(newStartH), (newStartH % 1) * 60);
+      if (ns >= originalEnd) ns.setTime(originalEnd.getTime() - minDurationMs);
+      apiPut('/cal/events/' + ev.id, { start: this._localDateTimeStr(ns) }).then(() => { this._loadEvents().then(() => this._render()); });
+    }
+  };
+  card.style.touchAction = 'none';
+  document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
+};
+
+// === 週ドラッグ選択 ===
+CalendarComponent.prototype._initWeekDrag = function(el) {
+  let dragging = false, startDate = '', startHour = 0, preview = null;
+  const cells = el.querySelectorAll('.gb-cal-week-cell');
+  const self = this;
+  cells.forEach(cell => {
+    cell.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.gb-cal-week-event')) return;
+      e.preventDefault(); dragging = true;
+      startDate = cell.dataset.date; startHour = parseInt(cell.dataset.hour);
+      document.body.style.userSelect = 'none';
+      preview = document.createElement('div'); preview.className = 'gb-cal-week-event';
+      preview.style.cssText = 'background:var(--cal-event-bg, var(--cal-accent, var(--accent)));color:var(--cal-event-fg, var(--ui-fg-strong));opacity:0.6;pointer-events:none;top:0;height:40px;left:2px;right:18px;';
+      preview.textContent = `${startHour}:00 – ${startHour+1}:00`;
+      cell.style.position = 'relative'; cell.appendChild(preview);
+    });
+    cell.addEventListener('pointermove', () => {
+      if (!dragging || cell.dataset.date !== startDate) return;
+      const curH = parseInt(cell.dataset.hour);
+      const minH = Math.min(startHour, curH), maxH = Math.max(startHour, curH) + 1;
+      if (preview?.parentElement) preview.remove();
+      const anchor = el.querySelector(`.gb-cal-week-cell[data-date="${startDate}"][data-hour="${minH}"]`);
+      if (anchor) { anchor.style.position = 'relative'; preview.style.top = '0'; preview.style.height = ((maxH-minH)*40) + 'px'; preview.textContent = `${minH}:00 – ${maxH}:00`; anchor.appendChild(preview); }
+    });
+    cell.addEventListener('pointerup', () => {
+      if (!dragging) return;
+      dragging = false; document.body.style.userSelect = '';
+      if (preview) { preview.remove(); preview = null; }
+      const endH = parseInt(cell.dataset.hour) + 1;
+      const minH = Math.min(startHour, endH - 1), maxH = Math.max(startHour + 1, endH);
+      self._openEventInPanel(null, startDate + 'T' + String(minH).padStart(2,'0') + ':00', startDate + 'T' + String(maxH).padStart(2,'0') + ':00');
+    });
+    // D&Dドロップ受け入れ
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.15)'; });
+    cell.addEventListener('dragleave', () => { cell.style.background = ''; });
+    cell.addEventListener('drop', (e) => {
+      e.preventDefault(); cell.style.background = '';
+      const d = e.dataTransfer.getData('application/x-cal-move');
+      if (!d) return;
+      const { id } = JSON.parse(d);
+      const ev = self._events.find(x => x.id === id);
+      if (!ev) return;
+      const origS = new Date(ev.start), origE = ev.end ? new Date(ev.end) : new Date(origS.getTime()+3600000);
+      const dur = origE - origS;
+      const ns = new Date(cell.dataset.date + 'T' + String(parseInt(cell.dataset.hour)).padStart(2,'0') + ':00');
+      self._pushUndo('イベント移動');
+      const before = self._snapshotEventLocal(id);
+      const nextStart = self._localDateTimeStr(ns);
+      const nextEnd = self._localDateTimeStr(new Date(ns.getTime()+dur));
+      self._applyEventLocal(id, { start: nextStart, end: nextEnd, all_day: 0 });
+      self._render();
+      apiPut('/cal/events/' + id, { start: nextStart, end: nextEnd, all_day: 0 })
+        .then(() => self._loadEvents())
+        .then(() => self._render())
+        .catch(() => {
+          self._restoreEventLocal(before);
+          self._render();
+          self._showStatus('イベント移動に失敗', true);
+        });
+    });
+  });
+  const cleanup = () => { if (dragging) { dragging = false; document.body.style.userSelect = ''; if (preview) { preview.remove(); preview = null; } } };
+  if (el._calWeekCleanup) document.removeEventListener('pointerup', el._calWeekCleanup);
+  el._calWeekCleanup = cleanup;
+  document.addEventListener('pointerup', cleanup);
+};
+
+CalendarComponent.prototype._clearNowLineTimer = function() {
+  if (this._nowLineTimer) clearInterval(this._nowLineTimer);
+  this._nowLineTimer = null;
+  this._contentEl?.querySelectorAll?.('.gb-cal-now-line').forEach(el => el.remove());
+};
+
+CalendarComponent.prototype._syncNowLineTimer = function() {
+  if (!['week', 'day'].includes(this._view)) {
+    this._clearNowLineTimer?.();
+    return;
+  }
+  this._updateNowLine();
+  if (this._nowLineTimer) return;
+  this._nowLineTimer = setInterval(() => this._updateNowLine(), 30000);
+};
+
+CalendarComponent.prototype._updateNowLine = function() {
+  const root = this._contentEl;
+  if (!root || !['week', 'day'].includes(this._view)) return;
+  root.querySelectorAll('.gb-cal-now-line').forEach(el => el.remove());
+  const now = new Date();
+  const dateStr = this._localDateStr(now);
+  const hour = now.getHours();
+  const cell = root.querySelector(`.gb-cal-week-cell[data-date="${dateStr}"][data-hour="${hour}"]`);
+  if (!cell) return;
+  const line = document.createElement('div');
+  line.className = 'gb-cal-now-line';
+  const rect = cell.getBoundingClientRect?.();
+  const hourPx = Math.max(1, rect?.height || 40);
+  line.style.top = ((now.getMinutes() / 60) * hourPx) + 'px';
+  cell.appendChild(line);
+};
+
+// === タスクボード ===
+CalendarComponent.prototype._renderTaskBoard = function() {
+  this._clearNowLineTimer?.();
+  const el = this._contentEl;
+  const statuses = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
+  let html = '<div class="gb-cal-task-board">';
+  statuses.forEach(([key, label]) => {
+    const tasks = this._tasks.filter(t => t.status === key && !t.parent_id);
+    html += `<div class="gb-cal-task-column"><div class="gb-cal-task-col-header"><span>${label}</span><span style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));">${tasks.length}</span></div><div class="gb-cal-task-col-body">`;
+    tasks.forEach(t => {
+      const pc = t.priority || 'medium';
+      html += `<div class="gb-cal-task-card" data-task-id="${t.id}"><div class="gb-cal-task-card-title">${esc(t.title)}</div><div class="gb-cal-task-card-meta"><span class="gb-cal-task-priority ${pc}">${pc}</span>`;
+      if (t.due_date) html += `<span>〆 ${t.due_date.substring(5)}</span>`;
+      if (t.assignee) html += `<span>${esc(t.assignee)}</span>`;
+      html += '</div></div>';
+    });
+    html += `<div style="padding:4px;text-align:center;cursor:pointer;color:var(--cal-muted-fg, var(--fg2));font-size:12px;" data-add-task="${key}">+ 追加</div></div></div>`;
+  });
+  html += '</div>';
+  el.innerHTML = html;
+  if (el._calClickHandler) el.removeEventListener('click', el._calClickHandler);
+  el._calClickHandler = (e) => {
+    const card = e.target.closest('.gb-cal-task-card');
+    if (card) { this._showTaskModal(card.dataset.taskId); return; }
+    const add = e.target.closest('[data-add-task]');
+    if (add) this._showTaskModal(null, add.dataset.addTask);
+  };
+  el.addEventListener('click', el._calClickHandler);
+};
+
+// === シフト表 ===
+CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
+  const activeSeq = renderSeq || this._renderSeq;
+  await this._loadShifts();
+  if (this._view !== 'shifts' || activeSeq !== this._renderSeq) return;
+  const el = this._contentEl, y = this._date.getFullYear(), m = this._date.getMonth();
+  const dim = new Date(y, m+1, 0).getDate(), todayStr = this._localDateStr();
+  const users = [...new Set(this._shifts.map(s => s.user).filter(Boolean))];
+  if (!users.length) users.push(this._getUser());
+  const mStart = `${y}-${String(m+1).padStart(2,'0')}-01`;
+  const mEnd = `${y}-${String(m+1).padStart(2,'0')}-${String(dim).padStart(2,'0')}T23:59:59`;
+  let timeEntries = [];
+  try { timeEntries = await apiFetch('/cal/time?date_from=' + mStart + '&date_to=' + mEnd); } catch {}
+  if (this._view !== 'shifts' || activeSeq !== this._renderSeq) return;
+  let html = '<div style="overflow-x:auto;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+  html += `<span style="font-weight:bold;">${y}年${m+1}月 シフト表</span><button class="gb-cal-shift-add" style="font-size:12px;padding:3px 10px;">+ シフト追加</button></div>`;
+  html += '<table style="width:100%;border-collapse:collapse;font-size:11px;"><tr><th style="padding:4px 8px;border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-header-bg, var(--bg3));color:var(--cal-header-fg, var(--fg2));min-width:80px;">ユーザー</th>';
+  for (let d = 1; d <= dim; d++) {
+    const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dow = ['日','月','火','水','木','金','土'][new Date(y,m,d).getDay()];
+    const isT = ds === todayStr, isW = [0,6].includes(new Date(y,m,d).getDay());
+    html += `<th style="padding:2px 4px;border:1px solid var(--cal-grid-line, var(--border));background:${isT?'var(--cal-mini-selected-bg, var(--cal-accent, var(--accent)))':isW?'var(--cal-cell-hover-bg, var(--bg4))':'var(--cal-header-bg, var(--bg3))'};color:${isT?'var(--cal-mini-selected-fg, var(--ui-fg-strong))':'var(--cal-header-fg, var(--fg))'};min-width:36px;text-align:center;">${d}<br><span style="font-size:9px;">${dow}</span></th>`;
+  }
+  html += '</tr>';
+  users.forEach(user => {
+    html += `<tr><td style="padding:4px 8px;border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-sidebar-bg, var(--bg2));font-weight:bold;color:var(--cal-sidebar-fg, var(--fg));">${esc(user)}<br><span style="font-size:9px;color:var(--cal-muted-fg, var(--fg2));">予定</span></td>`;
+    for (let d = 1; d <= dim; d++) {
+      const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const sh = this._shifts.find(s => s.user === user && s.date === ds);
+      const tc = { work: 'var(--blue)', off: 'var(--cal-muted-fg, var(--fg2))', holiday: 'var(--green)' };
+      const bg = sh ? (tc[sh.type] || 'var(--cal-muted-fg, var(--fg2))') : '';
+      const txt = sh ? (sh.start_time ? sh.start_time.substring(0,5)+'-'+(sh.end_time||'').substring(0,5) : (sh.type==='off'?'休':sh.type==='holiday'?'祝':'')) : '';
+      html += `<td class="gb-cal-shift-cell" data-user="${esc(user)}" data-date="${ds}" ${sh?`data-sid="${sh.id}"`:''}style="padding:2px;border:1px solid var(--cal-grid-line, var(--border));text-align:center;cursor:pointer;background:var(--cal-cell-bg, var(--bg));color:var(--cal-fg, var(--fg));${bg?'color:var(--cal-event-fg, #fff);background:'+bg:''}" title="${esc(sh?.note||'')}">${txt}</td>`;
+    }
+    html += '</tr>';
+    html += `<tr><td style="padding:4px 8px;border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-cell-bg, var(--bg));"><span style="font-size:9px;color:var(--cal-muted-fg, var(--fg2));">実績</span></td>`;
+    for (let d = 1; d <= dim; d++) {
+      const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const de = timeEntries.filter(e => e.user === user && e.timestamp.startsWith(ds));
+      const ci = de.find(e => e.type === 'clock_in'), co = de.filter(e => e.type === 'clock_out').pop();
+      let at = ''; if (ci && co) at = ((new Date(co.timestamp) - new Date(ci.timestamp))/3600000).toFixed(1)+'h'; else if (ci) at = ci.timestamp.substring(11,16)+'-';
+      const sh = this._shifts.find(s => s.user === user && s.date === ds);
+      const cb = sh && sh.type === 'work' && !ci ? 'background:rgba(244,71,71,0.15);' : '';
+      html += `<td style="padding:2px;border:1px solid var(--cal-grid-line, var(--border));text-align:center;font-size:10px;color:var(--cal-muted-fg, var(--fg2));background:var(--cal-cell-bg, var(--bg));${cb}">${at}</td>`;
+    }
+    html += '</tr>';
+  });
+  html += '</table></div>';
+  el.innerHTML = html;
+  el.querySelector('.gb-cal-shift-add')?.addEventListener('click', () => this._showShiftModal());
+  el.querySelectorAll('.gb-cal-shift-cell').forEach(c => {
+    c.addEventListener('click', () => this._showShiftModal(c.dataset.user, c.dataset.date, c.dataset.sid));
+  });
+};
+
+CalendarComponent.prototype._loadShifts = async function() {
+  const y = this._date.getFullYear(), m = this._date.getMonth() + 1;
+  try { this._shifts = await apiFetch('/cal/shifts?month=' + y + '-' + String(m).padStart(2,'0')); } catch { this._shifts = []; }
+};
+
+// === ミニカレンダー ===
+CalendarComponent.prototype._renderMiniCal = function() {
+  const y = this._date.getFullYear(), m = this._date.getMonth();
+  this._miniTitleEl.textContent = `${y}年${m+1}月`;
+  const rawFirst = new Date(y, m, 1).getDay();
+  const firstDay = (rawFirst - this._startDay + 7) % 7;
+  const dim = new Date(y, m+1, 0).getDate();
+  const todayStr = this._localDateStr(), selStr = this._localDateStr(this._date);
+  let html = this._getDayNames().map(d => `<div style="font-size:10px;color:var(--cal-muted-fg, var(--fg2));padding:2px;">${d}</div>`).join('');
+  for (let i = 0; i < firstDay; i++) html += '<div></div>';
+  for (let d = 1; d <= dim; d++) {
+    const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const cls = [ds===todayStr?'gb-cal-today':'',ds===selStr?'gb-cal-selected':''].filter(Boolean).join(' ');
+    html += `<div class="gb-cal-mini-day ${cls}" data-date="${ds}">${d}</div>`;
+  }
+  this._miniGridEl.innerHTML = html;
+  this._miniGridEl.querySelectorAll('.gb-cal-mini-day').forEach(el => {
+    el.addEventListener('click', () => { this._date = this._parseLocalDate(el.dataset.date); this._loadEvents().then(() => this._render()); this._renderMiniCal(); });
+  });
+};
+
+// === 今日のタスク ===
+CalendarComponent.prototype._renderTodayTasks = function() {
+  const todayStr = this._localDateStr();
+  const tasks = this._tasks.filter(t => t.due_date === todayStr || (t.status !== 'done' && t.status !== 'backlog'));
+  const el = this._todayTasksEl;
+  if (!tasks.length) { el.innerHTML = '<div style="color:var(--cal-muted-fg, var(--fg2));">タスクなし</div>'; return; }
+  el.innerHTML = tasks.slice(0, 10).map(t =>
+    `<div class="gb-cal-today-task-item" data-task-id="${t.id}" style="padding:4px 0;border-bottom:1px solid var(--cal-grid-line, var(--border));cursor:pointer;">` +
+    `<span class="gb-cal-task-priority ${t.priority||'medium'}" style="margin-right:4px;">${(t.priority||'M')[0].toUpperCase()}</span>${esc(t.title)}</div>`
+  ).join('');
+  el.querySelectorAll('.gb-cal-today-task-item').forEach(item => {
+    item.addEventListener('click', () => this._showTaskModal(item.dataset.taskId));
+  });
+};
+
+// === カレンダーリスト ===
+CalendarComponent.prototype._renderCalendarList = function() {
+  const container = this._calListEl;
+  if (!container) return;
+  container.innerHTML = '';
+  this._ensureSelectedCalendar?.();
+  this._calendars.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'gb-cal-calendar-row';
+    row.dataset.calendarId = c.id;
+    row.tabIndex = 0;
+    row.classList.toggle('is-selected', this._selectedCalendarId === c.id);
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;';
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('input,button,select,label')) return;
+      this._selectCalendar?.(c.id);
+    });
+    row.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      this._selectCalendar?.(c.id);
+    });
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = this._visibleCalIds.has(c.id);
+    cb.addEventListener('change', () => {
+      if (cb.checked) this._visibleCalIds.add(c.id); else this._visibleCalIds.delete(c.id);
+      if (!cb.checked && this._selectedCalendarId === c.id) this._selectedCalendarId = '';
+      this._ensureSelectedCalendar?.();
+      apiPut('/cal/calendars/' + c.id, { visible: cb.checked ? 1 : 0 });
+      this._renderCalendarList();
+      this._render();
+    });
+    const dot = document.createElement('span');
+    dot.style.cssText = `width:10px;height:10px;border-radius:50%;background:${c.color};flex-shrink:0;`;
+    const label = document.createElement('span');
+    label.textContent = c.name;
+    label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+    row.appendChild(cb); row.appendChild(dot); row.appendChild(label);
+    container.appendChild(row);
+  });
+};
+
+CalendarComponent.prototype._createCalendar = async function() {
+  let idx = 1, name = '無題';
+  const names = this._calendars.map(c => c.name);
+  while (names.includes(name)) { idx++; name = '無題' + idx; }
+  const calColor = (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeColorSet === 'function')
+    ? (MeldexThemeManager.getThemeColorSet()[this._calendars.length % 8] || PALETTE_COLORS[this._calendars.length % PALETTE_COLORS.length])
+    : PALETTE_COLORS[this._calendars.length % PALETTE_COLORS.length];
+  await apiPost('/cal/calendars', { name, color: calColor, user: this._getUser() });
+  await this._loadCalendars();
+};
+
+// === 打刻 ===
+CalendarComponent.prototype._initClockPanel = function() {
+  const cb = this.el.querySelector('.gb-cal-clock-toggle');
+  if (cb) { cb.checked = this._clockEnabled; cb.addEventListener('change', () => this._toggleClockPanel(cb.checked)); }
+  if (this._clockBtnsEl) this._clockBtnsEl.style.display = this._clockEnabled ? '' : 'none';
+};
+
+CalendarComponent.prototype._toggleClockPanel = function(on) {
+  this._clockEnabled = on;
+  localStorage.setItem('gb:clock-enabled', on ? 'true' : 'false');
+  if (this._clockBtnsEl) this._clockBtnsEl.style.display = on ? '' : 'none';
+  if (on) this._updateClockStatus();
+};
+
+CalendarComponent.prototype._clockAction = async function(type) {
+  try {
+    await apiPost('/cal/time', { type, user: this._getUser(), timestamp: this._localDateTimeStr(new Date()) });
+    const labels = { clock_in: '出勤しました', clock_out: '退勤しました', break_start: '離席しました', break_end: '復帰しました' };
+    this._showStatus(labels[type] || type);
+    this._updateClockStatus();
+  } catch { this._showStatus('打刻に失敗', true); }
+};
+
+CalendarComponent.prototype._updateClockStatus = async function() {
+  const todayStr = this._localDateStr();
+  try {
+    const entries = await apiFetch('/cal/time?user=' + encodeURIComponent(this._getUser()) + '&date_from=' + todayStr);
+    const last = entries[entries.length - 1];
+    if (!last) { if (this._clockStatusEl) this._clockStatusEl.textContent = '未出勤'; return; }
+    const labels = { clock_in: '出勤中', clock_out: '退勤済み', break_start: '離席中', break_end: '出勤中' };
+    if (this._clockStatusEl) this._clockStatusEl.textContent = (labels[last.type] || last.type) + ' ' + last.timestamp.substring(11, 16);
+  } catch {}
+};
+
+// === サイドバーリサイズ ===
+CalendarComponent.prototype._toggleSidebar = function() {
+  const rz = this.el.querySelector('.gb-cal-sidebar-resize');
+  this._sidebarEl.classList.toggle('gb-cal-hidden');
+  rz.style.display = this._sidebarEl.classList.contains('gb-cal-hidden') ? 'none' : '';
+};
+
+CalendarComponent.prototype._bindSidebarResize = function() {
+  const handle = this.el.querySelector('.gb-cal-sidebar-resize');
+  const sidebar = this._sidebarEl;
+  if (!handle || !sidebar) return;
+  let startX, startW;
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); startX = e.clientX; startW = sidebar.offsetWidth;
+    handle.classList.add('gb-cal-active');
+    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+    const onMove = (e2) => { sidebar.style.width = Math.max(120, Math.min(500, startW + e2.clientX - startX)) + 'px'; };
+    const onUp = () => { handle.classList.remove('gb-cal-active'); document.body.style.cursor = ''; document.body.style.userSelect = ''; document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp); localStorage.setItem('gb:cal-sidebar-width', sidebar.offsetWidth); };
+    document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
+  });
+  const saved = localStorage.getItem('gb:cal-sidebar-width');
+  if (saved) sidebar.style.width = saved + 'px';
+};
+
+// === アラーム ===
+CalendarComponent.prototype._checkAlarms = async function() {
+  try {
+    const alerts = await apiFetch('/cal/alerts?minutes_ahead=2&user=' + encodeURIComponent(this._getUser()));
+    alerts.forEach(ev => {
+      const key = ev.id + ev._alert_time;
+      if (this._alertedIds.has(key)) return;
+      this._alertedIds.add(key);
+      if ('Notification' in window && Notification.permission === 'granted') new Notification('Meldex カレンダー', { body: ev.title + '\n' + (ev.start||'').substring(11,16), icon: '/Meldex_icon.png' });
+      this._showStatus('🔔 ' + ev.title);
+    });
+  } catch {}
+};
+
+// === 右パネル（イベント編集フォーム） ===
+CalendarComponent.prototype._openEventInPanel = function(editId, defaultStart, defaultEnd, defaultAllDay) {
+  const ev = editId ? this._events.find(e => e.id === editId) : null;
+  // 親の詳細パネルに表示を委譲
+  if (typeof _showCalEventInDetailPanel === 'function') {
+    _showCalEventInDetailPanel(ev ? { ...ev } : null, this._calendars.map(c => ({ id: c.id, name: c.name })), defaultStart, defaultEnd, !!defaultAllDay, this);
+    return;
+  }
+  // フォールバック: コンポーネント内の右パネルに表示
+  const panel = this._rightPanelEl;
+  panel.classList.add('gb-cal-open');
+  const now = new Date();
+  const sVal = ev ? ev.start.substring(0,16) : (defaultStart || this._localDateTimeStr(now));
+  const eVal = ev ? (ev.end||'').substring(0,16) : (defaultEnd || this._localDateTimeStr(new Date(now.getTime()+3600000)));
+  const isAllDay = ev ? ev.all_day : !!defaultAllDay;
+  const calOpts = this._calendars.map(c => `<option value="${c.id}" ${ev?.calendar_id===c.id?'selected':''}>${esc(c.name)}</option>`).join('');
+  const _rp = CalendarComponent._recParse;
+  panel.innerHTML = `<h3>${ev?'イベント編集':'新規イベント'}</h3>
+<div class="field"><label>タイトル</label><input class="rp-ev-title" type="text" value="${esc(ev?.title||'')}" placeholder="イベント名"></div>
+<div class="field"><label><input class="rp-ev-allday" type="checkbox" ${isAllDay?'checked':''}> 終日</label></div>
+<div class="field"><label>開始</label><input class="rp-ev-start" type="datetime-local" value="${sVal}" ${isAllDay?'disabled style="opacity:0.4"':''}></div>
+<div class="field"><label>終了</label><input class="rp-ev-end" type="datetime-local" value="${eVal}" ${isAllDay?'disabled style="opacity:0.4"':''}></div>
+<div class="field"><label>カレンダー</label><select class="rp-ev-calendar gb-select" style="width:100%;">${calOpts}</select></div>
+<div class="field"><label>色</label><button type="button" class="rp-ev-color gb-color-swatch gb-color-swatch--field" data-color="${esc(ev?.color||'#569cd6')}" title="イベント色"></button></div>
+<div class="field"><label>場所</label><input class="rp-ev-location" type="text" value="${esc(ev?.location||'')}"></div>
+<div class="field"><label>URL</label><input class="rp-ev-url" type="url" value="${esc(ev?.url||'')}" placeholder="https://..."></div>
+<div class="field"><label>説明</label><textarea class="rp-ev-desc" rows="3">${esc(ev?.description||'')}</textarea></div>
+<div class="field"><label>アラーム</label><select class="rp-ev-alert gb-select" style="width:100%;">
+  <option value="-1" ${(ev?.alert_minutes??-1)===-1?'selected':''}>なし</option><option value="0" ${ev?.alert_minutes===0?'selected':''}>イベント時</option>
+  <option value="5" ${ev?.alert_minutes===5?'selected':''}>5分前</option><option value="15" ${ev?.alert_minutes===15?'selected':''}>15分前</option>
+  <option value="30" ${ev?.alert_minutes===30?'selected':''}>30分前</option><option value="60" ${ev?.alert_minutes===60?'selected':''}>1時間前</option>
+</select></div>
+<div class="btn-row">
+  ${ev?'<button class="danger rp-ev-delete">削除</button>':''}
+  <button class="rp-ev-cancel">キャンセル</button>
+  <button class="primary rp-ev-save">${ev?'更新':'作成'}</button>
+</div>`;
+  panel.querySelector('.rp-ev-allday').addEventListener('change', function() {
+    const s = panel.querySelector('.rp-ev-start'), e2 = panel.querySelector('.rp-ev-end');
+    s.disabled = e2.disabled = this.checked; s.style.opacity = e2.style.opacity = this.checked ? '0.4' : '1';
+  });
+  const colorSwatch = panel.querySelector('.rp-ev-color');
+  bindColorSwatch(colorSwatch, () => getColorSwatchValue(colorSwatch, ev?.color || '#569cd6'), (nextColor) => {
+    setColorSwatchValue(colorSwatch, nextColor || '#569cd6');
+  });
+  panel.querySelector('.rp-ev-save').addEventListener('click', () => this._saveEventFromPanel(ev?.id || ''));
+  panel.querySelector('.rp-ev-cancel').addEventListener('click', () => this._closeRightPanel());
+  if (ev) panel.querySelector('.rp-ev-delete').addEventListener('click', () => this._deleteEventFromPanel(ev.id));
+  setTimeout(() => panel.querySelector('.rp-ev-title')?.focus(), 50);
+};
+
+CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
+  const p = this._rightPanelEl;
+  this._pushUndo(editId ? 'イベント編集' : 'イベント作成');
+  const data = {
+    title: p.querySelector('.rp-ev-title').value,
+    start: p.querySelector('.rp-ev-start').value,
+    end: p.querySelector('.rp-ev-end').value,
+    all_day: p.querySelector('.rp-ev-allday').checked ? 1 : 0,
+    color: getColorSwatchValue(p.querySelector('.rp-ev-color'), ''),
+    location: p.querySelector('.rp-ev-location').value,
+    url: p.querySelector('.rp-ev-url')?.value || '',
+    description: p.querySelector('.rp-ev-desc').value,
+    alert_minutes: parseInt(p.querySelector('.rp-ev-alert').value),
+    calendar_id: p.querySelector('.rp-ev-calendar')?.value || '',
+    user: this._getUser(),
+  };
+  try {
+    if (editId) await apiPut('/cal/events/' + editId, data);
+    else await apiPost('/cal/events', data);
+    await this._loadEvents(); this._render();
+    this._closeRightPanel();
+    this._showStatus('イベントを保存しました');
+  } catch { this._showStatus('保存に失敗', true); }
+};
+
+CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
+  if (typeof cfConfirm === 'function' && !await cfConfirm('このイベントを削除しますか？')) return;
+  this._pushUndo('イベント削除');
+  let calId = '';
+  try {
+    const evRef = (this._events || []).find(x => x.id === id);
+    calId = evRef?.calendar_id || '';
+  } catch (_) {}
+  try {
+    await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    // Audit-P1 H-6: 紐付いたコメントを孤児化する（target_kind='calendar_event'）
+    apiPost('/annotations/orphan-by-target', {
+      target_kind: 'calendar_event',
+      target_file: calId || '_calendar',
+      item_id: id,
+      cascade_container: true,
+    }).catch(() => {});
+    await this._loadEvents();
+    this._render();
+    this._closeRightPanel();
+    this._showStatus('削除しました');
+  } catch {}
+};
+
+CalendarComponent.prototype._closeRightPanel = function() {
+  this._rightPanelEl.classList.remove('gb-cal-open');
+};
+
+CalendarComponent._recParse = function(ev) { try { return ev?.recurrence ? (typeof ev.recurrence === 'string' ? JSON.parse(ev.recurrence) : ev.recurrence) : {}; } catch { return {}; } };
+
+// === タスクモーダル ===
+CalendarComponent.prototype._showTaskModal = function(editId, defaultStatus) {
+  const t = editId ? this._tasks.find(x => x.id === editId) : null;
+  const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
+  const sts = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
+  const pris = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
+  o.innerHTML = `<div class="gb-cal-modal" style="min-width:450px;"><h3>${t?'タスク編集':'新規タスク'}</h3>
+<div class="field"><label>タイトル</label><input class="tk-title" value="${esc(t?.title||'')}"></div>
+<div style="display:flex;gap:8px;">
+  <div class="field" style="flex:1;"><label>ステータス</label><select class="tk-status">${sts.map(([v,l])=>`<option value="${v}" ${(t?.status||defaultStatus||'todo')===v?'selected':''}>${l}</option>`).join('')}</select></div>
+  <div class="field" style="flex:1;"><label>優先度</label><select class="tk-priority">${pris.map(([v,l])=>`<option value="${v}" ${(t?.priority||'medium')===v?'selected':''}>${l}</option>`).join('')}</select></div>
+</div>
+<div style="display:flex;gap:8px;">
+  <div class="field" style="flex:1;"><label>期限</label><input class="tk-due" type="date" value="${t?.due_date||''}"></div>
+  <div class="field" style="flex:1;"><label>担当者</label><input class="tk-assignee" value="${esc(t?.assignee||'')}"></div>
+</div>
+<div style="display:flex;gap:8px;">
+  <div class="field" style="flex:1;"><label>見積(h)</label><input class="tk-est" type="number" step="0.5" value="${t?.estimated_hours||0}"></div>
+  <div class="field" style="flex:1;"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
+</div>
+<div class="field"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
+<div class="btn-row">
+  ${t?'<button class="tk-delete" style="color:var(--red);">削除</button>':''}
+  <button class="tk-cancel">キャンセル</button>
+  <button class="primary tk-save">保存</button>
+</div></div>`;
+  document.body.appendChild(o);
+  o.querySelector('.tk-save').addEventListener('click', () => this._saveTask(t?.id || '', o));
+  o.querySelector('.tk-cancel').addEventListener('click', () => o.remove());
+  if (t) {
+    o.querySelector('.tk-delete').addEventListener('click', async () => {
+      if (await this._deleteTask(t.id)) o.remove();
+    });
+  }
+  o.querySelector('.tk-title').focus();
+};
+
+CalendarComponent.prototype._saveTask = async function(editId, overlay) {
+  this._pushUndo(editId ? 'タスク編集' : 'タスク作成');
+  const o = overlay;
+  const data = {
+    title: o.querySelector('.tk-title').value, status: o.querySelector('.tk-status').value,
+    priority: o.querySelector('.tk-priority').value, due_date: o.querySelector('.tk-due').value,
+    assignee: o.querySelector('.tk-assignee').value,
+    estimated_hours: parseFloat(o.querySelector('.tk-est').value) || 0,
+    actual_hours: parseFloat(o.querySelector('.tk-act').value) || 0,
+    description: o.querySelector('.tk-desc').value, user: this._getUser(),
+  };
+  o.remove();
+  try {
+    if (editId) await apiPut('/cal/tasks/' + editId, data); else await apiPost('/cal/tasks', data);
+    await this._loadTasks(); this._render(); this._renderTodayTasks();
+    this._showStatus('タスクを保存しました');
+  } catch { this._showStatus('保存に失敗', true); }
+};
+
+CalendarComponent.prototype._deleteTask = async function(id) {
+  if (typeof cfConfirm === 'function' && !await cfConfirm('このタスクを削除しますか？')) return false;
+  this._pushUndo('タスク削除');
+  try {
+    await apiFetch('/cal/tasks/' + id, { method: 'DELETE' });
+    await this._loadTasks();
+    this._render();
+    this._renderTodayTasks();
+    this._showStatus('削除しました');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// === シフトモーダル ===
+CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
+  const existing = editId ? this._shifts.find(s => s.id === editId) : null;
+  const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
+  o.innerHTML = `<div class="gb-cal-modal" style="min-width:350px;"><h3>${existing?'シフト編集':'新規シフト'}</h3>
+<div class="field"><label>ユーザー</label><input class="sh-user" value="${esc(user||existing?.user||this._getUser())}"></div>
+<div class="field"><label>日付</label><input class="sh-date" type="date" value="${existing?.date||date||''}"></div>
+<div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>開始</label><input class="sh-start" type="time" value="${existing?.start_time||'09:00'}"></div>
+<div class="field" style="flex:1;"><label>終了</label><input class="sh-end" type="time" value="${existing?.end_time||'18:00'}"></div></div>
+<div class="field"><label>種別</label><select class="sh-type"><option value="work" ${(!existing||existing?.type==='work')?'selected':''}>勤務</option><option value="off" ${existing?.type==='off'?'selected':''}>休み</option><option value="holiday" ${existing?.type==='holiday'?'selected':''}>祝日</option></select></div>
+<div class="field"><label>メモ</label><input class="sh-note" value="${esc(existing?.note||'')}"></div>
+<div class="btn-row">${existing?'<button class="sh-delete" style="color:var(--red);">削除</button>':''}<button class="sh-cancel">キャンセル</button><button class="primary sh-save">保存</button></div></div>`;
+  document.body.appendChild(o);
+  o.querySelector('.sh-save').addEventListener('click', () => this._saveShift(editId, o));
+  o.querySelector('.sh-cancel').addEventListener('click', () => o.remove());
+  if (existing) {
+    o.querySelector('.sh-delete').addEventListener('click', async () => {
+      if (await this._deleteShift(existing.id)) o.remove();
+    });
+  }
+};
+
+CalendarComponent.prototype._saveShift = async function(editId, o) {
+  const data = { user: o.querySelector('.sh-user').value.trim(), date: o.querySelector('.sh-date').value, start_time: o.querySelector('.sh-start').value, end_time: o.querySelector('.sh-end').value, type: o.querySelector('.sh-type').value, note: o.querySelector('.sh-note').value };
+  o.remove();
+  try { if (editId) await apiPut('/cal/shifts/' + editId, data); else await apiPost('/cal/shifts', data); this._render(); this._showStatus('シフトを保存しました'); } catch { this._showStatus('保存に失敗', true); }
+};
+
+CalendarComponent.prototype._deleteShift = async function(id) {
+  if (typeof cfConfirm === 'function' && !await cfConfirm('このシフトを削除しますか？')) return false;
+  try {
+    await apiFetch('/cal/shifts/' + id, { method: 'DELETE' });
+    this._render();
+    this._showStatus('削除しました');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// === 同期モーダル ===
+CalendarComponent.prototype._showSyncModal = async function() {
+  let syncStatus = {};
+  try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
+  const gC = syncStatus.google?.connected, gA = syncStatus.google?.available;
+  const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
+  o.innerHTML = `<div class="gb-cal-modal" style="min-width:450px;"><h3>カレンダー同期</h3>
+<div style="padding:10px;background:var(--cal-panel-bg, var(--bg));border:1px solid var(--cal-grid-line, var(--border));border-radius:4px;margin-bottom:10px;">
+  <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">Google Calendar</div>
+  <div style="font-size:12px;color:var(--cal-muted-fg, var(--fg2));margin-bottom:8px;">ステータス: ${gC?'<span style="color:var(--green);">接続済み</span>':gA?'未接続':'<span style="color:var(--red);">パッケージ未インストール</span>'}</div>
+  ${!gC&&gA?`<div class="field"><label>Client ID</label><input class="sync-gcal-id" type="text" placeholder="Google Cloud Console で取得"></div><div class="field"><label>Client Secret</label><input class="sync-gcal-secret" type="password"></div><button class="sync-gcal-auth" style="font-size:12px;padding:4px 12px;background:var(--cal-accent, var(--accent));color:var(--cal-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">Google認証開始</button>`:''}
+  ${gC?'<div style="display:flex;gap:4px;"><button class="sync-gcal-pull" style="font-size:12px;padding:4px 12px;">← Googleから取得</button><button class="sync-gcal-push" style="font-size:12px;padding:4px 12px;">→ Googleに送信</button></div>':''}
+</div>
+<div style="padding:10px;background:var(--cal-panel-bg, var(--bg));border:1px solid var(--cal-grid-line, var(--border));border-radius:4px;margin-bottom:10px;">
+  <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">iCal / .ics</div>
+  <div style="display:flex;gap:4px;flex-wrap:wrap;">
+    <button class="sync-ical-import" style="font-size:12px;padding:4px 12px;">.icsインポート</button>
+    <button class="sync-ical-export" style="font-size:12px;padding:4px 12px;">.icsエクスポート</button>
+  </div>
+</div>
+<div class="btn-row"><button class="sync-close">閉じる</button></div></div>`;
+  document.body.appendChild(o);
+  o.querySelector('.sync-close').addEventListener('click', () => o.remove());
+  o.querySelector('.sync-gcal-auth')?.addEventListener('click', () => this._googleCalAuth(o));
+  o.querySelector('.sync-gcal-pull')?.addEventListener('click', () => this._googleCalPull(o));
+  o.querySelector('.sync-gcal-push')?.addEventListener('click', () => this._googleCalPush());
+  o.querySelector('.sync-ical-import').addEventListener('click', () => this._icalImport());
+  o.querySelector('.sync-ical-export').addEventListener('click', async () => {
+    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
+      this._showStatus('保存ダイアログを初期化できませんでした', true);
+      return;
+    }
+    await MeldexExportSave.saveUrl(API_BASE + '/cal/sync/ical/export', {
+      filename: `calendar-${this._localDateStr(new Date())}.ics`,
+      extension: '.ics',
+      dialogTitle: 'iCal として保存',
+      filetypes: [['iCalファイル', '*.ics'], ['すべてのファイル', '*.*']],
+      okMessage: 'iCal を保存しました',
+      errorMessage: 'iCal の保存に失敗しました',
+    });
+  });
+};
+
+CalendarComponent.prototype._googleCalAuth = async function(o) {
+  const id = o.querySelector('.sync-gcal-id')?.value.trim();
+  const secret = o.querySelector('.sync-gcal-secret')?.value.trim();
+  if (!id || !secret) { this._showStatus('Client IDとSecretを入力してください', true); return; }
+  try { const res = await apiPost('/cal/sync/google/auth', { client_id: id, client_secret: secret }); this._showStatus(res.message || '認証成功'); o.remove(); this._showSyncModal(); } catch(e) { this._showStatus('認証失敗: ' + e.message, true); }
+};
+
+CalendarComponent.prototype._googleCalPull = async function(o) {
+  this._showStatus('Googleカレンダーから取得中...');
+  try { const res = await apiPost('/cal/sync/google/pull', {}); this._showStatus(`取得完了: ${res.imported}件インポート, ${res.updated}件更新`); await this._loadEvents(); this._render(); } catch(e) { this._showStatus('同期失敗: ' + e.message, true); }
+};
+
+CalendarComponent.prototype._googleCalPush = async function() {
+  this._showStatus('Googleカレンダーに送信中...');
+  try { const res = await apiPost('/cal/sync/google/push', {}); this._showStatus(`送信完了: ${res.pushed}件プッシュ`); } catch(e) { this._showStatus('送信失敗: ' + e.message, true); }
+};
+
+CalendarComponent.prototype._icalImport = function() {
+  const input = document.createElement('input'); input.type = 'file'; input.accept = '.ics,.ical';
+  input.addEventListener('change', async () => {
+    const file = input.files[0]; if (!file) return;
+    const text = await file.text();
+    try { const res = await apiPost('/cal/sync/ical/import', { ics: text }); this._showStatus(`iCalインポート完了: ${res.imported}件`); await this._loadEvents(); this._render(); } catch(e) { this._showStatus('インポート失敗: ' + e.message, true); }
+  });
+  input.click();
+};
+
+// === テンプレートモーダル ===
+CalendarComponent.prototype._showScheduleTemplateModal = async function() {
+  const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+  const dl = ['日','月','火','水','木','金','土'];
+  const addMin = (ts, min) => { const [h,m] = ts.split(':').map(Number); const t = h*60+m+min; return String(Math.floor(t/60)%24).padStart(2,'0')+':'+String(t%60).padStart(2,'0'); };
+  const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
+  let html = '<div class="gb-cal-modal" style="min-width:600px;max-height:80vh;overflow-y:auto;"><h3>週間テンプレート</h3><div class="tmpl-list">';
+  if (!templates.length) html += '<div style="color:var(--cal-muted-fg, var(--fg2));font-size:12px;padding:8px;">テンプレートがありません</div>';
+  templates.forEach(t => {
+    html += `<div style="border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-panel-bg, transparent);border-radius:4px;padding:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>${esc(t.name)}</strong><div>`;
+    html += `<button class="tmpl-edit" data-tid="${t.id}" style="font-size:11px;padding:2px 8px;margin-right:4px;">編集</button>`;
+    html += `<button class="tmpl-del" data-tid="${t.id}" style="font-size:11px;padding:2px 8px;color:var(--red);">削除</button>`;
+    html += `<button class="tmpl-gen" data-tid="${t.id}" style="font-size:11px;padding:2px 8px;margin-left:4px;background:var(--cal-accent, var(--accent));color:var(--cal-accent-fg, var(--ui-fg-strong));border:none;border-radius:3px;cursor:pointer;">一括生成</button></div></div>`;
+    (t.entries||[]).forEach(e => { html += `<div style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));padding:1px 0;">${dl[e.dayOfWeek]} ${e.startTime}〜${addMin(e.startTime,e.duration)} ${esc(e.title)}</div>`; });
+    html += '</div>';
+  });
+  html += '</div><div class="btn-row"><button class="tmpl-create">新規テンプレート</button><button class="tmpl-close">閉じる</button></div></div>';
+  o.innerHTML = html;
+  document.body.appendChild(o);
+  o.querySelector('.tmpl-close').addEventListener('click', () => o.remove());
+  o.querySelector('.tmpl-create').addEventListener('click', () => this._createTemplate(o));
+  o.querySelectorAll('.tmpl-edit').forEach(b => b.addEventListener('click', () => { o.remove(); this._editTemplate(b.dataset.tid); }));
+  o.querySelectorAll('.tmpl-del').forEach(b => b.addEventListener('click', async () => {
+    if (typeof cfConfirm === 'function' && !await cfConfirm('このテンプレートを削除しますか？')) return;
+    await apiFetch('/cal/schedule-templates/' + b.dataset.tid, { method: 'DELETE' });
+    o.remove();
+    this._showScheduleTemplateModal();
+  }));
+  o.querySelectorAll('.tmpl-gen').forEach(b => b.addEventListener('click', () => this._generateFromTemplate(b.dataset.tid, o)));
+};
+
+CalendarComponent.prototype._createTemplate = async function(overlay) {
+  const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+  let idx = 1, name = '無題'; const names = templates.map(t => t.name);
+  while (names.includes(name)) { idx++; name = '無題' + idx; }
+  const res = await apiPost('/cal/schedule-templates', { name, entries: [], user: this._getUser() });
+  overlay.remove();
+  this._editTemplate(res.id);
+};
+
+CalendarComponent.prototype._editTemplate = async function(tid) {
+  const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+  const t = templates.find(x => x.id === tid);
+  if (!t) return;
+  const dl = ['日','月','火','水','木','金','土'];
+  const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
+  const entryRow = (e) => `<div class="tmpl-entry" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;font-size:12px;">
+    <select data-field="dayOfWeek" class="gb-select gb-select-sm">${dl.map((d,i)=>`<option value="${i}" ${(e?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}</select>
+    <input type="time" data-field="startTime" value="${e?.startTime||'09:00'}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <input type="number" data-field="duration" value="${e?.duration||60}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
+    <input type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <button class="tmpl-entry-del" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
+  let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');
+  o.innerHTML = `<div class="gb-cal-modal" style="min-width:550px;max-height:80vh;overflow-y:auto;">
+    <h3>テンプレート編集: ${esc(t.name)}</h3>
+    <div class="field"><label>名前</label><input class="tmpl-name" type="text" value="${esc(t.name)}"></div>
+    <div style="font-size:12px;color:var(--cal-muted-fg, var(--fg2));margin-bottom:4px;">エントリ（1週間分）</div>
+    <div class="tmpl-entries">${entriesHtml}</div>
+    <button class="tmpl-add-entry" style="font-size:12px;padding:2px 8px;margin:4px 0;">+ エントリ追加</button>
+    <div class="btn-row"><button class="tmpl-edit-cancel">キャンセル</button><button class="primary tmpl-edit-save">保存</button></div></div>`;
+  document.body.appendChild(o);
+  o.querySelector('.tmpl-add-entry').addEventListener('click', () => {
+    o.querySelector('.tmpl-entries').insertAdjacentHTML('beforeend', entryRow({}));
+    o.querySelectorAll('.tmpl-entry-del').forEach(b => b.addEventListener('click', () => b.closest('.tmpl-entry').remove()));
+  });
+  o.querySelectorAll('.tmpl-entry-del').forEach(b => b.addEventListener('click', () => b.closest('.tmpl-entry').remove()));
+  o.querySelector('.tmpl-edit-cancel').addEventListener('click', () => { o.remove(); this._showScheduleTemplateModal(); });
+  o.querySelector('.tmpl-edit-save').addEventListener('click', async () => {
+    const name = o.querySelector('.tmpl-name').value.trim() || '無題';
+    const entries = [];
+    o.querySelectorAll('.tmpl-entries .tmpl-entry').forEach(row => {
+      entries.push({ dayOfWeek: parseInt(row.querySelector('[data-field="dayOfWeek"]').value), startTime: row.querySelector('[data-field="startTime"]').value, duration: parseInt(row.querySelector('[data-field="duration"]').value) || 60, title: row.querySelector('[data-field="title"]').value.trim() });
+    });
+    await apiPut('/cal/schedule-templates/' + tid, { name, entries });
+    o.remove(); this._showStatus('テンプレートを保存しました'); this._showScheduleTemplateModal();
+  });
+};
+
+CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay) {
+  const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+  const t = templates.find(x => x.id === tid);
+  if (!t || !t.entries?.length) { this._showStatus('エントリがありません', true); return; }
+  // cfPromptで週数を取得
+  const weeksStr = await cfPrompt('何週間分生成しますか？', '4');
+  const weeks = parseInt(weeksStr) || 0;
+  if (weeks <= 0) return;
+  const startDate = new Date(this._date);
+  startDate.setDate(startDate.getDate() - ((startDate.getDay() - this._startDay + 7) % 7));
+  let count = 0;
+  for (let w = 0; w < weeks; w++) {
+    for (const entry of t.entries) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + w * 7 + ((entry.dayOfWeek - this._startDay + 7) % 7));
+      const [h, mi] = (entry.startTime || '09:00').split(':').map(Number);
+      d.setHours(h, mi, 0, 0);
+      const endD = new Date(d.getTime() + (entry.duration || 60) * 60000);
+      await apiPost('/cal/events', { title: entry.title || '無題', start: this._localDateTimeStr(d), end: this._localDateTimeStr(endD), user: this._getUser() });
+      count++;
+    }
+  }
+  overlay?.remove();
+  await this._loadEvents(); this._render();
+  this._showStatus(`${count}件のイベントを生成しました`);
+};

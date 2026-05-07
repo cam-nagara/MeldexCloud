@@ -1,0 +1,38 @@
+/* gb-tooltip.css - shared tooltip surface for Meldex. */
+
+.gb-tooltip {
+  position: fixed;
+  /* ポップアップ (gb-icon-picker z-index:10004 等) の上に常に表示する */
+  z-index: 100000;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
+  color: var(--ui-tooltip-fg, var(--ui-fg-default, #d4d4d4));
+  background: var(--ui-tooltip-bg, var(--ui-popup-bg, var(--bg2, #252526)));
+  border: 1px solid var(--ui-tooltip-border, var(--ui-border, var(--border, #3c3c3c)));
+  border-radius: var(--ui-radius-sm, 4px);
+  box-shadow: var(--ui-shadow-md, 0 4px 12px rgba(0,0,0,0.35));
+  font-family: inherit;
+  font-size: var(--ui-font-11, 11px);
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-1px);
+  transition: opacity 0.08s ease, transform 0.08s ease;
+}
+
+.gb-tooltip.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.gb-tooltip[hidden] {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gb-tooltip {
+    transition: none;
+  }
+}
