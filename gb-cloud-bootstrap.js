@@ -623,6 +623,7 @@
     const hasStoredMode = _runtime().hasStoredMode?.();
     if (_isHostedCloudLaunch() && !hasExplicitMode) {
       if (mode === 'legacy') _runtime().clearMode?.();
+      _runtime().setMode('dropbox');
       mode = 'dropbox';
     } else if (!hasStoredMode && !hasExplicitMode && _isDesktopLaunch()) {
       _runtime().setMode('legacy');
