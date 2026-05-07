@@ -580,6 +580,28 @@
     }
   }
 
+  function _isLocalAppHost() {
+    try {
+      const host = String(window.location.hostname || '').toLowerCase();
+      if (!host) return window.location.protocol === 'file:';
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    } catch {
+      return false;
+    }
+  }
+
+  function _isHostedCloudLaunch() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('dataAccessMode') || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
+    } catch {}
+    try {
+      return window.location.protocol === 'https:' && !_isLocalAppHost();
+    } catch {
+      return false;
+    }
+  }
+
   async function prepareLaunch() {
     const callback = await _auth().handleRedirectCallback();
     if (callback.handled && !callback.ok) {
@@ -599,7 +621,10 @@
       hasExplicitMode = params.has('dataAccessMode') || params.get('safeMode') === '1';
     } catch {}
     const hasStoredMode = _runtime().hasStoredMode?.();
-    if (!hasStoredMode && !hasExplicitMode && _isDesktopLaunch()) {
+    if (_isHostedCloudLaunch() && !hasExplicitMode) {
+      if (mode === 'legacy') _runtime().clearMode?.();
+      mode = 'dropbox';
+    } else if (!hasStoredMode && !hasExplicitMode && _isDesktopLaunch()) {
       _runtime().setMode('legacy');
       mode = 'legacy';
     } else if (!hasStoredMode && !hasExplicitMode) {

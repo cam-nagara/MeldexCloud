@@ -792,7 +792,7 @@ function _saveUiConfigToServer() {
 // ページ読み込み時にサーバーからUI設定を復元（localStorageが空の場合のみ）
 async function _restoreUiConfigFromServer() {
   try {
-    const config = await apiFetch('/ui-config');
+    const config = await apiFetch('/ui-config', { silentError: true });
     if (!config || typeof config !== 'object') return;
     let restored = false;
     for (const [key, val] of Object.entries(config)) {
