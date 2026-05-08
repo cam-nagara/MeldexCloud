@@ -352,7 +352,7 @@
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10020;padding:8px;box-sizing:border-box;';
-      overlay.innerHTML = `<div style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
+      overlay.innerHTML = `<div class="meldex-cloud-mode-modal" data-modal-shell="off" role="dialog" aria-modal="true" style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
         <div style="font-size:22px;font-weight:700;margin-bottom:10px;">Meldex の保存モード</div>
         <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:18px;">Meldex Cloud BETAでは Dropbox 共有フォルダを使うクラウドモードと、従来の PC 単独モードを切り替えます。</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
@@ -422,7 +422,7 @@
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:20px;';
-      overlay.innerHTML = `<div style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);">
+      overlay.innerHTML = `<div class="meldex-cloud-setup-modal" data-modal-shell="off" role="dialog" aria-modal="true" style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);">
         <div style="font-size:22px;font-weight:700;margin-bottom:8px;">Dropbox 連携設定</div>
         <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:16px;">Meldex Cloud BETAは PKCE + refresh token 方式です。refresh token はこの端末の IndexedDB に保存されます。</div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}

@@ -14,6 +14,25 @@
     return MODES.has(mode) ? mode : 'legacy';
   }
 
+  function _isLocalAppHost() {
+    try {
+      const host = String(window.location.hostname || '').toLowerCase();
+      if (!host) return window.location.protocol === 'file:';
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    } catch {
+      return false;
+    }
+  }
+
+  function _isHostedCloudLaunch(params) {
+    try {
+      if (params?.has('dataAccessMode') || params?.get('safeMode') === '1' || params?.get('desktop') === '1') return false;
+      return window.location.protocol === 'https:' && !_isLocalAppHost();
+    } catch {
+      return false;
+    }
+  }
+
   function _mergeQuery(url, query) {
     if (!query || typeof query !== 'object') return url;
     Object.entries(query).forEach(([key, value]) => {
@@ -45,6 +64,7 @@
       const requestedMode = params.get('dataAccessMode');
       if (MODES.has(requestedMode)) return requestedMode;
       if (params.get('safeMode') === '1') return 'legacy';
+      if (_isHostedCloudLaunch(params)) return 'dropbox';
     } catch {}
     try {
       if (sessionStorage.getItem(SAFE_MODE_KEY) === '1') return 'legacy';
