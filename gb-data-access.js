@@ -836,7 +836,11 @@
       });
       return result;
     }
-    if (pathname === '/version' && method === 'GET') return { version: 'Dropbox cloud mode', semver: '0.0.0', variant: 'dropbox', build: '', commit: '' };
+    if (pathname === '/version' && method === 'GET') {
+      const semver = String(window.MeldexCloudRuntimeConfig?.version?.semver || window.MeldexReleaseConfig?.fallbackSemver || '0.5.x').replace(/^v/i, '').split(/\s+/)[0] || '0.5.x';
+      const betaLabel = String(window.MeldexReleaseConfig?.betaLabel || 'BETA');
+      return { version: `v${semver} ${betaLabel}`, semver, variant: 'dropbox', build: '', commit: '' };
+    }
     if (pathname === '/os-accent-color' && method === 'GET') return { color: '#569cd6' };
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {

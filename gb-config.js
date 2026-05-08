@@ -11,7 +11,7 @@
     isBeta: true,
     betaLabel: 'BETA',
     publicLabel: 'Meldex Cloud BETA',
-    fallbackSemver: '0.5.x',
+    fallbackSemver: _runtimeString(['version', 'semver'], '0.5.x'),
     betaFeedback: {
       googleWebAppUrl: '',
       googleSharedSecret: '',

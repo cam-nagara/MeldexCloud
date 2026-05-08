@@ -1,6 +1,10 @@
 (function () {
   'use strict';
   const config = {
+  "version": {
+    "semver": "0.5.434",
+    "variant": "cloud-beta"
+  },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
   "cloudBackupUrl": "",
   "betaFeedback": {
@@ -25,6 +29,10 @@
   }
 };
   window.MeldexCloudRuntimeConfig = Object.freeze({
+    version: Object.freeze({
+      semver: String(config.version?.semver || ''),
+      variant: String(config.version?.variant || 'cloud-beta'),
+    }),
     cloudPublicUrl: String(config.cloudPublicUrl || ''),
     cloudBackupUrl: String(config.cloudBackupUrl || ''),
     betaFeedback: Object.freeze({
