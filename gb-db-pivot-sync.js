@@ -460,6 +460,17 @@ function _refreshAfterCellEdit(anchorEl, entityPath, propName) {
     if (typeof selectEntity === 'function') selectEntity(state.currentEntityPath);
     return;
   }
+  const currentMode = state.currentDbPath && typeof getCurrentViewMode === 'function'
+    ? getCurrentViewMode(state.currentDbPath)
+    : state.view;
+  if ((state.view === 'timeline' || currentMode === 'timeline') && state.currentDbPath) {
+    const ctx = typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(anchorEl, { dbPath: state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    if (typeof renderTimeline === 'function') renderTimeline(ctx);
+    else selectDatabase(state.currentDbPath, undefined, { silent: true });
+    return;
+  }
   if (state.view !== 'pivot' || !state.currentDbPath) return;
   const td = anchorEl?.closest?.('td');
   if (td && entityPath && _tryRefreshPivotCellLocal(td, entityPath, propName)) return;

@@ -357,12 +357,18 @@ function clearPivot(ctx) {
 
 function _dbScope() { return state.currentDbPath ? 'db:' + state.currentDbPath.split('/').pop() : ''; }
 
-function _dbUndoValue(label, val, oldValue, newValue) {
+function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml) {
   const dbPath = state.currentDbPath;
   const scope = _dbScope();
+  const undoUpdates = { new_value: oldValue };
+  const redoUpdates = { new_value: newValue };
+  if (oldRichHtml !== undefined || newRichHtml !== undefined) {
+    undoUpdates.new_rich_html = oldRichHtml || '';
+    redoUpdates.new_rich_html = newRichHtml || '';
+  }
   historyPush(label,
-    async () => { await _apiPutValue(val, { new_value: oldValue }); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
-    async () => { await _apiPutValue(val, { new_value: newValue }); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
+    async () => { await _apiPutValue(val, undoUpdates); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
+    async () => { await _apiPutValue(val, redoUpdates); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
     scope
   );
 }

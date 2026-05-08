@@ -13,6 +13,11 @@
   let _syncInProgress = false; // 同期の同時実行防止
   let _currentOverlay = null;  // 現在開いているモーダルの参照
 
+  function _isCloudMode() {
+    return window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox';
+  }
+
   // === Notion同期設定UI ===
   async function showNotionSyncModal() {
     const o = document.createElement('div');
@@ -35,6 +40,10 @@
   }
 
   async function _renderNotionSyncSettings(container, options = {}) {
+    if (_isCloudMode()) {
+      container.textContent = 'Notion同期はMeldex Cloud BETAでは未対応です。デスクトップ版でローカルからNotionへの片方向pushを使用してください。';
+      return;
+    }
     let cfg = {};
     try { cfg = await apiFetch('/notion/config'); } catch (e) {
       showStatus('Notion設定の読み込みに失敗しました', true);
@@ -73,7 +82,7 @@
         <div id="notion-folder-list"></div>
       </div>
 
-      <div id="notion-sync-global-status" style="margin-bottom:8px;font-size:12px;color:var(--fg2);">双方向同期では、Meldex側とNotion側の両方が変わっている項目を自動上書きせず、競合ファイルとして残します。</div>
+      <div id="notion-sync-global-status" style="margin-bottom:8px;font-size:12px;color:var(--fg2);">Notion 同期は現在『ローカル → Notion 片方向 push 専用』として動作しています。Notion 側で編集した内容はローカルに反映されません（双方向同期は正式版以降）。</div>
       ${options.modal ? `<div class="btn-row">
         <button id="notion-close-btn" style="">閉じる</button>
       </div>` : ''}
@@ -150,13 +159,12 @@
     card.dataset.notionPageUrl = folder.notion_page_url || '';
     card.dataset.notionPageId = folder.notion_page_id || '';
     card.dataset.notionPageTitle = folder.notion_page_title || '';
-    card.dataset.syncMode = folder.sync_mode || 'push';
+    card.dataset.syncMode = 'push';
 
     const folderName = folder.path ? folder.path.split(/[/\\]/).pop() : '（未選択）';
     const notionTitle = folder.notion_page_title || '';
     const lastSync = folder.last_sync ? new Date(folder.last_sync).toLocaleString('ja-JP') : '未同期';
     const syncInterval = folder.sync_interval || 0;
-    const syncMode = folder.sync_mode || 'push';
 
     const intervalOptions = [
       { value: 0, label: '手動のみ' },
@@ -168,15 +176,6 @@
     const intervalSelect = intervalOptions.map(o =>
       `<option value="${o.value}" ${syncInterval === o.value ? 'selected' : ''}>${o.label}</option>`
     ).join('');
-    const modeOptions = [
-      { value: 'bidirectional', label: '双方向（競合保護）' },
-      { value: 'push', label: 'Meldex → Notion' },
-      { value: 'pull', label: 'Notion → Meldex' },
-    ];
-    const modeSelect = modeOptions.map(o =>
-      `<option value="${o.value}" ${syncMode === o.value ? 'selected' : ''}>${o.label}</option>`
-    ).join('');
-
     card.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
         <span style="font-size:14px;">${lucide('folder', 16)}</span>
@@ -199,10 +198,10 @@
           <span style="font-size:12px;color:var(--fg2);white-space:nowrap;">自動同期:</span>
           <select class="notion-sync-interval gb-select gb-select-sm" style="width:auto;min-width:112px;">${intervalSelect}</select>
         </label>
-        <label class="notion-sync-inline-field" style="display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1 1 220px;">
+        <div class="notion-sync-inline-field" style="display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1 1 220px;">
           <span style="font-size:12px;color:var(--fg2);white-space:nowrap;">同期方向:</span>
-          <select class="notion-sync-mode gb-select gb-select-sm" style="width:100%;min-width:180px;">${modeSelect}</select>
-        </label>
+          <span class="notion-sync-mode-label" data-notion-sync-mode="push" style="font-size:12px;color:var(--fg);white-space:nowrap;">Meldex → Notion（片方向 push 専用）</span>
+        </div>
         <span style="font-size:11px;color:var(--fg2);margin-left:auto;white-space:nowrap;">最終同期: ${lastSync}</span>
       </div>
       <div style="display:flex;gap:4px;">
@@ -217,7 +216,6 @@
     card.querySelector('.notion-resolve-page').addEventListener('click', () => _resolveNotionPage(card));
     card.querySelector('.notion-sync-now').addEventListener('click', () => _syncFolder(card, index));
     card.querySelector('.notion-sync-interval').addEventListener('change', (e) => _updateAutoSync(card, index, parseInt(e.target.value)));
-    card.querySelector('.notion-sync-mode').addEventListener('change', () => _updateSyncMode(card, index));
 
     return card;
   }
@@ -415,7 +413,7 @@
     const path = card.querySelector('.notion-folder-path').value.trim();
     const notionUrl = card.querySelector('.notion-page-url').value.trim();
     const interval = parseInt(card.querySelector('.notion-sync-interval').value);
-    const syncMode = card.querySelector('.notion-sync-mode')?.value || card.dataset.syncMode || 'push';
+    const syncMode = 'push';
     const urlChanged = notionUrl !== (card.dataset.notionPageUrl || '');
     const extraPayload = extra || {};
 
@@ -538,10 +536,8 @@
     syncBtn.disabled = true;
 
     try {
-      const mode = card.querySelector('.notion-sync-mode')?.value || card.dataset.syncMode || 'push';
-      const res = await apiPost('/notion/sync', { folder_index: index, mode });
+      const res = await apiPost('/notion/sync', { folder_index: index, mode: 'push' });
       const parts = [];
-      if (res.pulled) parts.push(`Pull: ${res.pulled}件`);
       if (res.pushed) parts.push(`Push: ${res.pushed}件`);
       if (res.skipped) parts.push(`スキップ: ${res.skipped}件`);
       if (res.conflicts) parts.push(`競合: ${res.conflicts}件`);
@@ -605,18 +601,6 @@
 
   function _timerKey(index, folder) {
     return [index, folder.path || '', folder.notion_page_id || '', folder.notion_page_url || ''].join('\u001f');
-  }
-
-  async function _updateSyncMode(card, index) {
-    try {
-      const saved = await _saveFolderConfig(card, {});
-      if (!saved) return;
-      const mode = card.querySelector('.notion-sync-mode')?.value || 'push';
-      const labels = { bidirectional: '双方向', push: 'Meldex → Notion', pull: 'Notion → Meldex' };
-      showStatus(`Notion同期方向を${labels[mode] || mode}に設定しました`);
-    } catch (e) {
-      showStatus('設定の保存に失敗しました', true);
-    }
   }
 
   // === 自動同期タイマー管理（設定行単位でキー管理） ===
@@ -694,9 +678,8 @@
     }
     _syncInProgress = true;
     try {
-      const mode = (folders[currentIndex] && folders[currentIndex].sync_mode) || 'push';
-      const res = await apiPost('/notion/sync', { folder_index: currentIndex, mode });
-      const total = (res.pushed || 0) + (res.pulled || 0);
+      const res = await apiPost('/notion/sync', { folder_index: currentIndex, mode: 'push' });
+      const total = res.pushed || 0;
       if (total > 0) {
         showStatus(`Notion自動同期: ${total}件の変更を同期しました`);
         if (typeof loadOutliner === 'function') await loadOutliner();
@@ -710,6 +693,10 @@
 
   // === 起動時の自動同期タイマー初期化 ===
   async function _initAutoSync() {
+    if (_isCloudMode()) {
+      _clearAllAutoSyncTimers();
+      return;
+    }
     await _reconcileTimers();
   }
 

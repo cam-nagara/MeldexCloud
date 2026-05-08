@@ -652,6 +652,12 @@
           if (!result?.ok) return false;
           continue;
         }
+        await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
+          console.warn('[MeldexCloudBootstrap] sample home preparation failed', err);
+        });
+        window.MeldexCloudSampleSeed?.ensure?.({ background: true }).catch((err) => {
+          console.warn('[MeldexCloudBootstrap] sample seed scheduling failed', err);
+        });
         _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' });
         if (preflight.access === 'viewer') {
           document.body.dataset.cloudReadonly = '1';

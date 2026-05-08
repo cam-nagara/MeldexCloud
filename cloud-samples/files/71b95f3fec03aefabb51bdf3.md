@@ -1,0 +1,50 @@
+---
+type: settings-entry
+id: ent_tl_3d981cc328
+category: 行動表
+created: '2026-05-06T06:38:22'
+created_by: codex
+created_by_kind: cli
+properties:
+  時間帯:
+  - value: 22:00-23:00
+    status: 案
+  開始時刻:
+  - value: 2026-08-13T22:00
+    status: 案
+  終了時刻:
+  - value: 2026-08-13T23:00
+    status: 案
+  キャラ:
+  - value: 鬼ヶ瀬 杢蔵
+    status: 案
+  場所:
+  - value: 家主の居室
+    status: 案
+  基準場所:
+  - value: 家主の居室
+    status: 案
+  状態:
+  - value: 死亡直後
+    status: 案
+  事件段階:
+  - value: 第三殺害
+    status: 案
+  行動:
+  - value: 過去の使用人と怨霊の核心を言いかけ、殺害される。
+    status: 案
+  重要イベント:
+  - value: 鬼ヶ瀬 杢蔵殺害と証言封じ
+    status: 案
+  手がかり・矛盾:
+  - value: 小間井 芽衣の正体と五十年前の因縁につながる。
+    status: 案
+  色:
+  - value: '#64748b'
+    status: 案
+relations: []
+modified: '2026-05-07T20:28:16'
+modified_by: anonymous
+modified_by_kind: human
+modified_by_model: gpt-5
+---

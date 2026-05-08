@@ -1,0 +1,44 @@
+---
+type: settings-entry
+id: p02_湖上の橋
+category: 場所情報
+created: '2026-05-06T17:18:39'
+created_by: codex
+created_by_kind: cli
+created_by_model: gpt-5
+properties:
+  分類:
+  - value: 周辺
+    status: 案
+  階層:
+  - value: 屋敷外
+    status: 案
+  接続:
+  - value: 山道と正門をつなぐ唯一の進入路。
+    status: 案
+  主な登場人物:
+  - value: 狭間 透、黒部 録郎、御影 依、薬師 治彦、検崎 甚一
+    status: 案
+  通常の機能:
+  - value: 来客が屋敷へ入るための唯一の橋。
+    status: 案
+  事件での役割:
+  - value: 嵐で崩落し、救助と逃走を遮断する。
+    status: 案
+  仕掛け・制約:
+  - value: 崩落の原因が自然災害か人為かを曖昧にできる。
+    status: 案
+  手がかり:
+  - value: 崩落時刻と到着時刻のずれが、真犯人の先入りを示す候補。
+    status: 案
+  ミスリード:
+  - value: 全員が同じタイミングで閉じ込められたように見せる。
+    status: 案
+  備考:
+  - value: タイムラインの「屋敷外」「移動中」と対応。
+    status: 案
+relations: []
+modified: '2026-05-07T20:27:17'
+modified_by: anonymous
+modified_by_kind: human
+---

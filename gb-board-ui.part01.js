@@ -1373,7 +1373,7 @@ function _bdColorFieldHtml(label, field, value, buttonAttr, resetAttr) {
 function _bdRangeFieldHtml(label, field, value, min, max, step, attrName) {
   const attr = attrName || 'data-bd-field';
   const nextValue = Number.isFinite(+value) ? +value : 0;
-  return `<label class="bd-detail-field"><span>${esc(label)}</span><span class="bd-detail-range"><input type="range" min="${_bdEscAttr(min)}" max="${_bdEscAttr(max)}" step="${_bdEscAttr(step)}" value="${_bdEscAttr(nextValue)}" ${attr}="${_bdEscAttr(field)}" data-bd-sync-key="${_bdEscAttr(field)}" data-e2e-id="bd-range-${_bdEscAttr(field)}-slider"><input type="number" min="${_bdEscAttr(min)}" max="${_bdEscAttr(max)}" step="${_bdEscAttr(step)}" value="${_bdEscAttr(nextValue)}" ${attr}="${_bdEscAttr(field)}" data-bd-sync-key="${_bdEscAttr(field)}" data-e2e-id="bd-range-${_bdEscAttr(field)}-number"></span></label>`;
+  return `<label class="bd-detail-field bd-detail-field-range"><span>${esc(label)}</span><span class="bd-detail-range"><input type="range" min="${_bdEscAttr(min)}" max="${_bdEscAttr(max)}" step="${_bdEscAttr(step)}" value="${_bdEscAttr(nextValue)}" ${attr}="${_bdEscAttr(field)}" data-bd-sync-key="${_bdEscAttr(field)}" data-e2e-id="bd-range-${_bdEscAttr(field)}-slider" aria-label="${_bdEscAttr(`${label} スライダー`)}"><input type="number" min="${_bdEscAttr(min)}" max="${_bdEscAttr(max)}" step="${_bdEscAttr(step)}" value="${_bdEscAttr(nextValue)}" ${attr}="${_bdEscAttr(field)}" data-bd-sync-key="${_bdEscAttr(field)}" data-e2e-id="bd-range-${_bdEscAttr(field)}-number" aria-label="${_bdEscAttr(`${label} 数値`)}"></span></label>`;
 }
 
 function _bdDetailStyleTriggerHtml(kind, styleId, attrName) {
@@ -1521,12 +1521,31 @@ function _bdShapeOptions(node) {
 function _bdStructureOptions(node) {
   // 構造 '' (未設定) は「親に従う」= ルートカードに設定された構造を継承する意味。
   // ルートカードで '' のままなら自動レイアウトが掛からない (= 従来の「自由配置」相当)。
-  const entries = [{ key: '', label: '親に従う' }].concat(
-    Object.entries(typeof BD_STRUCTURES !== 'undefined' ? BD_STRUCTURES : {}).map(([key, label]) => ({ key, label })),
-  );
+  const entries = _bdStructureEntries();
   return entries
     .map(entry => `<option value="${_bdEscAttr(entry.key)}" ${String(node.structure || '') === entry.key ? 'selected' : ''}>${esc(entry.label)}</option>`)
     .join('');
+}
+
+function _bdStructureEntries() {
+  return [{ key: '', label: '親に従う' }].concat(
+    Object.entries(typeof BD_STRUCTURES !== 'undefined' ? BD_STRUCTURES : {}).map(([key, label]) => ({ key, label })),
+  );
+}
+
+function _bdStructureLabel(node) {
+  const current = String(node?.structure || '');
+  const entry = _bdStructureEntries().find(item => item.key === current);
+  return entry?.label || current || '親に従う';
+}
+
+function _bdStructureHintHtml(node) {
+  const label = _bdStructureLabel(node);
+  const hasOwnStructure = !!String(node?.structure || '');
+  const body = hasOwnStructure
+    ? `このカード以下のサブツリーに「${esc(label)}」を適用します。親カードの構造には従いません。`
+    : '親カードがある場合は親の構造を継承します。親がないカード、または親側にも設定がない場合は自由配置です。';
+  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)}</div><div class="bd-detail-hint-body">${body}</div></div>`;
 }
 
 function _bdCardStyleOptions(node) {

@@ -1,0 +1,50 @@
+---
+type: settings-entry
+id: ent_tl_e9aa58401d
+category: 行動表
+created: '2026-05-06T06:37:48'
+created_by: codex
+created_by_kind: cli
+properties:
+  時間帯:
+  - value: 19:00-20:00
+    status: 案
+  開始時刻:
+  - value: 2026-08-13T19:00
+    status: 案
+  終了時刻:
+  - value: 2026-08-13T20:00
+    status: 案
+  キャラ:
+  - value: 御影 依
+    status: 案
+  場所:
+  - value: 大広間
+    status: 案
+  基準場所:
+  - value: 大広間
+    status: 案
+  状態:
+  - value: 憑依中
+    status: 案
+  事件段階:
+  - value: 夕食
+    status: 案
+  行動:
+  - value: 憑依の影響で断続的に意識が途切れる。
+    status: 案
+  重要イベント:
+  - value: 読者には疑似的に全員集合して見える
+    status: 案
+  手がかり・矛盾:
+  - value: 口調・利き手・知識の違和感が出始める。
+    status: 案
+  色:
+  - value: '#8b5cf6'
+    status: 案
+relations: []
+modified: '2026-05-07T20:27:58'
+modified_by: anonymous
+modified_by_kind: human
+modified_by_model: gpt-5
+---

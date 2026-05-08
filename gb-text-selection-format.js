@@ -9,6 +9,7 @@
     '#dp-editable',
     '#board-note-editable',
     '.sn2-text[contenteditable="true"]',
+    '.value-rich-editor[contenteditable="true"]',
     '.bd-node.bd-editing .bd-text[contenteditable="true"]',
     '.bd-conn-label[contenteditable="true"]',
   ].join(',');

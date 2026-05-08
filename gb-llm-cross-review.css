@@ -1,0 +1,209 @@
+.llm-review-modal {
+  width: min(920px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  background: var(--bg2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.llm-review-header,
+.llm-review-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.llm-review-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+.llm-review-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.llm-review-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.llm-review-section {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.llm-review-section h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.llm-review-label {
+  display: grid;
+  gap: 6px;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.llm-review-meta {
+  color: var(--fg2);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.llm-review-input,
+.llm-review-select,
+.llm-review-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.llm-review-textarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.llm-review-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.llm-review-check input {
+  margin-top: 2px;
+}
+
+.llm-review-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.llm-review-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.llm-review-bulk-label {
+  color: var(--fg2);
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.llm-review-issue {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg2);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.llm-review-issue[data-severity="high"] {
+  border-left-color: var(--danger, #d9534f);
+}
+
+.llm-review-issue[data-severity="medium"] {
+  border-left-color: var(--warning, #d6a300);
+}
+
+.llm-review-issue-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.llm-review-issue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.llm-review-state-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.llm-review-state-btn[data-active="1"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.llm-review-status {
+  color: var(--fg2);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.llm-review-progress-log {
+  min-height: 240px;
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.llm-review-progress-row {
+  color: var(--fg2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 2px 0;
+}
+
+.llm-review-progress-row[data-kind="error"] {
+  color: var(--danger, #d9534f);
+}
+
+@media (max-width: 760px) {
+  .llm-review-body {
+    grid-template-columns: 1fr;
+  }
+}

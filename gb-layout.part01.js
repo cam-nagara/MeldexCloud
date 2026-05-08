@@ -695,7 +695,7 @@ const GBLayout = (() => {
             saveLayout();
             return;
           }
-          GBTabs.activateTab(node.id, tab.id);
+          GBTabs.activateTab(node.id, tab.id, { preserveActivePane: _isPassivePaneTab(tab, node) });
           _showTabContextMenu(e, node.id, tab);
         });
 
@@ -910,22 +910,30 @@ const GBLayout = (() => {
     content.className = 'gb-pane-content';
     pane.appendChild(content);
 
-    // ペインクリックでアクティブ化
-    // フォルダツリーなどのナビペインも通常どおりアクティブ化する。
-    // ファイルを開く先は pane-bridge 側で作業用ペインへ解決する。
-    // 非アクティブペインのクリックでアクティブ化。
-    // 通常の行クリック等は click 配信が終わるまで副作用を遅延し、
+    // ペインクリックでアクティブ化。ナビペイン本文の通常クリックは作業ペインを保持する。
+    // 通常の行クリック等は click 配信が終わるまで同期副作用を遅延し、
     // 同一クリック内でコンテンツDOMが差し替わらないようにする。
     pane.addEventListener('pointerdown', (e) => {
+      if (e.button === 0) _blurFocusedChatInputForWorkPanePointer(node, e.target);
+      if (e.button === 0 && _isPassivePaneActiveTab(node) && e.target.closest('.gb-pane-content, .gb-pane-tabs')) return;
       if (_activePane === node.id) return;
       if (e.target.closest('.gb-legacy-snapshot-host')) {
-        setActivePane(node.id, { skipCallback: true });
+        _activatePaneAfterCurrentPointerClick(node.id);
+        return;
+      }
+      if (e.button === 0 && _isPaneWorkContentPointerTarget(e.target)) {
+        _activatePaneAfterCurrentPointerClick(node.id);
         return;
       }
       if (e.button === 0 && _isPaneInteractivePointerTarget(e.target)) {
+        if (e.target.closest('.gb-pane-content')) {
+          _activatePaneAfterCurrentPointerClick(node.id);
+          return;
+        }
         setActivePane(node.id, { skipCallback: true });
         return;
       }
+      if (e.button === 0 && _shouldPreserveActivePaneForNavContentPointer(node, e.target)) return;
       if (e.button !== 0) { setActivePane(node.id, { sync: true }); return; }
       _activatePaneAfterCurrentPointerClick(node.id);
     }, true);

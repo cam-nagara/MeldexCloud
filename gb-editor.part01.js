@@ -332,12 +332,45 @@ function _handleNoteSaveFailure(error, path, md, pc) {
   return false;
 }
 
+function _noteMarkdownFrontmatterType(text) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(String(text || ''));
+  if (!match) return '';
+  const typeMatch = /^\s*type\s*:\s*([^\r\n#]+)/m.exec(match[1]);
+  return typeMatch ? typeMatch[1].trim().replace(/^['"]|['"]$/g, '') : '';
+}
+
+function _notePathLooksLikeBoard(path) {
+  return /\.board\.md$/i.test(String(path || ''));
+}
+
+function _noteMarkdownIsBoard(text) {
+  return _noteMarkdownFrontmatterType(text) === 'board';
+}
+
 
 // ページ表示
 async function openPage(label, path, opts) {
   const openOpts = opts || {};
   if (!openOpts.bridgeLoad) showLoading('ノートを読み込み中...');
+  let preloadedFileData = null;
   try {
+    if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
+      if (!openOpts.bridgeLoad) hideLoading();
+      await openBoard(label, path, openOpts);
+      return;
+    }
+    if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && /\.md$/i.test(String(path || ''))) {
+      try {
+        preloadedFileData = await apiFetch('/file?path=' + encodeURIComponent(path));
+        if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
+          if (!openOpts.bridgeLoad) hideLoading();
+          await openBoard(label, path, openOpts);
+          return;
+        }
+      } catch {
+        preloadedFileData = null;
+      }
+    }
   if (!openOpts.skipStateView) state.view = 'page';
   state.currentPagePath = path;
   if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
@@ -368,7 +401,7 @@ async function openPage(label, path, opts) {
   if (!openOpts.skipHighlight) highlightOutlinerNode(path);
 
   try {
-    const data = await apiFetch('/file?path=' + encodeURIComponent(path));
+    const data = preloadedFileData || await apiFetch('/file?path=' + encodeURIComponent(path));
     if (isStalePageLoad()) return;
     const raw = data.content || '';
     // フロントマターを保存（保存時にプリペンドするため）

@@ -33,10 +33,11 @@ const GBTabs = (() => {
     };
   }
 
-  function _ensurePaneVisible(paneId) {
+  function _ensurePaneVisible(paneId, options) {
     if (!paneId || typeof GBLayout === 'undefined') return false;
     if (typeof GBLayout.revealPane === 'function') {
-      return !!GBLayout.revealPane(paneId, { deferRender: true, activate: true });
+      const activate = options?.activate !== false;
+      return !!GBLayout.revealPane(paneId, { deferRender: true, activate });
     }
     const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
     if (paneInfo?.node?.collapsed) {
@@ -143,7 +144,7 @@ const GBTabs = (() => {
     pane.tabs.push(tab);
     pane.activeTabIndex = pane.tabs.length - 1;
     const previousActivePane = GBLayout.activePane;
-    const revealed = _ensurePaneVisible(targetPaneId);
+    const revealed = _ensurePaneVisible(targetPaneId, { activate: !opts.preserveActivePane });
     const fastAdded = !revealed && _refreshPaneTabsFast(targetPaneId);
     if (!fastAdded) GBLayout.render();
     GBLayout.saveLayout({ immediate: true });
@@ -196,10 +197,9 @@ const GBTabs = (() => {
 
     const idx = pane.tabs.findIndex(t => t.id === tabId);
     if (idx < 0) return;
-    if (opts.preserveActivePane && pane.activeTabIndex === idx) return;
     const alreadyActive = pane.activeTabIndex === idx;
     pane.activeTabIndex = idx;
-    const revealed = _ensurePaneVisible(paneId);
+    const revealed = _ensurePaneVisible(paneId, { activate: !opts.preserveActivePane });
     const previousActivePane = GBLayout.activePane;
 
     if (alreadyActive) {

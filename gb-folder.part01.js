@@ -124,14 +124,49 @@ function toggleFolderPreview() {
 // ウォーターフォール: JSで位置計算（Pinterest風）
 // ウォーターフォールのリサイズ監視
 let _waterfallResizeOb = null;
+let _waterfallLayoutRaf = 0;
+let _waterfallObservedWidth = 0;
+
+function _scheduleWaterfallLayout() {
+  if (_waterfallLayoutRaf) return;
+  const run = () => {
+    _waterfallLayoutRaf = 0;
+    applyWaterfallLayout();
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    _waterfallLayoutRaf = requestAnimationFrame(run);
+  } else {
+    _waterfallLayoutRaf = setTimeout(run, 0);
+  }
+}
+
 function _ensureWaterfallResizeObserver() {
   const grid = document.getElementById('folder-grid');
   if (!grid) return;
   if (_waterfallResizeOb) _waterfallResizeOb.disconnect();
+  _waterfallObservedWidth = 0;
   if (grid.classList.contains('waterfall-layout')) {
-    _waterfallResizeOb = new ResizeObserver(() => applyWaterfallLayout());
-    _waterfallResizeOb.observe(grid);
+    const target = grid.parentElement || grid;
+    _waterfallObservedWidth = _waterfallElementWidth(target) || _waterfallElementWidth(grid);
+    _waterfallResizeOb = new ResizeObserver(entries => {
+      void entries;
+      const width = _waterfallElementWidth(target) || _waterfallElementWidth(grid);
+      if (width === _waterfallObservedWidth) return;
+      _waterfallObservedWidth = width;
+      _scheduleWaterfallLayout();
+    });
+    _waterfallResizeOb.observe(target);
   }
+}
+
+function _setStyleIfChanged(el, property, value) {
+  if (!el || el.style[property] === value) return;
+  el.style[property] = value;
+}
+
+function _waterfallElementWidth(el) {
+  const rect = el?.getBoundingClientRect?.();
+  return Math.round(rect?.width || el?.offsetWidth || el?.clientWidth || 0);
 }
 
 function applyWaterfallLayout() {
@@ -141,22 +176,29 @@ function applyWaterfallLayout() {
   if (items.length === 0) return;
   const gap = 3;
   const colW = parseInt(getComputedStyle(grid).getPropertyValue('--fv-card-w')) || 120;
-  const containerW = grid.clientWidth - 24; // padding考慮
+  const containerW = _waterfallElementWidth(grid) - 24; // padding考慮
   const cols = Math.max(1, Math.floor((containerW + gap) / (colW + gap)));
   const colHeights = new Array(cols).fill(0);
 
   items.forEach(el => {
     const minH = Math.min(...colHeights);
     const colIdx = colHeights.indexOf(minH);
-    el.style.left = (colIdx * (colW + gap)) + 'px';
-    el.style.top = minH + 'px';
-    el.style.width = colW + 'px';
+    _setStyleIfChanged(el, 'left', (colIdx * (colW + gap)) + 'px');
+    _setStyleIfChanged(el, 'top', minH + 'px');
+    _setStyleIfChanged(el, 'width', colW + 'px');
     colHeights[colIdx] = minH + el.offsetHeight + gap;
   });
   // 内部の高さスペーサーでスクロール可能にする（grid自体のheightは変えない）
   let spacer = grid.querySelector('.wf-spacer');
-  if (!spacer) { spacer = document.createElement('div'); spacer.className = 'wf-spacer'; grid.appendChild(spacer); }
-  spacer.style.cssText = 'position:relative;width:1px;height:' + Math.max(...colHeights) + 'px;pointer-events:none;';
+  if (!spacer) {
+    spacer = document.createElement('div');
+    spacer.className = 'wf-spacer';
+    spacer.style.position = 'relative';
+    spacer.style.width = '1px';
+    spacer.style.pointerEvents = 'none';
+    grid.appendChild(spacer);
+  }
+  _setStyleIfChanged(spacer, 'height', Math.max(...colHeights) + 'px');
 }
 
 function applyFolderZoom() {
@@ -165,7 +207,7 @@ function applyFolderZoom() {
   const h = Math.round(75 * _folderZoom);
   grid.style.setProperty('--fv-card-w', w + 'px');
   grid.style.setProperty('--fv-card-h', h + 'px');
-  if (_folderLayout === 'waterfall') requestAnimationFrame(() => applyWaterfallLayout());
+  if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
 }
 
 function _folderFilterArray(value) {
@@ -415,6 +457,12 @@ function renderFolderGrid(opts) {
       thumb.className = 'fv-thumb';
       const THUMB_TYPES = new Set(['image','video']);
       const SHELL_THUMB_TYPES = new Set(['3d','psd','clip','document']);
+      const appendIconThumb = () => {
+        const icon = document.createElement('span');
+        icon.className = 'fv-icon';
+        icon.innerHTML = fileTypeIcon(item.type);
+        thumb.appendChild(icon);
+      };
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
         img.src = '/api/file-raw?path=' + encodeURIComponent(item.path);
@@ -422,17 +470,10 @@ function renderFolderGrid(opts) {
         img.onerror = () => { const sp = document.createElement('span'); sp.className='fv-icon'; sp.innerHTML=fileTypeIcon(item.type); img.replaceWith(sp); };
         thumb.appendChild(img);
       } else if (SHELL_THUMB_TYPES.has(item.type)) {
-        // Windows シェルサムネイルを試行
-        const img = document.createElement('img');
-        img.src = '/api/thumbnail?path=' + encodeURIComponent(item.path);
-        img.loading = 'lazy';
-        img.onerror = () => { const sp = document.createElement('span'); sp.className='fv-icon'; sp.innerHTML=fileTypeIcon(item.type); img.replaceWith(sp); };
-        thumb.appendChild(img);
+        // Windows シェルサムネイルは起動直後の大量生成で固まるため、フォルダカードでは安定したアイコンを使う。
+        appendIconThumb();
       } else {
-        const icon = document.createElement('span');
-        icon.className = 'fv-icon';
-        icon.innerHTML = fileTypeIcon(item.type);
-        thumb.appendChild(icon);
+        appendIconThumb();
       }
       // リンクファイルバッジ
       if (item.linked) {
@@ -570,11 +611,11 @@ function renderFolderGrid(opts) {
 
   // ウォーターフォール: 全アイテム追加後にレイアウト計算 + 画像読み込み完了後に再計算（debounce）
   if (_folderLayout === 'waterfall') {
-    requestAnimationFrame(() => applyWaterfallLayout());
+    _scheduleWaterfallLayout();
     let _wfDebounceTimer = null;
     const debouncedLayout = () => {
       clearTimeout(_wfDebounceTimer);
-      _wfDebounceTimer = setTimeout(() => applyWaterfallLayout(), 80);
+      _wfDebounceTimer = setTimeout(() => _scheduleWaterfallLayout(), 80);
     };
     container.querySelectorAll('img').forEach(img => {
       if (!img.complete) img.onload = debouncedLayout;

@@ -224,12 +224,31 @@
     return walk(GBLayout.root, null, '') || null;
   }
 
-  function _activateToolPaneMatch(match) {
+  function _activateToolPaneMatch(match, options) {
     if (!match?.paneId || !match?.tabId) return;
     if (match.panelsetNode && match.groupId && match.panelsetNode.activeGroupId !== match.groupId) {
       match.panelsetNode.activeGroupId = match.groupId;
     }
-    GBTabs.activateTab(match.paneId, match.tabId);
+    GBTabs.activateTab(match.paneId, match.tabId, options);
+  }
+
+  function _scheduleContentPaneRestore(paneId) {
+    if (!paneId) return;
+    const run = () => {
+      if (typeof GBLayout === 'undefined' || !GBLayout.root || !GBLayout.paneMap?.[paneId]) return;
+      const paneInfo = _getPaneInfoById(paneId);
+      if (!paneInfo || _isToolbarUtilityView(paneInfo.activeTab?.type)) return;
+      _refreshMountedPane(paneId);
+      const toolbarView = _toolbarViewForTab(paneInfo.activeTab) || state.view || '';
+      _syncStateView();
+      _mountFloatingAnnotationUi();
+      if (toolbarView && typeof _updateToolbars === 'function') _updateToolbars(toolbarView);
+      if (typeof replaceIcons === 'function') replaceIcons();
+    };
+    queueMicrotask(run);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    setTimeout(run, 0);
+    setTimeout(run, 80);
   }
 
   function _toolLabel(toolType) {
@@ -240,6 +259,8 @@
   function _openToolPane(toolType, options) {
     const openOpts = options || {};
     const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;
+    const mobileSinglePane = typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout();
+    const preserveWorkActive = !mobileSinglePane && _isPassiveToolPaneTab(toolType, { type: toolType, path: '' });
     if (typeof GBDockPopup !== 'undefined' && typeof GBDockPopup.activateTabType === 'function') {
       if (GBDockPopup.activateTabType(popupToolType, '')) return;
     }
@@ -251,8 +272,14 @@
       const activePane = GBLayout.activePane;
       // toggleRightPanelTab() だけが同一ペイン時のクローズを許可する。
       // openRightPanelTab()/switchRightTab() は既存タブを必ずアクティブ化する。
-      if (!openOpts.toggleExisting || paneId !== activePane) {
-        _activateToolPaneMatch(existing);
+      const existingVisible = typeof GBLayout.isPaneVisible === 'function'
+        ? GBLayout.isPaneVisible(paneId)
+        : paneId === activePane;
+      const closeExisting = openOpts.toggleExisting && (paneId === activePane || (preserveWorkActive && existingVisible));
+      if (!closeExisting) {
+        const restorePaneId = _getContentPane(activePane) || _getFileOpenPane(activePane);
+        _activateToolPaneMatch(existing, { preserveActivePane: preserveWorkActive });
+        _scheduleContentPaneRestore(restorePaneId);
       } else {
         GBTabs.closeTab(paneId, existing.tabId);
       }
@@ -272,12 +299,19 @@
     } else {
       // 通常ツールは右に配置
       const allPanes = GBLayout.getAllPanes(GBLayout.root);
-      if (allPanes.length <= 1) {
-        const newPaneId = GBLayout.splitPane(paneId, 'horizontal', 'right', newPane);
-        if (newPaneId) GBLayout.setActivePane(newPaneId);
-      } else {
-        const lastPane = allPanes[allPanes.length - 1];
-        GBTabs.addTab(lastPane.id, _toolLabel(toolType), toolType, '');
+      const reusableToolPane = allPanes.find(pane => pane?.id && !pane.locked && _isVersionHostPane(pane));
+      if (reusableToolPane) {
+        const restorePaneId = _getContentPane(GBLayout.activePane) || _getFileOpenPane(GBLayout.activePane);
+        GBTabs.addTab(reusableToolPane.id, _toolLabel(toolType), toolType, '', null, { preserveActivePane: preserveWorkActive });
+        _scheduleContentPaneRestore(restorePaneId);
+        return;
+      }
+      const sourcePaneId = _getContentPane(GBLayout.activePane) || paneId;
+      const newPaneId = GBLayout.splitPane(sourcePaneId, 'horizontal', 'right', newPane);
+      if (newPaneId) {
+        if (!preserveWorkActive) GBLayout.setActivePane(newPaneId);
+        _refreshPaneAfterTabSwitch(newPaneId, { previousActivePane: preserveWorkActive ? null : sourcePaneId });
+        _scheduleContentPaneRestore(sourcePaneId);
       }
     }
   }
@@ -429,7 +463,11 @@
     mountAllPanes: _mountAllPanes,
     mountFloatingAnnotationUi: _mountFloatingAnnotationUi,
     mountVirtualPane: _mountVirtualPane,
+    activateFileOpenPane: _activateFileOpenPane,
     activateAnnotationFabForPane: _activateAnnotationFabForPane,
+    getAnnotationContentPaneInfo: _getAnnotationContentPaneInfo,
+    getCurrentAnnotationTarget: _getCurrentAnnotationTarget,
+    rememberAnnotationTargetForPane: _rememberAnnotationTargetForPane,
     refreshPaneAfterTabSwitch: _refreshPaneAfterTabSwitch,
     retractPaneContent: _retractPaneContent,
     toolLabel: _toolLabel,

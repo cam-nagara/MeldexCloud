@@ -120,6 +120,26 @@ const GBPaneBridge = (() => {
     skipGlobalUi: true,
     skipStateView: true,
   });
+  function _isDesktopStartupRestore() {
+    if (!window._meldexStartupRestoring) return false;
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      return params.get('desktop') === '1' || document.documentElement?.dataset?.desktopLaunch === '1';
+    } catch {
+      return false;
+    }
+  }
+  function _yieldStartupRestorePaint() {
+    if (!_isDesktopStartupRestore()) return Promise.resolve();
+    if (typeof _hideStartupSplash === 'function') {
+      try { _hideStartupSplash(); } catch {}
+    }
+    return new Promise(resolve => {
+      const done = () => setTimeout(resolve, 0);
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(done);
+      else done();
+    });
+  }
 
   function _beginBridgeUpdate() {
     _bridgeUpdating += 1;
@@ -207,6 +227,7 @@ const GBPaneBridge = (() => {
     GBLayout.onPostRender = _afterRender;
     GBLayout.onActivePaneChange = _onActivePaneChange;
     GBLayout.isNavPaneType = (type) => NAV_PANE_TYPES.has(type);
+    GBLayout.isPassivePaneType = (type, tab) => _isPassiveToolPaneTab(type, tab);
 
     // 3. GBLayout 初期化（#gb-layout-root が必要）
     const layoutRoot = document.getElementById('gb-layout-root');
@@ -685,48 +706,6 @@ const GBPaneBridge = (() => {
     });
   }
 
-  function _isDesktopStartupRestoreActive() {
-    if (!window._meldexStartupRestoring) return false;
-    try {
-      const params = new URLSearchParams(window.location.search || '');
-      return params.get('desktop') === '1' || document.documentElement?.dataset?.desktopLaunch === '1';
-    } catch {
-      return false;
-    }
-  }
-
-  function _renderDeferredStartupFolder(tab, containerId) {
-    const path = tab?.path || '';
-    const label = tab?.label || (path ? path.split(/[\\/]/).filter(Boolean).pop() : 'フォルダ');
-    const title = document.getElementById('folder-title');
-    if (title) title.textContent = label;
-    const count = document.getElementById('folder-item-count');
-    if (count) count.textContent = '未読込';
-    const grid = document.getElementById('folder-grid');
-    if (!grid) return;
-    const box = document.createElement('div');
-    box.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:160px;color:var(--fg2);font-size:13px;';
-    const message = document.createElement('div');
-    message.textContent = '起動時の負荷を抑えるため、フォルダの内容はまだ読み込んでいません。';
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-btn';
-    button.textContent = '読み込む';
-    button.addEventListener('click', () => {
-      if (typeof openFolder === 'function') {
-        openFolder(label, path, { fromExplorer: true, skipAutoAppLayout: true });
-      }
-    });
-    box.appendChild(message);
-    box.appendChild(button);
-    grid.replaceChildren(box);
-    const viewEl = document.getElementById(containerId);
-    if (viewEl) {
-      viewEl.dataset.gbLegacyView = 'folder';
-      viewEl.dataset.gbLegacyPath = '';
-    }
-  }
-
   function _ensureLegacyTabContent(tab, viewName, containerId, openOpts) {
     const label = tab.label || '';
     const path = tab.path || '';
@@ -734,10 +713,6 @@ const GBPaneBridge = (() => {
     const bridgeOpts = openOpts || _bridgeOpenOpts;
     if (!path) {
       _scheduleLegacyStateRestore(tab, viewName, containerId);
-      return;
-    }
-    if (viewName === 'folder' && _isDesktopStartupRestoreActive()) {
-      _renderDeferredStartupFolder(tab, containerId);
       return;
     }
     const existingJob = _legacyLoadJobs.get(containerId);
@@ -762,6 +737,7 @@ const GBPaneBridge = (() => {
           viewEl.dataset.gbLegacyPath = path;
         }
         _beginBridgeUpdate();
+        await _yieldStartupRestorePaint();
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, bridgeOpts);
         else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || _folderPath !== path || prevView !== 'folder')) await openFolder(label, path, bridgeOpts);
         else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, bridgeOpts);
@@ -770,7 +746,7 @@ const GBPaneBridge = (() => {
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevCsvPath !== path || prevView !== 'csv')) await openCsvFile(label, path, bridgeOpts);
         else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, bridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, bridgeOpts);
-        else if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, null, bridgeOpts);
+        else if (['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, null, bridgeOpts);
         else if (viewName === 'html' && typeof openViewer === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           openViewer(tab.state?.urlExternal ? path : '/viewer?file=' + encodeURIComponent(path), bridgeOpts);
         }
@@ -937,33 +913,53 @@ const GBPaneBridge = (() => {
     }
   }
 
+  function _paneHasVisibleManagedView(type) {
+    if (!type) return false;
+    const containerId = LEGACY_CONTAINERS[type];
+    if (containerId) {
+      const paneId = _containerPane[containerId] || '';
+      return !!(paneId && typeof _isPaneActuallyVisible === 'function' && _isPaneActuallyVisible(paneId));
+    }
+    if (!COMPONENT_TYPES.has(type) || typeof GBLayout?.getAllPanes !== 'function') return false;
+    return GBLayout.getAllPanes(GBLayout.root).some(pane => {
+      const tab = pane?.tabs?.[pane.activeTabIndex];
+      return tab?.type === type && (typeof _isPaneActuallyVisible !== 'function' || _isPaneActuallyVisible(pane.id));
+    });
+  }
+
   // アクティブペインのアクティブタブのtypeをstate.viewに同期する
   function _syncStateView() {
     let newView = null;
     let activePaneOwnsView = false;
     const isPaneManagedType = (type) => !!(type && (LEGACY_CONTAINERS[type] || COMPONENT_TYPES.has(type)));
+    const isWorkManagedType = (type) => isPaneManagedType(type) && !_isToolbarUtilityView(type);
     // まずアクティブペインのタブをチェック
     const paneId = GBLayout.activePane;
     if (paneId) {
       const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
       if (paneInfo) {
         const activeTab = paneInfo.node.tabs?.[paneInfo.node.activeTabIndex];
-        if (isPaneManagedType(activeTab?.type)) {
+        if (isWorkManagedType(activeTab?.type)) {
           newView = activeTab.type;
           activePaneOwnsView = true;
         }
       }
     }
     // ツールペイン等の場合: 全ペインからメインコンテンツを探す
+    if (!newView && isWorkManagedType(state.view) && _paneHasVisibleManagedView(state.view)) {
+      newView = state.view;
+    }
     if (!newView) {
       for (const p of GBLayout.getAllPanes(GBLayout.root)) {
         const tab = p.tabs?.[p.activeTabIndex];
-        if (isPaneManagedType(tab?.type)) { newView = tab.type; break; }
+        if (isWorkManagedType(tab?.type)) { newView = tab.type; break; }
       }
     }
     if (newView && (newView !== state.view || activePaneOwnsView)) {
       state.view = newView;
       _updateToolbars(newView);
+    } else if (!newView) {
+      _updateToolbars('');
     }
   }
 

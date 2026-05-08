@@ -69,8 +69,7 @@ function bdDrawConns(options) {
     const cx2 = tn ? tp.x + tw/2 : rawToPoint.x, cy2 = tn ? tp.y + th/2 : rawToPoint.y;
     const ddx = cx2 - cx1, ddy = cy2 - cy1;
 
-    let depth = 0; let cur = tn;
-    while (cur && cur.parent) { depth++; cur = bd.nodes.find(v=>v.id===cur.parent); }
+    const depth = typeof bdParentDepth === 'function' ? bdParentDepth(tn) : 0;
     // width: ユーザー指定値があればそれを使用、なければ深さに応じたデフォルト（旧値の約半分）
     const defaultW = Math.max(1, 7 - depth * 1.5);
     const strokeWidth = ((connStyle.width != null && connStyle.width !== 0) ? connStyle.width : defaultW);

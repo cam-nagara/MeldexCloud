@@ -10,6 +10,25 @@ const MELDEX_LLM_API_KEY_URLS = Object.freeze({
   gemini: 'https://aistudio.google.com/app/apikey',
 });
 
+function getMeldexSampleDownloadUrl() {
+  const cfg = window.MeldexCloudRuntimeConfig || {};
+  return String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
+}
+
+function openMeldexSampleDownload() {
+  const url = getMeldexSampleDownloadUrl() || 'https://github.com/cam-nagara/MeldexCloud/releases';
+  window.open(url, '_blank', 'noopener');
+}
+
+function openMeldexSampleGuide() {
+  document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
+  if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
+    openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
+    return;
+  }
+  window.open('public-index.html#samples', '_blank', 'noopener');
+}
+
 function _normalizeAvatarBgColor(value) {
   const raw = String(value || '').trim();
   if (/^#[0-9a-f]{3}$/i.test(raw) || /^#[0-9a-f]{6}$/i.test(raw) || /^#[0-9a-f]{8}$/i.test(raw)) return raw;
@@ -123,6 +142,15 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ</div>
+        <div class="gb-section-desc">サンプル作品は本体とは別配布です。ZIPを展開し、できた「サンプル」フォルダをソースフォルダ内へ置くか、ソースフォルダとして追加してください。</div>
+        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+          <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleDownload()">${lucide('download',14)} サンプルをダウンロード</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="addOutlinerRootFromSettings()">${lucide('folderPlus',14)} ソースフォルダに追加</button>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">保存モード</div>
         <div class="gb-section-desc">MeldexをこのPCだけで使うか、Dropbox共有モードで使うかを設定します。</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageMode)}</div>
@@ -141,6 +169,12 @@ async function showSettingsModal(opts) {
         </div>
         <div id="settings-mobile-url-list" class="gb-section-desc">接続情報を取得中...</div>
       </section>
+      <div id="settings-install-container">
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">${lucide('download',14)} ホーム画面に追加</div>
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </section>
+      </div>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ</div>
         <div class="gb-section-desc">このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません。</div>

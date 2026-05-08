@@ -8,8 +8,11 @@
         session_title: streamSessionTitle,
         target_path: streamTargetPath,
         source_folder: streamSourceFolder,
+        work_folder: streamWorkFolder,
+        active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
         user: typeof getUsername === 'function' ? getUsername() : '',
         user_agent: navigator.userAgent || '',
+        theme_context: typeof window.chatThemeContextSettings === 'function' ? window.chatThemeContextSettings() : {},
         allow_web_search: chatAllowWebSearch(),
         allow_auto_compress: chatAllowAutoCompress(),
         allow_code_execution: chatAllowCodeExecution(),
@@ -129,6 +132,7 @@
     }
 
     if (streamError) throw streamError;
+    streamCompleted = true;
 
     // アシスタントメッセージを記録 + 自動保存
     const toolOnlyResponse = !fullText && !responseCodeExecBlocks.length && responseToolEvents.length > 0;
@@ -224,6 +228,15 @@
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
       if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+      if (streamCompleted && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        setTimeout(() => {
+          _chatSendQueuedMessagesAfterStream({
+            messages: streamMessages,
+            sessionId: streamSessionId,
+            targetPath: streamTargetPath,
+          }).catch(() => {});
+        }, 0);
+      }
     }
     msgContainer.removeEventListener('scroll', _scrollHandler);
   }
@@ -287,7 +300,7 @@ Meldexのチャットでは、次の層を矛盾なく扱ってください。
 2. **ユーザー定義ルール**: ルールボタンで管理される個人ルール。Skillsと矛盾しない範囲で尊重する。
 3. **ナレッジ層**: 過去チャットから抽出された fact / decision / preference / correction / team_consensus。関連項目は自動注入され、追加で search_knowledge(query) でも探せる。ただし自動注入ナレッジは参考情報であり、存在確認・場所確認・作成更新完了の証拠にはしない。
 4. **ステータス別ポリシー**: 掲載済み・確定など canonical 扱いの項目は変更不可。内部確定は矛盾させない。調整可能項目はユーザー指示があれば提案・変更できる。
-5. **ファイル検索層**: search(query) はソースフォルダ、ホームフォルダ、Meldexコードを検索する。必要に応じて read_file / read_database で原文を読む。
+5. **ファイル検索層**: read_project_overview を最初に呼び、search(query) は既定で作品フォルダ内を検索する。作品外の確認が必要な場合だけ scope: source / roots / all を明示し、必要に応じて read_file / read_database / read_*_context で原文または構造化contextを読む。
 6. **現在のコンテキスト**: ユーザーが開いているファイル、添付、直近メッセージ。上位ルールや canonical と矛盾する場合は、矛盾を報告する。
 
 ナレッジ層の項目を修正する場合、ユーザーが明確に訂正・固定・解除を求めたときだけ update_knowledge を使ってください。canonical や保護された項目は勝手に上書きしないでください。
@@ -611,6 +624,7 @@ function _createFileChat(targetPath) {
   _chatState.messages = [];
   _chatState.sessionId = '';
   _chatState.targetPath = targetPath;
+  if (typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
@@ -775,6 +789,7 @@ function chatClear() {
   _chatState.sessionId = '';
   _chatState.targetPath = '';
   _chatState.pendingAttachments = [];
+  if (typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
   if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
@@ -1155,6 +1170,28 @@ function _chatLoadSession(path) {
   _chatSearchClose();
   if (typeof openSavedChat === 'function') openSavedChat(path);
 }
+
+function _chatAppendHighlightedText(parent, text, query) {
+  const source = String(text || '');
+  const needle = String(query || '');
+  if (!parent || !needle) {
+    parent?.appendChild(document.createTextNode(source));
+    return;
+  }
+  const pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  let lastIndex = 0;
+  source.replace(pattern, (match, offset) => {
+    if (offset > lastIndex) parent.appendChild(document.createTextNode(source.slice(lastIndex, offset)));
+    const mark = document.createElement('mark');
+    mark.style.cssText = 'background:var(--orange);color:var(--ui-fg-strong);border-radius:2px;padding:0 1px;';
+    mark.textContent = match;
+    parent.appendChild(mark);
+    lastIndex = offset + match.length;
+    return match;
+  });
+  if (lastIndex < source.length) parent.appendChild(document.createTextNode(source.slice(lastIndex)));
+}
+
 function _chatSearch() {
   const q = document.getElementById('chat-search-input')?.value?.trim();
   const scope = document.getElementById('chat-search-scope')?.value || 'session';
@@ -1220,15 +1257,20 @@ function _chatSearch() {
         results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">結果なし</div>';
         return;
       }
-      let html = '';
+      results.innerHTML = '';
       items.forEach(r => {
-        const preview = (r.snippet || '').replace(/</g, '&lt;').replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => `<mark style="background:var(--orange);color:var(--ui-fg-strong);border-radius:2px;padding:0 1px;">${m}</mark>`);
-        html += `<div style="padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;" data-action="_chatLoadSession('${esc(r.path)}')">
-          <div style="font-weight:bold;color:var(--fg);margin-bottom:2px;">${esc(r.title || r.path.split('/').pop())}</div>
-          <div style="color:var(--fg2);font-size:11px;">${preview}</div>
-        </div>`;
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
+        const title = document.createElement('div');
+        title.style.cssText = 'font-weight:bold;color:var(--fg);margin-bottom:2px;';
+        title.textContent = r.title || String(r.path || '').split('/').pop();
+        const preview = document.createElement('div');
+        preview.style.cssText = 'color:var(--fg2);font-size:11px;';
+        _chatAppendHighlightedText(preview, r.snippet || '', q);
+        row.append(title, preview);
+        row.addEventListener('click', () => _chatLoadSession(r.path));
+        results.appendChild(row);
       });
-      results.innerHTML = html;
     }).catch(() => {
       results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">検索に失敗しました</div>';
       if (countEl) countEl.textContent = '';
@@ -1245,6 +1287,7 @@ document.getElementById('chat-search-scope')?.addEventListener('change', () => {
 // Enter送信、Shift+Enter改行
 document.getElementById('chat-input')?.addEventListener('keydown', function(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
+    if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(e)) return;
     e.preventDefault();
     chatSend();
   }

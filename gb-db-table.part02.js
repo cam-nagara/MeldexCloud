@@ -298,7 +298,11 @@ function setDbCellTextDisplay(dbPath, overflow, lines, options = {}) {
     historyDetail: cfg.cellTextOverflow === 'wrap' ? `${cfg.cellWrapLines}行` : '切り詰め',
     skipHistory: options.skipHistory === true,
   });
-  if (typeof renderPivot === 'function') renderPivot(options.ctx || _currentPaneState());
+  const ctx = options.ctx
+    || (typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(options.event, { dbPath }) : null)
+    || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+  else if (typeof renderPivot === 'function') renderPivot(ctx);
 }
 
 function showDbCellWrapMenu(event) {
@@ -306,7 +310,9 @@ function showDbCellWrapMenu(event) {
     event.preventDefault();
     event.stopPropagation();
   }
-  const ctx = _currentPaneState();
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(event, { dbPath: state.currentDbPath })
+    : _currentPaneState();
   const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   document.querySelectorAll('.db-cell-wrap-menu').forEach(el => el.remove());
@@ -327,10 +333,10 @@ function showDbCellWrapMenu(event) {
   };
 
   addItem('折り返し', 'wrapText', cfg.overflow === 'wrap', () => {
-    setDbCellTextDisplay(dbPath, 'wrap', cfg.lines, { ctx });
+    setDbCellTextDisplay(dbPath, 'wrap', cfg.lines, { ctx, event });
   });
   addItem('切り詰め', 'scissors', cfg.overflow === 'clip', () => {
-    setDbCellTextDisplay(dbPath, 'clip', cfg.lines, { ctx });
+    setDbCellTextDisplay(dbPath, 'clip', cfg.lines, { ctx, event });
   });
 
   const row = document.createElement('label');
@@ -346,7 +352,7 @@ function showDbCellWrapMenu(event) {
   const applyLines = () => {
     const nextLines = _dbClampInt(input.value, 1, 10, cfg.lines);
     input.value = String(nextLines);
-    setDbCellTextDisplay(dbPath, 'wrap', nextLines, { ctx });
+    setDbCellTextDisplay(dbPath, 'wrap', nextLines, { ctx, event });
   };
   input.addEventListener('change', applyLines);
   input.addEventListener('keydown', (e) => {
@@ -439,13 +445,32 @@ function _dbWidthPxFromChars(chars) {
   return Math.max(60, Math.min(640, Math.round(chars * 12 + 28)));
 }
 
-function autoFitCurrentSheetColumns() {
-  const ctx = _currentPaneState();
+const DB_ENTITY_AUTO_WIDTH_CHROME_PX = 74;
+
+function _dbEntityWidthPxFromChars(chars) {
+  return Math.max(120, Math.min(640, _dbWidthPxFromChars(chars) + DB_ENTITY_AUTO_WIDTH_CHROME_PX));
+}
+
+function autoFitCurrentSheetColumns(event) {
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(event, { dbPath: state.currentDbPath })
+    : _currentPaneState();
   const data = ctx?.pivotData || state.pivotData;
   const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath || !data?.entities) return;
+  const viewMode = typeof _dbCurrentViewModeForContext === 'function'
+    ? _dbCurrentViewModeForContext(ctx, dbPath)
+    : (typeof getCurrentViewMode === 'function' ? getCurrentViewMode(dbPath) : 'pivot');
+  if (viewMode === 'timeline' && typeof autoFitTimelineColumns === 'function') {
+    autoFitTimelineColumns(ctx, dbPath);
+    return;
+  }
+  if (viewMode !== 'pivot') {
+    if (typeof showStatus === 'function') showStatus('列幅自動調整はテーブル表示とタイムライン表示で利用できます', true);
+    return;
+  }
   const cfg = getDbViewConfig(dbPath);
-  const before = captureDbViewConfigHistory(dbPath);
+  const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const hiddenCols = getHiddenCols(dbPath);
   const propTypes = getPropertyTypes(dbPath);
   const advFilters = getAdvancedFilters(dbPath);
@@ -463,14 +488,16 @@ function autoFitCurrentSheetColumns() {
 
   widthTarget.colWidths = { ...(widthTarget.colWidths || {}) };
   const entityChars = _dbAutoWidthCharsForEntryNames(entityNames);
-  widthTarget.colWidths.__entity__ = _dbWidthPxFromChars(entityChars);
+  widthTarget.colWidths.__entity__ = _dbEntityWidthPxFromChars(entityChars);
   visibleProps.forEach(propName => {
     const texts = entityNames.map(name => _dbTextForProp(name, propName, data, propTypes, advFilters));
     widthTarget.colWidths[propName] = _dbWidthPxFromChars(_dbAutoWidthCharsForTexts(texts, propName));
   });
   cfg.cellWrapLines = _dbClampInt(cfg.cellWrapLines, 1, 10, 10);
   saveDbViewConfig(dbPath, cfg, { skipHistory: true });
-  pushDbViewConfigHistory(dbPath, 'シート表示: 列幅自動調整', before, captureDbViewConfigHistory(dbPath), '全列');
+  if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: 列幅自動調整', before, captureDbViewConfigHistory(dbPath), '全列');
+  }
   renderPivot(ctx);
   if (typeof showStatus === 'function') showStatus('列幅を自動調整しました');
 }

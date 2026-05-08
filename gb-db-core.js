@@ -139,12 +139,20 @@ async function _apiPutValue(valObj, updates) {
       : null;
     if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
   } catch {}
+  if (updates.new_rich_html !== undefined) {
+    if (updates.new_rich_html) valObj.rich_html = updates.new_rich_html;
+    else delete valObj.rich_html;
+  } else if (updates.new_value != null) {
+    delete valObj.rich_html;
+  }
   return res;
 }
 
-async function _apiPostValue(entityPath, propName, value, status, note) {
+async function _apiPostValue(entityPath, propName, value, status, note, richHtml) {
   const key = entityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
-  const res = await apiPost('/value', { [key]: entityPath, property: propName, value, status, note: note || '' });
+  const body = { [key]: entityPath, property: propName, value, status, note: note || '' };
+  if (richHtml) body.rich_html = richHtml;
+  const res = await apiPost('/value', body);
   const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
   _markDbAutoVersionDirty(dbPath);
   try {
@@ -258,4 +266,48 @@ function _setSelectedColumns(dbPath, props, anchor) {
     props: [...new Set((props || []).filter(Boolean))],
     anchor: anchor || ((props || [])[0] || ''),
   };
+}
+
+function _dbFindPaneContextForPath(dbPath) {
+  if (typeof getAllPanes !== 'function') return null;
+  try {
+    const panes = getAllPanes() || {};
+    for (const ctx of Object.values(panes)) {
+      if (ctx && (!dbPath || ctx.dbPath === dbPath)) return ctx;
+    }
+  } catch {}
+  return null;
+}
+
+function _dbPaneContextFromEvent(eventOrElement, options = {}) {
+  const fallbackDbPath = typeof state !== 'undefined' ? state.currentDbPath : '';
+  const dbPath = options.dbPath || fallbackDbPath || '';
+  const target = eventOrElement?.currentTarget || eventOrElement?.target || eventOrElement;
+  const paneEl = target?.closest?.('.gb-pane[data-pane-id]') || target?.closest?.('.gb-pane');
+  const paneId = paneEl?.dataset?.paneId || '';
+  if (paneId && typeof getPaneContext === 'function') {
+    const ctx = getPaneContext(paneId);
+    if (ctx) return ctx;
+  }
+  const active = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+  if (active && (!dbPath || active.dbPath === dbPath || !active.dbPath)) return active;
+  return _dbFindPaneContextForPath(dbPath) || active || null;
+}
+
+function _dbCurrentViewModeForContext(ctx, dbPath) {
+  const raw = dbPath && typeof getCurrentViewMode === 'function'
+    ? getCurrentViewMode(dbPath)
+    : (ctx?.viewMode || (typeof state !== 'undefined' ? state.view : '') || 'pivot');
+  return ['calendar', 'tasks', 'shifts'].includes(raw) ? 'timeline' : (raw || 'pivot');
+}
+
+function _renderCurrentDbView(ctx, dbPath) {
+  const mode = _dbCurrentViewModeForContext(ctx, dbPath);
+  if (mode === 'gallery' && typeof renderGallery === 'function') renderGallery(ctx);
+  else if (mode === 'kanban' && typeof renderKanban === 'function') renderKanban(ctx);
+  else if (mode === 'timeline' && typeof renderTimeline === 'function') renderTimeline(ctx);
+  else if (mode === 'chart' && typeof renderChart === 'function') renderChart(ctx);
+  else if (mode === 'graph' && typeof renderGraph === 'function') renderGraph(ctx);
+  else if (mode === 'form' && typeof renderDbFormView === 'function') renderDbFormView(ctx);
+  else if (typeof renderPivot === 'function') renderPivot(ctx);
 }

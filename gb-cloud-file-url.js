@@ -20,7 +20,7 @@
 
   function _extractRawPath(value) {
     const raw = String(value || '').trim();
-    if (!raw || /^(https?:|data:|blob:)/i.test(raw)) return '';
+    if (!raw) return '';
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) {
       try {
         const parsed = new URL(raw, document.baseURI || window.location.href);
@@ -32,13 +32,15 @@
         }
       }
     }
+    if (/^(https?:|data:|blob:)/i.test(raw)) return '';
     if (raw.startsWith('/')) return '';
     return _normalizePath(raw);
   }
 
   function _isDirectUrl(value) {
     const raw = String(value || '').trim();
-    return /^(https?:|data:|blob:)/i.test(raw) || (raw.startsWith('/') && !_looksLikeFileRawUrl(raw) && !/\/(?:api\/)?thumbnail\?/.test(raw));
+    if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) return false;
+    return /^(https?:|data:|blob:)/i.test(raw) || raw.startsWith('/');
   }
 
   function _fallbackRawUrl(path) {
@@ -143,14 +145,36 @@
     return ensureRawUrl(direct);
   }
 
+  function _sameResourceUrl(left, right) {
+    const a = String(left || '').trim();
+    const b = String(right || '').trim();
+    if (a === b) return true;
+    if (!a || !b) return false;
+    try {
+      return new URL(a, document.baseURI || window.location.href).href === new URL(b, document.baseURI || window.location.href).href;
+    } catch {
+      return false;
+    }
+  }
+
+  function _setElementUrlIfChanged(element, propName, nextValue) {
+    const next = String(nextValue || '');
+    if (!element || !next) return false;
+    const currentProp = String(element[propName] || '');
+    const currentAttr = String(element.getAttribute?.(propName) || '');
+    if (_sameResourceUrl(currentProp, next) || _sameResourceUrl(currentAttr, next)) return false;
+    element[propName] = next;
+    return true;
+  }
+
   function applyToElement(element, pathLike, propName) {
     const target = element;
     const prop = propName || 'src';
     if (!target) return Promise.resolve({ path: '', url: '' });
     const current = displayUrl(pathLike);
-    if (current) target[prop] = current;
+    if (current) _setElementUrlIfChanged(target, prop, current);
     return ensureDisplayUrl(pathLike).then((info) => {
-      if (target.isConnected && info?.url) target[prop] = info.url;
+      if (target.isConnected && info?.url) _setElementUrlIfChanged(target, prop, info.url);
       return info;
     }).catch(() => ({ path: '', url: current || '' }));
   }

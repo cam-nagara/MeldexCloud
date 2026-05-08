@@ -1149,10 +1149,12 @@
       editor.setAttribute('role', 'textbox');
       editor.setAttribute('aria-multiline', 'true');
       editor.setAttribute('aria-label', 'メッセージ入力');
+      editor.tabIndex = 0;
       input.classList.add(HIDDEN_INPUT_CLASS);
       input.setAttribute('aria-hidden', 'true');
       input.tabIndex = -1;
       input.insertAdjacentElement('afterend', editor);
+      if (typeof _chatBindImeCompositionGuard === 'function') _chatBindImeCompositionGuard(RICH_INPUT_ID);
       _renderRichInputFromSource();
     }
     return editor;
@@ -1171,10 +1173,12 @@
         event.stopPropagation();
       }
       if (event.key === 'Enter' && !event.shiftKey) {
+        if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(event)) return;
         event.preventDefault();
         _syncPlainFromRich();
         if (typeof chatSend === 'function') chatSend();
       } else if (event.key === 'Enter' && event.shiftKey) {
+        if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(event)) return;
         event.preventDefault();
         event.stopPropagation();
         _insertSourceTextAtRichSelection('\n');

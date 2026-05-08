@@ -182,7 +182,7 @@
 
   function _calAvatarHtml(name, size) {
     const safeName = _calEsc(name);
-    const src = '/api/team/avatar/' + encodeURIComponent(name) + '?t=0';
+    const src = window.MeldexDataAccess?.team?.avatarUrl?.(name || 'anonymous', {}) || ('/api/team/avatar/' + encodeURIComponent(name) + '?t=0');
     const style = `width:${size}px;height:${size}px;`;
     const fallback = _calEsc((name || '?').charAt(0).toUpperCase() || '?');
     return `<span class="gb-cal-event-avatar" style="${style}" title="${safeName}"><img src="${src}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';"><span>${fallback}</span></span>`;

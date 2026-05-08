@@ -745,16 +745,25 @@
   registerAssertion('inv_entity_visible', async (spec, _definition, api) => {
     const expected = spec.path ? api.normalizePath(spec.path) : '';
     let restoreRequested = false;
+    const pathMatchesExpected = (path) => {
+      if (!expected) return true;
+      const actual = api.normalizePath(path || '');
+      return actual === expected
+        || actual.endsWith('/' + expected)
+        || actual.endsWith('\\' + expected)
+        || expected.endsWith('/' + actual)
+        || expected.endsWith('\\' + actual);
+    };
     const matchesExpectedName = (root) => {
       if (spec.entityName == null) return true;
       return (root?.textContent || '').includes(String(spec.entityName));
     };
     const findSubPanelEntity = () => {
       const panel = document.getElementById('gb-subpanel');
-      const view = document.getElementById('entity-view');
-      if (!panel || panel.hidden || !view || !view.closest('#gb-subpanel') || !_isVisible(view)) return null;
+      const view = document.querySelector('[data-gb-subpanel-entity-root="true"]');
+      if (!panel || panel.hidden || !view || !_isVisible(view)) return null;
       if (typeof GBSubPanel !== 'undefined' && !GBSubPanel.isOpen('entity')) return null;
-      if (expected && api.normalizePath(_appState().currentEntityPath || '') !== expected) return null;
+      if (!pathMatchesExpected(view.dataset.path || '')) return null;
       if (!matchesExpectedName(view)) return null;
       return view;
     };
@@ -762,7 +771,7 @@
       const current = api.normalizePath(_appState().currentEntityPath);
       const subPanelEntity = findSubPanelEntity();
       if (subPanelEntity) return subPanelEntity;
-      if (expected && current !== expected && !restoreRequested && typeof selectEntity === 'function') {
+      if (expected && !pathMatchesExpected(current) && !restoreRequested && typeof selectEntity === 'function') {
         restoreRequested = true;
         try { await selectEntity(expected); } catch {}
       } else if (expected && _appState().view !== 'entity' && !restoreRequested && typeof selectEntity === 'function') {
@@ -773,7 +782,7 @@
       const view = document.getElementById('entity-view');
       const currentPath = api.normalizePath(_appState().currentEntityPath);
       if (!view || !_isVisible(view)) return null;
-      if (expected && currentPath !== expected) return null;
+      if (!pathMatchesExpected(currentPath)) return null;
       if (spec.entityName != null) {
         const title = document.getElementById('entity-title');
         const text = title?.textContent || '';

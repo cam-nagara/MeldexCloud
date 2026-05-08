@@ -516,18 +516,65 @@ const STYLE_PREVIEW_FONT_SIZES = {
   '見出し H6': 13,
 };
 
+const SETTINGS_THEME_PREVIEW_AUTO_VAR_TARGETS = Object.freeze({
+  '--fv-item-fg': { targetId: 'folder-panel-folder', stateId: 'normal', index: 0 },
+  '--fv-item-bg': { targetId: 'folder-panel-folder', stateId: 'normal', index: 0 },
+  '--fv-item-border': { targetId: 'folder-panel-folder', stateId: 'normal', index: 0 },
+  '--fv-item-hover-fg': { targetId: 'folder-panel-folder', stateId: 'hover', index: 0 },
+  '--fv-item-hover-bg': { targetId: 'folder-panel-folder', stateId: 'hover', index: 0 },
+  '--fv-item-hover-border': { targetId: 'folder-panel-folder', stateId: 'hover', index: 0 },
+  '--fv-item-selected-fg': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
+  '--fv-item-selected-bg': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
+  '--fv-item-selected-border': { targetId: 'folder-panel-folder', stateId: 'selected', index: 0 },
+  '--outliner-item-fg': { targetId: 'folder-tree-folder', stateId: 'normal', index: 0 },
+  '--outliner-item-bg': { targetId: 'folder-tree-folder', stateId: 'normal', index: 0 },
+  '--outliner-item-hover-fg': { targetId: 'folder-tree-folder', stateId: 'hover', index: 0 },
+  '--outliner-item-hover-bg': { targetId: 'folder-tree-folder', stateId: 'hover', index: 0 },
+  '--outliner-item-selected-fg': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
+  '--outliner-item-selected-bg': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
+  '--outliner-accent': { targetId: 'folder-tree-folder', stateId: 'selected', index: 0 },
+});
+
+function _settingsThemePreviewRowKeys(d) {
+  return [d?.fg, d?.bg, d?.line]
+    .map(key => String(key || '').trim())
+    .filter(Boolean);
+}
+
+function _settingsThemePreviewAutoTargetFromKnownVars(keys) {
+  for (const key of keys || []) {
+    const hit = SETTINGS_THEME_PREVIEW_AUTO_VAR_TARGETS[key];
+    if (hit) return { ...hit };
+  }
+  return null;
+}
+
+function _settingsThemePreviewAutoTargetFromThemeVars(keys) {
+  if (!keys?.length || typeof MeldexThemeManager === 'undefined' || !Array.isArray(MeldexThemeManager.THEME_UI_TARGETS)) {
+    return null;
+  }
+  const rowKeys = new Set(keys);
+  for (const target of MeldexThemeManager.THEME_UI_TARGETS) {
+    if (!target?.vars) continue;
+    for (const stateId of ['normal', 'hover', 'selected']) {
+      const vars = target.vars[stateId] || {};
+      const stateKeys = Object.values(vars).flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean);
+      if (stateKeys.some(key => rowKeys.has(key))) {
+        return { targetId: target.id, stateId, index: 0 };
+      }
+    }
+  }
+  return null;
+}
+
 function _settingsThemePreviewAutoTargetForRow(d) {
   const label = String(d?.label || '').trim();
   const heading = label.match(/^見出し H([1-6])$/);
-  if (heading) return { targetId: 'note-heading', index: parseInt(heading[1], 10) - 1 };
-  if (/目次/.test(label)) return { targetId: 'note-toc-item', index: 0 };
-  if (label === 'カード' && (d?.fg === '--fv-item-fg' || d?.bg === '--fv-item-bg')) {
-    return { targetId: 'folder-panel-folder', index: 0 };
-  }
-  if (label === '項目' && (d?.fg === '--outliner-item-fg' || d?.bg === '--outliner-item-bg')) {
-    return { targetId: 'folder-tree-folder', index: 0 };
-  }
-  return null;
+  if (heading) return { targetId: 'note-heading', stateId: 'normal', index: parseInt(heading[1], 10) - 1 };
+  if (/目次/.test(label)) return { targetId: 'note-toc-item', stateId: 'normal', index: 0 };
+  const keys = _settingsThemePreviewRowKeys(d);
+  return _settingsThemePreviewAutoTargetFromKnownVars(keys)
+    || _settingsThemePreviewAutoTargetFromThemeVars(keys);
 }
 
 function _settingsThemePreviewAutoMixCss(toneColor, amount, slotIndex, fallbackColor) {
@@ -561,11 +608,12 @@ function _settingsThemePreviewAutoStyleForRow(d) {
   if (!target || typeof MeldexThemeManager === 'undefined' || typeof MeldexThemeManager.getThemeUiApplications !== 'function') {
     return {};
   }
-  const normal = MeldexThemeManager.getThemeUiApplications()?.[target.targetId]?.normal || {};
+  const stateId = target.stateId || 'normal';
+  const state = MeldexThemeManager.getThemeUiApplications()?.[target.targetId]?.[stateId] || {};
   return {
-    fg: _settingsThemePreviewAutoColor(normal.fg, target.index),
-    bg: _settingsThemePreviewAutoColor(normal.bg, target.index),
-    underline: _settingsThemePreviewAutoColor(normal.underline, target.index),
+    fg: _settingsThemePreviewAutoColor(state.fg, target.index),
+    bg: _settingsThemePreviewAutoColor(state.bg, target.index),
+    underline: _settingsThemePreviewAutoColor(state.underline, target.index),
   };
 }
 

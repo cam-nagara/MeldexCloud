@@ -993,7 +993,8 @@ function _renderTeamMemberRows(container, members, myName, folderPath) {
     const av = document.createElement('div');
     av.style.cssText = 'width:24px;height:24px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;';
     if (m.has_avatar) {
-      av.innerHTML = `<img src="${API_BASE}/team/avatar/${encodeURIComponent(m.name)}?folder=${encodeURIComponent(folderPath)}&t=${Date.now()}" style="width:100%;height:100%;object-fit:cover;">`;
+      const avatarSrc = window.MeldexDataAccess?.team?.avatarUrl?.(m.name || 'anonymous', { folder: folderPath }) || `${API_BASE}/team/avatar/${encodeURIComponent(m.name)}?folder=${encodeURIComponent(folderPath)}&t=${Date.now()}`;
+      av.innerHTML = `<img src="${esc(avatarSrc)}" style="width:100%;height:100%;object-fit:cover;">`;
     } else {
       av.innerHTML = `<span style="font-size:11px;font-weight:bold;color:var(--fg2);">${esc((m.name||'?').charAt(0).toUpperCase())}</span>`;
     }
@@ -1155,8 +1156,10 @@ function getUserAvatarHtml(username, size) {
   size = size || 20;
   const fallbackChar = (typeof esc === 'function' ? esc((username || '?').charAt(0).toUpperCase()) : String((username || '?').charAt(0).toUpperCase()).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
   const baseStyle = `display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;flex-shrink:0;`;
+  const rawSrc = window.MeldexDataAccess?.team?.avatarUrl?.(username || 'anonymous', {}) || `${API_BASE}/team/avatar/${encodeURIComponent(username)}?t=0`;
+  const src = typeof esc === 'function' ? esc(rawSrc) : String(rawSrc).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   return `<span style="${baseStyle}">
-    <img src="${API_BASE}/team/avatar/${encodeURIComponent(username)}?t=0" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';">
+    <img src="${src}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';">
     <span style="display:none;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;background:var(--bg4);font-size:${Math.round(size*0.55)}px;font-weight:bold;color:var(--fg2);">${fallbackChar}</span>
   </span>`;
 }

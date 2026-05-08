@@ -429,6 +429,57 @@
   }
 
   // === 初期化 ===
+  const STARTUP_ACTIVE_PANE_AVOID_TYPES = new Set([
+    'outliner',
+    'detail',
+    'preview',
+    'chat',
+    'calendar',
+    'timer',
+    'history',
+    'annotation',
+    'sticky',
+    'search',
+    'version',
+  ]);
+
+  function _activeTabTypeForStartupPane(pane) {
+    if (!pane || pane.type !== 'pane') return '';
+    const tabs = Array.isArray(pane.tabs) ? pane.tabs : [];
+    const index = Number.isInteger(pane.activeTabIndex) ? pane.activeTabIndex : -1;
+    return String(tabs[index]?.type || tabs[0]?.type || '');
+  }
+
+  function _isStartupUtilityPane(pane) {
+    return STARTUP_ACTIVE_PANE_AVOID_TYPES.has(_activeTabTypeForStartupPane(pane));
+  }
+
+  function _isStartupVisiblePane(pane) {
+    return !!(pane?.id && isPaneVisible(pane.id));
+  }
+
+  function _findStartupContentPane(root) {
+    const activePanes = getAllPanes(root, { activeOnly: true });
+    const allPanes = getAllPanes(root);
+    return activePanes.find(pane => _isStartupVisiblePane(pane) && !_isStartupUtilityPane(pane))
+      || allPanes.find(pane => _isStartupVisiblePane(pane) && !_isStartupUtilityPane(pane))
+      || activePanes.find(pane => !_isStartupUtilityPane(pane))
+      || allPanes.find(pane => !_isStartupUtilityPane(pane))
+      || null;
+  }
+
+  function _resolveStartupActivePaneId(storedActivePaneId) {
+    const stored = storedActivePaneId ? findNode(_root, storedActivePaneId)?.node : null;
+    if (stored && _isStartupVisiblePane(stored) && !_isStartupUtilityPane(stored)) return stored.id;
+    const contentPane = _findStartupContentPane(_root);
+    if (contentPane) return contentPane.id;
+    if (stored && _isStartupVisiblePane(stored)) return stored.id;
+    const visiblePane = getAllPanes(_root, { activeOnly: true }).find(_isStartupVisiblePane)
+      || getAllPanes(_root).find(_isStartupVisiblePane);
+    if (visiblePane) return visiblePane.id;
+    return stored?.id || null;
+  }
+
   function init(containerEl) {
     _layoutEl = containerEl || document.getElementById('gb-layout-root');
     if (!_layoutEl) return;
@@ -438,9 +489,11 @@
     _loadedLayoutFromStorage = !!loadedRoot;
     _root = loadedRoot || defaultLayout();
     const storedActivePaneId = _loadedLayoutFromStorage ? _readStoredActivePaneId() : '';
-    _activePane = storedActivePaneId && findNode(_root, storedActivePaneId)?.node
-      ? storedActivePaneId
-      : null;
+    const startupActivePaneId = _loadedLayoutFromStorage ? _resolveStartupActivePaneId(storedActivePaneId) : null;
+    _activePane = startupActivePaneId;
+    if (_loadedLayoutFromStorage && _activePane !== storedActivePaneId) {
+      _writeActivePaneToStorage();
+    }
 
     // paneIdCounter と tabIdCounter を復元（ID衝突防止）
     // splitノードのIDも走査する
@@ -1149,6 +1202,8 @@
     set onActivePaneChange(fn) { _onActivePaneChange = fn; },
     get isNavPaneType() { return _isNavPaneType; },
     set isNavPaneType(fn) { _isNavPaneType = fn; },
+    get isPassivePaneType() { return _isPassivePaneType; },
+    set isPassivePaneType(fn) { _isPassivePaneType = fn; },
     isMobileLayout: _isMobileLayout,
   };
 })();

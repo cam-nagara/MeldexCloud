@@ -218,8 +218,8 @@ function showMeldexAboutDialog() {
         詳細は <code>LICENSE</code>, <code>THIRD-PARTY.md</code>, <code>CREDITS.md</code>, <code>fonts/OFL.txt</code> を参照してください。
       </div>
       <div class="btn-row" style="margin-top:10px;justify-content:flex-start;">
-        <button type="button" data-action="window.open('PRIVACY.md','_blank','noopener')">プライバシーポリシー</button>
-        <button type="button" data-action="window.open('TERMS-OF-USE.md','_blank','noopener')">利用規約</button>
+        <button type="button" data-action="window.open('PRIVACY.html','_blank','noopener')">プライバシーポリシー</button>
+        <button type="button" data-action="window.open('TERMS-OF-USE.html','_blank','noopener')">利用規約</button>
         <button type="button" data-action="window.open('THIRD-PARTY.md','_blank','noopener')">OSSライセンス</button>
         <button type="button" data-action="window.MeldexDiagnostics?.exportDiagnostics?.()">診断情報を保存</button>
       </div>

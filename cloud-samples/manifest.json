@@ -1,0 +1,2154 @@
+{
+  "type": "meldex-cloud-sample-seed",
+  "generatedAt": "2026-05-08T09:13:36.751087+00:00",
+  "sourceFolder": "MeldexHome/サンプル",
+  "targetRoot": "MeldexHome/サンプル",
+  "fileCount": 306,
+  "totalBytes": 11637362,
+  "contentHash": "c3dfaee4ca69ec714459a356913d5f4345716fc9ad347850a1c32c11a888030d",
+  "skipExisting": true,
+  "entries": [
+    {
+      "relativePath": "死霊探偵/アイテム表/アイテム表.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/アイテム表.md",
+      "asset": "cloud-samples/files/0699f946f9e6d0fc51a4d6b7.md",
+      "size": 882,
+      "sha256": "0699f946f9e6d0fc51a4d6b76d840414b38201390893f6bfb87bbbb5da8b2d21"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/ヤラセ用糸仕掛け.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/ヤラセ用糸仕掛け.md",
+      "asset": "cloud-samples/files/fc17c7a05f02fc13572fd791.md",
+      "size": 1238,
+      "sha256": "fc17c7a05f02fc13572fd791781519612787ac1bbbb0e2fb4c914632830f722d"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/五十年前の家族写真.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/五十年前の家族写真.md",
+      "asset": "cloud-samples/files/2f334950cb3eb310ddfce121.md",
+      "size": 1266,
+      "sha256": "2f334950cb3eb310ddfce1217f00917b7ef465943f629ff602b89dfb17e69709"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/割れた録音レコーダー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/割れた録音レコーダー.md",
+      "asset": "cloud-samples/files/557a7d21a43a888b9493c3e4.md",
+      "size": 1253,
+      "sha256": "557a7d21a43a888b9493c3e42fc92fcf50facd7c67bdb16fb16ed76c64533f27"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/古い屋敷図面.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/古い屋敷図面.md",
+      "asset": "cloud-samples/files/30b638c547897f22465859fd.md",
+      "size": 1194,
+      "sha256": "30b638c547897f22465859fdc269499747c05003130e5b2601758930c08bb2e0"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/小間井 芽衣の古い髪飾り.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/小間井 芽衣の古い髪飾り.md",
+      "asset": "cloud-samples/files/5ee29cd61b35aff5ec702b98.md",
+      "size": 1209,
+      "sha256": "5ee29cd61b35aff5ec702b98e56223bfdef570249c50733700b7521d1d60e9e3"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/御影 依の護符.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/御影 依の護符.md",
+      "asset": "cloud-samples/files/3f268f9536560a504efc2e1c.md",
+      "size": 1244,
+      "sha256": "3f268f9536560a504efc2e1c52f87ed93ef6d855c439907622065ad8b8f2fc75"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/検崎 甚一の捜査資料.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/検崎 甚一の捜査資料.md",
+      "asset": "cloud-samples/files/e78f24d2d5a299e281a30c89.md",
+      "size": 1226,
+      "sha256": "e78f24d2d5a299e281a30c899f19362a3b97f281bda1054735febc3ad4a277d1"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/死後についた首の傷.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/死後についた首の傷.md",
+      "asset": "cloud-samples/files/23af5889368cf387e6d440e7.md",
+      "size": 1280,
+      "sha256": "23af5889368cf387e6d440e7bcd81240256e018b4a0c57c9df6dad9c84467e4f"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/濡れた靴と水路の泥.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/濡れた靴と水路の泥.md",
+      "asset": "cloud-samples/files/47b841c50c1a33f2738e25e5.md",
+      "size": 1245,
+      "sha256": "47b841c50c1a33f2738e25e5091cbde88b654dd8b4abe3dc7cabacf0e6cf347a"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/薬師 治彦の薬品ケース.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/薬師 治彦の薬品ケース.md",
+      "asset": "cloud-samples/files/2cbf95e95e8a556a693f0dba.md",
+      "size": 1341,
+      "sha256": "2cbf95e95e8a556a693f0dbaaeaffad53f8291eb49a9ed35ef07a00ccdb115d5"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/遠隔音響装置.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/遠隔音響装置.md",
+      "asset": "cloud-samples/files/4263d6abb7dfc640e2db69d9.md",
+      "size": 1210,
+      "sha256": "4263d6abb7dfc640e2db69d96e12319ddb14bddba10932a18afa0bc91976f417"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/錆びた地下鍵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/錆びた地下鍵.md",
+      "asset": "cloud-samples/files/dfe28ea33cd24f4e48e0df0d.md",
+      "size": 1197,
+      "sha256": "dfe28ea33cd24f4e48e0df0dbbaedfe92b1c7abdc52764b82bf25e0e548258ae"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/隠しカメラ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/隠しカメラ.md",
+      "asset": "cloud-samples/files/3c8018e47f575cfa5c67516f.md",
+      "size": 1270,
+      "sha256": "3c8018e47f575cfa5c67516fa7dde91baf3aaff8a78297746fe1b4988b516f65"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/鬼ヶ瀬 杢蔵の古い日記.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/鬼ヶ瀬 杢蔵の古い日記.md",
+      "asset": "cloud-samples/files/f776d2fbc43c888aeca886be.md",
+      "size": 1174,
+      "sha256": "f776d2fbc43c888aeca886be2f086c92d6454930caaa733429117194c4124622"
+    },
+    {
+      "relativePath": "死霊探偵/アイテム表/鬼ヶ瀬 杢蔵の遺言状.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/アイテム表/鬼ヶ瀬 杢蔵の遺言状.md",
+      "asset": "cloud-samples/files/6aee21a5b419d9af1453fcae.md",
+      "size": 1222,
+      "sha256": "6aee21a5b419d9af1453fcae796eb26e1802134ee0aff3cd67bf76d406b5b4a0"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ相関図.board.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ相関図.board.md",
+      "asset": "cloud-samples/files/a40814fd868ce727cce437f5.md",
+      "size": 2747,
+      "sha256": "a40814fd868ce727cce437f5237a000b8d50bb0fc4cd4b3b89781e51198a293f"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/キャラ表.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/キャラ表.md",
+      "asset": "cloud-samples/files/1444c894b17472701e45cff7.md",
+      "size": 5222,
+      "sha256": "1444c894b17472701e45cff70921e5a5d9c583346790b503f2e28f2472c81438"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/小間井 芽衣.md",
+      "asset": "cloud-samples/files/60c4589218a1f034877cb5c0.md",
+      "size": 5844,
+      "sha256": "60c4589218a1f034877cb5c091392e19180257301efc49633dbef105f2705b78"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/小間井 芽衣/備考_生者には見えない（最初から死霊）。家主は生前メイドを認識していなかったが、死霊になって初めて見え、ボケのため違和感なし。メイドの正体がバレるのは事件解決後のエピ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/小間井 芽衣/備考_生者には見えない（最初から死霊）。家主は生前メイドを認識していなかったが、死霊になって初めて見え、ボケのため違和感なし。メイドの正体がバレるのは事件解決後のエピ.md",
+      "asset": "cloud-samples/files/f82cc45cfa463a5da957e52a.md",
+      "size": 402,
+      "sha256": "f82cc45cfa463a5da957e52a94259967e6c1d172a5c7b11fd687113fdad45191"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/小間井 芽衣/役割_容疑者・百年の亡霊（エピローグの核心）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/小間井 芽衣/役割_容疑者・百年の亡霊（エピローグの核心）.md",
+      "asset": "cloud-samples/files/b19aed9a4ecf75e643f0ed53.md",
+      "size": 210,
+      "sha256": "b19aed9a4ecf75e643f0ed534833f9757d636e320fa03b24ee2a0b38febe9f61"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/小間井 芽衣/正体_五十年前に屋敷で住み込みで働いていたメイドの怨霊。若い頃の主人の妾となり息子を産んだが、主人やその妻に息子・病弱な母・自分自身も殺された。屋敷の家系に怨みがあり.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/小間井 芽衣/正体_五十年前に屋敷で住み込みで働いていたメイドの怨霊。若い頃の主人の妾となり息子を産んだが、主人やその妻に息子・病弱な母・自分自身も殺された。屋敷の家系に怨みがあり.md",
+      "asset": "cloud-samples/files/26ce6e259d1cf207e8cfa819.md",
+      "size": 432,
+      "sha256": "26ce6e259d1cf207e8cfa81911915c8c4eb6d5235c773471243d48d273f64bd8"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/小間井 芽衣/物語上の機能_「屋敷の怨霊」のスケープゴート。全員死霊のため最初から死霊だったことに気づかれない。五十年前の写真の人物を「祖母」と嘘をつく。家主にだけ本名（古い名前）で呼ばれ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/小間井 芽衣/物語上の機能_「屋敷の怨霊」のスケープゴート。全員死霊のため最初から死霊だったことに気づかれない。五十年前の写真の人物を「祖母」と嘘をつく。家主にだけ本名（古い名前）で呼ばれ.md",
+      "asset": "cloud-samples/files/52013c7546d42fcee81d36a8.md",
+      "size": 408,
+      "sha256": "52013c7546d42fcee81d36a8de81b95dab5942dc2f58e5e56ffc124ea36ef24f"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/小間井 芽衣/秘密の目的_屋敷の主人（家主）を殺した真犯人を突き止めるため、自分もB肉体に殺されたとウソをついて皆の反応を探っている.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/小間井 芽衣/秘密の目的_屋敷の主人（家主）を殺した真犯人を突き止めるため、自分もB肉体に殺されたとウソをついて皆の反応を探っている.md",
+      "asset": "cloud-samples/files/e8cc8e7db44ef61db288e149.md",
+      "size": 319,
+      "sha256": "e8cc8e7db44ef61db288e14905ab8463b6d737d4dcf4c0c1ba89b72253e751a9"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/御影 依.md",
+      "asset": "cloud-samples/files/1dac5679d5c5f9b993c6cf35.md",
+      "size": 5436,
+      "sha256": "1dac5679d5c5f9b993c6cf35812ffac8a64c3757da2d4261aae6521f225ac6b2"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/御影 依/備考_オカルトライター殺害あたりまでは憑依中も意識が残っていた。その後は記憶なし。憑依されてしばらくして強制自殺させられ死霊となった.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/御影 依/備考_オカルトライター殺害あたりまでは憑依中も意識が残っていた。その後は記憶なし。憑依されてしばらくして強制自殺させられ死霊となった.md",
+      "asset": "cloud-samples/files/6b03267ee33682903b50e19b.md",
+      "size": 345,
+      "sha256": "6b03267ee33682903b50e19b0970c70b1892191bb05cf7bda38e95e415ae39ba"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/御影 依/役割_ヒロイン・冤罪者・ルール説明係.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/御影 依/役割_ヒロイン・冤罪者・ルール説明係.md",
+      "asset": "cloud-samples/files/71444bb9576056eb89b20dd4.md",
+      "size": 201,
+      "sha256": "71444bb9576056eb89b20dd4c707d5979b80d31fffbbf65b7007097d388aa76b"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/御影 依/物語上の機能_物証上の犯人だが冤罪。死霊のルール説明係。「屋敷の怨霊に取り憑かれた」と主張する狂言回し。冤罪を晴らす対象＝主人公の動機.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/御影 依/物語上の機能_物証上の犯人だが冤罪。死霊のルール説明係。「屋敷の怨霊に取り憑かれた」と主張する狂言回し。冤罪を晴らす対象＝主人公の動機.md",
+      "asset": "cloud-samples/files/c7a7e21cf20711e18154b0a6.md",
+      "size": 348,
+      "sha256": "c7a7e21cf20711e18154b0a64ad64208b4276d49a0c12dd182fe6e02e3f1492b"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/御影 依/秘密の目的_なし（オカルトライターの知り合いとして呼び出されただけ）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/御影 依/秘密の目的_なし（オカルトライターの知り合いとして呼び出されただけ）.md",
+      "asset": "cloud-samples/files/6b9e13ab5c6a7973005b90f8.md",
+      "size": 249,
+      "sha256": "6b9e13ab5c6a7973005b90f8205feb3b723e58eace79236f028692ed70d7891d"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/御影 依/職業_霊能力者（イタコ系霊媒体質）。死霊なら誰でも憑依できる体質.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/御影 依/職業_霊能力者（イタコ系霊媒体質）。死霊なら誰でも憑依できる体質.md",
+      "asset": "cloud-samples/files/0a034cb35daec64279cc7d8a.md",
+      "size": 243,
+      "sha256": "0a034cb35daec64279cc7d8abaeaaef8345de9bc9f254c7d94fa398d87c46f1b"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一.md",
+      "asset": "cloud-samples/files/2da317015db83557c4b45024.md",
+      "size": 5523,
+      "sha256": "2da317015db83557c4b450247d55c722a16728eb612021d87f8ee98037f43f5e"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一/備考_アリバイトリックのため水路沿いでうつむく習慣を演出。「こういう水辺で娘が死んだ」と重エピソードを周囲に話し、話しかけにくい空気を作る。事前に屋敷に罠を仕掛け中に.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一/備考_アリバイトリックのため水路沿いでうつむく習慣を演出。「こういう水辺で娘が死んだ」と重エピソードを周囲に話し、話しかけにくい空気を作る。事前に屋敷に罠を仕掛け中に.md",
+      "asset": "cloud-samples/files/ac071f37626ef3518b5da739.md",
+      "size": 414,
+      "sha256": "ac071f37626ef3518b5da739308c67a675b30e7e9f4f87a7d62728797396302a"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一/年齢_40代.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一/年齢_40代.md",
+      "asset": "cloud-samples/files/9df79caa1397e4891b0313a8.md",
+      "size": 170,
+      "sha256": "9df79caa1397e4891b0313a8f8130f772c2402cc174cdb0b613f4810f1bb8a1c"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一/役割_真犯人・迷推理で対立役.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一/役割_真犯人・迷推理で対立役.md",
+      "asset": "cloud-samples/files/f92977cb87c22f1fda5b74e9.md",
+      "size": 198,
+      "sha256": "f92977cb87c22f1fda5b74e984ac225bd148913498ad2fde09c332e49c33a7ab"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一/物語上の機能_「物証がBを指す以上Bが犯人だ」と強く主張し主人公と対立。実は自分の犯行を隠すための行動.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一/物語上の機能_「物証がBを指す以上Bが犯人だ」と強く主張し主人公と対立。実は自分の犯行を隠すための行動.md",
+      "asset": "cloud-samples/files/4eb56075197de57b86be712d.md",
+      "size": 305,
+      "sha256": "4eb56075197de57b86be712d5387cd0b938783d3832110665acd97d1b2c0987e"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一/秘密の目的_娘を心霊スポット事故で失った復讐。捜査資料から現場にいた全員を特定し皆殺しを計画。死霊になった後も娘を直接殺した犯人を突き止めBの霊能力で苦しめ消滅させたい.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一/秘密の目的_娘を心霊スポット事故で失った復讐。捜査資料から現場にいた全員を特定し皆殺しを計画。死霊になった後も娘を直接殺した犯人を突き止めBの霊能力で苦しめ消滅させたい.md",
+      "asset": "cloud-samples/files/ea7f90bd3c010400fae5e507.md",
+      "size": 406,
+      "sha256": "ea7f90bd3c010400fae5e5074f2affa29d9223fc6fa22826067d4c35705a2397"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/検崎 甚一/職業_刑事（霊能力者ではない）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/検崎 甚一/職業_刑事（霊能力者ではない）.md",
+      "asset": "cloud-samples/files/85b54bc9cc658ca968dfbdbf.md",
+      "size": 201,
+      "sha256": "85b54bc9cc658ca968dfbdbf89f63fb9dc0d547f106bdb8bde87d180e15ef6a7"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/狭間 透.md",
+      "asset": "cloud-samples/files/8cb2115c712f8be5364e456a.md",
+      "size": 5400,
+      "sha256": "8cb2115c712f8be5364e456a281eab2924300159d3630b16e1038a90feb318f5"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/狭間 透/年齢_17.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/狭間 透/年齢_17.md",
+      "asset": "cloud-samples/files/e500be639485efdf1586ff04.md",
+      "size": 155,
+      "sha256": "e500be639485efdf1586ff04d080bce4c66eed84f371097a33d594337a5d35e6"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/狭間 透/役割_探偵役・最後の被害者・白確定.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/狭間 透/役割_探偵役・最後の被害者・白確定.md",
+      "asset": "cloud-samples/files/6517140c4e7f4bc74e943e05.md",
+      "size": 195,
+      "sha256": "6517140c4e7f4bc74e943e054344edcb65b9ae2c87f4c56437b850f73f48a332"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/狭間 透/物語上の機能_殺害現場を複数の死霊に目撃され白確定。死霊になった後、探偵役として真犯人を突き止める.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/狭間 透/物語上の機能_殺害現場を複数の死霊に目撃され白確定。死霊になった後、探偵役として真犯人を突き止める.md",
+      "asset": "cloud-samples/files/c21db7cc669339a1ce860948.md",
+      "size": 291,
+      "sha256": "c21db7cc669339a1ce860948946451c1ae1d7a813fd903c777a9da446d082c65"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/狭間 透/秘密の目的_なし（バイトとして屋敷に来ただけ）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/狭間 透/秘密の目的_なし（バイトとして屋敷に来ただけ）.md",
+      "asset": "cloud-samples/files/269c4d9304a16113670f733b.md",
+      "size": 213,
+      "sha256": "269c4d9304a16113670f733b60c17a6fc3115bd950197fc3d69a6817b379b60b"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/狭間 透/職業_高校生（オカルトライターのバイト助手）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/狭間 透/職業_高校生（オカルトライターのバイト助手）.md",
+      "asset": "cloud-samples/files/7765b8065093ad7d51f576c9.md",
+      "size": 210,
+      "sha256": "7765b8065093ad7d51f576c99d5fe320ccd1bd0c7b6f0dfe1c7ba829b39bffc4"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/薬師 治彦.md",
+      "asset": "cloud-samples/files/4cfbcf01da9bba15050683c6.md",
+      "size": 5193,
+      "sha256": "4cfbcf01da9bba15050683c6e9eced5ade22ca7e23ef913b344fbe900d16a027"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/薬師 治彦/役割_死因推定・中立的立場.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/薬師 治彦/役割_死因推定・中立的立場.md",
+      "asset": "cloud-samples/files/28697efd294f51f4c559c7e3.md",
+      "size": 180,
+      "sha256": "28697efd294f51f4c559c7e3b656e89493e89e4e8ec64868ae60336a151ee863"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/薬師 治彦/物語上の機能_死霊の「診察」で死因・死亡時刻を推定。刑事の娘を救えなかった罪悪感がドラマを生む.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/薬師 治彦/物語上の機能_死霊の「診察」で死因・死亡時刻を推定。刑事の娘を救えなかった罪悪感がドラマを生む.md",
+      "asset": "cloud-samples/files/398ec26646ed97734c2d2974.md",
+      "size": 282,
+      "sha256": "398ec26646ed97734c2d2974a3abb2627b6c7bdd39ecfd0d17c82d81e8d9c7ab"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/薬師 治彦/秘密の目的_心霊スポット事故で刑事の娘が死ぬ直接の原因を作った人物。医療判断の遅れで助けられた命を救えなかった。罪悪感を抱えており、刑事を避ける.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/薬師 治彦/秘密の目的_心霊スポット事故で刑事の娘が死ぬ直接の原因を作った人物。医療判断の遅れで助けられた命を救えなかった。罪悪感を抱えており、刑事を避ける.md",
+      "asset": "cloud-samples/files/30fbc7efef432da54cfd865c.md",
+      "size": 357,
+      "sha256": "30fbc7efef432da54cfd865c27f44353100ac4de1cc2caa313748b2f60b9e584"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/薬師 治彦/職業_医師.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/薬師 治彦/職業_医師.md",
+      "asset": "cloud-samples/files/9c75353cee27e45eae1594e4.md",
+      "size": 156,
+      "sha256": "9c75353cee27e45eae1594e45d1616389631220eb07e1661639c53adc2ffded9"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/2540b9a5cee4e78656da567a.md",
+      "size": 5619,
+      "sha256": "2540b9a5cee4e78656da567a0bc02a08f2c698fa63795caafafbe72262165058"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/備考_オカルト好き。心霊スポット事故の日にメイドと共に現場にいた。生前はメイド（怨霊）の存在を認識していなかった。屋敷の清掃等は週一の業者が行っていた。死霊になって初.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/備考_オカルト好き。心霊スポット事故の日にメイドと共に現場にいた。生前はメイド（怨霊）の存在を認識していなかった。屋敷の清掃等は週一の業者が行っていた。死霊になって初.md",
+      "asset": "cloud-samples/files/927b26f35ba510e8f431a81d.md",
+      "size": 480,
+      "sha256": "927b26f35ba510e8f431a81d3f0ca439c5e988608147a8d7fc0742abf6a8032e"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/年齢_老年.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/年齢_老年.md",
+      "asset": "cloud-samples/files/935d1d7b0ed6a503e729a894.md",
+      "size": 156,
+      "sha256": "935d1d7b0ed6a503e729a89462bc309fddd035334c5279471fbe93783c591d32"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/役割_屋敷の持ち主・情報源.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/役割_屋敷の持ち主・情報源.md",
+      "asset": "cloud-samples/files/03ddf21756880bbc2b5da6cd.md",
+      "size": 180,
+      "sha256": "03ddf21756880bbc2b5da6cd562af7ed67970d4007791431ab7d8ccf59a8bf06"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/物語上の機能_屋敷の構造・歴史に詳しい情報源。ボケが進行しており過去と現在が混同。メイドを別名で呼ぶ。辻褄が合わない発言で混乱を生む.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/物語上の機能_屋敷の構造・歴史に詳しい情報源。ボケが進行しており過去と現在が混同。メイドを別名で呼ぶ。辻褄が合わない発言で混乱を生む.md",
+      "asset": "cloud-samples/files/b0e8bdd48aab255e6f1e37d1.md",
+      "size": 339,
+      "sha256": "b0e8bdd48aab255e6f1e37d175d097b2cc2495913737a26aff7e1096cce0b059"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/秘密の目的_なし（ボケにより秘密を持つ意図がない。だが混乱した発言がミスリードを生む）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/秘密の目的_なし（ボケにより秘密を持つ意図がない。だが混乱した発言がミスリードを生む）.md",
+      "asset": "cloud-samples/files/645883b8d8a85f1cd0ecbaa4.md",
+      "size": 270,
+      "sha256": "645883b8d8a85f1cd0ecbaa49a556cdf55e3fce0b352fb152c6c9260d41a460f"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/職業_無職（元採掘業の旧家当主）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/鬼ヶ瀬 杢蔵/職業_無職（元採掘業の旧家当主）.md",
+      "asset": "cloud-samples/files/5ead4a75b26487730acb7ab5.md",
+      "size": 189,
+      "sha256": "5ead4a75b26487730acb7ab5d3829b355fcaed5a00be20f93b7fab723f146d99"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/黒部 録郎.md",
+      "asset": "cloud-samples/files/91c8ff4170963a9145738139.md",
+      "size": 5625,
+      "sha256": "91c8ff4170963a91457381390f69713eb0a0575867e9d12480a013af0e6dbb7c"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/黒部 録郎/年齢_40代.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/黒部 録郎/年齢_40代.md",
+      "asset": "cloud-samples/files/7d9a2aa2192bbbdd5c4696bb.md",
+      "size": 173,
+      "sha256": "7d9a2aa2192bbbdd5c4696bb5772d165d555a918a4e329b7e91bf16961ed857c"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/黒部 録郎/役割_最初にB肉体で殺される人物.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/黒部 録郎/役割_最初にB肉体で殺される人物.md",
+      "asset": "cloud-samples/files/da4282ce595a6f68152c56ca.md",
+      "size": 205,
+      "sha256": "da4282ce595a6f68152c56ca9cda2edd8f893ee3a13582abc1d2af305b9acc51"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/黒部 録郎/物語上の機能_主人公の雇い主。屋敷取材の企画者。ヤラセ仕込みの怪現象がミスリードを生む.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/黒部 録郎/物語上の機能_主人公の雇い主。屋敷取材の企画者。ヤラセ仕込みの怪現象がミスリードを生む.md",
+      "asset": "cloud-samples/files/a7bf6b99cdd446fcdb3b0cb8.md",
+      "size": 288,
+      "sha256": "a7bf6b99cdd446fcdb3b0cb887f3759e29b767df8c31dda9cd8487ebafa48ebf"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/黒部 録郎/秘密の目的_ヤラセ心霊動画のために屋敷内に仕掛けを設置していた。死霊になった後も仕掛けが作動し怪現象が起きるが、ヤラセがバレると信用を失うため言い出せない.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/黒部 録郎/秘密の目的_ヤラセ心霊動画のために屋敷内に仕掛けを設置していた。死霊になった後も仕掛けが作動し怪現象が起きるが、ヤラセがバレると信用を失うため言い出せない.md",
+      "asset": "cloud-samples/files/9f70e892957847cb5f77c310.md",
+      "size": 390,
+      "sha256": "9f70e892957847cb5f77c31037be666ceef39d51362185b5acf13454af377758"
+    },
+    {
+      "relativePath": "死霊探偵/キャラ表/黒部 録郎/職業_フリーのオカルトライター・YouTuber。最近売れ始めて小金持ち.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/キャラ表/黒部 録郎/職業_フリーのオカルトライター・YouTuber。最近売れ始めて小金持ち.md",
+      "asset": "cloud-samples/files/a867ca95efce757762c1deae.md",
+      "size": 251,
+      "sha256": "a867ca95efce757762c1deae15f1d201d8f6a57d7b728b5f906a5f9e7fc1c4a8"
+    },
+    {
+      "relativePath": "死霊探偵/ストーリー構成フローチャート.board.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/ストーリー構成フローチャート.board.md",
+      "asset": "cloud-samples/files/8b70406fb28b700bd09ad666.md",
+      "size": 58720,
+      "sha256": "8b70406fb28b700bd09ad6665a039df74010d19d5a60c49c082ba06ff7d2260d"
+    },
+    {
+      "relativePath": "死霊探偵/プロット.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/プロット.md",
+      "asset": "cloud-samples/files/27dacc2bddc0afecade75fd9.md",
+      "size": 30201,
+      "sha256": "27dacc2bddc0afecade75fd92114775d663d103f52095c5ab707673f3c64a565"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/仏間.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/仏間.md",
+      "asset": "cloud-samples/files/fc5d43982cd2ae67b5abed8d.md",
+      "size": 1224,
+      "sha256": "fc5d43982cd2ae67b5abed8d3e58eef65c4b2642c2eccf19f8642ccc9d21a096"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/地下通路.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/地下通路.md",
+      "asset": "cloud-samples/files/ddc53dde23b98dbd1e0fd1f4.md",
+      "size": 1296,
+      "sha256": "ddc53dde23b98dbd1e0fd1f4614486a62cf0be3e93658a59011185e0eeca5005"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/場所情報.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/場所情報.md",
+      "asset": "cloud-samples/files/d3b82474cfd39fe054f8aeb0.md",
+      "size": 790,
+      "sha256": "d3b82474cfd39fe054f8aeb03b74435f1e9079ed63c58a261e7048c48950e356"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/大広間.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/大広間.md",
+      "asset": "cloud-samples/files/16ad2f9a49d3166a7b9a736c.md",
+      "size": 1181,
+      "sha256": "16ad2f9a49d3166a7b9a736cd98f0433539950a3f095ae3d762ecb30acb605c0"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/客間.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/客間.md",
+      "asset": "cloud-samples/files/6b467c7800069f803bd61086.md",
+      "size": 1263,
+      "sha256": "6b467c7800069f803bd61086b1645601c7d577b1f8a5d2d692a09639732b1420"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/家主の居室.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/家主の居室.md",
+      "asset": "cloud-samples/files/200dbc1113131ea794a99cba.md",
+      "size": 1280,
+      "sha256": "200dbc1113131ea794a99cba5b3d36393c26a2f19247b36ed1b74ba34bb2aa8d"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/庭園・鬼灯群生地.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/庭園・鬼灯群生地.md",
+      "asset": "cloud-samples/files/540da586c21bebb478f07404.md",
+      "size": 1233,
+      "sha256": "540da586c21bebb478f074049fea1cadfe4cc0ded73e97dd2bbbdf40ce75686b"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/書院・資料室.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/書院・資料室.md",
+      "asset": "cloud-samples/files/81e44ec605d210a12e6962d2.md",
+      "size": 1289,
+      "sha256": "81e44ec605d210a12e6962d2ba8bc27db0b2ca699cf9a9e4fd81f87eb61fde4d"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/正門・車寄せ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/正門・車寄せ.md",
+      "asset": "cloud-samples/files/20103594c1d6c0f608be20e9.md",
+      "size": 1192,
+      "sha256": "20103594c1d6c0f608be20e9709f3c6868379bd11214bfe5187411290e3b9fb9"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/水路・崖沿い.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/水路・崖沿い.md",
+      "asset": "cloud-samples/files/1733e4883e216fc73ccc5aad.md",
+      "size": 1264,
+      "sha256": "1733e4883e216fc73ccc5aad176bf8dc5a351802a443648122d099e98f7961f2"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/池・朱塗りの太鼓橋.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/池・朱塗りの太鼓橋.md",
+      "asset": "cloud-samples/files/6091de64f8e6b88b92318fa0.md",
+      "size": 1244,
+      "sha256": "6091de64f8e6b88b92318fa018643523a9981a16a0316cd1627c0a08973504db"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/渡り廊下.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/渡り廊下.md",
+      "asset": "cloud-samples/files/2aad898bde55bf01263cc041.md",
+      "size": 1204,
+      "sha256": "2aad898bde55bf01263cc041c16f18d8e81faf0a197a6ec29d9dd28988e52dc8"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/湖上の橋.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/湖上の橋.md",
+      "asset": "cloud-samples/files/4cadfaedc6bdbd7604237b79.md",
+      "size": 1273,
+      "sha256": "4cadfaedc6bdbd7604237b7918a6eabd5cf66a3ab44c51994ca00ddc8b927970"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/玄関・廊下.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/玄関・廊下.md",
+      "asset": "cloud-samples/files/64fa2ede8d5589f4b9f9a5de.md",
+      "size": 1351,
+      "sha256": "64fa2ede8d5589f4b9f9a5dea33789e2e18090db826f7ccc7142cb214e257d84"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/蔵一（古文書蔵）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/蔵一（古文書蔵）.md",
+      "asset": "cloud-samples/files/013e160e90517352066719fb.md",
+      "size": 1243,
+      "sha256": "013e160e90517352066719fb7849687861b50fae21cc2d18aaf43cfa6f947d35"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/蔵二（道具蔵）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/蔵二（道具蔵）.md",
+      "asset": "cloud-samples/files/f947026d524be8d80b5cb335.md",
+      "size": 1186,
+      "sha256": "f947026d524be8d80b5cb335511be8f56e153fa278d490482a5ac4dedc1fa4fc"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/離れ・茶室.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/離れ・茶室.md",
+      "asset": "cloud-samples/files/791eefbc5c80034bb76f59b5.md",
+      "size": 1216,
+      "sha256": "791eefbc5c80034bb76f59b53c9b3b31a8d6d8b6cd2d8f3003ee6f6df0880e4f"
+    },
+    {
+      "relativePath": "死霊探偵/場所情報/鬼ヶ瀬邸全体.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/場所情報/鬼ヶ瀬邸全体.md",
+      "asset": "cloud-samples/files/5ac1a48999852f3662488504.md",
+      "size": 1424,
+      "sha256": "5ac1a48999852f3662488504679bb75704c3a29286f0b19c3796483d066169c3"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/01_第一章_雨夜の鬼ヶ瀬邸.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/01_第一章_雨夜の鬼ヶ瀬邸.md",
+      "asset": "cloud-samples/files/e32ee886ad0bd17347001b41.md",
+      "size": 6696,
+      "sha256": "e32ee886ad0bd17347001b4197ccd7224bfbee145a9dede01c87571645447493"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/02_第二章_破れた護符.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/02_第二章_破れた護符.md",
+      "asset": "cloud-samples/files/2e04bab992ef98f52158bfb0.md",
+      "size": 6814,
+      "sha256": "2e04bab992ef98f52158bfb05e2a121075d738c3ebbfeb41e79a80e69afc5de5"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/03_第三章_蔵の怪音.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/03_第三章_蔵の怪音.md",
+      "asset": "cloud-samples/files/c08d316103e7fe5152513194.md",
+      "size": 6100,
+      "sha256": "c08d316103e7fe51525131941b159ed42c07385d18d0260125f8107936a32a34"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/04_第四章_古い髪飾り.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/04_第四章_古い髪飾り.md",
+      "asset": "cloud-samples/files/5c1bf9c1ee467288a732f28f.md",
+      "size": 5981,
+      "sha256": "5c1bf9c1ee467288a732f28fec266e8886b7ab11c9c363f6defb600318e7ebbd"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/05_第五章_欠けた時刻.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/05_第五章_欠けた時刻.md",
+      "asset": "cloud-samples/files/2683b37a56ea1c39f8d05aec.md",
+      "size": 5554,
+      "sha256": "2683b37a56ea1c39f8d05aec7c7c54ae31154e57f765204f8f357f9fe53a856c"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/06_第六章_水路の泥.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/06_第六章_水路の泥.md",
+      "asset": "cloud-samples/files/6b215bb2dcd4a988b34bf0ea.md",
+      "size": 6265,
+      "sha256": "6b215bb2dcd4a988b34bf0eab19d8c8824237eb167552080acba63bb37bc7f35"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/07_第七章_死者の証明.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/07_第七章_死者の証明.md",
+      "asset": "cloud-samples/files/a98e6827889ef9c163f31e47.md",
+      "size": 6422,
+      "sha256": "a98e6827889ef9c163f31e47fdbff4e6593acbcf33d3142c7369562b1c346b54"
+    },
+    {
+      "relativePath": "死霊探偵/小説本文/08_終章_夜明けの鬼灯.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文/08_終章_夜明けの鬼灯.md",
+      "asset": "cloud-samples/files/601760f7a884a22c38101995.md",
+      "size": 6267,
+      "sha256": "601760f7a884a22c381019957e901d4e8861f90a5f720e7f1efb783a1e4b26b0"
+    },
+    {
+      "relativePath": "死霊探偵/案/アイデアメモ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/アイデアメモ.md",
+      "asset": "cloud-samples/files/48ee32f85e9a00d36f7507db.md",
+      "size": 206,
+      "sha256": "48ee32f85e9a00d36f7507db7d0b32bfb8b3e890e45d85dc9bfa1203163d4f31"
+    },
+    {
+      "relativePath": "死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる.md",
+      "asset": "cloud-samples/files/84e6eebf10d7d1c2f5d66ad7.md",
+      "size": 160,
+      "sha256": "84e6eebf10d7d1c2f5d66ad7cd3ccdd00937db55c3fd6b992eeb3839a5e590e9"
+    },
+    {
+      "relativePath": "死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/テキスト_犬神家風の和風屋敷は、障子越しの影、襖の向こうの声、渡り廊下の足音で「そこにいる」と思い込ませやすい舞台装置。死霊を生者と認識させるジレンマの解決策の一つとして.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/テキスト_犬神家風の和風屋敷は、障子越しの影、襖の向こうの声、渡り廊下の足音で「そこにいる」と思い込ませやすい舞台装置。死霊を生者と認識させるジレンマの解決策の一つとして.md",
+      "asset": "cloud-samples/files/43b3ef41f0d52c4b499d1cd3.md",
+      "size": 477,
+      "sha256": "43b3ef41f0d52c4b499d1cd3ebccefbd3f6be8f3116315e9935c74904c24f7f5"
+    },
+    {
+      "relativePath": "死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/分類_舞台設定・演出.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/分類_舞台設定・演出.md",
+      "asset": "cloud-samples/files/c8f0174f9e76b1fab5f4a106.md",
+      "size": 243,
+      "sha256": "c8f0174f9e76b1fab5f4a10642888e2a030d81c1950abc99581afe63a348d6f2"
+    },
+    {
+      "relativePath": "死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/提案者_AI.md",
+      "asset": "cloud-samples/files/4f02220b0672874f7f158359.md",
+      "size": 227,
+      "sha256": "4f02220b0672874f7f158359f18d4ebb05e334d8a9aec5f42e221d82b8cf58e9"
+    },
+    {
+      "relativePath": "死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/発言リンク_msg_4dfa06a0.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/和風屋敷の障子・襖で顔を合わせず存在を認識させる/発言リンク_msg_4dfa06a0.md",
+      "asset": "cloud-samples/files/2e306100af6bbe79acdb324c.md",
+      "size": 243,
+      "sha256": "2e306100af6bbe79acdb324c2d2f3141b3d439fa4d9d0bff6786e38155c658e0"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行.md",
+      "asset": "cloud-samples/files/4b999fcbf4342bab9ea86228.md",
+      "size": 160,
+      "sha256": "4b999fcbf4342bab9ea86228ae8ffbc4dc14984ba496353130b6fd760011f005"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/テキスト_死霊は物に触れないが、生者に憑依すればその体で殺人を実行できる。犯人は先に死んでいた死霊で、生者の一人に憑依して次々と殺害。物理干渉不可の問題を解決しつつ、死霊.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/テキスト_死霊は物に触れないが、生者に憑依すればその体で殺人を実行できる。犯人は先に死んでいた死霊で、生者の一人に憑依して次々と殺害。物理干渉不可の問題を解決しつつ、死霊.md",
+      "asset": "cloud-samples/files/4b21964a452d98d5b127c8dc.md",
+      "size": 609,
+      "sha256": "4b21964a452d98d5b127c8dc693a609f47f2778aa75b8401ed1faf5be7e0d995"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/分類_メイントリック候補.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/分類_メイントリック候補.md",
+      "asset": "cloud-samples/files/0f98aa848939a3d5b22f06dd.md",
+      "size": 243,
+      "sha256": "0f98aa848939a3d5b22f06dddf711dc7577974af35ee26ad6721717995fc6052"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/提案者_ユーザー（憑依の着想）＋AI（構造分析）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/提案者_ユーザー（憑依の着想）＋AI（構造分析）.md",
+      "asset": "cloud-samples/files/f6455675c11fb252eed631fe.md",
+      "size": 275,
+      "sha256": "f6455675c11fb252eed631fe0a62c4310fda69b6ba5e066eea3e68c113536260"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/発言リンク_msg_0ed8ccd1.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依トリック：死霊が生者に憑依して殺人を実行/発言リンク_msg_0ed8ccd1.md",
+      "asset": "cloud-samples/files/ce85037bcf7275a0f984b404.md",
+      "size": 237,
+      "sha256": "ce85037bcf7275a0f984b404f6490699e780940bd5c9ef63873ae37116f843f0"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依中の癖・利き手の違いが証拠になる.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依中の癖・利き手の違いが証拠になる.md",
+      "asset": "cloud-samples/files/d4201648da465236a181cf54.md",
+      "size": 160,
+      "sha256": "d4201648da465236a181cf54edabd0b7ebe72b7c55c61d02386a4c5c061b19e4"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/テキスト_操られた人物の体で行われた犯行に、宿主ではなく憑依者の癖が出る。利き手の違い、口癖、宿主が知らないはずの屋敷の秘密通路の使用など。憑依の証拠になる。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/テキスト_操られた人物の体で行われた犯行に、宿主ではなく憑依者の癖が出る。利き手の違い、口癖、宿主が知らないはずの屋敷の秘密通路の使用など。憑依の証拠になる。.md",
+      "asset": "cloud-samples/files/4559ae221460fbbd7e62709e.md",
+      "size": 432,
+      "sha256": "4559ae221460fbbd7e62709ebc99f78df7cbbf04008d31b16d997deb207bf354"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/分類_証拠・伏線.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/分類_証拠・伏線.md",
+      "asset": "cloud-samples/files/1586a3da5b6fbb1633258d19.md",
+      "size": 219,
+      "sha256": "1586a3da5b6fbb1633258d19537a29556ce92eb653bf20dbfbe893935c78ac10"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/提案者_AI.md",
+      "asset": "cloud-samples/files/587fd99650f7797ce924e4fa.md",
+      "size": 209,
+      "sha256": "587fd99650f7797ce924e4fa52abeace229ed91fa5da239dbe9ef13dab288074"
+    },
+    {
+      "relativePath": "死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/発言リンク_msg_0ed8ccd1.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/憑依中の癖・利き手の違いが証拠になる/発言リンク_msg_0ed8ccd1.md",
+      "asset": "cloud-samples/files/be720128f8e3cf6ee19c6984.md",
+      "size": 225,
+      "sha256": "be720128f8e3cf6ee19c698489382cb07beac8290b008db92b4f34572ca19d95"
+    },
+    {
+      "relativePath": "死霊探偵/案/操られたBが犯人に見える二重構造.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/操られたBが犯人に見える二重構造.md",
+      "asset": "cloud-samples/files/29b318ac2a264c8143a1fad3.md",
+      "size": 160,
+      "sha256": "29b318ac2a264c8143a1fad3901544a9fb3bad64891b6eb86df2e8cb44ec6867"
+    },
+    {
+      "relativePath": "死霊探偵/案/操られたBが犯人に見える二重構造/テキスト_憑依トリックの場合、物理的証拠はすべて操られた人物を指す。刑事が「犯人はこいつだ！」と自信満々に間違える展開が自然に成立。表層の推理（刑事）→違和感（主人公）→.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/操られたBが犯人に見える二重構造/テキスト_憑依トリックの場合、物理的証拠はすべて操られた人物を指す。刑事が「犯人はこいつだ！」と自信満々に間違える展開が自然に成立。表層の推理（刑事）→違和感（主人公）→.md",
+      "asset": "cloud-samples/files/4de5024d09d958aebde6d9e2.md",
+      "size": 514,
+      "sha256": "4de5024d09d958aebde6d9e27c8e60fe68113f1beaa033e2ffb6b07eb1eac2a4"
+    },
+    {
+      "relativePath": "死霊探偵/案/操られたBが犯人に見える二重構造/分類_トリック構造.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/操られたBが犯人に見える二重構造/分類_トリック構造.md",
+      "asset": "cloud-samples/files/90f0d134b6dc92e3221db3bf.md",
+      "size": 214,
+      "sha256": "90f0d134b6dc92e3221db3bf9b3aaf04fdba635abd2216799ada959e2e3e13a2"
+    },
+    {
+      "relativePath": "死霊探偵/案/操られたBが犯人に見える二重構造/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/操られたBが犯人に見える二重構造/提案者_AI.md",
+      "asset": "cloud-samples/files/b5483fce579e980faa206e27.md",
+      "size": 201,
+      "sha256": "b5483fce579e980faa206e27f221b332bf0deec7901e701c55f8bdb4d979ca3e"
+    },
+    {
+      "relativePath": "死霊探偵/案/操られたBが犯人に見える二重構造/発言リンク_msg_0ed8ccd1.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/操られたBが犯人に見える二重構造/発言リンク_msg_0ed8ccd1.md",
+      "asset": "cloud-samples/files/b27cabb933ebcf0018f61e67.md",
+      "size": 217,
+      "sha256": "b27cabb933ebcf0018f61e674e9d5d5779d00184be0d73bcadfc6f5ef1c72bd6"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法.md",
+      "asset": "cloud-samples/files/32331a1390c13a030c2eaf0c.md",
+      "size": 160,
+      "sha256": "32331a1390c13a030c2eaf0cdbcef228c9077570fdc465b063dd2ba962eefba8"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/テキスト_犯人が元々死霊だった場合、生者が犯人を「生きている」と認識するにはどうするか。霊能力者以外は死霊が見えない。間接的な示唆だけではミスリードがバレバレ。「霊能力者.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/テキスト_犯人が元々死霊だった場合、生者が犯人を「生きている」と認識するにはどうするか。霊能力者以外は死霊が見えない。間接的な示唆だけではミスリードがバレバレ。「霊能力者.md",
+      "asset": "cloud-samples/files/af7bcde482b33d7a64688295.md",
+      "size": 643,
+      "sha256": "af7bcde482b33d7a64688295c2ac97939069bc0e086cc8c3b75a4fe272b21ef7"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/分類_課題・ジレンマ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/分類_課題・ジレンマ.md",
+      "asset": "cloud-samples/files/683e9df6c942e4734745b492.md",
+      "size": 235,
+      "sha256": "683e9df6c942e4734745b492bfb3b97ae660ae7d9b98a19191cf07912b1a5e8d"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/提案者_ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/提案者_ユーザー.md",
+      "asset": "cloud-samples/files/833ca98879bdc6554deffedb.md",
+      "size": 229,
+      "sha256": "833ca98879bdc6554deffedb2c93bb3216a287dccfacd2a16313af6c7005a7e8"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/発言リンク_msg_4dfa06a0.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向2のジレンマ：死霊を生者と認識させる方法/発言リンク_msg_4dfa06a0.md",
+      "asset": "cloud-samples/files/6fcc310ecaa5864231b1aa96.md",
+      "size": 235,
+      "sha256": "6fcc310ecaa5864231b1aa961c0e684b64f8513fadbededee8381279eb9e09f2"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）.md",
+      "asset": "cloud-samples/files/1543eaac2a0c5ade28f8dcb5.md",
+      "size": 160,
+      "sha256": "1543eaac2a0c5ade28f8dcb5df6d99d3dd6098f21ff0b9ccc7ff403a0de57059"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/テキスト_犯人は最初に「死んだふり」をして最初の被害者を装い、他の全員がパニックになっている隙に一人ずつ殺害。最後に本当に死亡して死霊に。「最初に殺されたかわいそうな人」.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/テキスト_犯人は最初に「死んだふり」をして最初の被害者を装い、他の全員がパニックになっている隙に一人ずつ殺害。最後に本当に死亡して死霊に。「最初に殺されたかわいそうな人」.md",
+      "asset": "cloud-samples/files/62140395e2916ced77d13f62.md",
+      "size": 628,
+      "sha256": "62140395e2916ced77d13f62d1e431b64f121b722ceb4608d8f274a012d40a08"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/分類_メイントリック候補.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/分類_メイントリック候補.md",
+      "asset": "cloud-samples/files/3baff4e62a37431460ec77b7.md",
+      "size": 235,
+      "sha256": "3baff4e62a37431460ec77b763e1887ae08fcd3499d7ee629ee24e91d8b47adc"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/提案者_AI.md",
+      "asset": "cloud-samples/files/8664094c176fb72b7daccf2f.md",
+      "size": 213,
+      "sha256": "8664094c176fb72b7daccf2f429a7901ffa01c169cbf15eb594cc5b041bbbf80"
+    },
+    {
+      "relativePath": "死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/方向3：最初の被害者が実は犯人（偽装死）/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/478e45292c7dec73da26f99f.md",
+      "size": 229,
+      "sha256": "478e45292c7dec73da26f99f214a70c95bd18dfb5e168a295fdbaa8106c111c3"
+    },
+    {
+      "relativePath": "死霊探偵/案/死後に殺人を実行した（X案）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死後に殺人を実行した（X案）.md",
+      "asset": "cloud-samples/files/2372209251d77098adb78e9d.md",
+      "size": 160,
+      "sha256": "2372209251d77098adb78e9d7a471d2bc003cbbf49cd56b9a0e222df4e715e01"
+    },
+    {
+      "relativePath": "死霊探偵/案/死後に殺人を実行した（X案）/テキスト_一部の殺人は、犯人が死霊になった後に実行された。犯人は生前に物理トラップを仕掛け、死霊として監視・誘導。霊能力者である犯人は死霊の姿で生者に語りかけ、トラップの.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死後に殺人を実行した（X案）/テキスト_一部の殺人は、犯人が死霊になった後に実行された。犯人は生前に物理トラップを仕掛け、死霊として監視・誘導。霊能力者である犯人は死霊の姿で生者に語りかけ、トラップの.md",
+      "asset": "cloud-samples/files/f2a1f7b713e3be4191cfd8c8.md",
+      "size": 575,
+      "sha256": "f2a1f7b713e3be4191cfd8c8ea8e8480e71e0a27b7badfe1b8dd43d458016253"
+    },
+    {
+      "relativePath": "死霊探偵/案/死後に殺人を実行した（X案）/分類_メイントリック候補.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死後に殺人を実行した（X案）/分類_メイントリック候補.md",
+      "asset": "cloud-samples/files/8dc42fb2e43b2d7a868bd1fa.md",
+      "size": 217,
+      "sha256": "8dc42fb2e43b2d7a868bd1fa86b5a6f4a9ba8dbbee7d447dd68d5ed330ac07f3"
+    },
+    {
+      "relativePath": "死霊探偵/案/死後に殺人を実行した（X案）/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死後に殺人を実行した（X案）/提案者_AI.md",
+      "asset": "cloud-samples/files/b8adf222faa7fae96f020d89.md",
+      "size": 195,
+      "sha256": "b8adf222faa7fae96f020d897bf14796dd083f5c6a570e56fd75eaeb5169a650"
+    },
+    {
+      "relativePath": "死霊探偵/案/死後に殺人を実行した（X案）/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死後に殺人を実行した（X案）/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/62fd592a698ea1e3b1d1f21a.md",
+      "size": 211,
+      "sha256": "62fd592a698ea1e3b1d1f21a75d0c1ede13cfb180dd94afe5e2bd29e481028c3"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈.md",
+      "asset": "cloud-samples/files/fd08dfd5c4572006bfaeed5a.md",
+      "size": 160,
+      "sha256": "fd08dfd5c4572006bfaeed5a4517a6f963b92183a0b2f20b4c12c836cfc64274"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/テキスト_真犯人は霊能力者のため死霊たちの会話が聞こえている。死霊たちだけで交わした話題について、つい前提として口にしてしまう。「なぜあなたがそれを知っている？」——この.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/テキスト_真犯人は霊能力者のため死霊たちの会話が聞こえている。死霊たちだけで交わした話題について、つい前提として口にしてしまう。「なぜあなたがそれを知っている？」——この.md",
+      "asset": "cloud-samples/files/501d224736f9dde235acf205.md",
+      "size": 597,
+      "sha256": "501d224736f9dde235acf205bd9979692277962390b9b397cbe4674ba7bfa0d3"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/分類_犯人露呈トリック.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/分類_犯人露呈トリック.md",
+      "asset": "cloud-samples/files/73d7c0045403487e85d08e3f.md",
+      "size": 237,
+      "sha256": "73d7c0045403487e85d08e3fb7c43adecc522d11e97f2388c3373bc0f8c25655"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/提案者_ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/提案者_ユーザー.md",
+      "asset": "cloud-samples/files/6e2d818841dd5bab470b453d.md",
+      "size": 225,
+      "sha256": "6e2d818841dd5bab470b453dfc2cf5ffa21b3c5f6b7a67a66d4e081ddb9bae63"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/発言リンク_msg_49dd3f95.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊の会話を知っていたことで霊能力者が露呈/発言リンク_msg_49dd3f95.md",
+      "asset": "cloud-samples/files/5e14402ddb9e7283a3cb7b82.md",
+      "size": 234,
+      "sha256": "5e14402ddb9e7283a3cb7b82b71de2fba2c3a699f08a2d30fc7a3cf790f6e6ce"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊化の時間差による情報格差.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊化の時間差による情報格差.md",
+      "asset": "cloud-samples/files/b84737a0427ab3ef0deedf45.md",
+      "size": 160,
+      "sha256": "b84737a0427ab3ef0deedf4577e80c15429c89696f5d4035e79fb2d1c51ce291"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊化の時間差による情報格差/テキスト_殺害順に死霊化するため、先に死んだ者ほど屋敷を長く観察している。後から死んだ者は自分の死後のことしか知らない。この時間差が情報の非対称性を生み、推理の手がかりと.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊化の時間差による情報格差/テキスト_殺害順に死霊化するため、先に死んだ者ほど屋敷を長く観察している。後から死んだ者は自分の死後のことしか知らない。この時間差が情報の非対称性を生み、推理の手がかりと.md",
+      "asset": "cloud-samples/files/2d095b0392f4e69568a2abe2.md",
+      "size": 531,
+      "sha256": "2d095b0392f4e69568a2abe2bee1f9a500479d751d085dcbeb1a0d284b48bc84"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊化の時間差による情報格差/分類_トリック補助.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊化の時間差による情報格差/分類_トリック補助.md",
+      "asset": "cloud-samples/files/45403a68d07b08a2e4b3dcbb.md",
+      "size": 210,
+      "sha256": "45403a68d07b08a2e4b3dcbb3ac074a1c62e2e7bb7426a63c3562d2683fb7366"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊化の時間差による情報格差/提案者_ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊化の時間差による情報格差/提案者_ユーザー.md",
+      "asset": "cloud-samples/files/52ffed71823dab0ed24e3f2b.md",
+      "size": 204,
+      "sha256": "52ffed71823dab0ed24e3f2b96c4cabf27c3b29750e03edf38a74b6951bc6991"
+    },
+    {
+      "relativePath": "死霊探偵/案/死霊化の時間差による情報格差/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/死霊化の時間差による情報格差/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/60cf2adc14aadca9a25f28f3.md",
+      "size": 213,
+      "sha256": "60cf2adc14aadca9a25f28f3c781a8e4193c9901c637f95dc2eb10c2fee777a3"
+    },
+    {
+      "relativePath": "死霊探偵/案/殺害順序が思い込みと違う（C案）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/殺害順序が思い込みと違う（C案）.md",
+      "asset": "cloud-samples/files/b2c4910750a0eb27d4417b1e.md",
+      "size": 160,
+      "sha256": "b2c4910750a0eb27d4417b1e406ace6418b97ba72a69d4f3bd8cde9a611dfb59"
+    },
+    {
+      "relativePath": "死霊探偵/案/殺害順序が思い込みと違う（C案）/テキスト_死霊には時間感覚がない。全員が「同時に殺された」と思っているが、実は数時間〜一日の時差で順番に殺されていた。死亡順序の復元自体がメインの謎になる。「死霊化の時間.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/殺害順序が思い込みと違う（C案）/テキスト_死霊には時間感覚がない。全員が「同時に殺された」と思っているが、実は数時間〜一日の時差で順番に殺されていた。死亡順序の復元自体がメインの謎になる。「死霊化の時間.md",
+      "asset": "cloud-samples/files/5fe992e7e0be6fc4ea3dd7b1.md",
+      "size": 505,
+      "sha256": "5fe992e7e0be6fc4ea3dd7b1da7b267246c59906c4fb3ec5eda5e1f9a0f6d7a7"
+    },
+    {
+      "relativePath": "死霊探偵/案/殺害順序が思い込みと違う（C案）/分類_メイントリック候補.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/殺害順序が思い込みと違う（C案）/分類_メイントリック候補.md",
+      "asset": "cloud-samples/files/e29050df8dcb59693941add9.md",
+      "size": 223,
+      "sha256": "e29050df8dcb59693941add9ba9c1cc7e2e37985f37aaa47f5d5b22e6ed204ff"
+    },
+    {
+      "relativePath": "死霊探偵/案/殺害順序が思い込みと違う（C案）/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/殺害順序が思い込みと違う（C案）/提案者_AI.md",
+      "asset": "cloud-samples/files/2936df8a06aa3c110deb977c.md",
+      "size": 201,
+      "sha256": "2936df8a06aa3c110deb977c0f81cdfd534b9a036259748d80c2773d7a4052b9"
+    },
+    {
+      "relativePath": "死霊探偵/案/殺害順序が思い込みと違う（C案）/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/殺害順序が思い込みと違う（C案）/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/cc52de342768f660b6feed76.md",
+      "size": 217,
+      "sha256": "cc52de342768f660b6feed76a55a3ea91d0e205d4e83e6fe3f945d17ca417016"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人が自分を犯人だと知らない（B案）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人が自分を犯人だと知らない（B案）.md",
+      "asset": "cloud-samples/files/d08e618d1fecfed752e61244.md",
+      "size": 160,
+      "sha256": "d08e618d1fecfed752e61244d18b3d89843f7b1048a1fc710995640d2f04ba23"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人が自分を犯人だと知らない（B案）/テキスト_全員の「殺された瞬間の記憶が欠落する」ルールを逆手に取る。犯人は犯行後に自殺したが、その記憶も欠落しているため、自分が犯人だと本当に分かっていない。「嘘をついて.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人が自分を犯人だと知らない（B案）/テキスト_全員の「殺された瞬間の記憶が欠落する」ルールを逆手に取る。犯人は犯行後に自殺したが、その記憶も欠落しているため、自分が犯人だと本当に分かっていない。「嘘をついて.md",
+      "asset": "cloud-samples/files/b91afdeb50dc15e6e4568290.md",
+      "size": 535,
+      "sha256": "b91afdeb50dc15e6e4568290ca23599310db6bcc5fd48e79cf91e4f181183e3a"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人が自分を犯人だと知らない（B案）/分類_メイントリック候補.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人が自分を犯人だと知らない（B案）/分類_メイントリック候補.md",
+      "asset": "cloud-samples/files/65ecef7a77fe4b486bc500f6.md",
+      "size": 229,
+      "sha256": "65ecef7a77fe4b486bc500f6d3a0745bcfcc02d61ef497f5bf8d08b2a9f988fe"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人が自分を犯人だと知らない（B案）/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人が自分を犯人だと知らない（B案）/提案者_AI.md",
+      "asset": "cloud-samples/files/8592dacd37ddaef5f4043156.md",
+      "size": 207,
+      "sha256": "8592dacd37ddaef5f4043156cb582c3cb5e86bd18bac1f6f080d24c458f1426b"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人が自分を犯人だと知らない（B案）/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人が自分を犯人だと知らない（B案）/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/77aa5cb27ac0b4e87839afde.md",
+      "size": 223,
+      "sha256": "77aa5cb27ac0b4e87839afde3a43c3a5d3b4c9f8154b524f85f6baa5c838f44a"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす.md",
+      "asset": "cloud-samples/files/f675566bba9995692d25078b.md",
+      "size": 160,
+      "sha256": "f675566bba9995692d25078bb00cdf723adaa81782d0a9ac2771b0d6091bdb39"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/テキスト_憑依トリックとの組み合わせ。真犯人の死霊は、生者に憑依していた間にその体で見聞きした情報を持っている。死霊になった後、その情報を前提とした発言をしてしまう。「な.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/テキスト_憑依トリックとの組み合わせ。真犯人の死霊は、生者に憑依していた間にその体で見聞きした情報を持っている。死霊になった後、その情報を前提とした発言をしてしまう。「な.md",
+      "asset": "cloud-samples/files/32927cd2f22caa006984ba99.md",
+      "size": 589,
+      "sha256": "32927cd2f22caa006984ba99fd331e83ed6667980125ff2b3849ad88b1d0c357"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/分類_犯人露呈トリック.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/分類_犯人露呈トリック.md",
+      "asset": "cloud-samples/files/9d8274449734b7f0d1856cf6.md",
+      "size": 255,
+      "sha256": "9d8274449734b7f0d1856cf6505fc099d24a64d6e32c9a7fa587c6adf4feb7c9"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/提案者_AI（ユーザーの口滑りアイディアを憑依版に発展）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/提案者_AI（ユーザーの口滑りアイディアを憑依版に発展）.md",
+      "asset": "cloud-samples/files/3c3f0f2e40e9ca0a4ceb5b2b.md",
+      "size": 302,
+      "sha256": "3c3f0f2e40e9ca0a4ceb5b2be90818808764603fff66683a219d27b59e3a505c"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/発言リンク_msg_0ed8ccd1.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人の口滑り（憑依版）：憑依中に見聞きした情報を漏らす/発言リンク_msg_0ed8ccd1.md",
+      "asset": "cloud-samples/files/654d0fdad5b0e92ced66d123.md",
+      "size": 252,
+      "sha256": "654d0fdad5b0e92ced66d1234bd3cf5e878cc70470e658d1998f5a27dfdcf588"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）.md",
+      "asset": "cloud-samples/files/92a9624ba012306c039b8317.md",
+      "size": 160,
+      "sha256": "92a9624ba012306c039b8317a2476fe46040649ad8674818109bf34b88d33484"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/テキスト_「全員死霊」という大前提そのものをひっくり返す。犯人は実はまだ生きており、霊能力者であるため死霊と会話でき、死霊のふりをして犯人捜しに参加している。「自分も殺さ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/テキスト_「全員死霊」という大前提そのものをひっくり返す。犯人は実はまだ生きており、霊能力者であるため死霊と会話でき、死霊のふりをして犯人捜しに参加している。「自分も殺さ.md",
+      "asset": "cloud-samples/files/664a36df3bbc9ccde34090a2.md",
+      "size": 640,
+      "sha256": "664a36df3bbc9ccde34090a2bd564833f11482f2d42c448ca14a75347a897aee"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/分類_メイントリック.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/分類_メイントリック.md",
+      "asset": "cloud-samples/files/7a2ffe5a3e456f9297e31762.md",
+      "size": 229,
+      "sha256": "7a2ffe5a3e456f9297e31762171947dd133a46589e22ac9158466c6ce1244798"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/提案者_AI＋ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/提案者_AI＋ユーザー.md",
+      "asset": "cloud-samples/files/2e832507e9c0260298d3f954.md",
+      "size": 225,
+      "sha256": "2e832507e9c0260298d3f954fc2090e92423e1a38cad75c3851dcd324eb01ac1"
+    },
+    {
+      "relativePath": "死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/犯人は生者が死霊のふりをしている（Y案）/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/2c431d73fbf8ae788bfa4325.md",
+      "size": 229,
+      "sha256": "2c431d73fbf8ae788bfa43258b014517df3b8f47b15b312436678362258ef4ed"
+    },
+    {
+      "relativePath": "死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）.md",
+      "asset": "cloud-samples/files/f92a74e2ea959110ca1a00a6.md",
+      "size": 160,
+      "sha256": "f92a74e2ea959110ca1a00a690e2a79e0c51075af6fb7d71a52ad46048a6a53f"
+    },
+    {
+      "relativePath": "死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/テキスト_物語の一部は生前の回想と死後の現在が区別なく描かれている叙述トリック。死霊には時間感覚がないため、読者が「死後の会話」だと思っていたシーンが実は「生前の記憶の再.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/テキスト_物語の一部は生前の回想と死後の現在が区別なく描かれている叙述トリック。死霊には時間感覚がないため、読者が「死後の会話」だと思っていたシーンが実は「生前の記憶の再.md",
+      "asset": "cloud-samples/files/bec9ea3bbdd20c7a83db125d.md",
+      "size": 646,
+      "sha256": "bec9ea3bbdd20c7a83db125d756ee7b261045247b14687f617b3a43506ef29a5"
+    },
+    {
+      "relativePath": "死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/分類_メイントリック候補.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/分類_メイントリック候補.md",
+      "asset": "cloud-samples/files/b86fbf6d07534328e2fd7816.md",
+      "size": 247,
+      "sha256": "b86fbf6d07534328e2fd7816edfbc761c6cadef06c0900e40bae3751fb34acb6"
+    },
+    {
+      "relativePath": "死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/提案者_AI.md",
+      "asset": "cloud-samples/files/76c47f5246f7da1f1fc51c4a.md",
+      "size": 225,
+      "sha256": "76c47f5246f7da1f1fc51c4a8e5d4523b5ffc989afdd93f5963bdd2bd478d794"
+    },
+    {
+      "relativePath": "死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生前と死後の時間軸が混在する叙述トリック（Z案）/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/4674018f2444316a2272df8b.md",
+      "size": 241,
+      "sha256": "4674018f2444316a2272df8b2b197db0828119bd89a5390aee5283f9984dca6b"
+    },
+    {
+      "relativePath": "死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）.md",
+      "asset": "cloud-samples/files/2f959b2cc0ab304e10826201.md",
+      "size": 160,
+      "sha256": "2f959b2cc0ab304e10826201b740c777aa03e3ed5e48874257cb531336b17418"
+    },
+    {
+      "relativePath": "死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/テキスト_ミステリ的にもホラー的にも、生者だと思っていた相手が死霊だった、というのは怖い。ただし実現には方向2のジレンマを乗り越える必要がある。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/テキスト_ミステリ的にもホラー的にも、生者だと思っていた相手が死霊だった、というのは怖い。ただし実現には方向2のジレンマを乗り越える必要がある。.md",
+      "asset": "cloud-samples/files/288928862b24badb5d3853b7.md",
+      "size": 430,
+      "sha256": "288928862b24badb5d3853b765fbfd30090e0fcc1e97d893b163ec8a09538790"
+    },
+    {
+      "relativePath": "死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/分類_コンセプト・テーマ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/分類_コンセプト・テーマ.md",
+      "asset": "cloud-samples/files/c39f35874fc08a235088e5f5.md",
+      "size": 252,
+      "sha256": "c39f35874fc08a235088e5f5b3aa82c0774dae870424c5004da814056c5e7294"
+    },
+    {
+      "relativePath": "死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/提案者_ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/提案者_ユーザー.md",
+      "asset": "cloud-samples/files/630c780ba8e4312f82f59ba5.md",
+      "size": 240,
+      "sha256": "630c780ba8e4312f82f59ba57d11cb2f8d27153987c2a73656712ecb6ba1b16d"
+    },
+    {
+      "relativePath": "死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/発言リンク_msg_4dfa06a0.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/生者だと思っていた相手が死霊だった（ホラー的恐怖）/発言リンク_msg_4dfa06a0.md",
+      "asset": "cloud-samples/files/1c1bdebd93dbe595962bd361.md",
+      "size": 246,
+      "sha256": "1c1bdebd93dbe595962bd361dfe3d21dda24ed3395a0fc3b84e7127cac19e15b"
+    },
+    {
+      "relativePath": "死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針.md",
+      "asset": "cloud-samples/files/5ff54523d895c76df81fea2d.md",
+      "size": 160,
+      "sha256": "5ff54523d895c76df81fea2d143b16dc8fbee585f643e48eedc29403ccd729ba"
+    },
+    {
+      "relativePath": "死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/テキスト_基本的な連続殺人は普通のトリックにしたほうがミステリっぽい。幽霊由来なのは大オチのメイントリックもしくはどんでん返しだけでいい。技法ナレッジの「1事件にファンタ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/テキスト_基本的な連続殺人は普通のトリックにしたほうがミステリっぽい。幽霊由来なのは大オチのメイントリックもしくはどんでん返しだけでいい。技法ナレッジの「1事件にファンタ.md",
+      "asset": "cloud-samples/files/d9dd59f97965b6afe93d96e6.md",
+      "size": 512,
+      "sha256": "d9dd59f97965b6afe93d96e61225d9eddd4e193c75609c4e88af1b79cd52b69c"
+    },
+    {
+      "relativePath": "死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/分類_設計方針.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/分類_設計方針.md",
+      "asset": "cloud-samples/files/c1629e1b6216478b48527a5d.md",
+      "size": 243,
+      "sha256": "c1629e1b6216478b48527a5dd6b048620db46c4bbfc5e1ba2ed13de8689a0935"
+    },
+    {
+      "relativePath": "死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/提案者_ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/提案者_ユーザー.md",
+      "asset": "cloud-samples/files/bb8aba852ea269660b995c13.md",
+      "size": 246,
+      "sha256": "bb8aba852ea269660b995c13252150c20773837c6a0a7788aca291076b0b508b"
+    },
+    {
+      "relativePath": "死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/発言リンク_msg_4dfa06a0.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/連続殺人は普通のトリック、メインだけ死霊由来にする方針/発言リンク_msg_4dfa06a0.md",
+      "asset": "cloud-samples/files/22f0e1ed9c7906132428735d.md",
+      "size": 252,
+      "sha256": "22f0e1ed9c7906132428735d19a3212fd0421b7744dfff3654a2b329bdb050f4"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が二人いる.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が二人いる.md",
+      "asset": "cloud-samples/files/c3f1082ae305c1995de1588e.md",
+      "size": 160,
+      "sha256": "c3f1082ae305c1995de1588e4994716ec778f8ef04a72ccd7ef56fdf1245b720"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が二人いる/テキスト_登場人物の一人が公然の霊能力者。読者は「霊能力者＝特殊な存在＝一人だけ」と思い込む。だが真犯人も隠れ霊能力者。一人霊能力者がいれば、まさか他にもいるとは誰も考え.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が二人いる/テキスト_登場人物の一人が公然の霊能力者。読者は「霊能力者＝特殊な存在＝一人だけ」と思い込む。だが真犯人も隠れ霊能力者。一人霊能力者がいれば、まさか他にもいるとは誰も考え.md",
+      "asset": "cloud-samples/files/67d85bbd9010f79f8d7f971d.md",
+      "size": 480,
+      "sha256": "67d85bbd9010f79f8d7f971db2f8ac00ca1d8a408e04f602355db001f7be6b69"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が二人いる/分類_設定・トリック.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が二人いる/分類_設定・トリック.md",
+      "asset": "cloud-samples/files/b72730297d8a3f20ecbcf4ac.md",
+      "size": 198,
+      "sha256": "b72730297d8a3f20ecbcf4ac6f2a65c608c900559fbd4cdca967d0415b9edd27"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が二人いる/提案者_ユーザー.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が二人いる/提案者_ユーザー.md",
+      "asset": "cloud-samples/files/129aa3d6ad302ac04db5c92a.md",
+      "size": 189,
+      "sha256": "129aa3d6ad302ac04db5c92aa44dac604456c6548375c0604639c355f8e9d59a"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が二人いる/発言リンク_msg_cbafef08.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が二人いる/発言リンク_msg_cbafef08.md",
+      "asset": "cloud-samples/files/ad0b7a91f65358e3444ba054.md",
+      "size": 198,
+      "sha256": "ad0b7a91f65358e3444ba05496de132904e684dfaacdd0e321df532b18437810"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線.md",
+      "asset": "cloud-samples/files/ebb7b0c9d9a8a828ade5cd3a.md",
+      "size": 160,
+      "sha256": "ebb7b0c9d9a8a828ade5cd3ac7a15d407fdf6b1feb4569c501282137878e5cec"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/テキスト_公然の霊能力者が序盤で死霊のルール説明をする中で「死霊は生者に憑依できる。ただし長時間は無理で、憑依中の記憶は宿主に残らない」とサラッと言う。読者はホラー的世界.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/テキスト_公然の霊能力者が序盤で死霊のルール説明をする中で「死霊は生者に憑依できる。ただし長時間は無理で、憑依中の記憶は宿主に残らない」とサラッと言う。読者はホラー的世界.md",
+      "asset": "cloud-samples/files/c5319f6fdb0c80c6bb7c708e.md",
+      "size": 630,
+      "sha256": "c5319f6fdb0c80c6bb7c708e3550537c6f68d25827001e68896d38ced15ffded"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/分類_伏線・演出.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/分類_伏線・演出.md",
+      "asset": "cloud-samples/files/96e6b109f55fd9ea552c2ce4.md",
+      "size": 237,
+      "sha256": "96e6b109f55fd9ea552c2ce4f999ee4bea8c5fe32f4b8c1b7f41d0b4070f7ffe"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/提案者_AI.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/提案者_AI.md",
+      "asset": "cloud-samples/files/dba6b446af365c3fb8d8954a.md",
+      "size": 227,
+      "sha256": "dba6b446af365c3fb8d8954a7312f04c71b0a3d32f779af38d8cbeb42c978928"
+    },
+    {
+      "relativePath": "死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/発言リンク_msg_0ed8ccd1.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/案/霊能力者が序盤で憑依ルールをサラッと説明する伏線/発言リンク_msg_0ed8ccd1.md",
+      "asset": "cloud-samples/files/7ff6ee734ded47cbaff19216.md",
+      "size": 243,
+      "sha256": "7ff6ee734ded47cbaff1921612254a3e184bd83b3089851bfcc95ae7dc8c468c"
+    },
+    {
+      "relativePath": "死霊探偵/死霊探偵_企画書.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/死霊探偵_企画書.md",
+      "asset": "cloud-samples/files/6d282b99f93c2ff4b6424c48.md",
+      "size": 20406,
+      "sha256": "6d282b99f93c2ff4b6424c483d06774574a4d04a1dc76bf02c2fc9c29ed75117"
+    },
+    {
+      "relativePath": "死霊探偵/殺害タイムライン/01_2000_黒部 録郎殺害.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/殺害タイムライン/01_2000_黒部 録郎殺害.md",
+      "asset": "cloud-samples/files/5f90f02f21165c4fddd19ef1.md",
+      "size": 1444,
+      "sha256": "5f90f02f21165c4fddd19ef11586facd8b57f1e19dfb85342b9b4b1e33ca2724"
+    },
+    {
+      "relativePath": "死霊探偵/殺害タイムライン/02_2100_薬師 治彦殺害.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/殺害タイムライン/02_2100_薬師 治彦殺害.md",
+      "asset": "cloud-samples/files/abe1e121172cf8ae82077082.md",
+      "size": 1474,
+      "sha256": "abe1e121172cf8ae82077082f405643b1ecdef6b88259b6bedd8f7be3068c712"
+    },
+    {
+      "relativePath": "死霊探偵/殺害タイムライン/03_2200_鬼ヶ瀬 杢蔵殺害.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/殺害タイムライン/03_2200_鬼ヶ瀬 杢蔵殺害.md",
+      "asset": "cloud-samples/files/b65c1fc2a047f2d7df386472.md",
+      "size": 1489,
+      "sha256": "b65c1fc2a047f2d7df386472207c1f5209ebf83424c838e3a726d50de9c000cd"
+    },
+    {
+      "relativePath": "死霊探偵/殺害タイムライン/04_2310_御影 依強制自殺.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/殺害タイムライン/04_2310_御影 依強制自殺.md",
+      "asset": "cloud-samples/files/c4ace788407d1f9d2749bf21.md",
+      "size": 1471,
+      "sha256": "c4ace788407d1f9d2749bf2187a18493a64de33ec7f5bffb5a831dba2e2806de"
+    },
+    {
+      "relativePath": "死霊探偵/殺害タイムライン/05_2330_狭間 透殺害.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/殺害タイムライン/05_2330_狭間 透殺害.md",
+      "asset": "cloud-samples/files/19d90678ea87e449028b42f1.md",
+      "size": 1451,
+      "sha256": "19d90678ea87e449028b42f1319048c65ea88864de92b1f0561d81585f1e9281"
+    },
+    {
+      "relativePath": "死霊探偵/殺害タイムライン/殺害タイムライン.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/殺害タイムライン/殺害タイムライン.md",
+      "asset": "cloud-samples/files/e3ceec07a9021bcef6817c9d.md",
+      "size": 1167,
+      "sha256": "e3ceec07a9021bcef6817c9df1d9f78ae0dd24885934260a237a570556b52f34"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/アクロイド殺し（アガサ・クリスティ）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/アクロイド殺し（アガサ・クリスティ）.md",
+      "asset": "cloud-samples/files/99263866ef7a6188098ef9ab.md",
+      "size": 57,
+      "sha256": "99263866ef7a6188098ef9ab14aee90d6547071540466b116ea1164c52a9f1e5"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/死霊探偵への応用可能性_犯行現場に「ある仕掛け」が残されており、その仕掛けを用意できた人物が論理的に一人に絞られる構造。憑依者が犯行中に「自分のための仕掛け」を残していた可能性。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/死霊探偵への応用可能性_犯行現場に「ある仕掛け」が残されており、その仕掛けを用意できた人物が論理的に一人に絞られる構造。憑依者が犯行中に「自分のための仕掛け」を残していた可能性。.md",
+      "asset": "cloud-samples/files/547e05fe424d049a90861da7.md",
+      "size": 471,
+      "sha256": "547e05fe424d049a90861da730e977c20a1c07f396edbbc86a902aa857e3fa7e"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/決定的証拠の概要_犯人が被害者の部屋に仕掛けた録音装置（ディクタフォン）。被害者がまだ生きているように見せかけるための時間偽装装置であり、この装置を仕掛ける機会があった人物は犯人.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/決定的証拠の概要_犯人が被害者の部屋に仕掛けた録音装置（ディクタフォン）。被害者がまだ生きているように見せかけるための時間偽装装置であり、この装置を仕掛ける機会があった人物は犯人.md",
+      "asset": "cloud-samples/files/adc96942458d03bae5806c2f.md",
+      "size": 489,
+      "sha256": "adc96942458d03bae5806c2fe447248686864888dcec79e3917866c12a0d2c13"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/証拠の型_時間のトリックと物証の組み合わせ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/証拠の型_時間のトリックと物証の組み合わせ.md",
+      "asset": "cloud-samples/files/f7915620dcb0565b7addee8e.md",
+      "size": 267,
+      "sha256": "f7915620dcb0565b7addee8e0c9120e18de65290f0049e6070019ca039b0abcc"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/証明の論理構造_物理的装置（物証）＋その装置を設置する機会（タイムライン上の消去法）の組み合わせ。物証が存在し、かつそれを仕掛けられた人物が一人に絞られる。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/アクロイド殺し（アガサ・クリスティ）/証明の論理構造_物理的装置（物証）＋その装置を設置する機会（タイムライン上の消去法）の組み合わせ。物証が存在し、かつそれを仕掛けられた人物が一人に絞られる。.md",
+      "asset": "cloud-samples/files/1532941ac15c663090ebda7c.md",
+      "size": 438,
+      "sha256": "1532941ac15c663090ebda7c33d6020ad7c777cae870a17c247fd478830cb03e"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/エジプト十字架の謎（エラリー・クイーン）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/エジプト十字架の謎（エラリー・クイーン）.md",
+      "asset": "cloud-samples/files/5fd2d224340355dbdc8f8aee.md",
+      "size": 63,
+      "sha256": "5fd2d224340355dbdc8f8aeef98e048e5a4e77b26db3e1158f4131b77f319103"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/死霊探偵への応用可能性_「犯行中のある行為が、Bの意志では説明できないがAの意志なら必然」という構造に転用可能。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/死霊探偵への応用可能性_「犯行中のある行為が、Bの意志では説明できないがAの意志なら必然」という構造に転用可能。.md",
+      "asset": "cloud-samples/files/a3a7e8525546158d9c879fa0.md",
+      "size": 374,
+      "sha256": "a3a7e8525546158d9c879fa07175a2f56888da6fe9875432b70ea559cafe1696"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/決定的証拠の概要_被害者の首が切断されている＝身元を隠すため。身元を隠す必要がある人物は誰か？という論理で、被害者と犯人の入れ替わりトリックを暴く。「首を切る必要があった人物」は.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/決定的証拠の概要_被害者の首が切断されている＝身元を隠すため。身元を隠す必要がある人物は誰か？という論理で、被害者と犯人の入れ替わりトリックを暴く。「首を切る必要があった人物」は.md",
+      "asset": "cloud-samples/files/ee6b2862bde6e55ca94fe3e0.md",
+      "size": 513,
+      "sha256": "ee6b2862bde6e55ca94fe3e09a99611fccc2f1505feee4eac66ff4a6b23bd753"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/証拠の型_物理的不可能性の消去法.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/証拠の型_物理的不可能性の消去法.md",
+      "asset": "cloud-samples/files/91598926c44ec6ef28246a70.md",
+      "size": 258,
+      "sha256": "91598926c44ec6ef28246a70ffe7626068c5b3d5501bbe4eee1ea09c20fd186a"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/証明の論理構造_「なぜそうする必要があったか」から犯人を逆算。行為の必然性が特定の人物にしか帰属しない。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/エジプト十字架の謎（エラリー・クイーン）/証明の論理構造_「なぜそうする必要があったか」から犯人を逆算。行為の必然性が特定の人物にしか帰属しない。.md",
+      "asset": "cloud-samples/files/53056ac63ed5de3f58cec8f6.md",
+      "size": 366,
+      "sha256": "53056ac63ed5de3f58cec8f6c1b6933b24df5509f52f5c025dc5b17b74fbf27d"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/オリエント急行の殺人（アガサ・クリスティ）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/オリエント急行の殺人（アガサ・クリスティ）.md",
+      "asset": "cloud-samples/files/53e64b1005090a55e3021229.md",
+      "size": 66,
+      "sha256": "53e64b1005090a55e30212299edf6e890cb1d04017c2aad832df29ba86e082f3"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/死霊探偵への応用可能性_「Bが自分の意志で犯行した」仮定では矛盾が出るが、「Aが憑依していた」仮定では全て説明がつく、という仮説対決構造に応用可能。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/死霊探偵への応用可能性_「Bが自分の意志で犯行した」仮定では矛盾が出るが、「Aが憑依していた」仮定では全て説明がつく、という仮説対決構造に応用可能。.md",
+      "asset": "cloud-samples/files/3eae0342fdd593e8f85b2337.md",
+      "size": 431,
+      "sha256": "3eae0342fdd593e8f85b2337ac3c96b61076022dd6e623c2f1fa5a79aff242d1"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/決定的証拠の概要_単独の決定的物証ではなく、全員のアリバイ証言が互いに矛盾なく噛み合いすぎていることが逆に不自然。「全員が共犯」でなければ説明できない証言の構造そのものが証拠。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/決定的証拠の概要_単独の決定的物証ではなく、全員のアリバイ証言が互いに矛盾なく噛み合いすぎていることが逆に不自然。「全員が共犯」でなければ説明できない証言の構造そのものが証拠。.md",
+      "asset": "cloud-samples/files/b30077060b9d4bec77d87c8d.md",
+      "size": 477,
+      "sha256": "b30077060b9d4bec77d87c8dd24f9ff9739f0f868ca8844772d7333941a3cfbc"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/証拠の型_矛盾の集積による前提崩壊.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/証拠の型_矛盾の集積による前提崩壊.md",
+      "asset": "cloud-samples/files/6bed4a060d29f7e041a1e5f2.md",
+      "size": 264,
+      "sha256": "6bed4a060d29f7e041a1e5f2c5f16293ca9fd1620d37b712217a76a4ecc93b44"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/証明の論理構造_「一人の犯人」を仮定するとどの証言にも矛盾が出る。「全員が犯人」を仮定すると全ての矛盾が解消する。仮説の優劣による証明。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/オリエント急行の殺人（アガサ・クリスティ）/証明の論理構造_「一人の犯人」を仮定するとどの証言にも矛盾が出る。「全員が犯人」を仮定すると全ての矛盾が解消する。仮説の優劣による証明。.md",
+      "asset": "cloud-samples/files/73769482f5fae5065c6cf21c.md",
+      "size": 417,
+      "sha256": "73769482f5fae5065c6cf21c30f4cfa535c2a587be1b14b7d792c93800030eaf"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/十角館の殺人（綾辻行人）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/十角館の殺人（綾辻行人）.md",
+      "asset": "cloud-samples/files/4ea76774845c9d845a24a9b4.md",
+      "size": 39,
+      "sha256": "4ea76774845c9d845a24a9b4c2eb1aff408bc9c39f628465f71a8d2a6b2e92a5"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/死霊探偵への応用可能性_「別の存在だと思っていた二者が同一だった」構造。例えば、ある死霊と、憑依中にBの体で行動していた人格が、同一人物だと判明する瞬間。死霊の世界では「名前」「外見」.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/死霊探偵への応用可能性_「別の存在だと思っていた二者が同一だった」構造。例えば、ある死霊と、憑依中にBの体で行動していた人格が、同一人物だと判明する瞬間。死霊の世界では「名前」「外見」.md",
+      "asset": "cloud-samples/files/b19148d1416de80cd1e23549.md",
+      "size": 499,
+      "sha256": "b19148d1416de80cd1e23549debda9c943c5c6b1f6e137cf506cf38afe1c4172"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/決定的証拠の概要_島にいる人物と本土にいる人物が同一人物であることが判明する。読者が「別人」だと思い込んでいた二人が同一人物であるという事実そのものが決定的証拠。ニックネームと本.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/決定的証拠の概要_島にいる人物と本土にいる人物が同一人物であることが判明する。読者が「別人」だと思い込んでいた二人が同一人物であるという事実そのものが決定的証拠。ニックネームと本.md",
+      "asset": "cloud-samples/files/2e88c2455d532a93e09a9707.md",
+      "size": 501,
+      "sha256": "2e88c2455d532a93e09a9707394636abfa17bb11e7e83c3a0df7a34ef18a60c4"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/証拠の型_アイデンティティの物証（名前＝存在の証明）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/証拠の型_アイデンティティの物証（名前＝存在の証明）.md",
+      "asset": "cloud-samples/files/541679ab47c0dd97a8ffde01.md",
+      "size": 264,
+      "sha256": "541679ab47c0dd97a8ffde0106bb13dc1fc3d9df351cb137c9b393e0fcb8c89c"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/証明の論理構造_「AとBは別人」という読者の前提そのものが崩壊する。証拠は「A＝Bである」という事実の発覚。叙述上の仕掛けで隠されていた同一性が明かされる。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/十角館の殺人（綾辻行人）/証明の論理構造_「AとBは別人」という読者の前提そのものが崩壊する。証拠は「A＝Bである」という事実の発覚。叙述上の仕掛けで隠されていた同一性が明かされる。.md",
+      "asset": "cloud-samples/files/38f479743369537732b51331.md",
+      "size": 412,
+      "sha256": "38f479743369537732b513312d8d890ac2c948a4a47c52755413346909ab3e7a"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/占星術殺人事件（島田荘司）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/占星術殺人事件（島田荘司）.md",
+      "asset": "cloud-samples/files/22f2bf2647f42f5af99dbee3.md",
+      "size": 42,
+      "sha256": "22f2bf2647f42f5af99dbee3a05b9b1bfcbd3d6b9f624cfc4e79443127d1eb41"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/死霊探偵への応用可能性_既に判明している事実を別の枠組みで再解釈すると真相が見える構造。「Bが犯人」という枠組みで見ていた事実を「Aが憑依していた」という枠組みで見直すと、全てが整合する.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/死霊探偵への応用可能性_既に判明している事実を別の枠組みで再解釈すると真相が見える構造。「Bが犯人」という枠組みで見ていた事実を「Aが憑依していた」という枠組みで見直すと、全てが整合する.md",
+      "asset": "cloud-samples/files/fbb9b950b84eb95e49b7cb7a.md",
+      "size": 467,
+      "sha256": "fbb9b950b84eb95e49b7cb7a685a0d4840c4ade91727286da9c8fa4e4f401be9"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/決定的証拠の概要_6人の被害者の遺体からそれぞれ異なる部位が切り取られている。占星術の儀式に見せかけているが、実は切り取った部位を組み合わせると「一人の完全な人体」が復元できる。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/決定的証拠の概要_6人の被害者の遺体からそれぞれ異なる部位が切り取られている。占星術の儀式に見せかけているが、実は切り取った部位を組み合わせると「一人の完全な人体」が復元できる。.md",
+      "asset": "cloud-samples/files/9e6b73fc0e363b25f52b5fb2.md",
+      "size": 547,
+      "sha256": "9e6b73fc0e363b25f52b5fb27e242c376c98805b55c974ad23b37bd0d74c332d"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/証拠の型_物理的事実の再解釈（パズルの組み替え）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/証拠の型_物理的事実の再解釈（パズルの組み替え）.md",
+      "asset": "cloud-samples/files/81e36a406b474f4c8ad3725f.md",
+      "size": 261,
+      "sha256": "81e36a406b474f4c8ad3725f0927f4cc6cebba86583baec2ff3f7684617f1462"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/証明の論理構造_既知の物理的事実（遺体の欠損部位）を別の視点から再解釈すると、全く異なる絵が浮かぶ。証拠は最初から目の前にあったが、解釈の枠組みが間違っていた。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/占星術殺人事件（島田荘司）/証明の論理構造_既知の物理的事実（遺体の欠損部位）を別の視点から再解釈すると、全く異なる絵が浮かぶ。証拠は最初から目の前にあったが、解釈の枠組みが間違っていた。.md",
+      "asset": "cloud-samples/files/288fb72aeba0b24a02798ad2.md",
+      "size": 429,
+      "sha256": "288fb72aeba0b24a02798ad253696a36a45014c8cf4d07a95ffb9d3bb86a0f9b"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/容疑者Xの献身（東野圭吾）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/容疑者Xの献身（東野圭吾）.md",
+      "asset": "cloud-samples/files/9db928b4d0c90002589a850c.md",
+      "size": 40,
+      "sha256": "9db928b4d0c90002589a850c2e903e34f7fa87a4b5e340649b5bbe732cfd5e04"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/死霊探偵への応用可能性_「憑依というトリックを実行するために、犯人が事前に何をしたか」の痕跡を発見する構造。憑依の準備行為（例：特定の場所に自分の死体を配置した、特定の薬を被憑依者に飲.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/死霊探偵への応用可能性_「憑依というトリックを実行するために、犯人が事前に何をしたか」の痕跡を発見する構造。憑依の準備行為（例：特定の場所に自分の死体を配置した、特定の薬を被憑依者に飲.md",
+      "asset": "cloud-samples/files/52f6e06f54ba6e97a2c11aed.md",
+      "size": 499,
+      "sha256": "52f6e06f54ba6e97a2c11aed5583e26cb21616db596c4a537706a9a8c5e453f6"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/決定的証拠の概要_完璧に見えるアリバイの裏に「別の死体」が使われていた。アリバイ工作のために無関係の人間を殺害するという、トリックの存在そのものの発見が決定打。被害者が入れ替わっ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/決定的証拠の概要_完璧に見えるアリバイの裏に「別の死体」が使われていた。アリバイ工作のために無関係の人間を殺害するという、トリックの存在そのものの発見が決定打。被害者が入れ替わっ.md",
+      "asset": "cloud-samples/files/ca7976a5791607887d4a857a.md",
+      "size": 490,
+      "sha256": "ca7976a5791607887d4a857ae8b5dd491f55ed1c680847457ea1758babbc796e"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/証拠の型_トリックの存在自体が証拠（偽装工作の発見）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/証拠の型_トリックの存在自体が証拠（偽装工作の発見）.md",
+      "asset": "cloud-samples/files/22c1821f0ffd7605a8c8d1ac.md",
+      "size": 265,
+      "sha256": "22c1821f0ffd7605a8c8d1ac2a0ebbd8807ab9f357b22202ab56a3d047d290d0"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/証明の論理構造_「アリバイが完璧すぎる」→「完璧なアリバイを作るために何をしたか」を逆算→偽装工作の物理的痕跡を発見。トリックの手段そのものが物証になる。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/容疑者Xの献身（東野圭吾）/証明の論理構造_「アリバイが完璧すぎる」→「完璧なアリバイを作るために何をしたか」を逆算→偽装工作の物理的痕跡を発見。トリックの手段そのものが物証になる。.md",
+      "asset": "cloud-samples/files/3937b5deaf1dd623fe96af6a.md",
+      "size": 418,
+      "sha256": "3937b5deaf1dd623fe96af6ac09479a71132e9410e0c30d44df29efe5f3c2338"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/死霊探偵への応用可能性_犯行中の「不必要な行為」が犯人の知識や信念を反映している。Bの意志なら絶対にやらない「過剰な行為」が現場に残されており、その行為の意味を理解できる人物＝真犯人。.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/死霊探偵への応用可能性_犯行中の「不必要な行為」が犯人の知識や信念を反映している。Bの意志なら絶対にやらない「過剰な行為」が現場に残されており、その行為の意味を理解できる人物＝真犯人。.md",
+      "asset": "cloud-samples/files/dabd572b8c263e4e0d59601a.md",
+      "size": 451,
+      "sha256": "dabd572b8c263e4e0d59601a1db54b72a2b9c9ac06ff88d5b2bae35f2abeb297"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/決定的証拠の概要_殺害方法が俳句の見立てになっている。この俳句を知っていた人物は限られており、かつ見立て殺人を実行する動機と知識を併せ持つ人物が犯人として特定される。殺し方の「過.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/決定的証拠の概要_殺害方法が俳句の見立てになっている。この俳句を知っていた人物は限られており、かつ見立て殺人を実行する動機と知識を併せ持つ人物が犯人として特定される。殺し方の「過.md",
+      "asset": "cloud-samples/files/9fa334f0a579d1c25ce57ee9.md",
+      "size": 486,
+      "sha256": "9fa334f0a579d1c25ce57ee99200d5dfd2c84d569b0c54bdde7229369103f4f8"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/獄門島（横溝正史）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/獄門島（横溝正史）.md",
+      "asset": "cloud-samples/files/eb04de60ad4ae43f93070f88.md",
+      "size": 30,
+      "sha256": "eb04de60ad4ae43f93070f88c647bee04f8606f3fc58c2a1d2c4362f89b205ec"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/証拠の型_犯行の「様式」が犯人の知識を証明.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/証拠の型_犯行の「様式」が犯人の知識を証明.md",
+      "asset": "cloud-samples/files/824d9a7fbca31044ca0fbb93.md",
+      "size": 240,
+      "sha256": "824d9a7fbca31044ca0fbb93ccda3ffa13db10cb55f9df591078aa4e2595f142"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/証明の論理構造_「この様式で殺す必要があった」＝「この知識を持ち、この動機を持つ人物」の交差点が一人に絞られる。犯行の様式そのものが、犯人の内面（知識・動機・信念）を物理的に刻.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/獄門島（横溝正史）/証明の論理構造_「この様式で殺す必要があった」＝「この知識を持ち、この動機を持つ人物」の交差点が一人に絞られる。犯行の様式そのものが、犯人の内面（知識・動機・信念）を物理的に刻.md",
+      "asset": "cloud-samples/files/46287e97dafabdb7bfc02559.md",
+      "size": 459,
+      "sha256": "46287e97dafabdb7bfc025594600b507f99561cca846a92f1757c5589a2c274e"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/死霊探偵への応用可能性_憑依の「道具」に相当するものがあれば強い。憑依に必要な条件（特定の場所、特定の儀式、特定の物品）を設定し、その条件を満たせた人物を絞り込む構造。金田一的な「物品.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/死霊探偵への応用可能性_憑依の「道具」に相当するものがあれば強い。憑依に必要な条件（特定の場所、特定の儀式、特定の物品）を設定し、その条件を満たせた人物を絞り込む構造。金田一的な「物品.md",
+      "asset": "cloud-samples/files/0d724ac8cf79f3d8921727b4.md",
+      "size": 556,
+      "sha256": "0d724ac8cf79f3d8921727b49d8edf11f5de3bda68daad8c233f034395aa6806"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/決定的証拠の概要_犯人がファントム（怪人）に変装して犯行を行っていた。変装に使った衣装・仮面と、犯人が「特定の時間帯に不在だった」事実の組み合わせ。さらに犯人の動機（過去の復讐）.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/決定的証拠の概要_犯人がファントム（怪人）に変装して犯行を行っていた。変装に使った衣装・仮面と、犯人が「特定の時間帯に不在だった」事実の組み合わせ。さらに犯人の動機（過去の復讐）.md",
+      "asset": "cloud-samples/files/cf9f5cacc21412b843c7ebd3.md",
+      "size": 565,
+      "sha256": "cf9f5cacc21412b843c7ebd38f08dfcdd815a0af918588e820e0c6a732c1912b"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/証拠の型_犯人しか持ち得ない物品＋アリバイ崩し.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/証拠の型_犯人しか持ち得ない物品＋アリバイ崩し.md",
+      "asset": "cloud-samples/files/0145a86415aafb88d8e5b896.md",
+      "size": 274,
+      "sha256": "0145a86415aafb88d8e5b896f0209a00f87f82f67427cf0e5c945247900a89e3"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/証明の論理構造_①変装道具の発見（物証）→ ②その道具を使う機会があった人物の絞り込み（タイムライン）→ ③変装の様式が犯人の過去と結びつく（動機）。単独では弱い証拠が三つ揃うこ.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/証明の論理構造_①変装道具の発見（物証）→ ②その道具を使う機会があった人物の絞り込み（タイムライン）→ ③変装の様式が犯人の過去と結びつく（動機）。単独では弱い証拠が三つ揃うこ.md",
+      "asset": "cloud-samples/files/9492519c915bb994278b7ed4.md",
+      "size": 495,
+      "sha256": "9492519c915bb994278b7ed4f1c9caf6b821211578d09581a9dd8e2ba7b2946d"
+    },
+    {
+      "relativePath": "死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/金田一少年の事件簿 オペラ座館殺人事件.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/決定的証拠の実例集/金田一少年の事件簿 オペラ座館殺人事件/金田一少年の事件簿 オペラ座館殺人事件.md",
+      "asset": "cloud-samples/files/eab457763dd2ec475f07ac2c.md",
+      "size": 58,
+      "sha256": "eab457763dd2ec475f07ac2c04679470dc3b8661ca2bfe6cb22b5e00626dad24"
+    },
+    {
+      "relativePath": "死霊探偵/無題/無題.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/無題/無題.md",
+      "asset": "cloud-samples/files/8a5b37e702bd997c9fbc7363.md",
+      "size": 499,
+      "sha256": "8a5b37e702bd997c9fbc73633ba634dcda1e646893de658764939a4bfc232b4e"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/小間井芽衣_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/小間井芽衣_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/ec7b3c17e4b70ed6237f397c.png",
+      "size": 1644420,
+      "sha256": "ec7b3c17e4b70ed6237f397c3be2b432cc7b02d29ce528eb280d88b54a08c497"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/御影依_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/御影依_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/681babbcdefe378fd6d34861.png",
+      "size": 1298194,
+      "sha256": "681babbcdefe378fd6d348610da4d32a42a234e7bfaebc2ce30109d903d6583a"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/検崎甚一_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/検崎甚一_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/af7fd687ce0efc8517250ea7.png",
+      "size": 1608930,
+      "sha256": "af7fd687ce0efc8517250ea7c038a8fdbad667ca44d1f38fb6801916c929295f"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/狭間透_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/狭間透_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/e73f7bf121300221c1caa077.png",
+      "size": 1526810,
+      "sha256": "e73f7bf121300221c1caa0779e416317b3bccd785d215295f02b23dfd11c6e96"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/薬師治彦_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/薬師治彦_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/b1072ebcbe8b60ea8f99ffb1.png",
+      "size": 1567955,
+      "sha256": "b1072ebcbe8b60ea8f99ffb16d857abc231340bc15fde851bd350ae2be14097f"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/鬼ヶ瀬杢蔵_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/鬼ヶ瀬杢蔵_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/7d0031ad20ea367b929a596b.png",
+      "size": 1762306,
+      "sha256": "7d0031ad20ea367b929a596bb58b9f1b8b5eada90dce7ad7ad24edabd9647ec5"
+    },
+    {
+      "relativePath": "死霊探偵/生成画像/黒部録郎_キャラクターシート_カメラ目線_水彩_1024.png",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/生成画像/黒部録郎_キャラクターシート_カメラ目線_水彩_1024.png",
+      "asset": "cloud-samples/files/18dda875d5817e9a56efaaef.png",
+      "size": 1841149,
+      "sha256": "18dda875d5817e9a56efaaef73e9da851912a9a7148b3e1b78eb921bcba6e42d"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_小間井 芽衣.md",
+      "asset": "cloud-samples/files/414f1a5db6c5fcc966311839.md",
+      "size": 1148,
+      "sha256": "414f1a5db6c5fcc96631183953b974312359432f79e48663e38b8b672420fa23"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_御影 依.md",
+      "asset": "cloud-samples/files/bf2daf801b7d2f799243da80.md",
+      "size": 1126,
+      "sha256": "bf2daf801b7d2f799243da80bf94d360f865aa950a7362c91337ccae4e97229a"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_検崎 甚一.md",
+      "asset": "cloud-samples/files/c31c881b5d111627cfcf7c5e.md",
+      "size": 1132,
+      "sha256": "c31c881b5d111627cfcf7c5e7600c67ad6ea367afa95c4a80cbb65bbf279d23f"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_狭間 透.md",
+      "asset": "cloud-samples/files/61b650812f3c4290256f3bc4.md",
+      "size": 1121,
+      "sha256": "61b650812f3c4290256f3bc4345a3011ad317067575f3acc0dd3db23ff6114c5"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_薬師 治彦.md",
+      "asset": "cloud-samples/files/b8b776f00e354dd5b869959b.md",
+      "size": 1139,
+      "sha256": "b8b776f00e354dd5b869959bc554b910cd49ba3532c7d17fb6b7ca3be3e3e67d"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/c3db38864969171caf1ea1db.md",
+      "size": 1102,
+      "sha256": "c3db38864969171caf1ea1dbcec4d40e52934603094bc78b430fc4738dbd3af3"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/01_1500_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/01_1500_黒部 録郎.md",
+      "asset": "cloud-samples/files/74f66a8ee89a6156c780bf6c.md",
+      "size": 1126,
+      "sha256": "74f66a8ee89a6156c780bf6c0a4dcab6c98f737a13c38fefbc4ef8666baeb7fc"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_小間井 芽衣.md",
+      "asset": "cloud-samples/files/4074264c784125b6c900705f.md",
+      "size": 1283,
+      "sha256": "4074264c784125b6c900705f0eee022670270007daf97c5a20f5245057b71ba7"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_御影 依.md",
+      "asset": "cloud-samples/files/ee0c518f26676ceeb22c7b12.md",
+      "size": 1186,
+      "sha256": "ee0c518f26676ceeb22c7b125574564f70c62d105139c440a27cbf95df74d35b"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_検崎 甚一.md",
+      "asset": "cloud-samples/files/27f1246391c57e4d49d6f081.md",
+      "size": 1165,
+      "sha256": "27f1246391c57e4d49d6f0818585022b242c9550c678d489296d31e71793a6e3"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_狭間 透.md",
+      "asset": "cloud-samples/files/bd35783fe361919eb2f062f7.md",
+      "size": 1208,
+      "sha256": "bd35783fe361919eb2f062f7313550dd9917390c35aed5bbe090d165b144cfb5"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_薬師 治彦.md",
+      "asset": "cloud-samples/files/34fb575bb3128e101dd233d2.md",
+      "size": 1201,
+      "sha256": "34fb575bb3128e101dd233d26adabf6a8868afa9016c5791a14d9b64816caa9f"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/2bad6366cda489be1fb8c650.md",
+      "size": 1241,
+      "sha256": "2bad6366cda489be1fb8c6505b7f3fcb36892508ebb0d9a193cddead57acc44a"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/02_1600_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/02_1600_黒部 録郎.md",
+      "asset": "cloud-samples/files/ea51be5ff879cabe690412a1.md",
+      "size": 1189,
+      "sha256": "ea51be5ff879cabe690412a1ea75b162d389a2d0ea09f866c6baed4a031fae52"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_小間井 芽衣.md",
+      "asset": "cloud-samples/files/eef0617a170fc95e30dfff0e.md",
+      "size": 1129,
+      "sha256": "eef0617a170fc95e30dfff0e992aa213884c9fec9240b4b8a2d900c410f95f12"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_御影 依.md",
+      "asset": "cloud-samples/files/0bdbea9b7cccffef89f012f3.md",
+      "size": 1093,
+      "sha256": "0bdbea9b7cccffef89f012f3fc1aa243895764b68411e5513ad4608589cfb1e7"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_検崎 甚一.md",
+      "asset": "cloud-samples/files/77dfb84c254368d8cd6ba809.md",
+      "size": 1282,
+      "sha256": "77dfb84c254368d8cd6ba809a512e1c030f7dc40c7a9b2ea990388721c673655"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_狭間 透.md",
+      "asset": "cloud-samples/files/5f758cbf81f15a4a28322d38.md",
+      "size": 1090,
+      "sha256": "5f758cbf81f15a4a28322d38d60c24de6bd0cf2fbc8c42217a5eab0f7b10d0b6"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_薬師 治彦.md",
+      "asset": "cloud-samples/files/84d28ab9b5aac8404939a226.md",
+      "size": 1106,
+      "sha256": "84d28ab9b5aac8404939a226f956c3a2b480e3231fe85ad51166b59919ef3600"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/2461db98bcb81896fc34cc91.md",
+      "size": 1072,
+      "sha256": "2461db98bcb81896fc34cc912ec9b8f9975766188f8f7a0acec6378fb7ca2531"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/03_1700_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/03_1700_黒部 録郎.md",
+      "asset": "cloud-samples/files/eef310c139292d26516dec38.md",
+      "size": 1117,
+      "sha256": "eef310c139292d26516dec38d4aa852028fdb7ac846e02a2df152dba440a8cb6"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_小間井 芽衣.md",
+      "asset": "cloud-samples/files/7bf51327791229cead5b02ad.md",
+      "size": 1105,
+      "sha256": "7bf51327791229cead5b02ad15ecd0487e36f8f30541ef00e7c70860d29b8445"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_御影 依.md",
+      "asset": "cloud-samples/files/b0eff12ef9424fa95b91a332.md",
+      "size": 1085,
+      "sha256": "b0eff12ef9424fa95b91a332b8c6d164ec755ec8896587d69ba6a99d39654bf1"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_検崎 甚一.md",
+      "asset": "cloud-samples/files/1bbc34ab97461add844f18dd.md",
+      "size": 1113,
+      "sha256": "1bbc34ab97461add844f18dd828862fe1bbb64c309dee885a7333d278659d9b3"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_狭間 透.md",
+      "asset": "cloud-samples/files/02d4c7fedd93f5c461c7a4d2.md",
+      "size": 1093,
+      "sha256": "02d4c7fedd93f5c461c7a4d2c6330ce538777825a6a089155ea50a5a2a40aac8"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_薬師 治彦.md",
+      "asset": "cloud-samples/files/b9644b89e1cd2e2ea6447e0a.md",
+      "size": 1076,
+      "sha256": "b9644b89e1cd2e2ea6447e0a46e5e527c8a2db007838412f7d175bde3b8d84aa"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/08e9ce77e201ebbb8c44f653.md",
+      "size": 1315,
+      "sha256": "08e9ce77e201ebbb8c44f6538218a544dfc6b25b78993cc1893f16ea021b8148"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/04_1800_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/04_1800_黒部 録郎.md",
+      "asset": "cloud-samples/files/4f9ca008bf4b7bf0bda38aa1.md",
+      "size": 1123,
+      "sha256": "4f9ca008bf4b7bf0bda38aa1bd80f7ba6f7645d37197035fee5d01ec7a1f289c"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_小間井 芽衣.md",
+      "asset": "cloud-samples/files/128d017cedf0d4f84b40cd74.md",
+      "size": 1230,
+      "sha256": "128d017cedf0d4f84b40cd74e8da5c3d3cf9d41eff9f98ee5c9d0c639d7938c9"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_御影 依.md",
+      "asset": "cloud-samples/files/a08e82a12fdc4bc6bfcd14fe.md",
+      "size": 1087,
+      "sha256": "a08e82a12fdc4bc6bfcd14fec42270675499ffc590634be5d524f821bc210ba6"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_検崎 甚一.md",
+      "asset": "cloud-samples/files/ad849be4212069afd1c85dfc.md",
+      "size": 1121,
+      "sha256": "ad849be4212069afd1c85dfcb8c672292791c9065f5a9440e811b93c76b0a694"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_狭間 透.md",
+      "asset": "cloud-samples/files/8c548afaf31fab2602e5351f.md",
+      "size": 1114,
+      "sha256": "8c548afaf31fab2602e5351f71bfed9c055ae5be85b55febeda4d7951b9d2013"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_薬師 治彦.md",
+      "asset": "cloud-samples/files/1c7a0021adc6fed9cd182067.md",
+      "size": 1088,
+      "sha256": "1c7a0021adc6fed9cd182067e8ffaf5309c08e07985eafa9bfebb1a1a965ee52"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/3e518930043d1986905a05f6.md",
+      "size": 1276,
+      "sha256": "3e518930043d1986905a05f615c68251f7361a5d8652d23711c8995af47ae1e2"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/05_1900_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/05_1900_黒部 録郎.md",
+      "asset": "cloud-samples/files/27c3e5ad1a904601f14e459e.md",
+      "size": 1090,
+      "sha256": "27c3e5ad1a904601f14e459e63af60a6ce2d50dac0ff617e929fc015f3ddae38"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_小間井 芽衣.md",
+      "asset": "cloud-samples/files/2745d1b8daa979d068dabd1d.md",
+      "size": 1100,
+      "sha256": "2745d1b8daa979d068dabd1dddeeb75ce2ae763e2f891e2b76e45db6cedb6fe4"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_御影 依.md",
+      "asset": "cloud-samples/files/8a74074d161f6d7302bcdcf6.md",
+      "size": 1130,
+      "sha256": "8a74074d161f6d7302bcdcf674becbdf7fe794307aa17fb8fee25e90c1351e82"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_検崎 甚一.md",
+      "asset": "cloud-samples/files/5dd2cb1a4ce4594960fc825f.md",
+      "size": 1170,
+      "sha256": "5dd2cb1a4ce4594960fc825f1681e07360bfee29f17c447a4a57b4620cdbbe2f"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_狭間 透.md",
+      "asset": "cloud-samples/files/e771f796516df17503d6421f.md",
+      "size": 1086,
+      "sha256": "e771f796516df17503d6421f75ce37af61569848becaa50fc39fbde4ce866de4"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_薬師 治彦.md",
+      "asset": "cloud-samples/files/5b6a0787abd342637d95e1ce.md",
+      "size": 1046,
+      "sha256": "5b6a0787abd342637d95e1ceec354bdd19cf1f2e2dcee49db8bb3dc7fad76304"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/ac5fa66637624760cc87e4ce.md",
+      "size": 1064,
+      "sha256": "ac5fa66637624760cc87e4cedd0854e8391863c59525053f8092fc8d573581fd"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/06_2000_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/06_2000_黒部 録郎.md",
+      "asset": "cloud-samples/files/b3c86c6204ddc7224877d069.md",
+      "size": 1127,
+      "sha256": "b3c86c6204ddc7224877d069bd0282e25e3ad5b2515397efd131f7ecd6d89acb"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_小間井 芽衣.md",
+      "asset": "cloud-samples/files/fda9292c1dc8d1a3b81d4c14.md",
+      "size": 1141,
+      "sha256": "fda9292c1dc8d1a3b81d4c14d7dac3e097aa513f447426baeb67656ee9afe27e"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_御影 依.md",
+      "asset": "cloud-samples/files/46463ac7c078de4595e15dca.md",
+      "size": 1073,
+      "sha256": "46463ac7c078de4595e15dcadb25dc3ab0fb09f38e7f97398a2633db88334116"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_検崎 甚一.md",
+      "asset": "cloud-samples/files/d73abbed5a3536cae2f5d517.md",
+      "size": 1140,
+      "sha256": "d73abbed5a3536cae2f5d5170b9c32e5741aae0006cfc2e86e90bd92732f729d"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_狭間 透.md",
+      "asset": "cloud-samples/files/108ff3e3234ccfe64fd3bd0f.md",
+      "size": 1129,
+      "sha256": "108ff3e3234ccfe64fd3bd0fcdf17d8baa011a8aabc1107f8d72f72037ec228b"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_薬師 治彦.md",
+      "asset": "cloud-samples/files/591d621c5d19595c1a7fc54a.md",
+      "size": 1166,
+      "sha256": "591d621c5d19595c1a7fc54a07155a81cb4725f7b7aee97b5edda55d264fc2e1"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/031b20a93e376f566ca031cb.md",
+      "size": 1097,
+      "sha256": "031b20a93e376f566ca031cb1983435787ff8945ec35db2cb2d45feb7907986b"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/07_2100_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/07_2100_黒部 録郎.md",
+      "asset": "cloud-samples/files/2d041e9ad1d338e455ae80ee.md",
+      "size": 1106,
+      "sha256": "2d041e9ad1d338e455ae80eec7093a1e52f1ef663ec9649754b67d0d5286a3f3"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_小間井 芽衣.md",
+      "asset": "cloud-samples/files/2c9ef6ba492c571e46b16190.md",
+      "size": 1146,
+      "sha256": "2c9ef6ba492c571e46b161906dbe8989e39fd0060418399a483c2246c4034dda"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_御影 依.md",
+      "asset": "cloud-samples/files/51f2b2bd644f83cb0d3997ff.md",
+      "size": 1082,
+      "sha256": "51f2b2bd644f83cb0d3997ff2eb04495f1c0c01aba90e1e3138065061080d7aa"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_検崎 甚一.md",
+      "asset": "cloud-samples/files/9ab24a70fd22fa5683b60682.md",
+      "size": 1161,
+      "sha256": "9ab24a70fd22fa5683b606827e816821063fa5abd1125143730e1e5b7bd2a457"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_狭間 透.md",
+      "asset": "cloud-samples/files/02769a051b0e84b899bc8242.md",
+      "size": 1145,
+      "sha256": "02769a051b0e84b899bc82429d198f7de9a80bb310ababdc2d61ee82fdb5bc87"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_薬師 治彦.md",
+      "asset": "cloud-samples/files/227e0e6114a98ad9a71059dc.md",
+      "size": 1115,
+      "sha256": "227e0e6114a98ad9a71059dcc492cf4d0f99b3b307e2326e6ad0c579479c4863"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/71b95f3fec03aefabb51bdf3.md",
+      "size": 1128,
+      "sha256": "71b95f3fec03aefabb51bdf33edf90837a226e8a31d6ba9640630d8f291bbdb5"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/08_2200_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/08_2200_黒部 録郎.md",
+      "asset": "cloud-samples/files/94a79df487e6c5bf78dd5ebe.md",
+      "size": 1100,
+      "sha256": "94a79df487e6c5bf78dd5ebede495a635e0c03981b67eab9d754b2d2ddb77f3e"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_小間井 芽衣.md",
+      "asset": "cloud-samples/files/dfc5f8418d4bcbe8955b6425.md",
+      "size": 1187,
+      "sha256": "dfc5f8418d4bcbe8955b6425dec271f374280235a1333abe108033a59b0ec8f2"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_御影 依.md",
+      "asset": "cloud-samples/files/a9c14d7029c0851916a8ed72.md",
+      "size": 1311,
+      "sha256": "a9c14d7029c0851916a8ed725f52940a4d2ead3cbb799fa22b168268e8168c45"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_検崎 甚一.md",
+      "asset": "cloud-samples/files/0fdbd812b5c9b032b87b9d1a.md",
+      "size": 1410,
+      "sha256": "0fdbd812b5c9b032b87b9d1a7440e28defc5286a6462976e0cc11e90e6a421f5"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_狭間 透.md",
+      "asset": "cloud-samples/files/4ac732ce680f333d726a7571.md",
+      "size": 1201,
+      "sha256": "4ac732ce680f333d726a757177b62a97eaa55175eb305d3217320a301b0eec12"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_薬師 治彦.md",
+      "asset": "cloud-samples/files/8f373275417a3f26c20de2ad.md",
+      "size": 1140,
+      "sha256": "8f373275417a3f26c20de2ad05df9b1713b5237d0507a32f3695633c4f85db86"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/a9462bddd5b4fd1b1e4684a2.md",
+      "size": 1150,
+      "sha256": "a9462bddd5b4fd1b1e4684a259471bddcecec2c6418ff8458e1fa1bfdb2d0eab"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/09_2300_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/09_2300_黒部 録郎.md",
+      "asset": "cloud-samples/files/46cc1e90bcb64efc8e8a6d8c.md",
+      "size": 1147,
+      "sha256": "46cc1e90bcb64efc8e8a6d8c915a90507701530581971f21aaa175b90acdb0c4"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_小間井 芽衣.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_小間井 芽衣.md",
+      "asset": "cloud-samples/files/eef5b4dd96c3e0a75d6653e2.md",
+      "size": 1195,
+      "sha256": "eef5b4dd96c3e0a75d6653e25ac976021a79b48336c5fa503a856b92805192a6"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_御影 依.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_御影 依.md",
+      "asset": "cloud-samples/files/42fea9dd6e1aa5be5d8fd06b.md",
+      "size": 1189,
+      "sha256": "42fea9dd6e1aa5be5d8fd06bd93aac5cebeb9bda01969bb924bcecf500bfe45a"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_検崎 甚一.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_検崎 甚一.md",
+      "asset": "cloud-samples/files/58431c13bd5a98a8bba9fc1a.md",
+      "size": 1202,
+      "sha256": "58431c13bd5a98a8bba9fc1ac2726f3c50676b74a8c0a9417ebf023ecf6aa4e7"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_狭間 透.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_狭間 透.md",
+      "asset": "cloud-samples/files/c153f3f2438d2baa09dd0df4.md",
+      "size": 1138,
+      "sha256": "c153f3f2438d2baa09dd0df4a0fc5ab0f97375f51751c8f8f863dd7a92ad083c"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_薬師 治彦.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_薬師 治彦.md",
+      "asset": "cloud-samples/files/fe51c651e66ad87da66bf060.md",
+      "size": 1217,
+      "sha256": "fe51c651e66ad87da66bf060c110f17c0dbcbdb47cd1f423a479a31ae9c38c30"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_鬼ヶ瀬 杢蔵.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_鬼ヶ瀬 杢蔵.md",
+      "asset": "cloud-samples/files/48794a1bf55c30d4faeacc8e.md",
+      "size": 1160,
+      "sha256": "48794a1bf55c30d4faeacc8ea9d5c1cf5162db139231bc4f4db01932698f8bfa"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/10_0000_黒部 録郎.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/10_0000_黒部 録郎.md",
+      "asset": "cloud-samples/files/fb0e74c8919bb8ca0007a1a2.md",
+      "size": 1150,
+      "sha256": "fb0e74c8919bb8ca0007a1a2b47d434b1f00f02cf2f4b6237ce01cda6d7e5cf1"
+    },
+    {
+      "relativePath": "死霊探偵/行動表/行動表.md",
+      "targetPath": "MeldexHome/サンプル/死霊探偵/行動表/行動表.md",
+      "asset": "cloud-samples/files/e58db2915fa27614e8757d0f.md",
+      "size": 1584,
+      "sha256": "e58db2915fa27614e8757d0f8d163e45e560c11cf21dbab6f39be563e284953b"
+    }
+  ]
+}

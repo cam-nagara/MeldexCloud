@@ -246,6 +246,8 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
   let baseSelection = [];
   let candidateRow = null;
   let candidateRowDraggable = null;
+  let pointerId = null;
+  let pointerCaptured = false;
   let _savedScrollerPosition = null;
 
   function _outlinerLassoMode(event) {
@@ -328,6 +330,12 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
   const beginLasso = (event) => {
     if (active) return;
     active = true;
+    if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {
+      try {
+        scroller.setPointerCapture(pointerId);
+        pointerCaptured = true;
+      } catch {}
+    }
     box = document.createElement('div');
     box.className = 'outliner-lasso-box';
     _savedScrollerPosition = scroller.style.position;
@@ -344,8 +352,14 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
     const suppressClickNode = candidateRow?.closest?.('.tree-node') || null;
     active = false;
     tracking = false;
+    removeDocumentPointerEndHandlers();
     box?.remove();
     box = null;
+    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
+      try { scroller.releasePointerCapture(pointerId); } catch {}
+    }
+    pointerId = null;
+    pointerCaptured = false;
     if (candidateRow) {
       candidateRow.draggable = candidateRowDraggable;
       candidateRow = null;
@@ -367,6 +381,16 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
     }
   };
 
+  function addDocumentPointerEndHandlers() {
+    document.addEventListener('pointerup', endLasso, true);
+    document.addEventListener('pointercancel', endLasso, true);
+  }
+
+  function removeDocumentPointerEndHandlers() {
+    document.removeEventListener('pointerup', endLasso, true);
+    document.removeEventListener('pointercancel', endLasso, true);
+  }
+
   scroller.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (_outlinerLassoBlockedTarget(e.target)) return;
@@ -376,6 +400,9 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
     if (e.target.closest('.tree-node-row') && !candidateRow) return;
     tracking = true;
     active = false;
+    addDocumentPointerEndHandlers();
+    pointerId = e.pointerId;
+    pointerCaptured = false;
     selectionScope = _outlinerLassoScopeFromTarget(e.target);
     baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];
     const rect = scroller.getBoundingClientRect();
@@ -387,7 +414,6 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
       candidateRowDraggable = candidateRow.draggable;
       candidateRow.draggable = false;
     }
-    scroller.setPointerCapture(e.pointerId);
   });
 
   scroller.addEventListener('pointermove', (e) => {

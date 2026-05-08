@@ -219,6 +219,23 @@
     return '';
   }
 
+  function _avatarFallbackUrl(name) {
+    const rawName = String(name || '').trim() || 'anonymous';
+    let hash = 0;
+    for (let index = 0; index < rawName.length; index += 1) {
+      hash = ((hash << 5) - hash + rawName.charCodeAt(index)) | 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    const label = (rawName.charAt(0).toUpperCase() || '?')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="hsl(${hue},38%,36%)"/><text x="32" y="40" text-anchor="middle" font-family="system-ui,Arial,sans-serif" font-size="28" font-weight="700" fill="#f4f4f5">${label}</text></svg>`;
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  }
+
   async function _pwaProvider() {
     const storage = _storage();
     if (!storage || typeof storage.getProvider !== 'function') return null;
@@ -526,7 +543,7 @@
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
     if (ext === '.md') {
-      if (safeOptions.forBrowse) return 'page';
+      if (lowerName.endsWith('.board.md')) return _phase1SurfaceType('board', 'file');
       const frontmatterType = _extractFrontmatterType(await _readTextSafe(provider, relativePath, ''));
       if (frontmatterType === 'board') return _phase1SurfaceType('board', 'file');
       if (frontmatterType === 'chat') return _phase1SurfaceType('chat', 'file');
@@ -732,6 +749,7 @@
     _boolParam,
     _displayLabelForPath,
     _phase1SurfaceType,
+    _extractFrontmatterType,
     _isTextLikePath,
     _folderLinksStore,
     _writeFolderLinksStore,
@@ -854,13 +872,13 @@
   function _teamAvatarUrl(name, query) {
     if (!_runtime()?.isDropboxMode?.()) return _resource().teamAvatar(name, query);
     const folder = query?.folder ? _normalizeFolderPath(query.folder) : '';
-    return _cachedTeamAvatar(name, folder) || _resource().teamAvatar(name, query);
+    return _cachedTeamAvatar(name, folder) || _avatarFallbackUrl(name);
   }
 
   function _authAvatarUrl(name, query) {
     if (!_runtime()?.isDropboxMode?.()) return _resource().authAvatar(name, query);
-    if (typeof getUsername === 'function' && getUsername() === name) return localStorage.getItem('meldex-avatar') || _resource().authAvatar(name, query);
-    return _resource().authAvatar(name, query);
+    if (typeof getUsername === 'function' && getUsername() === name) return localStorage.getItem('meldex-avatar') || _avatarFallbackUrl(name);
+    return _avatarFallbackUrl(name);
   }
 
   window.MeldexDataAccess = {

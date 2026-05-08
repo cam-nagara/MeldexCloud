@@ -37,6 +37,13 @@
   flex: 0 0 auto;
 }
 
+.db-toolbar-display-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
 .db-toolbar-view-switcher .view-tab {
   display: inline-flex;
   align-items: center;
@@ -66,6 +73,7 @@
 .db-toolbar-view-switcher .view-tab-add svg,
 .db-toolbar-actions-right .view-tab-add svg,
 .db-toolbar-actions-right .tb-icon-btn svg,
+.db-toolbar-display-actions .tb-icon-btn svg,
 #btn-filter svg {
   width: 16px;
   height: 16px;

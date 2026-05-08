@@ -202,23 +202,23 @@
     try {
       await api.waitFor(() => {
         const panel = document.getElementById('gb-subpanel');
-        const view = document.getElementById('entity-view');
-        const currentPath = api.normalizePath(_appState().currentEntityPath || '');
-        if (!panel || panel.hidden || !view || !view.closest('#gb-subpanel')) return null;
+        const view = document.querySelector('[data-gb-subpanel-entity-root="true"]');
+        if (!panel || panel.hidden || !view) return null;
         if (typeof GBSubPanel !== 'undefined' && !GBSubPanel.isOpen('entity')) return null;
-        if (api.normalizePath(entityPath) !== currentPath) return null;
-        const title = document.getElementById('entity-title')?.textContent || '';
+        if (!_pathMatches(api, view.dataset.path || '', entityPath)) return null;
+        const title = view.querySelector('.gb-subpanel-entity-title')?.textContent || view.textContent || '';
         if (entityName && !title.includes(entityName)) return null;
         return _isVisibleElement(view) ? view : null;
       }, 'サブパネルエンティティ表示');
     } catch (_error) {
       const panel = document.getElementById('gb-subpanel');
-      const view = document.getElementById('entity-view');
+      const view = document.querySelector('[data-gb-subpanel-entity-root="true"]');
       throw new Error(
         'サブパネルエンティティ表示 がタイムアウトしました '
         + `(subpanel=${panel && !panel.hidden ? 'open' : 'closed'}, `
         + `isEntityOpen=${typeof GBSubPanel !== 'undefined' ? String(GBSubPanel.isOpen('entity')) : '(missing)'}, `
         + `viewHost=${view?.closest?.('#gb-subpanel') ? 'subpanel' : '(other)'}, `
+        + `viewPath=${view?.dataset?.path || '(empty)'}, `
         + `currentEntityPath=${_appState().currentEntityPath || '(empty)'})`
       );
     }
@@ -1234,6 +1234,10 @@
     const paneInfo = await api.waitFor(() => {
       const direct = _toolPaneReadySignal(toolType);
       if (direct) return direct;
+      if (typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout()) {
+        const match = typeof GBTabs?.findPaneWithTab === 'function' ? GBTabs.findPaneWithTab(toolType, '') : null;
+        if (match?.paneId && match?.tabId) return match;
+      }
       if (toolType === 'history') {
         const list = document.getElementById('rp-history-list');
         const host = document.getElementById('rp-history');
@@ -1251,10 +1255,10 @@
     const expected = api.normalizePath(spec.path || spec.entityPath || 'Characters/Hero.md');
     await api.waitFor(() => {
       const panel = document.getElementById('gb-subpanel');
-      const view = document.getElementById('entity-view');
-      if (!panel || panel.hidden || !view || !view.closest('#gb-subpanel')) return null;
+      const view = document.querySelector('[data-gb-subpanel-entity-root="true"]');
+      if (!panel || panel.hidden || !view) return null;
       if (typeof GBSubPanel !== 'undefined' && !GBSubPanel.isOpen('entity')) return null;
-      return _pathMatches(api, _appState().currentEntityPath || '', expected) ? view : null;
+      return _pathMatches(api, view.dataset.path || '', expected) ? view : null;
     }, 'サブパネルエンティティ確認');
   });
 

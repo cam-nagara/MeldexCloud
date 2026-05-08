@@ -72,7 +72,7 @@ function _calendarEventAvatarsHtml(ev, size = 14) {
   const names = _calendarEventUserNames(ev).slice(0, 4);
   if (!names.length) return '';
   return `<span class="gb-cal-event-avatars">${names.map(name => {
-    const src = '/api/team/avatar/' + encodeURIComponent(name) + '?t=0';
+    const src = window.MeldexDataAccess?.team?.avatarUrl?.(name || 'anonymous', {}) || ('/api/team/avatar/' + encodeURIComponent(name) + '?t=0');
     return `<span class="gb-cal-event-avatar" style="width:${size}px;height:${size}px;" title="${esc(name)}"><img src="${src}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';"><span>${esc((name || '?').charAt(0).toUpperCase() || '?')}</span></span>`;
   }).join('')}</span>`;
 }
@@ -154,6 +154,8 @@ function _bindCalendarCellAddButton(cell, onClick) {
   btn.className = 'cal-cell-quick-add';
   btn.textContent = '+';
   btn.title = 'イベントを追加';
+  const token = [cell.dataset.date || 'day', cell.dataset.hour || 'all-day'].join('-').replace(/[^a-zA-Z0-9_-]/g, '-');
+  btn.dataset.e2eId = `cal-cell-quick-add-${token}`;
   btn.style.cssText = 'position:absolute;top:4px;right:4px;width:20px;height:20px;border:none;border-radius:999px;background:var(--accent);color:var(--ui-fg-strong);font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.12s ease;z-index:4;';
   btn.addEventListener('click', async (e) => {
     e.preventDefault();

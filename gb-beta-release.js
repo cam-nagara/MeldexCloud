@@ -14,6 +14,9 @@
   let _versionPromise = null;
   let _serverConsentLoaded = false;
   let _serverConsent = null;
+  let _installPromptEvent = null;
+  let _installListenersBound = false;
+  let _installSectionObserverBound = false;
 
   function _safeStorageGet(key) {
     try { return localStorage.getItem(key); } catch (_) { return null; }
@@ -209,6 +212,319 @@
     ]);
   }
 
+  function _isStandaloneDisplayMode() {
+    try {
+      const modes = ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'];
+      if (modes.some(mode => window.matchMedia?.(`(display-mode: ${mode})`)?.matches)) return true;
+    } catch (_) {}
+    try {
+      if (navigator.standalone === true) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function _isIosLike() {
+    const ua = String(navigator.userAgent || '').toLowerCase();
+    if (/iphone|ipad|ipod/.test(ua)) return true;
+    return navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1;
+  }
+
+  function _isAndroidLike() {
+    return /android/i.test(String(navigator.userAgent || ''));
+  }
+
+  function _installSteps() {
+    if (_isStandaloneDisplayMode()) return ['Meldexはすでにホーム画面またはアプリ一覧から起動できます。'];
+    if (_isIosLike()) {
+      return [
+        'SafariでこのMeldexページを開きます。',
+        '共有ボタンを押し、「ホーム画面に追加」を選びます。',
+        '表示名を確認し、「追加」を押します。',
+      ];
+    }
+    if (_isAndroidLike()) {
+      return [
+        'ChromeまたはEdgeでこのMeldexページを開きます。',
+        'ブラウザメニューから「アプリをインストール」または「ホーム画面に追加」を選びます。',
+        '確認画面で追加を実行します。',
+      ];
+    }
+    return [
+      'ChromeまたはEdgeでこのMeldexページを開きます。',
+      'アドレスバー右側のインストールアイコン、またはブラウザメニューの「アプリをインストール」を選びます。',
+      '確認画面でインストールを実行します。',
+    ];
+  }
+
+  function _installStatusText() {
+    if (_isStandaloneDisplayMode()) return '追加済みです。ホーム画面やアプリ一覧からMeldexを起動できます。';
+    if (_installPromptEvent) return 'この端末では、Meldexからホーム画面への追加を実行できます。';
+    return 'ブラウザ条件により直接追加できない場合は、ボタンから追加手順を確認できます。';
+  }
+
+  function _installHintText() {
+    if (_isStandaloneDisplayMode()) return '現在はアプリ表示で起動しています。';
+    if (_installPromptEvent) return 'ボタンを押すとブラウザの確認画面が開きます。';
+    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューから追加します。';
+  }
+
+  function _showInstallStatus(message) {
+    if (typeof showStatus === 'function') showStatus(message);
+  }
+
+  function _iconNode(name, size) {
+    const span = _el('span', { class: 'meldex-install-icon', 'aria-hidden': 'true' });
+    if (typeof lucide === 'function') span.innerHTML = lucide(name, size || 14);
+    return span;
+  }
+
+  function _refreshInstallUi(root) {
+    root = root || document;
+    if (!root.querySelectorAll) return;
+    const installed = _isStandaloneDisplayMode();
+    const state = installed ? 'installed' : _installPromptEvent ? 'ready' : 'manual';
+    const sections = [
+      ...(root.matches?.('[data-meldex-install-section]') ? [root] : []),
+      ...root.querySelectorAll('[data-meldex-install-section]'),
+    ];
+    sections.forEach(section => {
+      section.dataset.meldexInstallState = state;
+      const status = section.querySelector('[data-meldex-install-status]');
+      if (status) status.textContent = _installStatusText();
+      const hint = section.querySelector('[data-meldex-install-hint]');
+      if (hint) hint.textContent = _installHintText();
+      const button = section.querySelector('[data-meldex-install-button]');
+      if (button) {
+        button.disabled = installed;
+        button.textContent = installed ? '追加済み' : 'ホーム画面に追加';
+      }
+    });
+  }
+
+  function _createInstallSection(options) {
+    options = options || {};
+    const modal = options.context === 'modal';
+    const section = _el('section', {
+      class: modal
+        ? 'meldex-install-card meldex-install-card--modal'
+        : 'gb-section gb-section--boxed meldex-install-card',
+      dataset: {
+        meldexInstallSection: '1',
+        meldexInstallContext: modal ? 'modal' : 'settings',
+      },
+    });
+    const title = _el('div', { class: modal ? 'meldex-install-title' : 'gb-section-title meldex-install-title' });
+    title.appendChild(_iconNode('download', 14));
+    title.appendChild(_el('span', { text: 'ホーム画面に追加' }));
+    const desc = _el('div', {
+      class: modal ? 'meldex-install-desc' : 'gb-section-desc meldex-install-desc',
+      text: '対応ブラウザでは、Meldexをホーム画面やアプリ一覧から直接起動できるようにします。',
+    });
+    const status = _el('div', { class: 'meldex-install-status', dataset: { meldexInstallStatus: '1' } });
+    const hint = _el('div', { class: 'meldex-install-hint', dataset: { meldexInstallHint: '1' } });
+    const button = _el('button', {
+      type: 'button',
+      class: modal ? 'meldex-install-button' : 'gb-btn gb-btn-sm meldex-install-button',
+      dataset: { meldexInstallButton: '1' },
+      text: 'ホーム画面に追加',
+    });
+    button.addEventListener('click', async () => {
+      const result = await installMeldexApp().catch(error => ({ ok: false, error }));
+      if (options.closeOnSuccess && (result?.installed || result?.outcome === 'accepted')) options.closeOnSuccess();
+    });
+    const actions = _el('div', { class: 'meldex-install-actions' }, [button]);
+    section.append(title, desc, status, hint, actions);
+    _refreshInstallUi(section);
+    return section;
+  }
+
+  function showMeldexInstallDialog(options) {
+    options = options || {};
+    if (!options.force && _isStandaloneDisplayMode()) return false;
+    const existing = document.getElementById('meldex-install-prompt-overlay');
+    if (existing) existing.remove();
+    const overlay = _el('div', {
+      id: 'meldex-install-prompt-overlay',
+      class: 'modal-overlay meldex-install-prompt-overlay',
+    });
+    const dialog = _el('div', {
+      class: 'modal meldex-install-prompt-modal',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': 'meldex-install-prompt-title',
+    });
+    const title = _el('h3', { id: 'meldex-install-prompt-title', text: 'ホーム画面に追加' });
+    const body = _el('div', { class: 'modal-body meldex-install-prompt-body' }, [
+      _el('p', {
+        class: 'meldex-install-help-intro',
+        text: 'Meldexをホーム画面やアプリ一覧に追加すると、次回からブラウザのタブを探さずに起動できます。',
+      }),
+    ]);
+    const close = () => {
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+    };
+    function onKeydown(event) {
+      if (event.key === 'Escape' && overlay.isConnected) close();
+    }
+    body.appendChild(_createInstallSection({ context: 'modal', closeOnSuccess: close }));
+    const buttons = _el('div', { class: 'btn-row' });
+    const laterButton = _el('button', { type: 'button', text: '今はしない' });
+    laterButton.addEventListener('click', close);
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKeydown);
+    buttons.appendChild(laterButton);
+    dialog.append(title, body, buttons);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    _refreshInstallUi(overlay);
+    const installButton = overlay.querySelector('[data-meldex-install-button]');
+    installButton?.focus?.();
+    return true;
+  }
+
+  function renderMeldexInstallSection(root, options) {
+    options = options || {};
+    const section = _createInstallSection(options);
+    if (options.standalone) return section;
+    const scope = root?.querySelector ? root : document;
+    const host = options.host || scope.querySelector?.('#settings-install-container');
+    if (!host) return section;
+    host.replaceChildren(section);
+    return section;
+  }
+
+  function _renderPendingInstallSections(root) {
+    const scope = root?.querySelectorAll ? root : document;
+    const hosts = [];
+    if (scope.matches?.('#settings-install-container')) hosts.push(scope);
+    scope.querySelectorAll?.('#settings-install-container').forEach(host => hosts.push(host));
+    hosts.forEach(host => {
+      if (host.querySelector?.('[data-meldex-install-section]')) {
+        _refreshInstallUi(host);
+        return;
+      }
+      renderMeldexInstallSection(document, { host });
+    });
+  }
+
+  async function installMeldexApp() {
+    if (_isStandaloneDisplayMode()) {
+      _showInstallStatus('Meldexはすでにホーム画面に追加済みです');
+      _refreshInstallUi(document);
+      return { ok: true, installed: true };
+    }
+    const promptEvent = _installPromptEvent;
+    if (promptEvent && typeof promptEvent.prompt === 'function') {
+      _installPromptEvent = null;
+      _refreshInstallUi(document);
+      try {
+        const promptResult = await promptEvent.prompt();
+        let choice = promptResult || null;
+        if (promptEvent.userChoice) {
+          try { choice = await promptEvent.userChoice; } catch (_) {}
+        }
+        const outcome = String(choice?.outcome || '');
+        if (outcome === 'accepted') {
+          _showInstallStatus('Meldexをホーム画面に追加しました');
+        } else if (outcome === 'dismissed') {
+          _showInstallStatus('ホーム画面への追加をキャンセルしました');
+        }
+        _refreshInstallUi(document);
+        return { ok: outcome !== 'dismissed', outcome: outcome || 'unknown' };
+      } catch (error) {
+        _showInstallStatus('ブラウザの追加画面を開けませんでした。手順を表示します');
+        _refreshInstallUi(document);
+        showMeldexInstallHelpDialog();
+        return { ok: false, error };
+      }
+    }
+    showMeldexInstallHelpDialog();
+    return { ok: false, manual: true };
+  }
+
+  function showMeldexInstallHelpDialog() {
+    const existing = document.getElementById('meldex-install-help-overlay');
+    if (existing) existing.remove();
+    const overlay = _el('div', {
+      id: 'meldex-install-help-overlay',
+      class: 'modal-overlay meldex-install-help-overlay',
+    });
+    const dialog = _el('div', {
+      class: 'modal meldex-install-help-modal',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': 'meldex-install-help-title',
+    });
+    const title = _el('h3', { id: 'meldex-install-help-title', text: 'ホーム画面に追加' });
+    const body = _el('div', { class: 'modal-body meldex-install-help-body' }, [
+      _el('p', {
+        class: 'meldex-install-help-intro',
+        text: 'このブラウザではMeldexから追加画面を直接開けないため、次の手順で追加してください。',
+      }),
+      _el('ol', { class: 'meldex-install-help-list' }, _installSteps().map(step => _el('li', { text: step }))),
+    ]);
+    const buttons = _el('div', { class: 'btn-row' });
+    const closeButton = _el('button', { type: 'button', class: 'primary', text: '閉じる' });
+    const close = () => {
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+    };
+    function onKeydown(event) {
+      if (event.key === 'Escape' && overlay.isConnected) close();
+    }
+    closeButton.addEventListener('click', close);
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKeydown);
+    buttons.appendChild(closeButton);
+    dialog.append(title, body, buttons);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    closeButton.focus();
+    return true;
+  }
+
+  function _bindInstallPromptEvents() {
+    if (_installListenersBound) return;
+    if (typeof window.addEventListener !== 'function') return;
+    _installListenersBound = true;
+    window.addEventListener('beforeinstallprompt', event => {
+      event.preventDefault?.();
+      _installPromptEvent = event;
+      _refreshInstallUi(document);
+    });
+    window.addEventListener('appinstalled', () => {
+      _installPromptEvent = null;
+      _showInstallStatus('Meldexをホーム画面に追加しました');
+      _refreshInstallUi(document);
+    });
+    try {
+      const displayMode = window.matchMedia?.('(display-mode: standalone)');
+      displayMode?.addEventListener?.('change', () => _refreshInstallUi(document));
+    } catch (_) {}
+  }
+
+  function _bindInstallSectionObserver() {
+    _renderPendingInstallSections(document);
+    if (_installSectionObserverBound) return;
+    if (typeof MutationObserver !== 'function') return;
+    const target = document.body || document.documentElement;
+    if (!target) return;
+    _installSectionObserverBound = true;
+    const observer = new MutationObserver(mutations => {
+      mutations.forEach(mutation => {
+        mutation.addedNodes?.forEach(node => {
+          if (node?.nodeType === 1) _renderPendingInstallSections(node);
+        });
+      });
+    });
+    observer.observe(target, { childList: true, subtree: true });
+  }
+
   function showConsentDialog(options) {
     options = options || {};
     if (!options.force && hasConsent()) return false;
@@ -229,14 +545,13 @@
     body.appendChild(_el('ul', { class: 'meldex-beta-consent-summary' }, [
       _el('li', { text: 'この版はベータ版です。正式版までに機能名、配置、挙動が変わる可能性があります。' }),
       _el('li', { text: '作品・データはユーザーに帰属し、原則としてローカルPCまたはユーザーが指定したクラウドストレージに保存されます。' }),
-      _el('li', { text: '本ソフトウェアは13歳以上の利用を推奨します。13歳未満の方は保護者の同意を得てから利用してください。' }),
       _el('li', { text: 'クラッシュレポートと利用統計は、下の任意チェックを入れた場合だけ送信します。作品本文・ファイル名・個人識別情報は含めません。' }),
       _el('li', { text: 'LLM連携を使う場合、質問本文と選択した関連コンテキストは各LLMプロバイダへ送信されます。' }),
     ]));
     const links = _el('p', { class: 'meldex-beta-consent-muted' }, [
-      _el('a', { href: 'PRIVACY.md', target: '_blank', rel: 'noopener', text: 'プライバシーポリシー' }),
+      _el('a', { href: 'PRIVACY.html', target: '_blank', rel: 'noopener', text: 'プライバシーポリシー' }),
       document.createTextNode(' / '),
-      _el('a', { href: 'TERMS-OF-USE.md', target: '_blank', rel: 'noopener', text: '利用規約' }),
+      _el('a', { href: 'TERMS-OF-USE.html', target: '_blank', rel: 'noopener', text: '利用規約' }),
       document.createTextNode(' を確認できます。'),
     ]);
     body.appendChild(links);
@@ -299,6 +614,9 @@
       if (updateInput.checked) window.MeldexUpdateChecker?.checkNow?.({ force: true }).catch(() => {});
       overlay.remove();
       refreshMeldexAboutPanel(document);
+      if (options.showInstallAfterConsent !== false) {
+        setTimeout(() => showMeldexInstallDialog({ reason: 'after-consent' }), 80);
+      }
     });
 
     document.body.appendChild(overlay);
@@ -353,6 +671,7 @@
 
   async function refreshMeldexAboutPanel(root) {
     root = root || document;
+    _refreshInstallUi(root);
     const versionEl = root.querySelector?.('#settings-about-version');
     if (!versionEl) return;
     const info = await getVersionInfo();
@@ -371,8 +690,12 @@
   function _boot() {
     refreshReleaseTitle().catch(() => {});
     _ensureDesktopBadge();
+    _refreshInstallUi(document);
+    _bindInstallSectionObserver();
     syncConsentState().finally(() => _scheduleFirstRunConsent());
   }
+
+  _bindInstallPromptEvents();
 
   window.MeldexBetaRelease = {
     CONSENT_KEY,
@@ -387,8 +710,16 @@
     resetConsent,
     syncConsentState,
     isUpdateCheckEnabled,
+    installMeldexApp,
+    showMeldexInstallDialog,
+    showMeldexInstallHelpDialog,
+    renderMeldexInstallSection,
   };
   window.refreshMeldexAboutPanel = refreshMeldexAboutPanel;
+  window.installMeldexApp = installMeldexApp;
+  window.showMeldexInstallDialog = showMeldexInstallDialog;
+  window.showMeldexInstallHelpDialog = showMeldexInstallHelpDialog;
+  window.renderMeldexInstallSection = renderMeldexInstallSection;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _boot, { once: true });
   else _boot();

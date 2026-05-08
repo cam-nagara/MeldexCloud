@@ -10,7 +10,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-max-tokens',
   'chat-top-p',
 ];
-const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null };
+const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, queuedMessages: [], queuedScope: null, queuedSendRunning: false, stopSerial: 0 };
 let _chatMode = localStorage.getItem('chat-mode') || 'team';
 if (_chatMode === 'cli') _chatMode = 'history';
 let _teamCurrentRoom = '';
@@ -1512,8 +1512,38 @@ function _renderTeamMessageWithImages(container, text) {
   }
 }
 
+function _chatBindImeCompositionGuard(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input || input.dataset.chatImeGuardBound === '1') return;
+  input.dataset.chatImeGuardBound = '1';
+  input.addEventListener('compositionstart', () => {
+    input.dataset.chatImeComposing = '1';
+  });
+  input.addEventListener('compositionend', () => {
+    input.dataset.chatImeComposing = '0';
+    input.dataset.chatLastCompositionEnd = String(Date.now());
+  });
+}
+
+function _chatIsImeEnterEvent(event) {
+  const target = event?.target;
+  const lastEnd = Number(target?.dataset?.chatLastCompositionEnd || 0);
+  return !!(
+    event?.isComposing ||
+    event?.keyCode === 229 ||
+    event?.which === 229 ||
+    target?.dataset?.chatImeComposing === '1' ||
+    (lastEnd && Date.now() - lastEnd < 120)
+  );
+}
+
+_chatBindImeCompositionGuard('team-input');
 document.getElementById('team-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); teamSend(); }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    if (_chatIsImeEnterEvent(e)) return;
+    e.preventDefault();
+    teamSend();
+  }
 });
 
 // textarea auto-grow（入力内容に合わせて高さを調整）
@@ -1539,6 +1569,7 @@ function _autoGrowTextarea(ta, minRows, maxRows) {
   ta.style.overflowY = ta.scrollHeight > maxH ? 'auto' : 'hidden';
 }
 document.getElementById('team-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 8); });
+_chatBindImeCompositionGuard('chat-input');
 document.getElementById('chat-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 10); });
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 
@@ -1744,7 +1775,7 @@ async function _chatCliProviderReadyStatus(provider) {
   const key = _chatProviderKey(provider);
   const meta = CHAT_CLI_PROVIDERS[key] || { label: key || 'CLI', command: key || 'CLI' };
   try {
-    const cfg = await apiFetch('/cli-chat/config');
+    const cfg = await apiFetch('/cli-chat/config', { silentError: true });
     if (cfg?.enabled === false) {
       return { configured: false, message: 'CLIチャット機能が無効です。設定 > LLM > CLIチャットで有効にしてください。' };
     }
@@ -1842,6 +1873,7 @@ function _chatResetCurrentSession(options = {}) {
   _chatState.sessionId = '';
   _chatState.targetPath = options.keepTargetPath ? (_chatState.targetPath || '') : '';
   _chatState.pendingAttachments = [];
+  if (typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
   if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
@@ -1928,7 +1960,7 @@ async function _refreshChatDebugAvailability() {
   const el = document.getElementById('chat-debug-available');
   if (!el) return;
   try {
-    const data = await apiFetch(_chatApiPath('/settings-db/debug-report/exists'));
+    const data = await apiFetch(_chatApiPath('/settings-db/debug-report/exists'), { silentError: true });
     el.style.display = data?.exists ? 'inline-flex' : 'none';
   } catch {
     el.style.display = 'none';
@@ -2038,6 +2070,20 @@ function _chatMessageRenderOptions(message, index) {
   return options;
 }
 
+function _chatRenderQueuedMessageBubbles() {
+  if (!_chatQueueScopeMatchesCurrent()) return;
+  const queue = Array.isArray(_chatState.queuedMessages) ? _chatState.queuedMessages : [];
+  queue.forEach((message, offset) => {
+    if (!message || message.role !== 'user') return;
+    chatAddMessage('user', message.content, {
+      messageIndex: _chatState.messages.length + offset,
+      msg_id: _ensureChatMessageId(message),
+      timestamp: message.timestamp || '',
+      queued_for_next_response: true,
+    });
+  });
+}
+
 function _chatRenderStoredMessages() {
   const container = _chatLiveMessagesContainer();
   if (!container) return;
@@ -2046,6 +2092,7 @@ function _chatRenderStoredMessages() {
     if (!message || typeof message !== 'object') return;
     chatAddMessage(message.role || 'assistant', message.content, _chatMessageRenderOptions(message, index));
   });
+  _chatRenderQueuedMessageBubbles();
 }
 
 function _chatApplyCompression(data, options = {}) {
@@ -2581,6 +2628,7 @@ function _handleChatToolWorkspaceEffect(name, result) {
 function chatStopStreaming() {
   const controller = _chatState.abortController;
   if (!controller) return;
+  _chatState.stopSerial = Number(_chatState.stopSerial || 0) + 1;
   try { controller.abort(); } catch {}
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn) {
@@ -2594,6 +2642,162 @@ function chatStopStreaming() {
       _chatSyncStreamingControls();
     }
   }, 1500);
+}
+
+function _chatQueuedMessages() {
+  if (!Array.isArray(_chatState.queuedMessages)) _chatState.queuedMessages = [];
+  return _chatState.queuedMessages;
+}
+
+function _chatCurrentQueueScope() {
+  return {
+    messages: _chatState.messages,
+    sessionId: String(_chatState.sessionId || ''),
+    targetPath: String(_chatState.targetPath || ''),
+    sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
+    mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),
+  };
+}
+
+function _chatQueueScopesMatch(scope, current) {
+  if (!scope || !current) return false;
+  if (String(scope.mode || '') !== String(current.mode || '')) return false;
+  if (String(scope.sourceFolder || '') !== String(current.sourceFolder || '')) return false;
+  if (String(scope.targetPath || '') !== String(current.targetPath || '')) return false;
+  const scopeSession = String(scope.sessionId || '');
+  const currentSession = String(current.sessionId || '');
+  if (scopeSession || currentSession) return scopeSession === currentSession;
+  return scope.messages === current.messages;
+}
+
+function _chatQueueScopeMatchesCurrent() {
+  const queue = _chatQueuedMessages();
+  if (!queue.length) return true;
+  return _chatQueueScopesMatch(_chatState.queuedScope, _chatCurrentQueueScope());
+}
+
+function _chatClearQueuedMessages() {
+  const queue = _chatQueuedMessages();
+  queue.splice(0, queue.length);
+  _chatState.queuedScope = null;
+}
+
+function _chatNormalizeUserContent(text, attachments) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  if (list.length === 0) return String(text || '');
+  return [
+    { type: 'text', text: String(text || '') },
+    ...list.map(att => {
+      const mime = String(att?.mime || '').toLowerCase();
+      const isPdf = mime === 'application/pdf' || /\.pdf$/i.test(att?.name || att?.path || '');
+      return { type: isPdf ? 'document' : 'image', name: att?.name, path: att?.path, mimeType: isPdf ? 'application/pdf' : att?.mime };
+    }),
+  ];
+}
+
+function _chatQueuedMessagesText(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  return list.map(message => {
+    if (typeof _chatContentToText === 'function') return _chatContentToText(message?.content || '');
+    return typeof message?.content === 'string' ? message.content : JSON.stringify(message?.content || '');
+  }).filter(Boolean).join('\n\n');
+}
+
+function _chatQueueUserInputForNextTurn(options = {}) {
+  if (options?.fromButton || options?.stopRequested) {
+    chatStopStreaming();
+    return false;
+  }
+  const input = document.getElementById('chat-input');
+  const attachments = Array.isArray(_chatState.pendingAttachments) ? _chatState.pendingAttachments.slice() : [];
+  const text = String(input?.value || '').trim();
+  if (!text && attachments.length === 0) return false;
+
+  const submitFingerprint = JSON.stringify({ text, attachments: attachments.map(att => att.path || att.name || '') });
+  const now = Date.now();
+  if (submitFingerprint === _chatLastSubmitFingerprint && now - _chatLastSubmitAt < 300) {
+    if (typeof showStatus === 'function') showStatus('同じメッセージの連続送信を抑止しました');
+    return false;
+  }
+  _chatLastSubmitFingerprint = submitFingerprint;
+  _chatLastSubmitAt = now;
+
+  if (input) {
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
+    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
+  }
+  if (attachments.length > 0) {
+    if (typeof _chatClearPendingAttachments === 'function') _chatClearPendingAttachments();
+    else _chatState.pendingAttachments = [];
+  }
+
+  const timestamp = _chatLocalTimestamp();
+  const message = { role: 'user', content: _chatNormalizeUserContent(text, attachments), timestamp };
+  _ensureChatMessageId(message);
+  const queue = _chatQueuedMessages();
+  if (queue.length && !_chatQueueScopeMatchesCurrent()) _chatClearQueuedMessages();
+  _chatState.queuedScope = _chatCurrentQueueScope();
+  queue.push(message);
+  chatAddMessage('user', message.content, {
+    messageIndex: _chatState.messages.length + queue.length - 1,
+    msg_id: message.msg_id,
+    timestamp,
+    queued_for_next_response: true,
+  });
+  if (typeof showStatus === 'function') showStatus('応答完了後にまとめて送信します');
+  return true;
+}
+
+function _chatDrainQueuedMessages() {
+  if (!_chatQueueScopeMatchesCurrent()) return [];
+  const queue = _chatQueuedMessages();
+  if (!queue.length) return [];
+  const drained = _chatCloneMessages(queue);
+  queue.splice(0, queue.length);
+  _chatState.queuedScope = null;
+  return drained;
+}
+
+function _chatPromoteQueuedMessagesToHistory() {
+  const queued = _chatDrainQueuedMessages();
+  if (!queued.length) return 0;
+  queued.forEach(message => {
+    message.role = 'user';
+    message.timestamp = message.timestamp || _chatLocalTimestamp();
+    _ensureChatMessageId(message);
+  });
+  _chatState.messages.push(...queued);
+  if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+  return queued.length;
+}
+
+async function _chatSendQueuedMessagesAfterStream(options = {}) {
+  if (_chatState.streaming || _chatState.queuedSendRunning) return false;
+  const queue = _chatQueuedMessages();
+  if (!queue.length) return false;
+  if (!_chatQueueScopeMatchesCurrent()) return false;
+
+  const queued = _chatDrainQueuedMessages();
+  if (!queued.length) return false;
+  _chatState.queuedSendRunning = true;
+  const stopSerial = Number(_chatState.stopSerial || 0);
+  let sent = false;
+  try {
+    if (typeof showStatus === 'function') showStatus(`保留メッセージ ${queued.length} 件を送信します`);
+    sent = await chatSend({ deferredMessages: queued, fromQueuedMessages: true });
+    if (!sent && !_chatState.streaming) {
+      _chatState.queuedMessages = queued.concat(_chatQueuedMessages());
+      _chatState.queuedScope = _chatCurrentQueueScope();
+    }
+    return sent;
+  } finally {
+    _chatState.queuedSendRunning = false;
+    if (sent && !_chatState.streaming && _chatQueuedMessages().length && Number(_chatState.stopSerial || 0) === stopSerial) {
+      setTimeout(() => { _chatSendQueuedMessagesAfterStream().catch(() => {}); }, 0);
+    }
+  }
 }
 
 function _chatAbortActiveStreamForNavigation() {
@@ -2664,44 +2868,52 @@ function chatToggleVoiceInput() {
 
 async function chatSend(options = {}) {
   if (_chatState.streaming) {
-    chatStopStreaming();
-    return;
+    return _chatQueueUserInputForNextTurn(options);
   }
   if (_chatIsCliProvider(_chatState.provider)) {
     if (window.GBChatCli?.sendCliChat) return window.GBChatCli.sendCliChat(options);
     if (typeof chatAddSystem === 'function') chatAddSystem('CLIチャット機能を読み込み中です。少し待ってから再送信してください。');
     return false;
   }
-  _captureChatSessionTitleFromInput();
+  const deferredMessages = Array.isArray(options.deferredMessages) ? _chatCloneMessages(options.deferredMessages).filter(message => message?.role === 'user') : [];
+  const usingDeferredMessages = deferredMessages.length > 0;
+  if (!usingDeferredMessages) _captureChatSessionTitleFromInput();
   const input = document.getElementById('chat-input');
   const msgContainer = _chatLiveMessagesContainer();
   if (!msgContainer) {
     if (typeof showStatus === 'function') showStatus('チャット表示を準備中です', true);
     return false;
   }
-  const _pendingAtts = _chatState.pendingAttachments || [];
-  const text = input.value.trim();
-  if (!text && _pendingAtts.length === 0) return;
-  const submitFingerprint = JSON.stringify({ text, attachments: _pendingAtts.map(att => att.path || att.name || '') });
-  const now = Date.now();
-  if (submitFingerprint === _chatLastSubmitFingerprint && now - _chatLastSubmitAt < 300) {
-    if (typeof showStatus === 'function') showStatus('同じメッセージの連続送信を抑止しました');
-    return false;
+  const _pendingAtts = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
+  const text = usingDeferredMessages ? _chatQueuedMessagesText(deferredMessages).trim() : input.value.trim();
+  if (!usingDeferredMessages && !text && _pendingAtts.length === 0) {
+    if (_chatQueuedMessages().length) return _chatSendQueuedMessagesAfterStream();
+    return;
+  }
+  if (!usingDeferredMessages) {
+    const submitFingerprint = JSON.stringify({ text, attachments: _pendingAtts.map(att => att.path || att.name || '') });
+    const now = Date.now();
+    if (submitFingerprint === _chatLastSubmitFingerprint && now - _chatLastSubmitAt < 300) {
+      if (typeof showStatus === 'function') showStatus('同じメッセージの連続送信を抑止しました');
+      return false;
+    }
+    _chatLastSubmitFingerprint = submitFingerprint;
+    _chatLastSubmitAt = now;
   }
   if (window.MeldexOnlineStatus?.assertOnlineForLlm && !window.MeldexOnlineStatus.assertOnlineForLlm()) {
     chatAddSystem(window.MeldexOnlineStatus.offlineMessage());
     return false;
   }
-  _chatLastSubmitFingerprint = submitFingerprint;
-  _chatLastSubmitAt = now;
   chatRefreshUsageBanner().catch(() => {});
-  input.value = '';
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
-  if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
+  if (!usingDeferredMessages) {
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
+    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
+  }
 
   // CLIP画像検索コマンド: /image-search <query> または /画像検索 <query>
-  const imgSearchMatch = text.match(/^\/(?:image-search|画像検索)\s+(.+)/i);
+  const imgSearchMatch = usingDeferredMessages ? null : text.match(/^\/(?:image-search|画像検索)\s+(.+)/i);
   if (imgSearchMatch) {
     const query = imgSearchMatch[1].trim();
     chatAddMessage('user', text, { timestamp: _chatLocalTimestamp() });
@@ -2722,34 +2934,39 @@ async function chatSend(options = {}) {
 
   const providerStatus = await _chatProviderReadyStatus(_chatState.provider);
   if (!providerStatus.configured) {
-    input.value = text;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
-    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
+    if (!usingDeferredMessages) {
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
+      if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
+    }
     chatAddSystem(providerStatus.message || '送信設定を確認してください。');
     _chatRefreshApiKeyState().catch(() => {});
     return false;
   }
 
   // ユーザーメッセージ表示・記録（画像添付があれば構造化コンテンツにする）
-  let _userContent = text;
-  if (_pendingAtts.length > 0) {
-    _userContent = [
-      { type: 'text', text: text },
-      ..._pendingAtts.map(att => {
-        const mime = String(att.mime || '').toLowerCase();
-        const isPdf = mime === 'application/pdf' || /\.pdf$/i.test(att.name || att.path || '');
-        return { type: isPdf ? 'document' : 'image', name: att.name, path: att.path, mimeType: isPdf ? 'application/pdf' : att.mime };
-      }),
-    ];
-    if (typeof _chatClearPendingAttachments === 'function') _chatClearPendingAttachments();
-    else _chatState.pendingAttachments = [];
+  if (usingDeferredMessages) {
+    deferredMessages.forEach(message => {
+      message.role = 'user';
+      message.timestamp = message.timestamp || _chatLocalTimestamp();
+      _ensureChatMessageId(message);
+    });
+    _chatState.messages.push(...deferredMessages);
+    _chatRenderStoredMessages();
+  } else {
+    _chatPromoteQueuedMessagesToHistory();
+    const _userContent = _chatNormalizeUserContent(text, _pendingAtts);
+    if (_pendingAtts.length > 0) {
+      if (typeof _chatClearPendingAttachments === 'function') _chatClearPendingAttachments();
+      else _chatState.pendingAttachments = [];
+    }
+    const userTimestamp = _chatLocalTimestamp();
+    const userMessage = { role: 'user', content: _userContent, timestamp: userTimestamp };
+    _ensureChatMessageId(userMessage);
+    chatAddMessage('user', _userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
+    _chatState.messages.push(userMessage);
   }
-  const userTimestamp = _chatLocalTimestamp();
-  const userMessage = { role: 'user', content: _userContent, timestamp: userTimestamp };
-  _ensureChatMessageId(userMessage);
-  chatAddMessage('user', _userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
-  _chatState.messages.push(userMessage);
   _ensureSessionId();
 
   // ストリーミング開始
@@ -2760,6 +2977,7 @@ async function chatSend(options = {}) {
   const streamSessionTitle = _chatState.sessionTitle || '';
   const streamTargetPath = _chatState.targetPath || '';
   const streamSourceFolder = _chatSourceFolderValue();
+  const streamWorkFolder = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
   const streamSystemPrompt = _buildSystemPrompt();
   const streamController = new AbortController();
   _chatState.streaming = true;
@@ -2826,6 +3044,7 @@ async function chatSend(options = {}) {
   let responseToolEvents = [];
   let _autoScroll = true;
   let streamError = null;
+  let streamCompleted = false;
   const _scrollHandler = () => {
     const atBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 40;
     _autoScroll = atBottom;

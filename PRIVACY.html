@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
+  <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
+  <meta name="color-scheme" content="dark">
+  <title>Meldex プライバシーポリシー</title>
+  <meta name="description" content="Meldex BETA のプライバシーポリシーです。作品データ、テレメトリ、LLM連携時の外部送信について説明します。">
+  <link rel="icon" href="Meldex_icon_64.png" type="image/png">
+  <link rel="stylesheet" href="public-legal.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="public-index.html" aria-label="Meldex BETA 配布ページへ戻る">
+      <img src="Meldex_icon_64.png" alt="">
+      <span>Meldex BETA</span>
+    </a>
+    <nav class="nav" aria-label="関連ページ">
+      <a href="public-index.html">配布ページ</a>
+      <a href="TERMS-OF-USE.html">利用規約</a>
+      <a href="Meldex.html">クラウド版</a>
+    </nav>
+  </header>
+
+  <main class="doc-layout">
+    <aside class="doc-sidebar" aria-label="文書ナビゲーション">
+      <div class="doc-kind">Privacy Policy</div>
+      <nav class="doc-toc">
+        <a href="#summary">要点</a>
+        <a href="#storage">保存場所</a>
+        <a href="#telemetry">任意送信</a>
+        <a href="#llm">LLM連携</a>
+        <a href="#sync">同期サービス</a>
+        <a href="#changes">変更</a>
+      </nav>
+      <div class="doc-side-actions">
+        <a href="TERMS-OF-USE.html">利用規約</a>
+        <a href="public-index.html">配布ページ</a>
+      </div>
+    </aside>
+
+    <article class="doc-content">
+      <header class="doc-header">
+        <div class="doc-kind">Meldex BETA</div>
+        <h1>プライバシーポリシー</h1>
+        <p class="doc-lead">Meldexで作成した作品・データがどこに保存され、どの操作で外部サービスへ送信される可能性があるかを説明します。</p>
+        <ul class="doc-meta">
+          <li>最終更新日: 2026-05-04</li>
+          <li>配布者: cam-nagara / Meldex 開発者</li>
+          <li>問い合わせ: GitHub Issues または配布ページ記載の連絡先</li>
+        </ul>
+      </header>
+
+      <section class="legal-section" id="summary">
+        <h2>要点</h2>
+        <ul class="key-points">
+          <li><strong>作品・データはユーザーに帰属します。</strong>Meldex開発者は、ユーザーの作品・データに所有権を主張しません。</li>
+          <li><strong>作品データは原則としてユーザー側に保存されます。</strong>ローカルPC、またはユーザー自身が指定したDropboxなどのクラウドストレージに保存されます。</li>
+          <li><strong>テレメトリは任意です。</strong>クラッシュレポートや匿名利用統計は、ユーザーが同意した場合だけ送信されます。</li>
+          <li><strong>LLM連携では外部プロバイダへ送信されます。</strong>質問本文、選択した関連コンテキスト、添付内容は、ユーザー自身のAPIキーで各LLMプロバイダへ送信されます。</li>
+        </ul>
+      </section>
+
+      <section class="legal-section" id="storage">
+        <h2>作品・データの帰属と保存場所</h2>
+        <p>ユーザーがMeldexで作成・編集した作品・データはユーザー自身に帰属します。Meldex開発者は、ユーザーの作品・データに対して所有権を主張しません。</p>
+        <p>作品・データは原則としてユーザーのローカルPC上、またはユーザー自身が指定したクラウドストレージに保存されます。Meldex開発者のサーバには保存されません。</p>
+      </section>
+
+      <section class="legal-section" id="telemetry">
+        <h2>テレメトリとクラッシュレポート</h2>
+        <p>Meldexは、ユーザーが明示的に同意した場合に限り、クラッシュレポートと匿名利用統計を送信することがあります。</p>
+        <h3>送信される可能性がある情報</h3>
+        <ul class="clause-list">
+          <li>スタックトレース</li>
+          <li>OSバージョン、Meldexバージョン</li>
+          <li>直前操作の概要</li>
+          <li>機能利用頻度、パフォーマンスメトリクス</li>
+        </ul>
+        <div class="callout"><strong>送信対象に含めないもの:</strong> 作品本文、ファイル名、ユーザー識別情報、LLM APIキーは送信対象に含めません。ユーザーが同意するまで、テレメトリは送信されません。同意は設定画面から後で変更できます。</div>
+      </section>
+
+      <section class="legal-section" id="llm">
+        <h2>LLM連携時の外部送信</h2>
+        <p>ユーザーがチャット機能などのLLM連携を使う場合、質問本文、ユーザーが選択した関連コンテキスト、添付したファイル内容は、ユーザーが設定したAPIキーに基づきOpenAI、Anthropic、Google Geminiなどの外部LLMプロバイダへ送信されます。</p>
+        <p>Meldex開発者はその送信内容を取得・閲覧・保存しません。送信はユーザー本人のAPIキーで直接行われ、Meldex開発者のサーバを経由しません。</p>
+        <div class="table-wrap" role="region" aria-label="LLMプロバイダごとのデータ取り扱い">
+          <table>
+            <thead>
+              <tr>
+                <th>プロバイダ</th>
+                <th>Meldexから送信されるもの</th>
+                <th>データ取り扱いの概要</th>
+                <th>公式情報</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>OpenAI API</td>
+                <td>チャット本文、選択コンテキスト、添付内容</td>
+                <td>API経由の入力・出力は、ユーザーが明示的に共有へ同意しない限り、モデルの訓練・改善に使われない方針です。安全監視等のため一定期間ログが保持される場合があります。</td>
+                <td><a href="https://platform.openai.com/docs/guides/your-data">公式情報</a></td>
+              </tr>
+              <tr>
+                <td>Anthropic API</td>
+                <td>チャット本文、選択コンテキスト、添付内容</td>
+                <td>API等の商用利用では、ユーザーが明示的にモデル改善へ提供しない限り、プロンプトや出力を生成モデルの訓練に使わない方針です。</td>
+                <td><a href="https://docs.anthropic.com/en/docs/claude-code/data-usage">公式情報</a></td>
+              </tr>
+              <tr>
+                <td>Google Gemini API</td>
+                <td>チャット本文、選択コンテキスト、添付内容</td>
+                <td>無料枠では入力・出力がGoogleのサービス改善や機械学習技術の改善に使われ、人間のレビュー対象になる場合があります。Cloud Billingが有効な有料扱いのGemini APIでは、入力・出力を製品改善に使わない方針です。</td>
+                <td><a href="https://ai.google.dev/gemini-api/terms">公式情報</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="notes">
+          <li>LLM連携を使いたくない場合は、設定画面でAPIキーを未入力にするか削除してください。</li>
+          <li>APIキーが未設定のプロバイダには送信されません。</li>
+        </ul>
+      </section>
+
+      <section class="legal-section" id="sync">
+        <h2>Dropboxなどの同期サービス</h2>
+        <p>ユーザーがDropboxなどのクラウドストレージ内にMeldexのソースフォルダを置いた場合、作品・データ、ゴミ箱（<code>_trash/</code>）配下のファイル、設定ファイルがそのサービスの同期対象になります。</p>
+        <p>クラウドストレージ側で削除・巻き戻しを行った場合、Meldex側でも影響を受けることがあります。</p>
+      </section>
+
+      <section class="legal-section" id="changes">
+        <h2>第三者ライブラリと変更</h2>
+        <p>Meldexは第三者ライブラリとフォントを同梱します。ライセンス情報は <code>THIRD-PARTY.md</code> と <code>CREDITS.md</code> を参照してください。</p>
+        <p>本ポリシーは、機能追加や配布方法の変更に応じて更新される場合があります。</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="doc-footer">
+    <span>Meldex BETA</span>
+    <span>プライバシーポリシー</span>
+  </footer>
+</body>
+</html>

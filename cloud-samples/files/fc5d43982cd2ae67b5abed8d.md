@@ -1,0 +1,44 @@
+---
+type: settings-entry
+id: p08_仏間
+category: 場所情報
+created: '2026-05-06T17:18:39'
+created_by: codex
+created_by_kind: cli
+created_by_model: gpt-5
+properties:
+  分類:
+  - value: 本館
+    status: 案
+  階層:
+  - value: 一階
+    status: 案
+  接続:
+  - value: 大広間、廊下。
+    status: 案
+  主な登場人物:
+  - value: 鬼ヶ瀬 杢蔵、小間井 芽衣、狭間 透
+    status: 案
+  通常の機能:
+  - value: 先祖供養と鬼ヶ瀬家の過去を象徴する部屋。
+    status: 案
+  事件での役割:
+  - value: 五十年前の怨念や家系の罪を示す象徴的な場所。
+    status: 案
+  仕掛け・制約:
+  - value: 位牌、写真、古い名前が小間井 芽衣の正体への伏線になる。
+    status: 案
+  手がかり:
+  - value: 鬼ヶ瀬 杢蔵が小間井 芽衣を古い本名で呼びかける理由。
+    status: 案
+  ミスリード:
+  - value: 怨霊である小間井 芽衣が一連の犯人に見える。
+    status: 案
+  備考:
+  - value: エピローグの余韻に使いやすい。
+    status: 案
+relations: []
+modified: '2026-05-07T20:27:27'
+modified_by: anonymous
+modified_by_kind: human
+---

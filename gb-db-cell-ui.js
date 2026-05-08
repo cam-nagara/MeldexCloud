@@ -4,6 +4,163 @@ function _cellUiValueToString(value) {
   return value == null ? '' : String(value);
 }
 
+function _dbRichEscapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function _dbRichComparableText(text) {
+  return String(text == null ? '' : text)
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function _dbRichPlainTextToHtml(text) {
+  return _dbRichEscapeHtml(text).replace(/\r\n?/g, '\n').replace(/\n/g, '<br>');
+}
+
+function _dbRichStyleValueSafe(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  const lower = raw.toLowerCase().replace(/\s+/g, '');
+  return !lower.includes('url(')
+    && !lower.includes('expression(')
+    && !lower.includes('javascript:')
+    && !lower.includes('behavior:')
+    && !raw.includes('<')
+    && !raw.includes('>');
+}
+
+function _dbRichCopySafeStyles(source, target) {
+  if (!source?.style || !target?.style) return;
+  const styleProps = [
+    'color',
+    'backgroundColor',
+    'fontSize',
+    'fontFamily',
+    'fontWeight',
+    'fontStyle',
+    'webkitTextStrokeColor',
+    'webkitTextStrokeWidth',
+    'paintOrder',
+    'textDecorationLine',
+    'textDecorationColor',
+    'borderLeft',
+    'paddingLeft',
+  ];
+  styleProps.forEach(prop => {
+    const value = source.style[prop];
+    if (value && _dbRichStyleValueSafe(value)) target.style[prop] = value;
+  });
+}
+
+function _dbRichSanitizeHtml(rawHtml) {
+  const raw = String(rawHtml || '');
+  if (!raw || typeof document === 'undefined') return '';
+  const template = document.createElement('template');
+  template.innerHTML = raw;
+  const out = document.createElement('div');
+  const allowedInline = new Set(['span', 'b', 'strong', 'i', 'em', 'u']);
+  const blocked = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'svg', 'math']);
+
+  const appendChildren = (source, parent) => {
+    Array.from(source.childNodes || []).forEach(node => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parent.appendChild(document.createTextNode(node.textContent || ''));
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = String(node.tagName || '').toLowerCase();
+      if (blocked.has(tag)) return;
+      if (tag === 'br') {
+        parent.appendChild(document.createElement('br'));
+        return;
+      }
+      if (tag === 'div' || tag === 'p') {
+        if (parent.childNodes.length) parent.appendChild(document.createElement('br'));
+        appendChildren(node, parent);
+        return;
+      }
+      if (!allowedInline.has(tag)) {
+        if (tag === 'font') {
+          const cleanFont = document.createElement('span');
+          const color = node.getAttribute('color') || '';
+          const face = node.getAttribute('face') || '';
+          if (_dbRichStyleValueSafe(color)) cleanFont.style.color = color;
+          if (_dbRichStyleValueSafe(face)) cleanFont.style.fontFamily = face;
+          _dbRichCopySafeStyles(node, cleanFont);
+          appendChildren(node, cleanFont);
+          if (cleanFont.childNodes.length) parent.appendChild(cleanFont);
+          return;
+        }
+        appendChildren(node, parent);
+        return;
+      }
+      const clean = document.createElement(tag);
+      _dbRichCopySafeStyles(node, clean);
+      appendChildren(node, clean);
+      if (clean.childNodes.length) parent.appendChild(clean);
+    });
+  };
+
+  appendChildren(template.content, out);
+  return out.innerHTML;
+}
+
+function _dbRichTextFromSanitizedHtml(sanitizedHtml) {
+  if (!sanitizedHtml || typeof document === 'undefined') return '';
+  const div = document.createElement('div');
+  div.innerHTML = sanitizedHtml;
+  const collect = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    const tag = String(node.tagName || '').toLowerCase();
+    if (tag === 'br') return ' ';
+    const text = Array.from(node.childNodes || []).map(collect).join('');
+    return (tag === 'div' || tag === 'p') ? (' ' + text + ' ') : text;
+  };
+  return collect(div);
+}
+
+function _dbRichHtmlForValue(val) {
+  const sanitized = _dbRichSanitizeHtml(val?.rich_html || '');
+  if (!sanitized) return '';
+  const htmlText = _dbRichComparableText(_dbRichTextFromSanitizedHtml(sanitized));
+  const valueText = _dbRichComparableText(_cellUiValueToString(val?.value));
+  return htmlText && htmlText === valueText ? sanitized : '';
+}
+
+function _dbRichHtmlHasFormatting(sanitizedHtml) {
+  if (!sanitizedHtml || typeof document === 'undefined') return false;
+  const div = document.createElement('div');
+  div.innerHTML = sanitizedHtml;
+  return !!div.querySelector('[style], b, strong, i, em, u');
+}
+
+function _dbRichTextFromEditable(editor) {
+  const text = typeof editor?.innerText === 'string' ? editor.innerText : (editor?.textContent || '');
+  return String(text || '').replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n');
+}
+
+function _dbRichAppendValuePreview(parent, vals, options = {}) {
+  if (!parent) return;
+  const sep = options.separator == null ? ', ' : String(options.separator);
+  (vals || []).forEach((val, index) => {
+    if (index > 0) parent.appendChild(document.createTextNode(sep));
+    const richHtml = _dbRichHtmlForValue(val);
+    const span = document.createElement('span');
+    span.className = richHtml ? 'db-rich-value-preview' : 'db-plain-value-preview';
+    if (richHtml) span.innerHTML = richHtml;
+    else span.textContent = _cellUiValueToString(val?.value);
+    parent.appendChild(span);
+  });
+}
+
 function _setupCellValueDrag(row, val, entityPath, propName) {
   row.draggable = true;
   row.dataset.cvDragValue = _cellUiValueToString(val.value);
@@ -22,8 +179,13 @@ function _cellUiApplyAutoLinks(el, rawText, entityPath) {
   return !!el.querySelector('.auto-link');
 }
 
+function _cellUiClosestFromEvent(e, selector) {
+  const target = e?.target;
+  return target && typeof target.closest === 'function' ? target.closest(selector) : null;
+}
+
 function _cellUiHandleAutoLinkClick(e) {
-  const al = e.target.closest('.auto-link');
+  const al = _cellUiClosestFromEvent(e, '.auto-link');
   if (!al || typeof onAutoLinkClick !== 'function') return false;
   e.stopPropagation();
   onAutoLinkClick(al, e);
@@ -34,7 +196,7 @@ function _cellUiHandleAutoLinkClick(e) {
 function _ensureCellValueDragDelegate() {
   if (globalThis.__gbCellValueDragInstalled) return;
   document.addEventListener('dragstart', (e) => {
-    const row = e.target.closest('.cell-value[draggable]');
+    const row = _cellUiClosestFromEvent(e, '.cell-value[draggable]');
     if (!row || row.dataset.cvDragEntityPath === undefined) return;
     e.stopPropagation();
     const value = row.dataset.cvDragValue || '';
@@ -49,7 +211,7 @@ function _ensureCellValueDragDelegate() {
     row.classList.add('dragging');
   });
   document.addEventListener('dragend', (e) => {
-    const row = e.target.closest('.cell-value[draggable]');
+    const row = _cellUiClosestFromEvent(e, '.cell-value[draggable]');
     if (row) row.classList.remove('dragging');
   });
   globalThis.__gbCellValueDragInstalled = true;
@@ -139,7 +301,13 @@ function createValueElement(val, entityPath, propName, thumbSize) {
   // 通常テキスト（カスタム数値単位対応）
   const txt = document.createElement('span');
   txt.className = 'value-text';
-  txt.textContent = v;
+  const richHtml = _dbRichHtmlForValue(val);
+  if (richHtml) {
+    txt.classList.add('value-text--rich');
+    txt.innerHTML = richHtml;
+  } else {
+    txt.textContent = v;
+  }
   // DB セル内の自動リンク適用
   if (_cellUiApplyAutoLinks(txt, v, entityPath)) {
     // auto-link がある場合はクリックハンドラを分岐
@@ -171,12 +339,14 @@ function _showValueContextMenu(e, val, entityPath, propName) {
   // 上部にリネーム入力欄: 値テキストを変更
   if (typeof _addMenuRenameInput === 'function') {
     const old = _cellUiValueToString(val.value);
+    const oldRichHtml = _dbRichHtmlForValue(val);
     const _menuAnchor = e?.target || null;
     _addMenuRenameInput(menu, old, async (newValue) => {
       try {
-        await _apiPutValue(val, { new_value: newValue });
-        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + newValue, val, old, newValue);
+        await _apiPutValue(val, { new_value: newValue, new_rich_html: '' });
+        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + newValue, val, old, newValue, oldRichHtml, '');
         val.value = newValue;
+        delete val.rich_html;
         showStatus('保存しました', false, { passiveSave: true });
         // Step 3: 部分更新化 (コンテキストメニュー値変更) — _refreshAfterCellEdit がフォールバックも内包
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(_menuAnchor, entityPath, propName);
@@ -382,7 +552,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   // 列ロックチェック
   const lockMsg = checkColumnEditable(state.currentDbPath, propName);
   if (lockMsg) { showStatus(lockMsg); return; }
-  if (span.querySelector('input,textarea')) return;
+  if (span.querySelector('input,textarea,[contenteditable="true"]')) return;
   // user / multi-user 型: クリックでドロップダウンを表示
   const ptc = state.currentDbPath ? getPropertyTypes(state.currentDbPath)[propName] : null;
   if (ptc && (ptc.type === 'user' || ptc.type === 'multi-user')) {
@@ -390,24 +560,50 @@ function startInlineEdit(span, val, entityPath, propName) {
     return;
   }
   const old = _cellUiValueToString(val.value);
-  const input = document.createElement('textarea');
-  input.className = 'value-input value-input--textarea';
-  input.rows = 1;
-  input.value = old;
+  const oldRichHtml = _dbRichHtmlForValue(val);
+  const input = document.createElement('span');
+  input.className = 'value-input value-input--textarea value-rich-editor';
+  input.setAttribute('contenteditable', 'true');
+  input.setAttribute('role', 'textbox');
+  input.setAttribute('aria-multiline', 'true');
+  input.innerHTML = oldRichHtml || _dbRichPlainTextToHtml(old);
   span.textContent = '';
   span.appendChild(input);
   _cellUiAutosizeTextarea(input);
   input.focus();
-  input.select();
+  const selection = window.getSelection?.();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  const restoreOldDisplay = () => {
+    span.textContent = '';
+    if (oldRichHtml) span.innerHTML = oldRichHtml;
+    else span.textContent = old;
+  };
+
+  let canceled = false;
+  let done = false;
+  const isFormatSurface = (target) => !!target?.closest?.('.gb-fmt-popup, .gb-palette-popup');
 
   const finish = async () => {
-    const nv = input.value.trim();
+    if (done) return;
+    done = true;
+    document.removeEventListener('pointerdown', outsidePointerDown, true);
+    if (canceled) {
+      restoreOldDisplay();
+      return;
+    }
+    const nv = _dbRichTextFromEditable(input).trim();
+    const sanitizedRichHtml = _dbRichSanitizeHtml(input.innerHTML);
+    const nextRichHtml = _dbRichHtmlHasFormatting(sanitizedRichHtml) ? sanitizedRichHtml : '';
     // 空文字列で確定 → 候補値を削除
     if (!nv && old) {
       // 入力要素を即座に消して見た目をクリア
       span.textContent = '';
-      // td 参照を _apiPutValue 前に取得 (API 後は span が DOM から外れる可能性あり)
-      const _delTd = span.closest('td');
       try {
         await _apiPutValue(val, { _delete: true });
         showStatus('削除しました');
@@ -417,11 +613,12 @@ function startInlineEdit(span, val, entityPath, propName) {
         const dbPath = state.currentDbPath;
         const savedStatus = val.status || '採用';
         const savedNote = val.note || '';
+        const savedRichHtml = oldRichHtml;
         let currentVal = { ...val };
         if (typeof historyPush === 'function') {
           historyPush('値削除: ' + propName + '=' + old,
             async () => {
-              const result = await _apiPostValue(entityPath, propName, old, savedStatus, savedNote);
+              const result = await _apiPostValue(entityPath, propName, old, savedStatus, savedNote, savedRichHtml);
               if (result) {
                 currentVal = {
                   file: result.path || currentVal.file,
@@ -431,6 +628,7 @@ function startInlineEdit(span, val, entityPath, propName) {
                   status: savedStatus,
                   note: savedNote,
                 };
+                if (savedRichHtml) currentVal.rich_html = savedRichHtml;
               }
               if (dbPath) selectDatabase(dbPath, undefined, { silent: true });
             },
@@ -443,44 +641,49 @@ function startInlineEdit(span, val, entityPath, propName) {
         }
         // Step 3: 部分更新化 (空文字列 delete) — 削除済み val をローカル pivotData から除去
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
-        if (state.view === 'pivot' && state.currentDbPath && _delTd && entityPath
-            && typeof _tryRefreshPivotCellLocal === 'function'
-            && _tryRefreshPivotCellLocal(_delTd, entityPath, propName)) {
-          // ローカル更新成功
-        } else if (state.currentDbPath) {
-          selectDatabase(state.currentDbPath, undefined, { silent: true });
-        }
+        if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+        else if (state.currentDbPath) selectDatabase(state.currentDbPath, undefined, { silent: true });
       } catch (e) {
         span.textContent = old;
       }
       return;
     }
-    span.textContent = nv || old;
-    if (nv && nv !== old) {
+    if (nextRichHtml) span.innerHTML = nextRichHtml;
+    else span.textContent = nv || old;
+    if (nv && (nv !== old || nextRichHtml !== oldRichHtml)) {
       try {
-        await _apiPutValue(val, { new_value: nv });
-        _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv);
+        await _apiPutValue(val, { new_value: nv, new_rich_html: nextRichHtml });
+        _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
         val.value = nv;
+        if (nextRichHtml) val.rich_html = nextRichHtml;
+        else delete val.rich_html;
         showStatus('保存しました', false, { passiveSave: true });
-        if (state.view === 'pivot' && state.currentDbPath) {
-          const _td = span.closest('td');
-          const _ep = state.currentEntityPath || (_td?.closest('tr')?.dataset?.entityName
-            ? _entityPath(state.currentDbPath, _td.closest('tr').dataset.entityName) : null);
-          const _refreshed = _td && _ep && typeof _tryRefreshPivotCellLocal === 'function'
-            && _tryRefreshPivotCellLocal(_td, _ep, propName);
-          if (!_refreshed) selectDatabase(state.currentDbPath, undefined, { silent: true });
-        }
+        if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
+        else if (state.currentDbPath) selectDatabase(state.currentDbPath, undefined, { silent: true });
       } catch (e) {
-        span.textContent = old;
+        restoreOldDisplay();
       }
     }
   };
 
   input.addEventListener('input', () => _cellUiAutosizeTextarea(input));
-  input.addEventListener('blur', finish);
+  const scheduleBlurFinish = () => {
+    setTimeout(() => {
+      if (done) return;
+      const active = document.activeElement;
+      if (active === input || input.contains(active) || isFormatSurface(active)) return;
+      finish();
+    }, 0);
+  };
+  const outsidePointerDown = (ev) => {
+    if (done || input.contains(ev.target) || isFormatSurface(ev.target)) return;
+    setTimeout(finish, 0);
+  };
+  document.addEventListener('pointerdown', outsidePointerDown, true);
+  input.addEventListener('blur', scheduleBlurFinish);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (!e.shiftKey || e.ctrlKey || e.metaKey)) { e.preventDefault(); input.blur(); }
-    if (e.key === 'Escape') { input.value = old; input.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); canceled = true; input.blur(); }
   });
 }
 

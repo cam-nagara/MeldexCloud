@@ -1,0 +1,137 @@
+/* タイムラインビュー専用の上書き */
+
+.tl-grid {
+  column-gap: 4px;
+  row-gap: 3px;
+  padding: 2px 2px 4px;
+  align-items: stretch;
+}
+
+.tl-header-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tl-header-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-header-more-btn {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.tl-header-cell:hover .tl-header-more-btn,
+.tl-header-more-btn:focus-visible {
+  opacity: 0.85;
+}
+
+.tl-header-more-btn:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+  border-color: var(--border);
+}
+
+.tl-header-cell.tl-col-header {
+  padding-right: 20px;
+}
+
+.tl-col-resize-handle {
+  z-index: 3;
+}
+
+.tl-header-cell.tl-axis-colored {
+  background: color-mix(in srgb, var(--tl-axis-bg) 82%, #000);
+  color: var(--tl-axis-fg);
+  border-color: color-mix(in srgb, var(--tl-axis-bg) 65%, #000);
+}
+
+.tl-cell.tl-axis-colored {
+  background: color-mix(in srgb, var(--tl-axis-bg) 14%, transparent);
+  border-color: color-mix(in srgb, var(--tl-axis-bg) 55%, var(--border));
+}
+
+.tl-cell.tl-axis-colored:hover {
+  background: color-mix(in srgb, var(--tl-axis-bg) 22%, var(--ui-hover-bg));
+}
+
+.tl-card.tl-axis-colored,
+.tl-bar.tl-axis-colored {
+  background: var(--tl-axis-bg);
+  color: var(--tl-axis-fg);
+  border-color: var(--tl-axis-bg);
+}
+
+.tl-card.tl-axis-colored .tl-card-prop-name,
+.tl-bar.tl-axis-colored .tl-card-prop-name {
+  color: color-mix(in srgb, var(--tl-axis-fg) 76%, transparent);
+}
+
+.tl-card-prop-value--editable {
+  display: inline-flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tl-card-prop-value--editable .cell-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 18px 0 0;
+  line-height: 1.25;
+  color: inherit;
+}
+
+.tl-card-prop-value--editable .value-text,
+.tl-card-prop-value--editable .cell-number,
+.tl-card-prop-value--editable .cell-date,
+.tl-card-prop-value--editable .cell-select-val {
+  color: inherit;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tl-card-prop-value--editable .cell-value-more {
+  right: 0;
+  background: color-mix(in srgb, var(--bg3) 88%, transparent);
+}
+
+.tl-bar-label {
+  pointer-events: auto;
+}
+
+.tl-color-modal {
+  min-width: 360px;
+}
+
+.tl-color-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.tl-color-target {
+  color: var(--fg);
+  font-size: 13px;
+  padding: 4px 0;
+}

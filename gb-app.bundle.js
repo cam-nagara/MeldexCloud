@@ -1715,10 +1715,6 @@ function _isDesktopStartupLaunch() {
   }
 }
 
-function _shouldDeferStartupFolderRestore(entry) {
-  return _isDesktopStartupLaunch() && entry?.type === 'folder' && !!entry.path;
-}
-
 function _paneLayoutHasAnyTabs() {
   try {
     if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function' || !GBLayout.root) return false;
@@ -1729,8 +1725,35 @@ function _paneLayoutHasAnyTabs() {
   }
 }
 
+const STARTUP_LAYOUT_UTILITY_TAB_TYPES = new Set([
+  'outliner',
+  'detail',
+  'preview',
+  'chat',
+  'calendar',
+  'timer',
+  'history',
+  'annotation',
+  'sticky',
+  'search',
+  'version',
+]);
+
+function _paneLayoutHasContentTabs() {
+  try {
+    if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function' || !GBLayout.root) return false;
+    const panes = GBLayout.getAllPanes(GBLayout.root, { activeOnly: true }) || [];
+    return panes.some(pane => {
+      if (typeof GBLayout.isPaneVisible === 'function' && !GBLayout.isPaneVisible(pane?.id)) return false;
+      return (pane?.tabs || []).some(tab => !STARTUP_LAYOUT_UTILITY_TAB_TYPES.has(tab?.type));
+    });
+  } catch {
+    return false;
+  }
+}
+
 function _paneLayoutRestoredFromStorage() {
-  return !!(typeof GBLayout !== 'undefined' && GBLayout.layoutLoadedFromStorage && _paneLayoutHasAnyTabs());
+  return !!(typeof GBLayout !== 'undefined' && GBLayout.layoutLoadedFromStorage && _paneLayoutHasContentTabs());
 }
 
 /* ==============================
@@ -1759,7 +1782,7 @@ async function apiFetch(path, opts) {
     window.MeldexSaveSafety?.reportApiSuccess?.(path, opts);
     return data;
   } catch (e) {
-    window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+    if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
     if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
       const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
       showStatus('エラー: ' + text, true);
@@ -2132,10 +2155,7 @@ async function init() {
       }
       const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
       if (last) {
-        if (_shouldDeferStartupFolderRestore(last)) {
-          restored = true;
-        }
-        else if (last.type === 'pivot' && last.dbPath) { selectDatabase(last.dbPath, null, _expOpts); restored = true; }
+        if (last.type === 'pivot' && last.dbPath) { selectDatabase(last.dbPath, null, _expOpts); restored = true; }
         else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
         else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
         else if (last.type === 'board' && last.path) { openBoard(last.label || '', last.path, _expOpts); restored = true; }
@@ -2156,7 +2176,7 @@ async function init() {
     if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
       const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
       try {
-        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath));
+        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
         if (_check && typeof _check.content === 'string') {
           const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
           openPage('クイックスタート', _qsPath, _qsOpts);
@@ -2189,7 +2209,7 @@ async function init() {
       initGlobalFilterBar();
       setTimeout(() => {
         const last = JSON.parse(localStorage.getItem('lastView') || 'null');
-        if (last && !_shouldDeferStartupFolderRestore(last)) {
+        if (last) {
           const p = last.path || last.dbPath || last.entityPath || '';
           if (p) highlightOutlinerNode(p);
         }

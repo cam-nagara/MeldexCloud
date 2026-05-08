@@ -211,12 +211,7 @@ function bdApplyNodeBaseStyles(div, node, nodeStyle, showStatus) {
   }
   if (node.minimized) div.classList.add('bd-minimized');
   if (node.container) div.classList.add('bd-container');
-  let depth = 0;
-  let cur = node;
-  while (cur.parent) {
-    depth++;
-    cur = bd.nodes.find(v => v.id === cur.parent) || { parent: '' };
-  }
+  const depth = typeof bdParentDepth === 'function' ? bdParentDepth(node) : 0;
   div.style.zIndex = 2 + depth;
   if (showStatus && node.status && typeof bdStatusDef === 'function') {
     const sd = bdStatusDef(node.status);

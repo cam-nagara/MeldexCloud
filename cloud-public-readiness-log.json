@@ -1,0 +1,107 @@
+{
+  "type": "meldex-cloud-beta-public-readiness-log",
+  "generatedAt": "2026-05-08T09:13:36.752535+00:00",
+  "semver": "0.5.434",
+  "variant": "cloud-beta",
+  "publicationDecision": "external-manual-gates-required",
+  "automatedGateSummary": {
+    "staticArtifactGenerated": true,
+    "cloudSampleSeedBundled": true,
+    "serverFilesExcludedByBuilder": true,
+    "secretNamedFilesExcludedByBuilder": true,
+    "requiredPublicEnvSourcesPresent": true,
+    "externalValuesAreNotWrittenInThisLog": true
+  },
+  "externalValueSources": {
+    "cloudPublicUrl": {
+      "source": "MELDEX_CLOUD_PUBLIC_URL",
+      "present": true,
+      "valueIncluded": false
+    },
+    "cloudBackupUrl": {
+      "source": "MELDEX_CLOUD_BACKUP_URL",
+      "present": false,
+      "valueIncluded": false
+    },
+    "feedbackGoogleWebAppUrl": {
+      "source": "MELDEX_FEEDBACK_GOOGLE_WEB_APP_URL",
+      "present": false,
+      "valueIncluded": false
+    },
+    "feedbackFormUrl": {
+      "source": "MELDEX_FEEDBACK_FORM_URL",
+      "present": false,
+      "valueIncluded": false
+    },
+    "updateJsonUrl": {
+      "source": "MELDEX_UPDATE_JSON_URL",
+      "present": false,
+      "valueIncluded": false
+    },
+    "updatePageUrl": {
+      "source": "MELDEX_UPDATE_PAGE_URL",
+      "present": false,
+      "valueIncluded": false
+    },
+    "desktopDownloadUrl": {
+      "source": "MELDEX_DESKTOP_DOWNLOAD_URL",
+      "present": true,
+      "valueIncluded": false
+    },
+    "desktopReleasesUrl": {
+      "source": "MELDEX_DESKTOP_RELEASES_URL",
+      "present": true,
+      "valueIncluded": false
+    },
+    "desktopVersion": {
+      "source": "MELDEX_DESKTOP_VERSION",
+      "present": true,
+      "valueIncluded": false
+    },
+    "desktopVersionsJson": {
+      "source": "MELDEX_DESKTOP_VERSIONS_JSON",
+      "present": false,
+      "valueIncluded": false
+    },
+    "sampleDownloadUrl": {
+      "source": "MELDEX_SAMPLE_DOWNLOAD_URL",
+      "present": true,
+      "valueIncluded": false
+    },
+    "dropboxDeveloperAppKey": {
+      "source": "MELDEX_DROPBOX_APP_KEY",
+      "present": true,
+      "valueIncluded": false
+    }
+  },
+  "manualGates": [
+    {
+      "gate": "Dropbox App Console のProduction/Development状態、redirect URI、公開ユーザー上限確認",
+      "status": "manual-required"
+    },
+    {
+      "gate": "Windows / iPad Safari / iPhone Safari / Android Chrome の実機Cloud BETA起動確認",
+      "status": "manual-required"
+    },
+    {
+      "gate": "フィードバック送信、クラッシュレポート、利用統計の本番受信確認",
+      "status": "manual-required"
+    },
+    {
+      "gate": "デスクトップZIPの公開URL、SHA256、SmartScreen注意書き確認",
+      "status": "manual-required"
+    },
+    {
+      "gate": "Notion同期がローカル → Notion 片方向push専用で双方向復活していないこと",
+      "status": "automated-and-manual-required"
+    }
+  ],
+  "artifactHashes": {
+    "Meldex.html": "3870dd0f86a5e28bef54c6c6a40e7f9d54c0f49fde5251c10f1e354e11178142",
+    "manifest.json": "0a967cbe14d6a3114ad16f77984f153b3813d2676247705e4e82b4d71b4dd98f",
+    "sw.js": "39d0038c8c766a221be61a4200fe40e62c55ecb0c134439d7f34c27c89c0b5da",
+    "gb-config.js": "20c4f8362533c20fcd2a083301a13b627d15323a1e736ddb4c8515b2dc09770b",
+    "gb-cloud-runtime-config.js": "f612b49d763d2df84609c912973696cf0bde8a86e0bf73490e8dea4f01dc3f9c",
+    "cloud-samples/manifest.json": "0ab464b65ee14d576af476202010019550ac9524ad29d932d510f27b68e84c42"
+  }
+}

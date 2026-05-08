@@ -1,0 +1,1031 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
+  <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
+  <meta name="color-scheme" content="dark">
+  <title>Meldex BETA</title>
+  <meta name="description" content="Meldex BETA の配布ページです。利用環境に合わせてデスクトップ版とクラウド版を選べます。">
+  <link rel="icon" href="Meldex_icon_64.png" type="image/png">
+  <link rel="apple-touch-icon" sizes="180x180" href="Meldex_apple_touch_icon_180.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="Meldex_apple_touch_icon_167.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="Meldex_apple_touch_icon_152.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="Meldex_apple_touch_icon_120.png">
+  <link rel="apple-touch-icon" href="Meldex_apple_touch_icon_180.png">
+  <link rel="manifest" href="manifest.json">
+  <script src="gb-cloud-runtime-config.js"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      var fallbackReleases = 'https://github.com/cam-nagara/MeldexCloud/releases';
+      var fallbackVersion = 'v0.5.434 BETA';
+      var releaseOptions = [];
+      var selectedIndex = 0;
+
+      function normalizeVersion(value) {
+        var raw = String(value || '').trim();
+        if (!raw) return fallbackVersion;
+        return /^v/i.test(raw) ? raw : 'v' + raw;
+      }
+
+      function escapeRepoPart(value) {
+        return encodeURIComponent(String(value || '').replace(/^\/+|\/+$/g, ''));
+      }
+
+      function githubReleaseApiUrl(releasesUrl) {
+        try {
+          var url = new URL(releasesUrl || fallbackReleases);
+          var parts = url.pathname.split('/').filter(Boolean);
+          if (url.hostname !== 'github.com' || parts.length < 2) return '';
+          return 'https://api.github.com/repos/' + escapeRepoPart(parts[0]) + '/' + escapeRepoPart(parts[1]) + '/releases?per_page=20';
+        } catch (_) {
+          return '';
+        }
+      }
+
+      function pickDesktopAsset(release) {
+        var assets = Array.isArray(release && release.assets) ? release.assets : [];
+        var preferred = assets.find(function (asset) {
+          return /meldex/i.test(asset.name || '') && /\.(zip|exe|msi)$/i.test(asset.name || '');
+        });
+        return preferred || assets.find(function (asset) {
+          return /\.(zip|exe|msi)$/i.test(asset.name || '');
+        }) || null;
+      }
+
+      function optionFromRelease(release) {
+        var asset = pickDesktopAsset(release);
+        var version = normalizeVersion(release && release.tag_name);
+        return {
+          version: version,
+          downloadUrl: asset && asset.browser_download_url ? asset.browser_download_url : release.html_url,
+          pageUrl: release.html_url || fallbackReleases,
+          publishedAt: release.published_at || '',
+          assetName: asset && asset.name ? asset.name : '配布ページ',
+        };
+      }
+
+      function fallbackOptions(desktop, releasesUrl) {
+        var current = normalizeVersion(desktop.currentVersion || desktop.version || '');
+        var downloadUrl = desktop.downloadUrl || releasesUrl;
+        var configured = Array.isArray(desktop.versions) ? desktop.versions : [];
+        var mapped = configured.map(function (item) {
+          return {
+            version: normalizeVersion(item.version || item.tag || item.name),
+            downloadUrl: item.downloadUrl || item.url || downloadUrl,
+            pageUrl: item.pageUrl || item.releasesUrl || releasesUrl,
+            publishedAt: item.publishedAt || '',
+            assetName: item.assetName || '配布ページ',
+          };
+        }).filter(function (item) { return item.version; });
+        if (mapped.length) return mapped;
+        return [{
+          version: current,
+          downloadUrl: downloadUrl,
+          pageUrl: releasesUrl,
+          publishedAt: '',
+          assetName: desktop.downloadUrl ? 'Windows用ZIP' : '配布ページ',
+        }];
+      }
+
+      function formatDate(value) {
+        if (!value) return '';
+        var date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' });
+      }
+
+      function setText(selector, value) {
+        document.querySelectorAll(selector).forEach(function (node) {
+          node.textContent = value;
+        });
+      }
+
+      function setRuntimeHref(kind, value) {
+        document.querySelectorAll('[data-runtime-href="' + kind + '"]').forEach(function (node) {
+          node.setAttribute('href', value);
+        });
+      }
+
+      function renderVersionSelect() {
+        var select = document.getElementById('desktop-version-select');
+        if (!select) return;
+        select.replaceChildren();
+        releaseOptions.forEach(function (item, index) {
+          var option = document.createElement('option');
+          option.value = String(index);
+          option.textContent = item.version + (index === 0 ? ' / 最新' : '');
+          select.appendChild(option);
+        });
+        select.value = String(selectedIndex);
+      }
+
+      function applySelectedVersion() {
+        var item = releaseOptions[selectedIndex] || releaseOptions[0];
+        if (!item) return;
+        setRuntimeHref('desktop-download', item.downloadUrl || item.pageUrl || fallbackReleases);
+        setRuntimeHref('desktop-release-page', item.pageUrl || fallbackReleases);
+        setText('[data-runtime-text="desktop-version"]', item.version);
+        setText('[data-runtime-text="desktop-asset"]', item.assetName || '配布ページ');
+        setText('[data-runtime-text="desktop-published"]', formatDate(item.publishedAt) || '公開日未取得');
+      }
+
+      function bindVersionSelect() {
+        var select = document.getElementById('desktop-version-select');
+        if (!select || select.dataset.bound === '1') return;
+        select.dataset.bound = '1';
+        select.addEventListener('change', function () {
+          selectedIndex = Number(select.value) || 0;
+          applySelectedVersion();
+        });
+      }
+
+      async function loadReleaseOptions(releasesUrl, desktop) {
+        var apiUrl = githubReleaseApiUrl(releasesUrl);
+        if (!apiUrl) return fallbackOptions(desktop, releasesUrl);
+        try {
+          var response = await fetch(apiUrl, { headers: { Accept: 'application/vnd.github+json' } });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          var releases = await response.json();
+          var options = releases.filter(function (release) {
+            return !release.draft;
+          }).map(optionFromRelease).filter(function (item) {
+            return item.version && (item.downloadUrl || item.pageUrl);
+          });
+          return options.length ? options : fallbackOptions(desktop, releasesUrl);
+        } catch (_) {
+          return fallbackOptions(desktop, releasesUrl);
+        }
+      }
+
+      async function applyRuntimeLinks() {
+        var cfg = window.MeldexCloudRuntimeConfig || {};
+        var desktop = cfg.desktop || {};
+        var releasesUrl = desktop.releasesUrl || fallbackReleases;
+        var sampleUrl = (cfg.samples && cfg.samples.downloadUrl) || releasesUrl;
+        setRuntimeHref('desktop-releases', releasesUrl);
+        setRuntimeHref('sample-download', sampleUrl);
+        releaseOptions = await loadReleaseOptions(releasesUrl, desktop);
+        selectedIndex = 0;
+        renderVersionSelect();
+        bindVersionSelect();
+        applySelectedVersion();
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', applyRuntimeLinks);
+      } else {
+        applyRuntimeLinks();
+      }
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #181818;
+      --surface: #242424;
+      --surface-2: #2c2c2c;
+      --line: #3f3f3f;
+      --fg: #e7e2da;
+      --muted: #aaa39a;
+      --accent: #00b89c;
+      --accent-2: #e2b85b;
+      --danger: #d85b5b;
+      --link: #8fa8ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Noto Sans JP", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.7;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+    }
+
+    a {
+      color: var(--link);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px clamp(16px, 4vw, 44px);
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 92%, transparent);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      color: var(--fg);
+      font-weight: 700;
+      text-decoration: none;
+      letter-spacing: 0;
+    }
+
+    .brand img {
+      width: 30px;
+      height: 30px;
+      flex: 0 0 auto;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .nav a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .nav a:hover {
+      color: var(--fg);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+      gap: clamp(24px, 5vw, 56px);
+      align-items: center;
+      min-height: 0;
+      padding: clamp(34px, 5vw, 58px) clamp(16px, 4vw, 44px) clamp(32px, 4vw, 46px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .hero-copy {
+      max-width: 760px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--fg);
+      font-size: clamp(34px, 6vw, 68px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      margin: 18px 0 0;
+      max-width: 700px;
+      color: color-mix(in srgb, var(--fg) 88%, var(--muted));
+      font-size: clamp(16px, 2.2vw, 19px);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 26px;
+    }
+
+    .button.subtle {
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 8px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--fg);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .button.primary {
+      border-color: color-mix(in srgb, var(--accent) 68%, var(--line));
+      background: var(--accent);
+      color: #071d1a;
+    }
+
+    .button:hover {
+      border-color: color-mix(in srgb, var(--accent) 65%, var(--line));
+    }
+
+    .status-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .status-panel header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-2);
+    }
+
+    .status-panel img {
+      width: 42px;
+      height: 42px;
+    }
+
+    .status-panel h2 {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .status-panel p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .facts {
+      display: grid;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .facts li {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      gap: 14px;
+      padding: 12px 16px;
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      font-size: 13px;
+    }
+
+    .facts li:last-child {
+      border-bottom: 0;
+    }
+
+    .facts strong {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .version-picker {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .version-picker label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .version-picker select {
+      min-height: 40px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-2);
+      color: var(--fg);
+      font: inherit;
+    }
+
+    .version-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .version-meta span {
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-2);
+    }
+
+    .section {
+      padding: clamp(30px, 5vw, 58px) clamp(16px, 4vw, 44px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+    }
+
+    .section h2 {
+      margin: 0 0 14px;
+      font-size: clamp(22px, 3vw, 32px);
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .section p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .item {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .item h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    .item p,
+    .item li {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .item ul,
+    .notes {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .notes {
+      display: grid;
+      gap: 8px;
+      margin-top: 16px;
+      color: var(--muted);
+    }
+
+    .available {
+      border-left: 4px solid var(--accent);
+    }
+
+    .limited {
+      border-left: 4px solid var(--accent-2);
+    }
+
+    .important {
+      border-left: 4px solid var(--danger);
+    }
+
+    .mode-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .mode-card {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .mode-card h3 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    .mode-card p {
+      font-size: 14px;
+    }
+
+    .mode-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .mode-list li {
+      padding-left: 18px;
+      position: relative;
+    }
+
+    .mode-list li::before {
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      content: "•";
+    }
+
+    .mode-list.cons li::before {
+      color: var(--accent-2);
+    }
+
+    .mode-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    .table-wrap {
+      margin-top: 18px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .compare-table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .compare-table th,
+    .compare-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .compare-table th {
+      color: var(--fg);
+      background: var(--surface-2);
+      font-weight: 700;
+    }
+
+    .compare-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .speed-rank {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 68px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+      color: var(--fg);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .speed-rank.mid {
+      background: color-mix(in srgb, var(--accent-2) 18%, var(--surface-2));
+    }
+
+    .speed-rank.low {
+      background: color-mix(in srgb, var(--danger) 18%, var(--surface-2));
+    }
+
+    .footer {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 20px clamp(16px, 4vw, 44px);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 860px) {
+      .topbar {
+        position: static;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .nav {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+        min-height: 0;
+      }
+
+      .grid,
+      .mode-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .facts li {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+
+      .actions,
+      .mode-actions {
+        flex-direction: column;
+      }
+
+      .button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="public-index.html" aria-label="Meldex BETA トップ">
+      <img src="Meldex_icon_64.png" alt="">
+      <span>Meldex BETA</span>
+    </a>
+    <nav class="nav" aria-label="ページ内ナビゲーション">
+      <a href="#download">ダウンロード</a>
+      <a href="#samples">サンプル</a>
+      <a href="#cloud">クラウド版</a>
+      <a href="#compare">版の比較</a>
+      <a href="#speed">速度比較</a>
+      <a href="#scope">対応範囲</a>
+      <a href="#support">サポート</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" id="start">
+      <div class="hero-copy">
+        <p class="eyebrow">BETA / 利用環境に合わせて選択</p>
+        <h1>Meldex BETA</h1>
+        <p class="lead">
+          Meldexは、漫画・小説・シナリオ・企画などの創作を、資料整理から構成・執筆・管理まで一つにまとめる創作支援ワークスペースです。
+          Windows PCではデスクトップ版とクラウド版、iPad・スマホ・Macなどではブラウザで使えるクラウド版を選べます。
+        </p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
+          <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+          <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="sample-download">サンプルをダウンロード</a>
+          <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-releases">過去版を選ぶ</a>
+        </div>
+      </div>
+
+      <aside class="status-panel" aria-label="配布状態">
+        <header>
+          <img src="Meldex_icon_128.png" alt="">
+          <div>
+            <h2>デスクトップ版 / クラウド版</h2>
+            <p>Windows desktop / Browser cloud</p>
+          </div>
+        </header>
+        <ul class="facts">
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.5.434 BETA</span></li>
+          <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
+          <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
+          <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
+          <li><strong>状態</strong><span>BETA。機能名、配置、挙動は変更される可能性があります。</span></li>
+        </ul>
+      </aside>
+    </section>
+
+    <section class="section" id="download">
+      <div class="section-inner">
+        <h2>デスクトップ版をダウンロード</h2>
+        <p>Windows PCでローカルファイルとして扱いたい場合は、デスクトップ版を利用できます。PC内のファイルを直接読むため、速度や外部ツール連携の面で有利です。</p>
+        <div class="version-picker" aria-label="ダウンロードするバージョン">
+          <label for="desktop-version-select">
+            ダウンロードするバージョン
+            <select id="desktop-version-select">
+              <option value="0">v0.5.434 BETA / 最新</option>
+            </select>
+          </label>
+          <div class="version-meta">
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.5.434 BETA</strong></span>
+            <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
+            <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-download">選択した版をダウンロード</a>
+            <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-release-page">リリース詳細を見る</a>
+            <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-releases">すべての過去版を見る</a>
+          </div>
+        </div>
+        <div class="grid">
+          <article class="item available">
+            <h3>デスクトップ版</h3>
+            <p>Windows用ZIPをダウンロードし、展開して起動します。ソースフォルダはローカルにもDropbox上にも置けます。</p>
+          </article>
+          <article class="item limited">
+            <h3>古いバージョン</h3>
+            <p>過去版を取得できた場合は、上の選択欄で選べます。表示されない場合は「すべての過去版を見る」から選んでください。</p>
+          </article>
+          <article class="item important">
+            <h3>確認事項</h3>
+            <p>インストール前、または古い版へ戻す前には、作品フォルダをバックアップしてください。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="samples">
+      <div class="section-inner">
+        <h2>サンプルデータ</h2>
+        <p>サンプル作品は、デスクトップ版では別ZIP、クラウド版では初回Dropbox接続後にホームフォルダへ自動配置されます。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
+        <div class="version-picker" aria-label="サンプルデータをダウンロード">
+          <div class="version-meta">
+            <span>デスクトップ版: <strong>別ZIP</strong></span>
+            <span>クラウド版: <strong>初回接続後に自動配置</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="sample-download">サンプルデータをダウンロード</a>
+          </div>
+        </div>
+        <ul class="notes">
+          <li>デスクトップ版では、展開した <code>サンプル</code> フォルダを現在のソースフォルダ内に置くと、サンプル内リンクがそのまま使えます。</li>
+          <li>クラウド版では、MeldexがDropbox内に <code>MeldexHome/サンプル</code> を作成し、不足ファイルだけを追加します。</li>
+          <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="cloud">
+      <div class="section-inner">
+        <h2>クラウド版</h2>
+        <p>クラウド版は、インストールせずブラウザで <a href="Meldex.html">Meldex Cloud BETA</a> を開く利用形態です。Dropbox認証後、ユーザー自身のDropbox上のデータを読み書きします。</p>
+        <div class="version-picker" aria-label="クラウド版を起動">
+          <div class="version-meta">
+            <span>起動する版: <strong>公開中の最新版</strong></span>
+            <span>保存先: <strong>ユーザー自身のDropbox</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+          </div>
+        </div>
+        <div class="grid">
+          <article class="item available">
+            <h3>すぐ開ける</h3>
+            <p>PC以外に、iPad、タブレット、スマホでも使えます。軽い確認や外出先の追記に向いています。</p>
+            <div class="mode-actions">
+              <a class="button" href="Meldex.html">クラウド版を起動</a>
+            </div>
+          </article>
+          <article class="item limited">
+            <h3>常に最新版</h3>
+            <p>このページの「クラウド版を起動」は、公開中の最新版を開きます。更新があると、次回起動時も最新版が使われます。</p>
+          </article>
+          <article class="item available">
+            <h3>ホーム画面に追加</h3>
+            <p>iPhone、iPad、Androidでホーム画面に追加すると、Meldexのアイコンとアプリ名で起動できます。</p>
+          </article>
+          <article class="item important">
+            <h3>クラウド版のバージョン</h3>
+            <p>クラウド版は最新版のみ提供しています。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="compare">
+      <div class="section-inner">
+        <h2>クラウド版とデスクトップ版の違い</h2>
+        <p>同じ作品データを扱えますが、保存経路、速度、使える機能が違います。</p>
+        <div class="mode-grid">
+          <article class="mode-card">
+            <h3>デスクトップ版（ソースフォルダ：ローカル）</h3>
+            <p>Windows上でMeldexを起動し、PC内のローカルフォルダをソースフォルダにします。</p>
+            <ul class="mode-list">
+              <li>ローカル保存のため速度面で有利</li>
+              <li>ネットワークなしでも作業できる</li>
+              <li>大きいボード、長いノート、大量のシート編集に向いている</li>
+            </ul>
+            <ul class="mode-list cons">
+              <li>別端末との自動共有はない</li>
+              <li>バックアップを自分で管理する必要がある</li>
+              <li>PC故障時に備えた外部バックアップが必須</li>
+            </ul>
+          </article>
+          <article class="mode-card">
+            <h3>デスクトップ版（ソースフォルダ：Dropbox上）</h3>
+            <p>Windows上でMeldexを起動し、Dropbox同期フォルダ内のソースフォルダをローカルファイルとして開きます。</p>
+            <ul class="mode-list">
+              <li>PC連携やローカルファイル操作を使える</li>
+              <li>読み書きはローカルファイルなのでCloud版より速い</li>
+              <li>Dropbox同期で複数PCやCloud版とデータを共有できる</li>
+            </ul>
+            <ul class="mode-list cons">
+              <li>Dropbox同期が終わる前に別端末で開くと競合しやすい</li>
+              <li>大量ファイルの初回同期には時間がかかる</li>
+              <li>Dropbox容量と同期状態の管理が必要</li>
+            </ul>
+          </article>
+          <article class="mode-card">
+            <h3>クラウド版</h3>
+            <p>ブラウザでMeldexを開き、Dropboxに保存します。</p>
+            <ul class="mode-list">
+              <li>iPad、スマホ、Macでも使いやすい</li>
+              <li>インストール不要で使える</li>
+              <li>端末を替えてもDropbox認証で続きから使える</li>
+            </ul>
+            <ul class="mode-list cons">
+              <li>通信速度とDropboxの応答待ちの影響を受ける</li>
+              <li>PC内のコマンドラインツールやOS連携は使えない</li>
+              <li>オフライン作業には向かない</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="speed">
+      <div class="section-inner">
+        <h2>速度比較</h2>
+        <p>実測値ではなく、同じデータ量を扱ったときの一般的な体感目安です。端末性能、回線、Dropbox同期状態、ファイル数で変わります。</p>
+        <div class="table-wrap">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th>利用形態</th>
+                <th>速度目安</th>
+                <th>読み込み/保存の特徴</th>
+                <th>向いている作業</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>デスクトップ版（ソースフォルダ：ローカル）</td>
+                <td><span class="speed-rank">最速</span></td>
+                <td>PC内のファイルを直接読むため、通信待ちがありません。</td>
+                <td>大きいボード、長いノート、大量シート編集、長時間の執筆。</td>
+              </tr>
+              <tr>
+                <td>デスクトップ版（ソースフォルダ：Dropbox上）</td>
+                <td><span class="speed-rank mid">速い</span></td>
+                <td>アプリはローカルDropboxフォルダを読み書きし、同期はDropboxクライアントが後追いします。</td>
+                <td>Windows PCで編集し、他端末やクラウド版でも確認したい場合。</td>
+              </tr>
+              <tr>
+                <td>クラウド版</td>
+                <td><span class="speed-rank low">中〜遅い</span></td>
+                <td>読み込み/保存ごとにDropboxと通信します。回線やDropboxの応答待ちの影響を受けます。</td>
+                <td>iPad/スマホでの確認、軽い編集、外出先の追記。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="notes">
+          <li>速度重視は「デスクトップ版（ソースフォルダ：ローカル）」、共有重視は「デスクトップ版（ソースフォルダ：Dropbox上）」、端末自由度重視は「クラウド版」が目安です。</li>
+          <li>クラウド版とDropbox上のデスクトップ版を併用する場合は、保存直後に別端末で開く前に同期完了を確認してください。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="scope">
+      <div class="section-inner">
+        <h2>対応範囲</h2>
+        <p>利用形態によって、使える端末と一部の機能が異なります。</p>
+        <div class="table-wrap" aria-label="デバイスやOSへの対応状況">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th>環境</th>
+                <th>デスクトップ版</th>
+                <th>クラウド版</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Windows PC</td>
+                <td>対応。Windows用ZIPを利用できます。</td>
+                <td>対応。Chrome / Edge などのブラウザで使えます。</td>
+              </tr>
+              <tr>
+                <td>Mac / Linux / Chromebook</td>
+                <td>未提供。</td>
+                <td>対応。最新のブラウザで使えます。</td>
+              </tr>
+              <tr>
+                <td>iPad / タブレット</td>
+                <td>未提供。</td>
+                <td>対応。軽い確認や追記に向いています。</td>
+              </tr>
+              <tr>
+                <td>iPhone / Androidスマホ</td>
+                <td>未提供。</td>
+                <td>対応。狭い画面ではモバイルUIで表示します。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="notes">
+          <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
+          <li>クラウド版はブラウザとDropboxを使うため、端末性能、ブラウザ、回線状態で体感が変わります。</li>
+        </ul>
+        <div class="grid">
+          <article class="item available">
+            <h3>クラウド版で対応</h3>
+            <ul>
+              <li>フォルダ、ノート、シナリオ、ボード、シート、カレンダー</li>
+              <li>スマートシート、クラウド版フルチャット</li>
+              <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
+              <li>フィードバック送信、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
+              <li>シートのセル内テキスト書式とカード内書式表示</li>
+            </ul>
+          </article>
+          <article class="item limited">
+            <h3>クラウド版で未対応</h3>
+            <ul>
+              <li>リアルタイム共同編集</li>
+              <li>PC内のコマンドラインツールやOS連携</li>
+              <li>外部カレンダー同期リレー未設定時のGoogle / CalDAV同期</li>
+            </ul>
+          </article>
+          <article class="item important">
+            <h3>注意</h3>
+            <ul>
+              <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
+              <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
+              <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="support">
+      <div class="section-inner">
+        <h2>サポートと確認資料</h2>
+        <div class="grid">
+          <article class="item">
+            <h3>規約とプライバシー</h3>
+            <p><a href="TERMS-OF-USE.html">利用規約</a> と <a href="PRIVACY.html">プライバシーポリシー</a> を確認してください。</p>
+          </article>
+          <article class="item">
+            <h3>更新情報</h3>
+            <p>ダウンロード欄に表示されるバージョンと公開日を確認してください。クラウド版は起動時の画面タイトルにもバージョンが表示されます。</p>
+          </article>
+          <article class="item">
+            <h3>フィードバック</h3>
+            <p>Meldex内の設定またはフィードバック導線から送信してください。送信に失敗した場合はローカルに控えが残ります。</p>
+          </article>
+        </div>
+        <ul class="notes">
+          <li>このページは検索結果に出にくい設定です。</li>
+          <li>リンクを受け取った人は開けるため、必要な相手にだけ共有してください。</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Meldex BETA</span>
+    <span>Meldex BETA 配布ページ</span>
+  </footer>
+</body>
+</html>

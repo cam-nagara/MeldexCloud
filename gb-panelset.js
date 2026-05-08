@@ -616,6 +616,7 @@
   function renderDock(panelsetNode, depth) {
     const col = document.createElement('div');
     col.className = 'gb-column gb-dock';
+    if (panelsetNode.collapsed) col.classList.add('gb-dock-collapsed');
     col.dataset.columnNodeId = panelsetNode.id || '';
     col.dataset.panelsetId = panelsetNode.id || '';
     col.style.display = 'flex';
@@ -732,6 +733,8 @@
           btn.dataset.e2eId = `dock-${panelsetNode.id}-${g.id}-${pane.id}-${tab.id || tabIdx}`;
           btn.title = tab.label || '';
           btn.innerHTML = _dockTabTypeIcon(tab.type, 18);
+          const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
+            && GBLayout.isPassivePaneType(tab.type, tab, pane);
           // Phase 5: D4 仕様 (click/dblclick 分岐)
           //   折りたたみ時: click=ポップアップ / dblclick=展開+アクティブ化
           //   展開時:       click=アクティブ化 / dblclick=折りたたみ
@@ -765,11 +768,11 @@
               pane.activeTabIndex = tabIdx;
               let revealed = false;
               if (typeof GBLayout?.revealPane === 'function') {
-                revealed = !!GBLayout.revealPane(pane.id, { activate: true });
+                revealed = !!GBLayout.revealPane(pane.id, { activate: !preserveWorkActive });
               }
               if (!revealed && panelsetNode.collapsed) {
                 panelsetNode.collapsed = false;
-                if (typeof GBLayout?.setActivePane === 'function') GBLayout.setActivePane(pane.id);
+                if (!preserveWorkActive && typeof GBLayout?.setActivePane === 'function') GBLayout.setActivePane(pane.id);
                 if (typeof GBLayout?.render === 'function') GBLayout.render();
                 if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
               }

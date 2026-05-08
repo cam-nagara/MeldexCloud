@@ -182,14 +182,18 @@ function _bdBuildNodeDetailHtml(node) {
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">構造</div>
         <label class="bd-detail-field bd-detail-field-wide"><span>構造</span><select data-bd-field="structure">${_bdStructureOptions(node)}</select></label>
-        <div class="bd-detail-hint" style="font-size:11px;opacity:0.7;">「親に従う」(初期値) は親カードの構造を継承。他を選ぶと、このカード以下のサブツリーが独自の構造になります。</div>
+        ${_bdStructureHintHtml(node)}
       </div>
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">変形</div>
-        ${_bdRangeFieldHtml('回転', 'rotate', node.rotate || 0, -360, 360, 1)}
-        ${_bdRangeFieldHtml('不透明度', 'opacityPct', opacityPct, 0, 100, 1)}
-        <label class="bd-detail-check"><input type="checkbox" data-bd-field="flipH" ${node.flipH ? 'checked' : ''}><span>左右反転</span></label>
-        <label class="bd-detail-check"><input type="checkbox" data-bd-field="flipV" ${node.flipV ? 'checked' : ''}><span>上下反転</span></label>
+        <div class="bd-detail-transform-fields">
+          ${_bdRangeFieldHtml('回転', 'rotate', node.rotate || 0, -360, 360, 1)}
+          ${_bdRangeFieldHtml('不透明度', 'opacityPct', opacityPct, 0, 100, 1)}
+          <div class="bd-detail-transform-checks">
+            <label class="bd-detail-check"><input type="checkbox" data-bd-field="flipH" ${node.flipH ? 'checked' : ''}><span>左右反転</span></label>
+            <label class="bd-detail-check"><input type="checkbox" data-bd-field="flipV" ${node.flipV ? 'checked' : ''}><span>上下反転</span></label>
+          </div>
+        </div>
       </div>
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">拡張</div>

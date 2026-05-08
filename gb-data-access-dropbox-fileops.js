@@ -18,6 +18,7 @@
     _boolParam,
     _displayLabelForPath,
     _phase1SurfaceType,
+    _extractFrontmatterType,
     _isTextLikePath,
     _folderLinksStore,
     _writeFolderLinksStore,
@@ -76,6 +77,22 @@
       return '';
     }
     return walk('');
+  }
+
+  function _pathLooksLikeBoardMarkdown(path) {
+    return /\.board\.md$/i.test(String(path || ''));
+  }
+
+  async function _assertNoBoardTypeDowngrade(provider, path, nextContent) {
+    let previous = '';
+    try {
+      previous = await provider.readText(path);
+    } catch {}
+    const wasBoard = _pathLooksLikeBoardMarkdown(path) || _extractFrontmatterType(previous) === 'board';
+    if (!wasBoard || _extractFrontmatterType(nextContent) === 'board') return;
+    const error = new Error('既存のボードファイルをノート形式のMarkdownで上書きしようとしたため保存を中止しました');
+    error.code = 'board_type_downgrade';
+    throw error;
   }
 
   function _llmConfigShape() {
@@ -921,7 +938,9 @@
       const provider = await _requirePwaProvider('readwrite');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
       if (!filePath) throw new Error('path は必須です');
-      await provider.writeText(filePath, body?.content || '');
+      const content = body?.content || '';
+      await _assertNoBoardTypeDowngrade(provider, filePath, content);
+      await provider.writeText(filePath, content);
       return { ok: true };
     }
 

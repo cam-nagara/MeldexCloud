@@ -7,7 +7,7 @@
 
 // --- ボード状態オブジェクト ---
 const bd = {
-  path:'', _loadedBoardPath:'', nodes:[], connections:[], selected:new Set(), editing:null,
+  path:'', _loadedBoardPath:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
   dirty:false, zoom:1, panX:0, panY:0, rotation:0, _id:0,
   connecting:null, _activeNode:null, selectedConnId:'', selectedConnIds:new Set(),
   cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'',
@@ -177,6 +177,56 @@ function bdDescendants(nodeId) {
     });
   }
   collect(nodeId); return result;
+}
+function bdNormalizeParentGraph(nodes) {
+  if (!Array.isArray(nodes) || !nodes.length) return nodes || [];
+  const byId = new Map(nodes.filter(n => n?.id).map(n => [n.id, n]));
+  nodes.forEach(node => {
+    if (!node?.parent) return;
+    if (node.parent === node.id || !byId.has(node.parent)) {
+      node.parent = '';
+      node.contained = false;
+      return;
+    }
+    const seen = new Set([node.id]);
+    let cur = byId.get(node.parent);
+    let guard = 0;
+    while (cur?.parent && guard <= nodes.length) {
+      if (seen.has(cur.id) || cur.parent === node.id) {
+        node.parent = '';
+        node.contained = false;
+        return;
+      }
+      seen.add(cur.id);
+      if (!byId.has(cur.parent)) {
+        cur.parent = '';
+        cur.contained = false;
+        return;
+      }
+      cur = byId.get(cur.parent);
+      guard += 1;
+    }
+    if (guard > nodes.length) {
+      node.parent = '';
+      node.contained = false;
+    }
+  });
+  return nodes;
+}
+function bdParentDepth(nodeOrId, limit) {
+  const maxDepth = Number.isFinite(limit) && limit > 0 ? limit : Math.max(50, (bd.nodes || []).length + 1);
+  let cur = typeof nodeOrId === 'string' ? bd.nodes.find(v => v.id === nodeOrId) : nodeOrId;
+  const seen = new Set();
+  let depth = 0;
+  while (cur?.parent && depth < maxDepth) {
+    if (seen.has(cur.id)) break;
+    seen.add(cur.id);
+    const parent = bd.nodes.find(v => v.id === cur.parent);
+    if (!parent || seen.has(parent.id)) break;
+    depth += 1;
+    cur = parent;
+  }
+  return depth;
 }
 function bdAbsolutePosition(node) {
   let x = Number(node?.x) || 0;
@@ -419,10 +469,12 @@ function _bdCanSaveCurrentBoardPath(path) {
 // --- Markdown解析 ---
 function bdParseMd(raw) {
   raw = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'); // 改行コード統一
+  if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
-  let positions = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {};
+  let positions = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
   if (fmMatch) {
     const fm = fmMatch[1];
+    if (typeof bdParseLlmSemanticsFrontmatter === 'function') llmSemantics = bdParseLlmSemanticsFrontmatter(fm);
     const posBlock = fm.match(/positions:\n((?:\s+\w+:.*\n?)*)/);
     if (posBlock) posBlock[1].replace(/(\w+):\s*\{x:\s*([\d.-]+),\s*y:\s*([\d.-]+)\}/g, (_, id, x, y) => { positions[id] = {x:+x, y:+y}; });
     if (typeof bdYamlNestedMap === 'function') {
@@ -642,6 +694,7 @@ function bdParseMd(raw) {
         const ptm = cl.match(/pathType:\s*([^\s,}]+)/); if(ptm) c.pathType = ptm[1];
         const wm = cl.match(/width:\s*([\d.]+)/); if(wm) c.width = +wm[1];
         const srm = cl.match(/styleRef:\s*([^\s,}]+)/); if(srm) c.styleRef = srm[1];
+        const semm = cl.match(/semanticId:\s*([^\s,}]+)/); if(semm) c.semanticId = semm[1];
         const ltc = cl.match(/labelTextColor:\s*"((?:[^"\\]|\\.)*)"/); if(ltc) c.labelTextColor = ltc[1];
         const lbc = cl.match(/labelBgColor:\s*"((?:[^"\\]|\\.)*)"/); if(lbc) c.labelBgColor = lbc[1];
         const ldc = cl.match(/labelBorderColor:\s*"((?:[^"\\]|\\.)*)"/); if(ldc) c.labelBorderColor = ldc[1];
@@ -683,6 +736,7 @@ function bdParseMd(raw) {
             c.style = c.style == null ? '' : String(c.style);
             c.color = c.color == null ? '' : String(c.color);
             if (typeof _bdMigrateConnectionSchema === 'function') _bdMigrateConnectionSchema(c);
+            if (c.semanticId != null) c.semanticId = String(c.semanticId);
             return c;
           })
           .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
@@ -729,6 +783,7 @@ function bdParseMd(raw) {
           width: c.width,
           pathType: c.pathType || (c.straight ? 'straight' : ''),
         };
+        if (c.semanticId) conn.semanticId = String(c.semanticId);
         if (c.fromPoint) conn.fromPoint = bdNormalizeConnectionPoint(c.fromPoint);
         if (c.toPoint) conn.toPoint = bdNormalizeConnectionPoint(c.toPoint);
         // arrow は明示指定時のみプロパティとして設定し、style ベースの解決を残す
@@ -758,8 +813,9 @@ function bdParseMd(raw) {
         if (typeof _bdMigrateConnectionSchema === 'function') _bdMigrateConnectionSchema(conn);
         return conn;
       }).filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
+      if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(jNodes);
       if (canvasBg) bd._bgColor = canvasBg;
-      return { nodes: jNodes, connections: jConns, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi };
+      return { nodes: jNodes, connections: jConns, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: json.llmSemantics || llmSemantics };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
     }
@@ -798,10 +854,11 @@ function bdParseMd(raw) {
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);
   });
+  if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(nodes);
   if (canvasBg) bd._bgColor = canvasBg;
   // グループのID変換
   groups.forEach(g => { g.nodeIds = g._nids.map(nid=>idMap[nid]).filter(Boolean); delete g._nids; });
-  return { nodes, connections: connections.map(c => ({...c, from:idMap[c.from]||c.from, to:idMap[c.to]||c.to})).filter(c=>c.from&&c.to), groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi };
+  return { nodes, connections: connections.map(c => ({...c, from:idMap[c.from]||c.from, to:idMap[c.to]||c.to})).filter(c=>c.from&&c.to), groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics };
 }
 
 // --- Markdown書き出し ---
@@ -812,6 +869,7 @@ function bdToMd() {
   bd.nodes.forEach((n,i) => { if (n.w || n.h) fm += `  n${i}: {w: ${Math.round(n.w||160)}, h: ${Math.round(n.h||0)}}\n`; });
   // 親子関係
   const m = {}; bd.nodes.forEach((n,i) => { m[n.id]='n'+i; });
+  if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(bd.connections, m);
   const hasParents = bd.nodes.some(n => n.parent);
   if (hasParents) {
     fm += 'parents:\n';
@@ -970,6 +1028,7 @@ function bdToMd() {
       if (c.hidden) s += ', hidden: true';
       if (c.width) s += ', width: ' + c.width;
       if (c.styleRef) s += ', styleRef: ' + c.styleRef;
+      if (c.semanticId) s += ', semanticId: ' + c.semanticId;
       if (c.labelTextColor) s += `, labelTextColor: "${c.labelTextColor.replace(/"/g, '\\"')}"`;
       if (c.labelBgColor) s += `, labelBgColor: "${c.labelBgColor.replace(/"/g, '\\"')}"`;
       if (c.labelBorderColor) s += `, labelBorderColor: "${c.labelBorderColor.replace(/"/g, '\\"')}"`;
@@ -994,6 +1053,9 @@ function bdToMd() {
       fm += s + '}\n';
     });
   }
+  if (typeof bdSerializeLlmSemanticsFrontmatter === 'function') {
+    fm += bdSerializeLlmSemanticsFrontmatter(bd.llmSemantics);
+  }
   fm += '---\n';
   const _escapeBody = (s) => s.replace(/^(\\*#\s)/gm, '\\$1');
   let body = '';
@@ -1006,7 +1068,8 @@ function bdToMd() {
     }
     body += '\n';
   });
-  return fm + body;
+  const llmContext = typeof bdBuildLlmContextMarkdown === 'function' ? bdBuildLlmContextMarkdown(bd, { nodeIdMap: m }) : '';
+  return fm + body + llmContext;
 }
 
 // --- リンクツールチップ ---

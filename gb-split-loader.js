@@ -2,8 +2,8 @@
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
     'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'b114d36a676b' },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '67478473f62b' },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '7304c19fa33d' },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '3a1ffbad7daa' },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '4f3ae4c10e3a' },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -12,11 +12,11 @@
   }
 
   function _withFingerprint(url, hash) {
-    if (!hash) return url;
+    const devBust = _currentDevBust();
+    if (!hash && !devBust) return url;
     const next = new URL(url, window.location.href);
     if (next.protocol === 'file:') return next.toString();
-    next.searchParams.set('v', hash);
-    const devBust = _currentDevBust();
+    if (hash) next.searchParams.set('v', hash);
     if (devBust) next.searchParams.set('devBust', devBust);
     return next.toString();
   }
@@ -87,7 +87,7 @@
     }
     let source = '';
     for (const chunkName of chunkNames) {
-      source += _loadChunkText(_resolveChunkUrl(currentScript, chunkName));
+      source += _loadChunkText(_withFingerprint(_resolveChunkUrl(currentScript, chunkName), ''));
       if (!source.endsWith('\n')) source += '\n';
     }
     _executeClassicScript(entryName, source);

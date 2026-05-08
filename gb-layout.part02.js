@@ -159,6 +159,8 @@
 
     const handle = document.createElement('div');
     handle.className = 'gb-split-handle';
+    handle.dataset.e2eId = `split-${node.id}-resize`;
+    handle.dataset.splitId = node.id || '';
     _setupResizeHandle(handle, node, split, first);
     _setSplitHandleAnchor(handle, node.direction);
     _bindSplitHandleAnchor(handle, node.direction);
@@ -562,6 +564,21 @@
   // === アクティブペイン管理 ===
   let _onActivePaneChange = null;
   let _isNavPaneType = null; // (type) => bool — ナビペイン判定（pane-bridge が設定）
+  let _isPassivePaneType = null; // (type, tab, pane) => bool — 作業アクティブを奪わない補助ペイン判定
+
+  function _isPassivePaneTab(tab, pane) {
+    if (!tab || typeof _isPassivePaneType !== 'function') return false;
+    try {
+      return !!_isPassivePaneType(tab.type, tab, pane);
+    } catch {
+      return false;
+    }
+  }
+
+  function _isPassivePaneActiveTab(pane) {
+    const activeTab = pane?.tabs?.[pane?.activeTabIndex];
+    return _isPassivePaneTab(activeTab, pane);
+  }
 
   function _scrollSnapshotKey(el, fallbackIndex) {
     if (!el || el.nodeType !== 1) return '';
@@ -726,6 +743,70 @@
       '.modal',
       '.cf-modal',
     ].join(','));
+  }
+
+  function _isChatInputFocusNode(node) {
+    if (!node || !(node instanceof Element)) return false;
+    return !!node.closest('#chat-rich-input, #chat-input, .chat-rich-input');
+  }
+
+  function _blurFocusedChatInputForWorkPanePointer(node, target) {
+    if (!target || !(target instanceof Element)) return;
+    if (!target.closest('.gb-pane-content')) return;
+    const activeTab = node?.tabs?.[node?.activeTabIndex];
+    if (!activeTab || activeTab.type === 'chat') return;
+    if (_isNavPaneType && _isNavPaneType(activeTab.type)) return;
+    const active = document.activeElement;
+    if (!_isChatInputFocusNode(active)) return;
+    active.blur?.();
+  }
+
+  function _isPaneWorkContentPointerTarget(target) {
+    if (!target || !(target instanceof Element)) return false;
+    return !!target.closest([
+      '#db-view-container',
+      '#pivot-view',
+      '.pivot-view',
+      '.pivot-table',
+      'td[data-prop-name]',
+      'td.col-entity',
+      '.value-text',
+      '.relation-link',
+      '.multi-select-tag',
+      '.cell-checkbox',
+      '.cell-select-val',
+      '.entity-row-more-btn',
+      '.cell-add-btn',
+      '.db-action-btn',
+      '#timeline-view',
+      '.tl-grid',
+      '.tl-card',
+      '#gallery-view',
+      '.gallery-view',
+      '.db-gallery-card',
+      '#kanban-view',
+      '.kanban-view',
+      '.kanban-card',
+      '#smart-db-view',
+      '#page-view',
+      '#page-content',
+      '#entity-view',
+      '#entity-freetext',
+      '.gb-scriptnote-root',
+      '#board-view',
+      '#bd-canvas',
+      '#bd-world',
+      '#folder-view',
+      '#folder-grid',
+    ].join(','));
+  }
+
+  function _shouldPreserveActivePaneForNavContentPointer(node, target) {
+    if (!_activePane || !_paneMap[_activePane] || _activePane === node?.id) return false;
+    if (!target || !(target instanceof Element)) return false;
+    const activeTab = node?.tabs?.[node?.activeTabIndex];
+    if (!(_isNavPaneType && _isNavPaneType(activeTab?.type))) return false;
+    return !!target.closest('.gb-pane-content');
   }
 
   function _activatePaneAfterCurrentPointerClick(paneId) {

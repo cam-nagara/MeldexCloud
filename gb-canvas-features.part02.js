@@ -239,7 +239,9 @@ function _bdGetNumber(nodeId) {
   if (!n) return '';
   const parts = [];
   let cur = n;
-  while (cur.parent) {
+  const seen = new Set();
+  while (cur.parent && !seen.has(cur.id)) {
+    seen.add(cur.id);
     const parent = bd.nodes.find(v => v.id === cur.parent);
     if (!parent) break;
     const siblings = bdChildren(parent.id);

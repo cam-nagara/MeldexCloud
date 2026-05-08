@@ -31,6 +31,25 @@
     return !!(startup?.vaultPath || startup?.hasRoots);
   }
 
+  function _sampleDownloadUrl() {
+    const cfg = window.MeldexCloudRuntimeConfig || {};
+    return String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
+  }
+
+  function _openSampleDownload() {
+    const url = _sampleDownloadUrl() || 'https://github.com/cam-nagara/MeldexCloud/releases';
+    window.open(url, '_blank', 'noopener');
+  }
+
+  function _openSampleGuide() {
+    document.getElementById('meldex-onboarding-overlay')?.remove();
+    if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
+      openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
+      return;
+    }
+    window.open('public-index.html#samples', '_blank', 'noopener');
+  }
+
   function shouldShow(startup) {
     if (_isBypassMode() || _done()) return false;
     return !_hasSource(startup || {});
@@ -67,11 +86,12 @@
     }
     if (state.step === 2) {
       return `<h2 style="margin:0 0 10px;">サンプルデータ</h2>
-        <label class="gb-check" style="align-items:flex-start;">
-          <input id="meldex-onboarding-sample" type="checkbox" ${state.sample ? 'checked' : ''}>
-          <span>お手本になるサンプルとマニュアルを使う</span>
-        </label>
-        <p style="line-height:1.7;color:var(--fg2);">サンプルはホームフォルダの「サンプル」に入っています。自分の作品とは分けて使えます。</p>`;
+        <p style="line-height:1.7;color:var(--fg2);">サンプル作品は本体とは別配布です。必要な場合だけダウンロードし、展開した「サンプル」フォルダをソースフォルダへ入れるか追加してください。</p>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+          <button class="gb-btn gb-btn-sm" data-onboarding-action="sample-download">${lucide('download',14)} サンプルをダウンロード</button>
+          <button class="gb-btn gb-btn-sm" data-onboarding-action="sample-guide">${lucide('bookOpen',14)} 取り込み手順</button>
+          <button class="gb-btn gb-btn-sm" data-onboarding-action="add-source">${lucide('folderPlus',14)} ソースフォルダを追加</button>
+        </div>`;
     }
     return `<h2 style="margin:0 0 10px;">同意と最初のノート</h2>
       <p style="line-height:1.7;color:var(--fg2);">ベータ版の利用条件を確認し、最初の無題ノートを作成して開始します。</p>
@@ -153,6 +173,8 @@
       render();
       return;
     }
+    else if (action === 'sample-download') { _openSampleDownload(); return; }
+    else if (action === 'sample-guide') { _openSampleGuide(); return; }
     else if (action === 'consent') { window.MeldexBetaRelease?.showConsentDialog?.({ force: !window.MeldexBetaRelease?.hasConsent?.() }); return; }
     else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(); return; }
     else if (action === 'finish') {

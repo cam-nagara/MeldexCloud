@@ -545,9 +545,16 @@
 .bd-style-summary-grid > div { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-2); }
 /* v2 §4.2 要求: 丸型スウォッチを四角統一 (旧 999px → radius-sm) */
 .bd-inline-swatch { width: 16px; height: 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); box-sizing: border-box; flex-shrink: 0; }
-.bd-detail-range { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: var(--ui-space-2); align-items: center; }
-.bd-detail-range input[type="range"] { padding: 0; }
-.bd-detail-range input[type="number"] { text-align: right; padding: var(--ui-space-1) var(--ui-space-2); font-size: var(--ui-font-11); }
+.bd-detail-structure-hint { grid-column: 1 / -1; display: grid; gap: var(--ui-space-1); padding: var(--ui-space-2) var(--ui-space-3); border-left: 2px solid var(--ui-accent); border-radius: var(--ui-radius-xs); background: color-mix(in srgb, var(--ui-accent) 10%, transparent); line-height: 1.45; }
+.bd-detail-hint-current { font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); color: var(--ui-fg-default); }
+.bd-detail-hint-body { color: var(--ui-fg-muted); }
+.bd-detail-transform-fields { grid-column: 1 / -1; display: grid; gap: var(--ui-space-2); }
+.bd-detail-field-range { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(56px, 72px) minmax(220px, 1fr); gap: var(--ui-space-3); align-items: center; width: 100%; }
+.bd-detail-field-range > span:first-child { min-width: 0; color: var(--ui-fg-default); }
+.bd-detail-range { display: grid; grid-template-columns: minmax(180px, 1fr) 58px; gap: var(--ui-space-2); align-items: center; min-width: 0; }
+.bd-detail-range input[type="range"] { width: 100%; min-width: 160px; padding: 0; }
+.bd-detail-range input[type="number"] { width: 58px; text-align: right; padding: var(--ui-space-1) var(--ui-space-2); font-size: var(--ui-font-11); }
+.bd-detail-transform-checks { display: flex; gap: var(--ui-space-3); flex-wrap: wrap; padding-left: calc(72px + var(--ui-space-3)); }
 .bd-detail-inline-actions { grid-column: 1 / -1; display: flex; gap: var(--ui-space-2); flex-wrap: wrap; }
 .bd-detail-inline-actions button { padding: 3px var(--ui-space-4); font-size: var(--ui-font-11); }
 /* 左 240px (リスト+プレビュー枠 96px に必要な最小幅) + 右 320px (編集フィールド) */
@@ -611,8 +618,11 @@
   .bd-style-manager { grid-template-columns: 1fr; }
   .bd-detail-section,
   .bd-style-editor-fields { grid-template-columns: 1fr; }
-  .bd-style-summary-grid,
-  .bd-detail-range { grid-template-columns: 1fr; }
+  .bd-style-summary-grid { grid-template-columns: 1fr; }
+  .bd-detail-field-range { grid-template-columns: 1fr; }
+  .bd-detail-field-range .bd-detail-range { grid-template-columns: minmax(140px, 1fr) 58px; }
+  .bd-detail-range input[type="range"] { min-width: 140px; }
+  .bd-detail-transform-checks { padding-left: 0; }
 }
 
 /* === Note styling: heading empty-line removal === */
@@ -969,8 +979,7 @@ blockquote .quote-cite a {
 }
 .heading-section.level-5,
 .heading-section.level-6 { padding-left: 12px; }
-/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする
-   #page-content h2等にpadding-leftがあるため、ID付きで上書きする */
+/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。#page-content h2等にpadding-leftがあるため、ID付きで上書きする */
 #page-content .heading-section > h1,
 #page-content .heading-section > h2,
 #page-content .heading-section > h3,

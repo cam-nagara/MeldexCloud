@@ -8,9 +8,10 @@
     '#dp-editable',
     '#board-note-editable',
     '.sn2-text[contenteditable="true"]',
+    '.value-rich-editor[contenteditable="true"]',
   ].join(',');
   const PLAIN_INPUT_SELECTOR = [
-    '.value-input',
+    '.value-input:not(.value-rich-editor)',
     '.cell-inline-input',
     '.entity-rename-input',
     '.th-rename-input',

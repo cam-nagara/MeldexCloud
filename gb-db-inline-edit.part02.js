@@ -51,6 +51,50 @@ function calcColumnCount(propName, entitiesMap, entityNames, type, ptc) {
 let activeCell = null;
 let rangeAnchorCell = null;
 
+function _scrollDbActiveCellIntoView(td) {
+  if (!td) return;
+  const table = td.closest?.('table');
+  const scroller = td.closest?.('.pivot-view, #pivot-view') || table?.closest?.('.pivot-view, #pivot-view')
+    || (typeof _getDbViewScrollContainer === 'function' ? _getDbViewScrollContainer(null, 'pivot') : null);
+  if (!scroller) {
+    td.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    return;
+  }
+  const cellRect = td.getBoundingClientRect?.();
+  const scrollRect = scroller.getBoundingClientRect?.();
+  if (!cellRect || !scrollRect || cellRect.width <= 0 || cellRect.height <= 0) return;
+  const headerRect = table?.querySelector?.('thead')?.getBoundingClientRect?.();
+  const headerHeight = headerRect && headerRect.bottom > scrollRect.top && headerRect.top < scrollRect.bottom
+    ? Math.max(0, headerRect.height)
+    : 0;
+  const cellIndex = td.parentElement ? Array.from(td.parentElement.children).indexOf(td) : -1;
+  const entityPinned = !!table && !table.classList.contains('entity-col-unpinned');
+  const entityRect = entityPinned && cellIndex > 0
+    ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row) td.col-entity')?.getBoundingClientRect?.()
+    : null;
+  const pad = 4;
+  const topLimit = scrollRect.top + headerHeight + pad;
+  const bottomLimit = scrollRect.bottom - pad;
+  const leftLimit = scrollRect.left + (entityRect?.width || 0) + pad;
+  const rightLimit = scrollRect.right - pad;
+  let deltaTop = 0;
+  let deltaLeft = 0;
+  if (cellRect.top < topLimit) deltaTop = cellRect.top - topLimit;
+  else if (cellRect.bottom > bottomLimit) deltaTop = cellRect.bottom - bottomLimit;
+  if (cellRect.left < leftLimit) deltaLeft = cellRect.left - leftLimit;
+  else if (cellRect.right > rightLimit) deltaLeft = cellRect.right - rightLimit;
+  if (deltaTop) scroller.scrollTop += deltaTop;
+  if (deltaLeft) scroller.scrollLeft += deltaLeft;
+}
+
+function _scheduleDbActiveCellScroll(td) {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => _scrollDbActiveCellIntoView(td));
+  } else {
+    setTimeout(() => _scrollDbActiveCellIntoView(td), 0);
+  }
+}
+
 function _clearDbCellRangeSelection(table) {
   (table || document).querySelectorAll('.db-range-selected').forEach(cell => {
     cell.classList.remove('db-range-selected');
@@ -112,6 +156,10 @@ function setActiveCell(td, options = {}) {
     td.classList.add('active-cell');
     td.tabIndex = 0;
     td.focus?.({ preventScroll: true });
+    if (options.scroll !== false) {
+      _scrollDbActiveCellIntoView(td);
+      _scheduleDbActiveCellScroll(td);
+    }
   }
 }
 

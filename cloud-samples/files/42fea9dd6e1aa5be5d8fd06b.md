@@ -1,0 +1,50 @@
+---
+type: settings-entry
+id: ent_tl_63206362ba
+category: 行動表
+created: '2026-05-06T06:38:38'
+created_by: codex
+created_by_kind: cli
+properties:
+  時間帯:
+  - value: 00:00-01:00
+    status: 案
+  開始時刻:
+  - value: 2026-08-14T00:00
+    status: 案
+  終了時刻:
+  - value: 2026-08-14T01:00
+    status: 案
+  キャラ:
+  - value: 御影 依
+    status: 案
+  場所:
+  - value: 鬼ヶ瀬邸内
+    status: 案
+  基準場所:
+  - value: 鬼ヶ瀬邸全体
+    status: 案
+  状態:
+  - value: 死霊
+    status: 案
+  事件段階:
+  - value: 死後捜査
+    status: 案
+  行動:
+  - value: 憑依中の記憶が欠落し、物証上の犯人として疑われる。気弱に弁明するが、金欠で依頼を受けた弱みを言い出せない。
+    status: 案
+  重要イベント:
+  - value: 全員死霊化し、捜査が始まる
+    status: 案
+  手がかり・矛盾:
+  - value: 冤罪者兼ヒロインの立場が固まる。
+    status: 案
+  色:
+  - value: '#8b5cf6'
+    status: 案
+relations: []
+modified: '2026-05-07T20:31:50'
+modified_by: anonymous
+modified_by_kind: human
+modified_by_model: gpt-5
+---

@@ -838,9 +838,11 @@ window.openEntityAiChat = window.openEntityChatForPath;
 // ユーザープロパティ: 小型アバター
 function _userAvatarSmall(username) {
   // team avatar → auth avatar → フォールバック（頭文字）の順で試す
-  return '<img src="/api/team/avatar/' + encodeURIComponent(username) + '" '
+  const teamAvatar = window.MeldexDataAccess?.team?.avatarUrl?.(username || 'anonymous', {}) || ('/api/team/avatar/' + encodeURIComponent(username));
+  const authAvatar = window.MeldexDataAccess?.team?.authAvatarUrl?.(username || 'anonymous', {}) || ('/api/auth/avatar/' + encodeURIComponent(username));
+  return '<img src="' + esc(teamAvatar) + '" '
     + 'style="width:16px;height:16px;border-radius:50%;object-fit:cover;vertical-align:middle;" '
-    + 'onerror="this.onerror=null;this.src=\'/api/auth/avatar/' + encodeURIComponent(username) + '\';this.addEventListener(\'error\',()=>{this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-flex\';},{once:true});">'
+    + 'onerror="this.onerror=null;this.src=\'' + esc(authAvatar) + '\';this.addEventListener(\'error\',()=>{this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-flex\';},{once:true});">'
     + '<span style="display:none;width:16px;height:16px;border-radius:50%;background:var(--accent);color:var(--ui-fg-strong);font-size:9px;font-weight:bold;align-items:center;justify-content:center;vertical-align:middle;">'
     + esc((username || '?')[0].toUpperCase()) + '</span>';
 }

@@ -264,7 +264,7 @@ function renderDbViewTabs(ctx) {
         const item = document.createElement('div');
         item.className = 'gb-context-menu-item';
         item.innerHTML = lucide(vt.icon, 14) + ' ' + vt.label + ' ビューを追加';
-        item.addEventListener('click', () => { menu.remove(); doSaveViewWithTypeDirect(vt.mode, vt.label); });
+        item.addEventListener('click', (ev) => { menu.remove(); doSaveViewWithTypeDirect(vt.mode, vt.label, { ctx, event: ev }); });
         menu.appendChild(item);
       });
       if (group.length > 0 && groups.slice(groupIndex + 1).some(next => next.length > 0)) {
@@ -327,7 +327,7 @@ function renderDbNoViewsGuide(ctx) {
   add.className = 'gb-btn primary';
   add.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 14px;';
   add.innerHTML = lucide('plus', 16) + ' ビューを追加';
-  add.addEventListener('click', () => doSaveViewWithTypeDirect('pivot', 'テーブル'));
+  add.addEventListener('click', (ev) => doSaveViewWithTypeDirect('pivot', 'テーブル', { ctx, event: ev }));
   guide.appendChild(title);
   guide.appendChild(desc);
   guide.appendChild(add);
@@ -561,11 +561,12 @@ function _generateEntryName(dbPath, entityName, ctx) {
 
 
 
-function _makeDbViewStateFromCurrent(dbPath, viewMode, name) {
+function _makeDbViewStateFromCurrent(dbPath, viewMode, name, ctx) {
   const cfg = getDbViewConfig(dbPath);
   const activeView = typeof getCurrentDbViewConfigEntry === 'function'
     ? getCurrentDbViewConfigEntry(dbPath)
     : null;
+  const paneData = ctx?.dbPath === dbPath ? ctx.pivotData : null;
   const viewState = {
     name,
     viewMode,
@@ -575,7 +576,7 @@ function _makeDbViewStateFromCurrent(dbPath, viewMode, name) {
     advancedFilters: _cloneDbViewArray(activeView?.advancedFilters),
     conditionalFormat: !!activeView?.conditionalFormat,
     conditionalColors: _cloneDbViewObject(activeView?.conditionalColors),
-    filter: state.filter,
+    filter: ctx?.filter ?? state.filter,
     sortConfig: activeView?.sortConfig == null ? null : _cloneDbViewValue(activeView.sortConfig, null),
     manualOrder: activeView?.manualOrder == null ? null : _cloneDbViewValue(activeView.manualOrder, null),
     showFooter: activeView?.showFooter === true,
@@ -587,7 +588,7 @@ function _makeDbViewStateFromCurrent(dbPath, viewMode, name) {
   };
   if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(viewState, cfg);
   if (viewMode === 'form') {
-    const props = state.pivotData?.properties || [];
+    const props = paneData?.properties || state.pivotData?.properties || [];
     const propTypes = getPropertyTypes(dbPath) || {};
     const formConfig = typeof makeDefaultFormViewConfig === 'function'
       ? makeDefaultFormViewConfig(props, propTypes)
@@ -600,11 +601,13 @@ function _makeDbViewStateFromCurrent(dbPath, viewMode, name) {
 }
 
 function doSaveViewWithTypeDirect(viewMode, label, options = {}) {
-  const ctx = _currentPaneState();
+  const ctx = options.ctx
+    || (typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(options.event, { dbPath: state.currentDbPath }) : null)
+    || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
   const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const cfg = getDbViewConfig(dbPath);
-  const viewState = _makeDbViewStateFromCurrent(dbPath, viewMode, label);
+  const viewState = _makeDbViewStateFromCurrent(dbPath, viewMode, label, ctx);
   const views = getSavedViews(dbPath);
   views.push(viewState);
   cfg.savedViews = views;
@@ -1093,7 +1096,11 @@ function renderGallery(ctx) {
       propRow.appendChild(nameSpan);
       const valSpan = document.createElement('span');
       valSpan.className = 'gallery-card-prop-val';
-      valSpan.textContent = displayVal;
+      if (!ptcG?.source && typeof _dbRichAppendValuePreview === 'function') {
+        _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || []));
+      } else {
+        valSpan.textContent = displayVal;
+      }
       propRow.appendChild(valSpan);
       propsDiv.appendChild(propRow);
       shown++;
@@ -1384,7 +1391,15 @@ function renderKanban(ctx) {
         if (vals.length === 0) continue;
         const propRow = document.createElement('div');
         propRow.className = 'kanban-card-prop';
-        propRow.textContent = propName + ': ' + vals.map(v => v.value).join(', ');
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'kanban-card-prop-name';
+        nameSpan.textContent = propName + ': ';
+        propRow.appendChild(nameSpan);
+        if (typeof _dbRichAppendValuePreview === 'function') {
+          _dbRichAppendValuePreview(propRow, vals);
+        } else {
+          propRow.appendChild(document.createTextNode(vals.map(v => v.value).join(', ')));
+        }
         propsDiv.appendChild(propRow);
         shown++;
       }

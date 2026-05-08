@@ -392,8 +392,7 @@ function openCurrentToolbarSearchReplace(tool) {
     return;
   }
   if (normalized === 'database' || normalized === 'db' || normalized === 'sheet') {
-    const dbPath = (typeof state !== 'undefined' && state.currentDbPath) ? state.currentDbPath : '';
-    openVaultSearchReplacePanel(dbPath);
+    if (typeof showDbSearchModal === 'function') showDbSearchModal({ scope: 'current' });
     return;
   }
   if (normalized === 'folder') {

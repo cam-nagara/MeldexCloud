@@ -209,8 +209,8 @@
       header.className = 'cloud-mobile-tree-screen-header';
       sidebar.prepend(header);
     }
-    if (header.dataset.cloudMobileHeaderVersion !== '2') {
-      header.dataset.cloudMobileHeaderVersion = '2';
+    if (header.dataset.cloudMobileHeaderVersion !== '3') {
+      header.dataset.cloudMobileHeaderVersion = '3';
       header.replaceChildren();
 
       const menuButton = document.createElement('button');
@@ -228,6 +228,17 @@
       const actions = document.createElement('div');
       actions.className = 'cloud-mobile-tree-actions';
 
+      const refreshButton = document.createElement('button');
+      refreshButton.type = 'button';
+      refreshButton.className = 'cloud-mobile-tree-refresh';
+      refreshButton.title = 'フォルダツリーを更新';
+      refreshButton.setAttribute('aria-label', 'フォルダツリーを更新');
+      refreshButton.innerHTML = _iconHtml('refreshCw', 20, '↻');
+      _bindMobileControlActivation(refreshButton, (event) => {
+        if (typeof refreshOutlinerFromButton === 'function') return refreshOutlinerFromButton(event);
+        if (typeof refreshOutliner === 'function') return refreshOutliner();
+      });
+
       const userButton = document.createElement('button');
       userButton.type = 'button';
       userButton.className = 'cloud-mobile-tree-user';
@@ -242,6 +253,7 @@
       settingsButton.innerHTML = _iconHtml('settings', 20, '⚙');
       _bindMobileControlActivation(settingsButton, (event) => _openSettingsPanel('', event));
 
+      actions.appendChild(refreshButton);
       actions.appendChild(userButton);
       actions.appendChild(settingsButton);
       header.appendChild(menuButton);

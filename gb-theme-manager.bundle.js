@@ -115,7 +115,7 @@
       selected: { fg: '--fv-item-selected-fg', bg: '--fv-item-selected-bg', underline: '--fv-item-selected-border' },
     } },
     { id: 'style-note', group: 'style', app: 'ノート', label: 'ノート', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { hover: 'リンク', selected: '選択/カーソル' }, vars: {
-      normal: { fg: '--page-text-fg', underline: ['--page-hr-color', '--page-quote-border', '--page-table-border-color', '--page-table-control-border', '--page-table-toolbar-border', '--page-cell-edit-outline-color', '--page-callout-border', '--page-callout-info-border', '--page-callout-warning-border', '--page-callout-danger-border', '--page-callout-success-border', '--page-copy-button-border', '--page-code-block-border', '--page-kbd-border', '--page-details-border', '--page-details-open-border', '--page-heading-icon-fg', '--page-drag-guide-color'] },
+      normal: { fg: '--page-text-fg', underline: ['--page-hr-color', '--page-quote-border', '--page-table-border-color', '--page-table-control-border', '--page-table-toolbar-border', '--page-callout-border', '--page-callout-info-border', '--page-callout-warning-border', '--page-callout-danger-border', '--page-callout-success-border', '--page-copy-button-border', '--page-code-block-border', '--page-kbd-border', '--page-details-border', '--page-details-open-border', '--page-heading-icon-fg', '--page-drag-guide-color'] },
       hover: { fg: ['--page-link-fg', '--page-table-control-hover-fg', '--page-table-toolbar-hover-fg', '--page-copy-button-hover-fg'], bg: ['--page-link-bg', '--page-link-hover-bg', '--page-table-row-hover-bg', '--page-table-control-hover-bg', '--page-table-toolbar-button-hover-bg', '--page-copy-button-hover-bg', '--page-details-summary-hover-bg'], underline: ['--page-link-accent-color', '--page-table-control-hover-border'] },
       selected: { fg: '--page-selection-fg', bg: '--page-selection-color', underline: ['--page-caret-color', '--page-cell-edit-outline-color'] },
     } },
@@ -151,7 +151,7 @@
     } },
     { id: 'style-detail', group: 'style', app: 'オプション', label: 'オプション', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', selected: '選択/アクセント' }, vars: {
       normal: { fg: '--detail-fg', underline: '--detail-border' },
-      hover: { fg: '--detail-fg', bg: '--detail-hover-bg' },
+      hover: { bg: '--detail-hover-bg' },
       selected: { fg: '--detail-active-fg', bg: '--detail-active-bg', underline: '--detail-accent' },
     } },
     { id: 'style-chat', group: 'style', app: 'チャット', label: 'チャット', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'メッセージ', selected: 'タブ/送信' }, vars: {
@@ -166,22 +166,22 @@
     } },
     { id: 'style-history', group: 'style', app: 'ヒストリー', label: 'ヒストリー', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: '行', selected: '強調' }, vars: {
       normal: { fg: '--history-fg', underline: '--history-border' },
-      hover: { fg: '--history-fg', bg: '--history-hover-bg' },
+      hover: { bg: '--history-hover-bg' },
       selected: { fg: '--history-active-fg', bg: '--history-active-bg', underline: '--history-accent' },
     } },
     { id: 'style-annotation', group: 'style', app: '注釈', label: '注釈', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', hover: 'カード', selected: '付箋/ツール' }, vars: {
       normal: { fg: '--annotation-fg', underline: '--annotation-border' },
-      hover: { fg: '--annotation-fg', bg: '--annotation-hover-bg' },
+      hover: { bg: '--annotation-hover-bg' },
       selected: { fg: '--annotation-note-fg', bg: '--annotation-note-bg', underline: '--annotation-accent' },
     } },
     { id: 'style-search', group: 'style', app: '検索', label: '検索', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: 'パネル', selected: '結果/アクセント' }, vars: {
       normal: { fg: '--search-fg', underline: '--search-border' },
-      hover: { fg: '--search-fg', bg: '--search-hover-bg' },
+      hover: { bg: '--search-hover-bg' },
       selected: { fg: '--search-active-fg', bg: '--search-active-bg', underline: '--search-accent' },
     } },
     { id: 'style-version', group: 'style', app: 'バージョン管理', label: 'バージョン管理', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { normal: '行', selected: '保存/復元' }, vars: {
       normal: { fg: '--version-fg', underline: '--version-border' },
-      hover: { fg: '--version-fg', bg: '--version-hover-bg' },
+      hover: { bg: '--version-hover-bg' },
       selected: { fg: '--version-active-fg', bg: '--version-active-bg', underline: '--version-accent' },
     } },
   ]);
@@ -1560,19 +1560,33 @@
     return `var(--theme-palette-${normalized},var(--theme-slot-color,var(--accent)))`;
   }
 
+  const THEME_UI_SELECTED_SELECTOR_SUFFIXES = Object.freeze([
+    '.active',
+    '.selected',
+    '.gb-inner-tab-active',
+    '.gb-panel-tab-active',
+    '[aria-selected="true"]',
+    '[data-selected="1"]',
+  ]);
+
+  function _themeUiSelectedSelectors(base) {
+    return THEME_UI_SELECTED_SELECTOR_SUFFIXES.map(suffix => `${base}${suffix}`);
+  }
+
+  function _themeUiNormalSelector(base) {
+    const selectedExclusions = THEME_UI_SELECTED_SELECTOR_SUFFIXES
+      .map(suffix => `:not(${suffix})`)
+      .join('');
+    return `${base}:not(:hover)${selectedExclusions}`;
+  }
+
   function _themeUiStateSelector(targetId, stateId) {
     const base = `[data-theme-palette-target="${targetId}"]`;
     if (stateId === 'hover') return `${base}:hover`;
     if (stateId === 'selected') {
-      return [
-        `${base}.active`,
-        `${base}.selected`,
-        `${base}.gb-inner-tab-active`,
-        `${base}.gb-panel-tab-active`,
-        `${base}[aria-selected="true"]`,
-        `${base}[data-selected="1"]`,
-      ].join(',');
+      return _themeUiSelectedSelectors(base).join(',');
     }
+    if (stateId === 'normal') return _themeUiNormalSelector(base);
     return base;
   }
 

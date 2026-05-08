@@ -26,9 +26,10 @@
 }
 
 .meldex-beta-consent-modal {
-  width: min(560px, 92vw);
-  max-height: min(620px, 88vh);
+  width: min(620px, 92vw);
+  max-height: none;
   padding: 0;
+  overflow: visible;
 }
 
 .meldex-beta-consent-modal > h3 {
@@ -40,8 +41,9 @@
 .meldex-beta-consent-modal .modal-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 18px 0;
+  gap: 10px;
+  padding: 12px 18px 0;
+  overflow: visible;
 }
 
 .meldex-beta-consent-modal > .btn-row {
@@ -52,42 +54,205 @@
 
 .meldex-beta-consent-summary {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   margin: 0;
   padding-left: 18px;
   color: var(--fg);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .meldex-beta-consent-checks {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .meldex-beta-consent-check {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 9px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg2);
   color: var(--fg);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.45;
 }
 
 .meldex-beta-consent-check input {
   margin-top: 2px;
   flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 2px solid color-mix(in srgb, var(--fg) 58%, var(--border));
+  border-radius: 4px;
+  appearance: none;
+  background: color-mix(in srgb, var(--bg) 82%, var(--fg) 18%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent);
+  cursor: pointer;
+  position: relative;
+}
+
+.meldex-beta-consent-check input:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--fg));
+  background: color-mix(in srgb, var(--bg) 70%, var(--accent) 18%);
+}
+
+.meldex-beta-consent-check input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 80%, white);
+  outline-offset: 2px;
+}
+
+.meldex-beta-consent-check input:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.meldex-beta-consent-check input:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
 .meldex-beta-consent-muted,
 .settings-about-muted {
   color: var(--fg2);
   font-size: 12px;
+  line-height: 1.5;
+}
+
+.meldex-beta-consent-modal button.primary:disabled {
+  opacity: 1 !important;
+  filter: none !important;
+  border-color: color-mix(in srgb, var(--border) 70%, var(--fg) 20%) !important;
+  background: color-mix(in srgb, var(--bg3) 82%, var(--fg) 8%) !important;
+  color: color-mix(in srgb, var(--fg) 76%, var(--fg2)) !important;
+}
+
+.meldex-install-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meldex-install-card--modal {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg2) 86%, var(--accent) 6%);
+}
+
+.meldex-install-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.meldex-install-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.meldex-install-desc,
+.meldex-install-status,
+.meldex-install-hint,
+.meldex-install-help-intro {
+  font-size: 12px;
   line-height: 1.6;
+}
+
+.meldex-install-desc {
+  color: var(--fg);
+}
+
+.meldex-install-status,
+.meldex-install-hint,
+.meldex-install-help-intro {
+  color: var(--fg2);
+}
+
+.meldex-install-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.meldex-install-card--modal .meldex-install-button {
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg3));
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.meldex-install-button:disabled {
+  cursor: default;
+  color: var(--fg2);
+  border-color: var(--border);
+  background: var(--bg3);
+}
+
+.meldex-install-prompt-overlay {
+  z-index: 10095;
+}
+
+.meldex-install-help-overlay {
+  z-index: 10100;
+}
+
+.meldex-install-prompt-modal,
+.meldex-install-help-modal {
+  width: min(460px, 92vw);
+  max-height: min(520px, 86vh);
+  padding: 0;
+}
+
+.meldex-install-prompt-modal > h3,
+.meldex-install-help-modal > h3 {
+  margin: 0;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.meldex-install-prompt-body,
+.meldex-install-help-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px 0;
+}
+
+.meldex-install-help-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.meldex-install-prompt-modal > .btn-row,
+.meldex-install-help-modal > .btn-row {
+  margin-top: 0;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
 }
 
 .settings-about-grid {

@@ -311,6 +311,11 @@
   resize: none;
   overflow: hidden;
 }
+.value-rich-editor {
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 #btn-db-cell-wrap.active {
   color: var(--ui-fg-strong);
 }

@@ -8,6 +8,7 @@
       arrow:c.arrow,
       label:c.label,
       style:c.style,
+      semanticId:c.semanticId,
       styleRef:c.styleRef,
       width:c.width,
       straight:c.straight,
@@ -57,6 +58,7 @@ function _bdSnapshot() {
     _numbering: bd._numbering || false,
     _bgColor: bd._bgColor || '',
     _fileStyle: bd._fileStyle || null,
+    llmSemantics: bd.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null),
     _showShadow: !!bd._showShadow,
     _textRotateOnLine: !!bd._textRotateOnLine,
   });
@@ -83,6 +85,7 @@ function _bdApplySnapshot(s) {
     bdRestoreGlobalStyleDefaults(s.globalStyleDefaults);
   }
   if (s._numbering !== undefined) bd._numbering = !!s._numbering;
+  if (s.llmSemantics !== undefined) bd.llmSemantics = s.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null);
   if (s._showShadow !== undefined) bd._showShadow = !!s._showShadow;
   if (s._textRotateOnLine !== undefined) bd._textRotateOnLine = !!s._textRotateOnLine;
   if (s._bgColor !== undefined) {
@@ -230,6 +233,7 @@ async function bdOpenBoard(label, path) {
     bd.path = nextPath;
     bd._loadedBoardPath = nextPath;
     bd.nodes = parsed.nodes || [];
+    if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes);
     // 新規作成ボードの初期ルートカードには階層別スタイル (_autoStyle) とロジック図を既定で有効化する。
     // 「新規作成直後 = ノード 1 枚 / 親子関係・構造・コネクション・グループ無し / 追加メタ無し」
     // の形状にマッチする場合のみ true を立てる。親子・構造・スタイル等の付加情報が
@@ -255,6 +259,7 @@ async function bdOpenBoard(label, path) {
     }
     bd._lastSavedNodeIds = new Set(bd.nodes.map(n => n.id));
     bd.connections = parsed.connections || [];
+    bd.llmSemantics = parsed.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null);
     bdEnsureConnectionRuntime(bd.connections);
     bd.groups = parsed.groups || [];
     bd.statuses = parsed.statusDefs || ((typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : []);
@@ -399,6 +404,7 @@ function bdLoadState(dump) {
   // bd の Set プロパティが dump 時に欠けていた場合のフォールバック
   if (!(bd.selected instanceof Set)) bd.selected = new Set();
   if (!(bd.selectedConnIds instanceof Set)) bd.selectedConnIds = new Set();
+  if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes || []);
   bdEnsureConnectionRuntime(bd.connections || []);
   // undo/redo スタックを復元
   _bdUndoStack.length = 0;

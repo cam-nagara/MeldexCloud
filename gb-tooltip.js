@@ -448,8 +448,54 @@
     if (!el) return '';
     const text = compactText(el.textContent);
     if (!text || text.length > 36) return '';
+    if (!isTextVisiblyTruncated(el)) return '';
     // ボタン・タブの可視テキストはそのまま返す（「を実行します」「を表示します」等の冗長な接尾辞は付けない）。
     return text;
+  }
+
+  function normalizedTooltipText(value) {
+    return compactText(value).replace(/[、。,.!?！？:：;；]+$/g, '');
+  }
+
+  function sameVisibleText(el, text) {
+    if (!el || !text) return false;
+    const visible = normalizedTooltipText(el.textContent);
+    const tooltip = normalizedTooltipText(text);
+    return !!visible && visible === tooltip;
+  }
+
+  function isNodeOverflowing(el) {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    return (el.scrollWidth > el.clientWidth + 1) || (el.scrollHeight > el.clientHeight + 1);
+  }
+
+  function isTextVisiblyTruncated(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    if (isNodeOverflowing(el)) return true;
+    const selectors = [
+      '.tree-label',
+      '.fv-name',
+      '.gb-tab-label',
+      '.gb-panel-title',
+      '.sidebar-item-label',
+      '.entity-name-label',
+      '.value-text'
+    ];
+    for (const selector of selectors) {
+      const node = el.matches?.(selector) ? el : el.querySelector?.(selector);
+      if (isNodeOverflowing(node)) return true;
+    }
+    return false;
+  }
+
+  function shouldSuppressRedundantTooltip(el, text) {
+    if (!sameVisibleText(el, text)) return false;
+    return !isTextVisiblyTruncated(el);
+  }
+
+  function finalizeTooltipText(text, el) {
+    const withShortcut = appendShortcut(text, el);
+    return shouldSuppressRedundantTooltip(el, withShortcut) ? '' : withShortcut;
   }
 
   function placeholderHint(el) {
@@ -492,7 +538,10 @@
     if (!el || !el.tagName) return '';
     // ボタン・タブ・汎用入力に対する無意味な汎用文言（「この操作を実行します」「値を入力します」等）は出さない。
     // 文脈情報のある drag や input[type=range] のみ残す（操作方法の手掛かりになるため）。
-    if (el.hasAttribute('draggable')) return 'ドラッグして移動または並べ替えます';
+    if (el.hasAttribute('draggable')) {
+      if (compactText(el.textContent)) return '';
+      return 'ドラッグして移動または並べ替えます';
+    }
     const tag = el.tagName.toLowerCase();
     const type = readAttr(el, 'type').toLowerCase();
     if (tag === 'input' && type === 'range') return 'ドラッグして値を調整します';
@@ -564,7 +613,7 @@
     const fromRegistry = registryHint(el);
     // registry に shortcutId が無くても data-shortcut-id があれば後付けする。
     // appendShortcut は末尾に既に括弧表記があれば二重付与を避けるため安全。
-    if (fromRegistry) return appendShortcut(fromRegistry, el);
+    if (fromRegistry) return finalizeTooltipText(fromRegistry, el);
     const text = (
       readAttr(el, ATTR_PRIMARY) ||
       readAttr(el, ATTR_LEGACY) ||
@@ -580,7 +629,12 @@
       iconHint(el) ||
       controlFallbackHint(el)
     );
-    return appendShortcut(text, el);
+    return finalizeTooltipText(text, el);
+  }
+
+  function shouldKeepNativeTitleSuppressed(el) {
+    const nativeTitle = readAttr(el, ATTR_NATIVE_TITLE) || readAttr(el, 'title');
+    return !!nativeTitle && shouldSuppressRedundantTooltip(el, nativeTitle);
   }
 
   function suppressNativeTitle(el) {
@@ -624,6 +678,7 @@
     if (!el || !document.documentElement.contains(el)) return;
     const text = explicitText != null ? String(explicitText).trim() : getTooltipText(el);
     if (!text) {
+      if (shouldKeepNativeTitleSuppressed(el)) return;
       restoreNativeTitle(el);
       return;
     }

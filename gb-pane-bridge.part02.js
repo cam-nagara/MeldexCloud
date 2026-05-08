@@ -204,6 +204,15 @@
     return viewName === 'database' ? 'pivot' : viewName;
   }
 
+  function _resolveDbPaneDisplayView(viewName, tab) {
+    const normalizedViewName = _normalizeDbPaneView(viewName);
+    if (!DB_SUB_VIEWS[normalizedViewName]) return normalizedViewName;
+    const dbPath = tab?.path || tab?.state?.dbPath || state.currentDbPath || '';
+    const mode = (dbPath && typeof getCurrentViewMode === 'function') ? getCurrentViewMode(dbPath) : '';
+    const resolvedMode = ['calendar', 'tasks', 'shifts'].includes(mode) ? 'timeline' : mode;
+    return DB_SUB_VIEWS[resolvedMode] ? resolvedMode : normalizedViewName;
+  }
+
   function _getActiveContentPaneInfo() {
     const paneId = _getContentPane(GBLayout.activePane);
     if (!paneId) return null;
@@ -288,6 +297,16 @@
       if (info) return _rememberAnnotationPaneInfo(info);
     }
     return _rememberAnnotationPaneInfo(_getAnnotationPaneInfos()[0] || null);
+  }
+
+  function _getCurrentAnnotationTarget(preferredPaneId) {
+    const info = _getAnnotationContentPaneInfo(preferredPaneId);
+    return _getAnnotationTargetForTab(info?.activeTab) || '';
+  }
+
+  function _rememberAnnotationTargetForPane(paneId) {
+    const info = _getAnnotationContentPaneInfo(paneId);
+    return _getAnnotationTargetForTab(info?.activeTab) || '';
   }
 
   function _annotationFabButtonForPane(contentEl, paneId) {
@@ -411,11 +430,19 @@
     }
   }
 
+  function _scheduleToolbarRecheck(viewName) {
+    const run = () => {
+      if (typeof _updateToolbars === 'function') _updateToolbars(viewName || state.view || '');
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    setTimeout(run, 0);
+  }
+
   // レガシーコンテナをペインに配置
   function _showLegacyViewInPane(paneId, contentEl, viewName, containerId, tab) {
     const viewEl = document.getElementById(containerId);
     if (!viewEl) return;
-    const resolvedViewName = _normalizeDbPaneView(viewName);
+    const resolvedViewName = _resolveDbPaneDisplayView(viewName, tab);
 
     // 他のペインから奪う場合は退避
     if (_containerPane[containerId] && _containerPane[containerId] !== paneId) {
@@ -445,6 +472,7 @@
     try { if (viewEl.inert) viewEl.inert = false; } catch (e) {}
 
     if (tab) _bindLiveLegacyContainer(containerId, paneId, tab, viewName, viewEl);
+    if (containerId === 'db-view-container') _scheduleToolbarRecheck(viewName);
   }
 
   // ペインからレガシーコンテナを退避（メインビュー＋右パネル両方）
@@ -494,6 +522,31 @@
     'version',
   ]);
   const FILE_SHOW_VIEW_TYPES = new Set(Object.keys(LEGACY_CONTAINERS).filter(type => type !== 'welcome'));
+  const TOOLBAR_DB_VIEW_TYPES = new Set(['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
+  const TOOLBAR_UTILITY_VIEW_TYPES = new Set([
+    ...Object.keys(PANEL_CONTAINERS),
+    ...Object.keys(RP_CONTAINERS),
+    ...PRIMARY_TOOL_PANE_TYPES,
+    'version',
+  ]);
+  const PASSIVE_TOOL_PANE_TYPES = new Set([
+    'chat',
+    'annotation',
+    'sticky',
+    'history',
+    'detail',
+    'preview',
+    'search',
+    'version',
+    'timer',
+  ]);
+
+  function _isPassiveToolPaneTab(type, tab) {
+    const rawType = type || tab?.type || '';
+    const normalizedType = rawType === 'sticky' ? 'annotation' : rawType;
+    if (normalizedType === 'calendar') return !tab?.path;
+    return PASSIVE_TOOL_PANE_TYPES.has(normalizedType);
+  }
 
   function _isPaneActuallyVisible(paneId) {
     if (!paneId) return false;
@@ -505,6 +558,49 @@
     if (typeof GBLayout.isPaneVisible === 'function') return GBLayout.isPaneVisible(paneId);
     const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
     return !!paneInfo?.node && !paneInfo.node.collapsed;
+  }
+
+  function _paneActiveType(pane) {
+    const tab = pane?.tabs?.[pane.activeTabIndex];
+    return tab?.type || '';
+  }
+
+  function _firstPaneMatching(panes, predicate) {
+    for (const pane of (panes || [])) {
+      if (predicate(pane)) return pane;
+    }
+    return null;
+  }
+
+  function _createFileOpenPaneNear(paneId) {
+    if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined') return null;
+    const allPanes = typeof GBLayout.getAllPanes === 'function' ? GBLayout.getAllPanes(GBLayout.root) : [];
+    const visiblePanes = allPanes.filter(pane => _isPaneActuallyVisible(pane.id));
+    const sourcePane = _firstPaneMatching(visiblePanes, pane => pane.id === paneId && !pane.locked)
+      || _firstPaneMatching(visiblePanes, pane => _paneActiveType(pane) === 'outliner' && !pane.locked)
+      || _firstPaneMatching(visiblePanes, pane => !_isFileOpenPaneCandidate(pane) && !pane.locked)
+      || _firstPaneMatching(allPanes, pane => _paneActiveType(pane) === 'outliner' && !pane.locked)
+      || _firstPaneMatching(allPanes, pane => !pane.locked)
+      || null;
+    const tab = GBTabs.createTab('フォルダ', 'folder', '');
+    const newPane = GBLayout.createPaneNode(null, [tab], 0);
+    const historyOptions = {
+      historyLabel: 'レイアウト: 作業パネルを作成',
+      historyDetail: 'ファイルリンクを開く',
+    };
+    let newPaneId = null;
+    if (sourcePane?.id) {
+      const position = _paneActiveType(sourcePane) === 'outliner' ? 'right' : 'left';
+      newPaneId = GBLayout.splitPane(sourcePane.id, 'horizontal', position, newPane, historyOptions);
+    }
+    if (!newPaneId && typeof GBLayout.splitRoot === 'function') {
+      newPaneId = GBLayout.splitRoot('right', newPane, historyOptions);
+    }
+    if (newPaneId) {
+      _expandCollapsedPane(newPaneId);
+      GBLayout.setActivePane(newPaneId, { sync: true });
+    }
+    return newPaneId;
   }
 
   // アクティブペインがナビゲーション用ペインの場合、コンテンツペインを返す
@@ -554,8 +650,10 @@
     return true;
   }
 
-  function _getFileOpenPane(paneId) {
-    if (!paneId) return _getContentPane(paneId);
+  function _getFileOpenPane(paneId, options) {
+    const opts = options || {};
+    paneId = paneId || GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id || '';
+    if (!paneId) return opts.ensureWorkPane ? _createFileOpenPaneNear('') : _getContentPane(paneId);
     const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
     const pane = paneInfo?.node || null;
     if (pane && _isPaneActuallyVisible(paneId) && _isFileOpenPaneCandidate(pane)) return paneId;
@@ -577,6 +675,11 @@
       if (p.id === paneId) continue;
       if (_isFileOpenPaneCandidate(p, { allowLocked: true })) return p.id;
     }
+    if (opts.ensureWorkPane) {
+      const ensuredPaneId = _createFileOpenPaneNear(paneId);
+      if (ensuredPaneId) return ensuredPaneId;
+    }
+    if (opts.fileOpenOnly) return null;
     for (const p of allPanes) {
       if (p.id === paneId || !_isPaneActuallyVisible(p.id)) continue;
       if (_isFileOpenFallbackPaneCandidate(p)) return p.id;
@@ -595,9 +698,71 @@
     return null;
   }
 
+  function _activateFileOpenPane(options) {
+    const paneId = _getFileOpenPane(options?.paneId || GBLayout.activePane, { ensureWorkPane: true });
+    if (!paneId) return null;
+    _expandCollapsedPane(paneId);
+    if (GBLayout.activePane !== paneId) GBLayout.setActivePane(paneId, { sync: true });
+    return paneId;
+  }
+
   function _getViewHostPane(viewName) {
     if (!FILE_SHOW_VIEW_TYPES.has(viewName)) return _getContentPane(GBLayout.activePane);
-    return _getFileOpenPane(GBLayout.activePane);
+    return _getFileOpenPane(GBLayout.activePane, { ensureWorkPane: true });
+  }
+
+  function _isToolbarUtilityView(viewName) {
+    return TOOLBAR_UTILITY_VIEW_TYPES.has(viewName);
+  }
+
+  function _toolbarViewForTab(tab) {
+    const rawType = tab?.type || '';
+    if (!rawType || _isToolbarUtilityView(rawType)) return '';
+    const normalizedType = _normalizeDbPaneView(rawType);
+    if (TOOLBAR_DB_VIEW_TYPES.has(normalizedType)) return _resolveDbPaneDisplayView(rawType, tab);
+    return normalizedType;
+  }
+
+  function _getToolbarContentContext(viewName) {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root) return null;
+    const activePaneId = GBLayout.activePane || '';
+    const paneIds = [];
+    const seen = new Set();
+    const pushPaneId = (paneId) => {
+      if (!paneId || seen.has(paneId)) return;
+      seen.add(paneId);
+      paneIds.push(paneId);
+    };
+
+    if (!_isToolbarUtilityView(viewName)) pushPaneId(activePaneId);
+    pushPaneId(_getFileOpenPane(activePaneId));
+    pushPaneId(_getContentPane(activePaneId));
+    pushPaneId(_containerPane['db-view-container']);
+    pushPaneId(_lastDetailContentPaneId);
+
+    const panes = typeof GBLayout.getAllPanes === 'function'
+      ? GBLayout.getAllPanes(GBLayout.root, { activeOnly: true }) || []
+      : [];
+    panes.filter(pane => _isPaneActuallyVisible(pane.id)).forEach(pane => pushPaneId(pane.id));
+    panes.forEach(pane => pushPaneId(pane.id));
+
+    for (const paneId of paneIds) {
+      const info = _getPaneInfoById(paneId);
+      const toolbarView = _toolbarViewForTab(info?.activeTab);
+      if (info && toolbarView) return { ...info, viewName: toolbarView };
+    }
+    return null;
+  }
+
+  function _resolveToolbarContext(viewName) {
+    const normalizedViewName = _normalizeDbPaneView(viewName);
+    const contentContext = _getToolbarContentContext(viewName);
+    if (_isToolbarUtilityView(viewName) && contentContext) return contentContext;
+    const requestedViewName = TOOLBAR_DB_VIEW_TYPES.has(normalizedViewName)
+      ? _resolveDbPaneDisplayView(viewName, contentContext?.activeTab)
+      : normalizedViewName;
+    if (contentContext) return { ...contentContext, viewName: requestedViewName };
+    return { paneId: '', paneNode: null, activeTab: null, contentEl: null, viewName: requestedViewName };
   }
 
   function _focusFileOpenPane(paneId) {
@@ -799,9 +964,10 @@
 
   // ツールバー更新（v5.0: ツールバーをペインのcontentEl先頭に動的配置）
   function _updateToolbars(viewName) {
-    const normalizedViewName = _normalizeDbPaneView(viewName);
-    const isDbView = ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db'].includes(normalizedViewName);
-    const showRt = (viewName === 'page');
+    const toolbarContext = _resolveToolbarContext(viewName);
+    const toolbarViewName = toolbarContext.viewName;
+    const isDbView = TOOLBAR_DB_VIEW_TYPES.has(toolbarViewName);
+    const showRt = (toolbarViewName === 'page');
     const showToolbar = isDbView || showRt;
 
     const appTb = document.getElementById('app-toolbar');
@@ -814,7 +980,7 @@
 
     // ツールバーをアクティブペインのcontentElの先頭に移動
     if (appTb && showToolbar) {
-      const paneId = _getFileOpenPane(GBLayout.activePane) || _getContentPane(GBLayout.activePane);
+      const paneId = toolbarContext.paneId || _getFileOpenPane(GBLayout.activePane) || _getContentPane(GBLayout.activePane);
       if (paneId) {
         const paneInfo = GBLayout.paneMap[paneId];
         if (paneInfo && paneInfo.contentEl && appTb.parentNode !== paneInfo.contentEl) {
@@ -826,7 +992,7 @@
     const entityRt = document.getElementById('entity-rt-toolbar');
     if (entityRt) {
       const entityFreeText = document.getElementById('entity-freetext');
-      const hasEntityNote = viewName === 'entity'
+      const hasEntityNote = toolbarViewName === 'entity'
         && entityFreeText?.dataset?.entityNoteCreated === '1'
         && entityFreeText.style.display !== 'none';
       entityRt.style.display = hasEntityNote ? 'flex' : 'none';
@@ -835,9 +1001,9 @@
     const sc = document.getElementById('sb-shortcuts');
     if (sc) {
       if (isDbView) sc.textContent = '';
-      else if (['entity', 'page'].includes(viewName)) {
+      else if (['entity', 'page'].includes(toolbarViewName)) {
         sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き';
-      } else if (viewName === 'scriptnote') {
+      } else if (toolbarViewName === 'scriptnote') {
         if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
         else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
       } else sc.textContent = '';
@@ -975,7 +1141,7 @@
     // _openInNewTab → ペインに新タブとして開く
     window._openInNewTab = function(label, path, type) {
       type = type || 'page';
-      const paneId = _getFileOpenPane(GBLayout.activePane);
+      const paneId = _getFileOpenPane(GBLayout.activePane, { ensureWorkPane: true });
       const tabId = paneId ? GBTabs.addTab(paneId, label, type, path) : null;
       if (tabId) {
         _beginBridgeUpdate();

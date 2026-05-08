@@ -808,10 +808,35 @@ function refreshOutlinerSettingsAfterHistory() {
 
 async function refreshOutliner() {
   const refreshJobs = [];
-  if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve(loadOutliner()).catch(() => {}));
-  if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve(renderFavorites()).catch(() => {}));
-  if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
-  await Promise.allSettled(refreshJobs);
+  if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner()));
+  if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+  if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+  return Promise.allSettled(refreshJobs);
+}
+
+async function refreshOutlinerFromButton(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  const btn = event?.target?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh') || null;
+  if (btn?.disabled) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+  }
+  try {
+    const results = await refreshOutliner();
+    const failedCount = (results || []).filter(result => result?.status === 'rejected').length;
+    if (typeof showStatus === 'function') {
+      showStatus(failedCount ? 'フォルダツリーの一部更新に失敗しました' : 'フォルダツリーを更新しました', !!failedCount);
+    }
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('フォルダツリーの更新に失敗しました', true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+    }
+  }
 }
 
 function captureOutlinerSettingsHistory(keys) {

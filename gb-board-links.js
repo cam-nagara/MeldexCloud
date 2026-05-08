@@ -48,7 +48,8 @@ function _bdShouldResolveLinkedType(path, explicitType) {
   if (String(explicitType || '').trim()) return false;
   const nextPath = String(path || '').trim();
   if (!nextPath || /^[a-z][a-z0-9+.-]*:\/\//i.test(nextPath)) return false;
-  return ['md', 'json'].includes(_bdLinkExt(nextPath));
+  const ext = _bdLinkExt(nextPath);
+  return !ext || ['md', 'json'].includes(ext);
 }
 
 async function _bdFetchLinkedType(path) {

@@ -424,6 +424,7 @@
   }
 
   function normalizeCliChatUserContent(textValue, attachments) {
+    if (typeof _chatNormalizeUserContent === 'function') return _chatNormalizeUserContent(textValue, attachments);
     const textPart = String(textValue || '');
     if (!Array.isArray(attachments) || !attachments.length) return textPart;
     return [
@@ -473,7 +474,10 @@
 
   async function sendCliChat(options = {}) {
     if (_chatState.streaming) {
-      if (typeof chatStopStreaming === 'function') chatStopStreaming();
+      if (typeof _chatQueueUserInputForNextTurn === 'function') return _chatQueueUserInputForNextTurn(options);
+      if (options?.fromButton || options?.stopRequested) {
+        if (typeof chatStopStreaming === 'function') chatStopStreaming();
+      }
       return false;
     }
     if (!cliChatConfig) await loadCliChatConfig();
@@ -487,27 +491,51 @@
     const input = document.getElementById('chat-input');
     const msgContainer = typeof _chatLiveMessagesContainer === 'function' ? _chatLiveMessagesContainer() : document.getElementById('chat-messages');
     if (!input || !msgContainer) return false;
-    const attachments = _chatState.pendingAttachments || [];
-    const textValue = input.value.trim();
-    if (!textValue && attachments.length === 0) return false;
-
-    input.value = '';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
-    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
-
-    const userTimestamp = typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString();
-    const userContent = normalizeCliChatUserContent(textValue, attachments);
-    if (attachments.length > 0) {
-      if (typeof _chatClearPendingAttachments === 'function') _chatClearPendingAttachments();
-      else _chatState.pendingAttachments = [];
+    const deferredMessages = Array.isArray(options.deferredMessages)
+      ? (typeof _chatCloneMessages === 'function' ? _chatCloneMessages(options.deferredMessages) : JSON.parse(JSON.stringify(options.deferredMessages))).filter(message => message?.role === 'user')
+      : [];
+    const usingDeferredMessages = deferredMessages.length > 0;
+    const attachments = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
+    const textValue = usingDeferredMessages && typeof _chatQueuedMessagesText === 'function'
+      ? _chatQueuedMessagesText(deferredMessages).trim()
+      : input.value.trim();
+    if (!usingDeferredMessages && !textValue && attachments.length === 0) {
+      if (typeof _chatQueuedMessages === 'function' && _chatQueuedMessages().length && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        return _chatSendQueuedMessagesAfterStream();
+      }
+      return false;
     }
-    const userMessage = { role: 'user', content: userContent, timestamp: userTimestamp };
-    if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(userMessage);
-    if (typeof chatAddMessage === 'function') {
-      chatAddMessage('user', userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
+
+    if (!usingDeferredMessages) {
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
+      if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
     }
-    _chatState.messages.push(userMessage);
+
+    if (usingDeferredMessages) {
+      deferredMessages.forEach(message => {
+        message.role = 'user';
+        message.timestamp = message.timestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString());
+        if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(message);
+      });
+      _chatState.messages.push(...deferredMessages);
+      if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+    } else {
+      if (typeof _chatPromoteQueuedMessagesToHistory === 'function') _chatPromoteQueuedMessagesToHistory();
+      const userTimestamp = typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString();
+      const userContent = normalizeCliChatUserContent(textValue, attachments);
+      if (attachments.length > 0) {
+        if (typeof _chatClearPendingAttachments === 'function') _chatClearPendingAttachments();
+        else _chatState.pendingAttachments = [];
+      }
+      const userMessage = { role: 'user', content: userContent, timestamp: userTimestamp };
+      if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(userMessage);
+      if (typeof chatAddMessage === 'function') {
+        chatAddMessage('user', userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
+      }
+      _chatState.messages.push(userMessage);
+    }
     if (typeof _ensureSessionId === 'function') _ensureSessionId();
 
     const streamMessages = _chatState.messages;
@@ -515,6 +543,7 @@
     const streamSessionTitle = _chatState.sessionTitle || '';
     const streamTargetPath = _chatState.targetPath || '';
     const streamSourceFolder = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
+    const streamWorkFolder = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
     const streamModel = cliChatModel(provider);
     const streamController = new AbortController();
     const streamVisibleInCurrentChat = () => _chatState.messages === streamMessages
@@ -548,6 +577,7 @@
     let stderrText = '';
     let sendOk = false;
     let sawCliEvent = false;
+    let cliCompleted = false;
     const renderOptions = () => {
       if (!assistantTimestamp) assistantTimestamp = typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString();
       return {
@@ -575,7 +605,10 @@
           session_title: streamSessionTitle,
           target_path: streamTargetPath,
           source_folder: streamSourceFolder,
+          work_folder: streamWorkFolder,
+          active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
           user: typeof getUsername === 'function' ? getUsername() : '',
+          theme_context: typeof window.chatThemeContextSettings === 'function' ? window.chatThemeContextSettings() : {},
         }),
       });
       if (!response.ok) {
@@ -628,6 +661,7 @@
         }
       }
       activity.wrapper.remove();
+      cliCompleted = true;
       if (!fullText.trim() && stderrText.trim()) fullText = stderrText.trim();
       if (!fullText.trim() && !stderrText.trim()) {
         const label = cliChatMeta(provider)?.label || provider || 'CLI';
@@ -684,6 +718,15 @@
         cliChatSetSendButtonStreaming(false);
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
         if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+        if (cliCompleted && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+          setTimeout(() => {
+            _chatSendQueuedMessagesAfterStream({
+              messages: streamMessages,
+              sessionId: streamSessionId,
+              targetPath: streamTargetPath,
+            }).catch(() => {});
+          }, 0);
+        }
       }
     }
     return sendOk;

@@ -15,19 +15,33 @@
     return `var(--theme-palette-${normalized},var(--theme-slot-color,var(--accent)))`;
   }
 
+  const THEME_UI_SELECTED_SELECTOR_SUFFIXES = Object.freeze([
+    '.active',
+    '.selected',
+    '.gb-inner-tab-active',
+    '.gb-panel-tab-active',
+    '[aria-selected="true"]',
+    '[data-selected="1"]',
+  ]);
+
+  function _themeUiSelectedSelectors(base) {
+    return THEME_UI_SELECTED_SELECTOR_SUFFIXES.map(suffix => `${base}${suffix}`);
+  }
+
+  function _themeUiNormalSelector(base) {
+    const selectedExclusions = THEME_UI_SELECTED_SELECTOR_SUFFIXES
+      .map(suffix => `:not(${suffix})`)
+      .join('');
+    return `${base}:not(:hover)${selectedExclusions}`;
+  }
+
   function _themeUiStateSelector(targetId, stateId) {
     const base = `[data-theme-palette-target="${targetId}"]`;
     if (stateId === 'hover') return `${base}:hover`;
     if (stateId === 'selected') {
-      return [
-        `${base}.active`,
-        `${base}.selected`,
-        `${base}.gb-inner-tab-active`,
-        `${base}.gb-panel-tab-active`,
-        `${base}[aria-selected="true"]`,
-        `${base}[data-selected="1"]`,
-      ].join(',');
+      return _themeUiSelectedSelectors(base).join(',');
     }
+    if (stateId === 'normal') return _themeUiNormalSelector(base);
     return base;
   }
 

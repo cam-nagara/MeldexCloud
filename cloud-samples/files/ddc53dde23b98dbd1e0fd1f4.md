@@ -1,0 +1,44 @@
+---
+type: settings-entry
+id: p16_地下通路
+category: 場所情報
+created: '2026-05-06T17:18:39'
+created_by: codex
+created_by_kind: cli
+created_by_model: gpt-5
+properties:
+  分類:
+  - value: 地下
+    status: 案
+  階層:
+  - value: 本館床下
+    status: 案
+  接続:
+  - value: 家主の居室、書院、蔵、離れ付近へ隠し導線。
+    status: 案
+  主な登場人物:
+  - value: 検崎 甚一、鬼ヶ瀬 杢蔵、小間井 芽衣、狭間 透
+    status: 案
+  通常の機能:
+  - value: 当主一族だけが知る古い避難路または抜け道。
+    status: 案
+  事件での役割:
+  - value: 表の廊下を通らない移動とアリバイ崩しに使う。
+    status: 案
+  仕掛け・制約:
+  - value: 暗く狭く、水音がする。生者には危険で死霊には観察だけ可能。
+    status: 案
+  手がかり:
+  - value: 足跡、湿った泥、古い鍵、死体移動の可能性。
+    status: 案
+  ミスリード:
+  - value: 屋敷の怨霊がどこからでも現れるように見える。
+    status: 案
+  備考:
+  - value: 本格ミステリの物理導線として重要。
+    status: 案
+relations: []
+modified: '2026-05-07T20:27:24'
+modified_by: anonymous
+modified_by_kind: human
+---

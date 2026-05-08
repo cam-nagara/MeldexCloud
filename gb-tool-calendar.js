@@ -37,6 +37,8 @@ class CalendarComponent extends ToolComponent {
     this._clockBtnsEl = null;
     this._clockStatusEl = null;
     this._renderSeq = 0;
+    this._initialized = false;
+    this._initPromise = null;
   }
 
   // === DOM生成 ===
@@ -185,8 +187,19 @@ class CalendarComponent extends ToolComponent {
 
   // === ライフサイクル ===
   activate() {
+    const wasActive = this._active;
     super.activate();
-    this._init();
+    if (this._initPromise) return;
+    if (this._initialized) {
+      if (!wasActive) this._refreshAfterActivation();
+      return;
+    }
+    this._initPromise = this._init().catch(error => {
+      this._initialized = false;
+      console.warn('[CalendarComponent] init failed:', error);
+    }).finally(() => {
+      this._initPromise = null;
+    });
   }
 
   deactivate() {
@@ -202,11 +215,21 @@ class CalendarComponent extends ToolComponent {
   }
 
   async _init() {
+    if (this._initialized) return;
+    this._initialized = true;
     await Promise.all([this._loadEvents(), this._loadTasks(), this._loadCalendars()]);
+    this._refreshAfterActivation();
+  }
+
+  _refreshAfterActivation() {
     this._render();
     this._renderMiniCal();
     this._renderTodayTasks();
     this._updateClockStatus();
+    this._ensureAlarmTimer();
+  }
+
+  _ensureAlarmTimer() {
     if (!this._alarmInterval) {
       this._alarmInterval = setInterval(() => this._checkAlarms(), 60000);
       setTimeout(() => this._checkAlarms(), 3000);

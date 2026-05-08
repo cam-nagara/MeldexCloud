@@ -27,6 +27,45 @@ function _normalizeRightPanelTabName(tabName) {
   return tabName === 'sticky' ? 'annotation' : tabName;
 }
 
+let _lastRpAnnotationCurrentTarget = '';
+
+function _isRpAnnotationConcreteTarget(value) {
+  const target = String(value || '').trim();
+  if (!target) return false;
+  return !['unknown', 'undefined', 'null', 'viewer'].includes(target.toLowerCase());
+}
+
+function _rememberRpAnnotationCurrentTarget(target) {
+  const nextTarget = String(target || '').trim();
+  if (!_isRpAnnotationConcreteTarget(nextTarget)) return '';
+  _lastRpAnnotationCurrentTarget = nextTarget;
+  const panel = document.getElementById('rp-annotation');
+  const search = document.getElementById('rp-ann-search');
+  if (panel) panel.dataset.currentTarget = nextTarget;
+  if (search) search.dataset.currentTarget = nextTarget;
+  return nextTarget;
+}
+
+function _resolveRpAnnotationCurrentTarget() {
+  const panel = document.getElementById('rp-annotation');
+  const search = document.getElementById('rp-ann-search');
+  const targetFilter = _readRpAnnotationTargetFilter(search);
+  const candidates = [
+    targetFilter?.targetPath,
+    (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.getCurrentAnnotationTarget === 'function')
+      ? GBPaneBridge.getCurrentAnnotationTarget()
+      : '',
+    (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '',
+    search?.dataset?.currentTarget,
+    panel?.dataset?.currentTarget,
+    _lastRpAnnotationCurrentTarget,
+  ];
+  for (const candidate of candidates) {
+    if (_isRpAnnotationConcreteTarget(candidate)) return _rememberRpAnnotationCurrentTarget(candidate);
+  }
+  return '';
+}
+
 function openRightPanelTab(tabName) {
   tabName = _normalizeRightPanelTabName(tabName);
   const panel = document.getElementById('right-panel');
@@ -151,15 +190,35 @@ async function loadRpAnnotationList() {
   const userFilter = document.getElementById('rp-ann-user')?.value || '';
   const searchEl = document.getElementById('rp-ann-search');
   const searchQuery = searchEl?.value?.toLowerCase() || '';
-  const targetFilter = _readRpAnnotationTargetFilter(searchEl);
+  let targetFilter = _readRpAnnotationTargetFilter(searchEl);
+  const currentTarget = scopeFilter === 'current' ? _resolveRpAnnotationCurrentTarget() : '';
+  const currentTargetCandidates = scopeFilter === 'current' ? _rpAnnotationTargetCandidates(currentTarget) : [];
+  if (scopeFilter === 'current' && !currentTarget) {
+    _renderRpAnnotationEmptyState(list, {
+      unresolved: true,
+      scope: scopeFilter,
+      status: statusFilter,
+      type: typeFilter,
+    });
+    return;
+  }
+  if (scopeFilter === 'current' && currentTarget && !targetFilter?.targetPath) {
+    targetFilter = { targetPath: currentTarget, targetPathCandidates: currentTargetCandidates };
+  }
   try {
-    let url = '/annotations?limit=500';
-    if (scopeFilter === 'current') {
-      const cur = (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '';
-      // fallback 文字列 'unknown' 等をそのまま投げない（/ を含むパスのみ有効とみなす）
-      if (cur && cur.includes('/')) url += '&target=' + encodeURIComponent(cur);
+    let items = [];
+    if (scopeFilter === 'current' && currentTargetCandidates.length) {
+      const byId = new Map();
+      for (const candidate of currentTargetCandidates) {
+        const rows = await apiFetch('/annotations?limit=500&target=' + encodeURIComponent(candidate));
+        (rows || []).forEach(row => {
+          if (row?.id && !byId.has(row.id)) byId.set(row.id, row);
+        });
+      }
+      items = [...byId.values()];
+    } else {
+      items = await apiFetch('/annotations?limit=500');
     }
-    const items = await apiFetch(url);
     const norm = (items || []).map(_normalizeAnnotationRow);
     _populateRpAnnotationUsers(norm, userFilter);
     // 状態フィルタ
@@ -186,6 +245,7 @@ async function loadRpAnnotationList() {
         (a.data?.text || '').toLowerCase().includes(searchQuery) ||
         _stripRpAnnotationHtml(a.data?.html || '').toLowerCase().includes(searchQuery) ||
         (a.target_path || '').toLowerCase().includes(searchQuery) ||
+        (a.target_ref?.file || '').toLowerCase().includes(searchQuery) ||
         (a.target_file_name || '').toLowerCase().includes(searchQuery) ||
         (a.target_snapshot || '').toLowerCase().includes(searchQuery) ||
         (a.user || '').toLowerCase().includes(searchQuery)
@@ -193,7 +253,13 @@ async function loadRpAnnotationList() {
     }
     _sortRpAnnotations(filtered, sortMode);
     if (filtered.length === 0) {
-      list.innerHTML = '<div style="padding:12px;text-align:center;color:var(--fg2);font-size:12px;">該当する注釈がありません</div>';
+      _renderRpAnnotationEmptyState(list, {
+        target: currentTarget,
+        scope: scopeFilter,
+        status: statusFilter,
+        type: typeFilter,
+        query: searchQuery,
+      });
       return;
     }
     list.innerHTML = '';
@@ -208,6 +274,48 @@ function _readRpAnnotationTargetFilter(searchEl) {
   const raw = searchEl?.dataset?.targetFilter || '';
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
+}
+
+function _rpNormalizeAnnotationPath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _rpSameAnnotationPath(a, b) {
+  const left = _rpNormalizeAnnotationPath(a);
+  const right = _rpNormalizeAnnotationPath(b);
+  if (!left || !right) return false;
+  return left === right || left.endsWith('/' + right) || right.endsWith('/' + left);
+}
+
+function _rpAnnotationTargetCandidates(target) {
+  const raw = _rpNormalizeAnnotationPath(target);
+  if (!raw) return [];
+  const candidates = [raw];
+  const hasExactCandidate = (value) => {
+    const normalized = _rpNormalizeAnnotationPath(value);
+    return candidates.some(item => _rpNormalizeAnnotationPath(item) === normalized);
+  };
+  const roots = [];
+  try {
+    if (typeof _homeFolderPath !== 'undefined' && _homeFolderPath) roots.push(_homeFolderPath);
+  } catch {}
+  try {
+    if (typeof state !== 'undefined' && state?.vaultPath) roots.push(state.vaultPath);
+  } catch {}
+  for (const rootValue of roots) {
+    const root = _rpNormalizeAnnotationPath(rootValue);
+    if (!root || raw === root || !raw.startsWith(root + '/')) continue;
+    const relative = raw.slice(root.length + 1);
+    if (relative && !hasExactCandidate(relative)) {
+      candidates.push(relative);
+    }
+  }
+  const parts = raw.split('/').filter(Boolean);
+  for (let count = 1; count <= Math.min(4, parts.length); count += 1) {
+    const suffix = parts.slice(-count).join('/');
+    if (suffix && !hasExactCandidate(suffix)) candidates.push(suffix);
+  }
+  return candidates;
 }
 
 function _rpTargetContainerFilter(kind, ref) {
@@ -230,7 +338,10 @@ function _rpRefMatches(filterRef, actualRef) {
 function _rpAnnotationMatchesTargetFilter(annotation, filter) {
   const ref = annotation.target_ref || {};
   const targetPath = ref.file || annotation.target_path || '';
-  if (filter.targetPath && targetPath !== filter.targetPath) return false;
+  const targetCandidates = Array.isArray(filter.targetPathCandidates) && filter.targetPathCandidates.length
+    ? filter.targetPathCandidates
+    : (filter.targetPath ? [filter.targetPath] : []);
+  if (targetCandidates.length && !targetCandidates.some(candidate => _rpSameAnnotationPath(targetPath, candidate))) return false;
   if (!filter.targetKind) return true;
   if (annotation.target_kind === filter.targetKind) {
     return _rpRefMatches(filter.targetRef, ref);
@@ -240,6 +351,55 @@ function _rpAnnotationMatchesTargetFilter(annotation, filter) {
     return _rpRefMatches(containerFilter, ref.container);
   }
   return false;
+}
+
+function _renderRpAnnotationEmptyState(list, options = {}) {
+  if (!list) return;
+  list.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'padding:12px;color:var(--fg2);font-size:12px;display:flex;flex-direction:column;gap:8px;line-height:1.6;';
+  const title = document.createElement('div');
+  title.style.cssText = 'color:var(--fg);font-weight:600;';
+  title.textContent = options.unresolved ? '現在の対象を特定できません' : '該当する注釈がありません';
+  wrap.appendChild(title);
+
+  const detail = document.createElement('div');
+  const targetText = options.target ? options.target : '未特定';
+  const statusText = ({
+    open: '未解決',
+    resolved: '解決済み',
+    orphan: '孤児',
+    deleted: '削除済み',
+    all: 'すべて',
+  })[options.status || 'open'] || (options.status || '未解決');
+  const typeText = options.type || 'すべて';
+  detail.textContent = `現在対象: ${targetText} / スコープ: ${options.scope || 'current'} / 状態: ${statusText} / 種類: ${typeText}`;
+  wrap.appendChild(detail);
+  if (options.query) {
+    const query = document.createElement('div');
+    query.textContent = `検索語: ${options.query}`;
+    wrap.appendChild(query);
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = '全ファイル・全状態で表示';
+  btn.style.cssText = 'align-self:flex-start;padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--fg);cursor:pointer;';
+  btn.addEventListener('click', () => {
+    const scope = document.getElementById('rp-ann-scope');
+    const status = document.getElementById('rp-ann-status');
+    const search = document.getElementById('rp-ann-search');
+    if (scope) scope.value = 'all';
+    if (status) status.value = 'all';
+    if (search) {
+      search.value = '';
+      delete search.dataset.targetFilter;
+      delete search.dataset.currentTarget;
+    }
+    loadRpAnnotationList();
+  });
+  wrap.appendChild(btn);
+  list.appendChild(wrap);
 }
 
 // /annotations 行の正規化: data / target_ref を JSON.parse、フラグを bool 化
@@ -344,7 +504,8 @@ function _renderRpAnnotationPreviewView(container, items) {
 }
 
 function _rpAnnotationMeta(a) {
-  const path = a.target_file_name || (a.target_path || '').split('/').pop() || '(不明)';
+  const rawPath = a.target_ref?.file || a.target_path || '';
+  const path = a.target_file_name || rawPath.split('/').pop() || '(不明)';
   const time = _rpAnnotationTime(a, 'modified') || _rpAnnotationTime(a, 'created');
   const flags = [a.resolved ? '解決済み' : '', a.orphan ? '孤児' : '', a.deleted ? '削除済み' : ''].filter(Boolean);
   return `${path} ・ ${a.user || ''}${time ? ' ・ ' + time : ''}${flags.length ? ' ・ ' + flags.join(' ・ ') : ''}`;

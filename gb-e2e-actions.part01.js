@@ -304,6 +304,8 @@
     const paneVisible = paneInfo?.paneId && typeof GBLayout?.isPaneVisible === 'function'
       ? GBLayout.isPaneVisible(paneInfo.paneId)
       : true;
+    const mobileSinglePane = typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout();
+    if (mobileSinglePane && paneInfo?.paneId && !layoutContent) return null;
     if (paneInfo?.activeTab?.type === toolType && paneVisible) {
       if (layoutContent) return layoutContent;
       if (paneInfo.pane) return paneInfo.pane;
@@ -1121,7 +1123,16 @@
     const dbPath = action.dbPath || _appState().currentDbPath;
     const configDbPath = _resolvedDbPathKey(api, dbPath);
     api.assert(dbPath, 'dbPath が見つかりません');
+    let focused = await _focusContentTab('database', dbPath, api, 'シートタブ再アクティブ化').catch(() => null);
+    if (!focused) focused = await _focusContentTab('pivot', dbPath, api, 'シートタブ再アクティブ化').catch(() => null);
     const targetView = ['calendar', 'tasks', 'shifts'].includes(action.mode) ? 'timeline' : action.mode;
+    if (typeof getSavedViews === 'function' && typeof setSavedViews === 'function' && typeof setCurrentViewIdx === 'function') {
+      const savedViews = getSavedViews(configDbPath);
+      if (!Array.isArray(savedViews) || savedViews.length === 0) {
+        setSavedViews(configDbPath, [{ name: 'E2E ビュー', viewMode: 'pivot' }], { skipHistory: true });
+        setCurrentViewIdx(configDbPath, 0, { skipHistory: true });
+      }
+    }
     if (action.mode === 'timeline' && typeof getTimelineConfig === 'function' && typeof setTimelineConfig === 'function') {
       setTimelineConfig(configDbPath, {
         ...(getTimelineConfig(configDbPath) || {}),
@@ -1132,7 +1143,8 @@
         direction: action.direction || 'horizontal',
       });
     }
-    switchDbViewMode(action.mode, action.viewIdx ?? -1);
+    const renderCtx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+    switchDbViewMode(action.mode, action.viewIdx ?? -1, renderCtx);
     try {
       await api.waitFor(() => {
         const currentMode = typeof getCurrentViewMode === 'function' ? getCurrentViewMode(configDbPath) : 'pivot';
@@ -1152,6 +1164,56 @@
       );
     }
     api.logStep('シートビュー切替 OK: ' + action.mode);
+  });
+
+  registerAction('database_open_timeline_card_props_menu', async (action, api) => {
+    const dbPath = action.dbPath || _appState().currentDbPath;
+    if (dbPath) {
+      let focused = await _focusContentTab('database', dbPath, api, 'シートタブ再アクティブ化').catch(() => null);
+      if (!focused) focused = await _focusContentTab('pivot', dbPath, api, 'シートタブ再アクティブ化').catch(() => null);
+    }
+    let button = null;
+    try {
+      button = await api.waitFor(() => {
+        const btn = document.querySelector('.timeline-view #tl-card-props, #timeline-view #tl-card-props');
+        return _isVisibleElement(btn) ? btn : null;
+      }, 'タイムラインカード表示ボタン');
+    } catch (error) {
+      if (typeof renderTimeline === 'function') {
+        const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+        if (ctx && dbPath) ctx.dbPath = dbPath;
+        renderTimeline(ctx);
+        button = await api.waitFor(() => {
+          const btn = document.querySelector('.timeline-view #tl-card-props, #timeline-view #tl-card-props');
+          return _isVisibleElement(btn) ? btn : null;
+        }, 'タイムラインカード表示ボタン再描画');
+      }
+      if (!button) {
+        const root = document.querySelector('.timeline-view, #timeline-view');
+        const text = (root?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 220);
+        const panes = typeof GBLayout?.getAllPanes === 'function'
+          ? GBLayout.getAllPanes(GBLayout.root).map(p => {
+            const tab = p.tabs?.[p.activeTabIndex] || {};
+            return `${p.id}:${tab.type || ''}:${tab.path || ''}`;
+          }).join('|')
+          : '';
+        const currentDbPath = action.dbPath || _appState().currentDbPath || '';
+        const configDbPath = _resolvedDbPathKey(api, currentDbPath);
+        const mode = configDbPath && typeof getCurrentViewMode === 'function' ? getCurrentViewMode(configDbPath) : '';
+        const idx = configDbPath && typeof getCurrentViewIdx === 'function' ? getCurrentViewIdx(configDbPath) : '';
+        throw new Error((error?.message || error) + ' / timeline=' + (text || '(empty)') + ' / mode=' + mode + ' / idx=' + idx + ' / panes=' + panes);
+      }
+    }
+    button.click();
+    const menu = await api.waitFor(() => {
+      const menu = document.querySelector('.tl-card-props-menu');
+      return _isVisibleElement(menu) ? menu : null;
+    }, 'タイムラインカード表示メニュー');
+    if (action.expectEntryNameOption !== false) {
+      api.assert((menu.textContent || '').includes('エントリ名'), 'タイムラインカード表示メニューにエントリ名がありません');
+    }
+    if (action.close !== false) document.querySelector('.tl-card-props-menu')?.remove();
+    api.logStep('タイムラインカード表示メニュー OK');
   });
 
   registerAction('database_add_relation', async (action, api) => {

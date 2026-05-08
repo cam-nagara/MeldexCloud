@@ -184,7 +184,7 @@ function applyConditionalColors(propName) {
 function getCellColor(value, propName, dbPath) {
   const colors = getConditionalColors(dbPath);
   const rules = colors[propName];
-  if (!rules) return null;
+  if (!Array.isArray(rules)) return null;
   const v = value == null ? '' : String(value);
   for (const r of rules) {
     const ruleValue = r.value == null ? '' : String(r.value);

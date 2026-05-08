@@ -44,7 +44,8 @@ function _timelineGridTemplate(cfg, cols) {
 }
 
 function _setTimelineColWidth(dbPath, cfg, col, width, options = {}) {
-  const next = { ...cfg, colWidths: { ...(cfg.colWidths || {}) } };
+  const base = dbPath ? getTimelineConfig(dbPath) : (cfg || {});
+  const next = { ...base, colWidths: { ...(base.colWidths || {}) } };
   next.colWidths[_timelineColKey(col)] = Math.max(60, Math.round(width || 120));
   setTimelineConfig(dbPath, next, {
     label: options.label || 'シート表示: タイムライン列幅',
@@ -57,23 +58,25 @@ function _bindTimelineColumnResize(th, grid, dbPath, cfg, cols, col) {
   const handle = document.createElement('span');
   handle.className = 'tl-col-resize-handle';
   handle.title = '列幅を調整';
+  handle.draggable = false;
   handle.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     handle.setPointerCapture?.(ev.pointerId);
+    const baseCfg = getTimelineConfig(dbPath);
     const startX = ev.clientX;
-    const startWidth = _timelineColWidth(cfg, col);
+    const startWidth = _timelineColWidth(baseCfg, col);
     let nextWidth = startWidth;
     const onMove = (moveEv) => {
       nextWidth = Math.max(60, startWidth + moveEv.clientX - startX);
-      const liveCfg = { ...cfg, colWidths: { ...(cfg.colWidths || {}), [_timelineColKey(col)]: nextWidth } };
+      const liveCfg = { ...baseCfg, colWidths: { ...(baseCfg.colWidths || {}), [_timelineColKey(col)]: nextWidth } };
       grid.style.gridTemplateColumns = _timelineGridTemplate(liveCfg, cols);
     };
     const onUp = (upEv) => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       handle.releasePointerCapture?.(upEv.pointerId);
-      _setTimelineColWidth(dbPath, cfg, col, nextWidth);
+      _setTimelineColWidth(dbPath, baseCfg, col, nextWidth);
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
@@ -81,30 +84,52 @@ function _bindTimelineColumnResize(th, grid, dbPath, cfg, cols, col) {
   handle.addEventListener('dblclick', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
+    if (typeof autoFitTimelineColumn === 'function') {
+      const ctx = typeof _dbPaneContextFromEvent === 'function'
+        ? _dbPaneContextFromEvent(th, { dbPath })
+        : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+      autoFitTimelineColumn(ctx, dbPath, col);
+      return;
+    }
     const colIndex = th.dataset.colIndex;
     let width = th.scrollWidth + 18;
     grid.querySelectorAll(`[data-tl-col-index="${colIndex}"]`).forEach(el => {
       width = Math.max(width, el.scrollWidth + 18);
     });
-    _setTimelineColWidth(dbPath, cfg, col, Math.min(Math.max(width, 80), 480), { detail: String(col || '') });
+    _setTimelineColWidth(dbPath, getTimelineConfig(dbPath), col, Math.min(Math.max(width, 80), 360), { detail: String(col || '') });
   });
   th.appendChild(handle);
 }
 
-function _timelineEntryPropDisplay(entry, propName) {
+function _timelineEntryPropValues(entry, propName) {
   const vals = typeof filterValues === 'function' ? filterValues(entry.data?.[propName] || []) : (entry.data?.[propName] || []);
+  return vals || [];
+}
+
+function _timelineEntryPropDisplay(entry, propName) {
+  const vals = _timelineEntryPropValues(entry, propName);
   return vals.map(v => v?.value ?? '').filter(v => String(v).trim()).join(', ');
+}
+
+function _timelineShowsEntryName(cfg) {
+  return cfg?.showEntryName !== false;
 }
 
 function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
   root.innerHTML = '';
-  const title = document.createElement('div');
-  title.className = options.titleClass || 'tl-card-title';
-  title.textContent = entry.name;
-  root.appendChild(title);
+  if (_timelineShowsEntryName(cfg)) {
+    const title = document.createElement('div');
+    title.className = options.titleClass || 'tl-card-title';
+    title.textContent = entry.name;
+    root.appendChild(title);
+  }
   const cardProps = Array.isArray(cfg.cardProps) ? cfg.cardProps : [];
+  const editable = options.editable && options.dbPath && typeof _entityPath === 'function';
+  const propTypes = options.propTypes || {};
+  const entityPath = editable ? _entityPath(options.dbPath, entry.name) : '';
   cardProps.forEach(propName => {
-    const displayVal = _timelineEntryPropDisplay(entry, propName);
+    const vals = _timelineEntryPropValues(entry, propName);
+    const displayVal = vals.map(v => v?.value ?? '').filter(v => String(v).trim()).join(', ');
     if (!displayVal) return;
     const row = document.createElement('div');
     row.className = 'tl-card-prop';
@@ -113,11 +138,38 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
     name.textContent = propName + ':';
     const value = document.createElement('span');
     value.className = 'tl-card-prop-value';
-    value.textContent = displayVal;
+    if (editable && typeof createTypedValueElement === 'function') {
+      value.classList.add('tl-card-prop-value--editable');
+      vals.forEach(val => {
+        const valueEl = createTypedValueElement(val, entityPath, propName, options.thumbSize || 'small', propTypes[propName]);
+        if (valueEl) value.appendChild(valueEl);
+      });
+      ['pointerdown', 'click', 'dblclick', 'dragstart'].forEach(type => {
+        value.addEventListener(type, ev => ev.stopPropagation());
+      });
+    }
+    if (!value.childNodes.length) {
+      if (typeof _dbRichAppendValuePreview === 'function') _dbRichAppendValuePreview(value, vals);
+      else value.textContent = displayVal;
+    }
     row.appendChild(name);
     row.appendChild(value);
     root.appendChild(row);
   });
+}
+
+function _appendTimelineCardPropsOption(menu, text, checked, onChange) {
+  const label = document.createElement('label');
+  label.className = 'tl-card-prop-option';
+  label.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!checked;
+  cb.addEventListener('change', () => onChange(cb.checked));
+  label.appendChild(cb);
+  label.appendChild(document.createTextNode(text));
+  menu.appendChild(label);
+  return cb;
 }
 
 function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
@@ -126,25 +178,24 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.className = 'gb-context-menu tl-card-props-menu';
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
   const selected = new Set(Array.isArray(cfg.cardProps) ? cfg.cardProps : []);
-  props.forEach(prop => {
-    const label = document.createElement('label');
-    label.className = 'tl-card-prop-option';
-    label.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = selected.has(prop);
-    cb.addEventListener('change', () => {
-      if (cb.checked) selected.add(prop);
-      else selected.delete(prop);
-      setTimelineConfig(dbPath, { ...cfg, cardProps: Array.from(selected) }, {
-        label: 'シート表示: タイムラインカード表示',
-        detail: prop,
-      });
-      renderTimeline(ctx);
+  let showEntryName = _timelineShowsEntryName(cfg);
+  const saveCardProps = (detail) => {
+    setTimelineConfig(dbPath, { ...cfg, cardProps: Array.from(selected), showEntryName }, {
+      label: 'シート表示: タイムラインカード表示',
+      detail,
     });
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(prop));
-    menu.appendChild(label);
+    renderTimeline(ctx);
+  };
+  _appendTimelineCardPropsOption(menu, 'エントリ名', showEntryName, (checked) => {
+    showEntryName = checked;
+    saveCardProps('エントリ名');
+  });
+  props.forEach(prop => {
+    _appendTimelineCardPropsOption(menu, prop, selected.has(prop), (checked) => {
+      if (checked) selected.add(prop);
+      else selected.delete(prop);
+      saveCardProps(prop);
+    });
   });
   document.body.appendChild(menu);
   if (typeof attachMeldexDropdownCloseButton === 'function') {
@@ -154,10 +205,10 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
       attr: 'data-tl-card-props-close',
     });
   }
-  positionPopup(menu, anchor.getBoundingClientRect());
+  _positionTimelineCardPropsMenu(menu, anchor);
   setTimeout(() => {
     const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor) {
+      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
         menu.remove();
         document.removeEventListener('pointerdown', closer);
       }
@@ -166,12 +217,85 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   }, 0);
 }
 
+function _positionTimelineCardPropsMenu(menu, anchor) {
+  const rect = anchor?.getBoundingClientRect?.();
+  if (!menu || !rect) return;
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, rect);
+    return;
+  }
+  const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+  menu.style.left = (rect.left / z) + 'px';
+  menu.style.top = (rect.bottom / z + 2) + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+}
+
+function _timelineDisplayViewMode(mode) {
+  return ['calendar', 'tasks', 'shifts'].includes(mode) ? 'timeline' : (mode || 'timeline');
+}
+
+function _captureTimelineViewState(ctx, dbPath) {
+  const currentMode = (dbPath && typeof getCurrentViewMode === 'function')
+    ? getCurrentViewMode(dbPath)
+    : (ctx?.viewMode || 'timeline');
+  return {
+    dbPath,
+    currentViewIdx: (dbPath && typeof getCurrentViewIdx === 'function') ? getCurrentViewIdx(dbPath) : null,
+    viewMode: currentMode || 'timeline',
+    stateView: typeof state !== 'undefined' ? state.view : '',
+  };
+}
+
+function _restoreTimelineViewState(snapshot, ctx) {
+  if (!snapshot?.dbPath || typeof state === 'undefined') return;
+  if (state.currentDbPath !== snapshot.dbPath) return;
+  if (Number.isInteger(snapshot.currentViewIdx) && typeof setCurrentViewIdx === 'function') {
+    setCurrentViewIdx(snapshot.dbPath, snapshot.currentViewIdx, { skipHistory: true });
+  }
+  if (ctx && ctx.dbPath === snapshot.dbPath) ctx.viewMode = snapshot.viewMode || 'timeline';
+  if (snapshot.stateView) state.view = snapshot.stateView;
+  if (typeof showView === 'function') showView(_timelineDisplayViewMode(snapshot.viewMode), ctx);
+  if (typeof renderDbViewTabs === 'function') renderDbViewTabs(ctx);
+}
+
+async function _openTimelineEntityInSubpanel(ctx, dbPath, entityName) {
+  const snapshot = _captureTimelineViewState(ctx, dbPath);
+  let result = false;
+  try {
+    if (typeof openEntityInSplit === 'function') {
+      result = await openEntityInSplit(_entityPath(dbPath, entityName), entityName);
+    }
+  } finally {
+    const restore = () => _restoreTimelineViewState(snapshot, ctx);
+    if (typeof queueMicrotask === 'function') queueMicrotask(restore);
+    else Promise.resolve().then(restore);
+    setTimeout(restore, 0);
+  }
+  return result;
+}
+
+function _queueTimelineEntitySingleClick(el, ctx, dbPath, entityName) {
+  if (!el) return;
+  if (el._tlSingleClickTimer) clearTimeout(el._tlSingleClickTimer);
+  el._tlSingleClickTimer = setTimeout(() => {
+    el._tlSingleClickTimer = null;
+    void _openTimelineEntityInSubpanel(ctx, dbPath, entityName);
+  }, 180);
+}
+
+function _cancelTimelineEntitySingleClick(el) {
+  if (!el?._tlSingleClickTimer) return;
+  clearTimeout(el._tlSingleClickTimer);
+  el._tlSingleClickTimer = null;
+}
+
 function renderTimeline(ctx) {
   ctx = ctx || _currentPaneState();
   const data = ctx.pivotData || state.pivotData;
   const container = _paneEl(ctx, '.timeline-view') || document.getElementById('timeline-view');
   if (!data || !data.entities) { container.innerHTML = ''; return; }
   const dbPath = ctx.dbPath || state.currentDbPath;
+  if (typeof syncDbCellDisplayToolbar === 'function') syncDbCellDisplayToolbar(dbPath);
 
   // カレンダーソースDBの場合はカレンダーモードに分岐
   if (typeof _canRenderCalendarFromDb === 'function' && _canRenderCalendarFromDb(dbPath, data) && typeof renderCalendar === 'function') {
@@ -224,6 +348,7 @@ function renderTimeline(ctx) {
   container.appendChild(settings);
   settings.querySelector('#tl-card-props')?.addEventListener('click', (ev) => {
     ev.preventDefault();
+    ev.stopPropagation();
     _showTimelineCardPropsMenu(ev.currentTarget, dbPath, cfg, props, ctx);
   });
 
@@ -286,8 +411,9 @@ function renderTimeline(ctx) {
     if (e.endVal) timeGroups.add(roundTimeValue(e.endVal, cfg.scale));
     rowGroups.add(e.rowVal);
   });
-  const timeArr = [...timeGroups].sort(_compareTimelineGroupValues);
-  const rowArr = [...rowGroups].sort(_compareTimelineGroupValues);
+  const timeArrBase = [...timeGroups].sort(_compareTimelineGroupValues);
+  const timeArr = typeof _applyTimelineTimeOrder === 'function' ? _applyTimelineTimeOrder(timeArrBase, cfg) : timeArrBase;
+  const rowArr = _applyTimelineRowOrder([...rowGroups].sort(_compareTimelineGroupValues), cfg);
 
   if (timeArr.length === 0 || rowArr.length === 0) {
     container.insertAdjacentHTML('beforeend', '<div style="padding:24px;color:var(--fg2);">データがありません</div>');
@@ -298,15 +424,24 @@ function renderTimeline(ctx) {
   const isHorizontal = cfg.direction === 'horizontal';
   const cols = isHorizontal ? timeArr : rowArr;
   const rows = isHorizontal ? rowArr : timeArr;
+  const axisColors = typeof _getTimelineAxisColorMap === 'function' ? _getTimelineAxisColorMap(dbPath) : {};
 
   const grid = document.createElement('div');
   grid.className = 'tl-grid';
   grid.style.gridTemplateColumns = _timelineGridTemplate(cfg, cols);
+  if (typeof _dbCellDisplayConfig === 'function') {
+    const display = _dbCellDisplayConfig(dbPath);
+    grid.dataset.cellOverflow = display.overflow;
+    grid.dataset.cellWrapLines = String(display.lines);
+    grid.style.setProperty('--db-cell-wrap-lines', String(display.lines));
+  }
 
   // コーナーセル
   const corner = document.createElement('div');
   corner.className = 'tl-header-cell tl-corner';
-  corner.textContent = isHorizontal ? cfg.rowProp === '_entity' ? 'エントリ' : cfg.rowProp : cfg.timeProp;
+  const cornerLabel = isHorizontal ? (cfg.rowProp === '_entity' ? 'エントリ' : cfg.rowProp) : cfg.timeProp;
+  if (typeof _setupTimelineHeaderCell === 'function') _setupTimelineHeaderCell(corner, cornerLabel, { dbPath, cfg, ctx, isCorner: true, kind: 'corner', axisValues: rowArr, timeValues: timeArr }, axisColors);
+  else corner.textContent = cornerLabel;
   corner.style.gridRow = '1'; corner.style.gridColumn = '1';
   grid.appendChild(corner);
 
@@ -314,10 +449,13 @@ function renderTimeline(ctx) {
   cols.forEach((col, ci) => {
     const th = document.createElement('div');
     th.className = 'tl-header-cell tl-col-header';
-    th.textContent = col;
+    const headerKind = isHorizontal ? 'time' : 'axis';
+    if (typeof _setupTimelineHeaderCell === 'function') _setupTimelineHeaderCell(th, col, { dbPath, cfg, ctx, value: col, kind: headerKind, axisValues: rowArr, timeValues: timeArr }, axisColors);
+    else th.textContent = col;
     th.style.gridRow = '1'; th.style.gridColumn = (ci + 2) + '';
     th.dataset.colIndex = String(ci);
     th.dataset.tlColIndex = String(ci);
+    if (!isHorizontal) _bindTimelineHeaderReorder(th, dbPath, cfg, rowArr, col, ctx);
     _bindTimelineColumnResize(th, grid, dbPath, cfg, cols, col);
     grid.appendChild(th);
   });
@@ -327,8 +465,11 @@ function renderTimeline(ctx) {
     // 行ヘッダー
     const rh = document.createElement('div');
     rh.className = 'tl-header-cell tl-row-header';
-    rh.textContent = row;
+    const rowHeaderKind = isHorizontal ? 'axis' : 'time';
+    if (typeof _setupTimelineHeaderCell === 'function') _setupTimelineHeaderCell(rh, row, { dbPath, cfg, ctx, value: row, kind: rowHeaderKind, isRowHeader: true, axisValues: rowArr, timeValues: timeArr }, axisColors);
+    else rh.textContent = row;
     rh.style.gridRow = (ri + 2) + ''; rh.style.gridColumn = '1';
+    if (isHorizontal) _bindTimelineHeaderReorder(rh, dbPath, cfg, rowArr, row, ctx);
     grid.appendChild(rh);
 
     // セル
@@ -338,6 +479,7 @@ function renderTimeline(ctx) {
       cell.style.gridRow = (ri + 2) + ''; cell.style.gridColumn = (ci + 2) + '';
       cell.dataset.row = row; cell.dataset.col = col;
       cell.dataset.tlColIndex = String(ci);
+      if (typeof _applyTimelineVisibleColor === 'function') _applyTimelineVisibleColor(cell, axisColors, isHorizontal ? row : col, isHorizontal ? col : row);
 
       // D&D: ドロップ先
       cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.classList.add('drag-over'); });
@@ -415,22 +557,22 @@ function renderTimeline(ctx) {
         const card = document.createElement('div');
         card.className = 'tl-card';
         card.dataset.entity = e.name;
-        _renderTimelineEntityContent(card, e, cfg);
+        _renderTimelineEntityContent(card, e, cfg, { dbPath, propTypes, editable: true });
         card.title = e.name + '\n' + cfg.timeProp + ': ' + e.timeVal;
-        const colorVals = filterValues(e.data['色'] || e.data['color'] || []);
-        if (colorVals.length > 0 && colorVals[0].value) {
-          card.style.background = colorVals[0].value;
-          card.style.color = '#fff';
-          card.style.borderColor = colorVals[0].value;
-        }
+        if (typeof _applyTimelineVisibleColor === 'function') _applyTimelineVisibleColor(card, axisColors, e.rowVal, roundTimeValue(e.timeVal, cfg.scale));
         card.draggable = true;
         card.addEventListener('dragstart', (ev) => {
           ev.dataTransfer.setData('text/x-timeline-entity', e.name);
           ev.dataTransfer.effectAllowed = 'move';
         });
-        card.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, e.name), e.name));
-        card.addEventListener('dblclick', (ev) => {
+        card.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          _queueTimelineEntitySingleClick(card, ctx, dbPath, e.name);
+        });
+        card.addEventListener('dblclick', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          _cancelTimelineEntitySingleClick(card);
           if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, e.name);
           selectEntity(_entityPath(dbPath, e.name));
         });
@@ -467,19 +609,14 @@ function renderTimeline(ctx) {
         bar.style.gridColumn = (startColIdx + 2) + '';
       }
 
-      // 色プロパティ
-      const colorVals = filterValues(e.data['色'] || e.data['color'] || []);
-      if (colorVals.length > 0 && colorVals[0].value) {
-        bar.style.background = colorVals[0].value;
-        bar.style.color = '#fff';
-      }
+      if (typeof _applyTimelineVisibleColor === 'function') _applyTimelineVisibleColor(bar, axisColors, e.rowVal, startRound);
 
       // リサイズハンドル
       const handleL = document.createElement('div');
       handleL.className = 'tl-bar-handle tl-bar-handle-left';
       const label = document.createElement('span');
       label.className = 'tl-bar-label';
-      _renderTimelineEntityContent(label, e, cfg, { titleClass: 'tl-bar-title' });
+      _renderTimelineEntityContent(label, e, cfg, { titleClass: 'tl-bar-title', dbPath, propTypes, editable: true });
       const handleR = document.createElement('div');
       handleR.className = 'tl-bar-handle tl-bar-handle-right';
       bar.appendChild(handleL);
@@ -487,9 +624,14 @@ function renderTimeline(ctx) {
       bar.appendChild(handleR);
 
       bar.title = e.name + '\n' + cfg.timeProp + ': ' + e.timeVal + '\n' + (cfg.endProp || cfg.timeProp) + ': ' + e.endVal;
-      bar.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, e.name), e.name));
-      bar.addEventListener('dblclick', (ev) => {
+      bar.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        _queueTimelineEntitySingleClick(bar, ctx, dbPath, e.name);
+      });
+      bar.addEventListener('dblclick', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        _cancelTimelineEntitySingleClick(bar);
         if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, e.name);
         selectEntity(_entityPath(dbPath, e.name));
       });

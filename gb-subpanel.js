@@ -26,6 +26,7 @@ const GBSubPanel = (() => {
   let _restoreRect = null;
   let _drag = null;
   let _resize = null;
+  let _entityRenderSeq = 0;
 
   function _readJson(key) {
     try {
@@ -123,12 +124,10 @@ const GBSubPanel = (() => {
     const label = options.label || _basename(path) || _toolLabel(toolType);
     const linkType = options.linkType || toolType;
     if ((linkType === 'entity' || toolType === 'entity') && typeof drawer.openEntity === 'function') {
-      drawer.openEntity(path, label);
-      return true;
+      return drawer.openEntity(path, label) === true;
     }
     if (typeof drawer.openBoardLink === 'function') {
-      drawer.openBoardLink(path, label, linkType);
-      return true;
+      return drawer.openBoardLink(path, label, linkType) === true;
     }
     return false;
   }
@@ -313,6 +312,135 @@ const GBSubPanel = (() => {
   function _subpanelTitle(toolType) {
     const label = _toolLabel(toolType);
     return (label ? label + ' ' : '') + 'サブパネル';
+  }
+
+  function _entityParentDir(path) {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    const idx = normalized.lastIndexOf('/');
+    return idx > 0 ? normalized.slice(0, idx) : '';
+  }
+
+  function _entityNameFromData(data, path) {
+    return data?.entity || _basename(path).replace(/\.md$/, '') || 'エントリ';
+  }
+
+  function _appendEntityParentLink(root, entityPath) {
+    const parentDb = _entityParentDir(entityPath);
+    const parent = document.createElement('div');
+    parent.className = 'gb-subpanel-entity-parent';
+    if (parentDb) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'gb-subpanel-link-button';
+      link.dataset.e2eId = 'gb-subpanel-entity-parent';
+      link.setAttribute('aria-label', '親シートを開く');
+      link.textContent = '← ' + (_basename(parentDb) || parentDb);
+      link.addEventListener('click', () => {
+        if (typeof selectDatabase === 'function') selectDatabase(parentDb);
+      });
+      parent.appendChild(link);
+    }
+    root.appendChild(parent);
+  }
+
+  function _renderEntityNote(noteEl, data, entityPath) {
+    const raw = String(data?.page_content || '');
+    noteEl.innerHTML = '';
+    if (!raw.trim()) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-subpanel-empty-note';
+      empty.textContent = 'ノートはありません';
+      noteEl.appendChild(empty);
+      return;
+    }
+    if (typeof mdToHtml === 'function') {
+      const html = mdToHtml(raw);
+      noteEl.innerHTML = typeof applyAutoLinks === 'function' ? applyAutoLinks(html, entityPath) : html;
+    } else {
+      noteEl.textContent = raw;
+    }
+  }
+
+  function _renderEntityData(root, data, entityPath) {
+    root.innerHTML = '';
+    root.dataset.path = entityPath;
+    _appendEntityParentLink(root, entityPath);
+
+    const title = document.createElement('h2');
+    title.className = 'gb-subpanel-entity-title';
+    title.textContent = _entityNameFromData(data, entityPath);
+    root.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'gb-subpanel-entity-props';
+    root.appendChild(grid);
+    if (typeof renderEntityPropsGridInto === 'function') {
+      renderEntityPropsGridInto(grid, data, entityPath, {
+        parentDb: _entityParentDir(entityPath),
+        subPanel: true,
+      });
+    } else {
+      for (const [name, values] of Object.entries(data?.properties || {})) {
+        const row = document.createElement('div');
+        row.className = 'gb-subpanel-entity-prop-row';
+        const label = document.createElement('div');
+        label.className = 'gb-subpanel-entity-prop-name';
+        label.textContent = name;
+        const value = document.createElement('div');
+        value.className = 'gb-subpanel-entity-prop-value';
+        value.textContent = (Array.isArray(values) ? values : [])
+          .map(item => item?.value ?? '')
+          .filter(Boolean)
+          .join(' / ');
+        row.appendChild(label);
+        row.appendChild(value);
+        grid.appendChild(row);
+      }
+    }
+
+    const note = document.createElement('div');
+    note.className = 'gb-subpanel-entity-note';
+    _renderEntityNote(note, data, entityPath);
+    root.appendChild(note);
+    if (typeof replaceIcons === 'function') replaceIcons();
+  }
+
+  async function _loadEntityIntoRoot(root, entityPath, seq) {
+    if (!root || !entityPath) return;
+    root.innerHTML = '<div class="gb-subpanel-empty">エントリを読み込み中...</div>';
+    try {
+      if (typeof apiFetch !== 'function') throw new Error('apiFetch is not available');
+      const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+      if (seq !== _entityRenderSeq || !root.isConnected || root.dataset.path !== entityPath) return;
+      _renderEntityData(root, data, entityPath);
+    } catch (e) {
+      if (seq !== _entityRenderSeq || !root.isConnected) return;
+      root.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'gb-subpanel-empty';
+      empty.textContent = 'エントリを読み込めませんでした';
+      root.appendChild(empty);
+    }
+  }
+
+  function _mountEntityPane(options) {
+    const entityPath = options?.path || '';
+    _pane = _createPane('entity', options);
+    _registerPaneMap();
+    const root = document.createElement('div');
+    root.className = 'gb-subpanel-entity-root';
+    root.dataset.gbSubpanelEntityRoot = 'true';
+    root.dataset.path = entityPath;
+    _contentEl.appendChild(root);
+    const tabId = _pane.tabs?.[0]?.id || '';
+    _current = {
+      toolType: 'entity',
+      path: entityPath,
+      label: _titleFromOptions('entity', options),
+      tabId,
+    };
+    const seq = ++_entityRenderSeq;
+    _loadEntityIntoRoot(root, entityPath, seq);
   }
 
   function _updateTitle(toolType, title) {
@@ -532,6 +660,10 @@ const GBSubPanel = (() => {
 
   function _mountPane(toolType, options) {
     _retractCurrentContent({ remount: true });
+    if (toolType === 'entity' && options?.path) {
+      _mountEntityPane(options);
+      return;
+    }
     _pane = _createPane(toolType, options);
     _registerPaneMap();
     const mounted = typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountVirtualPane === 'function'

@@ -743,6 +743,22 @@
     return { path: candidates[0] || target, type: '' };
   }
 
+  function _activateChatWorkspaceOpenPane() {
+    try {
+      if (global.GBPaneBridge?.activateFileOpenPane) {
+        return global.GBPaneBridge.activateFileOpenPane({ source: 'chat-link' }) || '';
+      }
+    } catch {}
+    return '';
+  }
+
+  function _usesWorkspaceOpenPane(type, ext) {
+    if (type === 'chat') return false;
+    if (['folder', 'database', 'smart-db', 'board', 'scriptnote', 'scenario', 'calendar', 'page'].includes(type)) return true;
+    if (['.smart-db.json', '.csv', '.html', '.htm', '.pdf'].includes(ext)) return true;
+    return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext);
+  }
+
   async function _openWorkspacePath(path) {
     const target = String(path || '').trim();
     if (!target) return false;
@@ -751,7 +767,9 @@
     const label = _basename(cleanPath);
     let type = resolvedTarget.type || await _checkWorkspaceCandidateType(cleanPath);
     const ext = _extension(cleanPath);
-    const opts = { fromExplorer: true };
+    const targetPaneId = _usesWorkspaceOpenPane(type, ext) ? _activateChatWorkspaceOpenPane() : '';
+    const opts = { fromExplorer: true, source: 'chat-link' };
+    if (targetPaneId) opts.paneId = targetPaneId;
     try {
       if (type === 'folder') await openFolder(label, cleanPath, opts);
       else if (type === 'database') await selectDatabase(cleanPath, null, opts);
