@@ -262,7 +262,7 @@
 
   async function loadCliChatConfig() {
     try {
-      cliChatConfig = await apiFetch('/cli-chat/config');
+      cliChatConfig = await apiFetch('/cli-chat/config', { silentError: true });
     } catch {
       cliChatConfig = null;
     }
