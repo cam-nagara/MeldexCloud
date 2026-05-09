@@ -371,7 +371,7 @@
 
     _dropboxPath(relativePath) {
       const vaultPath = this.getVaultPath();
-      if (!vaultPath) throw new Error('Dropbox vault path が未設定です');
+      if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
       const relative = _normalizeRelativePath(relativePath);
       return relative ? (vaultPath + '/' + relative) : vaultPath;
     }
@@ -640,6 +640,23 @@
       return new DropboxDirectoryHandle(this, normalized);
     }
 
+    async ensureVaultRootDirectory() {
+      const vaultPath = this.getVaultPath();
+      if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
+      try {
+        await this._rpc('files/create_folder_v2', {
+          path: vaultPath,
+          autorename: false,
+        });
+      } catch (err) {
+        this._forgetMeta('');
+        const existing = await this.statPath('');
+        if (!existing || existing.kind !== 'directory') throw err;
+      }
+      this._forgetMeta('');
+      return this.getMetadata('');
+    }
+
     async listEntries(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const entries = [];
@@ -822,15 +839,27 @@
     async preflight() {
       this._metaCache.clear();
       const vaultPath = this.getVaultPath();
-      if (!vaultPath) throw new Error('Dropbox vault path が未設定です');
+      if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
       const mountInfo = await this.findMountedFolderByPath();
-      const rootMeta = await this.getMetadata('');
+      let rootMeta = await this.getMetadata('');
+      if (!rootMeta) {
+        try {
+          rootMeta = await this.ensureVaultRootDirectory();
+        } catch (err) {
+          return {
+            ok: false,
+            mounted: false,
+            access: 'none',
+            message: `DropboxにMeldex用フォルダ（${vaultPath}）を作成できませんでした。Dropbox側の容量・権限・同名ファイルを確認してください。詳細: ${err?.message || String(err)}`,
+          };
+        }
+      }
       if (!rootMeta || rootMeta['.tag'] !== 'folder') {
         return {
           ok: false,
           mounted: false,
           access: 'none',
-          message: `Dropbox 内に ${vaultPath} が見つかりません。Dropbox でフォルダを作成するか、共有フォルダ招待を承認してください。`,
+          message: `Dropboxの${vaultPath}はフォルダではありません。同じ名前のファイルがある場合は名前を変更してください。`,
         };
       }
       const account = await _auth().getCurrentAccount(true);

@@ -7,6 +7,7 @@
   const CUSTOM_APP_KEY = 'meldex-dropbox-custom-app-key';
   const VAULT_PATH_KEY = 'meldex-dropbox-vault-path';
   const REDIRECT_OVERRIDE_KEY = 'meldex-dropbox-redirect-override';
+  const DEFAULT_VAULT_PATH = '/MeldexVault';
   const DEFAULT_APP_KEY = window.MeldexCloudConfig?.dropbox?.developerAppKey || '';
   const DEFAULT_SCOPES = Object.freeze(window.MeldexCloudConfig?.dropbox?.scopes || []);
   const TOKEN_ENDPOINT = 'https://api.dropbox.com/oauth2/token';
@@ -109,11 +110,11 @@
   }
 
   function getVaultPath() {
-    return _normalizeVaultPath(_readStorage(VAULT_PATH_KEY, ''));
+    return _normalizeVaultPath(_readStorage(VAULT_PATH_KEY, DEFAULT_VAULT_PATH)) || DEFAULT_VAULT_PATH;
   }
 
   function setVaultPath(path) {
-    _writeStorage(VAULT_PATH_KEY, _normalizeVaultPath(path));
+    _writeStorage(VAULT_PATH_KEY, _normalizeVaultPath(path) || DEFAULT_VAULT_PATH);
   }
 
   function getRedirectOverride() {
@@ -435,7 +436,7 @@
 
   async function refreshSession(forceAppKey) {
     const session = await getSession();
-    if (!session?.refreshToken) throw new Error('refresh token がありません');
+    if (!session?.refreshToken) throw new Error('Dropbox接続情報が見つかりません。もう一度Dropboxに接続してください。');
     const appKey = forceAppKey || session.appKey || getAppKey();
     if (!appKey) throw new Error('Dropbox App key が設定されていません');
     const payload = await _tokenRequest({
