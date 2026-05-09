@@ -9,11 +9,44 @@
    ============================== */
 function _resolveDatabasePaneContext(ctx, options) {
   const resolveOpts = options || {};
-  const paneMissing = !!(ctx?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, ctx.paneId)?.node);
-  const containerDetached = !!(ctx?.containerEl && !document.body.contains(ctx.containerEl));
-  const shouldUseActivePane = !!resolveOpts.preferActivePane && !!ctx?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && ctx.paneId !== GBLayout.activePane;
-  if (!ctx || paneMissing || containerDetached || shouldUseActivePane) return _currentPaneState();
-  return ctx;
+  const explicitCtx = !!ctx;
+  let candidate = ctx || _currentPaneState();
+  const paneMissing = !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
+  const containerDetached = !!(candidate?.containerEl && !document.body.contains(candidate.containerEl));
+  const shouldUseActivePane = !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
+  if (paneMissing || containerDetached || shouldUseActivePane) candidate = _currentPaneState();
+  if (!explicitCtx && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
+    candidate = _globalPaneState();
+  }
+  return candidate;
+}
+
+function _dbPaneHasPivotTable(ctx) {
+  if (!ctx?.containerEl) return true;
+  const tblId = ctx.tableId || 'pivot-table';
+  try {
+    const id = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(tblId) : String(tblId).replace(/["\\]/g, '\\$&');
+    return !!ctx.containerEl.querySelector('#' + id);
+  } catch {
+    return !!ctx.containerEl.querySelector('#' + tblId);
+  }
+}
+
+function _normalizeDbRenderContext(ctx) {
+  const candidate = ctx || _currentPaneState();
+  if (candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
+    return _globalPaneState();
+  }
+  return candidate;
+}
+
+function _renderDbViewTabsSafely(ctx) {
+  if (typeof renderDbViewTabs !== 'function') return;
+  try {
+    renderDbViewTabs(ctx);
+  } catch (error) {
+    console.warn('[Meldex] シートビュータブの描画に失敗しました。シート本体の読み込みは続行します。', error);
+  }
 }
 
 function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
@@ -39,8 +72,11 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
 
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
-  // silent: インラインセル更新等、ローディングオーバーレイを出したくないケース用
-  if (!openOpts.bridgeLoad && !openOpts.silent) showLoading('シートを読み込み中...');
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('シートを読み込み中...');
   // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
   if (state.currentDbPath !== dbPath) {
     const _ctxClear = ctx || _currentPaneState();
@@ -55,10 +91,15 @@ async function selectDatabase(dbPath, ctx, opts) {
   ctx.entityPath = null;
   // グローバルstate同期（非スコープ化コードの互換性）
   state.currentDbPath = dbPath;
+  state.currentSmartDb = null;
+  state.smartDbData = null;
   state.currentEntityPath = null;
   const dbLoadSeq = (ctx._dbLoadSeq || 0) + 1;
   ctx._dbLoadSeq = dbLoadSeq;
-  const isStaleDbLoad = () => ctx._dbLoadSeq !== dbLoadSeq || ctx.dbPath !== dbPath || state.currentDbPath !== dbPath;
+  const isStaleDbLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
+    || ctx._dbLoadSeq !== dbLoadSeq
+    || ctx.dbPath !== dbPath
+    || state.currentDbPath !== dbPath;
   if (!openOpts.skipSaveLastView) saveLastView({type:'pivot', dbPath});
   if (!openOpts.skipNavPush) {
     const _navEntry = {type:'pivot', path: dbPath};
@@ -180,11 +221,11 @@ async function selectDatabase(dbPath, ctx, opts) {
       if (!openOpts.skipShowView) showView('timeline', ctx);
     }
     const entityCountForLoading = Object.keys(ctx.pivotData.entities || {}).length;
-    if (!openOpts.bridgeLoad && !openOpts.silent && typeof showLoadingBeforeHeavyWork === 'function') {
+    if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(entityCountForLoading, '大きいシートを描画中...', { threshold: 250 });
       if (isStaleDbLoad()) return;
     }
-    renderDbViewTabs(ctx);
+    _renderDbViewTabsSafely(ctx);
     const hasDbViews = getSavedViews(dbPath).length > 0;
     if (!hasDbViews && typeof renderDbNoViewsGuide === 'function') renderDbNoViewsGuide(ctx);
     else if (dbViewMode === 'gallery') renderGallery(ctx);
@@ -211,11 +252,19 @@ async function selectDatabase(dbPath, ctx, opts) {
     state.pivotData = null;
     state.dbMetadata = null;
     clearPivot(ctx);
+    const tbody = _paneEl(ctx, '#pivot-table tbody') || document.querySelector('#pivot-table tbody');
+    if (tbody) {
+      const message = esc('シートを読み込めませんでした: ' + (e?.message || e || '不明なエラー'));
+      tbody.innerHTML = `<tr><td colspan="999" style="padding:24px;color:var(--fg2);">${message}</td></tr>`;
+    }
+    if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
+      showStatus('シート読み込みエラー: ' + (e?.message || e), true);
+    }
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(dbName, dbPath, 'database');
   // エンティティ追加/削除/リネーム後にリンク辞書を更新
   if (typeof MeldexAutoLink !== 'undefined') MeldexAutoLink.scheduleReload(3000);
-  } finally { if (!openOpts.bridgeLoad && !openOpts.silent) hideLoading(); }
+  } finally { if (showOpenLoading) hideLoading(); }
 }
 
 async function selectEntity(entityPath, opts) {
@@ -328,7 +377,7 @@ function _updateFilterBadge() {
    ピボットテーブル描画
    ============================== */
 function clearPivot(ctx) {
-  ctx = ctx || _currentPaneState();
+  ctx = _normalizeDbRenderContext(ctx);
   const tblId = ctx.tableId || 'pivot-table';
   const thead = _paneEl(ctx, '#' + tblId + ' thead');
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
@@ -336,7 +385,8 @@ function clearPivot(ctx) {
   if (thead) thead.innerHTML = '';
   if (tbody) tbody.innerHTML = '';
   if (tfoot) tfoot.innerHTML = '';
-  document.getElementById('sb-count').textContent = '0 件';
+  const countEl = document.getElementById('sb-count');
+  if (countEl) countEl.textContent = '0 件';
 }
 
 /* PROP_TYPE_ICON → gb-db-props.js に分離 */

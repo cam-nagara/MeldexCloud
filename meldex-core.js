@@ -768,6 +768,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-bookOpenText')) name = 'bookOpenText';
     else if (cls.includes('ico-book')) name = 'book';
     else if (cls.includes('ico-download')) name = 'download';
+    else if (cls.includes('ico-globe')) name = 'globe';
     else if (cls.includes('ico-upload')) name = 'upload';
     else if (cls.includes('ico-board')) name = 'presentation';
     else if (cls.includes('ico-preview') || cls.includes('ico-tvMinimal')) name = 'tvMinimal';

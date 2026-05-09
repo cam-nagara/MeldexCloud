@@ -45,27 +45,45 @@ function _folderDisplayLabel(label, path) {
 
 async function openFolder(label, path, opts) {
   const openOpts = opts || {};
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('フォルダを読み込み中...');
   const displayLabel = _folderDisplayLabel(label, path);
-  if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
-  if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('folder-view');
-  _folderPath = path;
-  _folderSelected = null;
-  _folderSelectedItems = [];
-  if (!openOpts.skipShowView) showView('folder');
-  if (!openOpts.skipGlobalUi && typeof applyFolderFileStyle === 'function') applyFolderFileStyle(path);
-  const folderTitleEl = document.getElementById('folder-title');
-  if (folderTitleEl) folderTitleEl.textContent = displayLabel;
-  const currentTitleEl = document.getElementById('current-title');
-  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = displayLabel;
-  if (!openOpts.skipSaveLastView) saveLastView({type:'folder', label: displayLabel, path});
-  if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'folder', label: displayLabel, path};
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path, { noScroll: true });
-
+  const folderLoadSeq = (window._openFolderLoadSeq || 0) + 1;
+  window._openFolderLoadSeq = folderLoadSeq;
+  const isStaleFolderLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
+    || window._openFolderLoadSeq !== folderLoadSeq
+    || _folderPath !== path;
   try {
+    if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
+    if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('folder-view');
+    _folderPath = path;
+    _folderSelected = null;
+    _folderSelectedItems = [];
+    if (!openOpts.skipShowView) showView('folder');
+    if (!openOpts.skipGlobalUi && typeof applyFolderFileStyle === 'function') applyFolderFileStyle(path);
+    const folderTitleEl = document.getElementById('folder-title');
+    if (folderTitleEl) folderTitleEl.textContent = displayLabel;
+    const currentTitleEl = document.getElementById('current-title');
+    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = displayLabel;
+    if (!openOpts.skipSaveLastView) saveLastView({type:'folder', label: displayLabel, path});
+    if (!openOpts.skipNavPush) {
+      const _navEntry = {type:'folder', label: displayLabel, path};
+      navPush(_navEntry);
+    }
+    if (!openOpts.skipHighlight) highlightOutlinerNode(path, { noScroll: true });
+
     _folderItems = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+    if (typeof isOutlinerDeletePendingPath === 'function') {
+      _folderItems = _folderItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
+    }
+    if (isStaleFolderLoad()) return;
+    if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
+      await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80 });
+      if (isStaleFolderLoad()) return;
+    }
     registerFileTypes(_folderItems);
     renderFolderGrid();
     const folderCountEl = document.getElementById('folder-item-count');
@@ -94,6 +112,7 @@ async function openFolder(label, path, opts) {
       }
     })();
   } catch (e) {
+    if (isStaleFolderLoad()) return;
     _folderItems = [];
     _folderSelected = null;
     _folderSelectedItems = [];
@@ -101,6 +120,11 @@ async function openFolder(label, path, opts) {
     if (folderGridEl) folderGridEl.innerHTML = '<div style="padding:24px;color:var(--fg2);">読み込みに失敗しました</div>';
     const folderCountEl = document.getElementById('folder-item-count');
     if (folderCountEl) folderCountEl.textContent = '0 項目';
+    if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
+      showStatus('フォルダ読み込みエラー: ' + (e?.message || e), true);
+    }
+  } finally {
+    if (showOpenLoading) hideLoading();
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');
 }
@@ -292,6 +316,7 @@ function _getFolderFilteredItems() {
   const types = new Set(_folderFilterArray(cfg.filterTypes));
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
   return _folderItems.filter(item => {
+    if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
       const haystack = [item.name, item.path, item.ext, _folderItemTypeLabel(item.type)].join('\n').toLowerCase();
       if (!haystack.includes(text)) return false;

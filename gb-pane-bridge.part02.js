@@ -207,6 +207,7 @@
   function _resolveDbPaneDisplayView(viewName, tab) {
     const normalizedViewName = _normalizeDbPaneView(viewName);
     if (!DB_SUB_VIEWS[normalizedViewName]) return normalizedViewName;
+    if (normalizedViewName === 'smart-db') return 'smart-db';
     const dbPath = tab?.path || tab?.state?.dbPath || state.currentDbPath || '';
     const mode = (dbPath && typeof getCurrentViewMode === 'function') ? getCurrentViewMode(dbPath) : '';
     const resolvedMode = ['calendar', 'tasks', 'shifts'].includes(mode) ? 'timeline' : mode;
@@ -1185,7 +1186,7 @@
         if (window.MeldexCloudBootstrap?.openSettingsFlow) {
           const cloud = document.createElement('div');
           cloud.style.cssText = 'padding:5px 14px;cursor:pointer;font-size:13px;';
-          cloud.textContent = 'Dropbox / 保存モード';
+          cloud.textContent = '保存先を設定';
           cloud.onmouseenter = () => { cloud.style.background = 'var(--bg4)'; };
           cloud.onmouseleave = () => { cloud.style.background = ''; };
           cloud.addEventListener('click', () => {

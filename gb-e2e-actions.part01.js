@@ -825,6 +825,60 @@
     api.logStep('ノート表示 OK');
   });
 
+  registerAction('current_reveal_expands_folder_tree', async (action, api) => {
+    const targetPath = action.path || 'Smoke/Note.md';
+    const folderPath = action.folderPath || targetPath.split('/').slice(0, -1).join('/');
+    if (action.keepExpandedPath) {
+      await api.expandTreePath(action.keepExpandedPath);
+    }
+    let folderNode = null;
+    if (folderPath) {
+      folderNode = await api.ensureTreePathVisible(folderPath);
+      const toggle = folderNode.querySelector(':scope > .tree-node-row .tree-toggle');
+      if (toggle && toggle.dataset.expanded !== 'false') {
+        toggle.click();
+        await api.delay(200);
+      }
+    }
+    const originalLoadOutliner = window.loadOutliner;
+    let reloadCount = 0;
+    const reloadStacks = [];
+    if (typeof originalLoadOutliner === 'function') {
+      window.loadOutliner = async function (...args) {
+        reloadCount += 1;
+        reloadStacks.push((new Error('loadOutliner called')).stack || '');
+        return originalLoadOutliner.apply(this, args);
+      };
+    }
+    try {
+      api.assert(typeof revealCurrentInFolderTree === 'function', 'フォルダツリーで表示関数が未登録です');
+      await revealCurrentInFolderTree(action.hint || 'page', null);
+    } finally {
+      if (typeof originalLoadOutliner === 'function') window.loadOutliner = originalLoadOutliner;
+    }
+    api.assert(reloadCount === 0, '既存のフォルダツリーを全再読み込みしました\n' + (reloadStacks[0] || ''));
+    const expectedSuffixes = [targetPath].concat(action.acceptPaths || []);
+    const activeNode = await api.waitFor(() => document.querySelector('.tree-node-row.active')?.closest?.('.tree-node'), 'フォルダツリー対象ノード選択');
+    const activePath = api.normalizePath(activeNode?._nodeData?.path || activeNode?.dataset?.path || '');
+    const matched = expectedSuffixes.some(path => {
+      const suffix = api.normalizePath(path);
+      return activePath === suffix || activePath.endsWith('/' + suffix);
+    });
+    api.assert(matched, '対象ノードが選択されていません: ' + activePath + ' expected=' + expectedSuffixes.join(','));
+    api.assert(!activeNode.closest('.tree-children.collapsed'), '対象ノードの親フォルダが閉じたままです');
+    if (folderPath) {
+      const revealedFolder = api.findTreeNodeBySuffix(folderPath);
+      const toggle = revealedFolder?.querySelector?.(':scope > .tree-node-row .tree-toggle');
+      api.assert(!toggle || toggle.dataset.expanded === 'true', '対象フォルダが展開されていません');
+    }
+    if (action.keepExpandedPath) {
+      const keepNode = api.findTreeNodeBySuffix(action.keepExpandedPath);
+      const keepToggle = keepNode?.querySelector?.(':scope > .tree-node-row .tree-toggle');
+      api.assert(!keepToggle || keepToggle.dataset.expanded === 'true', '無関係な展開済みフォルダが閉じられました');
+    }
+    api.logStep('フォルダツリーで表示 OK: ' + targetPath);
+  });
+
   registerAction('open_database', async (action, api) => {
     const expected = api.normalizePath(action.path || action.dbPath);
     if (!_pathMatches(api, _currentDbPathValue(), expected)) {
@@ -843,6 +897,77 @@
     await api.waitFor(() => document.querySelector('#db-view-tabs, .db-view-tabs'), 'シートタブ表示');
     await api.ensureAnnotationFab('シート');
     api.logStep('シート表示 OK');
+  });
+
+  registerAction('database_open_with_stale_pane_context', async (action, api) => {
+    const dbPath = String(action.path || action.dbPath || 'Characters').trim();
+    api.assert(typeof createPaneContext === 'function' && typeof destroyPaneContext === 'function', 'PaneContext API が見つかりません');
+    api.assert(typeof selectDatabase === 'function', 'selectDatabase が見つかりません');
+    const stalePaneId = 'e2e-stale-db-pane-' + Date.now();
+    const host = document.createElement('div');
+    host.dataset.e2eId = 'stale-db-pane-host';
+    host.style.display = 'none';
+    document.body.appendChild(host);
+    const ctx = createPaneContext(stalePaneId);
+    ctx.containerEl = host;
+    ctx.tableId = 'pivot-table-stale';
+    if (typeof setActivePane === 'function') setActivePane(stalePaneId);
+    try {
+      await selectDatabase(dbPath);
+      await api.waitFor(() => {
+        if (!_pathMatches(api, _currentDbPathValue(), dbPath)) return null;
+        const tbody = document.querySelector('#pivot-table tbody');
+        return tbody && tbody.children.length > 0 ? tbody : null;
+      }, '古いペイン状態からのシート表示');
+    } finally {
+      destroyPaneContext(stalePaneId);
+      host.remove();
+    }
+    api.logStep('古いペイン状態からのシート表示 OK');
+  });
+
+  registerAction('database_view_tab_add_delete_smoke', async (action, api) => {
+    const dbPath = String(action.dbPath || _currentDbPathValue() || 'Characters').trim();
+    api.assert(typeof getSavedViews === 'function' && typeof getCurrentViewIdx === 'function', 'ビュー設定APIが見つかりません');
+    const beforeViews = getSavedViews(dbPath).length;
+    api.assert(beforeViews >= 1, 'ビュー削除テストには既存ビューが1件以上必要です');
+    const modeLabel = action.label || 'ギャラリー';
+    const addBtn = await api.waitFor(() => {
+      const buttons = [...document.querySelectorAll('[data-e2e-id^="db-view-add-"]')];
+      return buttons.find(_isVisibleElement) || null;
+    }, 'ビュー追加ボタン');
+    addBtn.click();
+    const addItem = await api.waitFor(() => {
+      const items = [...document.querySelectorAll('.gb-context-menu .gb-context-menu-item')];
+      return items.find(item => (item.textContent || '').includes(modeLabel + ' ビューを追加')) || null;
+    }, 'ビュー追加メニュー');
+    addItem.click();
+    await api.waitFor(() => getSavedViews(dbPath).length === beforeViews + 1 ? true : null, 'ビュー追加反映');
+    const addedIdx = getSavedViews(dbPath).length - 1;
+    await api.waitFor(() => {
+      const tabs = [...document.querySelectorAll('.db-view-tabs .view-tab')];
+      return tabs.some(tab => (tab.textContent || '').includes(modeLabel)) ? true : null;
+    }, '追加ビュータブ表示');
+
+    const oldConfirm = window.cfConfirm;
+    window.cfConfirm = async () => true;
+    try {
+      const moreBtn = await api.waitFor(() => {
+        const buttons = [...document.querySelectorAll('[data-e2e-id^="db-saved-view-more-"]')];
+        return buttons[addedIdx] || buttons[buttons.length - 1] || null;
+      }, '追加ビュー操作ボタン');
+      moreBtn.click();
+      const deleteItem = await api.waitFor(() => {
+        const items = [...document.querySelectorAll('.gb-context-menu .gb-context-menu-item')];
+        return items.find(item => (item.textContent || '').trim() === '削除') || null;
+      }, 'ビュー削除メニュー');
+      deleteItem.click();
+      await api.waitFor(() => getSavedViews(dbPath).length === beforeViews ? true : null, 'ビュー削除反映');
+    } finally {
+      window.cfConfirm = oldConfirm;
+    }
+    api.assert(getCurrentViewIdx(dbPath) >= 0, 'ビュー削除後にアクティブビューが失われました');
+    api.logStep('ビュータブ追加/削除 OK');
   });
 
   registerAction('open_scriptnote', async (action, api) => {

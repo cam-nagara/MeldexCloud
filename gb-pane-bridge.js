@@ -726,6 +726,8 @@ const GBPaneBridge = (() => {
     const livePath = viewEl?.dataset?.gbLegacyPath || '';
     const needsLiveReload = liveView !== viewName || livePath !== path;
     const token = {};
+    const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
+    const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
     const run = async () => {
       try {
         const prevView = state.view;
@@ -740,15 +742,16 @@ const GBPaneBridge = (() => {
         }
         _beginBridgeUpdate();
         await _yieldStartupRestorePaint();
-        if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, bridgeOpts);
-        else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || _folderPath !== path || prevView !== 'folder')) await openFolder(label, path, bridgeOpts);
-        else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, bridgeOpts);
-        else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, bridgeOpts);
-        else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) openMedia(label, path, tab.state?.mediaType || 'image', bridgeOpts);
-        else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevCsvPath !== path || prevView !== 'csv')) await openCsvFile(label, path, bridgeOpts);
-        else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, bridgeOpts);
-        else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, bridgeOpts);
-        else if (['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, null, bridgeOpts);
+        if (!isCurrentLoadJob()) return;
+        if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
+        else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || _folderPath !== path || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
+        else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, scopedBridgeOpts);
+        else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
+        else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) openMedia(label, path, tab.state?.mediaType || 'image', scopedBridgeOpts);
+        else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevCsvPath !== path || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
+        else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, scopedBridgeOpts);
+        else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
+        else if (['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, null, scopedBridgeOpts);
         else if (viewName === 'html' && typeof openViewer === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           openViewer(tab.state?.urlExternal ? path : '/viewer?file=' + encodeURIComponent(path), bridgeOpts);
         }
@@ -759,6 +762,7 @@ const GBPaneBridge = (() => {
           else if (viewName === 'entity') state.currentEntityPath = path;
           else if (viewName === 'board') state.currentBoardPath = path;
         }
+        if (!isCurrentLoadJob()) return;
         const boundViewEl = document.getElementById(containerId);
         if (boundViewEl && _legacyLoadJobs.get(containerId)?.token === token) {
           boundViewEl.dataset.gbLegacyView = viewName;
@@ -768,8 +772,7 @@ const GBPaneBridge = (() => {
         _endBridgeUpdate();
       }
     };
-    const previousPromise = existingJob?.promise || Promise.resolve();
-    const promise = previousPromise.catch(() => {}).then(run).finally(() => {
+    const promise = Promise.resolve().then(run).finally(() => {
       if (_legacyLoadJobs.get(containerId)?.token === token) {
         _legacyLoadJobs.delete(containerId);
         _scheduleLegacyStateRestore(tab, viewName, containerId);
@@ -1354,6 +1357,7 @@ const GBPaneBridge = (() => {
   function _resolveDbPaneDisplayView(viewName, tab) {
     const normalizedViewName = _normalizeDbPaneView(viewName);
     if (!DB_SUB_VIEWS[normalizedViewName]) return normalizedViewName;
+    if (normalizedViewName === 'smart-db') return 'smart-db';
     const dbPath = tab?.path || tab?.state?.dbPath || state.currentDbPath || '';
     const mode = (dbPath && typeof getCurrentViewMode === 'function') ? getCurrentViewMode(dbPath) : '';
     const resolvedMode = ['calendar', 'tasks', 'shifts'].includes(mode) ? 'timeline' : mode;
@@ -2332,7 +2336,7 @@ const GBPaneBridge = (() => {
         if (window.MeldexCloudBootstrap?.openSettingsFlow) {
           const cloud = document.createElement('div');
           cloud.style.cssText = 'padding:5px 14px;cursor:pointer;font-size:13px;';
-          cloud.textContent = 'Dropbox / 保存モード';
+          cloud.textContent = '保存先を設定';
           cloud.onmouseenter = () => { cloud.style.background = 'var(--bg4)'; };
           cloud.onmouseleave = () => { cloud.style.background = ''; };
           cloud.addEventListener('click', () => {

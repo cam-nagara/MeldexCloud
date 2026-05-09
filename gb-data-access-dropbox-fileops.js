@@ -67,7 +67,7 @@
       const entries = await _listDirectoryEntries(provider, normalized);
       for (const entry of entries) {
         if (!entry.name || entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
-        const nextPath = _joinPath(normalized, entry.name);
+        const nextPath = entry.path || _joinPath(normalized, entry.name);
         if (_fnvFileId(nextPath) === wanted) return nextPath;
         if (entry.handle.kind === 'directory') {
           const nested = await walk(nextPath);
@@ -109,7 +109,7 @@
     return {
       ok: false,
       unsupported: true,
-      error: `${feature}は Dropbox 共有モード ${phase} 対象です。Phase 1 ではフォルダ・ノート・シナリオ・ボードの基本操作を先に安定化します。`,
+      error: `${feature}はブラウザ版Meldex ${phase} 対象です。現在はフォルダ・ノート・シナリオ・ボードの基本操作を先に安定化しています。`,
     };
   }
 
@@ -707,7 +707,7 @@
       }
       const entries = await _listDirectoryEntries(provider, relativePath);
       for (const entry of entries) {
-        const nextPath = _joinPath(relativePath, entry.name);
+        const nextPath = entry.path || _joinPath(relativePath, entry.name);
         if (!entry.name || entry.name.startsWith('.')) continue;
         if (entry.handle.kind === 'directory') {
           if (entry.name === '_meldex' || entry.name === '_trash' || entry.name === 'node_modules') continue;
@@ -878,7 +878,7 @@
       const folders = [];
       const files = [];
       for (const entry of entries) {
-        const itemPath = _joinPath(browsePath, entry.name);
+        const itemPath = entry.path || _joinPath(browsePath, entry.name);
         const item = await _buildBrowseItem(provider, itemPath, entry.handle, { allFiles, detail });
         if (!item) continue;
         if (item.type === 'folder') folders.push(item);
@@ -919,7 +919,7 @@
         if (entry.handle.kind !== 'file') continue;
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
         if (!IMAGE_EXTS.has(ext)) continue;
-        const itemPath = _joinPath(targetPath, entry.name);
+        const itemPath = entry.path || _joinPath(targetPath, entry.name);
         const stats = await _fileStats(entry.handle);
         items.push({ name: entry.name, path: itemPath, size: stats.size, modified: stats.modified });
       }
@@ -1522,13 +1522,13 @@
       return { ok: true };
     }
 
-    if (pathname === '/server-info' && method === 'GET') return { local_ip: 'クラウドモードではローカルIPは利用しません' };
+    if (pathname === '/server-info' && method === 'GET') return { local_ip: 'ブラウザ版ではローカルIPは利用しません' };
     if (pathname === '/autostart' && method === 'GET') return { supported: false, enabled: false };
     if (pathname === '/autostart' && method === 'POST') return { ok: false, supported: false };
     if (pathname === '/chat/config' && method === 'GET') return _llmConfigShape();
     if (pathname === '/chat/config' && (method === 'PUT' || method === 'POST')) return { ok: false, unsupported: true };
     if (pathname === '/extensions/status' && method === 'GET') return { pillow: false, clip: false, caldav: false };
-    if (pathname === '/extensions/install' && method === 'POST') return { ok: false, error: 'クラウドモードでは拡張インストールに対応していません' };
+    if (pathname === '/extensions/install' && method === 'POST') return { ok: false, error: 'ブラウザ版では拡張インストールに対応していません' };
     if (pathname === '/caldav/info' && method === 'GET') return { url: '', instructions: { iphone: '', thunderbird: '', google: '' } };
     if (pathname === '/caldav/sync-to-ics' && method === 'POST') return { ok: false, synced: 0 };
     if (pathname === '/caldav/sync-from-ics' && method === 'POST') return { ok: false, imported: 0, updated: 0 };

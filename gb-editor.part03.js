@@ -248,6 +248,30 @@ function htmlToMd(html) {
   div.innerHTML = html;
   const BLANK = '\x00BLANK\x00';
 
+  function tablePixelStyle(value) {
+    const n = parseFloat(String(value || '').replace('px', ''));
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  }
+
+  function tableLayoutForMarkdown(table) {
+    const cols = [...table.querySelectorAll(':scope > colgroup > col')];
+    const firstRow = table.rows?.[0];
+    const colWidths = firstRow ? [...firstRow.cells].map((cell, index) => {
+      return tablePixelStyle(cols[index]?.style?.width) || tablePixelStyle(cell.style.width);
+    }) : [];
+    const rowHeights = [...(table.rows || [])].map(row => {
+      const firstCell = row.cells?.[0];
+      return tablePixelStyle(row.style.height) || tablePixelStyle(firstCell?.style?.height);
+    });
+    const hasLayout = colWidths.some(Boolean) || rowHeights.some(Boolean);
+    if (!hasLayout) return '';
+    const payload = {
+      colWidths: colWidths.map(width => width || null),
+      rowHeights: rowHeights.map(height => height || null),
+    };
+    return '<!--table-layout:' + JSON.stringify(payload) + '-->\n';
+  }
+
   // ブロック要素の先頭が _nl-id span であれば <!--nl:ID--> を返す。テキストが先にある場合は無効扱い（Q3: 結合時の後段ID喪失）。
   function _nlIdMarker(node) {
     const first = node.firstChild;
@@ -378,7 +402,7 @@ function htmlToMd(html) {
       case 'TABLE': {
         const rows = node.querySelectorAll('tr');
         if (rows.length === 0) return children;
-        let md = '';
+        let md = tableLayoutForMarkdown(node);
         rows.forEach((tr, ri) => {
           const cells = [...tr.querySelectorAll('th, td')].map(c => walk(c).trim());
           md += '| ' + cells.join(' | ') + ' |\n';

@@ -162,8 +162,9 @@
       await selectSmartDb(smartDbId);
     }
     await api.waitFor(() => {
+      const tableArea = document.getElementById('smart-db-table-area');
       const table = document.getElementById('smart-db-table');
-      if (!table || !_isVisible(table)) return null;
+      if (!_isRenderedVisible(tableArea) || !_isRenderedVisible(table)) return null;
       if (_appState().view !== 'smart-db') return null;
       if (!action.path && action.id && _appState().currentSmartDb?.id && _appState().currentSmartDb.id !== smartDbId) return null;
       return table;
@@ -189,8 +190,9 @@
       if (typeof renderSmartDbTable === 'function') renderSmartDbTable();
       if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
       return api.waitFor(() => {
+        const tableArea = document.getElementById('smart-db-table-area');
         const table = document.getElementById('smart-db-table');
-        if (!table || !_isVisible(table)) return null;
+        if (!_isRenderedVisible(tableArea) || !_isRenderedVisible(table)) return null;
         return _appState().view === 'smart-db' ? table : null;
       }, 'スマートシート表示');
     });
@@ -689,17 +691,21 @@
 
   registerAssertion('inv_smart_db_visible', async (spec, _definition, api) => {
     await api.waitFor(() => {
+      const tableArea = document.getElementById('smart-db-table-area');
       const table = document.getElementById('smart-db-table');
       const tbody = table?.querySelector('tbody');
-      const tableReady = !!table && (_isVisible(table) || !!tbody || table.childElementCount > 0);
-      return _appState().view === 'smart-db' && tableReady ? table : null;
+      const tableReady = !!table && !!tbody && table.childElementCount > 0;
+      const visible = _isRenderedVisible(tableArea) && _isRenderedVisible(table);
+      return _appState().view === 'smart-db' && tableReady && visible ? table : null;
     }, 'スマートシート表示確認');
   });
 
   registerAssertion('inv_smart_db_rows', async (spec, _definition, api) => {
     await api.waitFor(() => {
+      const tableArea = document.getElementById('smart-db-table-area');
+      if (!_isRenderedVisible(tableArea)) return null;
       const tbody = document.querySelector('#smart-db-table tbody');
-      if (!tbody || !_isVisible(tbody)) return null;
+      if (!tbody || !_isRenderedVisible(tbody)) return null;
       const rows = [...tbody.querySelectorAll('tr')];
       const names = rows.map(row => (row.querySelector('td')?.textContent || '').trim()).filter(Boolean);
       if (spec.count != null && names.length !== Number(spec.count)) return null;

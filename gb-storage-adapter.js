@@ -11,6 +11,10 @@
     return window.MeldexResourceUrl;
   }
 
+  function _sourceRegistry() {
+    return window.MeldexSourceFolderRegistry;
+  }
+
   function _normalizeRelativePath(path) {
     return String(path || '')
       .replace(/\\/g, '/')
@@ -370,13 +374,17 @@
     }
 
     _dropboxPath(relativePath) {
+      const registry = _sourceRegistry();
+      if (registry?.resolveDropboxPath) return registry.resolveDropboxPath(relativePath, this.getVaultPath());
       const vaultPath = this.getVaultPath();
       if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
       const relative = _normalizeRelativePath(relativePath);
       return relative ? (vaultPath + '/' + relative) : vaultPath;
     }
 
-    _relativeFromDropboxPath(pathDisplay) {
+    _relativeFromDropboxPath(pathDisplay, sourceId) {
+      const registry = _sourceRegistry();
+      if (registry?.virtualPathFromDropboxPath) return registry.virtualPathFromDropboxPath(pathDisplay, sourceId);
       const vaultPath = this.getVaultPath().toLowerCase();
       const raw = String(pathDisplay || '').replace(/\\/g, '/');
       const lower = raw.toLowerCase();
@@ -621,10 +629,20 @@
     async ensureDirectory(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       if (!normalized) return new DropboxDirectoryHandle(this, '');
-      const segments = normalized.split('/').filter(Boolean);
+      const registry = _sourceRegistry();
+      const parsedSource = registry?.parseSourcePath?.(normalized);
+      const folderPath = parsedSource ? parsedSource.relativePath : normalized;
+      if (parsedSource && !folderPath) return new DropboxDirectoryHandle(this, normalized);
+      const segments = folderPath.split('/').filter(Boolean);
       let current = '';
+      let currentSourceRelative = '';
       for (const segment of segments) {
-        current = _joinPath(current, segment);
+        if (parsedSource) {
+          currentSourceRelative = _joinPath(currentSourceRelative, segment);
+          current = registry.sourcePath(parsedSource.sourceId, currentSourceRelative);
+        } else {
+          current = _joinPath(current, segment);
+        }
         try {
           await this._rpc('files/create_folder_v2', {
             path: this._dropboxPath(current),
@@ -659,6 +677,7 @@
 
     async listEntries(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      const sourceId = _sourceRegistry()?.parseSourcePath?.(normalized)?.sourceId || '';
       const entries = [];
       let payload = await this._rpc('files/list_folder', {
         path: this._dropboxPath(normalized),
@@ -670,11 +689,12 @@
       while (true) {
         (payload.entries || []).forEach((entry) => {
           if (entry['.tag'] !== 'file' && entry['.tag'] !== 'folder') return;
-          const rel = this._relativeFromDropboxPath(entry.path_display || entry.path_lower || '');
+          const rel = this._relativeFromDropboxPath(entry.path_display || entry.path_lower || '', sourceId);
           this._rememberMeta(rel, entry);
           entries.push({
             name: entry.name,
             path: rel,
+            sourceId: sourceId || undefined,
             kind: entry['.tag'] === 'folder' ? 'directory' : 'file',
             size: Number(entry.size || 0),
             modified: entry.server_modified || entry.client_modified || '',
@@ -903,6 +923,10 @@
           vaultMeta = await this.ensureVaultMetadataOwner(vaultMeta, account);
         } catch {}
       }
+      let sourceRegistry = null;
+      try {
+        sourceRegistry = await _sourceRegistry()?.loadRegistry?.({ writeIfMissing: access === 'editor' });
+      } catch {}
       const nextState = {
         kind: 'dropbox',
         name: mountInfo?.name || rootMeta.name || this.getVaultName(),
@@ -914,8 +938,9 @@
         ownerId: vaultMeta?.ownerId || '',
         ownerName: vaultMeta?.ownerName || '',
         isOwner: this.isCurrentAccountVaultOwner(vaultMeta, account),
+        sourceFolders: Array.isArray(sourceRegistry?.roots) ? sourceRegistry.roots.length : 0,
         cursorTopology: {
-          vault: 'single-vault-cursor',
+          vault: 'source-folder-registry',
           liveEvents: 'reserved-events-cursor',
         },
       };

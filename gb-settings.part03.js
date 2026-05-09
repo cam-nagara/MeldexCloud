@@ -1248,6 +1248,7 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
       if (typeof renderNotionSyncSettings === 'function') renderNotionSyncSettings(modal);
+      if (typeof loadWebClipperSetupForSettings === 'function') loadWebClipperSetupForSettings();
       _loadExtensionStatus();
       return;
     }

@@ -22,7 +22,41 @@ function _isOutlinerPathWithin(path, basePath) {
   const normalizedPath = _normalizeOutlinerPathForCompare(path);
   const normalizedBase = _normalizeOutlinerPathForCompare(basePath);
   if (!normalizedPath || !normalizedBase) return false;
-  return normalizedPath === normalizedBase || normalizedPath.startsWith(normalizedBase + '/');
+  if (normalizedPath === normalizedBase || normalizedPath.startsWith(normalizedBase + '/')) return true;
+  const pathParts = normalizedPath.split('/').filter(Boolean);
+  const baseParts = normalizedBase.split('/').filter(Boolean);
+  if (!pathParts.length || !baseParts.length || pathParts.length < baseParts.length) return false;
+  for (let i = 0; i <= pathParts.length - baseParts.length; i++) {
+    let matches = true;
+    for (let j = 0; j < baseParts.length; j++) {
+      if (pathParts[i + j] !== baseParts[j]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+const _outlinerPendingDeletePaths = new Set();
+
+function isOutlinerDeletePendingPath(path) {
+  const normalizedPath = _normalizeOutlinerPathForCompare(path);
+  if (!normalizedPath || !_outlinerPendingDeletePaths.size) return false;
+  for (const pendingPath of _outlinerPendingDeletePaths) {
+    if (_isOutlinerPathWithin(normalizedPath, pendingPath)) return true;
+  }
+  return false;
+}
+
+function _setOutlinerDeletePending(paths, pending) {
+  const normalizedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
+  normalizedPaths.forEach(path => {
+    if (pending) _outlinerPendingDeletePaths.add(path);
+    else _outlinerPendingDeletePaths.delete(path);
+  });
+  return normalizedPaths;
 }
 
 function _prepareOutlinerDeleteTargets(items) {
@@ -83,6 +117,53 @@ function _removeOutlinerNodesForPaths(paths) {
   });
 }
 
+function _removeFolderItemsForPaths(paths) {
+  const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
+  if (!deletedPaths.length) return;
+  const matches = path => deletedPaths.some(dp => _isOutlinerPathWithin(path, dp));
+
+  document.querySelectorAll('#folder-grid .fv-item').forEach(itemEl => {
+    const path = itemEl?.dataset?.path || '';
+    if (path && matches(path)) itemEl.remove();
+  });
+
+  if (typeof _folderItems !== 'undefined' && Array.isArray(_folderItems)) {
+    _folderItems = _folderItems.filter(item => !matches(item?.path));
+  }
+  if (typeof _folderVisibleItems !== 'undefined' && Array.isArray(_folderVisibleItems)) {
+    _folderVisibleItems = _folderVisibleItems.filter(item => !matches(item?.path));
+  }
+  if (typeof _folderSelectedItems !== 'undefined' && Array.isArray(_folderSelectedItems)) {
+    _folderSelectedItems = _folderSelectedItems.filter(item => !matches(item?.path));
+  }
+  if (typeof _folderSelected !== 'undefined' && _folderSelected && matches(_folderSelected.path)) {
+    _folderSelected = _folderSelectedItems?.[_folderSelectedItems.length - 1] || null;
+  }
+
+  const countEl = document.getElementById('folder-item-count');
+  if (countEl && typeof _folderVisibleItems !== 'undefined' && typeof _folderItems !== 'undefined') {
+    countEl.textContent = _folderVisibleItems.length + (_folderItems.length !== _folderVisibleItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
+  }
+  if (typeof _syncFolderCheckboxes === 'function') _syncFolderCheckboxes();
+  if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
+  if (typeof _scheduleWaterfallLayout === 'function') _scheduleWaterfallLayout();
+}
+
+function _markOutlinerDeletePending(paths) {
+  const pendingPaths = _setOutlinerDeletePending(paths, true);
+  if (!pendingPaths.length) return pendingPaths;
+  _removeOutlinerNodesForPaths(pendingPaths);
+  _removeFolderItemsForPaths(pendingPaths);
+  if (typeof purgeAppPathReferences === 'function') {
+    purgeAppPathReferences(pendingPaths);
+  }
+  return pendingPaths;
+}
+
+function _clearOutlinerDeletePending(paths) {
+  return _setOutlinerDeletePending(paths, false);
+}
+
 function _outlinerTrashRefFromResponse(response) {
   if (!response?.trash_name) return null;
   return { trash_name: response.trash_name, trash_root: response.trash_root || '' };
@@ -129,6 +210,12 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
   }
 
+  const targetPaths = targets.map(item => item.path).filter(Boolean);
+  _markOutlinerDeletePending(targetPaths);
+  if (typeof options.onOptimisticDelete === 'function') {
+    try { options.onOptimisticDelete(targets); } catch {}
+  }
+
   const results = await _deleteOutlinerTargetsSequentially(targets, {
     onSuccess: (item, response) => {
       if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
@@ -139,10 +226,12 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   });
   const succeeded = [];
   const skipped = [];
+  const failed = [];
   results.forEach((result, index) => {
     const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
     if (!trashRef) {
       if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);
+      else failed.push(targets[index]);
       return;
     }
     succeeded.push({ ...targets[index], ...trashRef });
@@ -150,8 +239,18 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   const deletedPaths = succeeded.map(item => item.path);
   const deletedCount = requestedTargets.filter(item => deletedPaths.some(path => _isOutlinerPathWithin(item.path, path))).length || succeeded.length;
   const failedCount = targets.length - succeeded.length - skipped.length;
+  _clearOutlinerDeletePending(targetPaths);
   if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
     purgeAppPathReferences(deletedPaths);
+  }
+  if (failed.length) {
+    await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', {
+      succeeded,
+      skipped,
+      failed,
+      deletedPaths,
+      failedPaths: failed.map(item => item.path),
+    });
   }
 
   let trashRefs = succeeded.map(_outlinerTrashRefFromResponse).filter(Boolean);
@@ -168,11 +267,13 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
       },
       async () => {
         const nextTrashRefs = [];
+        if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
         for (const item of succeeded) {
           const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
           const ref = _outlinerTrashRefFromResponse(res);
           if (ref) nextTrashRefs.push(ref);
         }
+        if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
         trashRefs = nextTrashRefs;
         trashNames = _outlinerTrashRefsToNames(trashRefs);
         if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
@@ -186,7 +287,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     );
   }
 
-  return { targets, requestedTargets, succeeded, skipped, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
+  return { targets, requestedTargets, succeeded, skipped, failed, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
 }
 
 const MAIN_CALENDAR_SETTINGS_KEYS = ['main-calendar-path', 'main-calendar-id'];
@@ -240,7 +341,7 @@ function _isCloudPhase1BlockedCreateType(type) {
 
 function _showCloudPhase1BlockedCreate(type) {
   if (window.MeldexCloudBootstrap?.showPhase1Unsupported) return window.MeldexCloudBootstrap.showPhase1Unsupported(type);
-  showStatus('Dropbox 共有モード Phase 1 では未対応の作成タイプです', true);
+  showStatus('ブラウザ版Meldexではまだ未対応の作成タイプです', true);
   return false;
 }
 

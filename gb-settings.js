@@ -11,6 +11,7 @@ const MELDEX_LLM_API_KEY_URLS = Object.freeze({
   anthropic: 'https://platform.claude.com/settings/keys',
   gemini: 'https://aistudio.google.com/app/apikey',
 });
+const MELDEX_WEBCLIP_GUIDE_PATH = 'MeldexHome/マニュアル/03_設定と連携/Chrome拡張機能の設定.md';
 
 function getMeldexSampleDownloadUrl() {
   const cfg = window.MeldexCloudRuntimeConfig || {};
@@ -29,6 +30,16 @@ function openMeldexSampleGuide() {
     return;
   }
   window.open('public-index.html#samples', '_blank', 'noopener');
+}
+
+function isWebClipperDesktopSetupAvailable() {
+  try {
+    const host = String(window.location.hostname || '').toLowerCase();
+    const local = !host || host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    return window.location.protocol !== 'https:' || local;
+  } catch {
+    return true;
+  }
 }
 
 function _normalizeAvatarBgColor(value) {
@@ -83,11 +94,14 @@ async function showSettingsModal(opts) {
   // テーマ変更のキャンセル用にスナップショットを保存
   const _themeSnapshot = snapshotThemeVars();
   const _currentTheme = detectCurrentTheme();
-  const _storageMode = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropbox 共有モード' : 'デスクトップ版';
+  const _isDropboxConnected = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox';
+  const _storageLabel = _isDropboxConnected ? 'Dropboxと接続中' : 'このPCに保存';
   const _workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
   const _storageDetail = _workspaceState?.path
     ? `${_workspaceState.path}${_workspaceState.access ? ' / ' + _workspaceState.access : ''}`
     : '未接続';
+  const _webClipperDesktopSetupAvailable = isWebClipperDesktopSetupAvailable();
+  const _webClipperSetupDisabled = _webClipperDesktopSetupAvailable ? '' : ' disabled aria-disabled="true"';
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
@@ -153,17 +167,17 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">保存モード</div>
-        <div class="gb-section-desc">MeldexをこのPCだけで使うか、Dropbox共有モードで使うかを設定します。</div>
-        <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageMode)}</div>
+        <div class="gb-section-title">保存先</div>
+        <div class="gb-section-desc">このPCのフォルダ、またはDropboxを保存先として使います。</div>
+        <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
-          <button class="gb-btn gb-btn-sm" data-action="document.querySelector('.modal-overlay[data-settings-modal=&quot;1&quot;]')?.remove(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">Dropbox / 保存モード設定...</button>
+          <button class="gb-btn gb-btn-sm" data-action="document.querySelector('.modal-overlay[data-settings-modal=&quot;1&quot;]')?.remove(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">保存先を設定...</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続</div>
-        <div class="gb-section-desc">このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。標準のデスクトップ版は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はCloud版PWAまたは管理者が用意した共有URLを使ってください。</div>
+        <div class="gb-section-desc">このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください。</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
           <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
           <button type="button" class="gb-btn gb-btn-sm" data-action="copySettingsMobilePrimaryUrl()">${lucide('copy',14)} URLをコピー</button>
@@ -395,15 +409,38 @@ async function showSettingsModal(opts) {
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
       <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('blocks',14)} Web Clipper</div>
+        <div class="gb-section-desc">Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の <code>Web Clipper</code> フォルダです。</div>
+        ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
+        <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
+        <label class="gb-field" style="margin-top:8px;">
+          <span class="gb-label">ブラウザに読み込むフォルダ</span>
+          <input id="settings-webclip-install-path" class="gb-input" type="text" readonly value="" placeholder="Web Clipperを準備すると表示されます">
+        </label>
+        <ol class="gb-section-desc" style="margin:8px 0 0 20px;padding:0;line-height:1.6;">
+          <li><strong>Web Clipperを準備</strong>を押します。</li>
+          <li><strong>読み込み用フォルダを開く</strong>を押します。</li>
+          <li>使うブラウザで拡張機能画面を開き、上のフォルダを読み込みます。</li>
+        </ol>
+        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-prepare" data-action="prepareWebClipperSetup"${_webClipperSetupDisabled}>${lucide('download',14)} Web Clipperを準備</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-folder" data-action="openWebClipperInstallFolder"${_webClipperSetupDisabled}>${lucide('folderOpen',14)} 読み込み用フォルダを開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-guide" data-action="openWebClipperGuide">${lucide('bookOpen',14)} 手順ノートを開く</button>
+        </div>
+        <div class="gb-section-desc" style="margin-top:10px;">ブラウザ側でデベロッパーモードをONにし、上のフォルダを読み込んでください。</div>
+        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-chrome" data-action="openWebClipperBrowser" data-args='["chrome"]'${_webClipperSetupDisabled}>${lucide('externalLink',14)} Chromeで開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-edge" data-action="openWebClipperBrowser" data-args='["edge"]'${_webClipperSetupDisabled}>${lucide('externalLink',14)} Edgeで開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-brave" data-action="openWebClipperBrowser" data-args='["brave"]'${_webClipperSetupDisabled}>${lucide('externalLink',14)} Braveで開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-vivaldi" data-action="openWebClipperBrowser" data-args='["vivaldi"]'${_webClipperSetupDisabled}>${lucide('externalLink',14)} Vivaldiで開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-opera" data-action="openWebClipperBrowser" data-args='["opera"]'${_webClipperSetupDisabled}>${lucide('externalLink',14)} Operaで開く</button>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed">
         <div class="gb-section-title"><span class="ico ico-sync"></span> Notion同期</div>
         <div id="notion-sync-settings-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
-      </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">Chrome拡張機能（Web Clipper）</div>
-        <div class="gb-section-desc">Webページ・画像・テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の <code>Web Clipper</code> フォルダです。</div>
-        <div class="gb-section-desc">meldex-extension フォルダをChrome拡張機能として読み込んでください</div>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">拡張機能</div>
@@ -519,15 +556,15 @@ async function loadStorageInfoForSettings() {
   const modeEl = document.getElementById('settings-storage-mode');
   const detailEl = document.getElementById('settings-storage-detail');
   if (!modeEl || !detailEl) return;
-  const storageMode = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropbox 共有モード' : 'デスクトップ版';
+  const storageLabel = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropboxと接続中' : 'このPCに保存';
   try {
     const info = await window.MeldexStorageAdapter?.describeWorkspace?.();
     const displayPath = info?.path || info?.homePath || '';
     const permission = info?.permission ? ' / ' + info.permission : '';
-    modeEl.textContent = '現在: ' + storageMode;
+    modeEl.textContent = '現在: ' + storageLabel;
     detailEl.textContent = '接続先: ' + (displayPath ? (displayPath + permission) : '未接続');
   } catch {
-    modeEl.textContent = '現在: ' + storageMode;
+    modeEl.textContent = '現在: ' + storageLabel;
   }
 }
 
@@ -707,10 +744,121 @@ async function openExternalBrowserUrl(url, event) {
   window.open?.(href, '_blank', 'noopener');
 }
 
+function _setWebClipperSetupStatus(message, isError) {
+  const el = document.getElementById('settings-webclip-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
+}
+
+function _setWebClipperSetupInfo(info) {
+  const pathEl = document.getElementById('settings-webclip-install-path');
+  if (pathEl) pathEl.value = info?.install_path || '';
+  const prepared = !!info?.prepared;
+  _setWebClipperSetupStatus(
+    prepared
+      ? '準備済みです。ブラウザ側でこのフォルダを読み込んでください。'
+      : '未準備です。まず「Web Clipperを準備」を押してください。',
+    false
+  );
+}
+
+async function loadWebClipperSetupForSettings() {
+  if (!document.getElementById('settings-webclip-status')) return;
+  if (!isWebClipperDesktopSetupAvailable()) {
+    _setWebClipperSetupStatus('クラウド版では設定できません。デスクトップ版を起動して設定してください。', false);
+    return;
+  }
+  _setWebClipperSetupStatus('Web Clipperの準備状態を確認中...', false);
+  try {
+    const info = await apiFetch('/webclip/setup', { silentError: true });
+    _setWebClipperSetupInfo(info);
+  } catch (e) {
+    _setWebClipperSetupStatus('Web Clipperの準備状態を取得できませんでした: ' + (e.message || e), true);
+  }
+}
+
+async function prepareWebClipperSetup() {
+  if (!isWebClipperDesktopSetupAvailable()) {
+    _setWebClipperSetupStatus('クラウド版では設定できません。デスクトップ版を起動して設定してください。', false);
+    return;
+  }
+  _setWebClipperSetupStatus('Web Clipperを準備中...', false);
+  try {
+    const info = await apiPost('/webclip/setup', {}, { silentError: true });
+    _setWebClipperSetupInfo(info);
+    if (typeof showStatus === 'function') showStatus(info.message || 'Web Clipperを準備しました');
+  } catch (e) {
+    _setWebClipperSetupStatus('Web Clipperの準備に失敗しました: ' + (e.message || e), true);
+  }
+}
+
+async function ensureWebClipperSetupReadyForSettings() {
+  let info = null;
+  try {
+    info = await apiFetch('/webclip/setup', { silentError: true });
+  } catch {}
+  if (!info?.prepared) {
+    _setWebClipperSetupStatus('読み込み用フォルダを準備中...', false);
+    info = await apiPost('/webclip/setup', {}, { silentError: true });
+  }
+  _setWebClipperSetupInfo(info);
+  return info;
+}
+
+async function openWebClipperInstallFolder() {
+  if (!isWebClipperDesktopSetupAvailable()) {
+    _setWebClipperSetupStatus('クラウド版では設定できません。デスクトップ版を起動して設定してください。', false);
+    return;
+  }
+  _setWebClipperSetupStatus('読み込み用フォルダを開いています...', false);
+  try {
+    const res = await apiPost('/webclip/open-folder', {}, { silentError: true });
+    const pathEl = document.getElementById('settings-webclip-install-path');
+    if (pathEl) pathEl.value = res.path || pathEl.value;
+    _setWebClipperSetupStatus('読み込み用フォルダを開きました。ブラウザ側でこのフォルダを選んでください。', false);
+  } catch (e) {
+    _setWebClipperSetupStatus('読み込み用フォルダを開けませんでした: ' + (e.message || e), true);
+  }
+}
+
+async function openWebClipperBrowser(browser) {
+  if (!isWebClipperDesktopSetupAvailable()) {
+    _setWebClipperSetupStatus('クラウド版では設定できません。デスクトップ版を起動して設定してください。', false);
+    return;
+  }
+  const key = String(browser || '').trim();
+  const labelMap = { chrome: 'Chrome', edge: 'Edge', brave: 'Brave', vivaldi: 'Vivaldi', opera: 'Opera' };
+  if (!labelMap[key]) {
+    _setWebClipperSetupStatus('対応していないブラウザです。Chrome / Edge / Brave / Vivaldi / Operaから選んでください。', true);
+    return;
+  }
+  _setWebClipperSetupStatus((labelMap[key] || 'ブラウザ') + 'の拡張機能画面を開いています...', false);
+  try {
+    await ensureWebClipperSetupReadyForSettings();
+    const res = await apiPost('/webclip/open-browser', { browser: key }, { silentError: true });
+    const label = res.label || labelMap[key] || 'ブラウザ';
+    const fallback = res.fallback ? ` 開かない場合は、アドレスバーに ${res.url} を入力してください。` : '';
+    _setWebClipperSetupStatus(label + 'の拡張機能画面を開きました。' + fallback, false);
+  } catch (e) {
+    _setWebClipperSetupStatus('ブラウザを開けませんでした: ' + (e.message || e), true);
+  }
+}
+
+function openWebClipperGuide() {
+  document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
+  if (typeof openPage === 'function') {
+    openPage('Chrome拡張機能の設定', MELDEX_WEBCLIP_GUIDE_PATH, { fromExplorer: true, skipAutoAppLayout: true });
+    return;
+  }
+  window.open('docs/meldex-web-clipper-install-explanation-page-2026-05-09.md', '_blank', 'noopener');
+}
+
 // --- フォルダツリールート管理 ---
 let _outlinerRoots = [];
 
-function _isDropboxBackedSourcePath(path) {
+function _isDropboxBackedSourcePath(path, root) {
+  if (root?.provider === 'dropbox' || root?.dropboxPath) return true;
   const normalized = String(path || '').replace(/\\/g, '/').toLowerCase();
   return normalized.includes('/dropbox/')
     || normalized.includes(' dropbox/')
@@ -718,12 +866,21 @@ function _isDropboxBackedSourcePath(path) {
     || normalized.includes('dropbox');
 }
 
+function _sourceRootDisplayPath(root) {
+  if (!root) return '';
+  if (root.provider === 'dropbox' || root.dropboxPath) {
+    const suffix = root.needsMapping ? '（このPCで場所を確認してください）' : '';
+    return `Dropbox: ${root.dropboxPath || root.path || ''}${suffix}`;
+  }
+  return String(root.path || '');
+}
+
 function _createDropboxSourceFolderNotice() {
   const notice = document.createElement('div');
   notice.id = 'settings-dropbox-source-folder-notice';
   notice.className = 'gb-section-desc';
   notice.style.cssText = 'margin:0 0 8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg2);line-height:1.5;';
-  notice.textContent = 'Dropbox上のソースフォルダは、Dropboxアプリ側でオンラインアクセスと同期を許可し、必要なフォルダをローカルで利用可能にしてください。オンラインのみのままだと、フォルダやファイルの初回読み込みが重くなることがあります。';
+  notice.textContent = 'Dropbox上のソースフォルダは端末間で共有されます。このPCで使う場合は、Dropboxアプリ側でも必要なフォルダをローカルで利用可能にしてください。';
   return notice;
 }
 
@@ -743,12 +900,13 @@ function renderOutlinerRootsSettings() {
   const container = document.getElementById('modal-outliner-roots');
   if (!container) return;
   container.innerHTML = '';
-  if (_outlinerRoots.some(root => _isDropboxBackedSourcePath(root?.path))) {
+  if (_outlinerRoots.some(root => _isDropboxBackedSourcePath(root?.path, root))) {
     container.appendChild(_createDropboxSourceFolderNotice());
   }
   _outlinerRoots.forEach((root, i) => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:12px;';
+    const displayPath = _sourceRootDisplayPath(root);
     row.innerHTML = `
       <label style="display:flex;align-items:center;gap:3px;cursor:pointer;" title="フォルダツリーに表示">
         <input type="checkbox" class="or-visible" data-e2e-id="settings-outliner-root-${i}-visible" aria-label="${esc(root.name || 'ソースフォルダ')}をフォルダツリーに表示" ${root.visible ? 'checked' : ''}>
@@ -756,7 +914,7 @@ function renderOutlinerRootsSettings() {
       <input type="text" class="or-name" value="${esc(root.name)}"
         data-e2e-id="settings-outliner-root-${i}-name" aria-label="ソースフォルダ名"
         style="width:80px;font-size:12px;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-      <span style="flex:1;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(root.path)}">${esc(root.path)}</span>
+      <span style="flex:1;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(displayPath)}">${esc(displayPath)}</span>
       <button type="button" class="or-delete" data-e2e-id="settings-outliner-root-${i}-delete" aria-label="${esc(root.name || 'ソースフォルダ')}を削除" title="削除" style="font-size:11px;padding:1px 6px;color:var(--fg2);">${lucide('x', 12)}</button>
     `;
     row.querySelector('.or-visible').addEventListener('change', (e) => {
@@ -824,6 +982,10 @@ async function _promptFolderPath() {
 }
 
 async function addOutlinerRootFromSettings() {
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexDropboxFolderPicker?.pickFolder && window.MeldexSourceFolderRegistry?.addDropboxRoot) {
+    await _addDropboxOutlinerRootFromSettings();
+    return;
+  }
   showStatus('フォルダ選択ダイアログを開いています...');
   try {
     const res = await apiFetch('/add-outliner-root', { method: 'POST' });
@@ -881,7 +1043,7 @@ async function _addOutlinerRootManual() {
   });
 }
 
-async function _addOutlinerRootEntry(path, name) {
+async function _addOutlinerRootEntry(path, name, extra) {
   // 設定ダイアログの外から呼ばれた場合、サーバーから最新のルートを取得
   const inSettingsDialog = !!document.getElementById('modal-outliner-roots');
   const historyBefore = inSettingsDialog ? null : await captureOutlinerRootsSettingsSnapshot().catch(() => null);
@@ -892,7 +1054,7 @@ async function _addOutlinerRootEntry(path, name) {
     showStatus('既に登録されているフォルダです');
     return;
   }
-  _outlinerRoots.push({ path, name, visible: true });
+  _outlinerRoots.push({ ...(extra || {}), path, name, visible: true });
   if (inSettingsDialog) _markOutlinerRootsSettingsDirty();
   renderOutlinerRootsSettings();
   if (!inSettingsDialog) {
@@ -913,7 +1075,7 @@ async function _addOutlinerRootEntry(path, name) {
     const historyAfter = await captureOutlinerRootsSettingsSnapshot().catch(() => null);
     pushOutlinerRootsSettingsHistory('設定: ソースフォルダ追加', historyBefore, historyAfter, name || path);
   }
-  showStatus(_isDropboxBackedSourcePath(path)
+  showStatus(_isDropboxBackedSourcePath(path, extra)
     ? 'フォルダを追加しました。Dropbox上のソースフォルダはオンラインアクセスと同期を許可してください。'
     : 'フォルダを追加しました');
 }
@@ -929,6 +1091,11 @@ function _normalizeOutlinerRootSettings(root) {
   if (!root || !root.path) return null;
   return {
     path: String(root.path),
+    id: root.id || root.sourceId || undefined,
+    sourceId: root.sourceId || root.id || undefined,
+    provider: root.provider || undefined,
+    dropboxPath: root.dropboxPath || undefined,
+    needsMapping: root.needsMapping === true,
     name: String(root.name || root.path.split(/[\\/]/).pop() || root.path),
     visible: root.visible !== false,
   };
@@ -962,6 +1129,24 @@ function _sameOutlinerRootsSettingsSnapshot(a, b) {
       === JSON.stringify(_normalizeOutlinerRootsSettingsSnapshot(b));
   } catch {
     return false;
+  }
+}
+
+async function _addDropboxOutlinerRootFromSettings() {
+  showStatus('Dropbox内フォルダを選択してください...');
+  try {
+    const picked = await window.MeldexDropboxFolderPicker.pickFolder({
+      title: 'ソースフォルダに追加するDropbox内フォルダを選択',
+    });
+    if (!picked?.path) {
+      showStatus('キャンセルされました');
+      return;
+    }
+    const root = await window.MeldexSourceFolderRegistry.addDropboxRoot(picked.path, picked.name);
+    if (!root?.path) throw new Error('ソースフォルダを追加できませんでした');
+    await _addOutlinerRootEntry(root.path, root.name, root);
+  } catch (err) {
+    showStatus(err?.message || String(err), true);
   }
 }
 
@@ -4382,6 +4567,7 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
       if (typeof renderNotionSyncSettings === 'function') renderNotionSyncSettings(modal);
+      if (typeof loadWebClipperSetupForSettings === 'function') loadWebClipperSetupForSettings();
       _loadExtensionStatus();
       return;
     }

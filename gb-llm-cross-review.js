@@ -334,8 +334,15 @@
       .filter(Boolean);
   }
 
+  function _normalizeIssueLearningDefault(issue) {
+    if (issue && (!issue.accepted_state || issue.accepted_state === 'pending')) {
+      issue.apply_to_editor_learning = false;
+    }
+    return issue;
+  }
+
   function _issuesForRun(run) {
-    return (run?.merged?.issues || []).filter(issue => issue?.issue_id);
+    return (run?.merged?.issues || []).filter(issue => issue?.issue_id).map(_normalizeIssueLearningDefault);
   }
 
   function _findIssueById(run, issueId) {
@@ -456,7 +463,7 @@
     const learn = _el('label', 'llm-review-check');
     const learnInput = document.createElement('input');
     learnInput.type = 'checkbox';
-    learnInput.checked = !!issue.apply_to_editor_learning;
+    learnInput.checked = issue.accepted_state !== 'pending' && !!issue.apply_to_editor_learning;
     learn.append(learnInput, _el('span', '', 'この傾向を今後のレビューに反映'));
     const actions = _el('div', 'llm-review-issue-actions');
     Object.entries(STATE_LABELS).forEach(([state, label]) => {

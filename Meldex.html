@@ -12,7 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Meldex BETA">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Meldex BETA</title>
 <style>
 html[data-desktop-launch="1"]{
@@ -162,6 +162,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <script src="gb-i18n.js"></script>
 <script src="gb-online-status.js"></script>
 <script src="gb-dropbox-auth.js"></script>
+<script src="gb-source-folder-registry.js"></script>
+<script src="gb-dropbox-folder-picker.js"></script>
 <script src="gb-storage-adapter.js"></script>
 <script src="gb-storage-adapter-localfs.js"></script>
 <script src="gb-llm-keys-store.js"></script>
@@ -262,6 +264,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <button id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
     <button id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="全文検索" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
     <button id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ表示切替" data-action="toggleGlobalFilterBar()"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-outliner-refresh" class="outliner-refresh-btn" data-e2e-id="outliner-refresh-button" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フォルダツリーを更新" aria-label="フォルダツリーを更新" data-action="refreshOutlinerFromButton(event)"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
   </div>
   <!-- 検索パネル（ルートフォルダ全体検索） -->
   <div id="search-panel">
@@ -320,7 +323,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <span class="sidebar-section-toggle expanded" id="toggle-roots"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>ソースフォルダ</span>
         <span style="margin-left:auto;display:flex;gap:2px;">
-          <button type="button" class="sidebar-section-btn outliner-refresh-btn" data-e2e-id="outliner-refresh-button" data-action="refreshOutlinerFromButton(event)" title="フォルダツリーを更新" aria-label="フォルダツリーを更新"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
           <span class="sidebar-section-btn" data-action="_openSourceFolderSettings()" title="ソースフォルダの管理"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></span>
           <span class="sidebar-section-btn" data-action="addOutlinerRootFromSettings()" title="ソースフォルダを追加"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span>
         </span>
@@ -521,10 +523,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <div id="page-rt-toolbar" class="gb-toolbar">
         <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'page')"><span class="ico ico-menu"></span></button>
         <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
-        <span id="page-icon" class="tb-icon-btn" title="アイコンをクリックして変更" data-action="openPageIconPicker()"><span class="ico ico-fileText"></span></span>
         <div id="page-title" class="tb-file-title tb-file-title--input" contenteditable="true"></div>
-        <button class="tb-icon-btn" title="公開設定" data-e2e-id="page-publish-settings" data-action="showPublishSettingsModal()"><span class="ico ico-globe"></span></button>
-        <button class="tb-icon-btn" title="公開を更新" data-action="publishCurrentPageView()"><span class="ico ico-upload"></span></button>
         <div class="sep"></div>
         <button class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-panelLeft"></span></button>
         <button class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" data-action="toggleNoteVertical()"><span class="ico ico-kanban"></span></button>

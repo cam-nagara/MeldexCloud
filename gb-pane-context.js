@@ -128,8 +128,7 @@ const GBPaneState = {
   },
 };
 
-function _currentPaneState() {
-  if (_activePane) return _activePane;
+function _globalPaneState() {
   if (_fallbackPaneProxy) return _fallbackPaneProxy;
   // フォールバック: グローバルstateから擬似PaneContextを返す
   _fallbackPaneProxy = {
@@ -164,6 +163,11 @@ function _currentPaneState() {
     },
   };
   return _fallbackPaneProxy;
+}
+
+function _currentPaneState() {
+  if (_activePane) return _activePane;
+  return _globalPaneState();
 }
 
 if (typeof window !== 'undefined') {

@@ -359,6 +359,7 @@
     const header = document.createElement('button');
     header.type = 'button';
     header.className = 'gb-cal-section-header';
+    header.dataset.calSectionHeader = id;
     header.innerHTML = `<span class="gb-cal-section-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-section-title">${_calAttIcon(icon, 14)}<span>${_calAttEsc(title)}</span></span>`;
     const body = document.createElement('div');
     body.className = 'gb-cal-section-body';
@@ -481,6 +482,7 @@
         const header = document.createElement('button');
         header.type = 'button';
         header.className = 'gb-cal-attendance-folder-header';
+        header.dataset.calAttendanceFolder = folderKey || group.label || 'default';
         header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(group.label)}</span><span class="gb-cal-folder-count">${group.rows.length}</span>`;
         const body = document.createElement('div');
         body.className = 'gb-cal-attendance-folder-body';
@@ -524,6 +526,7 @@
       const header = document.createElement('button');
       header.type = 'button';
       header.className = 'gb-cal-calendar-folder-header';
+      header.dataset.calCalendarFolder = folder || 'default';
       header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(folder)}</span><span class="gb-cal-folder-count">${calendars.length}</span>`;
       const body = document.createElement('div');
       body.className = 'gb-cal-calendar-folder-body';
@@ -558,6 +561,8 @@
     });
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    cb.title = '表示切り替え: ' + (cal.name || '無題');
+    cb.dataset.calCalendarVisible = cal.id || '';
     cb.checked = this._visibleCalIds.has(cal.id);
     cb.addEventListener('change', () => {
       if (cb.checked) this._visibleCalIds.add(cal.id);
@@ -579,6 +584,7 @@
     menuBtn.type = 'button';
     menuBtn.className = 'gb-cal-calendar-icon-action gb-cal-calendar-more';
     menuBtn.title = 'カレンダー操作';
+    menuBtn.dataset.calCalendarAction = 'menu:' + (cal.id || '');
     menuBtn.innerHTML = _calAttIcon('moreHorizontal', 14);
     menuBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -682,6 +688,20 @@
     roleRow.append(roleLabel, roleSelect);
     menu.appendChild(roleRow);
 
+    const divider = document.createElement('div');
+    divider.className = 'gb-cal-calendar-menu-divider';
+    menu.appendChild(divider);
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'gb-cal-calendar-menu-delete';
+    deleteBtn.innerHTML = `<span>${_calAttIcon('trash2', 14)}</span><span>このカレンダーを削除</span>`;
+    deleteBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this._deleteCalendarFromMenu(cal, menu);
+    });
+    menu.appendChild(deleteBtn);
+
     document.body.appendChild(menu);
     const rect = anchor.getBoundingClientRect();
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
@@ -697,6 +717,49 @@
       };
       document.addEventListener('pointerdown', close, true);
     }, 0);
+  };
+
+  CalendarComponent.prototype._deleteCalendarFromMenu = async function(cal, menu) {
+    if (!cal?.id) return;
+    const name = cal.name || '無題';
+    if (typeof cfConfirm === 'function') {
+      const ok = await cfConfirm(`カレンダー「${name}」を削除しますか？\n予定は削除せず、カレンダー未設定として残します。`);
+      if (!ok) return;
+    }
+    menu?.remove?.();
+
+    const beforeCalendars = Array.isArray(this._calendars) ? [...this._calendars] : [];
+    const beforeVisibleIds = new Set(this._visibleCalIds || []);
+    const beforeSelectedId = this._selectedCalendarId || '';
+    const beforeEvents = Array.isArray(this._events) ? [...this._events] : [];
+
+    this._calendars = beforeCalendars.filter(item => item.id !== cal.id);
+    if (this._visibleCalIds) this._visibleCalIds.delete(cal.id);
+    if (this._selectedCalendarId === cal.id) this._selectedCalendarId = '';
+    if (Array.isArray(this._events)) {
+      this._events = this._events.map(ev => ev?.calendar_id === cal.id ? { ...ev, calendar_id: '' } : ev);
+    }
+    this._ensureSelectedCalendar?.();
+    this._renderCalendarList?.();
+    this._render?.();
+
+    try {
+      await apiFetch('/cal/calendars/' + encodeURIComponent(cal.id), { method: 'DELETE' });
+      await Promise.all([
+        Promise.resolve(this._loadCalendars?.()).catch(() => {}),
+        Promise.resolve(this._loadEvents?.()).catch(() => {}),
+      ]);
+      this._render?.();
+      this._showStatus?.('カレンダーを削除しました');
+    } catch (e) {
+      this._calendars = beforeCalendars;
+      this._visibleCalIds = beforeVisibleIds;
+      this._selectedCalendarId = beforeSelectedId;
+      this._events = beforeEvents;
+      this._renderCalendarList?.();
+      this._render?.();
+      this._showStatus?.('カレンダーの削除に失敗しました', true);
+    }
   };
 
   CalendarComponent.prototype._buildCalendarTeamFolderRow = function(cal, folderInput) {

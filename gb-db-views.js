@@ -147,6 +147,33 @@ function _bindDbViewTabsWheelScroll(tabs) {
   }, { passive: false });
 }
 
+function _clearDbViewTabDropIndicator(tabs) {
+  const scope = tabs || document;
+  scope.querySelectorAll?.('.view-tab.db-view-drop-before, .view-tab.db-view-drop-after')
+    .forEach(tab => tab.classList.remove('db-view-drop-before', 'db-view-drop-after', 'drag-over-tab'));
+}
+
+function _dbViewTabDropSide(tab, event) {
+  const rect = tab.getBoundingClientRect();
+  const x = typeof event?.clientX === 'number' ? event.clientX : rect.left + rect.width / 2;
+  return x < rect.left + rect.width / 2 ? 'before' : 'after';
+}
+
+function _markDbViewTabDropIndicator(tab, event) {
+  const tabs = tab?.closest?.('.db-view-tabs');
+  if (!tab || !tabs) return 'after';
+  _clearDbViewTabDropIndicator(tabs);
+  const side = _dbViewTabDropSide(tab, event);
+  tab.classList.add('drag-over-tab', side === 'before' ? 'db-view-drop-before' : 'db-view-drop-after');
+  return side;
+}
+
+function _dbViewDropTargetIndex(fromIdx, overIdx, side) {
+  let targetIdx = side === 'after' ? overIdx + 1 : overIdx;
+  if (fromIdx < targetIdx) targetIdx--;
+  return Math.max(0, targetIdx);
+}
+
 function _syncDbToolbarFilterButtonIcon() {
   const btn = document.getElementById('btn-filter');
   if (!btn || btn.dataset.dbFilterLucideReady === '1' || typeof lucide !== 'function') return;
@@ -154,6 +181,12 @@ function _syncDbToolbarFilterButtonIcon() {
   btn.innerHTML = lucide('filter', 16);
   if (badge) btn.appendChild(badge);
   btn.dataset.dbFilterLucideReady = '1';
+}
+
+function _defaultDbSavedViewName(viewMode, index = 0) {
+  const mode = _normalizeDbViewModeValue(viewMode || 'pivot');
+  const base = VIEW_TYPES.find(vt => vt.mode === mode)?.label || 'ビュー';
+  return index > 0 ? base + ' ' + (index + 1) : base;
 }
 
 function renderDbViewTabs(ctx) {
@@ -164,6 +197,11 @@ function renderDbViewTabs(ctx) {
   const curIdx = getCurrentViewIdx(dbPath);
   const tabs = _paneEl(ctx, '.db-view-tabs') || document.getElementById('db-view-tabs');
   const select = _paneEl(ctx, '.db-view-select') || document.getElementById('db-view-select');
+  _renderDbViewSelect(select, ctx, views, curIdx);
+  if (!tabs) {
+    console.warn('[Meldex] シートビュータブの表示先が見つからないため、タブ描画をスキップしました。', { dbPath });
+    return;
+  }
   tabs.innerHTML = '';
   _bindDbViewTabsWheelScroll(tabs);
   _syncDbToolbarFilterButtonIcon();
@@ -173,8 +211,6 @@ function renderDbViewTabs(ctx) {
     ? _getCalendarIntegrationInfo(dbPath, ctx.pivotData || state.pivotData)
     : { kind: !!(ctx.pivotData?.calendar_db || state.dbMetadata?.calendar_mapping) ? 'calendar-db' : 'none' };
   const isCalendarCapable = calendarInfo.kind !== 'none';
-
-  _renderDbViewSelect(select, ctx, views, curIdx);
 
   // ビュー（D&D対応 + ダブルクリックでリネーム + ホバーで...ボタン）
   views.forEach((v, i) => {
@@ -214,30 +250,47 @@ function renderDbViewTabs(ctx) {
     // D&D: タブ順序入れ替え
     tab.draggable = true;
     tab.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/x-view-idx', String(i));
-      e.dataTransfer.setData('text/x-view-db-path', dbPath);
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/x-view-idx', String(i));
+        e.dataTransfer.setData('text/x-view-db-path', dbPath);
+      }
       tab.classList.add('dragging');
     });
-    tab.addEventListener('dragend', () => tab.classList.remove('dragging'));
-    tab.addEventListener('dragover', (e) => { e.preventDefault(); tab.classList.add('drag-over-tab'); });
-    tab.addEventListener('dragleave', () => tab.classList.remove('drag-over-tab'));
+    tab.addEventListener('dragend', () => {
+      tab.classList.remove('dragging');
+      _clearDbViewTabDropIndicator(tabs);
+    });
+    tab.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      _markDbViewTabDropIndicator(tab, e);
+    });
+    tab.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && tab.contains(e.relatedTarget)) return;
+      tab.classList.remove('drag-over-tab', 'db-view-drop-before', 'db-view-drop-after');
+    });
     tab.addEventListener('drop', (e) => {
-      e.preventDefault(); tab.classList.remove('drag-over-tab');
-      const fromIdx = parseInt(e.dataTransfer.getData('text/x-view-idx'));
-      const fromDbPath = e.dataTransfer.getData('text/x-view-db-path');
+      e.preventDefault();
+      const side = _dbViewTabDropSide(tab, e);
+      _clearDbViewTabDropIndicator(tabs);
+      const fromIdx = parseInt(e.dataTransfer?.getData('text/x-view-idx'), 10);
+      const fromDbPath = e.dataTransfer?.getData('text/x-view-db-path');
       if (fromDbPath !== dbPath || isNaN(fromIdx) || fromIdx === i) return;
       const views2 = getSavedViews(dbPath);
       if (fromIdx < 0 || fromIdx >= views2.length || i < 0 || i >= views2.length) return;
+      const insertIdx = Math.min(_dbViewDropTargetIndex(fromIdx, i, side), views2.length - 1);
+      if (insertIdx === fromIdx) return;
       const moved = views2.splice(fromIdx, 1)[0];
       if (!moved) return;
-      views2.splice(i, 0, moved);
+      views2.splice(insertIdx, 0, moved);
       const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
       setSavedViews(dbPath, views2, { skipHistory: true });
       // currentViewIdxも調整
       let ci = getCurrentViewIdx(dbPath);
-      if (ci === fromIdx) ci = i;
-      else if (fromIdx < ci && i >= ci) ci--;
-      else if (fromIdx > ci && i <= ci) ci++;
+      if (ci === fromIdx) ci = insertIdx;
+      else if (fromIdx < ci && insertIdx >= ci) ci--;
+      else if (fromIdx > ci && insertIdx <= ci) ci++;
       setCurrentViewIdx(dbPath, ci, { skipHistory: true });
       if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
         pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
@@ -256,7 +309,9 @@ function renderDbViewTabs(ctx) {
   addBtn.innerHTML = lucide('plus', 16);
   addBtn.title = 'ビューを追加';
   addBtn.addEventListener('click', (e) => {
-    closeColHeaderMenu();
+    if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
+    e.preventDefault();
+    e.stopPropagation();
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu';
     _getViewAddMenuGroups(isCalendarCapable).forEach((group, groupIndex, groups) => {
@@ -282,7 +337,7 @@ function renderDbViewTabs(ctx) {
       document.addEventListener('pointerdown', closer);
     }, 0);
   });
-  actionHost.appendChild(addBtn);
+  tabs.appendChild(addBtn);
 
   // テンプレートボタン
   if (typeof showTemplateGalleryModal === 'function') {
@@ -794,7 +849,8 @@ function loadSavedView(idx, ctx, options = {}) {
 
   const targetView = v.viewMode === 'calendar' ? 'timeline' : (v.viewMode || 'pivot');
   showView(targetView, ctx);
-  renderDbViewTabs(ctx);
+  if (typeof _renderDbViewTabsSafely === 'function') _renderDbViewTabsSafely(ctx);
+  else renderDbViewTabs(ctx);
   if (targetView === 'gallery') renderGallery(ctx);
   else if (targetView === 'kanban') renderKanban(ctx);
   else if (targetView === 'timeline') renderTimeline(ctx);
@@ -1001,6 +1057,10 @@ function renderGallery(ctx) {
   ctx = ctx || _currentPaneState();
   const data = ctx.pivotData || state.pivotData;
   const container = _paneEl(ctx, '.gallery-view') || document.getElementById('gallery-view');
+  if (!container) {
+    if (typeof showStatus === 'function') showStatus('シートのギャラリー表示領域を準備できませんでした。シートを開き直してください。', true);
+    return;
+  }
   if (!data || !data.entities) { container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--fg2);">データがありません</div>'; return; }
 
   const dbPath = ctx.dbPath || state.currentDbPath;
@@ -1159,6 +1219,10 @@ function renderKanban(ctx) {
   ctx = ctx || _currentPaneState();
   const data = ctx.pivotData || state.pivotData;
   const container = _paneEl(ctx, '.kanban-view') || document.getElementById('kanban-view');
+  if (!container) {
+    if (typeof showStatus === 'function') showStatus('シートのカンバン表示領域を準備できませんでした。シートを開き直してください。', true);
+    return;
+  }
   if (!data || !data.entities) { container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--fg2);">データがありません</div>'; return; }
 
   const dbPath = ctx.dbPath || state.currentDbPath;

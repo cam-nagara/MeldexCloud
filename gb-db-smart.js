@@ -170,11 +170,14 @@ function removeLegacyDashboardStorageOnce() {
 async function openSmartDbFile(label, path, opts) {
   const openOpts = opts || {};
   const pathText = String(path || '');
+  const isLegacyLoadCurrent = () => typeof openOpts.isLegacyLoadCurrent !== 'function' || openOpts.isLegacyLoadCurrent();
+  if (!isLegacyLoadCurrent()) return;
   if (pathText.startsWith('smart-db:')) {
     return selectSmartDb(pathText.slice('smart-db:'.length), null, openOpts);
   }
   try {
     const data = await apiFetch('/file?path=' + encodeURIComponent(pathText));
+    if (!isLegacyLoadCurrent()) return;
     const def = normalizeSmartDbDefinition(JSON.parse(data.content || '{}'));
     def.id = def.id || 'file:' + pathText;
     def.name = def.name || label;
@@ -184,6 +187,7 @@ async function openSmartDbFile(label, path, opts) {
     state.currentSmartDb = def;
     return selectSmartDb(def.id, def, openOpts);
   } catch (e) {
+    if (!isLegacyLoadCurrent()) return;
     if (!openOpts.skipGlobalUi) showStatus('スマートシートの読み込みに失敗: ' + e.message, true);
   }
 }
@@ -299,58 +303,78 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
   const rawDef = defOverride || getSavedSmartDbs().find(d => d.id === smartDbId);
   if (!rawDef) { showStatus('スマートシートが見つかりません', true); return; }
   const def = normalizeSmartDbDefinition(rawDef);
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('スマートシートを読み込み中...');
   const recentPath = def._filePath || ('smart-db:' + smartDbId);
-  if (!openOpts.skipStateView) state.view = 'smart-db';
-  state.currentSmartDb = def;
-  state.currentDbPath = null;
-  if (!openOpts.skipShowView) showView('smart-db');
-  if (!openOpts.skipGlobalUi) {
-    const currentTitleEl = document.getElementById('current-title');
-    if (currentTitleEl) currentTitleEl.textContent = def.name;
-    const sbCategoryEl = document.getElementById('sb-category');
-    if (sbCategoryEl) sbCategoryEl.textContent = 'スマートシート: ' + def.name;
-  }
-  if (!openOpts.skipSaveLastView) saveLastView({ type: 'smart-db', smartDbId, path: recentPath });
-  if (!openOpts.skipNavPush) {
-    const _navEntry = { type: 'smart-db', smartDbId, label: def.name, path: recentPath };
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(def.name, recentPath, 'smart-db');
-  if (!openOpts.skipHighlight && def._filePath) highlightOutlinerNode(def._filePath);
-  if (!openOpts.skipAutoVersion && def._filePath && typeof startAutoVersion === 'function') startAutoVersion(def._filePath, 'file');
-  if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') {
-    historySetScope('smart-db:' + (def._filePath || def.id || smartDbId || ''));
-  }
-  if (!openOpts.skipGlobalUi) showStatus('スキャン中...');
   const requestSeq = ++_smartDbRequestSeq;
+  const isStaleSmartDbLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
+    || requestSeq !== _smartDbRequestSeq
+    || state.currentSmartDb?.id !== def.id;
   try {
+    if (!openOpts.skipStateView) state.view = 'smart-db';
+    state.currentSmartDb = def;
+    state.currentDbPath = null;
+    if (!openOpts.skipShowView) showView('smart-db');
+    if (!openOpts.skipGlobalUi) {
+      const currentTitleEl = document.getElementById('current-title');
+      if (currentTitleEl) currentTitleEl.textContent = def.name;
+      const sbCategoryEl = document.getElementById('sb-category');
+      if (sbCategoryEl) sbCategoryEl.textContent = 'スマートシート: ' + def.name;
+    }
+    if (!openOpts.skipSaveLastView) saveLastView({ type: 'smart-db', smartDbId, path: recentPath });
+    if (!openOpts.skipNavPush) {
+      const _navEntry = { type: 'smart-db', smartDbId, label: def.name, path: recentPath };
+      navPush(_navEntry);
+    }
+    if (!openOpts.skipRecent) addRecent(def.name, recentPath, 'smart-db');
+    if (!openOpts.skipHighlight && def._filePath) highlightOutlinerNode(def._filePath);
+    if (!openOpts.skipAutoVersion && def._filePath && typeof startAutoVersion === 'function') startAutoVersion(def._filePath, 'file');
+    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') {
+      historySetScope('smart-db:' + (def._filePath || def.id || smartDbId || ''));
+    }
+    if (!openOpts.skipGlobalUi) showStatus('スキャン中...');
     if (def.sourceType === 'all-files') {
       const data = await (typeof loadGlobalIndexData === 'function' ? loadGlobalIndexData(def) : Promise.resolve({ files: [], total: 0 }));
-      if (requestSeq !== _smartDbRequestSeq || state.currentSmartDb?.id !== def.id) return;
+      if (isStaleSmartDbLoad()) return;
       state.smartDbData = data;
+      if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
+        await showLoadingBeforeHeavyWork((data.files || []).length, '大きいスマートシートを描画中...', { threshold: 250 });
+        if (isStaleSmartDbLoad()) return;
+      }
       if (typeof renderGlobalIndexTable === 'function') renderGlobalIndexTable(def);
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
       if (!openOpts.skipGlobalUi) showStatus((data.files || []).length + ' / ' + (data.total || 0) + ' 件');
       return;
     }
     const url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(def.filters));
     const data = await apiFetch(url);
-    if (requestSeq !== _smartDbRequestSeq || state.currentSmartDb?.id !== def.id) return;
+    if (isStaleSmartDbLoad()) return;
     state.smartDbData = data;
+    if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
+      await showLoadingBeforeHeavyWork((data.entities || []).length, '大きいスマートシートを描画中...', { threshold: 250 });
+      if (isStaleSmartDbLoad()) return;
+    }
     renderSmartDbTable();
     if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
     if (!openOpts.skipGlobalUi) showStatus((state.smartDbData.entities || []).length + ' 件（' + state.smartDbData.total_dbs_scanned + ' シートをスキャン）');
   } catch (e) {
-    if (requestSeq !== _smartDbRequestSeq || state.currentSmartDb?.id !== def.id) return;
+    if (isStaleSmartDbLoad()) return;
     state.smartDbData = def.sourceType === 'all-files'
       ? { files: [], source_roots: [], total: 0 }
       : { entities: [], filter_properties: [], total_dbs_scanned: 0 };
     if (def.sourceType === 'all-files') {
       if (typeof renderGlobalIndexTable === 'function') renderGlobalIndexTable(def);
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
     } else {
       renderSmartDbTable();
       if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
     }
     if (!openOpts.skipGlobalUi) showStatus('スマートシート読み込み失敗', true);
+  } finally {
+    if (showOpenLoading) hideLoading();
   }
 }
 

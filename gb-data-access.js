@@ -260,19 +260,34 @@
   }
 
   async function _pwaRoots() {
-    const stored = _safeReadJson(PWA_ROOTS_KEY, null);
-    if (Array.isArray(stored) && stored.length > 0) return stored;
     const workspace = await _pwaWorkspaceDescriptor();
     if (!workspace.name && !workspace.path) return [];
+    const registry = window.MeldexSourceFolderRegistry;
+    if (registry?.loadOutlinerRoots) {
+      try {
+        const roots = await registry.loadOutlinerRoots();
+        if (Array.isArray(roots) && roots.length > 0) return roots;
+      } catch {}
+    }
+    const stored = _safeReadJson(PWA_ROOTS_KEY, null);
+    if (Array.isArray(stored) && stored.length > 0) return stored;
     return [{ path: '.', name: workspace.name || 'vault', visible: true }];
   }
 
-  function _setPwaRoots(roots) {
+  async function _setPwaRoots(roots) {
     const clean = (Array.isArray(roots) ? roots : []).map((root) => ({
       path: String(root?.path || '.'),
+      id: root?.id || root?.sourceId || undefined,
+      sourceId: root?.sourceId || root?.id || undefined,
+      provider: root?.provider || undefined,
+      dropboxPath: root?.dropboxPath || undefined,
       name: String(root?.name || root?.path || '.'),
       visible: root?.visible !== false,
     }));
+    const registry = window.MeldexSourceFolderRegistry;
+    if (registry?.saveOutlinerRoots && clean.some((root) => root.provider === 'dropbox' || root.dropboxPath)) {
+      await registry.saveOutlinerRoots(clean);
+    }
     _safeWriteJson(PWA_ROOTS_KEY, clean);
     return { ok: true };
   }
@@ -397,7 +412,7 @@
     const dirHandle = await _directoryHandle(provider, relativePath, false);
     const entries = [];
     for await (const [name, handle] of dirHandle.entries()) {
-      entries.push({ name, handle });
+      entries.push({ name, handle, path: handle?.path || '' });
     }
     return entries.sort((a, b) => a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' }));
   }
@@ -572,8 +587,9 @@
     const safeOptions = options || {};
     const name = _basename(relativePath);
     if (!name || name.startsWith('.') || name.startsWith('_')) return null;
+    const sourceId = window.MeldexSourceFolderRegistry?.parseSourcePath?.(relativePath)?.sourceId || '';
     if (handle.kind === 'directory') {
-      return { name, type: 'folder', path: _normalizeFolderPath(relativePath), file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
+      return { name, type: 'folder', path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
     }
     const fileType = await _classifyFileType(provider, relativePath, { forBrowse: true, allFiles: !!safeOptions.allFiles });
     if (!fileType) return null;
@@ -581,6 +597,7 @@
       name: _displayLabelForPath(relativePath, fileType),
       type: fileType,
       path: _normalizeFolderPath(relativePath),
+      sourceId: sourceId || undefined,
       file_id: _fnvFileId(_normalizeFolderPath(relativePath)),
     };
     if (safeOptions.allFiles && fileType === 'unknown') {
@@ -863,7 +880,7 @@
       const localResult = await _dropboxJsonRequest(path, requestOpts);
       if (localResult === NOT_HANDLED) {
         _logCompare({ ...logBase, adapter: 'dropbox-unhandled', durationMs: Math.round(performance.now() - started) });
-        throw new Error('クラウドモード未対応の操作です');
+        throw new Error('ブラウザ版ではまだ未対応の操作です');
       }
       _logCompare({ ...logBase, adapter: 'dropbox', durationMs: Math.round(performance.now() - started) });
       return localResult;

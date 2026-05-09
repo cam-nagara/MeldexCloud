@@ -23,16 +23,16 @@
     if (runtime === 'dropbox') {
       return {
         id: touch ? 'mobile-dropbox' : 'dropbox',
-        label: touch ? 'モバイル版（Dropbox）' : 'Cloud版（Dropbox）',
-        detail: workspace?.path || workspace?.accountName || 'Dropbox共有モード',
+        label: touch ? 'タッチ表示（Dropbox）' : 'Dropboxに保存',
+        detail: workspace?.path || workspace?.accountName || 'Dropboxと接続中',
       };
     }
     const source = String(window.state?.vaultPath || window._homeFolderPath || '');
     const hybrid = /dropbox/i.test(source);
     return {
       id: touch ? 'mobile-local' : (hybrid ? 'hybrid' : 'local'),
-      label: touch ? 'モバイル版' : (hybrid ? 'ハイブリッド' : 'デスクトップ版'),
-      detail: source || 'デスクトップ版',
+      label: touch ? 'タッチ表示' : (hybrid ? 'Dropbox同期フォルダ' : 'このPCに保存'),
+      detail: source || 'このPCに保存',
     };
   }
 
@@ -84,7 +84,7 @@
     }
     const info = getModeInfo();
     badge.textContent = info.label;
-    badge.title = '現在の動作モードを表示';
+    badge.title = '現在の保存先を表示';
     badge.dataset.mode = info.id;
   }
 

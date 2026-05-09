@@ -43,98 +43,11 @@ function initPageTitle() {
 }
 function startPageTitleEdit(el) { el.focus(); }
 
-// ページアイコンピッカー
-function openPageIconPicker() {
-  const iconEl = document.getElementById('page-icon');
-  if (!iconEl || typeof GBIconAssets === 'undefined') return;
-  GBIconAssets.openPicker({
-    title: 'ノートアイコン',
-    className: 'icon-picker-popup',
-    anchorEl: iconEl,
-    current: iconEl.dataset.iconName || 'fileText',
-    includeLucide: true,
-    includeNoto: true,
-    allowReset: true,
-    resetLabel: '既定に戻す',
-    onReset: () => {
-      iconEl.style.color = '';
-      iconEl.dataset.iconColor = '';
-      _setPageIcon('');
-    },
-    onSelect: (spec) => _setPageIcon(spec),
-    extraFooter: () => {
-      const colorRow = document.createElement('div');
-      colorRow.style.cssText = 'padding-top:6px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;';
-      colorRow.innerHTML = '<span style="font-size:11px;color:var(--fg2);">色</span>';
-      if (typeof createInlineColorGrid === 'function') {
-        const curColor = iconEl.dataset.iconColor || '';
-        const cg = createInlineColorGrid(curColor, (c) => {
-          iconEl.style.color = c || '';
-          iconEl.dataset.iconColor = c || '';
-          _savePageIcon();
-        });
-        cg.style.cssText += 'max-width:320px;';
-        colorRow.appendChild(cg);
-      }
-      return colorRow;
-    },
-  });
-}
-
-function _setPageIcon(iconName) {
-  const el = document.getElementById('page-icon');
-  if (!el) return;
-  const spec = iconName ? (typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(iconName) : iconName) : '';
-  el.innerHTML = spec && typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(spec, 22) : lucide('fileText', 22);
-  el.dataset.iconName = spec;
-  _savePageIcon();
-}
-
-function _savePageIcon() {
-  const pc = document.getElementById('page-content');
-  if (!pc) return;
-  const iconEl = document.getElementById('page-icon');
-  const iconName = iconEl?.dataset?.iconName || '';
-  const iconColor = iconEl?.dataset?.iconColor || '';
-  let fm = pc.dataset.frontmatter || '';
-  // フロントマターが --- デリミタ付きの場合、中身を操作して再構築
-  const fmMatch = fm.match(/^---\n([\s\S]*?)\n---\n?$/);
-  let body = fmMatch ? fmMatch[1] : '';
-  // 既存のicon/iconColor行を除去
-  body = body.replace(/^icon:.*\n?/gm, '').replace(/^iconColor:.*\n?/gm, '').trim();
-  // 新しい値を追加
-  if (iconName) body = 'icon: ' + iconName + (body ? '\n' + body : '');
-  if (iconColor) body += '\niconColor: ' + iconColor;
-  // フロントマターを再構築（bodyが空でもデリミタ付きで保存）
-  pc.dataset.frontmatter = body ? '---\n' + body + '\n---\n' : fm;
-  pc.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-function _loadPageIcon() {
-  const pc = document.getElementById('page-content');
-  if (!pc) return;
-  const fm = pc.dataset.frontmatter || '';
-  const iconMatch = fm.match(/^icon:\s*(.+)$/m);
-  const colorMatch = fm.match(/^iconColor:\s*(.+)$/m);
-  const el = document.getElementById('page-icon');
-  if (!el) return;
-  if (iconMatch && iconMatch[1].trim()) {
-    const name = iconMatch[1].trim();
-    const spec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(name) : name;
-    el.innerHTML = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(spec, 22) : lucide(name, 22);
-    el.dataset.iconName = spec;
-  } else {
-    el.innerHTML = lucide('fileText', 22);
-    el.dataset.iconName = '';
-  }
-  if (colorMatch && colorMatch[1].trim()) {
-    el.style.color = colorMatch[1].trim();
-    el.dataset.iconColor = colorMatch[1].trim();
-  } else {
-    el.style.color = '';
-    el.dataset.iconColor = '';
-  }
-}
+// ノートのファイルアイコン変更UIは廃止済み。旧データ互換のため参照先だけ残す。
+function openPageIconPicker() {}
+function _setPageIcon() {}
+function _savePageIcon() {}
+function _loadPageIcon() {}
 
 
 function flushPendingEditorAutosave() {
@@ -351,11 +264,15 @@ function _noteMarkdownIsBoard(text) {
 // ページ表示
 async function openPage(label, path, opts) {
   const openOpts = opts || {};
-  if (!openOpts.bridgeLoad) showLoading('ノートを読み込み中...');
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('ノートを読み込み中...');
   let preloadedFileData = null;
   try {
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
-      if (!openOpts.bridgeLoad) hideLoading();
+      if (showOpenLoading) hideLoading();
       await openBoard(label, path, openOpts);
       return;
     }
@@ -363,7 +280,7 @@ async function openPage(label, path, opts) {
       try {
         preloadedFileData = await apiFetch('/file?path=' + encodeURIComponent(path));
         if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
-          if (!openOpts.bridgeLoad) hideLoading();
+          if (showOpenLoading) hideLoading();
           await openBoard(label, path, openOpts);
           return;
         }
@@ -411,7 +328,7 @@ async function openPage(label, path, opts) {
     pc.dataset.lastSavedEtag = data.etag || '';
     pc.dataset.loadFailed = '';
     pc.contentEditable = isItemLocked(path) ? 'false' : 'true';
-    if (!openOpts.bridgeLoad && typeof showLoadingBeforeHeavyWork === 'function') {
+    if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...');
       if (isStalePageLoad()) return;
     }
@@ -547,7 +464,7 @@ async function openPage(label, path, opts) {
   // 詳細パネルにファイル情報を表示
   if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
   if (!openOpts.skipGlobalUi) _syncDetailPanel(label, path, 'page');
-  } finally { if (!openOpts.bridgeLoad) hideLoading(); }
+  } finally { if (showOpenLoading) hideLoading(); }
 }
 
 // ノート縦書き/横書き切替

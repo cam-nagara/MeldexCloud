@@ -243,9 +243,10 @@ function renderOutlinerLegacy(items) {
   const el = document.getElementById('outliner-tree');
   _unregisterTreeSubtree(el);
   el.innerHTML = '';
+  const visibleItems = (items || []).filter(item => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)));
   OUTLINER_CONFLICT_PATHS.clear();
-  _registerOutlinerConflictPaths(items);
-  items.forEach(item => el.appendChild(createTreeNodeFromBrowse(item)));
+  _registerOutlinerConflictPaths(visibleItems);
+  visibleItems.forEach(item => el.appendChild(createTreeNodeFromBrowse(item)));
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
   applyManualSort(el, '_root');
 }
@@ -254,7 +255,7 @@ function renderOutlinerMultiRoot(roots) {
   const el = document.getElementById('outliner-tree');
   _unregisterTreeSubtree(el);
   el.innerHTML = '';
-  const visibleRoots = roots.filter(r => r.visible);
+  const visibleRoots = roots.filter(r => r.visible && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(r.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleRoots);
 
@@ -264,6 +265,10 @@ function renderOutlinerMultiRoot(roots) {
       name: root.name,
       type: 'folder',
       path: root.path,
+      sourceId: root.sourceId || root.id || '',
+      provider: root.provider || '',
+      dropboxPath: root.dropboxPath || '',
+      needsMapping: root.needsMapping === true,
       _isRoot: true,
     };
     el.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
@@ -882,17 +887,20 @@ function createTreeNodeFromBrowse(item, rootPath) {
   div.className = 'tree-node';
   div._nodeData = item;
   if (item.path) div.dataset.path = item.path;
+  if (item.sourceId) div.dataset.sourceId = item.sourceId;
   if (item.file_id) _registerFileId(item.path, item.file_id);
 
   const row = document.createElement('div');
   row.className = 'tree-node-row';
   row.dataset.itemType = item.type || '';
+  if (item.sourceId) row.dataset.sourceId = item.sourceId;
   const itemLocked = item.path && isItemLocked(item.path);
   row.draggable = !itemLocked;
 
   const isFolder = item.type === 'folder';
   const isDB = item.type === 'database';
-  const isExpandable = isFolder || isDB;
+  const isUnavailableRoot = item.needsMapping === true;
+  const isExpandable = !isUnavailableRoot && (isFolder || isDB);
 
   // Toggle arrow
   const toggle = document.createElement('span');
@@ -921,6 +929,16 @@ function createTreeNodeFromBrowse(item, rootPath) {
   label.textContent = item.name || '';
   if (item._isRoot) label.style.fontWeight = 'bold';
   row.appendChild(label);
+  if (isUnavailableRoot) {
+    const notice = document.createElement('span');
+    notice.className = 'tree-source-mapping-badge';
+    notice.textContent = '場所を確認';
+    notice.title = 'このPCでDropbox同期フォルダの場所を確認してください';
+    notice.style.cssText = 'margin-left:6px;color:var(--fg2);font-size:11px;white-space:nowrap;';
+    row.title = notice.title;
+    row.dataset.gbTooltip = notice.title;
+    row.appendChild(notice);
+  }
   if (itemLocked) {
     const lockBadge = document.createElement('span');
     lockBadge.className = 'tree-lock-badge';
@@ -983,6 +1001,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   // Toggle click — lazy load children
   toggle.addEventListener('click', async (e) => {
     e.stopPropagation();
+    if (!isExpandable) return;
     const expanded = toggle.dataset.expanded === 'true';
     if (!expanded) {
       toggle.classList.add('expanded');
@@ -1026,16 +1045,19 @@ function createTreeNodeFromBrowse(item, rootPath) {
             const sortCfg = getSortForFolder(item.path);
             const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
-            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + '&all_files=true');
-            registerFileTypes(children);
-            _registerOutlinerConflictPaths(children);
-            children.forEach(child => {
+            const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
+            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + '&all_files=true');
+            const visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
+            registerFileTypes(visibleChildren);
+            _registerOutlinerConflictPaths(visibleChildren);
+            visibleChildren.forEach(child => {
+              if (item.sourceId && !child.sourceId) child.sourceId = item.sourceId;
               childrenDiv.appendChild(createTreeNodeFromBrowse(child, rootPath));
             });
             // マニュアルソート適用
             if (sortCfg.sort === 'manual') applyManualSort(childrenDiv, item.path);
             // 非同期でDB/board判定（NAS高速化: browseは拡張子のみで判定し、後からcheck-typeで確定）
-            const checkTargets = children.filter(c => c.type === 'folder' || c.type === 'page' || c.type === 'scenario' || c.type === 'scriptnote');
+            const checkTargets = visibleChildren.filter(c => c.type === 'folder' || c.type === 'page' || c.type === 'scenario' || c.type === 'scriptnote');
             // NAS負荷軽減: 5件ずつバッチ処理
             (async () => {
               for (let i = 0; i < checkTargets.length; i += 5) {

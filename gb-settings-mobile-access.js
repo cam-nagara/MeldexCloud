@@ -61,7 +61,7 @@
     } else {
       rows.push('<div style="margin-top:4px;">ネットワーク内で使えるIPアドレスを取得できませんでした。</div>');
     }
-    rows.push('<div style="margin-top:6px;">スマホから開けない場合は、PC側のMeldexが起動中か、Cloud版PWA/共有URLを利用しているかを確認してください。</div>');
+    rows.push('<div style="margin-top:6px;">スマホから開けない場合は、PC側のMeldexが起動中か、ブラウザ版Meldex/共有URLを利用しているかを確認してください。</div>');
     listEl.innerHTML = rows.join('');
     listEl.querySelectorAll('[data-settings-mobile-url-index]').forEach(btn => {
       btn.addEventListener('click', () => {

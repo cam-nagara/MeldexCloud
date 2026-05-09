@@ -293,6 +293,10 @@ function renderTimeline(ctx) {
   ctx = ctx || _currentPaneState();
   const data = ctx.pivotData || state.pivotData;
   const container = _paneEl(ctx, '.timeline-view') || document.getElementById('timeline-view');
+  if (!container) {
+    if (typeof showStatus === 'function') showStatus('シートのタイムライン表示領域を準備できませんでした。シートを開き直してください。', true);
+    return;
+  }
   if (!data || !data.entities) { container.innerHTML = ''; return; }
   const dbPath = ctx.dbPath || state.currentDbPath;
   if (typeof syncDbCellDisplayToolbar === 'function') syncDbCellDisplayToolbar(dbPath);

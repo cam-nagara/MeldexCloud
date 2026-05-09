@@ -190,7 +190,11 @@ function bdOpenBgPalette(event) {
 
 async function openBoard(label, path, opts) {
   const openOpts = opts || {};
-  if (!openOpts.bridgeLoad) showLoading('ボードを読み込み中...');
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('ボードを読み込み中...');
   try {
     if (!openOpts.skipStateView) state.view = 'board';
     state.currentBoardPath = path;
@@ -209,7 +213,7 @@ async function openBoard(label, path, opts) {
     if (typeof bdOpenBoard === 'function') await bdOpenBoard(label, path);
   } catch (err) {
     showStatus('ボード読み込みエラー: ' + (err.message || err), true);
-  } finally { if (!openOpts.bridgeLoad) hideLoading(); }
+  } finally { if (showOpenLoading) hideLoading(); }
 }
 
 function openMedia(label, path, type, opts) {
@@ -844,7 +848,7 @@ function hideLoading() {
 
 function trackIframeLoading(iframe, msg, opts) {
   const options = opts || {};
-  if (!iframe || options.bridgeLoad || options.silent) return;
+  if (!iframe || options.silent || options.skipGlobalUi) return;
   if (typeof showLoading !== 'function' || typeof hideLoading !== 'function') return;
   showLoading(msg || 'ビューアを読み込み中...');
   let done = false;

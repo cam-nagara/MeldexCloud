@@ -6,8 +6,10 @@
   const APP_MODE_KEY = 'meldex-dropbox-app-mode';
   const CUSTOM_APP_KEY = 'meldex-dropbox-custom-app-key';
   const VAULT_PATH_KEY = 'meldex-dropbox-vault-path';
+  const SETTINGS_PATH_KEY = 'meldex-dropbox-settings-path';
   const REDIRECT_OVERRIDE_KEY = 'meldex-dropbox-redirect-override';
   const DEFAULT_VAULT_PATH = '/MeldexVault';
+  const DEFAULT_SETTINGS_PATH = '/MeldexSettings';
   const DEFAULT_APP_KEY = window.MeldexCloudConfig?.dropbox?.developerAppKey || '';
   const DEFAULT_SCOPES = Object.freeze(window.MeldexCloudConfig?.dropbox?.scopes || []);
   const TOKEN_ENDPOINT = 'https://api.dropbox.com/oauth2/token';
@@ -115,6 +117,14 @@
 
   function setVaultPath(path) {
     _writeStorage(VAULT_PATH_KEY, _normalizeVaultPath(path) || DEFAULT_VAULT_PATH);
+  }
+
+  function getSettingsPath() {
+    return _normalizeVaultPath(_readStorage(SETTINGS_PATH_KEY, DEFAULT_SETTINGS_PATH)) || DEFAULT_SETTINGS_PATH;
+  }
+
+  function setSettingsPath(path) {
+    _writeStorage(SETTINGS_PATH_KEY, _normalizeVaultPath(path) || DEFAULT_SETTINGS_PATH);
   }
 
   function getRedirectOverride() {
@@ -675,6 +685,8 @@
     hasConfiguredAppKey,
     getVaultPath,
     setVaultPath,
+    getSettingsPath,
+    setSettingsPath,
     getRedirectOverride,
     setRedirectOverride,
     getScopes,

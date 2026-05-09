@@ -808,6 +808,19 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
 
 function _initTableOperations() {
   _ensureTableRowDragHandle();
+  document.addEventListener('pointermove', (e) => {
+    if (_noteTableResizeState) {
+      _noteTableResizeMove(e);
+      return;
+    }
+    _noteTableSetResizeHover(_noteTableCellAtResizeEdge(e));
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    _noteTableStartResize(e);
+  }, true);
+  document.addEventListener('pointerup', _noteTableFinishResize, true);
+  document.addEventListener('pointercancel', _noteTableFinishResize, true);
   document.addEventListener('click', (e) => {
     const cell = _noteTableCellFromTarget(e.target);
     if (cell) _showNoteTableCellControls(cell);

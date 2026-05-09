@@ -47,11 +47,42 @@
 .db-toolbar-view-switcher .view-tab {
   display: inline-flex;
   align-items: center;
+  position: relative;
   height: var(--ui-h-xs);
   padding: 0 8px;
   border-radius: var(--ui-radius-xs);
   border-bottom: 2px solid transparent;
   box-sizing: border-box;
+}
+
+.db-toolbar-view-switcher .view-tab.db-view-drop-before::before,
+.db-toolbar-view-switcher .view-tab.db-view-drop-after::after,
+.db-pane-view-switcher .view-tab.db-view-drop-before::before,
+.db-pane-view-switcher .view-tab.db-view-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.22);
+  pointer-events: none;
+}
+
+.db-toolbar-view-switcher .view-tab.db-view-drop-before::before,
+.db-pane-view-switcher .view-tab.db-view-drop-before::before {
+  left: -2px;
+}
+
+.db-toolbar-view-switcher .view-tab.db-view-drop-after::after,
+.db-pane-view-switcher .view-tab.db-view-drop-after::after {
+  right: -2px;
+}
+
+.db-toolbar-view-switcher .view-tab.drag-over-tab,
+.db-pane-view-switcher .view-tab.drag-over-tab {
+  border-bottom-color: transparent;
 }
 
 .db-toolbar-view-switcher .view-tab.active {
@@ -96,6 +127,10 @@
 
 .db-pane-view-switcher .db-view-tabs {
   border-bottom: 0;
+}
+
+.db-pane-view-switcher .view-tab {
+  position: relative;
 }
 
 @media (max-width: 768px), (pointer: coarse) {

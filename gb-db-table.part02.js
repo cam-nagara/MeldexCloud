@@ -503,7 +503,7 @@ function autoFitCurrentSheetColumns(event) {
 }
 
 function renderPivot(ctx) {
-  ctx = ctx || _currentPaneState();
+  ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || _currentPaneState());
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
 
@@ -594,6 +594,12 @@ function renderPivot(ctx) {
   // テーブルセレクタヘルパー（スプリットビュー対応: ペインごとにテーブルIDが異なる）
   const _tblId = ctx.tableId || 'pivot-table';
   const _tbl = (sub) => '#' + _tblId + (sub ? ' ' + sub : '');
+  const thead = _paneEl(ctx, _tbl('thead'));
+  const tbody = _paneEl(ctx, _tbl('tbody'));
+  if (!thead || !tbody) {
+    if (typeof showStatus === 'function') showStatus('シート表示領域を準備できませんでした。シートを開き直してください。', true);
+    return;
+  }
 
   // 枠線設定の適用（DB個別）
   const gridCfg = getDbViewConfig(dbPath);
@@ -624,7 +630,6 @@ function renderPivot(ctx) {
   syncDbCellDisplayToolbar(dbPath);
 
   // ヘッダー
-  const thead = _paneEl(ctx, _tbl('thead'));
   const headerRow = document.createElement('tr');
   headerRow.setAttribute('role', 'row');
   const th0 = document.createElement('th');
@@ -901,7 +906,6 @@ function renderPivot(ctx) {
   thead.appendChild(headerRow);
 
   // ボディ
-  const tbody = _paneEl(ctx, _tbl('tbody'));
   tbody.innerHTML = '';
   // D-4-a: tbody click 委譲を登録 (べき等。再 render 時は ctx だけ更新)
   _installTbodyDelegation(tbody, ctx);
@@ -962,7 +966,8 @@ function renderPivot(ctx) {
   // フッター集計行 (entityNames は確定済みなので即時計算)
   renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx);
 
-  document.getElementById('sb-count').textContent = entityNames.length + ' 件';
+  const countEl = document.getElementById('sb-count');
+  if (countEl) countEl.textContent = entityNames.length + ' 件';
 
   // ----- Step 2: チャンク分割レンダリング -----
   // 中断トークン: ctx._renderToken に Symbol を割り振る。

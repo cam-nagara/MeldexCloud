@@ -1257,9 +1257,10 @@ function _normalizeDbTimelineTypeSpecific(timeline) {
   return out;
 }
 function _makeLegacyDbSavedView(cfg) {
+  const viewMode = _normalizeDbViewModeValue(cfg.currentViewMode || 'pivot');
   return {
-    name: '無題ビュー1',
-    viewMode: _normalizeDbViewModeValue(cfg.currentViewMode || 'pivot'),
+    name: typeof _defaultDbSavedViewName === 'function' ? _defaultDbSavedViewName(viewMode, 0) : 'テーブル',
+    viewMode,
     hiddenCols: _cloneDbViewArray(cfg.hiddenCols),
     pinnedCols: _cloneDbViewArray(cfg.pinnedCols),
     colOrder: cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null),
@@ -1308,8 +1309,12 @@ function _ensureDbViewTypeSpecific(view, cfg) {
 }
 function _normalizeSavedDbViewForV2(view, cfg, index) {
   const v = _isDbViewPlainObject(view) ? view : {};
-  if (!String(v.name || '').trim()) v.name = '無題ビュー' + (index + 1);
   v.viewMode = _normalizeDbViewModeValue(v.viewMode || cfg.currentViewMode || 'pivot');
+  if (!String(v.name || '').trim()) {
+    v.name = typeof _defaultDbSavedViewName === 'function'
+      ? _defaultDbSavedViewName(v.viewMode, index)
+      : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
+  }
   if (v.hiddenCols == null) v.hiddenCols = _cloneDbViewArray(cfg.hiddenCols);
   else v.hiddenCols = _cloneDbViewArray(v.hiddenCols);
   if (v.pinnedCols == null) v.pinnedCols = _cloneDbViewArray(cfg.pinnedCols);
@@ -1677,7 +1682,7 @@ function _isCloudPhase1UnsupportedOpenType(type) {
 
 function _showCloudPhase1UnsupportedOpen(type) {
   if (window.MeldexCloudBootstrap?.showPhase1Unsupported) return window.MeldexCloudBootstrap.showPhase1Unsupported(type);
-  showStatus('Dropbox 共有モード Phase 1 では未対応のビューです', true);
+  showStatus('ブラウザ版Meldexではまだ未対応のビューです', true);
   return false;
 }
 
@@ -2769,7 +2774,11 @@ function bdOpenBgPalette(event) {
 
 async function openBoard(label, path, opts) {
   const openOpts = opts || {};
-  if (!openOpts.bridgeLoad) showLoading('ボードを読み込み中...');
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('ボードを読み込み中...');
   try {
     if (!openOpts.skipStateView) state.view = 'board';
     state.currentBoardPath = path;
@@ -2788,7 +2797,7 @@ async function openBoard(label, path, opts) {
     if (typeof bdOpenBoard === 'function') await bdOpenBoard(label, path);
   } catch (err) {
     showStatus('ボード読み込みエラー: ' + (err.message || err), true);
-  } finally { if (!openOpts.bridgeLoad) hideLoading(); }
+  } finally { if (showOpenLoading) hideLoading(); }
 }
 
 function openMedia(label, path, type, opts) {
@@ -3423,7 +3432,7 @@ function hideLoading() {
 
 function trackIframeLoading(iframe, msg, opts) {
   const options = opts || {};
-  if (!iframe || options.bridgeLoad || options.silent) return;
+  if (!iframe || options.silent || options.skipGlobalUi) return;
   if (typeof showLoading !== 'function' || typeof hideLoading !== 'function') return;
   showLoading(msg || 'ビューアを読み込み中...');
   let done = false;

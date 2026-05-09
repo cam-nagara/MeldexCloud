@@ -162,7 +162,6 @@
     onstampsend: 'スタンプを送信します',
     onvalidateclick: 'シートの整合性を検証します',
     opencurrenttoolbarsearchreplace: 'このビューで検索と置換を開きます',
-    openpageiconpicker: 'ノートアイコンを変更します',
     openrightpaneltab: '右パネルのタブを開きます',
     opensearchpanel: '全文検索パネルを開きます',
     rtcmd: 'ノートの書式を変更します',
@@ -281,7 +280,6 @@
     'chat-session-title': 'チャット名を入力します。Enterまたはフォーカス移動で保存します',
     'chat-title-dropdown-btn': '過去のチャットを選択します',
     'folder-btn-slideshow': '現在のフォルダをスライドショーで開きます',
-    'page-icon': 'ノートアイコンを変更します',
     'sidebar-resize': 'ドラッグしてフォルダツリーの幅を調整します'
   });
   const ICON_HINTS = Object.freeze({
@@ -1070,8 +1068,6 @@
   regId('chat-send-btn',           { label: '送信', desc: 'チャットメッセージを送信します' });
 
   // ====== Registry seed (B8: 設定ダイアログ・共通) ======
-  regId('page-icon',  { label: 'ノートアイコン', desc: 'ノートのアイコンを変更します' });
-  regAction('openpageiconpicker', { label: 'ノートアイコン', desc: 'ノートのアイコンを変更します' });
 
   // ====== Registry seed (B9: 各種モーダル / フォーム入力 / 共通ボタン) ======
   regAction('historyundo',  { label: '元に戻す', desc: '直前の操作を元に戻します', shortcutId: 'global.undo' });

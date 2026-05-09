@@ -3589,6 +3589,9 @@ read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
 // ファイル紐づきチャットを開始/復元
 async function openFileChat(targetPath) {
   if (!targetPath) return;
+  const showOpenLoading = typeof showLoading === 'function' && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('チャットを読み込み中...');
+  try {
   if (typeof _chatAbortActiveStreamForNavigation === 'function') _chatAbortActiveStreamForNavigation();
   await _initChatSourceFolderSelector();
   const detectedSourceFolder = _detectSourceFolderFromPath(targetPath);
@@ -3697,6 +3700,9 @@ async function openFileChat(targetPath) {
   }
 
   _showChatTargetBadge(targetPath);
+  } finally {
+    if (showOpenLoading) hideLoading();
+  }
 }
 
 function _createFileChat(targetPath) {
@@ -3749,6 +3755,9 @@ function _chatScrollToMessage(msgId) {
 
 // 保存済みチャットを開いてリプレイ＋続行
 async function openSavedChat(path, anchor = '', sourceFolder) {
+  const showOpenLoading = typeof showLoading === 'function' && typeof hideLoading === 'function';
+  if (showOpenLoading) showLoading('チャットを読み込み中...');
+  try {
   if (typeof _chatAbortActiveStreamForNavigation === 'function') _chatAbortActiveStreamForNavigation();
   const hashIndex = String(path || '').indexOf('#');
   if (hashIndex >= 0) {
@@ -3860,6 +3869,9 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
   });
   if (anchor) _chatScrollToMessage(anchor);
+  } finally {
+    if (showOpenLoading) hideLoading();
+  }
 }
 
 function chatClear() {

@@ -397,3 +397,7 @@
   .gb-form-editor { grid-template-columns: 1fr; }
   .gb-form-submit-editor { grid-template-columns: 1fr; }
 }
+body.note-table-resizing,
+body.note-table-resizing * {
+  user-select: none !important;
+}

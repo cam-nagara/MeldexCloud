@@ -730,7 +730,7 @@ class ScriptNoteComponent extends ToolComponent {
     this._loadSeq = loadSeq;
     const isStaleLoad = () => this._loadSeq !== loadSeq;
     const fallbackLabel = nextPath ? nextPath.split('/').pop().replace(/\.\w+$/, '') : '';
-    const showGlobalLoading = !options.bridgeLoad && !options.silent
+    const showGlobalLoading = !options.silent && !options.skipGlobalUi
       && typeof showLoading === 'function' && typeof hideLoading === 'function';
     if (showGlobalLoading) showLoading('シナリオを読み込み中...');
     try {

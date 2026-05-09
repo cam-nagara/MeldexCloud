@@ -919,6 +919,7 @@ function mdToHtml(md) {
   let html = '';
   let inCodeBlock = false, codeLang = '';
   let inTable = false, _tableRowCount = 0;
+  let pendingTableLayout = null;
   let pendingNoteTitle = false;
   // リストネスト管理: スタックで深度・種別を追跡
   const listStack = []; // [{ type: 'ul'|'ol', indent: number }, ...]
@@ -973,19 +974,46 @@ function mdToHtml(md) {
       continue;
     }
 
+    const tableLayoutMatch = line.match(/^<!--table-layout:(.+)-->\s*$/);
+    if (tableLayoutMatch) {
+      try {
+        pendingTableLayout = JSON.parse(tableLayoutMatch[1]);
+      } catch {
+        pendingTableLayout = null;
+      }
+      continue;
+    }
+
     // テーブル
     if (line.match(/^\|.*\|$/)) {
       closeListAll();
-      if (!inTable) { html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;">'; inTable = true; _tableRowCount = 0; }
       // 区切り行（|---|---|）はスキップ
       if (line.match(/^\|[\s\-:|]+\|$/)) continue;
       const cells = line.split('|').slice(1, -1).map(c => c.trim());
+      if (!inTable) {
+        const layoutJson = pendingTableLayout ? esc(JSON.stringify(pendingTableLayout)) : '';
+        const hasWidths = Array.isArray(pendingTableLayout?.colWidths) && pendingTableLayout.colWidths.length > 0;
+        html += `<table style="border-collapse:collapse;width:100%;margin:8px 0;${hasWidths ? 'table-layout:fixed;' : ''}"${layoutJson ? ` data-note-table-layout="${layoutJson}" data-note-table-resized="1"` : ''}>`;
+        if (hasWidths) {
+          html += '<colgroup>' + cells.map((_, ci) => {
+            const width = Math.max(40, Number(pendingTableLayout.colWidths[ci]) || 0);
+            return width ? `<col style="width:${width}px;">` : '<col>';
+          }).join('') + '</colgroup>';
+        }
+        inTable = true;
+        _tableRowCount = 0;
+      }
       const tag = _tableRowCount === 0 ? 'th' : 'td';
+      const rowHeight = Array.isArray(pendingTableLayout?.rowHeights)
+        ? Math.max(24, Number(pendingTableLayout.rowHeights[_tableRowCount]) || 0)
+        : 0;
       _tableRowCount++;
-      html += '<tr>' + cells.map(c => `<${tag} style="border:1px solid var(--border);padding:4px 8px;">${inlinemd(c)}</${tag}>`).join('') + '</tr>';
+      const rowStyle = rowHeight ? ` style="height:${rowHeight}px;"` : '';
+      const cellHeight = rowHeight ? `height:${rowHeight}px;` : '';
+      html += `<tr${rowStyle}>` + cells.map(c => `<${tag} style="border:1px solid var(--border);padding:4px 8px;${cellHeight}">${inlinemd(c)}</${tag}>`).join('') + '</tr>';
       continue;
     }
-    if (inTable) { html += '</table>'; inTable = false; }
+    if (inTable) { html += '</table>'; inTable = false; pendingTableLayout = null; }
 
     // details/summary タグはそのまま通す
     const trimmed = line.trim();

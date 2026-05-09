@@ -43,7 +43,9 @@
     if (type === 'folder') return _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
     if (type === 'csv') return _tabPath(tab, 'csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : '');
     if (type === 'media') return _tabPath(tab, 'mediaPath', 'pagePath') || _statePath('currentPagePath');
-    if (type === 'calendar') return _tabPath(tab, 'calendarPath', 'dbPath') || _statePath('currentDbPath');
+    if (type === 'calendar') return (typeof _calRenderState !== 'undefined' ? _calRenderState?.dbPath || '' : '')
+      || _tabPath(tab, 'calendarPath', 'dbPath')
+      || _statePath('currentDbPath');
     return _tabPath(tab, 'path', 'dbPath', 'pagePath', 'boardPath', 'folderPath', 'csvPath', 'scenarioPath')
       || _statePath('currentEntityPath')
       || _statePath('currentPagePath')
@@ -156,23 +158,39 @@
       && match.tab?.id !== activeSnapshot.tabId);
   }
 
+  function _hasOutlinerNodes() {
+    return !!document.querySelector('#outliner-tree .tree-node, #body-home .tree-node');
+  }
+
+  function _ensureSidebarOutlinerVisible() {
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar) return false;
+    sidebar.style.display = 'flex';
+    sidebar.classList.add('open');
+    return true;
+  }
+
   function _ensureOutlinerVisible(activeSnapshot) {
+    if (_hasOutlinerNodes() && _ensureSidebarOutlinerVisible()) return true;
     const visible = _findOutlinerTab({ activeOnly: true });
     if (visible && !_wouldReplaceActiveTab(visible, activeSnapshot) && _activateOutlinerMatch(visible, activeSnapshot)) return true;
     if (_createOutlinerPane(activeSnapshot)) return true;
     const existing = activeSnapshot?.paneId ? null : _findOutlinerTab();
     if (existing && _activateOutlinerMatch(existing, activeSnapshot)) return true;
-    const sidebar = document.getElementById('sidebar');
-    if (sidebar) {
-      sidebar.style.display = 'flex';
-      sidebar.classList.add('open');
-      if (typeof loadOutliner === 'function') loadOutliner();
-      return true;
-    }
-    return false;
+    return _ensureSidebarOutlinerVisible();
   }
 
   function _findTreeNode(path) {
+    const target = _normalizePath(path);
+    if (!target) return null;
+    for (const candidate of _candidateRevealPaths(target)) {
+      const node = _findTreeNodeExact(candidate);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function _findTreeNodeExact(path) {
     const target = _normalizePath(path);
     if (!target) return null;
     if (typeof _findTreeNodeByPath === 'function') {
@@ -185,6 +203,128 @@
       if (nodePath === target) return node;
     }
     return null;
+  }
+
+  function _isAbsoluteRevealPath(path) {
+    const text = _normalizePath(path);
+    return /^[A-Za-z]:\//.test(text) || text.startsWith('/') || text.startsWith('//');
+  }
+
+  function _visibleRootPaths() {
+    const roots = [];
+    document.querySelectorAll('#outliner-tree > .tree-node, #body-home > .tree-node').forEach(node => {
+      const path = _normalizePath(node._nodeData?.path || node.dataset?.path || '');
+      if (path && !roots.includes(path)) roots.push(path);
+    });
+    return roots;
+  }
+
+  function _candidateRevealPaths(path) {
+    const raw = _normalizePath(path);
+    if (!raw) return [];
+    const variants = [raw];
+    if (/\.md$/i.test(raw)) variants.push(raw.replace(/\.md$/i, ''));
+    const roots = _visibleRootPaths();
+    const out = [];
+    const add = value => {
+      const normalized = _normalizePath(value);
+      if (normalized && !out.includes(normalized)) out.push(normalized);
+    };
+    variants.forEach(add);
+    roots.forEach(root => {
+      const rootName = root.split('/').filter(Boolean).pop() || '';
+      variants.forEach(variant => {
+        if (!_isAbsoluteRevealPath(variant)) add(root + '/' + variant);
+        if (_isAbsoluteRevealPath(variant) && variant.startsWith(root + '/')) add(variant.slice(root.length + 1));
+        if (rootName && variant === rootName) add(root);
+        if (rootName && variant.startsWith(rootName + '/')) add(root + variant.slice(rootName.length));
+      });
+    });
+    return out;
+  }
+
+  function _pathPrefixes(path) {
+    const parts = _normalizePath(path).split('/').filter(Boolean);
+    const prefixes = [];
+    for (let i = 1; i <= parts.length; i++) prefixes.push(parts.slice(0, i).join('/'));
+    return prefixes;
+  }
+
+  function _nodeChildrenContainer(node) {
+    return node?.querySelector?.(':scope > .tree-children') || null;
+  }
+
+  async function _waitForTreeNodeChildren(node) {
+    const children = _nodeChildrenContainer(node);
+    const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
+    if (!children || children.dataset.loaded === 'true' || toggle?.dataset.expanded !== 'true') return;
+    for (let i = 0; i < 30; i++) {
+      await _sleep(50);
+      if (!node.isConnected || toggle.dataset.expanded !== 'true' || children.dataset.loaded === 'true') return;
+    }
+  }
+
+  async function _expandTreeNode(node) {
+    if (!node) return false;
+    const toggle = node.querySelector(':scope > .tree-node-row .tree-toggle');
+    const children = _nodeChildrenContainer(node);
+    if (!toggle || !children) return false;
+    if (toggle.dataset.expanded !== 'true') {
+      toggle.click();
+      await _waitForTreeNodeChildren(node);
+      return true;
+    }
+    children.classList.remove('collapsed');
+    await _waitForTreeNodeChildren(node);
+    return false;
+  }
+
+  async function _expandTreeNodeAncestors(node) {
+    const ancestors = [];
+    let parent = node?.parentElement || null;
+    while (parent) {
+      const ancestor = parent.closest?.('.tree-node') || null;
+      if (!ancestor) break;
+      ancestors.push(ancestor);
+      parent = ancestor.parentElement;
+    }
+    ancestors.reverse();
+    for (const ancestor of ancestors) {
+      await _expandTreeNode(ancestor);
+    }
+  }
+
+  async function _expandTreeToPath(path) {
+    for (const candidate of _candidateRevealPaths(path)) {
+      let exact = _findTreeNodeExact(candidate);
+      if (exact) {
+        await _expandTreeNodeAncestors(exact);
+        return exact;
+      }
+      for (const prefix of _pathPrefixes(candidate)) {
+        const node = _findTreeNodeExact(prefix);
+        if (!node) continue;
+        await _expandTreeNode(node);
+        exact = _findTreeNodeExact(candidate);
+        if (exact) {
+          await _expandTreeNodeAncestors(exact);
+          return exact;
+        }
+      }
+      exact = _findTreeNodeExact(candidate);
+      if (exact) {
+        await _expandTreeNodeAncestors(exact);
+        return exact;
+      }
+    }
+    return null;
+  }
+
+  async function _ensureOutlinerLoadedIfEmpty() {
+    if (_hasOutlinerNodes()) return;
+    if (typeof loadOutliner === 'function') {
+      try { await Promise.resolve(loadOutliner()); } catch {}
+    }
   }
 
   function _selectTreeNode(node, options) {
@@ -219,11 +359,13 @@
       if (typeof showStatus === 'function') showStatus('フォルダツリーを開けませんでした', true);
       return false;
     }
-    if (typeof loadOutliner === 'function') {
-      try { await Promise.resolve(loadOutliner()); } catch {}
-    }
-    if (typeof highlightOutlinerNode === 'function') {
-      try { highlightOutlinerNode(path); } catch {}
+    await _ensureOutlinerLoadedIfEmpty();
+    const expandedNode = await _expandTreeToPath(path);
+    if (expandedNode && _selectTreeNode(expandedNode, { preserveFocus: true })) {
+      if (activeSnapshot?.paneId && typeof GBLayout !== 'undefined' && GBLayout.activePane !== activeSnapshot.paneId) {
+        _restoreActivePane(activeSnapshot);
+      }
+      return true;
     }
     for (let i = 0; i < 30; i++) {
       const node = _findTreeNode(path);

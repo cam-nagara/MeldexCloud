@@ -78,7 +78,7 @@ class CalendarComponent extends ToolComponent {
   <span class="tb-title gb-cal-title">---</span>
   <button class="tb-icon-btn" data-cal-action="next" title="次へ">${lucide('chevronRight', 16)}</button>
   <div class="sep"></div>
-  <select class="tb-select gb-cal-view-select" title="表示">
+  <select class="tb-select gb-cal-view-select" title="表示" data-cal-setting="view">
     <option value="month">月</option>
     <option value="week">週</option>
     <option value="day">日</option>
@@ -101,7 +101,7 @@ class CalendarComponent extends ToolComponent {
       <div style="display:flex;align-items:center;margin-bottom:8px;">
         <span style="font-size:13px;font-weight:bold;flex:1;">打刻</span>
         <label style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;display:flex;align-items:center;gap:3px;">
-          <input type="checkbox" class="gb-cal-clock-toggle"> 有効
+          <input type="checkbox" class="gb-cal-clock-toggle" data-cal-setting="clock-enabled"> 有効
         </label>
       </div>
       <div class="gb-cal-clock-buttons" style="display:none;">
@@ -113,9 +113,9 @@ class CalendarComponent extends ToolComponent {
     </div>
     <div class="gb-cal-mini">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-        <button data-cal-action="miniPrev" style="background:none;border:none;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;">${lucide('chevronLeft', 12)}</button>
+        <button data-cal-action="miniPrev" title="前の月" style="background:none;border:none;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;">${lucide('chevronLeft', 12)}</button>
         <span class="gb-cal-mini-title" style="font-size:12px;font-weight:bold;"></span>
-        <button data-cal-action="miniNext" style="background:none;border:none;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;">${lucide('chevronRight', 12)}</button>
+        <button data-cal-action="miniNext" title="次の月" style="background:none;border:none;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;">${lucide('chevronRight', 12)}</button>
       </div>
       <div class="gb-cal-mini-grid"></div>
     </div>

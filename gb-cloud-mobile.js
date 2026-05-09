@@ -284,6 +284,20 @@
       button.dataset.e2eId = `cloud-mobile-pane-tree-back-${paneId}`;
       button.hidden = !shouldUseSidebarDrawer();
     });
+    _syncPaneSafeTopBars();
+  }
+
+  function _syncPaneSafeTopBars() {
+    const tabBars = Array.from(document.querySelectorAll('#gb-layout-root .gb-pane-tabs'));
+    tabBars.forEach(tabBar => tabBar.classList.remove('cloud-mobile-safe-top-bar'));
+    if (!shouldUseSidebarDrawer()) return;
+    const visualTop = Math.max(0, Math.round(window.visualViewport?.offsetTop || 0));
+    tabBars.forEach((tabBar) => {
+      const rect = tabBar.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0 && rect.top <= visualTop + 2) {
+        tabBar.classList.add('cloud-mobile-safe-top-bar');
+      }
+    });
   }
 
   function _installPaneBackButtonObserver() {
@@ -440,6 +454,7 @@
     GBLayout.render = function () {
       const result = originalRender.apply(this, arguments);
       _ensurePaneTreeBackButtons();
+      _syncPaneSafeTopBars();
       if (!_sanitizingLayout) setTimeout(sanitizeLayoutForMobile, 0);
       return result;
     };
@@ -491,6 +506,7 @@
     _setDatasetFlag('mobileUiLocal', mobile && localMobileMode);
     _setDatasetFlag('mobileEditingUi', editingUiEnabled);
     _ensurePaneTreeBackButtons();
+    _syncPaneSafeTopBars();
     const keyboardOpen = mobile && (
       visualViewport
         ? (keyboardGap > KEYBOARD_THRESHOLD || (_isFocusedTextInput() && keyboardGap > 40))

@@ -352,17 +352,17 @@
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10020;padding:8px;box-sizing:border-box;';
-      overlay.innerHTML = `<div class="meldex-cloud-mode-modal" data-modal-shell="off" role="dialog" aria-modal="true" style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
-        <div style="font-size:22px;font-weight:700;margin-bottom:10px;">Meldex の保存モード</div>
-        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:18px;">Meldex Cloud BETAでは Dropbox に保存するクラウド版と、PC内に保存するデスクトップ版を切り替えます。</div>
+      overlay.innerHTML = `<div class="meldex-cloud-mode-modal" role="dialog" aria-modal="true" style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
+        <div style="font-size:22px;font-weight:700;margin-bottom:10px;">保存先を選択</div>
+        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:18px;">Meldexで使うデータの保存先を選んでください。</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
           <button id="choose-dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropbox 共有モード</div>
-            <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">iPad / スマホ / PC で同じデータを使います。初回のみ Dropbox への接続が必要です。</div>
+            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxとつないで始める</div>
+            <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">スマホ、タブレット、PCで同じデータを開けます。初回のみDropboxへの接続が必要です。</div>
           </button>
           <button id="choose-legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">デスクトップ版</div>
-            <div style="font-size:12px;line-height:1.6;color:#969696;">この端末のフォルダに保存します。クラウド機能は使いません。</div>
+            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">このPCに保存して始める</div>
+            <div style="font-size:12px;line-height:1.6;color:#969696;">この端末のフォルダに保存します。Dropbox接続は使いません。</div>
           </button>
         </div>
         <div style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
@@ -445,19 +445,19 @@
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:20px;';
-      overlay.innerHTML = `<div class="meldex-cloud-setup-modal" data-modal-shell="off" role="dialog" aria-modal="true" style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);">
+      overlay.innerHTML = `<div class="meldex-cloud-setup-modal" role="dialog" aria-modal="true" style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);">
         <div style="font-size:22px;font-weight:700;margin-bottom:8px;">Dropbox 連携設定</div>
         <div style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
-          <div style="font-size:15px;font-weight:700;margin-bottom:8px;">クラウド版では Dropbox が保存先になります</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:8px;">Dropboxを保存先として使います</div>
           <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
             スマホ、タブレット、PCで同じデータを開けるように、あなたのDropbox内のMeldex用フォルダを保存先として使います。
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">デスクトップ版だけを使う場合、このDropbox連携設定は不要です。</div>
+          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">このPCのフォルダだけを使う場合、このDropbox連携設定は不要です。</div>
         </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">保存先フォルダ</div>
-          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox内のMeldex用フォルダ</label>
+          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">初期ソースフォルダ</div>
+          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox内の最初に使うフォルダ</label>
           <input id="cloud-vault-path" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
           <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">初回は通常このままで構いません。既に別名のMeldex用フォルダを作っている場合だけ変更してください。</div>
         </section>
@@ -503,7 +503,7 @@
         </section>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在デスクトップ版です"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'デスクトップ版使用中' : 'デスクトップ版に切り替える'}</button>` : ''}
+          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在はこのPCに保存しています"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'このPCに保存中' : 'このPCに保存して使う'}</button>` : ''}
           <button id="cloud-continue" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">接続確認して開始</button>
         </div>
       </div>`;
@@ -695,6 +695,8 @@
         return _enterLegacyMode();
       }
     } catch {}
+    const cloudHomeReady = await window.MeldexBetaRelease?.prepareCloudHomeLaunch?.();
+    if (cloudHomeReady === false) return false;
     let mode = _runtime().getMode();
     let hasExplicitMode = false;
     try {

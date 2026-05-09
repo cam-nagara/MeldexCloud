@@ -517,6 +517,10 @@ function renderCalendar(ctx) {
   ctx = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   const data = ctx?.pivotData || state.pivotData;
   const container = (typeof _paneEl === 'function' ? _paneEl(ctx, '.timeline-view') : null) || document.getElementById('timeline-view');
+  if (!container) {
+    if (typeof showStatus === 'function') showStatus('カレンダー表示領域を準備できませんでした。シートを開き直してください。', true);
+    return;
+  }
   if (!data || !data.entities) { container.innerHTML = ''; return; }
   const dbPath = ctx?.dbPath || state.currentDbPath;
   const info = typeof _getCalendarIntegrationInfo === 'function'

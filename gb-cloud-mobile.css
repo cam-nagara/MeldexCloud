@@ -16,6 +16,8 @@
 @media (max-width: 1024px), (pointer: coarse) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] {
     min-height: var(--cloud-visual-vh, 100dvh);
+    --cloud-mobile-safe-top: env(safe-area-inset-top, 0px);
+    --cloud-mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
     overscroll-behavior: none;
   }
 
@@ -91,8 +93,9 @@
     position: sticky;
     top: 0;
     z-index: 4;
-    min-height: 54px;
-    padding: 6px max(10px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
+    box-sizing: border-box;
+    min-height: calc(54px + var(--cloud-mobile-safe-top, 0px));
+    padding: calc(6px + var(--cloud-mobile-safe-top, 0px)) max(10px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr) auto;
     align-items: center;
@@ -237,12 +240,18 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-tabs {
+    box-sizing: border-box;
     min-height: 40px;
     padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
     gap: 4px;
     border-bottom: 1px solid var(--border, #333);
     background: var(--bg, #1f1f1f);
     overflow: hidden;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-tabs.cloud-mobile-safe-top-bar {
+    min-height: calc(40px + var(--cloud-mobile-safe-top, 0px));
+    padding-top: var(--cloud-mobile-safe-top, 0px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-drag-handle,
@@ -547,8 +556,9 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-header {
-    min-height: 54px;
-    padding: 6px max(8px, env(safe-area-inset-right)) 6px 12px;
+    box-sizing: border-box;
+    min-height: calc(54px + var(--cloud-mobile-safe-top, 0px));
+    padding: calc(6px + var(--cloud-mobile-safe-top, 0px)) max(8px, env(safe-area-inset-right)) 6px 12px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 44px 44px;
     align-items: center;
@@ -683,20 +693,20 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal-overlay {
     align-items: flex-start !important;
-    padding: 8px !important;
+    padding: calc(8px + var(--cloud-mobile-safe-top, 0px)) max(8px, env(safe-area-inset-right)) max(8px, var(--cloud-mobile-safe-bottom, 0px)) max(8px, env(safe-area-inset-left)) !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-modal,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] [role="dialog"] {
     max-width: calc(100vw - 16px) !important;
-    max-height: calc(var(--cloud-visual-vh, 100dvh) - 16px) !important;
+    max-height: calc(var(--cloud-visual-vh, 100dvh) - var(--cloud-mobile-safe-top, 0px) - var(--cloud-mobile-safe-bottom, 0px) - 16px) !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-modal-overlay,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-cal-modal-overlay {
     align-items: flex-start !important;
-    padding: 8px !important;
+    padding: calc(8px + var(--cloud-mobile-safe-top, 0px)) max(8px, env(safe-area-inset-right)) max(8px, var(--cloud-mobile-safe-bottom, 0px)) max(8px, env(safe-area-inset-left)) !important;
   }
 }
 
