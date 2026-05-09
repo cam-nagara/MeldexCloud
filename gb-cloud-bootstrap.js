@@ -431,9 +431,6 @@
           </div>
           <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">デスクトップ版でPC内のフォルダだけを使う場合、このDropbox連携設定は不要です。</div>
         </div>
-        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:16px;">
-          認証とは、Dropboxの画面で「Meldexが指定した保存先フォルダを読み書きしてよい」と許可する手続きです。DropboxのパスワードはMeldexには渡りません。接続情報はこの端末のブラウザ内に保存されます。
-        </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">保存先フォルダ</div>
@@ -462,6 +459,9 @@
         </section>
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">Dropboxへの接続</div>
+          <div style="font-size:13px;color:#bdbdbd;line-height:1.7;margin-bottom:8px;">
+            認証とは、Dropboxの画面で「Meldexが指定した保存先フォルダを読み書きしてよい」と許可する手続きです。DropboxのパスワードはMeldexには渡りません。接続情報はこの端末のブラウザ内に保存されます。
+          </div>
           <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : '#d4d4d4'};">
             ${session?.refreshToken ? `refresh token 保存済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}` : '未認証'}
           </div>

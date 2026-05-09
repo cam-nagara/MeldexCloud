@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-05-09T02:05:17.203574+00:00",
+  "generatedAt": "2026-05-09T02:13:21.846779+00:00",
   "semver": "0.5.434",
   "variant": "cloud-beta",
   "externalValueSources": {
@@ -21,6 +21,6 @@
     "sw.js": "39d0038c8c766a221be61a4200fe40e62c55ecb0c134439d7f34c27c89c0b5da",
     "gb-config.js": "98f42791049e1c508d62d85243c6992244f7aa9e4a2b5c9443dd3b92ff94c865",
     "gb-cloud-runtime-config.js": "aa5e40ab5716e2b076a819752a3b0998a6b37ebe73b29d119ef7600af2502dad",
-    "cloud-samples/manifest.json": "8d3ebb45b0fc1e32695ef20754c78571e4416d3be07f3a48bf70ee8959246066"
+    "cloud-samples/manifest.json": "c3c3036aeb06f3b2ed219965466340d895bf1ed702818c7dae07d5ac9470eb58"
   }
 }
