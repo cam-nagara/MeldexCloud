@@ -427,9 +427,9 @@
         <div style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
           <div style="font-size:15px;font-weight:700;margin-bottom:8px;">クラウド版では Dropbox が保存先になります</div>
           <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
-            Meldex Cloud はブラウザで動くため、開発元サーバーには作品データを保存しません。スマホ、タブレット、PCで同じデータを開けるように、あなたのDropbox内のMeldex用フォルダを保存先として使います。
+            スマホ、タブレット、PCで同じデータを開けるように、あなたのDropbox内のMeldex用フォルダを保存先として使います。
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">PC単独モードだけを使う場合、Dropbox接続は不要です。</div>
+          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">デスクトップ版でPC内のフォルダだけを使う場合、このDropbox連携設定は不要です。</div>
         </div>
         <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:16px;">
           認証とは、Dropboxの画面で「Meldexが指定した保存先フォルダを読み書きしてよい」と許可する手続きです。DropboxのパスワードはMeldexには渡りません。接続情報はこの端末のブラウザ内に保存されます。
