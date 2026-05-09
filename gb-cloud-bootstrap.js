@@ -459,13 +459,10 @@
         </section>
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <div style="font-size:15px;font-weight:700;margin-bottom:10px;">Dropboxへの接続</div>
-          <div style="font-size:13px;color:#bdbdbd;line-height:1.7;margin-bottom:8px;">
-            認証とは、Dropboxの画面で「Meldexが指定した保存先フォルダを読み書きしてよい」と許可する手続きです。DropboxのパスワードはMeldexには渡りません。接続情報はこの端末のブラウザ内に保存されます。
-          </div>
           <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : '#d4d4d4'};">
             ${session?.refreshToken ? `refresh token 保存済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}` : '未認証'}
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.6;margin-top:6px;">「Dropboxに接続」を押すとDropboxの許可画面が開きます。許可後、この画面に戻って「接続確認して開始」を押してください。</div>
+          <div style="font-size:12px;color:#969696;line-height:1.6;margin-top:6px;">Dropboxの許可画面で保存先フォルダの読み書きを許可します。パスワードはMeldexには渡りません。許可後に戻って「接続確認して開始」を押してください。</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
             <button id="cloud-auth-redirect" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">Dropbox に接続</button>
             <button id="cloud-auth-manual" style="padding:8px 14px;border:none;border-radius:6px;background:#28435a;color:#fff;cursor:pointer;">手動コード入力で認証</button>
