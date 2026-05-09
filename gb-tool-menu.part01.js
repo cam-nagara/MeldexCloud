@@ -77,6 +77,7 @@ function _resolveToolMenuButton(event) {
 
 function showToolMenu(e, toolType) {
   e.stopPropagation();
+  if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
   document.querySelectorAll('.tool-menu-dropdown').forEach(el => el.remove());
 

@@ -417,7 +417,7 @@
   async function exchangeCode(code, pending) {
     const safePending = pending || _loadPending();
     if (!safePending?.appKey || !safePending?.codeVerifier) {
-      throw new Error('認証セッションが見つかりません。もう一度 Dropbox 連携を開始してください。');
+      throw new Error('Dropbox接続の手続きが見つかりません。もう一度Dropboxに接続してください。');
     }
     const payload = await _tokenRequest({
       code: String(code || '').trim(),
@@ -503,6 +503,8 @@
       scope: getScopes().join(' '),
     });
     if (redirectUri) params.set('redirect_uri', redirectUri);
+    if (settings.forceReapprove) params.set('force_reapprove', 'true');
+    if (settings.forceReauthentication) params.set('force_reauthentication', 'true');
     return {
       authorizationUrl: AUTH_ENDPOINT + '?' + params.toString(),
       pending,
@@ -529,7 +531,7 @@
     const pending = _loadPending();
     if (!pending || pending.state !== state) {
       clearPending();
-      return { handled: true, ok: false, error: 'Dropbox 認証 state が一致しません。再度連携してください。' };
+      return { handled: true, ok: false, error: 'Dropboxの接続確認に失敗しました。もう一度接続してください。' };
     }
     try {
       await exchangeCode(code, pending);
@@ -607,7 +609,7 @@
 
   async function apiRpc(route, body) {
     const token = await getValidAccessToken();
-    if (!token) throw new Error('Dropbox への再認証が必要です');
+    if (!token) throw new Error('Dropboxへもう一度接続してください');
     const response = await _fetchDropboxWithRetry(route, async () => fetch('https://api.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), {
       method: 'POST',
       headers: await _fileApiHeaders(route, {
@@ -632,7 +634,7 @@
 
   async function apiContent(route, arg, init) {
     const token = await getValidAccessToken();
-    if (!token) throw new Error('Dropbox への再認証が必要です');
+    if (!token) throw new Error('Dropboxへもう一度接続してください');
     const requestInit = init ? { ...init } : {};
     requestInit.method = requestInit.method || 'POST';
     requestInit.headers = await _fileApiHeaders(route, {

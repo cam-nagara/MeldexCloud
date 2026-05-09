@@ -456,7 +456,7 @@
           ok: false,
           mounted: false,
           access: 'none',
-          message: 'PC 単独モードの vault が未設定です。',
+          message: 'デスクトップ版の保存先フォルダが未設定です。',
           state: _runtime()?.getWorkspaceState?.() || null,
         };
       }

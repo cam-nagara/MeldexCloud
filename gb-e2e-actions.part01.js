@@ -87,7 +87,9 @@
         || visibleById('left-chrome-floating-command');
       const settings = visibleById('left-chrome-settings')
         || visibleById('left-chrome-floating-settings');
-      return command && settings ? true : null;
+      const mobileReady = document.body?.dataset?.cloudMobile === '1'
+        && (visibleById('folder-toolbar') || visibleById('cloud-mobile-main-button'));
+      return (command && settings) || mobileReady ? true : null;
     }, label || '左クローム');
   }
 

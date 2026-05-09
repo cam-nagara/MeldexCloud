@@ -54,19 +54,18 @@
     right: max(12px, env(safe-area-inset-right));
     bottom: max(72px, calc(env(safe-area-inset-bottom) + 64px));
     z-index: 260;
-    min-width: 54px;
-    height: 54px;
-    padding: 0 14px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
     border: 1px solid var(--border, #333);
     border-radius: 999px;
-    background: var(--accent, #4a90d9);
-    color: var(--ui-fg-strong, #fff);
-    font-weight: 700;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+    background: var(--bg2, #252525);
+    color: var(--fg, #d4d4d4);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
     touch-action: manipulation;
   }
 
@@ -101,8 +100,7 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-main-button .cloud-mobile-label {
-    font-size: 13px;
-    line-height: 1;
+    display: none;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-editbar {

@@ -205,6 +205,34 @@
     return result !== false && result !== null;
   }
 
+  function _toolMenuTitle(toolType) {
+    return ({
+      folder: 'フォルダ',
+      page: 'ノート',
+      database: 'シート',
+      board: 'ボード',
+      scriptnote: 'シナリオ',
+      csv: 'CSV',
+      'smart-db': 'スマートシート',
+    })[toolType] || 'メニュー';
+  }
+
+  function _toolMenuItems(toolType) {
+    if (toolType === 'folder') {
+      return [
+        { label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
+        { label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
+        { label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
+        { label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
+        { label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
+        { label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
+        { label: 'オプション', icon: 'panelRight', action: () => _callGlobal('showFolderPanelSettings') },
+        { label: '設定', icon: 'settings', action: () => _callGlobal('showSettingsModal') },
+      ];
+    }
+    return [];
+  }
+
   function _editableFromNode(node) {
     if (!node) return null;
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
@@ -723,6 +751,39 @@
     document.body.appendChild(_menuOverlay);
   }
 
+  function _openToolMenuSheet(toolType) {
+    if (!_isEnabled() || _hasBlockingModal()) return false;
+    const toolItems = _toolMenuItems(toolType);
+    if (!toolItems.length) return false;
+    _closeOverflowSheet();
+    _closeMenuSheet();
+    _menuOverlay = document.createElement('div');
+    _menuOverlay.className = 'cloud-mobile-menu-overlay';
+    _menuOverlay.setAttribute('role', 'presentation');
+
+    const sheet = document.createElement('div');
+    sheet.className = 'cloud-mobile-menu-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', `${_toolMenuTitle(toolType)}メニュー`);
+
+    const header = document.createElement('div');
+    header.className = 'cloud-mobile-sheet-header';
+    const title = document.createElement('strong');
+    title.textContent = _toolMenuTitle(toolType);
+    header.appendChild(title);
+    header.appendChild(_button('cloud-mobile-sheet-close', '閉じる', 'x', _closeMenuSheet));
+    sheet.appendChild(header);
+
+    _appendSheetSection(sheet, '操作', toolItems);
+    _menuOverlay.appendChild(sheet);
+    _menuOverlay.addEventListener('pointerdown', (event) => {
+      if (event.target === _menuOverlay) _closeMenuSheet();
+    });
+    document.body.appendChild(_menuOverlay);
+    return true;
+  }
+
   function _closeMenuSheet() {
     _menuOverlay?.remove();
     _menuOverlay = null;
@@ -975,6 +1036,13 @@
     if (el) el.hidden = !!hidden;
   }
 
+  function _hasVisibleInlineMobileMenu() {
+    const folderView = document.getElementById('folder-view');
+    const folderToolbar = document.getElementById('folder-toolbar');
+    return _isVisibleElement(folderView) && _isVisibleElement(folderToolbar)
+      && !!folderToolbar.querySelector('.tool-menu-btn');
+  }
+
   function _refresh() {
     if (!document.body) return;
     const enabled = _isEnabled();
@@ -993,6 +1061,7 @@
     const showBoardBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && !showAnnotationBar && !keyboardOpen && _isBoardActive();
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
+    const inlineMenuAvailable = _hasVisibleInlineMobileMenu();
     _activeEditable = editable || _activeEditable;
     _activeChatInput = chatInput || (_activeChatInput?.isConnected ? _activeChatInput : null);
     _activePlainInput = plainInput || (_activePlainInput?.isConnected ? _activePlainInput : null);
@@ -1004,7 +1073,7 @@
     _ensureBoardBar();
     _ensureAnnotationBar();
     _syncAnnotationBarState();
-    _setHidden(_mainButton, !enabled || modalOpen || treeOpen || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
+    _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
     _setHidden(_editBar, !showEditBar);
     _setHidden(_chatBar, !showChatBar);
     _setHidden(_inputBar, !showInputBar);
@@ -1099,6 +1168,7 @@
   window.MeldexCloudMobileEditBar = {
     refresh: _refresh,
     openMenu: _openMenuSheet,
+    openToolMenu: _openToolMenuSheet,
     closeMenu: _closeMenuSheet,
     closeOverflow: _closeOverflowSheet,
   };

@@ -354,15 +354,15 @@
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10020;padding:8px;box-sizing:border-box;';
       overlay.innerHTML = `<div class="meldex-cloud-mode-modal" data-modal-shell="off" role="dialog" aria-modal="true" style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
         <div style="font-size:22px;font-weight:700;margin-bottom:10px;">Meldex の保存モード</div>
-        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:18px;">Meldex Cloud BETAでは Dropbox に保存するクラウド版と、デスクトップ版でPC内フォルダに保存する使い方を切り替えます。</div>
+        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:18px;">Meldex Cloud BETAでは Dropbox に保存するクラウド版と、PC内に保存するデスクトップ版を切り替えます。</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
           <button id="choose-dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropbox 共有モード</div>
             <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">iPad / スマホ / PC で同じデータを使います。初回のみ Dropbox への接続が必要です。</div>
           </button>
           <button id="choose-legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">PC内フォルダを使う</div>
-            <div style="font-size:12px;line-height:1.6;color:#969696;">デスクトップ版のローカルサーバ経由でPC内フォルダを使います。クラウド機能は使いません。</div>
+            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">デスクトップ版</div>
+            <div style="font-size:12px;line-height:1.6;color:#969696;">この端末のフォルダに保存します。クラウド機能は使いません。</div>
           </button>
         </div>
         <div style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
@@ -437,10 +437,10 @@
       : 'padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;';
     const sessionLabel = session?.refreshToken
       ? `Dropbox接続済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}`
-      : '未認証';
+      : '未接続';
     const sessionHelp = session?.refreshToken
       ? 'Dropboxへの接続は完了しています。「接続確認して開始」でMeldexを開きます。'
-      : '「Dropboxに接続」を押し、Dropboxの画面で保存先フォルダの読み書きを許可してください。パスワードはMeldexには渡りません。';
+      : '通常は「Dropboxに接続」を使います。別アカウントに変える場合は「別のアカウントで接続」を使ってください。';
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
@@ -452,7 +452,7 @@
           <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
             スマホ、タブレット、PCで同じデータを開けるように、あなたのDropbox内のMeldex用フォルダを保存先として使います。
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">デスクトップ版でPC内のフォルダだけを使う場合、このDropbox連携設定は不要です。</div>
+          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">デスクトップ版だけを使う場合、このDropbox連携設定は不要です。</div>
         </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
@@ -488,20 +488,22 @@
           <div id="cloud-session-help" style="font-size:12px;color:#969696;line-height:1.6;margin-top:6px;">${sessionHelp}</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
             <button id="cloud-auth-redirect" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">Dropbox に接続</button>
-            <button id="cloud-auth-manual" style="padding:8px 14px;border:none;border-radius:6px;background:#28435a;color:#fff;cursor:pointer;">手動コード入力で認証</button>
-            <button id="cloud-clear-session" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">認証を解除</button>
+            <button id="cloud-auth-switch-account" style="padding:8px 14px;border:none;border-radius:6px;background:#5a4770;color:#fff;cursor:pointer;">別のアカウントで接続</button>
+            <button id="cloud-auth-manual" style="padding:8px 14px;border:none;border-radius:6px;background:#28435a;color:#fff;cursor:pointer;">手動コードで接続</button>
+            <button id="cloud-clear-session" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">接続を解除</button>
           </div>
+          <div style="font-size:12px;color:#969696;line-height:1.6;margin-top:8px;">DropboxのパスワードはMeldexには渡りません。</div>
           <div id="cloud-manual-box" style="display:${showManualBox ? '' : 'none'};margin-top:12px;">
-            <div style="font-size:12px;color:#969696;line-height:1.6;margin-bottom:6px;">Dropbox で表示された認可コードを貼り付けてください。</div>
+            <div style="font-size:12px;color:#969696;line-height:1.6;margin-bottom:6px;">Dropboxで表示されたコードを貼り付けてください。</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <input id="cloud-manual-code" type="text" placeholder="認可コード" style="flex:1;min-width:220px;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-              <button id="cloud-manual-submit" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">コード交換</button>
+              <input id="cloud-manual-code" type="text" placeholder="Dropboxのコード" style="flex:1;min-width:220px;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
+              <button id="cloud-manual-submit" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">接続する</button>
             </div>
           </div>
         </section>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在PC内フォルダを使用中です"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'PC内フォルダ使用中' : 'PC内フォルダへ戻す'}</button>` : ''}
+          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在デスクトップ版です"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'デスクトップ版使用中' : 'デスクトップ版に切り替える'}</button>` : ''}
           <button id="cloud-continue" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">接続確認して開始</button>
         </div>
       </div>`;
@@ -533,15 +535,15 @@
         _auth().setRedirectOverride(overlay.querySelector('#cloud-redirect-override').value.trim());
       }
 
-      function updateSessionStatus(text, authenticated) {
+      function updateSessionStatus(text, authenticated, helpText) {
         const status = overlay.querySelector('#cloud-session-status');
         const help = overlay.querySelector('#cloud-session-help');
         status.textContent = text;
         status.style.color = authenticated ? '#9dd6a5' : '#d4d4d4';
         if (help) {
-          help.textContent = authenticated
+          help.textContent = helpText || (authenticated
             ? 'Dropboxへの接続は完了しています。「接続確認して開始」でMeldexを開きます。'
-            : '「Dropboxに接続」を押し、Dropboxの画面で保存先フォルダの読み書きを許可してください。パスワードはMeldexには渡りません。';
+            : '通常は「Dropboxに接続」を使います。別アカウントに変える場合は「別のアカウントで接続」を使ってください。');
         }
       }
 
@@ -563,11 +565,28 @@
         return true;
       }
 
+      async function beginDropboxConnection(options = {}) {
+        saveInputs();
+        const auth = await _auth().beginAuth({
+          manual: !!options.manual,
+          forceReapprove: !!options.switchAccount,
+          forceReauthentication: !!options.switchAccount,
+        });
+        if (options.manual) overlay.querySelector('#cloud-manual-box').style.display = '';
+        _openAuthWindow(auth.authorizationUrl, { manual: !!options.manual });
+      }
+
       overlay.querySelector('#cloud-auth-redirect').addEventListener('click', async () => {
         try {
-          saveInputs();
-          const auth = await _auth().beginAuth({ manual: false });
-          _openAuthWindow(auth.authorizationUrl, { manual: false });
+          await beginDropboxConnection({ manual: false });
+        } catch (err) {
+          setError(err?.message || String(err));
+        }
+      });
+
+      overlay.querySelector('#cloud-auth-switch-account').addEventListener('click', async () => {
+        try {
+          await beginDropboxConnection({ manual: false, switchAccount: true });
         } catch (err) {
           setError(err?.message || String(err));
         }
@@ -575,10 +594,7 @@
 
       overlay.querySelector('#cloud-auth-manual').addEventListener('click', async () => {
         try {
-          saveInputs();
-          const auth = await _auth().beginAuth({ manual: true });
-          overlay.querySelector('#cloud-manual-box').style.display = '';
-          _openAuthWindow(auth.authorizationUrl, { manual: true });
+          await beginDropboxConnection({ manual: true });
         } catch (err) {
           setError(err?.message || String(err));
         }
@@ -587,7 +603,7 @@
       overlay.querySelector('#cloud-manual-submit').addEventListener('click', async () => {
         try {
           saveInputs();
-          if (!await exchangeManualCodeIfPresent()) throw new Error('認可コードを入力してください');
+          if (!await exchangeManualCodeIfPresent()) throw new Error('Dropboxのコードを入力してください');
         } catch (err) {
           setError(err?.message || String(err));
         }
@@ -595,7 +611,12 @@
 
       overlay.querySelector('#cloud-clear-session').addEventListener('click', async () => {
         await _auth().clearSession();
-        updateSessionStatus('未認証', false);
+        setError('');
+        updateSessionStatus(
+          '未接続',
+          false,
+          'この端末の接続情報を削除しました。Dropbox側のログインは残ります。別アカウントに変える場合は「別のアカウントで接続」を使ってください。'
+        );
       });
 
       overlay.querySelector('#cloud-switch-legacy')?.addEventListener('click', () => {
@@ -665,7 +686,7 @@
   async function prepareLaunch() {
     const callback = await _auth().handleRedirectCallback();
     if (callback.handled && !callback.ok) {
-      await _showDropboxSetupModal(callback.error || 'Dropbox 認証に失敗しました');
+      await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');
     }
     try {
       const params = new URLSearchParams(window.location.search);

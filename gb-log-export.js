@@ -298,7 +298,8 @@
     const activitySummary = buildSupportActivitySummary();
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal meldex-support-dialog" style="width:min(440px,calc(100vw - 32px));min-width:360px;max-width:440px;height:min(760px,calc(100vh - 32px));max-height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;">
+    overlay.style.zIndex = '100070';
+    overlay.innerHTML = `<div class="modal meldex-support-dialog" style="width:min(440px,calc(100vw - 32px));min-width:0;max-width:440px;height:min(760px,calc(100vh - 32px));max-height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;">
       <h3 style="display:flex;align-items:center;gap:8px;">${lucide('lifeBuoy',16)} サポートに送信</h3>
       <div style="display:flex;flex-direction:column;gap:10px;min-height:0;flex:1;overflow:auto;padding-right:2px;">
         <section class="gb-section gb-section--boxed">
@@ -355,24 +356,58 @@
     });
   }
 
+  function _isCompactErrorNoticeViewport() {
+    try {
+      if (window.matchMedia?.('(max-width: 700px), (pointer: coarse)')?.matches) return true;
+      return window.innerWidth <= 700;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _errorNoticeStyle(compact) {
+    const common = 'position:fixed;z-index:100060;background:var(--bg2);color:var(--fg);border:1px solid var(--red);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);padding:12px;display:flex;flex-direction:column;gap:8px;font-size:13px;box-sizing:border-box;pointer-events:auto;';
+    if (compact) {
+      return common + 'left:12px;right:12px;top:calc(env(safe-area-inset-top, 0px) + 12px);bottom:auto;max-height:min(42vh,320px);overflow:auto;';
+    }
+    return common + 'right:18px;bottom:34px;max-width:360px;';
+  }
+
   function showErrorNotice(error, context) {
     const friendly = window.MeldexErrorMessages?.translate?.(error, context) || null;
     if (!friendly) return;
     const old = document.getElementById('meldex-error-support-notice');
     if (old) old.remove();
     const notice = document.createElement('div');
+    const compact = _isCompactErrorNoticeViewport();
     notice.id = 'meldex-error-support-notice';
-    notice.style.cssText = 'position:fixed;right:18px;bottom:34px;z-index:100060;max-width:360px;background:var(--bg2);color:var(--fg);border:1px solid var(--red);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);padding:12px;display:flex;flex-direction:column;gap:8px;font-size:13px;';
-    notice.innerHTML = `<div style="font-weight:700;">${esc(friendly.title)}</div>
+    notice.setAttribute('role', 'alertdialog');
+    notice.setAttribute('aria-live', 'assertive');
+    notice.style.cssText = _errorNoticeStyle(compact);
+    const buttonFlex = compact ? 'flex:1 1 0;min-width:0;' : '';
+    notice.innerHTML = `<div style="display:flex;align-items:flex-start;gap:8px;">
+        <div style="font-weight:700;min-width:0;flex:1;">${esc(friendly.title)}</div>
+        <button class="gb-btn gb-btn-sm" type="button" data-error-action="close" aria-label="閉じる" style="padding:2px 8px;line-height:1.2;">×</button>
+      </div>
       <div style="color:var(--fg2);line-height:1.5;">${esc(friendly.action)}</div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="gb-btn gb-btn-sm" data-error-action="details" data-e2e-id="error-support-details">詳細</button>
-        <button class="gb-btn gb-btn-sm gb-btn-primary" data-error-action="support" data-e2e-id="error-support-send">サポートに送信</button>
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        <button class="gb-btn gb-btn-sm" type="button" data-error-action="details" data-e2e-id="error-support-details" style="${buttonFlex}">詳細</button>
+        <button class="gb-btn gb-btn-sm gb-btn-primary" type="button" data-error-action="support" data-e2e-id="error-support-send" style="${buttonFlex}">報告画面を開く</button>
       </div>`;
     document.body.appendChild(notice);
-    notice.querySelector('[data-error-action="details"]')?.addEventListener('click', () => showSupportDialog(error, context));
-    notice.querySelector('[data-error-action="support"]')?.addEventListener('click', () => showSupportDialog(error, context));
-    setTimeout(() => notice.remove(), 12000);
+    let autoDismissTimer = 0;
+    const closeNotice = () => {
+      if (autoDismissTimer) clearTimeout(autoDismissTimer);
+      notice.remove();
+    };
+    const openSupport = () => {
+      closeNotice();
+      showSupportDialog(error, context);
+    };
+    notice.querySelector('[data-error-action="close"]')?.addEventListener('click', closeNotice);
+    notice.querySelector('[data-error-action="details"]')?.addEventListener('click', openSupport);
+    notice.querySelector('[data-error-action="support"]')?.addEventListener('click', openSupport);
+    autoDismissTimer = setTimeout(closeNotice, compact ? 7000 : 12000);
   }
 
   _installConsoleCapture();

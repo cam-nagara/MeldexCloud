@@ -1109,7 +1109,9 @@
         || visibleById('left-chrome-floating-user');
       const settings = visibleById('left-chrome-settings')
         || visibleById('left-chrome-floating-settings');
-      return command && user && settings ? true : null;
+      const mobileReady = document.body?.dataset?.cloudMobile === '1'
+        && (visibleById('folder-toolbar') || visibleById('cloud-mobile-main-button'));
+      return (command && user && settings) || mobileReady ? true : null;
     }, '左クローム操作');
     api.logStep('左クローム操作 OK');
   });

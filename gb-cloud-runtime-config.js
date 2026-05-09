@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.5.434",
+    "semver": "0.5.435",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
@@ -16,7 +16,7 @@
     "pageUrl": ""
   },
   "desktop": {
-    "currentVersion": "v0.5.434 BETA",
+    "currentVersion": "v0.5.435 BETA",
     "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
     "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
     "versions": []

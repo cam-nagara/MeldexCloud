@@ -32,7 +32,7 @@
     return {
       id: touch ? 'mobile-local' : (hybrid ? 'hybrid' : 'local'),
       label: touch ? 'モバイル版' : (hybrid ? 'ハイブリッド' : 'デスクトップ版'),
-      detail: source || 'PC単独モード',
+      detail: source || 'デスクトップ版',
     };
   }
 

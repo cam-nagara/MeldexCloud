@@ -81,7 +81,7 @@ async function showSettingsModal(opts) {
   // テーマ変更のキャンセル用にスナップショットを保存
   const _themeSnapshot = snapshotThemeVars();
   const _currentTheme = detectCurrentTheme();
-  const _storageMode = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropbox 共有モード' : 'PC 単独モード';
+  const _storageMode = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropbox 共有モード' : 'デスクトップ版';
   const _workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
   const _storageDetail = _workspaceState?.path
     ? `${_workspaceState.path}${_workspaceState.access ? ' / ' + _workspaceState.access : ''}`
@@ -161,7 +161,7 @@ async function showSettingsModal(opts) {
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続</div>
-        <div class="gb-section-desc">このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。標準のPC単独版は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はCloud版PWAまたは管理者が用意した共有URLを使ってください。</div>
+        <div class="gb-section-desc">このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。標準のデスクトップ版は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はCloud版PWAまたは管理者が用意した共有URLを使ってください。</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
           <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
           <button type="button" class="gb-btn gb-btn-sm" data-action="copySettingsMobilePrimaryUrl()">${lucide('copy',14)} URLをコピー</button>
@@ -517,7 +517,7 @@ async function loadStorageInfoForSettings() {
   const modeEl = document.getElementById('settings-storage-mode');
   const detailEl = document.getElementById('settings-storage-detail');
   if (!modeEl || !detailEl) return;
-  const storageMode = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropbox 共有モード' : 'PC 単独モード';
+  const storageMode = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropbox 共有モード' : 'デスクトップ版';
   try {
     const info = await window.MeldexStorageAdapter?.describeWorkspace?.();
     const displayPath = info?.path || info?.homePath || '';
