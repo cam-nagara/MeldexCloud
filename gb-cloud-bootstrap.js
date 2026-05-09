@@ -424,34 +424,48 @@
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:20px;';
       overlay.innerHTML = `<div class="meldex-cloud-setup-modal" data-modal-shell="off" role="dialog" aria-modal="true" style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);">
         <div style="font-size:22px;font-weight:700;margin-bottom:8px;">Dropbox 連携設定</div>
-        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:16px;">Meldex Cloud BETAは PKCE + refresh token 方式です。refresh token はこの端末の IndexedDB に保存されます。</div>
+        <div style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
+          <div style="font-size:15px;font-weight:700;margin-bottom:8px;">クラウド版では Dropbox が保存先になります</div>
+          <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
+            Meldex Cloud はブラウザで動くため、開発元サーバーには作品データを保存しません。スマホ、タブレット、PCで同じデータを開けるように、あなたのDropbox内のMeldex用フォルダを保存先として使います。
+          </div>
+          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">PC単独モードだけを使う場合、Dropbox接続は不要です。</div>
+        </div>
+        <div style="font-size:13px;color:#969696;line-height:1.7;margin-bottom:16px;">
+          認証とは、Dropboxの画面で「Meldexが指定した保存先フォルダを読み書きしてよい」と許可する手続きです。DropboxのパスワードはMeldexには渡りません。接続情報はこの端末のブラウザ内に保存されます。
+        </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">App key</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">保存先フォルダ</div>
+          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox内のMeldex用フォルダ</label>
+          <input id="cloud-vault-path" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
+          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">初回は通常このままで構いません。既に別名のMeldex用フォルダを作っている場合だけ変更してください。</div>
+        </section>
+        <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">詳細設定（通常は変更不要）</div>
           <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:8px;">
             <input type="radio" name="cloud-app-mode" value="developer" ${initial.appMode !== 'custom' ? 'checked' : ''}>
-            <span>既定 App key を使う${initial.defaultAppKey ? '' : '（このビルドでは未設定）'}</span>
+            <span>Meldex標準のDropbox接続を使う${initial.defaultAppKey ? '（推奨）' : '（このビルドでは未設定）'}</span>
           </label>
           <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;">
             <input type="radio" name="cloud-app-mode" value="custom" ${initial.appMode === 'custom' ? 'checked' : ''}>
-            <span>自分で登録した Dropbox OAuth アプリの App key を使う</span>
+            <span>自分で登録したDropbox OAuthアプリを使う</span>
           </label>
-          <input id="cloud-custom-app-key" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="margin-top:10px;width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
+          <div id="cloud-custom-dropbox-settings" style="display:${initial.appMode === 'custom' ? '' : 'none'};margin-top:12px;border-top:1px solid #333;padding-top:12px;">
+            <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox App key</label>
+            <input id="cloud-custom-app-key" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
+            <label style="display:block;font-size:12px;color:#969696;margin:12px 0 4px;">redirect URI 上書き（任意）</label>
+            <input id="cloud-redirect-override" type="text" value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
+            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。Dropbox App Consoleには、メインURL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> をredirect URIとして登録してください。</div>
+            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
+          </div>
         </section>
         <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">vault と redirect</div>
-          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">共有フォルダ mount パス</label>
-          <input id="cloud-vault-path" type="text" value="${_esc(initial.vaultPath)}" placeholder="/MeldexVault" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-          <label style="display:block;font-size:12px;color:#969696;margin:12px 0 4px;">redirect URI 上書き（任意）</label>
-          <input id="cloud-redirect-override" type="text" value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">メイン URL / 予備 HTTPS URL / <code>http://localhost:8080/</code> / <code>http://localhost:8001/</code> / <code>http://localhost:8001/?desktop=1</code> を Dropbox App Console の redirect URI に登録してください。</div>
-        </section>
-        <section style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">認証状態</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:10px;">Dropboxへの接続</div>
           <div id="cloud-session-status" style="font-size:13px;line-height:1.7;color:${session?.refreshToken ? '#9dd6a5' : '#d4d4d4'};">
             ${session?.refreshToken ? `refresh token 保存済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}` : '未認証'}
           </div>
+          <div style="font-size:12px;color:#969696;line-height:1.6;margin-top:6px;">「Dropboxに接続」を押すとDropboxの許可画面が開きます。許可後、この画面に戻って「接続確認して開始」を押してください。</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
             <button id="cloud-auth-redirect" style="padding:8px 14px;border:none;border-radius:6px;background:#356b4d;color:#fff;cursor:pointer;">Dropbox に接続</button>
             <button id="cloud-auth-manual" style="padding:8px 14px;border:none;border-radius:6px;background:#28435a;color:#fff;cursor:pointer;">手動コード入力で認証</button>
@@ -484,6 +498,12 @@
         el.textContent = text;
       }
 
+      function updateAdvancedSettings() {
+        const mode = overlay.querySelector('input[name="cloud-app-mode"]:checked')?.value || 'developer';
+        const advanced = overlay.querySelector('#cloud-custom-dropbox-settings');
+        if (advanced) advanced.style.display = mode === 'custom' ? '' : 'none';
+      }
+
       function saveInputs() {
         const mode = overlay.querySelector('input[name="cloud-app-mode"]:checked')?.value || 'developer';
         _auth().setAppMode(mode);
@@ -491,6 +511,11 @@
         _auth().setVaultPath(overlay.querySelector('#cloud-vault-path').value.trim());
         _auth().setRedirectOverride(overlay.querySelector('#cloud-redirect-override').value.trim());
       }
+
+      overlay.querySelectorAll('input[name="cloud-app-mode"]').forEach((input) => {
+        input.addEventListener('change', updateAdvancedSettings);
+      });
+      updateAdvancedSettings();
 
       async function exchangeManualCodeIfPresent() {
         const manualBox = overlay.querySelector('#cloud-manual-box');
