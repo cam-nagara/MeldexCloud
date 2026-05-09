@@ -431,6 +431,7 @@
     const pendingAuth = _auth().getPendingAuth?.();
     const showManualBox = !!pendingAuth?.manual;
     const isLegacyMode = _runtime().getMode?.() !== 'dropbox';
+    const canSwitchLegacy = !_isHostedCloudPage();
     const legacyButtonStyle = isLegacyMode
       ? 'padding:8px 14px;border:1px solid #444;border-radius:6px;background:#222;color:#777;cursor:not-allowed;'
       : 'padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;';
@@ -500,7 +501,7 @@
         </section>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          <button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在PC内フォルダを使用中です"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'PC内フォルダ使用中' : 'PC内フォルダへ戻す'}</button>
+          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在PC内フォルダを使用中です"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'PC内フォルダ使用中' : 'PC内フォルダへ戻す'}</button>` : ''}
           <button id="cloud-continue" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">接続確認して開始</button>
         </div>
       </div>`;
@@ -597,7 +598,7 @@
         updateSessionStatus('未認証', false);
       });
 
-      overlay.querySelector('#cloud-switch-legacy').addEventListener('click', () => {
+      overlay.querySelector('#cloud-switch-legacy')?.addEventListener('click', () => {
         if (isLegacyMode) return;
         _runtime().setMode('legacy');
         overlay.remove();
@@ -645,16 +646,20 @@
     }
   }
 
-  function _isHostedCloudLaunch() {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      if (params.has('dataAccessMode') || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
-    } catch {}
+  function _isHostedCloudPage() {
     try {
       return window.location.protocol === 'https:' && !_isLocalAppHost();
     } catch {
       return false;
     }
+  }
+
+  function _isHostedCloudLaunch() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('dataAccessMode') || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
+    } catch {}
+    return _isHostedCloudPage();
   }
 
   async function prepareLaunch() {
