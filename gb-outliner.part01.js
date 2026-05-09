@@ -179,6 +179,9 @@ function _queueSavedOutlinerExpansion(item, toggle) {
 }
 
 function _outlinerResolvedType(type, path) {
+  const rawType = String(type || '');
+  const lowerPath = String(path || '').split(/[?#]/)[0].toLowerCase();
+  if (!['folder', 'database', 'entity'].includes(rawType) && lowerPath.endsWith('.board.md')) return 'board';
   if (type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(path))) return 'scriptnote';
   return type || 'page';
 }

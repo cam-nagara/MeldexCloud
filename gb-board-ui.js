@@ -1734,8 +1734,8 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="collapsed" ${node.collapsed ? 'checked' : ''}><span>折りたたみ</span></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="locked" ${node.locked ? 'checked' : ''}><span>ロック</span></label>
         <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-card-styles">スタイル管理</button>
-          ${node.link ? '<button type="button" class="gb-btn gb-btn-sm" data-bd-action="open-link">リンク先を開く</button>' : ''}
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-node-manage-card-styles" data-bd-action="manage-card-styles">スタイル管理</button>
+          ${node.link ? '<button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-node-open-link" data-bd-action="open-link">リンク先を開く</button>' : ''}
         </div>
       </div>
       <div class="bd-detail-section">
@@ -1752,7 +1752,7 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイル</span></label>
         <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-node-manage-depth-styles" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
         </div>
       </div>
       <div class="bd-detail-section">
@@ -1776,7 +1776,7 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-field"><span>ステータス</span><select data-bd-field="status">${_bdNodeStatusOptions(node)}</select></label>
         ${markerHtml}
         <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-statuses">ステータスを管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-node-manage-statuses" data-bd-action="manage-statuses">ステータスを管理</button>
         </div>
       </div>`]);
   _bdLastNodeDetailPanels = { nodeId: node.id, contentHtml };
@@ -1813,7 +1813,7 @@ function _bdBuildConnectionDetailHtml(conn) {
         </div>
         <div class="bd-style-summary-card"><div class="bd-style-editor-fields bd-style-editor-fields--fmt" data-bd-conn-line-style-fields></div></div>
         <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-line-styles">スタイル管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-conn-manage-line-styles" data-bd-action="manage-line-styles">スタイル管理</button>
         </div>
       </div>
     </div>`;
@@ -1860,11 +1860,11 @@ function _bdBuildBoardDetailHtml() {
       </div>
       <div class="bd-detail-section">
         <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-card-styles">カードスタイル管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-line-styles">ラインスタイル管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="export-board-styles">${exportIcon} スタイル一式を書き出し</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-statuses">ステータスを管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-card-styles" data-bd-action="manage-card-styles">カードスタイル管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-line-styles" data-bd-action="manage-line-styles">ラインスタイル管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-export-board-styles" data-bd-action="export-board-styles">${exportIcon} スタイル一式を書き出し</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-statuses" data-bd-action="manage-statuses">ステータスを管理</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-depth-styles" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
         </div>
       </div>
     </div>`;

@@ -291,6 +291,17 @@
   line-height: 1.75;
 }
 
+.meldex-cloud-home-only-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.meldex-cloud-home-only-actions button {
+  min-height: 38px;
+}
+
 .meldex-install-prompt-modal,
 .meldex-install-help-modal {
   width: min(460px, 92vw);

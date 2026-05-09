@@ -2,7 +2,7 @@
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
     'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '88e44d6ccdb0' },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'cb2ed9a6b307' },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'de8ccd6704c4' },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '4f3ae4c10e3a' },
   };
 

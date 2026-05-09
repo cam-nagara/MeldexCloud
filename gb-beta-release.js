@@ -372,25 +372,64 @@
   }
 
   function showCloudHomeOnlyNotice() {
+    const options = arguments[0] || {};
     _hideStartupSplashForCloudHome();
     document.getElementById('meldex-cloud-home-first-overlay')?.remove();
     const existing = document.getElementById('meldex-cloud-home-only');
-    if (existing) return true;
-    const overlay = _el('main', {
-      id: 'meldex-cloud-home-only',
-      class: 'meldex-cloud-home-only',
-      role: 'main',
-      'aria-labelledby': 'meldex-cloud-home-only-title',
+    if (existing) existing.remove();
+    return new Promise((resolve) => {
+      const overlay = _el('main', {
+        id: 'meldex-cloud-home-only',
+        class: 'meldex-cloud-home-only',
+        role: 'main',
+        'aria-labelledby': 'meldex-cloud-home-only-title',
+      });
+      const actions = _el('div', { class: 'btn-row meldex-cloud-home-only-actions' });
+      const browserButton = _el('button', { type: 'button', class: 'primary', text: 'このままブラウザで起動' });
+      const retryButton = _el('button', { type: 'button', text: 'ホーム追加をやり直す' });
+      const close = () => {
+        document.removeEventListener('keydown', onKeydown);
+        overlay.remove();
+      };
+      const continueInBrowser = () => {
+        markCloudHomeBrowserLaunch();
+        _cloudHomeLaunchFlowActive = false;
+        close();
+        setTimeout(() => _scheduleFirstRunConsent(), 800);
+        resolve(true);
+      };
+      const retryHomeInstall = async () => {
+        _setCloudHomeChoice('');
+        close();
+        const result = await showCloudHomeFirstRunDialog();
+        resolve(!!result);
+      };
+      function onKeydown(event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          browserButton.focus();
+        }
+      }
+      browserButton.addEventListener('click', continueInBrowser);
+      retryButton.addEventListener('click', () => {
+        retryHomeInstall().catch(() => resolve(false));
+      });
+      actions.append(browserButton, retryButton);
+      const panel = _el('section', { class: 'meldex-cloud-home-only-panel' }, [
+        _el('h1', { id: 'meldex-cloud-home-only-title', text: 'ホーム画面から起動できます' }),
+        _el('p', {
+          text: '以前ホーム画面に追加した記録があります。アイコンが残っている場合は、ホームのMeldexアイコンから起動してください。',
+        }),
+        _el('p', {
+          text: 'アイコンを削除済みの場合は、このままブラウザで起動するか、ホームへの追加をやり直せます。',
+        }),
+        actions,
+      ]);
+      overlay.appendChild(panel);
+      document.addEventListener('keydown', onKeydown);
+      document.body.appendChild(overlay);
+      if (options.focus !== false) browserButton.focus();
     });
-    const panel = _el('section', { class: 'meldex-cloud-home-only-panel' }, [
-      _el('h1', { id: 'meldex-cloud-home-only-title', text: 'ホーム画面から起動してください' }),
-      _el('p', {
-        text: 'Meldexはホーム画面に追加済みです。ホームのMeldexアイコンから起動すると、Dropbox設定から開始できます。',
-      }),
-    ]);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-    return true;
   }
 
   function _iconNode(name, size) {
@@ -513,8 +552,7 @@
       document.removeEventListener('keydown', overlay._meldexCloudHomeKeydown);
     }
     overlay.remove();
-    showCloudHomeOnlyNotice();
-    resolve(false);
+    showCloudHomeOnlyNotice().then(resolve);
   }
 
   function showCloudHomeFirstRunDialog() {
@@ -610,8 +648,7 @@
     const choice = _getCloudHomeChoice();
     if (choice === CLOUD_HOME_CHOICE_BROWSER) return true;
     if (choice === CLOUD_HOME_CHOICE_INSTALLED) {
-      showCloudHomeOnlyNotice();
-      return false;
+      return await showCloudHomeOnlyNotice();
     }
     return await showCloudHomeFirstRunDialog();
   }
