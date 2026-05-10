@@ -1,0 +1,24 @@
+{
+  "name": "Meldex Quick Memo",
+  "short_name": "Meldex Memo",
+  "id": "./quick-memo.html",
+  "description": "Meldexへ送る軽量メモ",
+  "start_url": "quick-memo.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1e1e1e",
+  "theme_color": "#1e1e1e",
+  "icons": [
+    {
+      "src": "Meldex_icon_192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "Meldex_icon_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

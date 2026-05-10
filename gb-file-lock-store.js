@@ -275,6 +275,7 @@
       '/outliner/add',
       '/outliner/rename',
       '/outliner/delete',
+      '/outliner/delete-batch',
       '/outliner/restore',
       '/outliner/duplicate',
       '/outliner/save-as',
@@ -299,6 +300,14 @@
       const targetPath = _normalizeFolderPath(body?.path || '');
       const source = await _resolveEntryHandle(provider, targetPath);
       await requireUnlocked(provider, targetPath, { action: 'delete', includeDescendants: source?.kind === 'directory' });
+    } else if (pathname === '/outliner/delete-batch' && method === 'POST') {
+      const items = Array.isArray(body?.items) ? body.items : [];
+      for (const item of items) {
+        const targetPath = _normalizeFolderPath(item?.path || '');
+        if (!targetPath) continue;
+        const source = await _resolveEntryHandle(provider, targetPath);
+        await requireUnlocked(provider, targetPath, { action: 'delete', includeDescendants: source?.kind === 'directory' });
+      }
     } else if (pathname === '/outliner/restore' && method === 'POST') {
       await _guardOutlinerRestore(provider, body || {});
     } else if (pathname === '/outliner/duplicate' && method === 'POST') {

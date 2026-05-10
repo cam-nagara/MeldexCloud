@@ -3,6 +3,8 @@
  */
 
 const _DB_DATE_TOKEN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/;
+const _DB_DATE_INPUT_RE = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+const _DB_TIME_INPUT_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
 
 function _dbDateHasTimeToken(v) {
   return typeof v === 'string' && /T\d{2}:\d{2}/.test(v);
@@ -12,27 +14,149 @@ function _dbDateIsToken(v) {
   return typeof v === 'string' && _DB_DATE_TOKEN_RE.test(v.trim());
 }
 
-function _dbDateParseValue(raw) {
+function _dbDatePad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function _dbDateBuildDate(y, m, d) {
+  const date = new Date(y, m - 1, d);
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+  return date;
+}
+
+function _dbDateBuildPart(date, hour = null, minute = null, usedBaseDate = false, timeOnly = false) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  const hasTime = hour != null && minute != null;
+  if (hasTime && (hour < 0 || hour > 23 || minute < 0 || minute > 59)) return null;
+  const token = `${date.getFullYear()}-${_dbDatePad2(date.getMonth() + 1)}-${_dbDatePad2(date.getDate())}`
+    + (hasTime ? `T${_dbDatePad2(hour)}:${_dbDatePad2(minute)}` : '');
+  return { token, date, hour, minute, hasTime, usedBaseDate, timeOnly };
+}
+
+function _dbDateCoerceBaseDate(baseDate) {
+  if (baseDate instanceof Date && !Number.isNaN(baseDate.getTime())) {
+    return _dbDateBuildDate(baseDate.getFullYear(), baseDate.getMonth() + 1, baseDate.getDate());
+  }
+  if (typeof baseDate !== 'string' || !baseDate.trim()) return null;
+  const part = _dbDateParseSinglePart(baseDate.trim(), null);
+  return part ? part.date : null;
+}
+
+function _dbDateParseSinglePart(raw, baseDate) {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) return null;
+  let m = text.match(_DB_DATE_INPUT_RE);
+  if (m) {
+    const date = _dbDateBuildDate(Number(m[1]), Number(m[2]), Number(m[3]));
+    if (!date) return null;
+    if (m[4] != null) {
+      return _dbDateBuildPart(date, Number(m[4]), Number(m[5]), false, false);
+    }
+    return _dbDateBuildPart(date, null, null, false, false);
+  }
+  m = text.match(_DB_TIME_INPUT_RE);
+  if (m) {
+    const base = _dbDateCoerceBaseDate(baseDate);
+    if (!base) return null;
+    return _dbDateBuildPart(base, Number(m[1]), Number(m[2]), true, true);
+  }
+  return null;
+}
+
+function _dbDateSplitRangeText(text) {
+  const pipeIdx = text.indexOf('|');
+  if (pipeIdx >= 0) return { left: text.slice(0, pipeIdx).trim(), right: text.slice(pipeIdx + 1).trim(), sep: '|' };
+  const tildeMatch = text.match(/\s*[~～〜]\s*/);
+  if (tildeMatch) {
+    return {
+      left: text.slice(0, tildeMatch.index).trim(),
+      right: text.slice(tildeMatch.index + tildeMatch[0].length).trim(),
+      sep: '~',
+    };
+  }
+  const dashMatch = /(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(?=(?:\d{1,2}:\d{2}|\d{4}[/-]\d{1,2}[/-]\d{1,2}))/.exec(text);
+  if (dashMatch) {
+    const leftEnd = dashMatch.index + dashMatch[1].length;
+    return { left: text.slice(0, leftEnd).trim(), right: text.slice(dashMatch.index + dashMatch[0].length).trim(), sep: '-' };
+  }
+  return null;
+}
+
+function _dbDatePartToComparableDate(part) {
+  if (!part) return null;
+  return new Date(
+    part.date.getFullYear(),
+    part.date.getMonth(),
+    part.date.getDate(),
+    part.hasTime ? part.hour : 0,
+    part.hasTime ? part.minute : 0
+  );
+}
+
+function _dbDateAddDaysToToken(token, days) {
+  const part = _dbDateParseSinglePart(token, null);
+  if (!part) return token;
+  const date = new Date(part.date.getFullYear(), part.date.getMonth(), part.date.getDate() + days);
+  return _dbDateBuildPart(date, part.hour, part.minute, part.usedBaseDate, part.timeOnly)?.token || token;
+}
+
+function _dbDateParseValue(raw, options = {}) {
   const text = typeof raw === 'string' ? raw.trim() : '';
   if (!text) {
     return { raw: '', start: '', end: '', range: false, hasTime: false };
   }
-  const pipeIdx = text.indexOf('|');
-  if (pipeIdx >= 0) {
-    const start = text.slice(0, pipeIdx).trim();
-    const end = text.slice(pipeIdx + 1).trim();
-    if (_dbDateIsToken(start) || _dbDateIsToken(end) || !start || !end) {
+  const split = _dbDateSplitRangeText(text);
+  if (split) {
+    const startPart = _dbDateParseSinglePart(split.left, options.baseDate || null);
+    const endBase = startPart?.date || _dbDateCoerceBaseDate(options.baseDate || null);
+    const endPart = _dbDateParseSinglePart(split.right, endBase);
+    if (startPart && endPart) {
+      let end = endPart.token;
+      let overnight = false;
+      const startDate = _dbDatePartToComparableDate(startPart);
+      const endDate = _dbDatePartToComparableDate(endPart);
+      if (startPart.hasTime && endPart.hasTime && endPart.timeOnly && endDate <= startDate) {
+        end = _dbDateAddDaysToToken(end, 1);
+        overnight = true;
+      }
       return {
         raw: text,
-        start,
+        value: `${startPart.token}|${end}`,
+        start: startPart.token,
         end,
         range: true,
-        hasTime: _dbDateHasTimeToken(start) || _dbDateHasTimeToken(end),
+        hasTime: startPart.hasTime || endPart.hasTime,
+        usedBaseDate: !!(startPart.usedBaseDate || endPart.usedBaseDate),
+        overnight,
+      };
+    }
+    if (split.sep === '|' && (_dbDateIsToken(split.left) || _dbDateIsToken(split.right) || !split.left || !split.right)) {
+      return {
+        raw: text,
+        value: text,
+        start: split.left,
+        end: split.right,
+        range: true,
+        hasTime: _dbDateHasTimeToken(split.left) || _dbDateHasTimeToken(split.right),
       };
     }
   }
+  const part = _dbDateParseSinglePart(text, options.baseDate || null);
+  if (part) {
+    return {
+      raw: text,
+      value: part.token,
+      start: part.token,
+      end: '',
+      range: false,
+      hasTime: part.hasTime,
+      usedBaseDate: !!part.usedBaseDate,
+    };
+  }
   return {
     raw: text,
+    value: text,
     start: text,
     end: '',
     range: false,

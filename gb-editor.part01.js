@@ -260,6 +260,26 @@ function _noteMarkdownIsBoard(text) {
   return _noteMarkdownFrontmatterType(text) === 'board';
 }
 
+function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
+  const layers = window.MeldexDisplayLayers;
+  const autoLinksEnabled = !!layers?.isEnabled?.('autoLinks');
+  const commentsEnabled = !!layers?.isEnabled?.('comments');
+  if (!autoLinksEnabled && !commentsEnabled) return;
+  const initialHtml = pc.innerHTML;
+  const run = () => {
+    if (isStalePageLoad?.()) return;
+    if (document.activeElement === pc) return;
+    if (autoLinksEnabled && pc.innerHTML === initialHtml) {
+      pc.innerHTML = applyAutoLinks(html, path, { force: true });
+    }
+    if (commentsEnabled && typeof CommentBadges !== 'undefined') {
+      try { CommentBadges.refreshNote(path, pc, { force: true }); } catch {}
+    }
+  };
+  if (typeof layers?.scheduleIdle === 'function') layers.scheduleIdle(run, 900);
+  else setTimeout(run, 0);
+}
+
 
 // ページ表示
 async function openPage(label, path, opts) {
@@ -332,12 +352,12 @@ async function openPage(label, path, opts) {
       await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...');
       if (isStalePageLoad()) return;
     }
-    // Markdown→HTML変換してからauto-link適用
+    // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw);
-    pc.innerHTML = applyAutoLinks(html, path);
+    pc.innerHTML = html;
     _loadPageIcon();
-    // Phase 2e-ii: ノート行コメントバッジを描画
-    if (typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshNote(path, pc); } catch {} }
+    if (typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
+    _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
   } catch (e) {
     pc.innerHTML = '<span style="color:var(--fg2)">(ノートを読み込めませんでした)</span>';

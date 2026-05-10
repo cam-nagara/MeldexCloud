@@ -21,7 +21,7 @@
       'use strict';
 
       var fallbackReleases = 'https://github.com/cam-nagara/MeldexCloud/releases';
-      var fallbackVersion = 'v0.5.442 BETA';
+      var fallbackVersion = 'v0.5.448 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
 
@@ -712,7 +712,7 @@
         <div class="actions">
           <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
           <a class="button primary" href="Meldex.html">クラウド版を起動</a>
-          <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="sample-download">サンプルをダウンロード</a>
+          <a class="button subtle" href="#samples">サンプルの追加方法</a>
           <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-releases">過去版を選ぶ</a>
         </div>
       </div>
@@ -726,7 +726,7 @@
           </div>
         </header>
         <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.5.442 BETA</span></li>
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.5.448 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
@@ -743,11 +743,11 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.5.442 BETA / 最新</option>
+              <option value="0">v0.5.448 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.5.442 BETA</strong></span>
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.5.448 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -777,19 +777,20 @@
     <section class="section" id="samples">
       <div class="section-inner">
         <h2>サンプルデータ</h2>
-        <p>サンプル作品は、デスクトップ版では別ZIP、クラウド版では初回Dropbox接続後にホームフォルダへ自動配置されます。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
-        <div class="version-picker" aria-label="サンプルデータをダウンロード">
+        <p>サンプル作品は、デスクトップ版でもクラウド版でもMeldex内の確認ダイアログからホームフォルダへ追加できます。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
+        <div class="version-picker" aria-label="サンプルデータを追加">
           <div class="version-meta">
-            <span>デスクトップ版: <strong>別ZIP</strong></span>
-            <span>クラウド版: <strong>初回接続後に自動配置</strong></span>
+            <span>デスクトップ版: <strong>ホームフォルダ準備後に確認</strong></span>
+            <span>クラウド版: <strong>Dropbox接続後に確認</strong></span>
           </div>
           <div class="mode-actions">
-            <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="sample-download">サンプルデータをダウンロード</a>
+            <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
+            <a class="button subtle" href="#download">デスクトップ版で追加</a>
           </div>
         </div>
         <ul class="notes">
-          <li>デスクトップ版では、展開した <code>サンプル</code> フォルダを現在のソースフォルダ内に置くと、サンプル内リンクがそのまま使えます。</li>
-          <li>クラウド版では、MeldexがDropbox内に <code>MeldexHome/サンプル</code> を作成し、不足ファイルだけを追加します。</li>
+          <li>デスクトップ版では、ホームフォルダの準備後に「サンプルファイルを追加しますか？」と表示されます。</li>
+          <li>クラウド版では、Dropbox接続後に同じ確認が表示されます。</li>
           <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
         </ul>
       </div>

@@ -199,6 +199,60 @@
     api.logStep('スマートシート表示 OK: ' + smartDbId);
   });
 
+  registerAction('debug_list_seed_and_open_dashboard', async (_action, api) => {
+    const ensure = await apiFetch('/settings-db/debug/ensure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    api.assert(ensure?.ok, 'デバッグ管理ワークスペースを作成できません');
+    const report = await apiFetch('/settings-db/debug-report/quick-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'E2E 自動デバッグ確認',
+        reporter: 'E2E',
+        properties: {
+          種別: 'バグ',
+          優先度: '高',
+          進捗: 'AIの対応待ち',
+          エリア: 'スマートシート',
+          症状: 'デバッグリストが開けるか確認',
+          環境: 'frontend-e2e',
+        },
+      }),
+    });
+    api.assert(report?.ok, 'デバッグエントリを作成できません');
+    api.assert(typeof openSmartDbFile === 'function', 'openSmartDbFile が見つかりません');
+    await openSmartDbFile('デバッグリスト', 'デバッグ/デバッグリスト.smart-db.json');
+    await api.waitFor(() => {
+      return _appState().view === 'smart-db' && _appState().currentSmartDb?.name === 'デバッグリスト' ? true : null;
+    }, 'デバッグリスト表示');
+    if (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard') {
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
+    } else if (typeof setSmartDbActiveView === 'function') {
+      await setSmartDbActiveView('dashboard');
+    } else if (_appState().currentSmartDb) {
+      _appState().currentSmartDb.activeView = 'dashboard';
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
+    }
+    await api.waitFor(() => {
+      const area = document.getElementById('smart-db-dashboard-area');
+      if (!_isRenderedVisible(area)) return null;
+      const widgets = [...area.querySelectorAll('.smart-db-widget')];
+      if (widgets.length < 3) return null;
+      const text = area.textContent || '';
+      if (!text.includes('進捗別件数') || !text.includes('フィードバック対応状況') || !text.includes('テスター確認状況')) return null;
+      if (text.includes('取得失敗') || text.includes('不明なタイプ') || text.includes('ソース未設定')) return null;
+      if (text.includes('読み込み中')) return null;
+      if (!widgets.every(widget => widget.querySelector('.widget-content svg'))) return null;
+      const progressWidget = widgets.find(widget => (widget.querySelector('.widget-title')?.textContent || '').trim() === '進捗別件数');
+      if (!progressWidget || !progressWidget.textContent.includes('AIの対応待ち')) return null;
+      return true;
+    }, 'デバッグリストダッシュボード');
+    api.logStep('デバッグリストダッシュボード OK');
+  });
+
   registerAction('smart_db_open_filter_modal', async (action, api) => {
     const smartDbId = action.id || _appState().currentSmartDb?.id || 'e2e-smart-db';
     api.assert(typeof showSmartDbFilterModal === 'function', 'showSmartDbFilterModal が見つかりません');
@@ -715,6 +769,26 @@
       }
       return true;
     }, 'スマートシート行確認');
+  });
+
+  registerAssertion('inv_debug_list_dashboard_visible', async (_spec, _definition, api) => {
+    await api.waitFor(() => {
+      const area = document.getElementById('smart-db-dashboard-area');
+      if (!_isRenderedVisible(area)) return null;
+      const widgets = [...area.querySelectorAll('.smart-db-widget')];
+      if (widgets.length < 3) return null;
+      const titles = widgets.map(widget => (widget.querySelector('.widget-title')?.textContent || '').trim());
+      if (!titles.includes('進捗別件数')) return null;
+      if (!titles.includes('フィードバック対応状況')) return null;
+      if (!titles.includes('テスター確認状況')) return null;
+      const text = area.textContent || '';
+      if (text.includes('取得失敗') || text.includes('不明なタイプ') || text.includes('ソース未設定')) return null;
+      if (text.includes('読み込み中')) return null;
+      if (!widgets.every(widget => widget.querySelector('.widget-content svg'))) return null;
+      const progressWidget = widgets.find(widget => (widget.querySelector('.widget-title')?.textContent || '').trim() === '進捗別件数');
+      if (!progressWidget || !progressWidget.textContent.includes('AIの対応待ち')) return null;
+      return true;
+    }, 'デバッグリストダッシュボード確認');
   });
 
   registerAssertion('inv_validation_results', async (spec, _definition, api) => {

@@ -827,6 +827,8 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('parent');
   } else if (route === '/outliner/delete' || route === '/outliner/duplicate') {
     addBody('path');
+  } else if (route === '/outliner/delete-batch') {
+    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
   } else if (route === '/outliner/move') {
     addBody('path');
     addBody('dest_folder');
@@ -1045,6 +1047,12 @@ async function init() {
       hasHome,
       homePath: homeRes?.path || '',
     });
+    if (hasHome && !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+      window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({
+        trigger: 'desktop-home-ready',
+        homePath: homeRes?.path || '',
+      });
+    }
     if (!vault.path && !hasRoots && !hasHome) {
       // ソースフォルダもルートもホームもない場合はウェルカム画面
       // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）

@@ -485,7 +485,7 @@
     const button = _el('button', {
       type: 'button',
       class: modal ? 'meldex-install-button' : 'gb-btn gb-btn-sm meldex-install-button',
-      dataset: { meldexInstallButton: '1' },
+      dataset: { e2eId: modal ? 'install-modal-add-home-button' : 'settings-install-add-home-button', meldexInstallButton: '1' },
       text: 'ホーム画面に追加',
     });
     button.addEventListener('click', async () => {

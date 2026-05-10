@@ -387,7 +387,7 @@
     const buttonFlex = compact ? 'flex:1 1 0;min-width:0;' : '';
     notice.innerHTML = `<div style="display:flex;align-items:flex-start;gap:8px;">
         <div style="font-weight:700;min-width:0;flex:1;">${esc(friendly.title)}</div>
-        <button class="gb-btn gb-btn-sm" type="button" data-error-action="close" aria-label="閉じる" style="padding:2px 8px;line-height:1.2;">×</button>
+        <button class="gb-btn gb-btn-sm" type="button" data-error-action="close" data-e2e-id="error-support-close" aria-label="閉じる" style="padding:2px 8px;line-height:1.2;">×</button>
       </div>
       <div style="color:var(--fg2);line-height:1.5;">${esc(friendly.action)}</div>
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">

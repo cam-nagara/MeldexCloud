@@ -153,7 +153,7 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-tabs > .cloud-mobile-pane-tree-back {
     width: 40px;
     height: 40px;
-    margin: 1px 2px 1px max(2px, env(safe-area-inset-left));
+    margin: calc(1px + var(--cloud-mobile-safe-top, 0px)) 2px 1px max(2px, env(safe-area-inset-left));
     padding: 0;
     flex: 0 0 40px;
     display: inline-flex;

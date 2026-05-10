@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1e1e1e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Meldex Memo">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Meldex Quick Memo</title>
+  <link rel="manifest" href="quick-memo.webmanifest">
+  <link rel="apple-touch-icon" href="Meldex_icon_192.png">
+  <link rel="stylesheet" href="quick-memo.css">
+</head>
+<body>
+  <main class="qm-shell">
+    <header class="qm-header">
+      <div class="qm-brand">
+        <img src="Meldex_icon_32.png" alt="" width="24" height="24">
+        <div>
+          <strong>Meldex Memo</strong>
+          <span id="syncStatus">未保存</span>
+        </div>
+      </div>
+      <div class="qm-header-actions">
+        <button id="shortcutBtn" class="qm-ghost" type="button">Ctrl+Alt+M</button>
+        <button id="saveBtn" class="qm-primary" type="button">保存</button>
+      </div>
+    </header>
+
+    <section class="qm-meta">
+      <input id="titleInput" type="text" placeholder="タイトル">
+      <input id="tagsInput" type="text" placeholder="タグ（カンマ区切り）">
+    </section>
+
+    <nav class="qm-toolbar" aria-label="書式と入力">
+      <button type="button" data-command="bold" title="太字"><b>B</b></button>
+      <button type="button" data-command="italic" title="斜体"><i>I</i></button>
+      <button type="button" data-command="underline" title="下線"><u>U</u></button>
+      <button type="button" data-command="insertUnorderedList" title="箇条書き">•</button>
+      <button type="button" data-command="removeFormat" title="書式解除">Tx</button>
+      <span class="qm-sep"></span>
+      <button id="speechBtn" type="button" title="音声入力">音声</button>
+      <button id="drawToggleBtn" type="button" title="ペン入力">ペン</button>
+      <label class="qm-color" title="色"><input id="colorInput" type="color" value="#4ec9b0"></label>
+      <input id="widthInput" type="range" min="2" max="24" value="4" title="線幅">
+      <button id="markerBtn" type="button" title="マーカー">マーカー</button>
+      <button id="fillBtn" type="button" title="薄く塗る">塗り</button>
+      <button id="eraserBtn" type="button" title="消しゴム">消しゴム</button>
+      <button id="clearDrawingBtn" type="button" title="手書きを消去">消去</button>
+    </nav>
+
+    <section class="qm-surface">
+      <div id="editor" class="qm-editor" contenteditable="true" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
+      <canvas id="drawingCanvas" class="qm-canvas" aria-label="手書きメモ"></canvas>
+    </section>
+  </main>
+
+  <script src="quick-memo.js"></script>
+</body>
+</html>

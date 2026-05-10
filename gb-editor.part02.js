@@ -880,8 +880,8 @@ async function loadLinkDict() {
   }
 }
 
-function applyAutoLinks(html, filePath) {
-  if (typeof MeldexAutoLink !== 'undefined') return MeldexAutoLink.applyToHtml(html, filePath);
+function applyAutoLinks(html, filePath, options = {}) {
+  if (typeof MeldexAutoLink !== 'undefined') return MeldexAutoLink.applyToHtml(html, filePath, options);
   return html;
 }
 

@@ -65,7 +65,7 @@ async function showSettingsModal(opts) {
   opts = opts || {};
   // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
-  const settingsTabs = ['全般','テーマ','LLM','LLMコスト','Discord Bot','ユーザー','拡張機能','ショートカット','ゴミ箱','データベース','フィードバック'];
+  const settingsTabs = ['全般','テーマ','LLM','LLMコスト','Discord Bot','ユーザー','取り込み','拡張機能','ショートカット','ゴミ箱','データベース','フィードバック'];
   const settingsTabLabels = {
     'LLM': 'チャットAI',
     'LLMコスト': 'AI使用量',
@@ -78,6 +78,7 @@ async function showSettingsModal(opts) {
     'LLMコスト': 'coins',
     'Discord Bot': 'messageCircle',
     'ユーザー': 'user',
+    '取り込み': 'download',
     '拡張機能': 'blocks',
     'ショートカット': 'keyboard',
     'ゴミ箱': 'trash2',
@@ -125,13 +126,13 @@ async function showSettingsModal(opts) {
     <!-- モバイル: セクションリスト -->
     ${_isMobile ? `<div id="settings-nav-list" style="overflow-y:auto;flex:1;">
       ${settingsTabs.map(t =>
-        `<div class="settings-nav-item" data-target="${t}" data-action="_openSettingsSection('${t}')">${settingsTabLabel(t)}</div>`
+        `<div class="settings-nav-item" data-target="${t}" data-e2e-id="settings-mobile-tab-${esc(t)}" data-action="_openSettingsSection('${t}')">${settingsTabLabel(t)}</div>`
       ).join('')}
     </div>` : ''}
     ${!_isMobile ? `<div class="settings-desktop-layout" style="display:flex;min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--border);">
       <nav id="settings-tab-header" class="settings-sidebar" aria-label="設定カテゴリ" style="width:176px;flex:0 0 176px;padding:12px 10px 12px 0;margin-right:14px;border-right:1px solid var(--border);overflow-y:auto;">
       ${settingsTabs.map((t,i) =>
-        `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${i===0?' gb-inner-tab-active active':''}" data-tab="${t}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
+        `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${i===0?' gb-inner-tab-active active':''}" data-tab="${t}" data-e2e-id="settings-tab-${esc(t)}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
       ).join('')}
       </nav>
       <div class="settings-desktop-panel" style="min-width:0;flex:1;display:flex;flex-direction:column;">` : ''}
@@ -157,11 +158,10 @@ async function showSettingsModal(opts) {
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('archive',14)} サンプルデータ</div>
-        <div class="gb-section-desc">サンプル作品は本体とは別配布です。ZIPを展開し、できた「サンプル」フォルダをソースフォルダ内へ置くか、ソースフォルダとして追加してください。</div>
+        <div class="gb-section-desc">ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません。</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleDownload()">${lucide('download',14)} サンプルをダウンロード</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-action="addOutlinerRootFromSettings()">${lucide('folderPlus',14)} ソースフォルダに追加</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
@@ -404,8 +404,23 @@ async function showSettingsModal(opts) {
         <div id="settings-file-lock-list"><div class="gb-section-desc">このタブを開いた時に読み込みます</div></div>
       </section>
     </div>
+    <!-- 取り込み -->
+    <div class="settings-panel" data-panel="取り込み" hidden>
+      <div id="external-import-settings-container">
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">${lucide('download',14)} 外部ノート取り込み</div>
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </section>
+      </div>
+    </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('bookmark',14)} Xブックマーク保存</div>
+        <div id="x-bookmarks-settings-container">
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </div>
+      </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('blocks',14)} Web Clipper</div>
         <div class="gb-section-desc">Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の <code>Web Clipper</code> フォルダです。</div>
@@ -951,6 +966,7 @@ async function _changeHomeFolder() {
     document.getElementById('modal-home-folder').value = path;
     renderHomeFolderTree();
     showStatus('ホームフォルダを変更しました');
+    window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'home-folder-changed', homePath: path });
   }
 }
 

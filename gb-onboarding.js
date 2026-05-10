@@ -86,11 +86,10 @@
     }
     if (state.step === 2) {
       return `<h2 style="margin:0 0 10px;">サンプルデータ</h2>
-        <p style="line-height:1.7;color:var(--fg2);">サンプル作品は本体とは別配布です。必要な場合だけダウンロードし、展開した「サンプル」フォルダをソースフォルダへ入れるか追加してください。</p>
+        <p style="line-height:1.7;color:var(--fg2);">必要な場合だけ、ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
         <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
-          <button class="gb-btn gb-btn-sm" data-onboarding-action="sample-download">${lucide('download',14)} サンプルをダウンロード</button>
+          <button class="gb-btn gb-btn-sm" data-onboarding-action="sample-install">${lucide('archive',14)} サンプルを追加</button>
           <button class="gb-btn gb-btn-sm" data-onboarding-action="sample-guide">${lucide('bookOpen',14)} 取り込み手順</button>
-          <button class="gb-btn gb-btn-sm" data-onboarding-action="add-source">${lucide('folderPlus',14)} ソースフォルダを追加</button>
         </div>`;
     }
     return `<h2 style="margin:0 0 10px;">同意と最初のノート</h2>
@@ -174,6 +173,7 @@
       return;
     }
     else if (action === 'sample-download') { _openSampleDownload(); return; }
+    else if (action === 'sample-install') { await window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'onboarding-samples', homePath: _homePath() }); return; }
     else if (action === 'sample-guide') { _openSampleGuide(); return; }
     else if (action === 'consent') { window.MeldexBetaRelease?.showConsentDialog?.({ force: !window.MeldexBetaRelease?.hasConsent?.() }); return; }
     else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(); return; }

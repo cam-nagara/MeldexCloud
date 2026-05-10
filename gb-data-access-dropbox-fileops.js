@@ -58,6 +58,28 @@
     }
   }
 
+  async function _deleteOutlinerPathToTrash(provider, rawPath) {
+    const targetPath = _normalizeFolderPath(rawPath || '');
+    const source = await _resolveEntryHandle(provider, targetPath);
+    if (!source) return { ok: true };
+    await _directoryHandle(provider, PWA_TRASH_DIR, true);
+    const originalName = _basename(targetPath);
+    const split = _splitNameAndExt(originalName);
+    let destName = originalName;
+    let destPath = _joinPath(PWA_TRASH_DIR, destName);
+    for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
+      destName = source.kind === 'file'
+        ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
+        : `${originalName}_${String(counter).padStart(4, '0')}`;
+      destPath = _joinPath(PWA_TRASH_DIR, destName);
+    }
+    await _moveEntry(provider, targetPath, destPath);
+    await provider.writeJson(destPath + '._trash_meta.json', { original_path: targetPath, deleted_at: new Date().toISOString() });
+    _removeStoredPathEntries(targetPath, source.kind === 'directory');
+    await _runPathMutationHooks({ action: 'delete', path: targetPath, isFolder: source.kind === 'directory', trashPath: destPath });
+    return { ok: true, trash_name: destName };
+  }
+
   async function _findPathByFileId(provider, fileId) {
     const wanted = String(fileId || '').trim();
     if (!wanted) return '';
@@ -1355,25 +1377,21 @@
 
     if (pathname === '/outliner/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      const targetPath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, targetPath);
-      if (!source) return { ok: true };
-      await _directoryHandle(provider, PWA_TRASH_DIR, true);
-      const originalName = _basename(targetPath);
-      const split = _splitNameAndExt(originalName);
-      let destName = originalName;
-      let destPath = _joinPath(PWA_TRASH_DIR, destName);
-      for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-        destName = source.kind === 'file'
-          ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
-          : `${originalName}_${String(counter).padStart(4, '0')}`;
-        destPath = _joinPath(PWA_TRASH_DIR, destName);
+      return _deleteOutlinerPathToTrash(provider, body?.path || '');
+    }
+
+    if (pathname === '/outliner/delete-batch' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const items = Array.isArray(body?.items) ? body.items : [];
+      const results = [];
+      for (const item of items) {
+        try {
+          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item?.path || '') });
+        } catch (error) {
+          results.push({ ok: false, error: error?.message || String(error) });
+        }
       }
-      await _moveEntry(provider, targetPath, destPath);
-      await provider.writeJson(destPath + '._trash_meta.json', { original_path: targetPath, deleted_at: new Date().toISOString() });
-      _removeStoredPathEntries(targetPath, source.kind === 'directory');
-      await _runPathMutationHooks({ action: 'delete', path: targetPath, isFolder: source.kind === 'directory', trashPath: destPath });
-      return { ok: true, trash_name: destName };
+      return { ok: true, results };
     }
 
     if (pathname === '/outliner/restore' && method === 'POST') {

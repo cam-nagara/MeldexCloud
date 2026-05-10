@@ -1547,7 +1547,7 @@ function _renderMiniCalendar(sidebar,dbPath,events) {
   const curDate=getCalendarDate(dbPath);const y=curDate.getFullYear(),m=curDate.getMonth();
   const box=document.createElement('div');box.style.cssText='background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:6px;';
   const hdr=document.createElement('div');hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
-  hdr.innerHTML=`<button class="tl-nav-btn" style="padding:0 4px;">${lucide('chevronLeft', 12)}</button><span style="font-size:11px;font-weight:bold;">${y}年${m+1}月</span><button class="tl-nav-btn" style="padding:0 4px;">${lucide('chevronRight', 12)}</button>`;
+  hdr.innerHTML=`<button class="tl-nav-btn" type="button" data-e2e-id="calendar-mini-prev-month" aria-label="前の月" title="前の月" style="padding:0 4px;">${lucide('chevronLeft', 12)}</button><span style="font-size:11px;font-weight:bold;">${y}年${m+1}月</span><button class="tl-nav-btn" type="button" data-e2e-id="calendar-mini-next-month" aria-label="次の月" title="次の月" style="padding:0 4px;">${lucide('chevronRight', 12)}</button>`;
   hdr.children[0].addEventListener('click', ()=>{const d=getCalendarDate(dbPath);d.setMonth(d.getMonth()-1);setCalendarDate(dbPath,d);renderCalendar();});
   hdr.children[2].addEventListener('click', ()=>{const d=getCalendarDate(dbPath);d.setMonth(d.getMonth()+1);setCalendarDate(dbPath,d);renderCalendar();});
   box.appendChild(hdr);

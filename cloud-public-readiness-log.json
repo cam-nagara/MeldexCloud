@@ -1,7 +1,7 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-05-09T20:36:13.246885+00:00",
-  "semver": "0.5.442",
+  "generatedAt": "2026-05-10T06:41:08.269989+00:00",
+  "semver": "0.5.448",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
   "automatedGateSummary": {
@@ -9,13 +9,13 @@
     "cloudSampleSeedBundled": true,
     "serverFilesExcludedByBuilder": true,
     "secretNamedFilesExcludedByBuilder": true,
-    "requiredPublicEnvSourcesPresent": true,
+    "requiredPublicEnvSourcesPresent": false,
     "externalValuesAreNotWrittenInThisLog": true
   },
   "externalValueSources": {
     "cloudPublicUrl": {
       "source": "MELDEX_CLOUD_PUBLIC_URL",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "cloudBackupUrl": {
@@ -45,32 +45,32 @@
     },
     "desktopDownloadUrl": {
       "source": "MELDEX_DESKTOP_DOWNLOAD_URL",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "desktopReleasesUrl": {
       "source": "MELDEX_DESKTOP_RELEASES_URL",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "desktopVersion": {
       "source": "MELDEX_DESKTOP_VERSION",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "desktopVersionsJson": {
       "source": "MELDEX_DESKTOP_VERSIONS_JSON",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "sampleDownloadUrl": {
       "source": "MELDEX_SAMPLE_DOWNLOAD_URL",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "dropboxDeveloperAppKey": {
       "source": "MELDEX_DROPBOX_APP_KEY",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     }
   },
@@ -97,11 +97,11 @@
     }
   ],
   "artifactHashes": {
-    "Meldex.html": "26ab3af9264ac811412744621c93db30b03bd260a48efdd19bdff5216ad0fb43",
+    "Meldex.html": "e6dcdc3b906399852b976afa2c100f42857ac3aa39106bf88cd65fb0b35d626f",
     "manifest.json": "0a967cbe14d6a3114ad16f77984f153b3813d2676247705e4e82b4d71b4dd98f",
     "sw.js": "39d0038c8c766a221be61a4200fe40e62c55ecb0c134439d7f34c27c89c0b5da",
     "gb-config.js": "98f42791049e1c508d62d85243c6992244f7aa9e4a2b5c9443dd3b92ff94c865",
-    "gb-cloud-runtime-config.js": "d69984558e2915d1a2860e8b30f3ca5f3fec58ed86ced92827a305fed4185f73",
-    "cloud-samples/manifest.json": "f6d1a38fb9cabc3963423c800b76551fdc1b6a86cbe72459181727c7d0ebd474"
+    "gb-cloud-runtime-config.js": "107bd7b0fd1e8576d6176a2c885eabca04cd46a7c5e1ee0ee1ef6b7652a0f357",
+    "cloud-samples/manifest.json": "08d5b6f9ae80571b04933261526e35fe20592650891c524fd6cfcbe1147aa5be"
   }
 }

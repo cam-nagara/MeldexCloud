@@ -65,6 +65,58 @@
     }
   }
 
+  function _isCommentLayerEnabled(options) {
+    if (options?.force) return true;
+    if (typeof MeldexDisplayLayers === 'undefined') return true;
+    return MeldexDisplayLayers.isEnabled('comments');
+  }
+
+  function _clearCommentLayer(containerEl) {
+    if (!containerEl) return;
+    try { _clearNoteCommentHighlights(containerEl); } catch {}
+    containerEl.querySelectorAll('.cmt-badge,.cmt-cal-badge').forEach(el => el.remove());
+    containerEl.querySelectorAll('.cmt-line-highlight').forEach(el => el.classList.remove('cmt-line-highlight'));
+    containerEl.querySelectorAll('.bd-comment-hud').forEach(hud => {
+      try { _updateBoardCommentHud(hud, 0); } catch {}
+    });
+  }
+
+  function _activeCommentCount(items) {
+    return (items || []).filter(a => !a.orphan && !a.resolved && !a.data?.deleted).length;
+  }
+
+  function _setToolbarIndicator(filePath, count) {
+    document.querySelectorAll('[data-display-layer="comments"]').forEach(btn => {
+      btn.dataset.commentIndicatorPath = filePath || '';
+      let badge = btn.querySelector(':scope > .display-layer-badge');
+      if (count <= 0) {
+        if (badge) badge.remove();
+        return;
+      }
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'display-layer-badge';
+        badge.style.cssText = 'position:absolute;top:2px;right:2px;min-width:7px;height:7px;padding:0 2px;border-radius:999px;background:var(--accent,#4a90e2);box-shadow:0 0 0 1px var(--bg2);font-size:9px;line-height:10px;color:var(--ui-fg-strong);pointer-events:none;';
+        btn.style.position = btn.style.position || 'relative';
+        btn.appendChild(badge);
+      }
+      badge.textContent = count > 9 ? '9+' : '';
+      badge.title = count + '件の未解決コメント';
+    });
+  }
+
+  async function refreshFileIndicator(filePath) {
+    if (!filePath) {
+      _setToolbarIndicator('', 0);
+      return;
+    }
+    const requestPath = filePath;
+    const items = await fetchComments(filePath);
+    const currentPage = (typeof state !== 'undefined' && state.currentPagePath) || '';
+    if (currentPage && currentPage !== requestPath) return;
+    _setToolbarIndicator(requestPath, _activeCommentCount(items));
+  }
+
   // コメント一覧から target_kind + アンカー別の未解決件数マップを構築
   function buildCountMap(items) {
     const m = {
@@ -198,8 +250,12 @@
     });
   }
 
-  async function refreshNote(filePath, containerEl) {
+  async function refreshNote(filePath, containerEl, options) {
     if (!containerEl || !filePath) return;
+    if (!_isCommentLayerEnabled(options)) {
+      _clearCommentLayer(containerEl);
+      return;
+    }
     const items = await fetchComments(filePath);
     _clearNoteCommentHighlights(containerEl);
     _applyNoteCommentHighlights(filePath, containerEl, items);
@@ -213,8 +269,12 @@
     });
   }
 
-  async function refreshScriptnote(filePath, hostEl) {
+  async function refreshScriptnote(filePath, hostEl, options) {
     if (!hostEl || !filePath) return;
+    if (!_isCommentLayerEnabled(options)) {
+      _clearCommentLayer(hostEl);
+      return;
+    }
     const items = await fetchComments(filePath);
     const counts = buildCountMap(items).scriptnote_line;
     hostEl.querySelectorAll('.sn2-row[data-row-id]').forEach(row => {
@@ -227,6 +287,10 @@
 
   async function refreshBoard(filePath, containerEl, options) {
     if (!containerEl || !filePath) return;
+    if (!_isCommentLayerEnabled(options)) {
+      _clearCommentLayer(containerEl);
+      return;
+    }
     const started = typeof bdPerfStart === 'function' ? bdPerfStart('CommentBadges.refreshBoard') : 0;
     const items = await fetchComments(filePath);
     const counts = buildCountMap(items).board_card;
@@ -286,8 +350,12 @@
   // Audit-P1 H-6 (残作業): カレンダーイベント要素にコメントバッジを描画する。
   // calendar_event コメントは ev.calendar_id をキーにして保存されるため、
   // カレンダーコンポーネントから見えるイベントの calendar_id 一覧を走査して一括取得する。
-  async function refreshCalendar(containerEl) {
+  async function refreshCalendar(containerEl, options) {
     if (!containerEl) return;
+    if (!_isCommentLayerEnabled(options)) {
+      _clearCommentLayer(containerEl);
+      return;
+    }
     const evEls = [...containerEl.querySelectorAll('.gb-cal-day-event[data-event-id]')];
     if (!evEls.length) return;
     // calendar_id の一覧を抽出
@@ -334,8 +402,12 @@
     });
   }
 
-  async function refreshSheet(filePath, containerEl) {
+  async function refreshSheet(filePath, containerEl, options) {
     if (!containerEl || !filePath) return;
+    if (!_isCommentLayerEnabled(options)) {
+      _clearCommentLayer(containerEl);
+      return;
+    }
     const items = await fetchComments(filePath);
     const counts = buildCountMap(items).sheet_cell;
     // renderPivot 準拠: tr[data-entity-name] > td[data-prop-name]
@@ -769,6 +841,7 @@
     refreshNote, refreshScriptnote, refreshBoard, refreshSheet, refreshCalendar,
     refreshVisibleCalendar: refreshVisibleCalendarCommentBadges,
     invalidate, fetchComments, buildCountMap,
+    refreshFileIndicator,
     detectCommentContext, addCommentHere, openPanelForFileComments,
     openPanelForTarget: _openPanelForTarget,
   };

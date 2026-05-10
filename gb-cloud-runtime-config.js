@@ -2,10 +2,10 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.5.442",
+    "semver": "0.5.448",
     "variant": "cloud-beta"
   },
-  "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
+  "cloudPublicUrl": "",
   "cloudBackupUrl": "",
   "betaFeedback": {
     "googleWebAppUrl": "",
@@ -16,16 +16,16 @@
     "pageUrl": ""
   },
   "desktop": {
-    "currentVersion": "v0.5.442 BETA",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
-    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
+    "currentVersion": "0.5.448",
+    "downloadUrl": "",
+    "releasesUrl": "",
     "versions": []
   },
   "samples": {
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases"
+    "downloadUrl": ""
   },
   "dropbox": {
-    "developerAppKey": "ovxy3vacegzu7nu"
+    "developerAppKey": ""
   }
 };
   window.MeldexCloudRuntimeConfig = Object.freeze({

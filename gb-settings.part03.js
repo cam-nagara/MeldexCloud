@@ -1193,6 +1193,7 @@ const _SETTINGS_PANEL_INIT_DATA_KEYS = {
   'Discord Bot': 'settingsInitDiscordBot',
   'フィードバック': 'settingsInitFeedbackForm',
   'ユーザー': 'settingsInitUsers',
+  '取り込み': 'settingsInitExternalImport',
   '拡張機能': 'settingsInitExtensions',
   'ショートカット': 'settingsInitShortcuts',
   'ゴミ箱': 'settingsInitTrash',
@@ -1246,7 +1247,12 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
       if (typeof loadFileLockListForSettings === 'function') loadFileLockListForSettings();
       return;
     }
+    if (canonical === '取り込み') {
+      if (typeof renderExternalImportSettings === 'function') renderExternalImportSettings(modal);
+      return;
+    }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
+      if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
       if (typeof renderNotionSyncSettings === 'function') renderNotionSyncSettings(modal);
       if (typeof loadWebClipperSetupForSettings === 'function') loadWebClipperSetupForSettings();
       _loadExtensionStatus();

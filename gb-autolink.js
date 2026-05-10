@@ -4,6 +4,87 @@
  * マッチングロジック、HTML文字列版・DOM直接操作版、リンク辞書管理を統一。
  * ノート、台本、DB、ボード、詳細パネルで同じマッチング結果を保証する。
  */
+const MeldexDisplayLayers = window.MeldexDisplayLayers || (() => {
+  const STORAGE_KEY = 'meldex.displayLayers.v1';
+  const DEFAULTS = { autoLinks: false, comments: false };
+  let _state = null;
+
+  function _read() {
+    if (_state) return _state;
+    try {
+      const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      _state = { ...DEFAULTS, ...raw };
+    } catch {
+      _state = { ...DEFAULTS };
+    }
+    return _state;
+  }
+
+  function _write(next) {
+    _state = { ...DEFAULTS, ...next };
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(_state)); } catch {}
+    refreshControls();
+    try { window.dispatchEvent(new CustomEvent('meldex-display-layers-change', { detail: { ..._state } })); } catch {}
+  }
+
+  function isEnabled(layer) {
+    const state = _read();
+    if (layer === 'autoLinks') return !!state.autoLinks;
+    if (layer === 'comments') return !!state.comments;
+    return false;
+  }
+
+  function _reloadCurrentView() {
+    try {
+      if (typeof reloadCurrentOpenFile === 'function') {
+        reloadCurrentOpenFile();
+        return;
+      }
+    } catch {}
+    try {
+      if (typeof state !== 'undefined' && state.currentPagePath && typeof openPage === 'function') {
+        openPage(document.getElementById('page-title')?.textContent || state.currentPagePath, state.currentPagePath, { skipNavPush: true });
+      }
+    } catch {}
+  }
+
+  function setLayer(layer, enabled, options = {}) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULTS, layer)) return;
+    const next = { ..._read(), [layer]: !!enabled };
+    _write(next);
+    if (!options.silent) _reloadCurrentView();
+  }
+
+  function toggleLayer(layer) {
+    setLayer(layer, !isEnabled(layer));
+  }
+
+  function refreshControls() {
+    const state = _read();
+    document.querySelectorAll('[data-display-layer]').forEach(btn => {
+      const layer = btn.dataset.displayLayer;
+      const enabled = !!state[layer];
+      btn.classList.toggle('active', enabled);
+      btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      const label = layer === 'autoLinks' ? '自動リンク' : 'コメント表示';
+      btn.title = `${label}: ${enabled ? 'オン' : 'オフ'}`;
+    });
+  }
+
+  function scheduleIdle(fn, timeout = 800) {
+    if (typeof requestIdleCallback === 'function') {
+      return requestIdleCallback(fn, { timeout });
+    }
+    return setTimeout(fn, 0);
+  }
+
+  document.addEventListener('DOMContentLoaded', refreshControls);
+  setTimeout(refreshControls, 0);
+
+  return { getState: () => ({ ..._read() }), isEnabled, setLayer, toggleLayer, refreshControls, scheduleIdle };
+})();
+window.MeldexDisplayLayers = MeldexDisplayLayers;
+
 const MeldexAutoLink = (() => {
   // ── リンク辞書 ──
   let _linkDict = [];
@@ -84,7 +165,8 @@ const MeldexAutoLink = (() => {
   }
 
   // ── HTML文字列版（ノート、ボード、詳細パネル用） ──
-  function applyToHtml(html, filePath) {
+  function applyToHtml(html, filePath, options = {}) {
+    if (!options.force && !MeldexDisplayLayers.isEnabled('autoLinks')) return html;
     if (!html || _linkDict.length === 0) return html;
 
     if (!_isInWorkFolderScope(filePath)) return html;
@@ -96,7 +178,8 @@ const MeldexAutoLink = (() => {
   }
 
   // ── DOM直接操作版（台本用） ──
-  function applyToDom(el, filePath) {
+  function applyToDom(el, filePath, options = {}) {
+    if (!options.force && !MeldexDisplayLayers.isEnabled('autoLinks')) return;
     if (!el || _linkDict.length === 0) return;
     if (!_isInWorkFolderScope(filePath)) return;
     // 既存の自動リンクを除去（再適用時の二重表示を防止）

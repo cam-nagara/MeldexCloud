@@ -84,6 +84,33 @@ function _prepareOutlinerDeleteTargets(items) {
 }
 
 async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
+  const batchTargets = (Array.isArray(targets) ? targets : []).filter(item => item && item.path);
+  if (batchTargets.length) {
+    try {
+      const payload = await apiPost('/outliner/delete-batch', {
+        items: batchTargets.map(item => ({ path: item.path })),
+      });
+      const batchResults = Array.isArray(payload?.results) ? payload.results : [];
+      if (batchResults.length === batchTargets.length) {
+        return batchResults.map((entry, index) => {
+          const item = batchTargets[index];
+          if (entry?.ok) {
+            const value = entry.value || { ok: true };
+            const trashRef = _outlinerTrashRefFromResponse(value);
+            if (trashRef && typeof options.onSuccess === 'function') {
+              try { options.onSuccess(item, value); } catch {}
+            }
+            return { status: 'fulfilled', value };
+          }
+          const reason = entry?.detail || entry?.error || '削除に失敗しました';
+          if (typeof options.onFailure === 'function') {
+            try { options.onFailure(item, reason); } catch {}
+          }
+          return { status: 'rejected', reason };
+        });
+      }
+    } catch {}
+  }
   const results = [];
   for (const item of targets) {
     try {

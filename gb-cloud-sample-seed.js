@@ -109,19 +109,20 @@
     await provider.ensureDirectory(normalized);
   }
 
-  async function prepareHome() {
+  async function prepareHome(options) {
     if (_preparePromise) return _preparePromise;
     _preparePromise = (async () => {
       if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
       const provider = _provider();
       if (!provider) return { ok: false, skipped: 'missing-provider' };
+      const opts = options || {};
       const manifest = await _readManifest();
       const targetRoot = _normalizePath(manifest.targetRoot);
       const homePath = targetRoot.split('/')[0] || 'MeldexHome';
       const canWrite = await _hasWritePermission(provider);
       if (canWrite) {
         await _ensureDirectory(provider, homePath);
-        await _ensureDirectory(provider, targetRoot);
+        if (opts.createSampleRoot) await _ensureDirectory(provider, targetRoot);
         _rememberHome(homePath);
         return { ok: true, homePath, targetRoot, writable: true };
       }
@@ -132,6 +133,25 @@
       _preparePromise = null;
     });
     return _preparePromise;
+  }
+
+  async function status() {
+    if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+    const provider = _provider();
+    if (!provider) return { ok: false, skipped: 'missing-provider' };
+    const manifest = await _readManifest();
+    const targetRoot = _normalizePath(manifest.targetRoot);
+    const meta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
+    const sampleRoot = await _statPath(provider, targetRoot);
+    const failed = Number(meta?.failed || 0);
+    return {
+      ok: true,
+      targetRoot,
+      hasSampleFolder: sampleRoot?.kind === 'directory',
+      hasInstallMeta: !!meta,
+      installed: !!meta && failed === 0,
+      meta,
+    };
   }
 
   async function _sha256Hex(bytes) {
@@ -213,7 +233,8 @@
     const manifest = await _readManifest();
     const canWrite = await _hasWritePermission(provider);
     if (!canWrite) return { ok: false, skipped: 'readonly' };
-    await prepareHome();
+    await prepareHome({ createSampleRoot: true });
+    await _ensureDirectory(provider, _normalizePath(manifest.targetRoot));
     const result = await _copyMissingEntries(provider, manifest);
     await _writeSeedMeta(provider, manifest, result);
     if (typeof refreshOutliner === 'function') {
@@ -253,6 +274,7 @@
   window.MeldexCloudSampleSeed = {
     prepareHome,
     ensure,
+    status,
     _readManifestForTest: _readManifest,
   };
 })();

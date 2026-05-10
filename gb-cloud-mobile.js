@@ -294,7 +294,8 @@
     const visualTop = Math.max(0, Math.round(window.visualViewport?.offsetTop || 0));
     tabBars.forEach((tabBar) => {
       const rect = tabBar.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 && rect.top <= visualTop + 2) {
+      const hasTreeBack = !!tabBar.querySelector('.cloud-mobile-pane-tree-back:not([hidden])');
+      if (rect.width > 0 && rect.height > 0 && (hasTreeBack || rect.top <= visualTop + 2)) {
         tabBar.classList.add('cloud-mobile-safe-top-bar');
       }
     });

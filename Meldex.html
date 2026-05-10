@@ -186,11 +186,13 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <script src="gb-cloud-fetch.js"></script>
 <script src="gb-cloud-file-url.js"></script>
 <script src="gb-cloud-sample-seed.js"></script>
+<script src="gb-sample-installer.js"></script>
 <script src="gb-cloud-bootstrap.js"></script>
 <script src="gb-cloud-mobile.js"></script>
 <script src="gb-cloud-conflict-resolver.js"></script>
 <script src="vendor/lucide-icons.js"></script>
 <script src="meldex-core.js"></script>
+<script src="gb-quick-memo-sync.js"></script>
 <script src="noto-emoji-data.js"></script>
 <script src="vendor/icon-annotations.js"></script>
 <script src="gb-icon-assets.js"></script>
@@ -528,6 +530,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <button class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-panelLeft"></span></button>
         <button class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" data-action="toggleNoteVertical()"><span class="ico ico-kanban"></span></button>
         <button class="tb-icon-btn" id="btn-heading-indent" title="見出しインデント表示" data-action="toggleHeadingIndent()"><span class="ico ico-indentIncrease"></span></button>
+        <button class="tb-icon-btn" data-display-layer="autoLinks" aria-pressed="false" title="自動リンク: オフ" data-action="MeldexDisplayLayers.toggleLayer('autoLinks')"><span class="ico ico-externalLink"></span></button>
+        <button class="tb-icon-btn" data-display-layer="comments" aria-pressed="false" title="コメント表示: オフ" data-action="MeldexDisplayLayers.toggleLayer('comments')"><span class="ico ico-messageSquare"></span></button>
         <div class="sep"></div>
         <button class="tb-icon-btn" title="太字 (Ctrl+B)" data-action="rtCmd('bold')" data-e2e-id="page-rt-bold"><span class="ico ico-bold"></span></button>
         <button class="tb-icon-btn" title="斜体 (Ctrl+I)" data-action="rtCmd('italic')" data-e2e-id="page-rt-italic"><span class="ico ico-italic"></span></button>
@@ -919,6 +923,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <script src="gb-current-reload.js"></script>
 <script src="gb-current-reveal.js"></script>
 <script src="gb-notion-sync.js"></script>
+<script src="gb-settings-x-bookmarks.js"></script>
+<script src="gb-external-import.js"></script>
 <script src="gb-autolink.js"></script>
 <script src="gb-editor.js"></script>
 <script src="gb-detail-property-layout-editor.js"></script>

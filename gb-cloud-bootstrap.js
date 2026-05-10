@@ -738,9 +738,7 @@
         await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
           console.warn('[MeldexCloudBootstrap] sample home preparation failed', err);
         });
-        window.MeldexCloudSampleSeed?.ensure?.({ background: true }).catch((err) => {
-          console.warn('[MeldexCloudBootstrap] sample seed scheduling failed', err);
-        });
+        window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'cloud-dropbox-ready' });
         _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' });
         if (preflight.access === 'viewer') {
           document.body.dataset.cloudReadonly = '1';
