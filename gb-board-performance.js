@@ -151,11 +151,13 @@ function bdFastNodeById(nodeId) {
 
 function bdFastChildren(parentId) {
   if (typeof bd === 'undefined') return [];
-  return bd.nodes.filter(node => node?.parent === parentId);
+  return bd.nodes.filter(node => node?.parent === parentId && !node.contained);
 }
 
 function bdFastSubtreeIds(rootId) {
   if (typeof bd === 'undefined' || !rootId) return [];
+  const root = bdFastNodeById(rootId);
+  if (!root || root.contained) return [];
   const result = [];
   const stack = [rootId];
   const seen = new Set();
@@ -163,6 +165,8 @@ function bdFastSubtreeIds(rootId) {
     const id = stack.pop();
     if (!id || seen.has(id)) continue;
     seen.add(id);
+    const node = bdFastNodeById(id);
+    if (!node || node.contained) continue;
     result.push(id);
     bdFastChildren(id).forEach(child => stack.push(child.id));
   }
@@ -171,7 +175,7 @@ function bdFastSubtreeIds(rootId) {
 
 function bdFastNodeBounds(nodeOrId) {
   const node = typeof nodeOrId === 'string' ? bdFastNodeById(nodeOrId) : nodeOrId;
-  if (!node) return null;
+  if (!node || node.contained) return null;
   const el = typeof document !== 'undefined' ? document.getElementById('bdn-' + node.id) : null;
   const x = Number(node.x) || 0;
   const y = Number(node.y) || 0;
@@ -286,19 +290,31 @@ function bdApplySiblingDifferentialLayout(options = {}) {
   return { applied: true, movedIds: [...movedIds], axis };
 }
 
-function bdExpandConnectionIdsForSharedPairs(connIds) {
+function bdExpandConnectionIdsForSharedPairs(connIds, previousEndpointPairs) {
   const ids = new Set(connIds || []);
   if (typeof bd === 'undefined' || !ids.size) return ids;
   const keyOf = (conn, side) => (typeof bdConnectionEndpointKey === 'function')
     ? bdConnectionEndpointKey(conn, side)
     : (side === 'from' ? ('node:' + (conn?.from || '')) : ('node:' + (conn?.to || '')));
   const pairKeys = new Set();
+  const addPair = (a, b) => {
+    if (!a || !b || a === 'none' || b === 'none') return;
+    pairKeys.add(`${a}\u0000${b}`);
+    pairKeys.add(`${b}\u0000${a}`);
+  };
+  const extraPairs = Array.isArray(previousEndpointPairs) || previousEndpointPairs instanceof Set ? [...previousEndpointPairs] : [];
+  extraPairs.forEach(pair => {
+    if (typeof pair === 'string') {
+      pairKeys.add(pair);
+      return;
+    }
+    addPair(pair?.fromKey || pair?.from, pair?.toKey || pair?.to);
+  });
   bd.connections.forEach(conn => {
     if (!ids.has(conn.id)) return;
     const a = keyOf(conn, 'from');
     const b = keyOf(conn, 'to');
-    pairKeys.add(`${a}\u0000${b}`);
-    pairKeys.add(`${b}\u0000${a}`);
+    addPair(a, b);
   });
   if (!pairKeys.size) return ids;
   bd.connections.forEach(conn => {
@@ -310,22 +326,27 @@ function bdExpandConnectionIdsForSharedPairs(connIds) {
 function bdNormalizePartialConnectionIds(options) {
   if (typeof bd === 'undefined' || !options) return null;
   let connIds = [];
+  let previousEndpointPairs = [];
   if (typeof options === 'string') connIds = [options];
   else if (Array.isArray(options)) connIds = options;
   else if (options instanceof Set) connIds = [...options];
-  else if (options.connIds instanceof Set) connIds = [...options.connIds];
-  else if (Array.isArray(options.connIds)) connIds = options.connIds;
-  else if (options.nodeIds instanceof Set || Array.isArray(options.nodeIds)) {
-    const nodeIds = new Set([...(options.nodeIds || [])].filter(Boolean));
-    bd.connections.forEach(conn => {
-      if (nodeIds.has(conn.from) || nodeIds.has(conn.to)) connIds.push(conn.id);
-    });
-  } else {
-    return null;
+  else {
+    if (options.connIds instanceof Set) connIds = [...options.connIds];
+    else if (Array.isArray(options.connIds)) connIds = options.connIds;
+    else if (options.nodeIds instanceof Set || Array.isArray(options.nodeIds)) {
+      const nodeIds = new Set([...(options.nodeIds || [])].filter(Boolean));
+      bd.connections.forEach(conn => {
+        if (nodeIds.has(conn.from) || nodeIds.has(conn.to)) connIds.push(conn.id);
+      });
+    } else {
+      return null;
+    }
+    if (Array.isArray(options.previousEndpointPairs)) previousEndpointPairs = options.previousEndpointPairs;
+    else if (options.previousEndpointPair) previousEndpointPairs = [options.previousEndpointPair];
   }
   const ids = new Set(connIds.filter(Boolean));
   if (!ids.size) return ids;
-  return bdExpandConnectionIdsForSharedPairs(ids);
+  return bdExpandConnectionIdsForSharedPairs(ids, previousEndpointPairs);
 }
 
 function bdRemoveConnectionRender(svg, defs, connId) {

@@ -60,6 +60,17 @@
     return Number.isFinite(chunk) && chunk >= 0 ? Math.floor(chunk) : 0;
   }
 
+  function _citationBasename(path) {
+    const clean = String(path || '').split(/[?#]/)[0].replace(/[\\\/]+$/, '');
+    return clean.split(/[\\\/]/).pop() || clean || path;
+  }
+
+  function _citationExtension(path) {
+    const name = _citationBasename(path).toLowerCase();
+    const index = name.lastIndexOf('.');
+    return index >= 0 ? name.slice(index) : '';
+  }
+
   function _citationLabel(citation, index) {
     const path = _citationPath(citation);
     const title = String(citation?.title || citation?.document_title || path || '出典').trim();
@@ -71,8 +82,11 @@
   function _citationKey(citation) {
     return JSON.stringify({
       uri: citation?.uri || '',
+      url: _citationUrl(citation),
+      fileId: _citationFileId(citation),
       path: _citationPath(citation),
       line: _citationLine(citation),
+      chunk: _citationChunk(citation),
       text: citation?.cited_text || '',
     });
   }
@@ -183,9 +197,63 @@
     }
   }
 
+  async function _citationFileType(path) {
+    if (!path || typeof apiFetch !== 'function') return '';
+    try {
+      const data = await apiFetch('/check-type?path=' + encodeURIComponent(path), { silentError: true });
+      return String(data?.type || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function _citationCanOpenAsPage(path, type, ext) {
+    if (type === 'page') return true;
+    if (type && type !== 'unknown') return false;
+    return ['.md', '.markdown', '.txt'].includes(ext);
+  }
+
+  async function _openLocalChatCitation(path, citation) {
+    const label = _citationBasename(path).replace(/\.\w+$/, '') || path;
+    const lower = path.toLowerCase();
+    const ext = _citationExtension(path);
+    const type = await _citationFileType(path);
+    const opts = { fromExplorer: true, source: 'chat-citation' };
+    if (type === 'folder' && typeof openFolder === 'function') {
+      await openFolder(label, path, opts);
+    } else if (type === 'database' && typeof selectDatabase === 'function') {
+      await selectDatabase(path, null, opts);
+    } else if ((type === 'smart-db' || lower.endsWith('.smart-db.json')) && typeof openSmartDbFile === 'function') {
+      await openSmartDbFile(label, path, opts);
+    } else if ((type === 'calendar') && typeof openCalendarFile === 'function') {
+      await openCalendarFile(label, path, opts);
+    } else if ((type === 'chat') && typeof openSavedChat === 'function') {
+      await openSavedChat(path);
+    } else if ((type === 'scriptnote' || type === 'scenario' || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) && typeof openScenarioInScriptNote === 'function') {
+      openScenarioInScriptNote(path, label, opts);
+    } else if ((type === 'board' || lower.endsWith('.board.md')) && typeof openBoard === 'function') {
+      await openBoard(label, path, opts);
+    } else if (ext === '.csv' && typeof openCsvFile === 'function') {
+      await openCsvFile(label, path, opts);
+    } else if ((ext === '.html' || ext === '.htm') && typeof openHtmlFile === 'function') {
+      await openHtmlFile(label, path, opts);
+    } else if (ext === '.pdf' && typeof openViewer === 'function') {
+      openViewer('/viewer?pdf=' + encodeURIComponent(path), opts);
+    } else if (_citationCanOpenAsPage(path, type, ext) && typeof openPage === 'function') {
+      await openPage(label, path, opts);
+      setTimeout(() => _scrollPageToCitation(citation), 80);
+    } else if (typeof openNative === 'function') {
+      await openNative(path);
+    } else {
+      if (typeof showStatus === 'function') showStatus('この出典はノートとして開けません', true);
+      return false;
+    }
+    return true;
+  }
+
   async function _openChatCitation(citation) {
     const url = _citationUrl(citation);
-    if (citation?.source === 'web' && /^https?:\/\//i.test(url)) {
+    if (/^https?:\/\//i.test(url) && !_citationPath(citation) && !_citationFileId(citation)) {
       window.open(url, '_blank', 'noopener');
       return;
     }
@@ -194,23 +262,9 @@
       if (typeof showStatus === 'function') showStatus('出典ファイルを特定できません', true);
       return;
     }
-    const label = path.split('/').pop()?.replace(/\.\w+$/, '') || path;
-    const lower = path.toLowerCase();
-    const opts = { fromExplorer: true };
     try {
-      if ((lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) && typeof openScenarioInScriptNote === 'function') {
-        openScenarioInScriptNote(path, label, opts);
-      } else if (lower.endsWith('.board.md') && typeof openBoard === 'function') {
-        await openBoard(label, path, opts);
-      } else if (lower.endsWith('.csv') && typeof openCsvFile === 'function') {
-        await openCsvFile(label, path, opts);
-      } else if (lower.endsWith('.html') && typeof openHtmlFile === 'function') {
-        await openHtmlFile(label, path, opts);
-      } else if (typeof openPage === 'function') {
-        await openPage(label, path, opts);
-        setTimeout(() => _scrollPageToCitation(citation), 80);
-      }
-      if (typeof showStatus === 'function') showStatus('出典を開きました');
+      const opened = await _openLocalChatCitation(path, citation);
+      if (opened && typeof showStatus === 'function') showStatus('出典を開きました');
     } catch (e) {
       if (typeof showStatus === 'function') showStatus('出典を開けません: ' + (e?.message || e), true);
     }

@@ -61,7 +61,9 @@
   function _writeFallback(keys) {
     try {
       localStorage.setItem(FALLBACK_STORAGE_KEY, JSON.stringify(keys || {}));
-    } catch {}
+    } catch (err) {
+      throw new Error('APIキーをこの端末へ保存できませんでした。ブラウザのストレージ設定または空き容量を確認してください');
+    }
   }
 
   function _bytesToBase64(bytes) {
@@ -203,7 +205,19 @@
     };
   }
 
+  async function _requireCloudKeyApiAvailable() {
+    if (!window.MeldexDataAccess?.requestJson) {
+      throw new Error('暗号化APIキーCloud保存は、Cloud/Dropbox連携が有効な環境で利用できます');
+    }
+    const data = await window.MeldexDataAccess.requestJson('/llm-keys/cloud').catch(() => null);
+    if (!data) {
+      throw new Error('この環境では暗号化APIキーCloud保存を利用できません');
+    }
+    return data;
+  }
+
   async function saveCloudEncrypted(passphrase, keys) {
+    await _requireCloudKeyApiAvailable();
     const sourceKeys = keys ? _cleanKeyMap(keys) : await getAll();
     if (!Object.keys(sourceKeys).length) throw new Error('Cloud保存するAPIキーがありません');
     const envelope = await _encryptForCloud(sourceKeys, passphrase);
@@ -213,7 +227,7 @@
   }
 
   async function loadCloudEncrypted(passphrase, options = {}) {
-    const data = await window.MeldexDataAccess.requestJson('/llm-keys/cloud');
+    const data = await _requireCloudKeyApiAvailable();
     if (!data?.exists || !data?.envelope) throw new Error('Cloud保存APIキーが見つかりません');
     const keys = await _decryptCloudEnvelope(data.envelope, passphrase);
     if (options.importToLocal !== false) await setMany(keys);
@@ -222,6 +236,7 @@
   }
 
   async function deleteCloudEncrypted() {
+    await _requireCloudKeyApiAvailable();
     await window.MeldexDataAccess.requestJson('/llm-keys/cloud', { method: 'DELETE' });
     setSaveMode('local-device');
     return { ok: true };

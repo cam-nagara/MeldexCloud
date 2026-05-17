@@ -18,6 +18,7 @@
     recording: null,
     recordChunks: [],
     saveTimer: 0,
+    flushRequested: false,
   };
 
   document.addEventListener('DOMContentLoaded', init);
@@ -30,6 +31,7 @@
     registerServiceWorker();
     focusEditorSoon();
     setStatus('入力できます');
+    setTimeout(flushPendingQueue, 120);
   }
 
   function bindElements() {
@@ -60,6 +62,7 @@
     els.eraserBtn.addEventListener('click', () => setDrawTool('eraser'));
     els.clearDrawingBtn.addEventListener('click', clearDrawing);
     window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('online', flushPendingQueue);
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
   }
 
@@ -88,7 +91,10 @@
       const img = new Image();
       img.onload = () => {
         resizeCanvas();
-        context().drawImage(img, 0, 0, els.drawingCanvas.width, els.drawingCanvas.height);
+        const rect = els.drawingCanvas.getBoundingClientRect();
+        const width = rect.width || (els.drawingCanvas.width / Math.max(1, devicePixelRatio || 1));
+        const height = rect.height || (els.drawingCanvas.height / Math.max(1, devicePixelRatio || 1));
+        context().drawImage(img, 0, 0, width, height);
         state.hasDrawing = true;
       };
       img.src = draft.drawing_png;
@@ -126,38 +132,72 @@
 
   async function saveNow(opts) {
     const memo = collectMemo();
-    persistDraft(memo);
-    enqueueMemo(memo);
-    if (state.saving) return;
+    const storedDraft = persistDraft(memo);
+    const queued = enqueueMemo(memo);
+    if (!storedDraft || !queued) {
+      state.dirty = true;
+      setStatus('保存領域がいっぱいです', true);
+      return false;
+    }
+    state.flushRequested = true;
+    return drainQueue(opts);
+  }
+
+  async function flushPendingQueue() {
+    const queue = readJson(QUEUE_KEY, []);
+    if (!Array.isArray(queue) || !queue.length) return true;
+    state.flushRequested = true;
+    return drainQueue({ manual: false, pending: true });
+  }
+
+  async function drainQueue(opts) {
+    if (state.saving) {
+      state.flushRequested = true;
+      return false;
+    }
     state.saving = true;
     setStatus(opts && opts.manual ? '保存中...' : '自動保存中...');
     try {
-      const ok = await flushQueue();
+      let ok = false;
+      do {
+        state.flushRequested = false;
+        ok = await flushQueue();
+      } while (ok && state.flushRequested);
       state.dirty = !ok;
       setStatus(ok ? 'Meldexに保存済み' : 'Meldex起動後に自動送信');
+      return ok;
     } finally {
       state.saving = false;
     }
   }
 
   async function flushQueue() {
-    const queue = readJson(QUEUE_KEY, []);
-    if (!queue.length) return true;
-    const remaining = [];
-    for (const item of queue) {
+    const snapshot = readJson(QUEUE_KEY, []);
+    if (!Array.isArray(snapshot) || !snapshot.length) return true;
+    const sent = new Set();
+    const failed = new Set();
+    const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
+    for (const item of snapshot) {
       try {
         const result = await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
+        sent.add(item.memo_id);
         const current = readJson(CURRENT_KEY, {});
         if (current.memo_id === item.memo_id) {
           current.server_path = result.path || current.server_path || '';
           writeJson(CURRENT_KEY, current);
         }
       } catch {
-        remaining.push(item);
+        failed.add(item.memo_id);
       }
     }
-    writeJson(QUEUE_KEY, remaining);
+    const latest = readJson(QUEUE_KEY, []);
+    const remaining = (Array.isArray(latest) ? latest : []).filter((item) => {
+      if (!sent.has(item.memo_id) && !failed.has(item.memo_id)) return true;
+      if (failed.has(item.memo_id)) return true;
+      return queueItemSignature(item) !== signatures.get(item.memo_id);
+    });
+    if (!writeJson(QUEUE_KEY, remaining)) return false;
     return remaining.length === 0;
   }
 
@@ -166,11 +206,15 @@
     const idx = queue.findIndex((item) => item.memo_id === memo.memo_id);
     if (idx >= 0) queue[idx] = memo;
     else queue.push(memo);
-    writeJson(QUEUE_KEY, queue.slice(-30));
+    return writeJson(QUEUE_KEY, queue.slice(-30));
   }
 
   function persistDraft(memo) {
-    writeJson(CURRENT_KEY, memo);
+    return writeJson(CURRENT_KEY, memo);
+  }
+
+  function queueItemSignature(item) {
+    try { return JSON.stringify(item || {}); } catch { return String(item?.updated_at || item?.memo_id || ''); }
   }
 
   async function postJson(path, payload) {
@@ -364,7 +408,16 @@
 
   async function toggleRecordedTranscription() {
     if (state.recording) {
-      state.recording.stop();
+      try {
+        if (state.recording.state !== 'inactive') {
+          state.recording.stop();
+          setStatus('文字起こし準備中...');
+        }
+      } catch {
+        state.recording = null;
+        els.speechBtn.classList.remove('is-active');
+        setStatus('録音を停止できません', true);
+      }
       return;
     }
     try {
@@ -447,11 +500,27 @@
   }
 
   function writeJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function registerServiceWorker() {
     if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
-    navigator.serviceWorker.register('quick-memo-sw.js').catch(() => {});
+    const cleanupLegacyRootWorker = navigator.serviceWorker.getRegistration
+      ? navigator.serviceWorker.getRegistration('./').then((registration) => {
+        const scriptUrl = registration?.active?.scriptURL || registration?.waiting?.scriptURL || registration?.installing?.scriptURL || '';
+        if (scriptUrl.endsWith('/quick-memo-sw.js') || scriptUrl.endsWith('quick-memo-sw.js')) {
+          return registration.unregister();
+        }
+        return false;
+      }).catch(() => false)
+      : Promise.resolve(false);
+    cleanupLegacyRootWorker.finally(() => {
+      navigator.serviceWorker.register('quick-memo-sw.js', { scope: './quick-memo.html', updateViaCache: 'none' }).catch(() => {});
+    });
   }
 })();

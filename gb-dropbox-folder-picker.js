@@ -33,6 +33,10 @@
     return parts[parts.length - 1] || '/';
   }
 
+  function _displayName(path) {
+    return path === '/' ? 'Dropbox' : _basename(path);
+  }
+
   async function _listFolders(path) {
     const auth = _auth();
     if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
@@ -102,6 +106,7 @@
 
       let currentPath = _escPath(options.initialPath || '/');
       let selectedPath = currentPath;
+      let renderSeq = 0;
 
       const close = (value) => {
         document.removeEventListener('keydown', onKeydown);
@@ -114,13 +119,17 @@
       }
 
       async function render() {
-        pathText.textContent = currentPath;
-        selectedPath = currentPath;
+        const seq = ++renderSeq;
+        const renderPath = _escPath(currentPath);
+        currentPath = renderPath;
+        pathText.textContent = renderPath;
+        selectedPath = renderPath;
         list.textContent = '';
         status.textContent = '読み込み中...';
-        upButton.disabled = currentPath === '/';
+        upButton.disabled = renderPath === '/';
         try {
-          const folders = await _listFolders(currentPath === '/' ? '' : currentPath);
+          const folders = await _listFolders(renderPath);
+          if (seq !== renderSeq) return;
           list.textContent = '';
           if (!folders.length) {
             const empty = _el('div', { text: 'この階層にフォルダはありません' });
@@ -138,6 +147,7 @@
           });
           status.textContent = '現在表示しているフォルダをソースフォルダに追加できます。';
         } catch (err) {
+          if (seq !== renderSeq) return;
           list.textContent = '';
           status.textContent = err?.message || String(err);
         }
@@ -155,14 +165,19 @@
         const name = prompt('新しいフォルダ名');
         if (!name) return;
         try {
-          currentPath = await _createFolder(currentPath, name);
+          const createdPath = await _createFolder(currentPath, name);
+          if (!createdPath) {
+            status.textContent = 'フォルダ名を入力してください。';
+            return;
+          }
+          currentPath = createdPath;
           await render();
         } catch (err) {
           status.textContent = err?.message || String(err);
         }
       });
       cancelButton.addEventListener('click', () => close(null));
-      selectButton.addEventListener('click', () => close({ path: selectedPath, name: _basename(selectedPath) }));
+      selectButton.addEventListener('click', () => close({ path: selectedPath, name: _displayName(selectedPath) }));
       overlay.addEventListener('click', (event) => {
         if (event.target === overlay) close(null);
       });

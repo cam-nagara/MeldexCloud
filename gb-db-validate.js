@@ -7,8 +7,19 @@
 
 function getValidationRules(dbPath) {
   const fid = _pathToFileId(dbPath);
-  if (fid) { try { const v = localStorage.getItem('validationRules:' + fid); if (v) return JSON.parse(v); } catch {} }
-  try { return JSON.parse(localStorage.getItem('validationRules:' + dbPath)) || []; }
+  if (fid) {
+    try {
+      const v = localStorage.getItem('validationRules:' + fid);
+      if (v) {
+        const parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+    } catch {}
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem('validationRules:' + dbPath));
+    return Array.isArray(parsed) ? parsed : [];
+  }
   catch { return []; }
 }
 
@@ -23,7 +34,8 @@ function setValidationRules(dbPath, rules) {
  * 全ルールを実行し結果を返す
  */
 async function runValidation(dbPath, pivotData, propTypes) {
-  const rules = getValidationRules(dbPath).filter(r => r.enabled !== false);
+  const savedRules = getValidationRules(dbPath);
+  const rules = Array.isArray(savedRules) ? savedRules.filter(r => r && r.enabled !== false) : [];
   if (rules.length === 0) return [];
 
   const entitiesMap = pivotData.entities || {};
@@ -35,7 +47,7 @@ async function runValidation(dbPath, pivotData, propTypes) {
     try {
       switch (rule.type) {
         case 'range_check':
-          ruleResults = _validateRangeCheck(rule, entitiesMap, entityNames, dbPath);
+          ruleResults = _validateRangeCheck(rule, entitiesMap, entityNames, dbPath, propTypes);
           break;
         case 'reference_exists':
           ruleResults = await _validateReferenceExists(rule, entitiesMap, entityNames, dbPath, propTypes);
@@ -84,10 +96,57 @@ function _validationRelationNames(entityData, relationProperty, ptc) {
   return names;
 }
 
-function _validateRangeCheck(rule, entitiesMap, entityNames, dbPath) {
+function _validationRuleError(rule, message, property = '') {
+  return {
+    ruleId: rule.id,
+    ruleLabel: rule.label || rule.type || '不明なルール',
+    severity: 'error',
+    entityName: '(ルール)',
+    entityPath: '',
+    message,
+    property,
+  };
+}
+
+function _validationComparable(rawValue, ptc) {
+  const raw = rawValue == null ? '' : String(rawValue).trim();
+  if (!raw) return { ok: false, display: raw };
+  const type = ptc?.type || '';
+  const dateCandidate = type === 'date' || /^\d{4}[-/]\d{2}[-/]\d{2}/.test(raw);
+  if (dateCandidate) {
+    const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(raw) : null;
+    const dateRaw = parsed?.range ? parsed.start : (parsed?.start || raw);
+    const comparable = typeof _dbDateGetComparableValue === 'function' ? _dbDateGetComparableValue(dateRaw) : dateRaw;
+    const d = typeof parseLocalDate === 'function' ? parseLocalDate(comparable) : new Date(comparable);
+    if (!Number.isNaN(d.getTime())) return { ok: true, value: d.getTime(), display: comparable };
+    return { ok: false, display: raw };
+  }
+  const normalized = raw.replace(/,/g, '');
+  if (/^[+-]?(?:\d+|\d*\.\d+)$/.test(normalized)) {
+    const n = Number(normalized);
+    if (Number.isFinite(n)) return { ok: true, value: n, display: raw };
+  }
+  return { ok: false, display: raw };
+}
+
+function _validationCompare(left, right, operator) {
+  switch (operator) {
+    case '>=': return left >= right;
+    case '<=': return left <= right;
+    case '>':  return left > right;
+    case '<':  return left < right;
+    case '==': return left === right;
+    case '!=': return left !== right;
+  }
+  return true;
+}
+
+function _validateRangeCheck(rule, entitiesMap, entityNames, dbPath, propTypes) {
   const results = [];
   const { property, operator, compareProperty } = rule.config || {};
   if (!property || !operator || !compareProperty) return results;
+  const ptc1 = propTypes?.[property];
+  const ptc2 = propTypes?.[compareProperty];
 
   entityNames.forEach(en => {
     const vals1 = _validationValues(entitiesMap[en][property] || []);
@@ -95,24 +154,15 @@ function _validateRangeCheck(rule, entitiesMap, entityNames, dbPath) {
     if (vals1.length === 0 || vals2.length === 0) return;
     vals1.forEach(val1 => {
       vals2.forEach(val2 => {
-        const v1 = parseFloat(val1.value);
-        const v2 = parseFloat(val2.value);
-        if (isNaN(v1) || isNaN(v2)) return;
-
-        let pass = false;
-        switch (operator) {
-          case '>=': pass = v1 >= v2; break;
-          case '<=': pass = v1 <= v2; break;
-          case '>':  pass = v1 > v2; break;
-          case '<':  pass = v1 < v2; break;
-          case '==': pass = v1 === v2; break;
-          case '!=': pass = v1 !== v2; break;
-        }
+        const v1 = _validationComparable(val1.value, ptc1);
+        const v2 = _validationComparable(val2.value, ptc2);
+        if (!v1.ok || !v2.ok) return;
+        const pass = _validationCompare(v1.value, v2.value, operator);
         if (!pass) {
           results.push({
             ruleId: rule.id, ruleLabel: rule.label, severity: 'error',
             entityName: en, entityPath: _entityPath(dbPath, en),
-            message: property + '(' + v1 + ') ' + operator + ' ' + compareProperty + '(' + v2 + '): 条件不一致',
+            message: property + '(' + v1.display + ') ' + operator + ' ' + compareProperty + '(' + v2.display + '): 条件不一致',
             property,
           });
         }
@@ -152,7 +202,9 @@ async function _validateReferenceExists(rule, entitiesMap, entityNames, dbPath, 
   if (!_relDb) return results;
 
   const targetData = await fetchRelatedDbData(_relDb);
-  if (!targetData || !targetData.entities) return results;
+  if (!targetData || !targetData.entities) {
+    return [_validationRuleError(rule, relationProperty + ': 参照先シートを読み込めません: ' + _relDb, relationProperty)];
+  }
 
   const targetIndex = _buildValidationRelationTargetIndex(targetData.entities);
 
@@ -179,8 +231,11 @@ async function _validateCrossDbRange(rule, entitiesMap, entityNames, dbPath, pro
   if (!property || !operator || !targetDb || !targetProperty || !matchRelation) return results;
 
   const targetData = await fetchRelatedDbData(targetDb);
-  if (!targetData || !targetData.entities) return results;
+  if (!targetData || !targetData.entities) {
+    return [_validationRuleError(rule, '参照先シートを読み込めません: ' + targetDb, targetProperty)];
+  }
   const targetIndex = _buildValidationRelationTargetIndex(targetData.entities);
+  const sourcePtc = propTypes?.[property];
 
   entityNames.forEach(en => {
     const names = _validationRelationNames(entitiesMap[en], matchRelation, propTypes?.[matchRelation]);
@@ -191,31 +246,30 @@ async function _validateCrossDbRange(rule, entitiesMap, entityNames, dbPath, pro
 
     names.forEach(targetNameOrId => {
       const targetName = _resolveValidationTargetName(targetNameOrId, targetIndex);
-      if (!targetName) return;
+      if (!targetName) {
+        results.push({
+          ruleId: rule.id, ruleLabel: rule.label, severity: 'error',
+          entityName: en, entityPath: _entityPath(dbPath, en),
+          message: matchRelation + ': 「' + targetNameOrId + '」は参照先シートに存在しません',
+          property: matchRelation,
+        });
+        return;
+      }
       const targetEntity = targetData.entities[targetName];
       if (!targetEntity) return;
       const targetVals = _validationValues(targetEntity[targetProperty] || []);
       if (targetVals.length === 0) return;
       vals.forEach(val1 => {
         targetVals.forEach(val2 => {
-          const v1 = parseFloat(val1.value);
-          const v2 = parseFloat(val2.value);
-          if (isNaN(v1) || isNaN(v2)) return;
-
-          let pass = false;
-          switch (operator) {
-            case '>=': pass = v1 >= v2; break;
-            case '<=': pass = v1 <= v2; break;
-            case '>':  pass = v1 > v2; break;
-            case '<':  pass = v1 < v2; break;
-            case '==': pass = v1 === v2; break;
-            case '!=': pass = v1 !== v2; break;
-          }
+          const v1 = _validationComparable(val1.value, sourcePtc);
+          const v2 = _validationComparable(val2.value, null);
+          if (!v1.ok || !v2.ok) return;
+          const pass = _validationCompare(v1.value, v2.value, operator);
           if (!pass) {
             results.push({
               ruleId: rule.id, ruleLabel: rule.label, severity: 'error',
               entityName: en, entityPath: _entityPath(dbPath, en),
-              message: property + '(' + v1 + ') ' + operator + ' ' + targetName + '.' + targetProperty + '(' + v2 + '): 他シート条件不一致',
+              message: property + '(' + v1.display + ') ' + operator + ' ' + targetName + '.' + targetProperty + '(' + v2.display + '): 他シート条件不一致',
               property,
             });
           }
@@ -372,12 +426,24 @@ function showValidationRulesModal(dbPath) {
       typeBadge.textContent = rule.type;
       item.appendChild(typeBadge);
 
+      const editBtn = document.createElement('button');
+      editBtn.textContent = '編集';
+      editBtn.dataset.e2eId = 'validation-rule-' + (rule.id || i) + '-edit';
+      editBtn.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を編集');
+      editBtn.style.cssText = 'font-size:11px;padding:1px 6px;';
+      editBtn.addEventListener('click', () => {
+        overlay.remove();
+        showValidationRuleEditor(dbPath, { ...rule, config: { ...(rule.config || {}) } });
+      });
+      item.appendChild(editBtn);
+
       const delBtn = document.createElement('button');
       delBtn.textContent = '削除';
       delBtn.dataset.e2eId = 'validation-rule-' + (rule.id || i) + '-delete';
       delBtn.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を削除');
       delBtn.style.cssText = 'font-size:11px;padding:1px 6px;';
       delBtn.addEventListener('click', () => {
+        if (typeof confirm === 'function' && !confirm('この検証ルールを削除しますか？')) return;
         rules.splice(i, 1);
         setValidationRules(dbPath, rules);
         overlay.remove();

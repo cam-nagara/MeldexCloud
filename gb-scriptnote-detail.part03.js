@@ -19,6 +19,9 @@
     addBtn.type = 'button';
     addBtn.className = 'sn2-detail-add-btn';
     addBtn.textContent = '＋ステータス';
+    addBtn.dataset.e2eId = 'scriptnote-theme-add-status';
+    addBtn.title = '採用状況を追加';
+    addBtn.setAttribute('aria-label', '採用状況を追加');
     addBtn.disabled = !statusEnabled;
     statusBar.appendChild(enabledLabel);
     statusBar.appendChild(addBtn);
@@ -41,7 +44,14 @@
     addBtn.addEventListener('click', () => {
       this._pushUndo('採用状況設定変更');
       const list = this._getStatusList();
-      list.push({ name: `状態${list.length + 1}`, color: SCRIPTNOTE_DEFAULT_STATUS_LIST[list.length % SCRIPTNOTE_DEFAULT_STATUS_LIST.length].color });
+      const usedNames = new Set(list.map(item => String(item?.name || '').trim()).filter(Boolean));
+      let nextIndex = list.length + 1;
+      let nextName = `状態${nextIndex}`;
+      while (usedNames.has(nextName)) {
+        nextIndex++;
+        nextName = `状態${nextIndex}`;
+      }
+      list.push({ name: nextName, color: SCRIPTNOTE_DEFAULT_STATUS_LIST[list.length % SCRIPTNOTE_DEFAULT_STATUS_LIST.length].color });
       this.doc.editor.statusList = list;
       this._markDirty();
       this.renderThemePanel(container);
@@ -81,13 +91,18 @@
         const idx = Number(button.dataset.statusDelete);
         const list = this._getStatusList();
         if (!list[idx] || list.length <= 1) return;
-        this._pushUndo('採用状況設定変更');
-        const removed = list.splice(idx, 1)[0];
-        this.doc.editor.statusList = _sn2NormalizeStatusList(list);
-        this._clearInvalidStatuses?.(removed?.name || '');
-        this._markDirty();
-        this._render();
-        this.renderThemePanel(container);
+        const removeStatus = () => {
+          this._pushUndo('採用状況設定変更');
+          const removed = list.splice(idx, 1)[0];
+          this.doc.editor.statusList = _sn2NormalizeStatusList(list);
+          this._clearInvalidStatuses?.(removed?.name || '');
+          this._markDirty();
+          this._render();
+          this.renderThemePanel(container);
+        };
+        const name = list[idx].name || `状態${idx + 1}`;
+        if (typeof showConfirmDialog === 'function') showConfirmDialog(`採用状況「${name}」を削除しますか？`, removeStatus);
+        else if (typeof window === 'undefined' || window.confirm(`採用状況「${name}」を削除しますか？`)) removeStatus();
       });
     });
     statusSection.querySelectorAll('[data-status-color]').forEach((button) => {
@@ -134,6 +149,10 @@
           cb.type = 'checkbox';
           cb.checked = borderSet.has(col.id);
           cb.title = col.label + ' | ' + allCols[i + 1].label + ' 間';
+          cb.setAttribute('aria-label', cb.title);
+          cb.dataset.e2eId = 'scriptnote-theme-column-border-' + String(col.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+          cb.dataset.columnBorderLeft = col.id;
+          cb.dataset.columnBorderRight = allCols[i + 1].id;
           cb.className = 'sn2-detail-colborder-cb';
           cb.addEventListener('change', () => {
             this._pushUndo('列間枠線変更');
@@ -189,11 +208,14 @@
       if (!this.doc.editor.autoColorRule) this.doc.editor.autoColorRule = {};
       const colId = sel.dataset.acCol;
       this.doc.editor.autoColorRule[colId] = sel.value;
-      const rule = { ...this.doc.editor.autoColorRule };
+      const rule = {};
+      colDefs.forEach(cd => { rule[cd.id] = this.doc.editor.autoColorRule[cd.id] || 'none'; });
+      this.doc.editor.autoColorRule = { ...rule };
       // すべての非デフォルトタイプに同じターゲットを適用
       (this.doc.characters || []).forEach(chara => {
         if (chara.isDefault) return;
         chara.autoColorTarget = { ...rule };
+        if (typeof this._reapplyAutoColor === 'function') this._reapplyAutoColor(chara);
       });
       this._refreshRowStyles();
       this._markDirty();

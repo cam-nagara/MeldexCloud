@@ -5,6 +5,11 @@
     return navigator.onLine === false;
   }
 
+  function _isCloudMode() {
+    return window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox';
+  }
+
   function _ensureIndicator() {
     const bar = document.getElementById('status-bar');
     if (!bar) return null;
@@ -35,6 +40,9 @@
   }
 
   function offlineMessage() {
+    if (_isCloudMode()) {
+      return 'オフライン中です。クラウド保存・検索・閲覧・LLM送信はネット接続後に再試行してください。';
+    }
     return 'オフライン中です。編集・保存・検索・閲覧は使えますが、LLM送信はネット接続後に再試行してください。';
   }
 

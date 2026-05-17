@@ -118,9 +118,10 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride) {
   if (!pivotData || !pivotData.entities) return { labels: [], values: [], colors: [], total: 0 };
 
   const entities = pivotData.entities;
-  const entityNames = Object.keys(entities);
-  const allProps = pivotData.properties || _collectChartProperties(entities);
-  chartConfig = _normalizeChartConfig(chartConfig, allProps, dbPathOverride || state.currentDbPath);
+  const dbPath = dbPathOverride || state.currentDbPath;
+  const entityNames = _chartFilteredEntityNames(pivotData, dbPath);
+  const allProps = _collectChartProperties(entities, pivotData, dbPath);
+  chartConfig = _normalizeChartConfig(chartConfig, allProps, dbPath);
   const xProp = chartConfig.xProperty;
   const yAgg = chartConfig.yAggregation || 'count';
   const palette = CHART_PALETTES[chartConfig.palette] || CHART_PALETTES.default;
@@ -128,11 +129,11 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride) {
   if (!xProp) return { labels: [], values: [], colors: [], total: 0 };
 
   // X軸プロパティの値でグルーピング
-  const groups = {};
+  const groups = Object.create(null);
   entityNames.forEach(en => {
     const vals = filterValues(entities[en][xProp] || []);
-    const key = vals.length > 0 ? vals[0].value : '(空)';
-    if (!groups[key]) groups[key] = [];
+    const key = vals.length > 0 ? String(vals[0].value ?? '') : '(空)';
+    if (!Object.prototype.hasOwnProperty.call(groups, key)) groups[key] = [];
     groups[key].push(en);
   });
 
@@ -144,7 +145,6 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride) {
     labels.forEach(label => values.push(groups[label].length));
   } else if (chartConfig.yProperty && ['sum', 'average', 'min', 'max', 'median'].includes(yAgg)) {
     // Y軸プロパティの集計
-    const dbPath = dbPathOverride || state.currentDbPath;
     const propTypes = chartConfig.propertyTypes || getPropertyTypes(dbPath);
     const yPtc = propTypes[chartConfig.yProperty] || null;
     labels.forEach(label => {
@@ -152,7 +152,7 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride) {
       // グループ内エントリだけのサブマップ
       const subMap = {};
       groupEntities.forEach(en => { subMap[en] = entities[en]; });
-      const result = calcAggregation(chartConfig.yProperty, subMap, groupEntities, yAgg, yPtc);
+      const result = calcAggregation(chartConfig.yProperty, subMap, groupEntities, yAgg, yPtc, propTypes);
       values.push(typeof result === 'number' ? result : parseFloat(result) || 0);
     });
   } else {
@@ -243,9 +243,14 @@ function renderBarChart(data, w, h, options = {}) {
 
 function renderPieChart(data, w, h, options = {}) {
   const svg = svgCreate('svg', { width: w, height: h, viewBox: '0 0 ' + w + ' ' + h });
-  const positiveTotal = data.values.reduce((sum, v) => sum + (v > 0 ? v : 0), 0);
+  const positiveItems = data.labels.map((label, i) => ({
+    label,
+    value: data.values[i],
+    color: data.colors[i],
+  })).filter(item => item.value > 0);
+  const positiveTotal = positiveItems.reduce((sum, item) => sum + item.value, 0);
   if (data.labels.length === 0 || positiveTotal === 0) {
-    svg.appendChild(svgText(w / 2, h / 2, 'データなし', { fill: 'var(--fg2)', fontSize: '14' }));
+    svg.appendChild(svgText(w / 2, h / 2, data.labels.length ? '正の値がありません' : 'データなし', { fill: 'var(--fg2)', fontSize: '14' }));
     return svg;
   }
 
@@ -258,9 +263,8 @@ function renderPieChart(data, w, h, options = {}) {
 
   let startAngle = -Math.PI / 2;
 
-  data.labels.forEach((label, i) => {
-    const ratio = data.values[i] / positiveTotal;
-    if (ratio <= 0) return;
+  positiveItems.forEach(item => {
+    const ratio = item.value / positiveTotal;
     const endAngle = startAngle + ratio * 2 * Math.PI;
     const largeArc = ratio > 0.5 ? 1 : 0;
 
@@ -271,9 +275,9 @@ function renderPieChart(data, w, h, options = {}) {
 
     const d = 'M ' + cx + ' ' + cy + ' L ' + x1 + ' ' + y1 +
       ' A ' + r + ' ' + r + ' 0 ' + largeArc + ' 1 ' + x2 + ' ' + y2 + ' Z';
-    const slice = svgPath(d, data.colors[i]);
+    const slice = svgPath(d, item.color);
     const title = svgCreate('title');
-    title.textContent = label + ': ' + _formatDisplayVal(data.values[i]) + ' (' + Math.round(ratio * 100) + '%)';
+    title.textContent = item.label + ': ' + _formatDisplayVal(item.value) + ' (' + Math.round(ratio * 100) + '%)';
     slice.appendChild(title);
     svg.appendChild(slice);
 
@@ -292,12 +296,12 @@ function renderPieChart(data, w, h, options = {}) {
 
   // 凡例
   if (showLegend) {
-    const legendMaxItems = Math.min(data.labels.length, Math.floor((h - 20) / 22));
-    data.labels.slice(0, legendMaxItems).forEach((label, i) => {
+    const legendMaxItems = Math.min(positiveItems.length, Math.floor((h - 20) / 22));
+    positiveItems.slice(0, legendMaxItems).forEach((item, i) => {
       const ly = 20 + i * 22;
-      svg.appendChild(svgRect(legendX, ly - 6, 12, 12, data.colors[i], 2));
-      const truncLabel = label.length > 16 ? label.slice(0, 15) + '…' : label;
-      svg.appendChild(svgText(legendX + 18, ly + 4, truncLabel + ' (' + _formatDisplayVal(data.values[i]) + ')', {
+      svg.appendChild(svgRect(legendX, ly - 6, 12, 12, item.color, 2));
+      const truncLabel = item.label.length > 16 ? item.label.slice(0, 15) + '…' : item.label;
+      svg.appendChild(svgText(legendX + 18, ly + 4, truncLabel + ' (' + _formatDisplayVal(item.value) + ')', {
         fontSize: '11', fill: 'var(--fg2)', anchor: 'start',
       }));
     });
@@ -459,8 +463,11 @@ function _formatDisplayVal(v) {
  */
 function renderChart(ctx) {
   ctx = ctx || _currentPaneState();
-  const container = _paneEl(ctx, '.chart-view') || document.getElementById('chart-view');
+  const container = typeof _dbViewSurfaceEl === 'function'
+    ? _dbViewSurfaceEl(ctx, '.chart-view', 'chart-view')
+    : ((ctx?.containerEl ? ctx.containerEl.querySelector('.chart-view') : null) || document.getElementById('chart-view') || document.querySelector('.chart-view'));
   if (!container) return;
+  container.style.display = 'flex';
   container.innerHTML = '';
 
   const dbPath = ctx.dbPath || state.currentDbPath;
@@ -476,7 +483,7 @@ function renderChart(ctx) {
     renderEmptyState(container, 'barChart', 'データがありません', 'エントリを追加するとチャートが表示されます');
     return;
   }
-  const allProps = _collectChartProperties(entities);
+  const allProps = _collectChartProperties(entities, pivotData, dbPath);
 
   config = _normalizeChartConfig(config, allProps, dbPath);
   const savedConfig = getChartConfig(dbPath);
@@ -518,6 +525,7 @@ function renderChart(ctx) {
   if (container._resizeObs) container._resizeObs.disconnect();
   let resizeTimer = null;
   let lastW = containerRect.width, lastH = containerRect.height;
+  if (typeof ResizeObserver !== 'function') return;
   container._resizeObs = new ResizeObserver(entries => {
     const entry = entries[0];
     if (!entry) return;
@@ -535,14 +543,35 @@ function renderChart(ctx) {
 /**
  * チャートで使用可能なプロパティ一覧を収集
  */
-function _collectChartProperties(entities) {
+function _chartPropertyAllowed(propName) {
+  return !!propName && !String(propName).startsWith('_');
+}
+
+function _collectChartProperties(entities, pivotData, dbPath) {
   const propSet = new Set();
+  const add = (propName) => {
+    if (_chartPropertyAllowed(propName)) propSet.add(propName);
+  };
+  const props = Array.isArray(pivotData) ? pivotData : (pivotData?.properties || []);
+  props.forEach(add);
+  const propTypes = pivotData?.propertyTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {});
+  Object.keys(propTypes || {}).forEach(add);
   Object.values(entities).forEach(entData => {
     Object.keys(entData).forEach(k => {
-      if (k !== '_path' && k !== '_name') propSet.add(k);
+      add(k);
     });
   });
   return [...propSet];
+}
+
+function _chartFilteredEntityNames(pivotData, dbPath) {
+  const entities = pivotData?.entities || {};
+  let names = Object.keys(entities);
+  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath) : [];
+  if (Array.isArray(advFilters) && advFilters.length > 0 && typeof _dbEntityPassesAdvancedFilters === 'function') {
+    names = names.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters));
+  }
+  return names;
 }
 
 /**
@@ -592,6 +621,7 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
     { key: 'average', label: '平均' },
     { key: 'min', label: '最小' },
     { key: 'max', label: '最大' },
+    { key: 'median', label: '中央値' },
   ];
   const numProps = _chartNumericProps(allProps, propTypes);
   const hasNumeric = numProps.length > 0;

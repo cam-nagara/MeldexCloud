@@ -169,6 +169,7 @@ function sn2CopyForClipStudio() {
     if (typeof showStatus === 'function') showStatus('シナリオが開かれていません', true);
     return;
   }
+  if (typeof editor._syncAllFromDom === 'function') editor._syncAllFromDom();
 
   _sn2SepConnect();
 
@@ -198,17 +199,21 @@ function sn2CopyForClipStudio() {
         out += '\r\n';
       }
     }
-    navigator.clipboard.writeText(out).then(() => {
+    const onCopied = () => {
       if (typeof showStatus === 'function') showStatus('クリスタ用テキストをコピーしました');
-    }).catch(() => {
+    };
+    const fallbackCopy = () => {
       const ta = document.createElement('textarea');
       ta.value = out;
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand('copy');
+      try { document.execCommand('copy'); } catch {}
       ta.remove();
-      if (typeof showStatus === 'function') showStatus('クリスタ用テキストをコピーしました');
-    });
+      onCopied();
+    };
+    const clipboard = (typeof navigator !== 'undefined') ? navigator.clipboard : null;
+    if (clipboard?.writeText) clipboard.writeText(out).then(onCopied).catch(fallbackCopy);
+    else fallbackCopy();
   });
 }
 
@@ -281,6 +286,7 @@ function _sn2StartSep() {
   const overlay = document.querySelector('.modal-overlay');
   const editor = overlay?._sn2Editor || _sn2GetActiveEditor();
   if (!editor?.doc) return;
+  if (typeof editor._syncAllFromDom === 'function') editor._syncAllFromDom();
   const countdown = parseInt(document.getElementById('sn2-sep-countdown')?.value) || 5;
   const breakWaitRaw = parseFloat(document.getElementById('sn2-sep-break-wait')?.value);
   const breakWait = Number.isFinite(breakWaitRaw) ? Math.max(0, Math.min(10, Math.round(breakWaitRaw * 10) / 10)) : 1.0;
@@ -349,16 +355,15 @@ function _sn2StartSep() {
   }
   // 全ページ出力（range==='all'）のとき、先頭ページの区切り行ではページ送りしない
   if (range === 'all') {
-    const firstBreakIdx = rows.findIndex(row => row.kind === 'pageBreak');
-    if (firstBreakIdx >= 0) {
-      const first = rows[firstBreakIdx];
+    if (rows[0]?.kind === 'pageBreak') {
+      const first = rows[0];
       if (includeBreakText && first.text) {
         // テキストがあれば通常行扱いで先頭ページ先頭にペースト
         first.kind = 'normal';
         first.character = '';
       } else {
         // テキストがない or オプションOFF → 先頭の区切り行ごと除去
-        rows.splice(firstBreakIdx, 1);
+        rows.shift();
       }
     }
   }

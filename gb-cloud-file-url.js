@@ -2,7 +2,9 @@
   const CACHE = window.__MeldexPwaFileUrlCache = window.__MeldexPwaFileUrlCache || {};
   const PATH_MUTATION_HOOKS = window.__MeldexPwaPathMutationHooks = window.__MeldexPwaPathMutationHooks || [];
   const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"' )]+/g;
+  const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"' )]+/g;
   const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
+  const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -15,7 +17,8 @@
   function _looksLikeFileRawUrl(value) {
     return !!value && (typeof window.MeldexResourceUrl?.isFileRawUrl === 'function'
       ? window.MeldexResourceUrl.isFileRawUrl(value)
-      : /\/(?:api\/)?file-raw\?/.test(String(value || '')));
+      : /\/(?:api\/)?file-raw\?/.test(String(value || '')))
+      || /\/(?:api\/)?media\/file\?/.test(String(value || ''));
   }
 
   function _extractRawPath(value) {
@@ -97,7 +100,8 @@
     return provider;
   }
 
-  async function ensureRawUrl(pathLike) {
+  async function ensureRawUrl(pathLike, options) {
+    const opts = options || {};
     const direct = String(pathLike || '').trim();
     if (!direct) return { path: '', url: '' };
     if (_isDirectUrl(direct)) return { path: '', url: direct };
@@ -108,15 +112,25 @@
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const fileHandle = await provider.getFileHandle(normalized, { create: false });
     const file = await fileHandle.getFile();
+    const fileSize = Number(file.size || 0);
+    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
+      const cachedLarge = CACHE[normalized];
+      if (cachedLarge?.url?.startsWith('blob:')) {
+        try { URL.revokeObjectURL(cachedLarge.url); } catch {}
+      }
+      delete CACHE[normalized];
+      return { path: normalized, url: _fallbackRawUrl(normalized), mime: file.type || _mimeFromPath(normalized), size: fileSize, modified: String(file.lastModified || 0), streamed: true };
+    }
     const modified = String(file.lastModified || 0);
     const cached = CACHE[normalized];
-    if (cached && cached.modified === modified && cached.size === Number(file.size || 0)) return cached;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const url = _bytesToUrl(bytes, file.type || _mimeFromPath(normalized));
+    if (cached && cached.modified === modified && cached.size === fileSize) return cached;
+    const url = fileSize > BLOB_CACHE_MAX_BYTES
+      ? URL.createObjectURL(file)
+      : _bytesToUrl(new Uint8Array(await file.arrayBuffer()), file.type || _mimeFromPath(normalized));
     if (cached?.url && cached.url.startsWith('blob:')) {
       try { URL.revokeObjectURL(cached.url); } catch {}
     }
-    const next = { path: normalized, url, mime: file.type || _mimeFromPath(normalized), size: Number(file.size || 0), modified };
+    const next = { path: normalized, url, mime: file.type || _mimeFromPath(normalized), size: fileSize, modified };
     CACHE[normalized] = next;
     return next;
   }
@@ -138,11 +152,11 @@
     return getCachedRawUrl(normalized) || _fallbackRawUrl(normalized);
   }
 
-  async function ensureDisplayUrl(pathLike) {
+  async function ensureDisplayUrl(pathLike, options) {
     const direct = String(pathLike || '').trim();
     if (!direct) return { path: '', url: '' };
     if (_isDirectUrl(direct)) return { path: '', url: direct };
-    return ensureRawUrl(direct);
+    return ensureRawUrl(direct, options);
   }
 
   function _sameResourceUrl(left, right) {
@@ -207,7 +221,9 @@
   function _rewriteAttr(element, attrName) {
     const raw = element.getAttribute(attrName);
     if (!raw) return;
-    if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) {
+    const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
+    if (_looksLikeFileRawUrl(raw) || isThumbnail) {
+      if (isThumbnail && !_runtime()?.isDropboxMode?.()) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
       return;
     }
@@ -237,20 +253,23 @@
 
   function _rewriteStyle(element) {
     const styleValue = element.getAttribute('style');
-    if (!styleValue || (!RAW_URL_RE.test(styleValue) && !THUMB_URL_RE.test(styleValue))) {
+    if (!styleValue || (!RAW_URL_RE.test(styleValue) && !MEDIA_URL_RE.test(styleValue) && !THUMB_URL_RE.test(styleValue))) {
       RAW_URL_RE.lastIndex = 0;
+      MEDIA_URL_RE.lastIndex = 0;
       THUMB_URL_RE.lastIndex = 0;
       return;
     }
     RAW_URL_RE.lastIndex = 0;
+    MEDIA_URL_RE.lastIndex = 0;
     THUMB_URL_RE.lastIndex = 0;
-    const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(THUMB_URL_RE)];
+    const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE)];
     rawMatches.forEach((match) => {
       const urlText = match[0];
       ensureDisplayUrl(urlText).then((info) => {
         const current = element.getAttribute('style') || '';
         if (!current.includes(urlText) || !info?.url) return;
-        element.setAttribute('style', current.replaceAll(urlText, info.url));
+        const next = current.replaceAll(urlText, info.url);
+        if (next !== current) element.setAttribute('style', next);
       }).catch(() => {});
     });
   }

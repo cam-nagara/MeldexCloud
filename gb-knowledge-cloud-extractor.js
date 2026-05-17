@@ -4,7 +4,7 @@
   const internals = window.__MeldexPwaDataAccessInternals;
   if (!internals) return;
 
-  const { _normalizeFolderPath } = internals;
+  const { _normalizeFolderPath, _joinPath } = internals;
   const RUNS_PATH = '_knowledge/extraction_runs.json';
   const DEFAULT_STATUS = '(未設定)';
   const EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
@@ -134,14 +134,18 @@
   }
 
   function _allowsTarget(settings, sourceFolder) {
-    if (!_isObject(settings)) return { allowed: true, reason: '' };
-    if (settings.enabled === false) return { allowed: false, reason: 'knowledge_automation_disabled' };
+    if (!_isObject(settings)) return { allowed: false, reason: 'knowledge_automation_not_configured' };
+    if (_asBool(settings.enabled, false) !== true) return { allowed: false, reason: 'knowledge_automation_disabled' };
 
     const targets = _isObject(settings.targets) ? settings.targets : {};
     const sourceFolderNorm = _normPath(sourceFolder);
     if (sourceFolderNorm) {
       const sources = Array.isArray(targets.sources) ? targets.sources : [];
-      if (!sources.length) return { allowed: true, reason: '' };
+      if (!sources.length) {
+        return Object.prototype.hasOwnProperty.call(targets, 'sources')
+          ? { allowed: false, reason: 'knowledge_automation_source_not_selected' }
+          : { allowed: true, reason: '' };
+      }
       const selected = sources.some(item => _isObject(item) && item.enabled === true && _normPath(item.path) === sourceFolderNorm);
       return selected
         ? { allowed: true, reason: '' }
@@ -152,6 +156,15 @@
     if (home.enabled === true) return { allowed: true, reason: '' };
     if (!Object.keys(home).length && !targets.sources) return { allowed: true, reason: '' };
     return { allowed: false, reason: 'knowledge_automation_home_not_selected' };
+  }
+
+  function _automationWriteGate(settings) {
+    const trigger = String(settings?.trigger || 'after_chat').trim() || 'after_chat';
+    if (trigger !== 'after_chat') return { allowed: false, reason: 'knowledge_automation_trigger_not_after_chat' };
+    const writePolicy = String(settings?.writePolicy || settings?.write_policy || 'admin_auto').trim() || 'admin_auto';
+    if (writePolicy === 'admin_auto') return { allowed: true, reason: '' };
+    if (writePolicy === 'draft_only') return { allowed: false, reason: 'knowledge_automation_draft_only' };
+    return { allowed: false, reason: 'knowledge_automation_requires_approval' };
   }
 
   function _parseFrontmatter(raw) {
@@ -175,16 +188,34 @@
     return fm;
   }
 
+  async function _resolveSourceStatusPath(provider, targetPath, sourceFolder) {
+    const target = _normPath(targetPath);
+    const source = _normPath(sourceFolder);
+    const candidates = [];
+    if (target) candidates.push(target);
+    if (target && source && target !== source && !target.startsWith(source + '/')) {
+      candidates.push(typeof _joinPath === 'function' ? _joinPath(source, target) : _normPath(source + '/' + target));
+    }
+    for (const candidate of [...new Set(candidates)]) {
+      try {
+        return { path: candidate, raw: await provider.readText(candidate) };
+      } catch {}
+    }
+    return { path: target, raw: '' };
+  }
+
   async function _sourceStatus(provider, body) {
     const targetPath = _normPath(body?.targetPath || body?.target_path || body?.frontmatter?.targetPath || '');
     if (!targetPath) return { source_status: DEFAULT_STATUS, canonical_source_path: '' };
-    const raw = await provider.readText(targetPath).catch(() => '');
+    const sourceFolder = body?.source_folder || body?.sourceFolder || '';
+    const resolved = await _resolveSourceStatusPath(provider, targetPath, sourceFolder);
+    const raw = resolved.raw || '';
     const fm = _parseFrontmatter(raw);
     const status = _cleanText(
       fm.status || fm.source_status || fm.sourceStatus || fm['状態'] || fm['ステータス'] || DEFAULT_STATUS,
       80,
     ) || DEFAULT_STATUS;
-    return { source_status: status, canonical_source_path: targetPath };
+    return { source_status: status, canonical_source_path: resolved.path || targetPath };
   }
 
   async function _isLearnable(provider, sourceStatus) {
@@ -582,6 +613,8 @@
     const sourceFolder = _normPath(body.source_folder || body.sourceFolder || '');
     const allowed = _allowsTarget(settings, sourceFolder);
     if (!allowed.allowed) return { ok: true, skipped: true, reason: allowed.reason };
+    const writeGate = _automationWriteGate(settings);
+    if (!writeGate.allowed) return { ok: true, skipped: true, reason: writeGate.reason };
 
     const messages = _normalizeMessages(body.messages);
     const chatPath = _normPath(body.path || body.chat_path || '');

@@ -25,9 +25,9 @@
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     const relativePath = String(url.searchParams.get('path') || '').replace(/^\/+/, '');
-    if (url.pathname.endsWith('/file-raw')) {
+    if (url.pathname.endsWith('/file-raw') || url.pathname.endsWith('/media/file')) {
       const file = await provider.downloadAsFile(relativePath);
-      return new Response(await file.arrayBuffer(), {
+      return new Response(typeof file.stream === 'function' ? file.stream() : await file.arrayBuffer(), {
         status: 200,
         headers: { 'Content-Type': file.type || 'application/octet-stream' },
       });
@@ -55,6 +55,77 @@
     return null;
   }
 
+  function _normalizeUploadPath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
+  }
+
+  function _basename(path) {
+    const clean = _normalizeUploadPath(path).replace(/\/+$/, '');
+    return clean.split('/').pop() || clean || 'file';
+  }
+
+  function _mediaFileUrl(path) {
+    return '/api/media/file?path=' + encodeURIComponent(_normalizeUploadPath(path));
+  }
+
+  function _imageExtFromBytes(bytes, filename, contentType) {
+    const nameExt = String(filename || '').split('.').pop().toLowerCase();
+    let detected = '';
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) detected = 'png';
+    else if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) detected = 'jpeg';
+    else if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) detected = 'gif';
+    else if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) detected = 'webp';
+    else {
+      const head = new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 512))).trimStart().toLowerCase();
+      if (head.startsWith('<svg') || (head.startsWith('<?xml') && head.includes('<svg'))) detected = 'svg';
+    }
+    if (!detected) throw new Error('画像ファイルのみアップロードできます');
+    const normalizedExt = nameExt === 'jpg' ? 'jpeg' : nameExt;
+    if (['png', 'jpeg', 'gif', 'webp', 'svg'].includes(normalizedExt) && normalizedExt !== detected) {
+      throw new Error('画像ファイルの拡張子と内容が一致しません');
+    }
+    const content = String(contentType || '').toLowerCase();
+    const matchesContent = detected === 'jpeg' ? (content.includes('jpeg') || content.includes('jpg')) : content.includes(detected);
+    if (!['png', 'jpeg', 'gif', 'webp', 'svg'].includes(normalizedExt) && contentType && !matchesContent) {
+      throw new Error('画像ファイルの種類を確認できません');
+    }
+    return detected;
+  }
+
+  async function _sha256Hex(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function mediaUploadResponse(body) {
+    if (!(body instanceof FormData)) throw new Error('画像アップロードにはFormDataが必要です');
+    const file = body.get('file');
+    if (!(file instanceof File) && !(file instanceof Blob)) throw new Error('画像ファイルがありません');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!bytes.length) throw new Error('空のファイルはアップロードできません');
+    const filename = _basename(file.name || 'image');
+    const ext = _imageExtFromBytes(bytes, filename, file.type || '');
+    const hash = await _sha256Hex(bytes);
+    const shard = hash.slice(0, 2);
+    const src = `_media/blobs/${shard}/${hash}.${ext}`;
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.uploadBytes) throw new Error('Dropbox provider が未初期化です');
+    await provider.uploadBytes(src, bytes);
+    return jsonResponse({
+      ok: true,
+      hash,
+      content_hash: hash,
+      filename,
+      src,
+      thumb: src,
+      url: _mediaFileUrl(src),
+      thumb_url: _mediaFileUrl(src),
+      width: null,
+      height: null,
+      size: bytes.length,
+    });
+  }
+
   function apiRequestPath(url) {
     const pathname = String(url?.pathname || '');
     const marker = pathname.lastIndexOf('/api');
@@ -78,6 +149,9 @@
       const body = await readRequestBody(input, init);
       const apiPath = apiRequestPath(url);
       const apiUrl = new URL('http://local' + apiPath);
+      if (apiUrl.pathname === '/media/upload' && String(method || 'GET').toUpperCase() === 'POST') {
+        return await mediaUploadResponse(body);
+      }
       if (apiUrl.pathname === '/chat/stream' && String(method || 'GET').toUpperCase() === 'POST' && window.MeldexLlmClient?.streamChatAsResponse) {
         const payload = typeof body === 'string' ? JSON.parse(body || '{}') : (body || {});
         return await window.MeldexLlmClient.streamChatAsResponse(payload, { signal: init?.signal });

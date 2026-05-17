@@ -47,6 +47,7 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
   }
   return {
     fileType: src.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),
+    schema_version: Number.isFinite(Number(src.schema_version)) ? Number(src.schema_version) : 1,
     version: src.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
     title: String(src.title || ''),
     layoutMode: _scriptNoteLayoutOrDefault(src.layoutMode),
@@ -116,6 +117,7 @@ function serializeScriptNoteDoc(doc) {
   if (!doc || typeof doc !== 'object') return null;
   return {
     fileType: doc.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),
+    schema_version: Number.isFinite(Number(doc.schema_version)) ? Number(doc.schema_version) : 1,
     version: doc.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
     title: String(doc.title || ''),
     layoutMode: _scriptNoteLayoutOrDefault(doc.layoutMode),

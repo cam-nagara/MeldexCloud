@@ -42,7 +42,7 @@ function _getCalendarIntegrationInfo(dbPath, pivotData) {
   return {
     kind: isCalendarSource ? 'calendar-db' : hasMapping ? 'mapped-db' : 'none',
     isMappedDb: hasMapping,
-    canEditDates: hasMapping,
+    canEditDates: isCalendarSource || hasMapping,
     canCreateEvents: isCalendarSource,
     canDeleteEvents: isCalendarSource,
     canSyncExternal: isCalendarSource,
@@ -157,7 +157,7 @@ function _collectMappedCalendarEvents(dbPath, data) {
 
 function _collectCalendarEventsForDb(dbPath, data) {
   const info = _getCalendarIntegrationInfo(dbPath, data);
-  if (info.kind === 'calendar-db') return typeof _collectCalendarEvents === 'function' ? _collectCalendarEvents(data) : [];
+  if (info.kind === 'calendar-db') return typeof _collectCalendarEvents === 'function' ? _collectCalendarEvents(data, dbPath) : [];
   if (info.kind === 'mapped-db') return _collectMappedCalendarEvents(dbPath, data);
   return [];
 }
@@ -209,18 +209,24 @@ function _mappedCalendarDateValue(date, ptc, oldRaw) {
   return '';
 }
 
+function _calendarMappingHistoryScope(dbPath) {
+  if (typeof _dbViewConfigHistoryScope === 'function') return _dbViewConfigHistoryScope(dbPath);
+  return typeof _dbScope === 'function' ? _dbScope() : ('db:' + String(dbPath || '').split('/').pop());
+}
+
 async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options = {}) {
   const ctx = _getMappedCalendarUpdateContext(dbPath, ev);
   if (!ctx) throw new Error('マッピング元の日時プロパティを解決できません');
   const startValue = _mappedCalendarDateValue(startDate, ctx.startPtc, ctx.startRaw);
+  const clearEndIfMissing = !!options.clearEndIfMissing;
   const preserveEmptyEnd = !!options.preserveMissingEndIfZeroDuration
     && !ctx.endRaw
     && (!(endDate instanceof Date) || Number.isNaN(endDate.getTime()) || endDate.getTime() === startDate.getTime());
   let endValue = '';
   if (ctx.inlineRange) {
-    endValue = preserveEmptyEnd ? '' : _mappedCalendarDateValue(endDate || startDate, ctx.endPtc, ctx.endRaw);
+    endValue = (clearEndIfMissing || preserveEmptyEnd) ? '' : _mappedCalendarDateValue(endDate || startDate, ctx.endPtc, ctx.endRaw);
   } else if (ctx.mapping.endProp) {
-    endValue = preserveEmptyEnd ? '' : _mappedCalendarDateValue(endDate || startDate, ctx.endPtc, ctx.endRaw);
+    endValue = (clearEndIfMissing || preserveEmptyEnd) ? '' : _mappedCalendarDateValue(endDate || startDate, ctx.endPtc, ctx.endRaw);
   }
   const newStartRaw = ctx.inlineRange
     ? _dbDateSerializeValue(startValue, endValue, ctx.startPtc, ctx.startRaw)
@@ -232,19 +238,38 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
   const oldEndRaw = ctx.endRaw;
   let createdEndRef = null;
 
-  const applyValues = async (startRaw, endRaw, mode) => {
-    await _apiPutValue(startRef, { new_value: startRaw });
-    if (!ctx.inlineRange && ctx.mapping.endProp) {
-      if (ctx.endVal) {
-        await _apiPutValue({ file: ctx.endVal.file, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
-      } else if (endRaw && (mode === 'redo' || mode === 'apply')) {
-        const res = await _apiPostValue(ctx.entityPath, ctx.mapping.endProp, endRaw, '採用', '');
-        createdEndRef = { file: res?.path, property: res?.property || ctx.mapping.endProp, candidate_index: res?.candidate_index };
+  const deleteCreatedEnd = async (ref) => {
+    if (!ref) return;
+    try { await _apiPutValue(ref, { _delete: true }); } catch {}
+  };
+
+  const applyValues = async (startRaw, endRaw, mode, opts = {}) => {
+    let startWritten = false;
+    let localCreatedEndRef = null;
+    try {
+      await _apiPutValue(startRef, { new_value: startRaw });
+      startWritten = true;
+      if (!ctx.inlineRange && ctx.mapping.endProp) {
+        if (ctx.endVal) {
+          await _apiPutValue({ file: ctx.endVal.file, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
+        } else if (endRaw && (mode === 'redo' || mode === 'apply')) {
+          const res = await _apiPostValue(ctx.entityPath, ctx.mapping.endProp, endRaw, '採用', '');
+          createdEndRef = { file: res?.path, property: res?.property || ctx.mapping.endProp, candidate_index: res?.candidate_index };
+          localCreatedEndRef = createdEndRef;
+        }
       }
+    } catch (err) {
+      if (opts.rollbackOnFailure) {
+        if (localCreatedEndRef) await deleteCreatedEnd(localCreatedEndRef);
+        if (startWritten) {
+          try { await _apiPutValue(startRef, { new_value: oldStartRaw }); } catch {}
+        }
+      }
+      throw err;
     }
   };
 
-  await applyValues(newStartRaw, endValue, 'apply');
+  await applyValues(newStartRaw, endValue, 'apply', { rollbackOnFailure: true });
 
   if (typeof historyPush === 'function' && typeof _dbScope === 'function') {
     historyPush(
@@ -264,7 +289,7 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
         await applyValues(newStartRaw, endValue, 'redo');
         await selectDatabase(dbPathForHistory);
       },
-      _dbScope()
+      _calendarMappingHistoryScope(dbPathForHistory)
     );
   }
 
@@ -342,6 +367,7 @@ function _openMappedCalendarEventPanel(dbPath, ev) {
       };
       await _saveMappedCalendarDates(dbPath, ev, parseInputDate(startVal), endVal ? parseInputDate(endVal) : null, {
         preserveMissingEndIfZeroDuration: !endVal,
+        clearEndIfMissing: !!endField && !endVal,
       });
       overlay.remove();
       showStatus('日時を更新しました');

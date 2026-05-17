@@ -16,28 +16,43 @@ function bdEditConnLabel(conn) {
     const s=window.getSelection(), r=document.createRange();
     r.selectNodeContents(lbl); s.removeAllRanges(); s.addRange(r);
     lbl.style.pointerEvents = 'auto';
+    const originalLabel = conn._labelWasEmpty ? '' : (conn.label || '');
+    conn._labelEditOriginalLabel = originalLabel;
+    const cleanupLabelEditFlags = () => {
+      delete conn._labelWasEmpty;
+      delete conn._labelPlaceholderUndoCaptured;
+      delete conn._labelEditOriginalLabel;
+      delete conn._editingInline;
+    };
     const finish = () => {
       lbl.contentEditable = 'false';
       const text = lbl.textContent.trim() || '';
       const beforeLabel = conn.label || '';
+      const labelBeforePlaceholder = conn._labelEditOriginalLabel || '';
       const placeholderAdd = !!conn._labelWasEmpty && beforeLabel === 'テキスト';
       const nextLabel = (conn._labelWasEmpty && (text === 'テキスト' || text === '')) ? '' : text;
+      const changedFromOriginal = nextLabel !== labelBeforePlaceholder;
       if (nextLabel === beforeLabel) {
         const wasInlineNoChange = !!conn._editingInline;
-        delete conn._labelWasEmpty;
         lbl.style.pointerEvents = '';
-        delete conn._editingInline;
+        cleanupLabelEditFlags();
         if (wasInlineNoChange && typeof bdDrawConns === 'function') bdDrawConns();
         return;
       }
-      if (!placeholderAdd && typeof bdPushUndo === 'function') bdPushUndo();
+      if (placeholderAdd && !changedFromOriginal) {
+        conn.label = labelBeforePlaceholder;
+        lbl.style.pointerEvents = '';
+        cleanupLabelEditFlags();
+        if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'conn-label-placeholder-cancel' });
+        return;
+      }
+      if ((!placeholderAdd || !conn._labelPlaceholderUndoCaptured) && typeof bdPushUndo === 'function') bdPushUndo();
       // 元々空ラベルだった場合にプレースホルダ「テキスト」のまま確定されたら空に戻す
       conn.label = nextLabel;
-      delete conn._labelWasEmpty;
       lbl.style.pointerEvents = '';
       // textPath モードから一時的に HTML モードへ切り替えていた場合、編集完了で textPath モードに戻す (Phase 5-2)
       const wasInline = !!conn._editingInline;
-      delete conn._editingInline;
+      cleanupLabelEditFlags();
       bdDirty();
       if (!conn.label || wasInline) bdDrawConns();
     };
@@ -45,8 +60,7 @@ function bdEditConnLabel(conn) {
     lbl.onkeydown = (ke) => {
       if (ke.key === 'Enter') { ke.preventDefault(); lbl.blur(); }
       if (ke.key === 'Escape') {
-        if (conn._labelWasEmpty) lbl.textContent = '';
-        else lbl.textContent = conn.label;
+        lbl.textContent = conn._labelEditOriginalLabel || '';
         lbl.blur();
       }
       ke.stopPropagation();
@@ -172,23 +186,51 @@ function bdContextMenu(e, nodeId) {
       bdPushUndo();
       const ids = multi ? [...bd.selected] : [nodeId];
       const sourceNodes = ids.map(id => bd.nodes.find(v => v.id === id)).filter(Boolean);
-      const { newNodes } = typeof bdCloneNodesWithOffset === 'function'
+      const { newNodes, idMap } = typeof bdCloneNodesWithOffset === 'function'
         ? bdCloneNodesWithOffset(sourceNodes, 30)
-        : { newNodes: [] };
+        : { newNodes: [], idMap: {} };
       bd.nodes.push(...newNodes);
+      const sourceIdSet = new Set(sourceNodes.map(node => node.id));
+      const newConnections = (bd.connections || [])
+        .filter(conn => conn && sourceIdSet.has(conn.from) && sourceIdSet.has(conn.to) && idMap[conn.from] && idMap[conn.to])
+        .map(conn => {
+          const cloned = { ...conn, id: bdId(), from: idMap[conn.from], to: idMap[conn.to] };
+          if (Array.isArray(conn.controlPoints) && conn.controlPoints.length === 2) {
+            cloned.controlPoints = conn.controlPoints.map(point => ({ ...point }));
+          }
+          return cloned;
+        });
+      bd.connections.push(...newConnections);
       bd.selected = new Set(newNodes.map(node => node.id));
       bdRender();
       bdDirty();
     });
     if (multi && nd) {
       item('選択カードをこのカードに内包', () => {
+        const parentAbs = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(nd) : { x: nd.x, y: nd.y };
+        const isAncestorOfTarget = (id) => {
+          if (typeof bdDescendants === 'function') return bdDescendants(id).includes(nodeId);
+          let cur = nd;
+          const seen = new Set();
+          while (cur?.parent && !seen.has(cur.id)) {
+            if (cur.parent === id) return true;
+            seen.add(cur.id);
+            cur = bd.nodes.find(v => v.id === cur.parent);
+          }
+          return false;
+        };
+        const targetIds = [...bd.selected].filter(id => id !== nodeId && !isAncestorOfTarget(id));
+        if (!targetIds.length) {
+          if (typeof showStatus === 'function') showStatus('内包できるカードがありません', true);
+          return;
+        }
         bdPushUndo();
         nd.container = true;
-        [...bd.selected].forEach(id => {
-          if (id === nodeId) return;
+        targetIds.forEach(id => {
           const ch = bd.nodes.find(v => v.id === id);
           if (ch) {
-            ch.x -= nd.x; ch.y -= nd.y;
+            const childAbs = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(ch) : { x: ch.x, y: ch.y };
+            ch.x = childAbs.x - parentAbs.x; ch.y = childAbs.y - parentAbs.y;
             ch.parent = nodeId; ch.contained = true;
           }
         });
@@ -199,17 +241,18 @@ function bdContextMenu(e, nodeId) {
     if (nd && hasParentTarget) {
       item('親から切り離す', () => {
         bdPushUndo();
-        const depthOf = (id) => {
+        const depthOf = (id) => (typeof bdParentDepth === 'function') ? bdParentDepth(id) : (() => {
           let depth = 0;
           let cur = bd.nodes.find(v => v.id === id);
           const seen = new Set();
-          while (cur?.parent && depth < 50 && !seen.has(cur.id)) {
+          const limit = Math.max(50, (bd.nodes || []).length + 1);
+          while (cur?.parent && depth < limit && !seen.has(cur.id)) {
             seen.add(cur.id);
             cur = bd.nodes.find(v => v.id === cur.parent);
             depth += 1;
           }
           return depth;
-        };
+        })();
         const ids = (multi ? [...bd.selected] : [nodeId]).sort((a, b) => depthOf(b) - depthOf(a));
         ids.forEach(id => {
           const n = bd.nodes.find(v => v.id === id); if (!n || !n.parent) return;
@@ -422,10 +465,13 @@ function bdContextMenu(e, nodeId) {
       // c33a3a6 以降、中間カードに設定した structure もそのカード配下のサブツリーに適用される。
       // bdAutoLayout が DFS でサブルートを個別レイアウトするので、ルート以外でも有効。
       strSub.sep();
-      const curSt = nd.structure || '';
+      const targetStructures = targetNodeIds.map(id => bd.nodes.find(v => v.id === id)?.structure || '');
+      const mixedStructure = targetStructures.some(st => st !== targetStructures[0]);
+      const curSt = mixedStructure ? '' : (targetStructures[0] || '');
       const applyStructure = (key) => {
         bdPushUndo();
-        const nextValue = curSt === key ? '' : key;
+        const allTargetsAlreadyUseKey = key && targetNodeIds.every(id => (bd.nodes.find(v => v.id === id)?.structure || '') === key);
+        const nextValue = allTargetsAlreadyUseKey ? '' : key;
         targetNodeIds.forEach(id => {
           const n2 = bd.nodes.find(v => v.id === id);
           if (!n2) return;
@@ -456,9 +502,9 @@ function bdContextMenu(e, nodeId) {
         strSub.item('ラインから親子化', () => { bdLinkifySelectionToTree(nodeId); });
         strSub.sep();
       }
-      strSub.item((curSt ? '' : lucide('checkSquare', 12) + ' ') + '親に従う', () => applyStructure(''));
+      strSub.item((!mixedStructure && !curSt ? lucide('checkSquare', 12) + ' ' : '') + '親に従う', () => applyStructure(''));
       Object.entries(BD_STRUCTURES).forEach(([key, label]) => {
-        strSub.item((curSt === key ? lucide('checkSquare', 12) + ' ' : '') + label, () => applyStructure(key));
+        strSub.item((!mixedStructure && curSt === key ? lucide('checkSquare', 12) + ' ' : '') + label, () => applyStructure(key));
       });
     }
 
@@ -596,7 +642,7 @@ function bdContextMenu(e, nodeId) {
       const count = bd.selected.size;
       const msg = count > 1 ? `${count}件のカードを削除しますか？` : 'このカードを削除しますか？';
       if (!(await cfConfirm(msg))) return;
-      bdDeleteSelected();
+      await bdDeleteSelected({ confirm: false });
     });
 
   } else {
@@ -654,22 +700,60 @@ function bdContextMenu(e, nodeId) {
   }
 
   document.body.appendChild(menu);
-  const r=menu.getBoundingClientRect();
-  if(r.right>window.innerWidth) menu.style.left=(window.innerWidth-r.width-4)+'px';
-  if(r.bottom>window.innerHeight) menu.style.top=(window.innerHeight-r.height-4)+'px';
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+  } else {
+    const r=menu.getBoundingClientRect();
+    if(r.right>window.innerWidth) menu.style.left=(window.innerWidth-r.width-4)+'px';
+    if(r.bottom>window.innerHeight) menu.style.top=(window.innerHeight-r.height-4)+'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
   setTimeout(()=>document.addEventListener('pointerdown',function h(ev){const inAny=[...document.querySelectorAll('.gb-context-menu')].some(m=>m.contains(ev.target));if(!inAny){document.querySelectorAll('.gb-context-menu').forEach(m=>m.remove());document.removeEventListener('pointerdown',h);}},{once:false}),0);
 }
 
 // --- 15. Status Management ---
+function _bdUniqueStatusName(baseName, skipIndex) {
+  const base = String(baseName || '').replace(/[\r\n]+/g, ' ').trim() || '新規';
+  const names = new Set((bd.statuses || [])
+    .map((status, index) => index === skipIndex ? '' : (status?.name || '').trim())
+    .filter(Boolean));
+  if (!names.has(base)) return base;
+  let suffix = 2;
+  while (names.has(base + ' ' + suffix)) suffix += 1;
+  return base + ' ' + suffix;
+}
+
+function _bdRenameStatusOnNodes(oldName, nextName) {
+  if (!oldName || oldName === nextName) return;
+  (bd.nodes || []).forEach(node => {
+    if (node.status === oldName) node.status = nextName;
+  });
+}
+
+function _bdClearStatusOnNodes(statusName) {
+  if (!statusName) return;
+  (bd.nodes || []).forEach(node => {
+    if (node.status === statusName) node.status = '';
+  });
+}
+
 function bdManageStatuses() {
   const o = document.createElement('div'); o.className = 'modal-overlay';
+  let undoCaptured = false;
+  const captureUndo = () => {
+    if (undoCaptured) return;
+    undoCaptured = true;
+    if (typeof bdPushUndo === 'function') bdPushUndo();
+  };
   const bindStatusSwatches = () => {
     o.querySelectorAll('.bd-status-color').forEach((swatch) => {
       const idx = parseInt(swatch.dataset.i, 10);
       bindColorSwatch(swatch, () => getColorSwatchValue(swatch, bd.statuses[idx]?.color || '#888'), (nextColor) => {
         const appliedColor = nextColor || '#888';
+        captureUndo();
         setColorSwatchValue(swatch, appliedColor);
         if (Number.isFinite(idx) && bd.statuses[idx]) bd.statuses[idx].color = appliedColor;
+        bdDirty();
       });
     });
   };
@@ -681,7 +765,7 @@ function bdManageStatuses() {
         <input type="text" value="${esc(s.name)}" data-i="${i}" data-f="name" style="width:80px;font-size:13px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
         <button type="button" class="bd-status-color gb-color-swatch gb-color-swatch--status" data-i="${i}" data-f="color" data-color="${esc(s.color)}" title="色"></button>
         <label style="font-size:11px;color:var(--fg2);">透過<input type="range" min="0" max="1" step="0.1" value="${s.opacity}" data-i="${i}" data-f="opacity" style="width:50px;vertical-align:middle;"></label>
-        <label style="font-size:11px;color:var(--fg2);">枠<input type="text" value="${s.border||''}" data-i="${i}" data-f="border" placeholder="例: 2px solid #22c55e" style="width:100px;font-size:11px;padding:1px 3px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:2px;"></label>
+        <label style="font-size:11px;color:var(--fg2);">枠<input type="text" value="${esc(s.border||'')}" data-i="${i}" data-f="border" placeholder="例: 2px solid #22c55e" style="width:100px;font-size:11px;padding:1px 3px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:2px;"></label>
         <button data-del="${i}" style="font-size:11px;padding:1px 6px;color:var(--fg2);">${lucide('x', 12)}</button>
       </div>`;
     });
@@ -692,12 +776,54 @@ function bdManageStatuses() {
   }
   render(); document.body.appendChild(o);
   o.addEventListener('input', (ev) => {
-    const i = ev.target.dataset.i, f = ev.target.dataset.f;
-    if (i!==undefined && f) { bd.statuses[+i][f] = f==='opacity' ? +ev.target.value : ev.target.value; }
+    const i = parseInt(ev.target.dataset.i, 10), f = ev.target.dataset.f;
+    if (!Number.isFinite(i) || !f || !bd.statuses[i]) return;
+    if (f === 'name') {
+      const oldName = bd.statuses[i].name || '';
+      const nextName = _bdUniqueStatusName(ev.target.value, i);
+      if (ev.target.value !== nextName) ev.target.value = nextName;
+      if (nextName === oldName) return;
+      captureUndo();
+      _bdRenameStatusOnNodes(oldName, nextName);
+      bd.statuses[i].name = nextName;
+      bdRender();
+      bdDirty();
+      return;
+    }
+    captureUndo();
+    if (f === 'opacity') {
+      bd.statuses[i][f] = +ev.target.value;
+    } else if (f === 'border') {
+      const nextBorder = String(ev.target.value || '').replace(/[\r\n]+/g, ' ').trim();
+      if (ev.target.value !== nextBorder) ev.target.value = nextBorder;
+      bd.statuses[i][f] = nextBorder;
+    } else {
+      bd.statuses[i][f] = ev.target.value;
+    }
+    bdRender();
+    bdDirty();
   });
-  o.addEventListener('click', (ev) => {
-    if (ev.target.dataset.del!==undefined) { bd.statuses.splice(+ev.target.dataset.del,1); render(); document.body.querySelector('.modal-overlay')?.remove(); document.body.appendChild(o); }
-    if (ev.target.id==='bd-st-add') { bd.statuses.push({name:'新規',color:'#888',opacity:1,border:''}); render(); o.remove(); document.body.appendChild(o); }
+  o.addEventListener('click', async (ev) => {
+    const delBtn = ev.target.closest?.('[data-del]');
+    if (delBtn?.dataset?.del!==undefined) {
+      const idx = +delBtn.dataset.del;
+      if (!Number.isFinite(idx) || !bd.statuses[idx]) return;
+      const label = bd.statuses[idx].name || 'このステータス';
+      if (typeof cfConfirm === 'function' && !(await cfConfirm(`ステータス「${label}」を削除しますか？`))) return;
+      captureUndo();
+      bd.statuses.splice(idx,1);
+      _bdClearStatusOnNodes(label);
+      bdRender();
+      bdDirty();
+      render();
+      return;
+    }
+    if (ev.target.id==='bd-st-add') {
+      captureUndo();
+      bd.statuses.push({name:_bdUniqueStatusName('新規'),color:'#888',opacity:1,border:''});
+      bdDirty();
+      render();
+    }
     if (ev.target.id==='bd-st-close') { o.remove(); bdRender(); bdDirty(); }
   });
 }

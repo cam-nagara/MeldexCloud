@@ -15,7 +15,10 @@ function buildToolMenuItems(toolType) {
     // 公開したい場合は「公開設定...」「公開を更新」を使う (specific[] 側で提供)。
     page: {
       import: [
-        { label: 'Markdownファイルを開く...', action: () => { if (typeof importMarkdownFile === 'function') importMarkdownFile(); }, disabled: !hasFile },
+        { label: 'Markdownファイルを開く...', action: () => {
+          if (typeof importMarkdownFile === 'function') importMarkdownFile();
+          else _showUnavailableToolMenuAction('Markdownファイルを開く');
+        }, disabled: !hasFile },
       ],
       export: [
         { label: 'Markdownとして保存...', action: () => _exportFile('note', 'md'), disabled: !hasFile },
@@ -43,7 +46,10 @@ function buildToolMenuItems(toolType) {
     },
     database: {
       import: [
-        { label: 'CSVからインポート...', action: () => { if (typeof importCsvToDb === 'function') importCsvToDb(); }, disabled: !hasFile },
+        { label: 'CSVからインポート...', action: () => {
+          if (typeof importCsvToDb === 'function') importCsvToDb();
+          else _showUnavailableToolMenuAction('CSVからインポート');
+        }, disabled: !hasFile },
       ],
       export: [
         { label: 'CSVとして保存...', action: () => _exportFile('db', 'csv'), disabled: !hasFile },
@@ -61,11 +67,15 @@ function buildToolMenuItems(toolType) {
       ],
     },
     calendar: {
+      import: [
+        { label: 'シフト表を取り込む...', action: () => { if (typeof openProductionShiftImport === 'function') openProductionShiftImport(); } },
+      ],
       export: [
         { label: '公開を更新', action: () => { if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('calendar'); }, disabled: !hasFile },
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('calendar'); }, disabled: !hasFile },
         { separator: true },
         { label: '勤怠CSVとして保存...', action: () => { if (typeof exportAttendanceCsvFromMenu === 'function') exportAttendanceCsvFromMenu(); } },
+        { label: 'シフト、実績、作業予定を書き出す...', action: () => { if (typeof openProductionExport === 'function') openProductionExport(); } },
       ],
     },
     csv: {
@@ -103,7 +113,6 @@ function buildToolMenuItems(toolType) {
     ],
     scriptnote: [
       { label: '開く...', action: () => showScriptNoteOpenModal() },
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
     ],
     database: [
       { label: 'プロパティ管理', action: () => { if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
@@ -137,13 +146,15 @@ function buildToolMenuItems(toolType) {
       { label: 'シート / スマートシートから一括読込...', action: () => {
         if (typeof bdOpenBulkLinkImport === 'function') bdOpenBulkLinkImport();
       }, disabled: !hasFile },
-      { separator: true },
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
     ],
     calendar: [
-      { label: '新規イベント', action: () => { if (typeof addCalendarEvent === 'function') addCalendarEvent(); } },
+      { label: '新規イベント', action: () => _openCalendarEventFromMenu() },
       { separator: true },
-      { label: '同期設定...', action: () => { if (typeof showCalSyncModal === 'function') showCalSyncModal(); } },
+      { label: '制作管理を始める', action: () => { if (typeof openProductionManagementStart === 'function') openProductionManagementStart(); } },
+      { label: 'ページ単位またはコマ単位の作業を作成...', action: () => { if (typeof openProductionTaskCreate === 'function') openProductionTaskCreate(); } },
+      { label: '担当者と時間を割り当て', action: () => { if (typeof runProductionAssignment === 'function') runProductionAssignment(); } },
+      { separator: true },
+      { label: '同期設定...', action: () => _openCalendarSyncFromMenu() },
       { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
     ],
     csv: [
@@ -220,6 +231,43 @@ function buildToolMenuItems(toolType) {
     ...importExportBlock,
     ...tailClose,
   ];
+}
+
+function _showUnavailableToolMenuAction(label) {
+  if (typeof showStatus === 'function') showStatus(`${label}を実行できませんでした`, true);
+}
+
+function _getActiveToolComponent(toolType) {
+  if (typeof GBTabs === 'undefined' || typeof getComponentInstance !== 'function') return null;
+  const activeTab = typeof GBTabs.getActiveTab === 'function' ? GBTabs.getActiveTab() : null;
+  if (!activeTab || activeTab.type !== toolType) return null;
+  return getComponentInstance(activeTab.id) || null;
+}
+
+function _openCalendarEventFromMenu() {
+  const comp = _getActiveToolComponent('calendar');
+  if (comp && typeof comp._openEventInPanel === 'function') {
+    comp._openEventInPanel(null);
+    return;
+  }
+  if (typeof addCalendarEvent === 'function') {
+    addCalendarEvent();
+    return;
+  }
+  _showUnavailableToolMenuAction('新規イベント');
+}
+
+function _openCalendarSyncFromMenu() {
+  const comp = _getActiveToolComponent('calendar');
+  if (comp && typeof comp._showSyncModal === 'function') {
+    comp._showSyncModal();
+    return;
+  }
+  if (typeof showCalSyncModal === 'function') {
+    showCalSyncModal();
+    return;
+  }
+  _showUnavailableToolMenuAction('同期設定');
 }
 
 // 別名で保存モーダル

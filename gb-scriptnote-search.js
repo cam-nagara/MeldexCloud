@@ -30,6 +30,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     return matches;
   },
 
+  _syncSearchSourceFromDom() {
+    if (typeof this._syncAllFromDom === 'function') this._syncAllFromDom();
+  },
+
   _findVisibleTextBoundary(textEl, targetOffset) {
     let remaining = Math.max(0, Number(targetOffset) || 0);
     let found = null;
@@ -97,6 +101,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _refreshSearchState(preferred = null) {
     if (!this._searchState) this._searchState = { query: '', replace: '', matches: [], index: -1 };
+    this._syncSearchSourceFromDom();
     this._searchState.matches = this._collectSearchMatches(this._searchState.query);
     this._searchState.index = this._findSearchMatchIndex(this._searchState.matches, preferred);
     return this._searchState;
@@ -213,7 +218,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     };
 
-    queryInput.addEventListener('input', () => syncState());
+    queryInput.addEventListener('input', () => syncState(null, false));
     replaceInput.addEventListener('input', () => {
       this._searchState.replace = replaceInput.value;
     });

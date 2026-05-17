@@ -26,6 +26,36 @@
     return String(value);
   }
 
+  function _redactDiagnosticText(value) {
+    let text = _safeText(value);
+    if (!text) return '';
+    if (/(?:body|content|prompt|本文|作品本文)\s*[:=]/i.test(text)) {
+      return 'エラー内容はプライバシー保護のため省略しました';
+    }
+    text = text.replace(/data:[^,\s]+,[^\s"'<>]+/gi, '[redacted-data]');
+    text = text.replace(/https?:\/\/[^\s"'<>]+/gi, '[redacted-url]');
+    text = text.replace(/[A-Za-z]:[\\/][^\s"'<>)]*/g, '[redacted-path]');
+    text = text.replace(/(?:^|[\s("'`])(?:\.{1,2}\/)?[^\s"'<>)]*[\\/][^\s"'<>)]*/g, match => {
+      const prefix = /^[\s("'`]/.test(match) ? match[0] : '';
+      return prefix + '[redacted-path]';
+    });
+    text = text.replace(/[^\s"'<>:]+?\.(?:md|json|scriptnote\.json|smart-db\.json|board\.md|png|jpe?g|gif|webp|pdf|csv|xlsx?|txt|html?|css|js|py)\b/giu, '[redacted-file]');
+    text = text.replace(/\b(?:path|file|filename|folder|title|name|content|body|prompt)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
+    return text.slice(0, 1200);
+  }
+
+  function _redactLogValue(value, key) {
+    if (value instanceof Error) {
+      return {
+        name: _redactDiagnosticText(value.name || 'Error'),
+        message: _redactDiagnosticText(value.message || ''),
+      };
+    }
+    if (Array.isArray(value)) return value.map(item => _redactLogValue(item, key));
+    if (value && typeof value === 'object') return _redactObject(value);
+    return _redactDiagnosticText(value);
+  }
+
   function _redact(value, key) {
     const lower = String(key || '').toLowerCase();
     if (/key|token|secret|password|authorization|content|body|prompt|title|name|path|file/.test(lower)) {
@@ -34,8 +64,8 @@
     }
     if (Array.isArray(value)) return value.map(item => _redact(item, key));
     if (value && typeof value === 'object') return _redactObject(value);
-    if (typeof value === 'string' && /[A-Za-z]:[\\/]|\/[^ ]+\/[^ ]+/.test(value)) return '[redacted-path]';
-    return value;
+    if (/message|stack|detail|error/.test(lower)) return _redactDiagnosticText(value);
+    return typeof value === 'string' ? _redactDiagnosticText(value) : value;
   }
 
   function _redactObject(obj) {
@@ -51,8 +81,8 @@
     lastError = {
       time: _now(),
       context: _redactObject(context || {}),
-      message: _safeText(error?.message || error),
-      stack: _safeText(error?.stack || ''),
+      message: _redactDiagnosticText(error?.message || error),
+      stack: _redactDiagnosticText(error?.stack || ''),
       friendly,
     };
     _push(logs, { level: 'error', message: lastError.message, context: lastError.context });
@@ -72,7 +102,7 @@
   }
 
   function _recordConsole(level, args) {
-    _push(logs, { level, message: Array.from(args || []).map(_safeText).join(' ') });
+    _push(logs, { level, message: Array.from(args || []).map(item => _safeText(_redactLogValue(item))).join(' ') });
   }
 
   function _installConsoleCapture() {
@@ -162,7 +192,7 @@
   async function _serverLogs() {
     try {
       if (typeof apiFetch !== 'function') return [];
-      const res = await apiFetch('/debug-log/recent?limit=80');
+      const res = await apiFetch('/debug-log/recent?limit=80', { silentError: true });
       return Array.isArray(res?.logs) ? res.logs.map(_redactObject) : [];
     } catch (_) {
       return [];
@@ -270,21 +300,19 @@
     const view = window.state?.view || '';
     const path = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : '';
     if (view) lines.push(`画面: ${view}`);
-    if (path) lines.push(`対象: ${path}`);
+    if (path) lines.push('対象: 現在のファイル（名前は送信しません）');
     const entries = _collectSupportHistoryEntries(limit);
     if (entries.length) {
       lines.push('直近の操作:');
       entries.forEach(entry => {
-        const parts = _historyEntryParts(entry);
         const time = entry.time ? new Date(entry.time).toLocaleTimeString('ja-JP', {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
         }) : '';
         const status = entry._supportType === 'redo' ? 'やり直し待ち' : '実行済み';
-        const scope = _historyScopeLabel(entry.scope);
-        const detail = parts.detail ? ` - ${parts.detail}` : '';
-        lines.push(`- ${time} [${scope} / ${status}] ${parts.title || '操作'}${detail}`);
+        const scope = entry.scope ? '対象あり' : '全体';
+        lines.push(`- ${time} [${scope} / ${status}] 操作記録`);
       });
     } else {
       lines.push('直近の操作: 取得できませんでした');

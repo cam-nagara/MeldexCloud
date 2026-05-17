@@ -33,6 +33,11 @@
     node.style.color = error ? 'var(--danger)' : 'var(--fg2)';
   }
 
+  function _isOwner() {
+    return window.MeldexKnowledgeCloudStore?.role?.() === 'owner'
+      || window.MeldexRuntimeAdapter?.getWorkspaceState?.()?.isOwner === true;
+  }
+
   async function _resignAll() {
     const provider = window.MeldexStorageAdapter?.getProvider?.() || null;
     if (provider && window.MeldexKnowledgeIntegrity?.resignAll) {
@@ -41,11 +46,40 @@
     return { signed: [] };
   }
 
+  async function _verifyCandidateRawKey(rawKey) {
+    const provider = window.MeldexStorageAdapter?.getProvider?.() || null;
+    const targets = window.MeldexKnowledgeIntegrity?.targets || [];
+    if (!provider || !targets.length || !window.MeldexKnowledgeSignature?.verify) return { checked: 0 };
+    let checked = 0;
+    const failed = [];
+    for (const target of targets) {
+      const signature = await window.MeldexKnowledgeSignature?.readSignature?.(provider, target.scope).catch(() => null);
+      if (!signature?.hmac) continue;
+      let payload = null;
+      try {
+        const raw = await provider.readText(target.path);
+        payload = JSON.parse(String(raw || 'null'));
+      } catch {
+        continue;
+      }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+      const result = await window.MeldexKnowledgeSignature.verify(provider, target.scope, payload, { rawKey });
+      checked += 1;
+      if (result?.ok === false) failed.push(target.label || target.scope);
+    }
+    if (failed.length) throw new Error(`入力された鍵は既存署名と一致しません: ${failed.slice(0, 5).join('、')}`);
+    return { checked };
+  }
+
   async function _setFromPassphrase(root) {
+    if (!_isOwner()) return _status(root, '管理者のみ実行できます。', true);
     const pass = root.querySelector('[data-owner-key-recovery-passphrase]')?.value || '';
     if (!pass) return _status(root, 'パスフレーズを入力してください。', true);
     try {
-      await window.MeldexOwnerKeyStore?.deriveFromPassphrase?.(pass);
+      const raw = await window.MeldexOwnerKeyStore?.deriveRawFromPassphrase?.(pass);
+      if (!raw) throw new Error('管理者鍵を復旧できませんでした');
+      await _verifyCandidateRawKey(raw);
+      await window.MeldexOwnerKeyStore?.setRawKey?.(raw);
       const result = await _resignAll();
       _status(root, `管理者鍵を復旧しました。再署名: ${(result?.signed || []).length}件`);
     } catch (err) {
@@ -54,10 +88,14 @@
   }
 
   async function _importRaw(root) {
+    if (!_isOwner()) return _status(root, '管理者のみ実行できます。', true);
     const value = root.querySelector('[data-owner-key-recovery-raw]')?.value?.trim() || '';
     if (!value) return _status(root, 'バックアップの管理者鍵を貼り付けてください。', true);
     try {
-      await window.MeldexOwnerKeyStore?.setRawKey?.(value);
+      const raw = window.MeldexOwnerKeyStore?.normalizeRawKey?.(value);
+      if (!raw) throw new Error('管理者鍵を復旧できませんでした');
+      await _verifyCandidateRawKey(raw);
+      await window.MeldexOwnerKeyStore?.setRawKey?.(raw);
       const result = await _resignAll();
       _status(root, `バックアップ鍵を復旧しました。再署名: ${(result?.signed || []).length}件`);
     } catch (err) {
@@ -66,6 +104,7 @@
   }
 
   async function _exportBackup(root) {
+    if (!_isOwner()) return _status(root, '管理者のみ実行できます。', true);
     try {
       const raw = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
       if (!raw) return _status(root, '管理者鍵が未設定です。先に復旧または作成してください。', true);
@@ -96,6 +135,8 @@
     document.querySelectorAll('.modal-overlay[data-owner-key-recovery="1"]').forEach(el => el.remove());
     const minLength = window.MeldexOwnerKeyStore?.PASSPHRASE_MIN_LENGTH || 12;
     const reason = String(options.reason || '');
+    const owner = _isOwner();
+    const disabled = owner ? '' : 'disabled';
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.dataset.ownerKeyRecovery = '1';
@@ -111,16 +152,16 @@
           <div class="gb-section-desc">管理者が決めた${_esc(minLength)}文字以上のパスフレーズから同じ鍵を再生成します。</div>
           <label class="gb-field-row">
             <span class="gb-label" style="min-width:130px;">パスフレーズ</span>
-            <input type="password" class="gb-input" data-owner-key-recovery-passphrase style="flex:1;" autocomplete="new-password">
-            <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-action="derive">復旧</button>
+            <input type="password" class="gb-input" data-owner-key-recovery-passphrase ${disabled} style="flex:1;" autocomplete="new-password">
+            <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-action="derive" ${disabled}>復旧</button>
           </label>
         </section>
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">バックアップ鍵から復旧</div>
-          <textarea class="gb-input" data-owner-key-recovery-raw rows="3" style="width:100%;resize:vertical;" placeholder="バックアップファイルの管理者鍵を貼り付け"></textarea>
+          <textarea class="gb-input" data-owner-key-recovery-raw rows="3" ${disabled} style="width:100%;resize:vertical;" placeholder="バックアップファイルの管理者鍵を貼り付け"></textarea>
           <div class="gb-field-row" style="justify-content:flex-start;gap:6px;margin-top:8px;">
-            <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-action="import">鍵を復旧</button>
-            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-owner-key-recovery-action="export">バックアップ保存</button>
+            <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-action="import" ${disabled}>鍵を復旧</button>
+            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-owner-key-recovery-action="export" ${disabled}>バックアップ保存</button>
           </div>
         </section>
         <div class="gb-section-desc" data-owner-key-recovery-status></div>
@@ -135,6 +176,7 @@
       if (action === 'import') _importRaw(overlay);
       if (action === 'export') _exportBackup(overlay);
     });
+    if (!owner) _status(overlay, '管理者のみ実行できます。', true);
     return overlay;
   }
 

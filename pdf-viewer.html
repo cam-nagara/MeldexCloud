@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
 <meta charset="UTF-8">
 <title>Meldex PDFビューワー</title>
+<script src="gb-split-loader.js"></script>
 <script src="gb-runtime-adapter.js"></script>
 <script src="gb-resource-url.js"></script>
 <script src="gb-config.js"></script>
 <script src="gb-dropbox-auth.js"></script>
+<script src="gb-source-folder-registry.js"></script>
 <script src="gb-storage-adapter.js"></script>
 <script src="gb-storage-adapter-localfs.js"></script>
 <script src="gb-data-access.js"></script>
@@ -87,12 +90,20 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg);
 
 <script type="module">
 // PDF.js v4.4.168 — Copyright Mozilla Foundation, Apache 2.0 (vendor/pdfjs/LICENSE, NOTICE)
-const pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
-pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
+let pdfjsLib = null;
+try {
+  pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
+} catch (e) {
+  showFatalError('PDF表示ライブラリを読み込めませんでした: ' + (e?.message || e));
+}
 
 const API = '/api';
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
+const MAX_RENDERED_PAGE_CACHE = 8;
+const MIN_FIT_ZOOM = 0.2;
+const MAX_FIT_ZOOM = 5;
 
 let pdfDoc = null;
 let pageNum = 1;
@@ -105,7 +116,16 @@ let showPagesToken = 0;
 document.getElementById('sel-mode').value = mode;
 document.getElementById('title').textContent = filePath.split('/').pop() || 'PDF';
 
+function showFatalError(message) {
+  const loading = document.getElementById('loading');
+  if (loading) {
+    loading.classList.remove('hidden');
+    loading.textContent = message;
+  }
+}
+
 async function init() {
+  if (!pdfjsLib) return;
   if (!filePath) { document.getElementById('loading').textContent = 'パスが指定されていません'; return; }
   try {
     const url = API + '/file-raw?path=' + encodeURIComponent(filePath);
@@ -116,6 +136,14 @@ async function init() {
     showPages();
   } catch (e) {
     document.getElementById('loading').textContent = '読み込み失敗: ' + e.message;
+  }
+}
+
+function trimRenderedPageCache() {
+  while (renderedPages.size > MAX_RENDERED_PAGE_CACHE) {
+    const firstKey = renderedPages.keys().next().value;
+    if (firstKey === undefined) return;
+    renderedPages.delete(firstKey);
   }
 }
 
@@ -134,6 +162,7 @@ async function renderPage(num) {
     const ctx = canvas.getContext('2d');
     await page.render({ canvasContext: ctx, viewport }).promise;
     renderedPages.set(cacheKey, canvas);
+    trimRenderedPageCache();
     return canvas;
   } catch (e) {
     renderedPages.delete(cacheKey);
@@ -188,10 +217,12 @@ async function fitZoom() {
   const page = await pdfDoc.getPage(1);
   const vp = page.getViewport({ scale: 1 });
   const viewer = document.getElementById('viewer');
-  const vh = viewer.clientHeight - 32;
+  const vh = Math.max(1, viewer.clientHeight - 32);
   const gap = mode === 'single' ? 0 : 4;
-  const vw = mode === 'single' ? viewer.clientWidth - 32 : (viewer.clientWidth - 32 - gap) / 2;
-  zoom = Math.min(vw / vp.width, vh / vp.height);
+  const availableWidth = Math.max(1, viewer.clientWidth - 32);
+  const vw = mode === 'single' ? availableWidth : Math.max(1, (availableWidth - gap) / 2);
+  const nextZoom = Math.min(vw / vp.width, vh / vp.height);
+  zoom = Number.isFinite(nextZoom) ? Math.min(MAX_FIT_ZOOM, Math.max(MIN_FIT_ZOOM, nextZoom)) : 1;
   renderedPages.clear();
 }
 

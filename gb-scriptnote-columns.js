@@ -72,8 +72,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     cell.appendChild(input);
     input.focus();
     input.select();
+    let finished = false;
     const commit = () => {
+      if (finished) return;
+      finished = true;
       const newLabel = input.value.trim() || currentLabel;
+      if (newLabel === currentLabel) {
+        this._render();
+        return;
+      }
       this._pushUndo('列名変更');
       if (isStandard) {
         if (!this.doc.editor.columnLabels) this.doc.editor.columnLabels = {};
@@ -87,7 +94,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-      if (e.key === 'Escape') { input.value = currentLabel; input.blur(); }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (finished) return;
+        finished = true;
+        input.value = currentLabel;
+        this._render();
+      }
     });
   },
 
@@ -140,6 +153,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         buildSub(sub);
         const bRect = btn.getBoundingClientRect();
         sub.style.cssText = 'position:fixed;z-index:10001;';
+        document.body.appendChild(sub);
         positionPopup(sub, bRect, { prefer: 'right' });
         openSub = sub;
       });
@@ -386,7 +400,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     overlay.querySelector('#sn2-col-ok').addEventListener('click', () => {
       const label = overlay.querySelector('#sn2-col-name').value.trim() || '列';
       const type = typeSel.value;
-      const width = Number(overlay.querySelector('#sn2-col-width').value) || 80;
+      const rawWidth = Number(overlay.querySelector('#sn2-col-width').value);
+      const width = Math.max(20, Math.min(400, Number.isFinite(rawWidth) ? rawWidth : 80));
       const options = type === 'select'
         ? overlay.querySelector('#sn2-col-options').value.split('\n').map(s => s.trim()).filter(Boolean)
         : undefined;
@@ -430,6 +445,12 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._pushUndo('列複製');
     const dup = { ...src, id: newId, label: src.label + '（コピー）', options: src.options ? [...src.options] : undefined };
     customCols.splice(idx + 1, 0, dup);
+    if (Array.isArray(this.doc.editor?.columnOrder)) {
+      const order = this.doc.editor.columnOrder.filter(id => id !== newId && id !== '_handle');
+      const orderIdx = order.indexOf(colId);
+      order.splice(orderIdx >= 0 ? orderIdx + 1 : order.length, 0, newId);
+      this.doc.editor.columnOrder = order;
+    }
     // データも複製
     this.doc.rows.forEach(r => {
       if (r.columns && r.columns[colId] !== undefined) {
@@ -500,9 +521,20 @@ Object.assign(ScriptNoteEditor.prototype, {
     overlay.querySelector('#sn2-opt-cancel').addEventListener('click', () => overlay.remove());
     overlay.querySelector('#sn2-opt-ok').addEventListener('click', () => {
       this._pushUndo('選択肢編集');
-      colDef.options = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+      const nextOptions = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+      const allowed = new Set(nextOptions);
+      let cleared = 0;
+      (this.doc.rows || []).forEach(row => {
+        const val = row.columns?.[colId];
+        if (val !== undefined && val !== '' && !allowed.has(String(val))) {
+          row.columns[colId] = '';
+          cleared++;
+        }
+      });
+      colDef.options = nextOptions;
       this._render();
       this._markDirty();
+      if (cleared && typeof showStatus === 'function') showStatus(`削除された選択肢を使っていた${cleared}件の値を空にしました`);
       overlay.remove();
     });
     overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
@@ -526,6 +558,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         <button type="button" class="primary" id="sn2-unit-ok" style="padding:4px 12px;font-size:12px;">OK</button>
       </div>`;
     popup.style.cssText += 'position:fixed;z-index:10000;min-width:200px;';
+    document.body.appendChild(popup);
     positionPopup(popup, anchorEl.getBoundingClientRect());
     const input = popup.querySelector('#sn2-unit-input');
     input.focus();
@@ -588,7 +621,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     overlay.querySelector('#sn2-col-ok').addEventListener('click', () => {
       const label = overlay.querySelector('#sn2-col-name').value.trim() || '列';
       const type = typeSel.value;
-      const width = Number(overlay.querySelector('#sn2-col-width').value) || 80;
+      const rawWidth = Number(overlay.querySelector('#sn2-col-width').value);
+      const width = Math.max(20, Math.min(400, Number.isFinite(rawWidth) ? rawWidth : 80));
       const options = type === 'select'
         ? overlay.querySelector('#sn2-col-options').value.split('\n').map(s => s.trim()).filter(Boolean)
         : undefined;

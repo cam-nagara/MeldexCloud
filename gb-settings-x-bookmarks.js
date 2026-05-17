@@ -2,6 +2,7 @@
   'use strict';
 
   const rootId = 'x-bookmarks-settings-container';
+  let syncInFlight = false;
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -49,11 +50,21 @@
     }
   }
 
-  async function saveConfig() {
-    if (typeof apiPost !== 'function') return;
+  async function saveConfig(options = {}) {
+    const silentError = options?.silentError === true;
+    if (typeof apiPost !== 'function') {
+      if (!silentError) setStatus('設定を保存できませんでした: APIを利用できません', true);
+      return false;
+    }
     const saveDir = document.getElementById('x-bookmarks-save-dir')?.value || 'Xブックマーク';
     const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
-    await apiPost('/x-bookmarks/config', { save_dir: saveDir, max_results: maxResults }, { silentError: true });
+    try {
+      await apiPost('/x-bookmarks/config', { save_dir: saveDir, max_results: maxResults }, { silentError: true });
+      return true;
+    } catch (err) {
+      if (!silentError) setStatus('設定を保存できませんでした: ' + (err.userMessage || err.message || err), true);
+      return false;
+    }
   }
 
   async function connect() {
@@ -78,9 +89,23 @@
     }
   }
 
+  function setSyncBusy(isBusy) {
+    ['x-bookmarks-sync', 'x-bookmarks-sync-diff'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = !!isBusy;
+    });
+  }
+
   async function sync(mode) {
+    if (syncInFlight) return;
+    syncInFlight = true;
+    setSyncBusy(true);
     try {
-      await saveConfig();
+      const saved = await saveConfig({ silentError: true });
+      if (!saved) {
+        setStatus('設定を保存できなかったため、Xブックマーク保存を中止しました。', true);
+        return;
+      }
       setStatus('Xブックマークを保存しています...', false);
       const data = await apiPost('/x-bookmarks/sync', { mode: mode || 'incremental' }, { silentError: true });
       setStatus(`保存しました。新規${data.created || 0} / 更新${data.updated || 0} / スキップ${data.skipped || 0}`, false);
@@ -92,6 +117,9 @@
         return;
       }
       setStatus('保存できませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
     }
   }
 
@@ -106,7 +134,11 @@
 
   function renderXBookmarksSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
-    if (!container || container.dataset.rendered === '1') return;
+    if (!container) return;
+    if (container.dataset.rendered === '1') {
+      loadStatus();
+      return;
+    }
     container.dataset.rendered = '1';
     container.innerHTML = `
       <div class="gb-section-desc">Xに接続すると、自分のXブックマークをMeldex内のMarkdownとして保存できます。投稿、フォロー、いいね、DM送信は行いません。</div>
@@ -136,6 +168,7 @@
       <div id="x-bookmarks-status-message" class="gb-section-desc"></div>
     `;
     bind();
+    setSyncBusy(syncInFlight);
     loadStatus();
   }
 

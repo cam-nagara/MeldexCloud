@@ -13,7 +13,7 @@
 
   // 対象候補として扱うタブ型。ここに含まれる型のタブがあれば「開いているシート/スマートシート」として列挙する。
   const SUPPORTED_TAB_TYPES = new Set([
-    'smart-db', 'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph',
+    'smart-db', 'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
   ]);
 
   async function bdOpenBulkLinkImport() {
@@ -41,7 +41,8 @@
           const type = tab?.type || '';
           if (!path || seen.has(path)) return;
           if (SUPPORTED_TAB_TYPES.has(type)) {
-            result.push({ path, label: tab.label || path, type });
+            const tabState = (tab.state && typeof tab.state === 'object' && !Array.isArray(tab.state)) ? { ...tab.state } : {};
+            result.push({ path, label: tab.label || path, type, tabState, paneId: pane.id || '', tabId: tab.id || '' });
             seen.add(path);
           }
         });
@@ -100,9 +101,15 @@
       statusEl.style.color = isError ? 'var(--accent,#e66)' : 'var(--ui-fg-muted,#888)';
     };
 
+    const setPreviewPending = (pending) => {
+      currentEntries = null;
+      if (!busy) goBtn.disabled = !!pending;
+    };
+
     const refreshViews = async () => {
       const target = candidates[Number(srcSelect.value || 0)];
       viewSelect.innerHTML = '';
+      setPreviewPending(true);
       setStatus('ビューを取得中…');
       const views = await _getViewsFor(target);
       views.forEach((v, i) => {
@@ -121,10 +128,10 @@
       const target = viewSelect._target;
       const views = viewSelect._views || [];
       const v = views[Number(viewSelect.value || 0)];
+      setPreviewPending(true);
       if (!target || !v) {
         if (mySeq !== previewSeq) return;
         setStatus('');
-        currentEntries = null;
         return;
       }
       setStatus('該当エントリを取得中…');
@@ -133,10 +140,12 @@
         if (mySeq !== previewSeq) return; // より新しい refreshPreview が発火済みなら捨てる
         currentEntries = entries;
         if (!entries || !entries.length) setStatus('該当エントリがありません', true);
-        else setStatus(`該当エントリ: ${entries.length} 件`);
+        else {
+          setStatus(`該当エントリ: ${entries.length} 件`);
+          if (!busy) goBtn.disabled = false;
+        }
       } catch (e) {
         if (mySeq !== previewSeq) return;
-        currentEntries = null;
         setStatus('取得失敗: ' + (e?.message || e), true);
       }
     };
@@ -211,15 +220,81 @@
   }
 
   async function _fetchSmartDbEntries(path) {
-    const fileData = await apiFetch('/file?path=' + encodeURIComponent(path));
-    let def = {};
-    try { def = JSON.parse(fileData?.content || '{}') || {}; } catch { def = {}; }
-    const filters = Array.isArray(def.filters) ? def.filters : [];
-    const payload = await apiFetch('/smart-db?filters=' + encodeURIComponent(JSON.stringify(filters)));
+    const def = await _loadSmartDbDefinition(path);
+    if (def?.sourceType === 'all-files') {
+      const data = await _fetchSmartDbAllFilesData(path, def);
+      let files = Array.isArray(data?.files) ? data.files.slice() : [];
+      if (typeof applyGlobalIndexFilters === 'function') files = applyGlobalIndexFilters(files, def.filters || []);
+      if (typeof applyGlobalIndexSort === 'function') files = applyGlobalIndexSort(files, def.sortBy || 'modified', def.sortDir || 'desc');
+      return files
+        .filter(file => file && (file.path || file.abs_path))
+        .map(file => ({
+          path: file.abs_path || file.path,
+          name: file.name || String(file.abs_path || file.path || '').split(/[\\/]/).pop() || '',
+          source: 'smart-db',
+        }));
+    }
+    const filters = Array.isArray(def?.filters) ? def.filters : [];
+    const payload = _currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.entities)
+      ? state.smartDbData
+      : await apiFetch('/smart-db?filters=' + encodeURIComponent(JSON.stringify(filters)));
     const entities = Array.isArray(payload?.entities) ? payload.entities : [];
     return entities
       .filter(e => e && e.path)
       .map(e => ({ path: e.path, name: e.name || '', source: 'smart-db' }));
+  }
+
+  async function _loadSmartDbDefinition(path) {
+    const pathText = String(path || '');
+    if (pathText.startsWith('smart-db:')) {
+      const id = pathText.slice('smart-db:'.length);
+      if (state?.currentSmartDb && (state.currentSmartDb.id === id || state.currentSmartDb._filePath === id)) {
+        return state.currentSmartDb;
+      }
+      let saved = [];
+      try {
+        saved = typeof getSavedSmartDbs === 'function'
+          ? getSavedSmartDbs()
+          : JSON.parse(localStorage.getItem('smartDbs') || '[]');
+      } catch { saved = []; }
+      const found = (saved || []).find(d => d?.id === id || d?._filePath === id) || {};
+      if (!_isRawSmartDbDefinition(found)) throw new Error('スマートシートが見つかりません');
+      return typeof normalizeSmartDbDefinition === 'function' ? normalizeSmartDbDefinition(found) : found;
+    }
+    const fileData = await apiFetch('/file?path=' + encodeURIComponent(pathText));
+    let def = {};
+    try { def = JSON.parse(fileData?.content || '{}') || {}; } catch { throw new Error('スマートシートJSONを読み込めません'); }
+    if (!_isRawSmartDbDefinition(def)) throw new Error('スマートシート定義が空です');
+    if (typeof normalizeSmartDbDefinition === 'function') def = normalizeSmartDbDefinition(def);
+    def._filePath = pathText;
+    return def;
+  }
+
+  function _isRawSmartDbDefinition(def) {
+    if (!def || typeof def !== 'object' || Array.isArray(def)) return false;
+    if (!Object.keys(def).length) return false;
+    return def.type === 'smart-db'
+      || def.sourceType === 'all-files'
+      || def.sourceType === 'db-entities'
+      || Array.isArray(def.filters)
+      || !!def.id
+      || !!def.name;
+  }
+
+  function _currentSmartDbMatches(path, def) {
+    const current = state?.currentSmartDb;
+    if (!current) return false;
+    const pathText = String(path || '');
+    return current === def
+      || current.id === def?.id
+      || (current._filePath && current._filePath === pathText)
+      || pathText === 'smart-db:' + current.id;
+  }
+
+  async function _fetchSmartDbAllFilesData(path, def) {
+    if (_currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.files)) return state.smartDbData;
+    if (typeof loadGlobalIndexData === 'function') return await loadGlobalIndexData(def);
+    return await apiFetch('/global-index');
   }
 
   async function _fetchDbEntries(dbPath, view) {
@@ -227,39 +302,131 @@
     // state.filter (採用/不採用/すべて) が current フィルタとして status_filter に反映される。
     // view.kind === 'db-all' はフィルタ無しを要求するので status_filter を渡さない。
     let url = '/pivot?path=' + encodeURIComponent(dbPath);
-    if (view?.kind === 'db-current' && typeof getFilterParam === 'function') {
-      try {
-        const fp = getFilterParam();
-        if (fp) url += '&status_filter=' + encodeURIComponent(fp);
-      } catch (_) { /* noop */ }
-    }
+    const activeView = _dbViewForBulkImport(dbPath, view);
+    const statusFilter = _statusFilterParamForBulkImport(dbPath, view, activeView);
+    if (statusFilter) url += '&status_filter=' + encodeURIComponent(statusFilter);
     const data = await apiFetch(url);
     const entitiesObj = (data && data.entities && typeof data.entities === 'object') ? data.entities : {};
-    // /pivot のエントリは name キーのみ。path は _entityPath(dbPath, name) で導出する。
-    const resolvePath = (name) => {
-      if (typeof _entityPath === 'function') return _entityPath(dbPath, name);
-      // _entityPath が未ロードならフォールバック (新フォーマット想定: dbPath/name.md)
-      return dbPath + '/' + name + '.md';
-    };
     const all = Object.keys(entitiesObj).map(name => ({
-      path: resolvePath(name),
+      path: _resolveDbEntityPathForBulkImport(dbPath, name, data, entitiesObj[name]),
       name,
       source: 'db',
     })).filter(e => !!e.path);
-    // 保存済みビューの filter 文字列が指定されていれば、エントリ名または path の部分一致で簡易絞り込む。
-    // (高度な advancedFilters の完全適用は将来対応。本 MVP では単純文字列フィルタのみ)。
-    if (view?.kind === 'db-saved' && Number.isInteger(view.idx) && typeof getSavedViews === 'function') {
-      let filterStr = '';
-      try {
-        const saved = getSavedViews(dbPath) || [];
-        filterStr = String(saved[view.idx]?.filter || '').trim();
-      } catch (_) { /* noop */ }
-      if (filterStr) {
-        const needle = filterStr.toLowerCase();
-        return all.filter(e => (e.name + ' ' + e.path).toLowerCase().includes(needle));
+    const advancedFilters = Array.isArray(activeView?.advancedFilters) ? activeView.advancedFilters : [];
+    const filtered = advancedFilters.length
+      ? all.filter(e => _dbEntityPassesAdvancedFiltersForBulkImport(entitiesObj[e.name], advancedFilters))
+      : all;
+    return _sortDbEntriesForBulkImport(filtered, entitiesObj, activeView);
+  }
+
+  function _dbViewForBulkImport(dbPath, view) {
+    if (view?.kind === 'db-current' && typeof getCurrentDbViewConfigEntry === 'function') {
+      try { return getCurrentDbViewConfigEntry(dbPath) || null; } catch { return null; }
+    }
+    if (view?.kind !== 'db-saved' || !Number.isInteger(view.idx) || typeof getSavedViews !== 'function') return null;
+    try { return (getSavedViews(dbPath) || [])[view.idx] || null; } catch { return null; }
+  }
+
+  function _statusFilterParamForBulkImport(dbPath, view, savedView) {
+    if (view?.kind === 'db-all') return '';
+    let filterName = '';
+    if (view?.kind === 'db-saved' || view?.kind === 'db-current') filterName = String(savedView?.filter || '').trim();
+    else if (typeof state !== 'undefined' && dbPath === state.currentDbPath && typeof getFilterParam === 'function') {
+      try { return getFilterParam() || ''; } catch { return ''; }
+    }
+    if (filterName === 'adopted') return '採用,掲載済み';
+    if (filterName === 'nobotsu') return '採用,掲載済み,案';
+    return '';
+  }
+
+  function _resolveDbEntityPathForBulkImport(dbPath, name, pivotData, entityData) {
+    const db = String(dbPath || '').replace(/\/+$/, '');
+    const embedded = pivotData?.new_format === true ? _entityDataPathForBulkImport(entityData) : '';
+    if (embedded) return embedded;
+    return pivotData?.new_format === true ? db + '/' + name + '.md' : db + '/' + name;
+  }
+
+  function _entityDataPathForBulkImport(entityData) {
+    if (!entityData || typeof entityData !== 'object') return '';
+    for (const values of Object.values(entityData)) {
+      if (!Array.isArray(values)) continue;
+      for (const value of values) {
+        const file = String(value?.file || '').trim();
+        if (file) return file;
       }
     }
-    return all;
+    return '';
+  }
+
+  function _dbEntityPassesAdvancedFiltersForBulkImport(entityData, filters) {
+    if (typeof _dbEntityPassesAdvancedFilters === 'function') {
+      return _dbEntityPassesAdvancedFilters(entityData, filters);
+    }
+    return (filters || []).every(filter => {
+      if (filter?.property === '*') {
+        const allValues = Object.values(entityData || {}).flat().filter(v => v && typeof v === 'object');
+        return _dbValuesMatchAdvancedFilterForBulkImport(allValues, filter);
+      }
+      return _dbValuesMatchAdvancedFilterForBulkImport(entityData?.[filter?.property] || [], filter);
+    });
+  }
+
+  function _dbValuesMatchAdvancedFilterForBulkImport(values, filter) {
+    const list = Array.isArray(values) ? values : [];
+    if (!list.length) return filter?.operator === 'empty' || filter?.operator === 'not_contains';
+    if (filter?.operator === 'not_equals' || filter?.operator === 'not_contains') {
+      return list.every(value => _dbValueMatchesAdvancedFilterForBulkImport(value, filter));
+    }
+    return list.some(value => _dbValueMatchesAdvancedFilterForBulkImport(value, filter));
+  }
+
+  function _dbValueMatchesAdvancedFilterForBulkImport(valueObj, filter) {
+    const target = String(filter?.field === 'status' ? (valueObj?.status || '') : (valueObj?.value || ''));
+    const needle = String(filter?.value || '');
+    switch (filter?.operator) {
+      case 'equals': return target === needle;
+      case 'not_equals': return target !== needle;
+      case 'contains': return target.includes(needle);
+      case 'not_contains': return !target.includes(needle);
+      case 'empty': return target.trim() === '';
+      case 'not_empty': return target.trim() !== '';
+      default: return true;
+    }
+  }
+
+  function _sortDbEntriesForBulkImport(entries, entitiesObj, view) {
+    const sortCfg = view?.sortConfig || null;
+    const manualOrder = Array.isArray(view?.manualOrder) ? view.manualOrder : null;
+    const out = entries.slice();
+    if (sortCfg?.key === 'manual' && manualOrder) {
+      out.sort((a, b) => {
+        const ia = manualOrder.indexOf(a.name), ib = manualOrder.indexOf(b.name);
+        if (ia < 0 && ib < 0) return a.name.localeCompare(b.name);
+        if (ia < 0) return 1;
+        if (ib < 0) return -1;
+        return ia - ib;
+      });
+      return out;
+    }
+    if (!sortCfg?.key || sortCfg.key === 'name') {
+      out.sort((a, b) => sortCfg?.dir === 'desc' ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name));
+      return out;
+    }
+    out.sort((a, b) => {
+      const av = _firstAdoptedValueForBulkImport(entitiesObj[a.name]?.[sortCfg.key]);
+      const bv = _firstAdoptedValueForBulkImport(entitiesObj[b.name]?.[sortCfg.key]);
+      const cmp = av.localeCompare(bv, undefined, { numeric: true });
+      return sortCfg.dir === 'desc' ? -cmp : cmp;
+    });
+    return out;
+  }
+
+  function _firstAdoptedValueForBulkImport(values) {
+    if (!Array.isArray(values)) return '';
+    const picked = values.find(v => v && (v.status === '採用' || v.status === '掲載済み'))
+      || values.find(v => v && v.status === '案')
+      || values[0];
+    return picked?.value == null ? '' : String(picked.value);
   }
 
   async function _executeImport(entries) {
@@ -387,8 +554,8 @@
         for (const entry of arr) {
           if (!entry || typeof entry !== 'object') continue;
           if (!adopted(entry.status)) continue;
-          const v = entry.value;
-          if (typeof v === 'string' && imgExt.test(v)) return _resolveImageUrl(v);
+          const v = _firstImageCandidate(entry.value, imgExt);
+          if (v) return _resolveImageUrl(v, path);
         }
       }
     }
@@ -402,26 +569,63 @@
     for (const src of fallbackSources) {
       for (const key of Object.keys(src)) {
         const val = src[key];
-        if (typeof val === 'string' && imgExt.test(val)) return _resolveImageUrl(val);
-        if (Array.isArray(val)) {
-          for (const v of val) {
-            if (typeof v === 'string' && imgExt.test(v)) return _resolveImageUrl(v);
-          }
-        }
+        const image = _firstImageCandidate(val, imgExt);
+        if (image) return _resolveImageUrl(image, path);
       }
     }
     return '';
   }
 
+  function _firstImageCandidate(value, imgExt) {
+    const candidates = _imageCandidateValues(value);
+    return candidates.find(v => imgExt.test(v)) || '';
+  }
+
+  function _imageCandidateValues(value) {
+    if (value == null) return [];
+    if (typeof value === 'string') {
+      const raw = value.trim();
+      if ((raw.startsWith('[') && raw.endsWith(']')) || (raw.startsWith('{') && raw.endsWith('}'))) {
+        try { return _imageCandidateValues(JSON.parse(raw)); } catch {}
+      }
+      return raw ? [raw] : [];
+    }
+    if (Array.isArray(value)) return value.flatMap(v => _imageCandidateValues(v));
+    if (typeof value === 'object') {
+      return ['url', 'path', 'file', 'src', 'name']
+        .flatMap(key => _imageCandidateValues(value[key]));
+    }
+    return [];
+  }
+
   // 画像 URL を解決する。http/https/data はそのまま、相対パスは /file-raw 経由に変換する。
-  function _resolveImageUrl(val) {
+  function _resolveImageUrl(val, entryPath) {
     const s = String(val || '').trim();
     if (!s) return '';
-    if (/^(https?|data):/i.test(s)) return s;
+    if (/^(https?|data|blob):/i.test(s)) return s;
+    if (/^\/(?:api\/)?(?:file-raw|media\/file)\?/i.test(s)) return s;
+    if (/^_media\//i.test(s)) return _mediaFileUrlForBulkImport(s);
+    const resolvedPath = _resolveRelativeImagePath(s, entryPath);
     if (typeof API_BASE !== 'undefined' && API_BASE) {
-      return API_BASE + '/file-raw?path=' + encodeURIComponent(s);
+      return API_BASE + '/file-raw?path=' + encodeURIComponent(resolvedPath);
     }
-    return s;
+    return '/api/file-raw?path=' + encodeURIComponent(resolvedPath);
+  }
+
+  function _mediaFileUrlForBulkImport(path) {
+    const mediaPath = String(path || '').replace(/^\/+/, '');
+    return window.MeldexResourceUrl?.api
+      ? window.MeldexResourceUrl.api('/media/file', { path: mediaPath })
+      : '/api/media/file?path=' + encodeURIComponent(mediaPath);
+  }
+
+  function _resolveRelativeImagePath(imagePath, entryPath) {
+    const raw = String(imagePath || '').replace(/\\/g, '/').trim();
+    if (!raw || raw.startsWith('/') || /^[a-zA-Z]:\//.test(raw)) return raw.replace(/^\/+/, '');
+    const base = String(entryPath || '').replace(/\\/g, '/');
+    const slash = base.lastIndexOf('/');
+    const dir = base.endsWith('.md') ? base.slice(0, slash) : base;
+    return (dir ? dir.replace(/\/+$/, '') + '/' : '') + raw;
   }
 
   window.bdOpenBulkLinkImport = bdOpenBulkLinkImport;

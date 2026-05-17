@@ -38,6 +38,28 @@ const MeldexPublicRuntime = (() => {
     + "  if (!form) return;\n"
     + "  var msg = document.getElementById('meldex-publish-msg');\n"
     + "  function successMessage() { return cfg.success_message || cfg.successMessage || '送信しました'; }\n"
+    + "  function pad2(value) { return String(value).padStart(2, '0'); }\n"
+    + "  function templateEntityName(template) {\n"
+    + "    var d = new Date();\n"
+    + "    return String(template || 'フォーム送信 {yyyy}-{MM}-{dd} {HH}:{mm}')\n"
+    + "      .replace(/\\{yyyy\\}/g, String(d.getFullYear()))\n"
+    + "      .replace(/\\{MM\\}/g, pad2(d.getMonth() + 1))\n"
+    + "      .replace(/\\{dd\\}/g, pad2(d.getDate()))\n"
+    + "      .replace(/\\{HH\\}/g, pad2(d.getHours()))\n"
+    + "      .replace(/\\{mm\\}/g, pad2(d.getMinutes()))\n"
+    + "      .replace(/\\{ss\\}/g, pad2(d.getSeconds()));\n"
+    + "  }\n"
+    + "  function buildEntityName(fields) {\n"
+    + "    var source = cfg.form_entity_name_source || cfg.formEntityNameSource || null;\n"
+    + "    if (!source || typeof source !== 'object') return '';\n"
+    + "    if (source.kind === 'property') {\n"
+    + "      var prop = String(source.property || '');\n"
+    + "      return prop ? String(fields[prop] || '').trim().slice(0, 80) : '';\n"
+    + "    }\n"
+    + "    if (source.kind === 'timestamp') return templateEntityName('フォーム送信 {yyyy}-{MM}-{dd} {HH}-{mm}-{ss}');\n"
+    + "    if (source.kind === 'template') return templateEntityName(source.template || '');\n"
+    + "    return '';\n"
+    + "  }\n"
     + "  function postFeedbackToGoogle(payload) {\n"
     + "    var url = String(cfg.feedback_google_url || '').trim();\n"
     + "    if (!cfg.feedback_relay_enabled || !/^https:\\/\\/script\\.google\\.com\\/macros\\/s\\//.test(url)) return;\n"
@@ -77,7 +99,7 @@ const MeldexPublicRuntime = (() => {
     + "          try {\n"
     + "            var dataUrl = await readFileAsDataUrl(f);\n"
     + "            items.push({ filename: f.name, type: f.type || '', data_url: dataUrl });\n"
-    + "          } catch (err) {}\n"
+    + "          } catch (err) { throw new Error('画像を読み込めませんでした: ' + (f && f.name || '添付ファイル')); }\n"
     + "        }\n"
     + "        fields[name] = JSON.stringify(items);\n"
     + "        continue;\n"
@@ -104,6 +126,7 @@ const MeldexPublicRuntime = (() => {
     + "      db_path: cfg.db_path || '',\n"
     + "      token: cfg.form_submit_token || '',\n"
     + "      form_id: cfg.form_id || '',\n"
+    + "      name: buildEntityName(fields),\n"
     + "      fields: fields\n"
     + "    };\n"
     + "    try {\n"
@@ -129,11 +152,15 @@ const MeldexPublicRuntime = (() => {
   // ==========================================================================
   function _resolveViewDef(viewType) {
     if (viewType === 'page' || viewType === 'entity') {
+      const el = viewType === 'entity'
+        ? document.getElementById('entity-view')
+        : document.getElementById('page-content');
       return {
-        el: document.getElementById('page-content'),
-        cssFiles: ['gb-editor.css'],
+        el,
+        cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss:
-          '#page-content, [id="page-content"] { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; }\n'
+          '#page-content, [id="page-content"], #entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; }\n'
+          + '#entity-view { box-sizing: border-box; }\n'
           + 'ruby { ruby-position: over; }\n'
           + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n',
         notFound: 'ノートが開かれていません',
@@ -171,8 +198,9 @@ const MeldexPublicRuntime = (() => {
             form_id: formCfg?.id || '',
             success_message: formCfg?.successMessage || '送信しました',
             feedback_relay_enabled: !!formCfg?.betaFeedbackRelay,
+            ...(formCfg?.entityNameProp ? { form_entity_name_source: { kind: 'property', property: formCfg.entityNameProp } } : {}),
           },
-          cssFiles: ['gb-database.css', 'gb-ui.css'],
+          cssFiles: ['gb-tools.css', 'gb-ui.css'],
           extraCss:
             'body { padding: 24px; }\n'
             + 'form[data-publish-form] { max-width: 680px; margin: 0 auto; }\n'
@@ -199,7 +227,7 @@ const MeldexPublicRuntime = (() => {
       }
       return {
         el: document.getElementById('pivot-table'),
-        cssFiles: ['gb-database.css', 'gb-ui.css'],
+        cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss:
           'body { padding: 16px; }\n'
           + 'table { border-collapse: collapse; table-layout: fixed; width: 100%; }\n'
@@ -321,6 +349,7 @@ const MeldexPublicRuntime = (() => {
       form_submit_token: publishCfg.form_submit_token || '',
       form_id: publishCfg.form_id || '',
       success_message: publishCfg.success_message || publishCfg.successMessage || '',
+      form_entity_name_source: publishCfg.form_entity_name_source || publishCfg.formEntityNameSource || null,
       feedback_relay_enabled: !!publishCfg.feedback_relay_enabled,
       feedback_google_url: publishCfg.feedback_google_url || (window.MeldexReleaseConfig?.betaFeedback?.googleWebAppUrl || ''),
       feedback_google_sheet: publishCfg.feedback_google_sheet || (window.MeldexReleaseConfig?.betaFeedback?.feedbackSheetName || 'feedback'),

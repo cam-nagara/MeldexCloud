@@ -1,4 +1,61 @@
 /* エントリ詳細プロパティレイアウト */
+const _propertyLayoutMetadataCache = {};
+const _PROPERTY_LAYOUT_GLOBAL_TEMPLATES_KEY = 'gb:property-layout-templates';
+
+function _propertyLayoutPathKey(dbPath) {
+  return String(dbPath || '').replace(/\\/g, '/');
+}
+
+function _propertyLayoutIsCurrentDb(dbPath) {
+  return typeof _ptIsCurrentDbPath === 'function'
+    ? _ptIsCurrentDbPath(dbPath)
+    : (!dbPath || !state.currentDbPath || _propertyLayoutPathKey(dbPath) === _propertyLayoutPathKey(state.currentDbPath));
+}
+
+function _propertyLayoutCachedMetadata(dbPath) {
+  if (_propertyLayoutIsCurrentDb(dbPath)) {
+    return {
+      property_layout: state.dbMetadata?.property_layout || null,
+      property_layout_templates: Array.isArray(state.dbMetadata?.property_layout_templates) ? state.dbMetadata.property_layout_templates : [],
+    };
+  }
+  return _propertyLayoutMetadataCache[_propertyLayoutPathKey(dbPath)] || null;
+}
+
+function _propertyLayoutSetCachedMetadata(dbPath, metadata) {
+  const next = {
+    property_layout: metadata?.property_layout || null,
+    property_layout_templates: Array.isArray(metadata?.property_layout_templates) ? metadata.property_layout_templates : [],
+  };
+  if (_propertyLayoutIsCurrentDb(dbPath)) {
+    if (!state.dbMetadata) state.dbMetadata = {};
+    state.dbMetadata.property_layout = next.property_layout;
+    state.dbMetadata.property_layout_templates = next.property_layout_templates;
+  } else {
+    _propertyLayoutMetadataCache[_propertyLayoutPathKey(dbPath)] = next;
+  }
+  return next;
+}
+
+async function _loadPropertyLayoutMetadata(dbPath, options = {}) {
+  if (!dbPath) return _propertyLayoutSetCachedMetadata(dbPath, {});
+  if (!options.force) {
+    const cached = _propertyLayoutCachedMetadata(dbPath);
+    if (cached) return cached;
+  }
+  try {
+    const metadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
+    return _propertyLayoutSetCachedMetadata(dbPath, metadata || {});
+  } catch (err) {
+    console.warn('property_layout 読み込み失敗:', err);
+    return _propertyLayoutCachedMetadata(dbPath) || {};
+  }
+}
+
+async function getPropertyLayoutForEdit(dbPath, allProps) {
+  await _loadPropertyLayoutMetadata(dbPath, { force: !_propertyLayoutIsCurrentDb(dbPath) });
+  return getPropertyLayout(dbPath, allProps);
+}
 
 function normalizePropertyLayout(layout, allProps) {
   const src = layout && typeof layout === 'object' ? layout : {};
@@ -18,7 +75,7 @@ function normalizePropertyLayout(layout, allProps) {
 }
 
 function getPropertyLayout(dbPath, allProps) {
-  const backend = state.dbMetadata?.property_layout;
+  const backend = _propertyLayoutCachedMetadata(dbPath)?.property_layout || null;
   const local = dbPath && typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath).propertyLayout : null;
   return normalizePropertyLayout(backend || local || null, allProps || []);
 }
@@ -26,16 +83,18 @@ function getPropertyLayout(dbPath, allProps) {
 async function savePropertyLayout(dbPath, layout) {
   if (!dbPath) return false;
   const normalized = normalizePropertyLayout(layout);
-  const cfg = getDbViewConfig(dbPath);
-  cfg.propertyLayout = normalized;
-  cfg.entryPropOrder = normalized.order;
-  saveDbViewConfig(dbPath, cfg);
-  if (state.dbMetadata) state.dbMetadata.property_layout = normalized;
   try {
     await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { property_layout: normalized });
+    const cfg = getDbViewConfig(dbPath);
+    cfg.propertyLayout = normalized;
+    cfg.entryPropOrder = normalized.order;
+    saveDbViewConfig(dbPath, cfg);
+    const metadata = _propertyLayoutCachedMetadata(dbPath) || {};
+    _propertyLayoutSetCachedMetadata(dbPath, { ...metadata, property_layout: normalized });
     return true;
   } catch (err) {
     console.warn('property_layout 保存失敗:', err);
+    showStatus('プロパティレイアウトを保存できませんでした', true);
     return false;
   }
 }
@@ -79,13 +138,13 @@ function removePropertyLayoutReferences(layout, propName) {
 
 async function updatePropertyLayoutForRename(dbPath, oldName, newName) {
   if (!dbPath || !oldName || !newName || oldName === newName) return;
-  const current = getPropertyLayout(dbPath);
+  const current = await getPropertyLayoutForEdit(dbPath);
   await savePropertyLayout(dbPath, renamePropertyLayoutReferences(current, oldName, newName));
 }
 
 async function updatePropertyLayoutForDelete(dbPath, propName) {
   if (!dbPath || !propName) return;
-  const current = getPropertyLayout(dbPath);
+  const current = await getPropertyLayoutForEdit(dbPath);
   await savePropertyLayout(dbPath, removePropertyLayoutReferences(current, propName));
 }
 
@@ -109,29 +168,64 @@ function _nextLayoutTemplateName(existing) {
 async function _loadGlobalPropertyLayoutTemplates() {
   try {
     const res = await apiFetch('/property-layout-templates');
-    return Array.isArray(res.templates) ? res.templates : [];
+    const templates = Array.isArray(res.templates) ? res.templates : [];
+    try { localStorage.setItem(_PROPERTY_LAYOUT_GLOBAL_TEMPLATES_KEY, JSON.stringify(templates)); } catch {}
+    return templates;
   } catch {
-    return [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(_PROPERTY_LAYOUT_GLOBAL_TEMPLATES_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   }
 }
 
 async function _saveGlobalPropertyLayoutTemplates(templates) {
-  await apiPut('/property-layout-templates', { templates: Array.isArray(templates) ? templates : [] });
+  const normalized = Array.isArray(templates) ? templates : [];
+  try {
+    await apiPut('/property-layout-templates', { templates: normalized });
+  } catch (err) {
+    console.warn('property_layout_templates 全体保存失敗。ローカル保存に切り替えます:', err);
+  }
+  try { localStorage.setItem(_PROPERTY_LAYOUT_GLOBAL_TEMPLATES_KEY, JSON.stringify(normalized)); } catch {}
+  return true;
 }
 
-function _sheetPropertyLayoutTemplates() {
-  return Array.isArray(state.dbMetadata?.property_layout_templates) ? state.dbMetadata.property_layout_templates : [];
+function _sheetPropertyLayoutTemplates(dbPath) {
+  return _propertyLayoutCachedMetadata(dbPath)?.property_layout_templates || [];
 }
 
 async function _saveSheetPropertyLayoutTemplates(dbPath, templates) {
-  if (!state.dbMetadata) state.dbMetadata = {};
-  state.dbMetadata.property_layout_templates = templates;
-  await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { property_layout_templates: templates });
+  const normalized = Array.isArray(templates) ? templates : [];
+  try {
+    await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { property_layout_templates: normalized });
+    const metadata = _propertyLayoutCachedMetadata(dbPath) || {};
+    _propertyLayoutSetCachedMetadata(dbPath, { ...metadata, property_layout_templates: normalized });
+    return true;
+  } catch (err) {
+    console.warn('property_layout_templates 保存失敗:', err);
+    showStatus('レイアウトテンプレートを保存できませんでした', true);
+    return false;
+  }
+}
+
+function _ensurePropertyLayoutMetadataForRender(grid, data, entityPath, opts, dbPath) {
+  if (!grid || !dbPath || _propertyLayoutCachedMetadata(dbPath) || grid.dataset.propLayoutMetadataLoading === '1') return;
+  grid.dataset.propLayoutMetadataLoading = '1';
+  _loadPropertyLayoutMetadata(dbPath, { force: true }).then(metadata => {
+    delete grid.dataset.propLayoutMetadataLoading;
+    if (!metadata || !grid.isConnected || typeof renderEntityPropsGridInto !== 'function') return;
+    renderEntityPropsGridInto(grid, data, entityPath, opts);
+  }).catch(() => {
+    delete grid.dataset.propLayoutMetadataLoading;
+  });
 }
 
 function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
   const dbPath = opts?.parentDb || (typeof _entityParentDir === 'function' ? _entityParentDir(entityPath) : '');
   if (!grid || !dbPath) return;
+  _ensurePropertyLayoutMetadataForRender(grid, data, entityPath, opts, dbPath);
   const editMode = isPropertyLayoutEditMode(dbPath);
   const toolbar = document.createElement('div');
   toolbar.className = 'gb-prop-layout-toolbar';
@@ -170,32 +264,34 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
     scope.innerHTML = '<option value="sheet">シート</option><option value="global">全体</option>';
     toolbar.appendChild(scope);
     toolbar.appendChild(btn('テンプレート保存', 'save', async () => {
-      const layout = getPropertyLayout(dbPath, Object.keys(data.properties || {}));
+      const layout = await getPropertyLayoutForEdit(dbPath, Object.keys(data.properties || {}));
       const now = new Date().toISOString();
       if (scope.value === 'global') {
         const list = await _loadGlobalPropertyLayoutTemplates();
         list.push({ id: 'plt_' + Date.now(), name: _nextLayoutTemplateName(list), scope: 'global', ...layout, created_at: now, modified_at: now });
         await _saveGlobalPropertyLayoutTemplates(list);
       } else {
-        const list = _sheetPropertyLayoutTemplates().slice();
+        await _loadPropertyLayoutMetadata(dbPath, { force: !_propertyLayoutIsCurrentDb(dbPath) });
+        const list = _sheetPropertyLayoutTemplates(dbPath).slice();
         list.push({ id: 'plt_' + Date.now(), name: _nextLayoutTemplateName(list), scope: 'sheet', ...layout, created_at: now, modified_at: now });
-        await _saveSheetPropertyLayoutTemplates(dbPath, list);
+        if (!await _saveSheetPropertyLayoutTemplates(dbPath, list)) return;
       }
       showStatus('レイアウトテンプレートを保存しました');
     }));
     toolbar.appendChild(btn('テンプレート適用', 'layoutTemplate', async () => {
-      const sheet = _sheetPropertyLayoutTemplates().map(t => ({ ...t, scope: 'sheet' }));
+      await _loadPropertyLayoutMetadata(dbPath, { force: !_propertyLayoutIsCurrentDb(dbPath) });
+      const sheet = _sheetPropertyLayoutTemplates(dbPath).map(t => ({ ...t, scope: 'sheet' }));
       const global = (await _loadGlobalPropertyLayoutTemplates()).map(t => ({ ...t, scope: 'global' }));
       const templates = sheet.concat(global);
       if (!templates.length) { showStatus('テンプレートがありません'); return; }
       showPropertyLayoutTemplateMenu(toolbar, templates, async (tmpl) => {
-        await savePropertyLayout(dbPath, tmpl);
+        if (!await savePropertyLayout(dbPath, tmpl)) return;
         renderEntityPropsGridInto(grid, data, entityPath, opts);
         showStatus('レイアウトテンプレートを適用しました');
       });
     }));
     toolbar.appendChild(btn('リセット', 'rotateCcw', async () => {
-      await savePropertyLayout(dbPath, { order: Object.keys(data.properties || {}), hidden: [], groups: [] });
+      if (!await savePropertyLayout(dbPath, { order: Object.keys(data.properties || {}), hidden: [], groups: [] })) return;
       renderEntityPropsGridInto(grid, data, entityPath, opts);
     }));
   }

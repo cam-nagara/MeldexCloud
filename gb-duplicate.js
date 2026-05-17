@@ -133,15 +133,23 @@ async function _dupResolveGroup(sourceOrGi, maybeGi) {
       replace: replaceImgs.map(i => i.rel_path),
     });
 
-    const succeeded = res.results.filter(r => r.status === 'replaced').length;
-    const failed = res.results.filter(r => r.status === 'error').length;
+    const results = Array.isArray(res?.results) ? res.results : [];
+    const succeeded = results.filter(r => r.status === 'replaced').length;
+    const failed = results.filter(r => r.status === 'error').length;
     showStatus(`${succeeded} 件を整理（ゴミ箱+リンク登録）${failed ? ` / ${failed} 件失敗` : ''}`);
 
-    // グループUIを更新（解決済みマーク）
-    if (groupEl) {
+    // 全件成功した場合だけ解決済みにする。部分失敗は同じモーダルから再試行できるよう残す。
+    if (groupEl && failed === 0 && succeeded === replaceImgs.length) {
       groupEl.classList.add('dup-group-resolved');
       groupEl.querySelector('button').disabled = true;
       groupEl.querySelector('button').innerHTML = lucide('check', 12) + ' 解決済み';
+    } else if (groupEl) {
+      groupEl.classList.remove('dup-group-resolved');
+      const retryButton = groupEl.querySelector('button');
+      if (retryButton) {
+        retryButton.disabled = false;
+        retryButton.textContent = failed ? '失敗したため再試行' : 'もう一度整理';
+      }
     }
 
     // フォルダビューをリロード

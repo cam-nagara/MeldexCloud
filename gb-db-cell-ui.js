@@ -4,6 +4,52 @@ function _cellUiValueToString(value) {
   return value == null ? '' : String(value);
 }
 
+function _cellUiNormalizePath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _cellUiDbPathForEntity(entityPath) {
+  if (typeof _dbPathFromEntityPath === 'function') return _dbPathFromEntityPath(entityPath);
+  const parts = _cellUiNormalizePath(entityPath).split('/');
+  parts.pop();
+  return parts.join('/');
+}
+
+function _cellUiEntityNameFromPath(entityPath) {
+  const leaf = _cellUiNormalizePath(entityPath).split('/').pop() || '';
+  return leaf.replace(/\.(md|json)$/i, '');
+}
+
+function _cellUiColumnLockMessage(dbPath, propName) {
+  return (typeof checkColumnEditable === 'function') ? checkColumnEditable(dbPath, propName) : '';
+}
+
+function _cellUiCanQuickRename(ptc) {
+  const type = String(ptc?.type || 'text');
+  return type === 'text';
+}
+
+function _cellUiIsDeletableCandidate(val, entityPath) {
+  if (val?.candidate_index != null) return true;
+  if (!val?.file) return false;
+  return _cellUiNormalizePath(val.file) !== _cellUiNormalizePath(entityPath);
+}
+
+function _cellUiRelationIds(value) {
+  return String(value || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+async function _cellUiSelfPairRelationContext(dbPath, entityPath, ptc) {
+  if (!dbPath || !ptc || ptc.relationDb !== '' || !ptc.pairWith) return null;
+  const entityName = _cellUiEntityNameFromPath(entityPath);
+  let pivotData = (typeof state !== 'undefined' && state.currentDbPath === dbPath) ? state.pivotData : null;
+  if (!pivotData && typeof apiFetch === 'function') {
+    try { pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch {}
+  }
+  const sourceId = pivotData?.entities?.[entityName]?._id || entityName;
+  return { relDb: dbPath, pairPropName: ptc.pairWith, sourceId };
+}
+
 function _dbRichEscapeHtml(text) {
   return String(text == null ? '' : text)
     .replace(/&/g, '&amp;')
@@ -336,8 +382,11 @@ function _showValueContextMenu(e, val, entityPath, propName) {
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
+  const currentDbPath = state.currentDbPath || _cellUiDbPathForEntity(entityPath);
+  const _ptc = currentDbPath ? getPropertyTypes(currentDbPath)[propName] : null;
+  const lockMsg = _cellUiColumnLockMessage(currentDbPath, propName);
   // 上部にリネーム入力欄: 値テキストを変更
-  if (typeof _addMenuRenameInput === 'function') {
+  if (typeof _addMenuRenameInput === 'function' && !lockMsg && _cellUiCanQuickRename(_ptc)) {
     const old = _cellUiValueToString(val.value);
     const oldRichHtml = _dbRichHtmlForValue(val);
     const _menuAnchor = e?.target || null;
@@ -355,11 +404,10 @@ function _showValueContextMenu(e, val, entityPath, propName) {
     }, { placeholder: '値を変更...' });
   }
   // relation型の場合: 「リンク先を開く」を追加
-  const _ptc = state.currentDbPath ? getPropertyTypes(state.currentDbPath)[propName] : null;
   if (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation') && val.value) {
     // 自己参照判定: relationDb === '' (空文字) のみ自己参照。undefinedは単に未設定
     const isSelfRef = (_ptc.relationDb === '');
-    const relDb = isSelfRef ? state.currentDbPath : (_ptc.relationDb || '');
+    const relDb = isSelfRef ? currentDbPath : (_ptc.relationDb || '');
     // multi-relationで複数IDがある場合は各IDを個別にメニュー項目として展開
     // relDbが解決できない場合は「リンク先を開く」を表示しない
     const ids = relDb ? String(val.value).split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -424,7 +472,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
     cmtItem.addEventListener('click', () => {
       menu.remove();
       if (typeof addCommentHere !== 'function') return;
-      const dbPath = state.currentDbPath || '';
+      const dbPath = currentDbPath || '';
       // entityPath は "DBパス/エントリ名.md" 等のフルパス。tr.dataset.entityName と一致させるため
       // 拡張子を剥いだ basename を entryId にする
       let entityName = (entityPath || '').split('/').pop() || '';
@@ -442,7 +490,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
     cmtListItem.innerHTML = 'コメント一覧を開く';
     cmtListItem.addEventListener('click', () => {
       menu.remove();
-      const dbPath = state.currentDbPath || '';
+      const dbPath = currentDbPath || '';
       if (dbPath && typeof CommentBadges !== 'undefined' && typeof CommentBadges.openPanelForFileComments === 'function') {
         CommentBadges.openPanelForFileComments(dbPath);
       }
@@ -459,6 +507,11 @@ function _showValueContextMenu(e, val, entityPath, propName) {
   delItem.innerHTML = lucide('trash2', 14) + ' 削除';
   delItem.addEventListener('click', async () => {
     menu.remove();
+    if (lockMsg) { showStatus(lockMsg, true); return; }
+    if (!_cellUiIsDeletableCandidate(val, entityPath)) {
+      showStatus('削除できる候補値がありません', true);
+      return;
+    }
     if (typeof cfConfirm === 'function') {
       const ok = await cfConfirm('この候補値を削除しますか？');
       if (!ok) return;
@@ -466,34 +519,89 @@ function _showValueContextMenu(e, val, entityPath, propName) {
       return;
     }
     try {
-      const currentDbPath = state.currentDbPath;
       const bidirectionalCtx = (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation') && _ptc.bidirectional)
         ? { entityPath, propName, ptc: _ptc }
         : null;
+      const relationValue = _cellUiValueToString(val.value);
+      const savedStatus = val.status || '案';
+      const savedNote = val.note || '';
+      const savedRichHtml = _dbRichHtmlForValue(val);
+      const pairCtx = (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation'))
+        ? await _cellUiSelfPairRelationContext(currentDbPath, entityPath, _ptc)
+        : null;
+      const pairIds = pairCtx ? _cellUiRelationIds(relationValue) : [];
+      let currentVal = { ...val };
       let cascadeClears = [];
-      if (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation')
-          && typeof _clearCascadeDependentValues === 'function') {
-        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, _cellUiValueToString(val.value), '');
+      const pairRollbacks = [];
+      let bidirectionalApplied = false;
+      try {
+        if (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation')
+            && typeof _clearCascadeDependentValues === 'function') {
+          cascadeClears = await _clearCascadeDependentValues(entityPath, propName, relationValue, '');
+        }
+        if (pairCtx && typeof _syncPairRelation === 'function') {
+          for (const id of pairIds) {
+            await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, false);
+            pairRollbacks.push(id);
+          }
+        }
+        if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+          await _applyBidirectionalRelationSync({
+            sourceDbPath: currentDbPath,
+            entityPath,
+            propName,
+            ptc: _ptc,
+            oldValue: relationValue,
+            newValue: '',
+          });
+          bidirectionalApplied = true;
+        }
+        const candIdx = val.candidate_index;
+        if (candIdx != null) {
+          await _apiPutValue(val, { _delete: true });
+        } else if (val.file) {
+          await apiPost('/outliner/delete', { path: val.file });
+        }
+      } catch (err) {
+        if (bidirectionalApplied && bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+          try {
+            await _applyBidirectionalRelationSync({
+              sourceDbPath: currentDbPath,
+              entityPath,
+              propName,
+              ptc: _ptc,
+              oldValue: '',
+              newValue: relationValue,
+            });
+          } catch {}
+        }
+        if (pairCtx && pairRollbacks.length && typeof _syncPairRelation === 'function') {
+          for (const id of pairRollbacks.reverse()) {
+            try { await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, true); } catch {}
+          }
+        }
+        if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
+          try { await _restoreCascadeDependentValues(entityPath, cascadeClears); } catch {}
+        }
+        throw err;
       }
-      if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
-        await _applyBidirectionalRelationSync({
-          sourceDbPath: currentDbPath,
-          entityPath,
-          propName,
-          ptc: _ptc,
-          oldValue: _cellUiValueToString(val.value),
-          newValue: '',
-        });
-      }
-      const candIdx = val.candidate_index;
-      if (candIdx != null) {
-        await _apiPutValue(val, { _delete: true });
-      } else if (val.file) {
-        await apiPost('/outliner/delete', { path: val.file });
-      }
-      historyPush('候補値削除: ' + propName + '=' + _cellUiValueToString(val.value),
+      historyPush('候補値削除: ' + propName + '=' + relationValue,
         async () => {
-          await _apiPostValue(entityPath, propName, _cellUiValueToString(val.value), val.status || '案', val.note || '');
+          const result = await _apiPostValue(entityPath, propName, relationValue, savedStatus, savedNote, savedRichHtml);
+          if (result) {
+            currentVal = {
+              file: result.path || currentVal.file,
+              property: propName,
+              candidate_index: result.candidate_index,
+              value: relationValue,
+              status: savedStatus,
+              note: savedNote,
+            };
+            if (savedRichHtml) currentVal.rich_html = savedRichHtml;
+          }
+          if (pairCtx && typeof _syncPairRelation === 'function') {
+            for (const id of pairIds) await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, true);
+          }
           if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
             await _applyBidirectionalRelationSync({
               sourceDbPath: currentDbPath,
@@ -501,7 +609,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
               propName,
               ptc: _ptc,
               oldValue: '',
-              newValue: _cellUiValueToString(val.value),
+              newValue: relationValue,
             });
           }
           if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
@@ -510,18 +618,21 @@ function _showValueContextMenu(e, val, entityPath, propName) {
           await selectDatabase(currentDbPath, undefined, { silent: true });
         },
         async () => {
+          if (pairCtx && typeof _syncPairRelation === 'function') {
+            for (const id of pairIds) await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, false);
+          }
           if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
             await _applyBidirectionalRelationSync({
               sourceDbPath: currentDbPath,
               entityPath,
               propName,
               ptc: _ptc,
-              oldValue: _cellUiValueToString(val.value),
+              oldValue: relationValue,
               newValue: '',
             });
           }
-          if (val.candidate_index != null) await _apiPutValue(val, { _delete: true });
-          else if (val.file) await apiPost('/outliner/delete', { path: val.file });
+          if (currentVal.candidate_index != null) await _apiPutValue(currentVal, { _delete: true });
+          else if (currentVal.file) await apiPost('/outliner/delete', { path: currentVal.file });
           if (cascadeClears.length && typeof _redoCascadeDependentValues === 'function') {
             await _redoCascadeDependentValues(entityPath, cascadeClears);
           }
@@ -702,13 +813,14 @@ function _cellUiAutosizeTextarea(input) {
    ============================== */
 function showStatusDropdown(dotEl, val, entityPath, propName) {
   // 列ロックチェック
-  const lockMsg = checkColumnEditable(state.currentDbPath, propName);
+  const dbPath = state.currentDbPath || _cellUiDbPathForEntity(entityPath);
+  const lockMsg = _cellUiColumnLockMessage(dbPath, propName);
   if (lockMsg) { showStatus(lockMsg); return; }
   closeAllDropdowns();
   const dd = document.createElement('div');
   dd.className = 'status-dropdown';
 
-  const statuses = getStatusList(state.currentDbPath);
+  const statuses = getStatusList(dbPath);
   statuses.forEach(stObj => {
     const st = stObj.name;
     const item = document.createElement('div');
@@ -731,15 +843,23 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
         showStatus('ステータス更新: ' + st);
         // ステータス連動の自動日時入力
         const _ep = entityPath || state.currentEntityPath || val.file || '';
-        if (_ep && state.currentDbPath) _autoFillOnStatusChange(_ep, val.property || '', st, state.currentDbPath);
-        if (state.view === 'pivot' && state.currentDbPath) {
+        let autoFilled = false;
+        if (_ep && dbPath && typeof _autoFillOnStatusChange === 'function') {
+          await _autoFillOnStatusChange(_ep, val.property || '', st, dbPath);
+          autoFilled = true;
+        }
+        if (state.view === 'pivot' && dbPath) {
+          if (autoFilled) {
+            await selectDatabase(dbPath, undefined, { silent: true });
+            return;
+          }
           const _td = dotEl.closest('td');
           const _epRow = _td?.closest('tr')?.dataset?.entityName
-            ? _entityPath(state.currentDbPath, _td.closest('tr').dataset.entityName)
+            ? _entityPath(dbPath, _td.closest('tr').dataset.entityName)
             : (state.currentEntityPath || '');
           const _refreshed = _td && _epRow && typeof _tryRefreshPivotCellLocal === 'function'
             && _tryRefreshPivotCellLocal(_td, _epRow, propName);
-          if (!_refreshed) selectDatabase(state.currentDbPath, undefined, { silent: true });
+          if (!_refreshed) selectDatabase(dbPath, undefined, { silent: true });
         }
         else if (state.view === 'entity' && state.currentEntityPath) selectEntity(state.currentEntityPath);
       } catch (e) { /* error shown */ }

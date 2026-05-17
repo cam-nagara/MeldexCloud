@@ -53,6 +53,8 @@
   function _hideThemeUiMenu(menu) {
     menu.hidden = true;
     const wrap = menu.closest('.cs-theme-ui-picker-wrap');
+    wrap?.classList?.remove?.('cs-theme-ui-picker-wrap--open-up');
+    menu.style.removeProperty('--theme-ui-picker-menu-max-height');
     wrap?.querySelector?.('[data-theme-ui-picker]')?.setAttribute('aria-expanded', 'false');
   }
 
@@ -68,6 +70,10 @@
     }
     if (el.id === 'chat-title-dropdown' && typeof window._closeChatTitleDropdown === 'function') {
       window._closeChatTitleDropdown();
+      return;
+    }
+    if (el.matches?.('.chat-generation-settings-menu') && typeof window._closeChatGenerationSettingsMenu === 'function') {
+      window._closeChatGenerationSettingsMenu();
       return;
     }
     if (typeof el._cleanupActivityMenu === 'function') el._cleanupActivityMenu();

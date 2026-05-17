@@ -31,11 +31,35 @@ function _bdResolveOpenType(type) {
   if (type === 'database' || type === 'sheet') return 'pivot';
   if (type === 'scenario') return 'scriptnote';
   if (type === 'image' || type === 'video' || type === 'audio') return 'media';
+  if (type === 'pdf') return 'pdf';
+  if (type === 'document') return 'document';
   return type || 'page';
 }
 
 function _bdIsExternalUrl(path) {
-  return /^https?:\/\//i.test(String(path || '').trim());
+  return /^(https?:\/\/|mailto:|tel:)/i.test(String(path || '').trim());
+}
+
+function _bdIsExternalActionUrl(path) {
+  return /^(mailto:|tel:)/i.test(String(path || '').trim());
+}
+
+function _bdOpenExternalActionUrl(path) {
+  const url = String(path || '').trim();
+  if (!_bdIsExternalActionUrl(url)) return false;
+  try {
+    const opened = typeof window !== 'undefined' && typeof window.open === 'function'
+      ? window.open(url, '_blank', 'noopener')
+      : null;
+    if (opened !== false) return true;
+  } catch {}
+  try {
+    if (typeof window !== 'undefined') {
+      window.location.href = url;
+      return true;
+    }
+  } catch {}
+  return false;
 }
 
 const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board']);
@@ -143,7 +167,7 @@ function _bdPaneActiveType(pane) {
 }
 
 function _bdIsUtilityPane(pane) {
-  const utilityTypes = new Set(['outliner', 'detail', 'preview', 'chat', 'history', 'annotation', 'sticky', 'search', 'version', 'timer']);
+  const utilityTypes = new Set(['outliner', 'detail', 'preview', 'chat', 'history', 'annotation', 'sticky', 'search', 'version', 'calendar', 'timer']);
   return utilityTypes.has(_bdPaneActiveType(pane));
 }
 
@@ -179,6 +203,7 @@ function _bdInferLinkType(path, explicitType) {
   if (lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
   if (lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || ext === 'board') return 'board';
   if (lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (ext === 'pdf') return 'pdf';
   if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
   if (_bdLinkMediaType(ext)) return _bdLinkMediaType(ext);
@@ -202,9 +227,13 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (explicitType === 'smart-db') return { type: 'smart-db', label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
+  if (explicitType === 'pdf' || (explicitType === 'document' && ext === 'pdf')) {
+    return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
+  }
+  if (explicitType === 'document') return { type: 'page', label: nextLabel, path: nextPath };
   if (explicitType === 'page') return { type: 'page', label: nextLabel, path: nextPath };
   if (explicitType === 'media') {
-    return { type: 'media', mediaType: _bdLinkMediaType(ext) || 'image', label: nextLabel, path: nextPath };
+    return { type: 'media', mediaType: _bdLinkMediaType(ext) || 'file', label: nextLabel, path: nextPath };
   }
   if (lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return { type: 'board', label: nextLabel, path: nextPath };
@@ -212,9 +241,9 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (ext === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (ext === 'html' || ext === 'htm') return { type: 'html', label: nextLabel, path: nextPath };
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
-  if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
-  if (['mp3', 'wav', 'ogg', 'flac', 'aac'].includes(ext)) return { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
-  if (ext === 'pdf') return { type: 'page', label: nextLabel, path: nextPath };
+  if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(ext)) return { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
+  if (ext === 'pdf') return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
   if (ext === 'md' || ext === 'json' || !ext) return { type: 'page', label: nextLabel, path: nextPath };
   return { type: 'page', label: nextLabel, path: nextPath };
 }
@@ -264,6 +293,7 @@ function _bdAddLinkedTabToExactPane(targetPaneId, entry, tabState) {
 
 function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (!entry || !entry.type) return false;
+  if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   if (!targetPaneId || typeof GBTabs === 'undefined' || typeof GBLayout === 'undefined' || typeof navOpen !== 'function') {
     if (typeof navOpen === 'function') {
       navOpen(entry);
@@ -291,28 +321,15 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
 
 async function bdSyncLinkedSelectionToPane(path, label, linkType) {
   const seq = ++_bdLinkedSelectionSyncSeq;
-  const shouldResolve = _bdShouldResolveLinkedType(path, linkType);
-  const fastMarkdown = shouldResolve && _bdLinkExt(path) === 'md';
-  const entry = fastMarkdown
-    ? _bdResolveLinkedEntry(path, label, linkType)
-    : await _bdResolveLinkedEntryAsync(path, label, linkType);
+  const entry = await _bdResolveLinkedEntryAsync(path, label, linkType);
   if (seq !== _bdLinkedSelectionSyncSeq || !_bdIsCurrentLinkedSelection(path)) return false;
+  if (entry.urlExternal && _bdIsExternalActionUrl(entry.path)) return false;
   if (!_BD_LINK_OPENABLE_TYPES.has(entry.type) || entry.type === 'board') return false;
   if (typeof GBTabs === 'undefined' || typeof GBLayout === 'undefined' || typeof navOpen !== 'function') return false;
   const boardPaneId = _bdFindBoardPaneId() || GBLayout.activePane;
   const targetPaneId = _bdFindPaneByTabType(entry.type, boardPaneId, { preferRight: true }) || _bdFindSidePane(boardPaneId, { preferRight: true });
   if (!targetPaneId) return false;
   const opened = _bdActivateNavEntryInPane(targetPaneId, entry, { forceTargetPane: true, preserveActivePane: true });
-  if (fastMarkdown) {
-    _bdFetchLinkedType(path).then(resolvedType => {
-      if (!resolvedType || seq !== _bdLinkedSelectionSyncSeq || !_bdIsCurrentLinkedSelection(path)) return;
-      const resolvedEntry = _bdResolveLinkedEntry(path, label, resolvedType);
-      if (resolvedEntry.type === entry.type) return;
-      if (!_BD_LINK_OPENABLE_TYPES.has(resolvedEntry.type) || resolvedEntry.type === 'board') return;
-      const resolvedTargetPaneId = _bdFindPaneByTabType(resolvedEntry.type, boardPaneId, { preferRight: true }) || targetPaneId;
-      _bdActivateNavEntryInPane(resolvedTargetPaneId, resolvedEntry, { forceTargetPane: true, preserveActivePane: true });
-    }).catch(() => {});
-  }
   return opened;
 }
 
@@ -327,6 +344,7 @@ async function bdOpenLinkedPath(path, label, options) {
 async function bdOpenLinkedPathInCurrentPane(path, label, linkType) {
   if (!path) return;
   const entry = await _bdResolveLinkedEntryAsync(path, label, linkType);
+  if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return;
   if (typeof navOpen === 'function') {
     navOpen(entry);
     return;
@@ -337,6 +355,7 @@ async function bdOpenLinkedPathInCurrentPane(path, label, linkType) {
 async function openLinkedPathInSubPanel(path, label, options) {
   const opts = options || {};
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
+  if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return;
   const tabState = { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) };
   if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
     GBSubPanel.open(entry.type, {
@@ -408,8 +427,8 @@ function _bdFileIcon(ext, path, linkType) {
   if (name.endsWith('.smart-db.json')) return byType('smart-db', 'databaseSearch');
   const nextExt = String(ext || '').toLowerCase();
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(nextExt)) return 'image';
-  if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(nextExt)) return 'clapperboard';
-  if (['mp3', 'wav', 'ogg', 'flac'].includes(nextExt)) return 'audioLines';
+  if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(nextExt)) return 'clapperboard';
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(nextExt)) return 'audioLines';
   if (nextExt === 'md') return byType('page', 'fileText');
   if (nextExt === 'csv') return 'table';
   if (nextExt === 'board') return byType('board', 'presentation');
@@ -425,8 +444,9 @@ function _bdLinkExt(path) {
 
 function _bdLinkMediaType(ext) {
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return 'video';
-  if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) return 'audio';
+  if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(ext)) return 'video';
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return 'audio';
+  if (ext === 'pdf') return 'pdf';
   return '';
 }
 
@@ -595,6 +615,10 @@ async function bdRenderLinkedPreview(filePath, pane, linkType) {
   }
   if (mediaType === 'audio') {
     pane.innerHTML = `<div class="bd-preview-card"><div class="bd-preview-title">${_bdIcon('audioLines', 14)} <span>${esc(fileName)}</span></div><div class="bd-preview-path">${esc(filePath)}</div><audio src="${_bdEscAttr(API_BASE + '/file-raw?path=' + encodeURIComponent(filePath))}" controls style="width:100%;margin-top:8px;"></audio></div>`;
+    return true;
+  }
+  if (_bdIsExternalActionUrl(filePath)) {
+    pane.innerHTML = _bdLinkedPreviewCardHtml(filePath, fileName, ext, linkType, filePath, false);
     return true;
   }
   if (externalUrl || html) {

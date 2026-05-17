@@ -123,28 +123,42 @@ const GBSubPanel = (() => {
     const path = options.path;
     const label = options.label || _basename(path) || _toolLabel(toolType);
     const linkType = options.linkType || toolType;
+    let opened = false;
     if ((linkType === 'entity' || toolType === 'entity') && typeof drawer.openEntity === 'function') {
-      return drawer.openEntity(path, label) === true;
+      opened = drawer.openEntity(path, label) === true;
+    } else if (typeof drawer.openBoardLink === 'function') {
+      opened = drawer.openBoardLink(path, label, linkType) === true;
     }
-    if (typeof drawer.openBoardLink === 'function') {
-      return drawer.openBoardLink(path, label, linkType) === true;
-    }
-    return false;
+    if (opened && _panel) close();
+    return opened;
+  }
+
+  function _layoutZoom() {
+    const zoom = typeof _getZoom === 'function'
+      ? Number(_getZoom())
+      : Number.parseFloat(document.documentElement?.style?.zoom || '1');
+    return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
   }
 
   function _viewport() {
+    const zoom = _layoutZoom();
     return {
-      width: Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0),
-      height: Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0),
+      width: Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0) / zoom,
+      height: Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0) / zoom,
     };
   }
 
-  function _clampRect(rect) {
+  function _rectSizeBounds() {
     const vp = _viewport();
     const maxW = Math.max(240, vp.width - EDGE * 2);
     const maxH = Math.max(180, vp.height - EDGE * 2);
     const minW = Math.min(MIN_W, maxW);
     const minH = Math.min(MIN_H, maxH);
+    return { vp, maxW, maxH, minW, minH };
+  }
+
+  function _clampRect(rect) {
+    const { vp, maxW, maxH, minW, minH } = _rectSizeBounds();
     const width = Math.min(Math.max(rect.width || MIN_W, minW), maxW);
     const height = Math.min(Math.max(rect.height || MIN_H, minH), maxH);
     const maxLeft = Math.max(EDGE, vp.width - width - EDGE);
@@ -184,12 +198,17 @@ const GBSubPanel = (() => {
   function _readRect() {
     if (!_panel) return _defaultRect();
     const rect = _panel.getBoundingClientRect();
+    const zoom = _layoutZoom();
     return {
-      left: rect.left,
-      top: rect.top,
-      width: rect.width,
-      height: rect.height,
+      left: rect.left / zoom,
+      top: rect.top / zoom,
+      width: rect.width / zoom,
+      height: rect.height / zoom,
     };
+  }
+
+  function _layoutDelta(value) {
+    return value / _layoutZoom();
   }
 
   function _applyRect(rect) {
@@ -520,15 +539,20 @@ const GBSubPanel = (() => {
     const rect = { ...session.rect };
     const right = rect.left + rect.width;
     const bottom = rect.top + rect.height;
+    const { minW, minH, maxW, maxH } = _rectSizeBounds();
     if (dir.includes('e')) rect.width += dx;
     if (dir.includes('s')) rect.height += dy;
     if (dir.includes('w')) {
       rect.left += dx;
       rect.width = right - rect.left;
+      rect.width = Math.min(Math.max(rect.width, minW), maxW);
+      rect.left = right - rect.width;
     }
     if (dir.includes('n')) {
       rect.top += dy;
       rect.height = bottom - rect.top;
+      rect.height = Math.min(Math.max(rect.height, minH), maxH);
+      rect.top = bottom - rect.height;
     }
     return rect;
   }
@@ -537,14 +561,18 @@ const GBSubPanel = (() => {
     if (_drag && e.pointerId === _drag.pointerId) {
       _applyRect({
         ..._drag.rect,
-        left: _drag.rect.left + e.clientX - _drag.startX,
-        top: _drag.rect.top + e.clientY - _drag.startY,
+        left: _drag.rect.left + _layoutDelta(e.clientX - _drag.startX),
+        top: _drag.rect.top + _layoutDelta(e.clientY - _drag.startY),
       });
       e.preventDefault();
       return;
     }
     if (_resize && e.pointerId === _resize.pointerId) {
-      _applyRect(_resizeRect(_resize, e.clientX - _resize.startX, e.clientY - _resize.startY));
+      _applyRect(_resizeRect(
+        _resize,
+        _layoutDelta(e.clientX - _resize.startX),
+        _layoutDelta(e.clientY - _resize.startY)
+      ));
       e.preventDefault();
     }
   }

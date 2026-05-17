@@ -118,7 +118,7 @@
   }
 
   function messagePreview(message) {
-    return contentToText(message?.content || '').replace(/\s+/g, ' ').trim();
+    return contentToText(message?.content || '').replace(/\r\n/g, '\n').trim();
   }
 
   function setPanelStatus(message, isError = false) {
@@ -288,15 +288,19 @@
       setPanelStatus('外部CLI取り込みが無効です', true);
       return;
     }
-    await saveCliConfig({ silent: true });
-    setPanelStatus('外部CLIログをスキャン中...');
-    const result = await apiPost('/cli-transcripts/scan', {});
-    if (result.skipped) {
-      setPanelStatus('スキャンをスキップ: ' + (result.reason || 'disabled'), true);
-    } else {
-      setPanelStatus(`取り込み ${Number(result.imported_count || 0)} 件 / エラー ${Number(result.error_count || 0)} 件`);
+    try {
+      await saveCliConfig({ silent: true });
+      setPanelStatus('外部CLIログをスキャン中...');
+      const result = await apiPost('/cli-transcripts/scan', {});
+      if (result.skipped) {
+        setPanelStatus('スキャンをスキップ: ' + (result.reason || 'disabled'), true);
+      } else {
+        setPanelStatus(`取り込み ${Number(result.imported_count || 0)} 件 / エラー ${Number(result.error_count || 0)} 件`);
+      }
+      await loadCliSessions();
+    } catch (error) {
+      setPanelStatus('外部CLIログのスキャンに失敗: ' + (error?.message || error), true);
     }
-    await loadCliSessions();
   }
 
   async function loadCliSessions() {
@@ -415,12 +419,16 @@
   async function extractSelectedCliKnowledge() {
     const session = cliSelectedSession?.session;
     if (!session) return;
-    setPanelStatus('ナレッジを抽出中...');
-    const result = await apiPost(
-      '/cli-transcripts/session/' + encodeURIComponent(session.provider) + '/' + encodeURIComponent(session.session_id) + '/extract-knowledge',
-      {}
-    );
-    setPanelStatus(`ナレッジ抽出: ${Number(result.item_count || 0)}件`);
+    try {
+      setPanelStatus('ナレッジを抽出中...');
+      const result = await apiPost(
+        '/cli-transcripts/session/' + encodeURIComponent(session.provider) + '/' + encodeURIComponent(session.session_id) + '/extract-knowledge',
+        {}
+      );
+      setPanelStatus(`ナレッジ抽出: ${Number(result.item_count || 0)}件`);
+    } catch (error) {
+      setPanelStatus('ナレッジ抽出に失敗: ' + (error?.message || error), true);
+    }
   }
 
   function normalizeCliChatUserContent(textValue, attachments) {
@@ -481,7 +489,7 @@
       return false;
     }
     if (!cliChatConfig) await loadCliChatConfig();
-    const provider = String(_chatState.provider || '').trim();
+    const provider = String(options.provider || _chatState.provider || '').trim();
     const providerStatus = cliChatProviderReadyStatus(provider);
     if (!providerStatus.ok) {
       if (typeof chatAddSystem === 'function') chatAddSystem(providerStatus.message || ((cliChatMeta(provider)?.label || provider) + ' のCLIチャット設定を確認してください。'));
@@ -513,14 +521,18 @@
       if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, 10);
     }
 
+    const scopedMessages = Array.isArray(options.streamMessages) ? options.streamMessages : null;
+    const targetMessages = scopedMessages || _chatState.messages;
+    const detachedScope = !!scopedMessages && scopedMessages !== _chatState.messages;
+
     if (usingDeferredMessages) {
       deferredMessages.forEach(message => {
         message.role = 'user';
         message.timestamp = message.timestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString());
         if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(message);
       });
-      _chatState.messages.push(...deferredMessages);
-      if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+      targetMessages.push(...deferredMessages);
+      if (!detachedScope && typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
     } else {
       if (typeof _chatPromoteQueuedMessagesToHistory === 'function') _chatPromoteQueuedMessagesToHistory();
       const userTimestamp = typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString();
@@ -534,15 +546,20 @@
       if (typeof chatAddMessage === 'function') {
         chatAddMessage('user', userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
       }
-      _chatState.messages.push(userMessage);
+      targetMessages.push(userMessage);
     }
-    if (typeof _ensureSessionId === 'function') _ensureSessionId();
+    if (!detachedScope && typeof _ensureSessionId === 'function') _ensureSessionId();
 
-    const streamMessages = _chatState.messages;
-    const streamSessionId = _chatState.sessionId || '';
-    const streamSessionTitle = _chatState.sessionTitle || '';
-    const streamTargetPath = _chatState.targetPath || '';
-    const streamSourceFolder = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
+    const streamMessages = targetMessages;
+    const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
+    const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
+    const streamTargetPath = Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || '');
+    const streamSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder')
+      ? String(options.sourceFolder || '')
+      : (typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '');
+    const streamMode = Object.prototype.hasOwnProperty.call(options || {}, 'mode')
+      ? String(options.mode || '')
+      : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''));
     const streamWorkFolder = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
     const streamModel = cliChatModel(provider);
     const streamController = new AbortController();
@@ -567,8 +584,10 @@
     _chatState.streamingProvider = provider;
     cliChatSetSendButtonStreaming(true);
     const activity = createCliChatActivity(provider);
-    msgContainer.appendChild(activity.wrapper);
-    msgContainer.scrollTop = msgContainer.scrollHeight;
+    if (!detachedScope) {
+      msgContainer.appendChild(activity.wrapper);
+      msgContainer.scrollTop = msgContainer.scrollHeight;
+    }
 
     const assistantMessageId = typeof _newChatMessageId === 'function' ? _newChatMessageId() : 'msg_' + Math.random().toString(16).slice(2, 10);
     let assistantTimestamp = '';
@@ -587,6 +606,21 @@
         model: streamModel,
         timestamp: assistantTimestamp,
       };
+    };
+    const saveStreamMessages = async (throwOnError = false) => {
+      if (typeof chatAutoSave !== 'function') return false;
+      const saved = await chatAutoSave({
+        messages: streamMessages,
+        sessionId: streamSessionId,
+        sessionTitle: streamSessionTitle,
+        targetPath: streamTargetPath,
+        sourceFolder: streamSourceFolder,
+        provider,
+        model: streamModel,
+        silent: !throwOnError,
+      });
+      if (saved && typeof renderChatHistory === 'function') renderChatHistory();
+      return saved;
     };
 
     try {
@@ -675,17 +709,7 @@
         const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
         streamMessages.push(assistantMessage);
         sendOk = true;
-        if (typeof chatAutoSave === 'function') {
-          chatAutoSave({
-            messages: streamMessages,
-            sessionId: streamSessionId,
-            sessionTitle: streamSessionTitle,
-            targetPath: streamTargetPath,
-            sourceFolder: streamSourceFolder,
-            provider,
-            model: streamModel,
-          }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
-        }
+        saveStreamMessages().catch(() => {});
       }
     } catch (error) {
       activity.wrapper.remove();
@@ -696,19 +720,18 @@
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, []);
         streamMessages.push({ role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider, model: streamModel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()), aborted: true });
         sendOk = true;
-        if (typeof chatAutoSave === 'function') {
-          chatAutoSave({
-            messages: streamMessages,
-            sessionId: streamSessionId,
-            sessionTitle: streamSessionTitle,
-            targetPath: streamTargetPath,
-            sourceFolder: streamSourceFolder,
-            provider,
-            model: streamModel,
-          }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
-        }
+        saveStreamMessages().catch(() => {});
       } else if (streamVisibleInCurrentChat() && typeof chatAddSystem === 'function') {
         chatAddSystem('CLIエラー: ' + (error?.message || error));
+        try {
+          await saveStreamMessages(true);
+        } catch (saveError) {
+          if (typeof showStatus === 'function') showStatus('CLI送信内容の保存に失敗: ' + (saveError?.message || saveError), true);
+        }
+      } else {
+        try {
+          await saveStreamMessages(true);
+        } catch {}
       }
     } finally {
       if (_chatState.abortController === streamController) {
@@ -723,7 +746,11 @@
             _chatSendQueuedMessagesAfterStream({
               messages: streamMessages,
               sessionId: streamSessionId,
+              sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
+              sourceFolder: streamSourceFolder,
+              provider,
+              mode: streamMode,
             }).catch(() => {});
           }, 0);
         }

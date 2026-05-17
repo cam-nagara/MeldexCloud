@@ -23,6 +23,18 @@
     'OSに合わせる': 'OSに合わせる',
   };
   const LEGACY_THEME_ID_MAP = {
+    'custom-dark': 'builtin-dark',
+    'custom-light': 'builtin-light',
+    'custom-pastel': 'builtin-pastel',
+    'custom-earth': 'builtin-earth',
+    'custom-navy': 'builtin-dark',
+    'custom-sepia': 'builtin-earth',
+    'custom-forest': 'builtin-earth',
+    'custom-rose': 'builtin-pastel',
+    'custom-girly': 'builtin-pastel',
+    'custom-grayscale': 'builtin-dark',
+    'custom-rainbow': 'builtin-dark',
+    'custom-gaming': 'builtin-dark',
     'builtin-board-dark': 'builtin-dark',
     'builtin-board-light': 'builtin-light',
     'builtin-board-navy': 'builtin-dark',

@@ -44,7 +44,7 @@ const MeldexStartupTabGuard = (() => {
     const path = tab?.path || '';
     if (!path) return true;
     const base = (typeof API_BASE !== 'undefined') ? API_BASE : '/api';
-    const dbViewTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+    const dbViewTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'calendar']);
     const endpoint = dbViewTypes.has(viewName)
       ? (base + '/check-type?path=' + encodeURIComponent(path))
       : (base + '/file-meta?path=' + encodeURIComponent(path));

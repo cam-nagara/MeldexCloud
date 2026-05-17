@@ -151,7 +151,8 @@ async function _promptTimelineColumnWidth(dbPath, options) {
     if (typeof showStatus === 'function') showStatus('列幅は数値で入力してください', true);
     return;
   }
-  _setTimelineColWidth(dbPath, cfg, target, Math.max(60, Math.min(640, width)), { detail: String(target || '') });
+  const minWidth = target === '__rowHeader' ? 80 : 60;
+  _setTimelineColWidth(dbPath, cfg, target, Math.max(minWidth, Math.min(640, width)), { detail: String(target || '') });
   if (typeof renderTimeline === 'function') renderTimeline(options.ctx);
 }
 

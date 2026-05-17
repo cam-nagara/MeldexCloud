@@ -156,6 +156,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const sel = window.getSelection();
     if (!sel?.rangeCount) return false;
     const range = sel.getRangeAt(0);
+    if (!this._rangeWithinElement(range, text)) return false;
     this._pushUndo('セル内改行');
     range.deleteContents();
     const br = document.createElement('br');
@@ -175,7 +176,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     text.style.height = 'auto';
     this._syncRowFromDom(text, { skipUndo: true });
     requestAnimationFrame(() => {
+      if (!sel.rangeCount) return;
       const r2 = sel.getRangeAt(0);
+      if (!this._rangeWithinElement(r2, text)) return;
       const marker = document.createElement('span');
       r2.insertNode(marker);
       marker.scrollIntoView({ block: 'nearest', behavior: 'instant' });
@@ -232,6 +235,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _runEscapeShortcut() {
+    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup();
     document.querySelectorAll('.sn2-header-popup, .sn2-header-sub-popup, .gb-fmt-popup--bulk-edit').forEach(el => el.remove());
     if (typeof this._closeRoleMenu === 'function') this._closeRoleMenu();
     if (this._rowSelection?.size) this._clearRowSelection();
@@ -373,8 +377,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
         dragPending = false;
         dragSelecting = true;
+        if (!this._rowSelection) this._rowSelection = new Set();
         if (!dragCtrl && !dragShift) {
-          if (!this._rowSelection) this._rowSelection = new Set();
           this._rowSelection.clear();
         }
         host.setPointerCapture(dragPointerId);

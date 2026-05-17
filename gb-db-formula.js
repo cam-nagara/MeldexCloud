@@ -15,7 +15,18 @@ function formulaTokenize(src) {
     if (ch === '"') {
       const start = i;
       let s = ''; i++;
-      while (i < src.length && src[i] !== '"') { if (src[i] === '\\') { i++; s += src[i] || ''; } else { s += src[i]; } i++; }
+      let closed = false;
+      while (i < src.length) {
+        if (src[i] === '"') { closed = true; break; }
+        if (src[i] === '\\') { i++; s += src[i] || ''; }
+        else { s += src[i]; }
+        i++;
+      }
+      if (!closed) {
+        const err = new Error('Unterminated string');
+        err.formulaPos = start;
+        throw err;
+      }
       i++; tokens.push({type:'str', value:s, pos:start, end:i}); continue;
     }
     // 数値
@@ -179,19 +190,33 @@ function toBool(v) {
   return true;
 }
 
-function _formulaDateMs(v) {
+function _formulaDateRangePart(v, boundary = 'start') {
+  if (typeof v !== 'string') return v;
+  const text = v.trim();
+  const idx = text.indexOf('|');
+  if (idx < 0) return text;
+  const start = text.slice(0, idx).trim();
+  const end = text.slice(idx + 1).trim();
+  return boundary === 'end' ? (end || start) : (start || end);
+}
+
+function _formulaDateMs(v, options = {}) {
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.getTime();
   if (typeof v !== 'string') return null;
-  const m = v.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  const text = _formulaDateRangePart(v, options.boundary || 'start');
+  const m = String(text || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?(Z|[+-]\d{2}:?\d{2})?$/);
   if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0), Number(m[6] || 0));
+  const dateText = `${m[1]}-${m[2]}-${m[3]}` + (m[4] != null ? `T${m[4]}:${m[5]}:${m[6] || '00'}` : '') + (m[7] || '');
+  const d = typeof parseLocalDate === 'function'
+    ? parseLocalDate(dateText)
+    : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0), Number(m[6] || 0));
   if (Number.isNaN(d.getTime())) return null;
-  if (d.getFullYear() !== Number(m[1]) || d.getMonth() !== Number(m[2]) - 1 || d.getDate() !== Number(m[3])) return null;
+  if (typeof parseLocalDate !== 'function' && (d.getFullYear() !== Number(m[1]) || d.getMonth() !== Number(m[2]) - 1 || d.getDate() !== Number(m[3]))) return null;
   return d.getTime();
 }
 
-function _formulaDateObj(v) {
-  const ms = _formulaDateMs(v);
+function _formulaDateObj(v, options = {}) {
+  const ms = _formulaDateMs(v, options);
   return ms === null ? null : new Date(ms);
 }
 
@@ -200,6 +225,8 @@ function _formulaPad(v, len = 2) {
 }
 
 function _formulaDateValueFromDate(date, withTime) {
+  if (withTime && typeof formatLocalDateTime === 'function') return formatLocalDateTime(date);
+  if (!withTime && typeof formatLocalDate === 'function') return formatLocalDate(date);
   const y = date.getFullYear();
   const m = _formulaPad(date.getMonth() + 1);
   const d = _formulaPad(date.getDate());
@@ -288,8 +315,8 @@ function _formulaTrunc(value) {
 }
 
 function _formulaDateBetween(endValue, startValue, unitValue) {
-  const end = _formulaDateObj(endValue);
-  const start = _formulaDateObj(startValue);
+  const end = _formulaDateObj(endValue, { boundary: 'end' });
+  const start = _formulaDateObj(startValue, { boundary: 'start' });
   if (!end || !start) return 0;
   const unit = _formulaNormalizeDateUnit(unitValue);
   const diffMs = end.getTime() - start.getTime();
@@ -360,6 +387,19 @@ function formulaCallFn(name, args, ctx) {
   switch (name) {
     case 'prop': {
       const pname = ev(args[0]);
+      const ptc = ctx.propTypes?.[pname] || null;
+      if (ptc?.type === 'formula' && ptc.formula) {
+        if (ctx.formulaStack?.has(pname)) throw new Error('Circular formula reference: ' + pname);
+        const nextStack = new Set(ctx.formulaStack || []);
+        nextStack.add(pname);
+        const result = formulaEvalForEntity(ptc.formula, ctx.entity || {}, {
+          propTypes: ctx.propTypes,
+          vars: ctx.vars || {},
+          formulaStack: nextStack,
+        });
+        if (result.error) throw new Error(result.error);
+        return result.value ?? '';
+      }
       const vals = ctx.entity?.[pname];
       if (!vals || vals.length === 0) return '';
       const target = _formulaPickEntityValue(vals);
@@ -404,7 +444,7 @@ function formulaCallFn(name, args, ctx) {
       }
       return formulaEval(args[args.length - 1], {...ctx, vars: newVars});
     }
-    default: return '';
+    default: throw new Error('Unknown function: ' + name);
   }
 }
 
@@ -427,11 +467,26 @@ function formulaCompile(src) {
 }
 
 // エントリの全プロパティ値を使って数式を評価
-function formulaEvalForEntity(formulaSrc, entityData) {
+function _formulaPropTypesFromOptions(options) {
+  if (options?.propTypes) return options.propTypes;
+  if (options?.propertyTypes) return options.propertyTypes;
+  const dbPath = options?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+  if (dbPath && typeof getPropertyTypes === 'function') {
+    try { return getPropertyTypes(dbPath) || {}; } catch {}
+  }
+  return {};
+}
+
+function formulaEvalForEntity(formulaSrc, entityData, options = {}) {
   const compiled = formulaCompile(formulaSrc);
   if (compiled.error) return { value: '', error: compiled.error, errorPos: compiled.errorPos ?? null };
   try {
-    const result = formulaEval(compiled.ast, { entity: entityData, vars: {} });
+    const result = formulaEval(compiled.ast, {
+      entity: entityData,
+      vars: options.vars || {},
+      propTypes: _formulaPropTypesFromOptions(options),
+      formulaStack: options.formulaStack || new Set(),
+    });
     return { value: result, error: null };
   } catch (e) {
     return { value: '', error: e.message };

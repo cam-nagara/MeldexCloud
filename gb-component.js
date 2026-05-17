@@ -11,6 +11,7 @@ class ToolComponent {
     this.state = {};       // ツール固有の状態
     this._mounted = false;
     this._active = false;
+    this._displayBeforeDeactivate = null;
   }
 
   // --- ライフサイクル ---
@@ -32,13 +33,19 @@ class ToolComponent {
   /** タブがアクティブになった時（描画更新等）*/
   activate() {
     this._active = true;
-    if (this.el) this.el.style.display = '';
+    if (this.el) {
+      this.el.style.display = this._displayBeforeDeactivate == null ? '' : this._displayBeforeDeactivate;
+      this._displayBeforeDeactivate = null;
+    }
   }
 
   /** タブが非アクティブになった時（リソース解放等）*/
   deactivate() {
     this._active = false;
-    if (this.el) this.el.style.display = 'none';
+    if (this.el) {
+      if (this.el.style.display !== 'none') this._displayBeforeDeactivate = this.el.style.display;
+      this.el.style.display = 'none';
+    }
   }
 
   /** containerからDOM要素を除去 */
@@ -54,6 +61,7 @@ class ToolComponent {
     this.unmount();
     this.el = null;
     this.state = {};
+    this._displayBeforeDeactivate = null;
   }
 
   // --- 状態管理 ---
@@ -90,6 +98,7 @@ class LegacyWrapperComponent extends ToolComponent {
   constructor(paneId, tabId, legacyEl) {
     super(paneId, tabId);
     this._legacyEl = legacyEl; // ラップ対象のDOM要素
+    this._legacyDisplayBeforeDeactivate = null;
   }
 
   create() {
@@ -104,12 +113,18 @@ class LegacyWrapperComponent extends ToolComponent {
 
   activate() {
     super.activate();
-    if (this._legacyEl) this._legacyEl.style.display = '';
+    if (this._legacyEl) {
+      this._legacyEl.style.display = this._legacyDisplayBeforeDeactivate == null ? '' : this._legacyDisplayBeforeDeactivate;
+      this._legacyDisplayBeforeDeactivate = null;
+    }
   }
 
   deactivate() {
     super.deactivate();
-    if (this._legacyEl) this._legacyEl.style.display = 'none';
+    if (this._legacyEl) {
+      if (this._legacyEl.style.display !== 'none') this._legacyDisplayBeforeDeactivate = this._legacyEl.style.display;
+      this._legacyEl.style.display = 'none';
+    }
   }
 
   destroy() {

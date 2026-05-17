@@ -35,7 +35,8 @@ function _moveTimelineOrderedValue(values, fromValue, toValue) {
 }
 
 function _setTimelineRowOrder(dbPath, cfg, ordered, options = {}) {
-  const next = { ...cfg, rowOrder: ordered.map(value => _timelineColKey(value)) };
+  const base = dbPath && typeof getTimelineConfig === 'function' ? getTimelineConfig(dbPath) : (cfg || {});
+  const next = { ...base, rowOrder: ordered.map(value => _timelineColKey(value)) };
   setTimelineConfig(dbPath, next, {
     label: options.label || 'シート表示: タイムラインヘッダー順',
     detail: options.detail || '',

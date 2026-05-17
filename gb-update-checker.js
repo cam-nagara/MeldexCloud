@@ -16,7 +16,12 @@
   }
 
   function _parts(value) {
-    return String(value || '').replace(/^v/i, '').split(/[.+-]/)[0].split('.').map(n => parseInt(n, 10) || 0);
+    return String(value || '')
+      .replace(/^v/i, '')
+      .split('+')[0]
+      .split('-')[0]
+      .split('.')
+      .map(n => parseInt(n, 10) || 0);
   }
 
   function _compare(a, b) {
@@ -85,11 +90,11 @@
     if (!opts.force && last && Date.now() - last < CHECK_INTERVAL_MS) {
       return { ok: false, skipped: true, reason: 'interval' };
     }
-    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
     try {
       const [current, latest] = await Promise.all([_currentSemver(), _fetchLatest()]);
       if (!latest?.semver) return { ok: false, skipped: true, reason: 'no-latest' };
       if (_compare(latest.semver, current) > 0) _showUpdateNotice(latest, current);
+      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
       return { ok: true, current, latest };
     } catch (_) {
       return { ok: false, skipped: true, reason: 'network' };

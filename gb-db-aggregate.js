@@ -104,11 +104,11 @@ function _isCheckboxLikeValue(value) {
 /**
  * エントリ群から数値の配列を抽出する
  */
-function extractNumericValues(propName, entitiesMap, entityNames, ptc) {
+function extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes) {
   const nums = [];
   entityNames.forEach(en => {
     if (ptc && ptc.type === 'formula' && ptc.formula) {
-      const result = formulaEvalForEntity(ptc.formula, entitiesMap[en]);
+      const result = formulaEvalForEntity(ptc.formula, entitiesMap[en], { propTypes });
       if (!result.error) {
         const n = _toStrictNumber(result.value);
         if (n !== null) nums.push(n);
@@ -134,9 +134,12 @@ function extractDateValues(propName, entitiesMap, entityNames) {
     if (!entitiesMap[en]) return;
     const vals = filterValues(entitiesMap[en][propName] || []);
     vals.forEach(v => {
-      // 'YYYY-MM-DD' を UTC 解釈させないよう parseLocalDate を使う
-      const d = (typeof parseLocalDate === 'function') ? parseLocalDate(v.value) : new Date(v.value);
-      if (!isNaN(d.getTime())) dates.push(d);
+      const raw = String(v.value ?? '');
+      const parts = raw.includes('|') ? raw.split('|') : [raw];
+      parts.map(part => part.trim()).filter(Boolean).forEach(part => {
+        const d = (typeof parseLocalDate === 'function') ? parseLocalDate(part) : new Date(part);
+        if (!isNaN(d.getTime())) dates.push(d);
+      });
     });
   });
   return dates;
@@ -169,12 +172,12 @@ function extractCheckboxStats(propName, entitiesMap, entityNames) {
  * @param {object} ptc - プロパティ型設定 {type, formula, ...}
  * @returns {string|number} 集計結果
  */
-function calcAggregation(propName, entitiesMap, entityNames, type, ptc) {
+function calcAggregation(propName, entitiesMap, entityNames, type, ptc, propTypes) {
   if (type === 'none') return '';
 
   // 基本4種は既存のcalcColumnCountに委譲
   if (['count', 'unique', 'empty', 'not_empty'].includes(type)) {
-    return calcColumnCount(propName, entitiesMap, entityNames, type, ptc);
+    return calcColumnCount(propName, entitiesMap, entityNames, type, ptc, propTypes);
   }
 
   const total = entityNames.length;
@@ -185,8 +188,8 @@ function calcAggregation(propName, entitiesMap, entityNames, type, ptc) {
 
   // パーセント系
   if (type === 'percent_empty' || type === 'percent_not_empty') {
-    const emptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'empty', ptc);
-    const notEmptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'not_empty', ptc);
+    const emptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'empty', ptc, propTypes);
+    const notEmptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'not_empty', ptc, propTypes);
     const denom = Number(emptyCount) + Number(notEmptyCount);
     if (denom === 0) return '0%';
     if (type === 'percent_empty') return Math.round((emptyCount / denom) * 100) + '%';
@@ -202,7 +205,7 @@ function calcAggregation(propName, entitiesMap, entityNames, type, ptc) {
 
   // 数値系集計
   if (['sum', 'average', 'min', 'max', 'median', 'range'].includes(type)) {
-    const nums = extractNumericValues(propName, entitiesMap, entityNames, ptc);
+    const nums = extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes);
     if (nums.length === 0) return '-';
     return formatAggregationResult(_calcNumeric(nums, type), type, ptc);
   }
@@ -264,32 +267,56 @@ function _calcDate(dates, type) {
 }
 
 function _addYearsClamped(date, years) {
-  const y = date.getFullYear() + years;
-  const m = date.getMonth();
-  const d = date.getDate();
-  const next = new Date(y, m, d);
-  if (next.getMonth() === m) return next;
-  return new Date(y, m + 1, 0);
+  const parts = _aggregateDateParts(date);
+  const year = parts.year + years;
+  const lastDay = new Date(Date.UTC(year, parts.month, 0)).getUTCDate();
+  return _dateFromAggregateParts({
+    year,
+    month: parts.month,
+    day: Math.min(parts.day, lastDay),
+  });
 }
 
 function _calendarDateRangeParts(start, end) {
-  let years = end.getFullYear() - start.getFullYear();
+  const startParts = _aggregateDateParts(start);
+  const endParts = _aggregateDateParts(end);
+  let years = endParts.year - startParts.year;
   let anchor = _addYearsClamped(start, years);
-  if (anchor > end) {
+  if (_aggregateDateUtc(anchor) > _aggregateDateUtc(end)) {
     years -= 1;
     anchor = _addYearsClamped(start, years);
   }
   const dayMs = 1000 * 60 * 60 * 24;
-  const startOfAnchor = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
-  const startOfEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  const days = Math.max(0, Math.round((startOfEnd - startOfAnchor) / dayMs));
+  const days = Math.max(0, Math.round((_aggregateDateUtc(end) - _aggregateDateUtc(anchor)) / dayMs));
   return { years: Math.max(0, years), days };
+}
+
+function _aggregateDateParts(d) {
+  const text = _formatDate(d);
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() };
+  return {
+    year: parseInt(m[1], 10),
+    month: parseInt(m[2], 10),
+    day: parseInt(m[3], 10),
+  };
+}
+
+function _dateFromAggregateParts(parts) {
+  const text = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  return typeof parseLocalDate === 'function' ? parseLocalDate(text) : new Date(parts.year, parts.month - 1, parts.day);
+}
+
+function _aggregateDateUtc(d) {
+  const parts = _aggregateDateParts(d);
+  return Date.UTC(parts.year, parts.month - 1, parts.day);
 }
 
 /**
  * 日付を YYYY-MM-DD 形式でフォーマット
  */
 function _formatDate(d) {
+  if (typeof formatLocalDate === 'function') return formatLocalDate(d);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');

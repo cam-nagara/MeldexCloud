@@ -87,7 +87,7 @@ class CanvasComponent extends ToolComponent {
     if (this._bdDump) {
       if (typeof bdLoadState === 'function') bdLoadState(this._bdDump);
       this._bdDump = null;
-    } else if (this.state.boardPath && bd.path !== this.state.boardPath) {
+    } else if (!this._activatingForReload && this.state.boardPath && bd.path !== this.state.boardPath) {
       bdOpenBoard(this.state.label || '', this.state.boardPath);
     }
   }
@@ -164,8 +164,18 @@ class CanvasComponent extends ToolComponent {
   async reload() {
     const path = this.state.boardPath || this._bdDump?.bd?.path || (this._active ? bd.path : '');
     if (!path || typeof bdOpenBoard !== 'function') return false;
+    if (!this._isOwnPaneActive() && typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') {
+      this._activatingForReload = true;
+      try {
+        GBLayout.setActivePane(this.paneId, { sync: true });
+      } finally {
+        this._activatingForReload = false;
+      }
+    }
+    if (!this._isOwnPaneActive()) return false;
     if (this._isOwnPaneActive()) _bdSetActiveBoardRootIds(this.el, this.idSuffix);
-    await bdOpenBoard(this.state.label || this._bdDump?.bd?.label || '', path);
+    const opened = await bdOpenBoard(this.state.label || this._bdDump?.bd?.label || '', path);
+    if (opened === false) return false;
     this._bdDump = null;
     return true;
   }

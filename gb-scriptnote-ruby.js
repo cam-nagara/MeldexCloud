@@ -22,12 +22,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     header.innerHTML = '<span style="font-weight:600;font-size:13px;">ルビ</span>';
     const headerBtns = document.createElement('div');
     headerBtns.style.cssText = 'display:flex;gap:3px;';
-    const mkBtn = (label, title, onClick) => {
+    const mkBtn = (label, title, onClick, e2eId) => {
       const b = document.createElement('button');
       b.className = 'sn2-detail-add-btn';
       b.type = 'button';
       b.textContent = label;
       b.title = title;
+      b.setAttribute('aria-label', title || label);
+      if (e2eId) b.dataset.e2eId = e2eId;
       b.addEventListener('click', onClick);
       return b;
     };
@@ -38,7 +40,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._refreshAutoRubyDisplay();
       this._markDirty({ skipUndo: true });
       this.renderRubyPanel(container);
-    }));
+    }, 'scriptnote-ruby-add-rule'));
     header.appendChild(headerBtns);
     wrap.appendChild(header);
 
@@ -61,6 +63,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     sizeInput.type = 'number'; sizeInput.step = '0.05'; sizeInput.min = '0.2'; sizeInput.max = '1.5';
     sizeInput.value = this.doc.editor?.rubyFontSize || '';
     sizeInput.placeholder = '0.55';
+    sizeInput.dataset.e2eId = 'scriptnote-ruby-size-input';
+    sizeInput.setAttribute('aria-label', 'ルビサイズ');
+    sizeInput.title = 'ルビサイズ';
     sizeInput.style.cssText = 'width:52px;font-size:10px;padding:1px 3px;border:1px solid var(--border);border-radius:2px;background:var(--bg);color:var(--fg);';
     sizeInput.addEventListener('change', () => {
       this._pushUndo('ルビサイズ変更');
@@ -90,6 +95,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     offsetInput.type = 'number'; offsetInput.step = '1'; offsetInput.min = '-10'; offsetInput.max = '20';
     offsetInput.value = this.doc.editor?.rubyOffset ?? '';
     offsetInput.placeholder = '3.5';
+    offsetInput.dataset.e2eId = 'scriptnote-ruby-offset-input';
+    offsetInput.setAttribute('aria-label', 'ルビ距離');
+    offsetInput.title = 'ルビ距離';
     offsetInput.style.cssText = 'width:52px;font-size:10px;padding:1px 3px;border:1px solid var(--border);border-radius:2px;background:var(--bg);color:var(--fg);';
     offsetInput.addEventListener('change', () => {
       this._pushUndo('ルビ距離変更');
@@ -147,7 +155,10 @@ Object.assign(ScriptNoteEditor.prototype, {
         tr.addEventListener('click', () => {
           const row = this.doc.rows[fr.rowIdx];
           if (row) {
-            const rowEl = this.host?.querySelector(`.sn2-row[data-row-id="${row.id}"]`);
+            const safeRowId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+              ? CSS.escape(row.id)
+              : String(row.id).replace(/["\\]/g, '\\$&');
+            const rowEl = this.host?.querySelector(`.sn2-row[data-row-id="${safeRowId}"]`);
             if (rowEl) {
               rowEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
               rowEl.classList.add('sn2-swap-highlight');
@@ -191,6 +202,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       textInp.type = 'text';
       textInp.value = rule.text || '';
       textInp.placeholder = '漢字';
+      textInp.dataset.e2eId = 'scriptnote-ruby-rule-text-' + i;
+      textInp.setAttribute('aria-label', '自動ルビ対象 ' + (i + 1));
+      textInp.title = '自動ルビ対象';
       textInp.style.cssText = 'flex:1;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--fg);font-size:12px;outline:none;min-width:0;';
       textInp.addEventListener('change', () => {
         this._pushUndo('ルビルール編集');
@@ -209,6 +223,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       rubyInp.type = 'text';
       rubyInp.value = rule.ruby || '';
       rubyInp.placeholder = 'ルビ';
+      rubyInp.dataset.e2eId = 'scriptnote-ruby-rule-ruby-' + i;
+      rubyInp.setAttribute('aria-label', '自動ルビ ' + (i + 1));
+      rubyInp.title = '自動ルビ';
       rubyInp.style.cssText = 'flex:1;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--fg);font-size:12px;outline:none;min-width:0;';
       rubyInp.addEventListener('change', () => {
         this._pushUndo('ルビルール編集');
@@ -224,6 +241,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       delBtn.type = 'button';
       delBtn.textContent = '✕';
       delBtn.title = '削除';
+      delBtn.dataset.e2eId = 'scriptnote-ruby-rule-delete-' + i;
+      delBtn.setAttribute('aria-label', '自動ルビルールを削除 ' + (i + 1));
       delBtn.style.cssText = 'font-size:10px;color:var(--fg2);flex-shrink:0;margin-left:auto;';
       delBtn.addEventListener('click', () => {
         showConfirmDialog(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を削除しますか？`, () => {
@@ -248,6 +267,10 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _setupRubyDragDrop(listEl, panelContainer) {
     let dragIdx = -1;
+    const clearDragState = () => {
+      dragIdx = -1;
+      listEl.querySelectorAll('.sn2-detail-item').forEach(el => el.classList.remove('sn2-dragging', 'sn2-drop-above', 'sn2-drop-below'));
+    };
     listEl.addEventListener('dragstart', (e) => {
       const item = e.target.closest('.sn2-detail-item');
       if (!item) return;
@@ -267,22 +290,23 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     });
     listEl.addEventListener('dragend', () => {
-      listEl.querySelectorAll('.sn2-detail-item').forEach(el => el.classList.remove('sn2-dragging', 'sn2-drop-above', 'sn2-drop-below'));
+      clearDragState();
     });
     listEl.addEventListener('drop', (e) => {
       e.preventDefault();
       const item = e.target.closest('.sn2-detail-item');
-      if (!item || dragIdx < 0) return;
+      if (!item || dragIdx < 0) { clearDragState(); return; }
       const rules = this.doc.rubyRules || [];
       let dropIdx = Number(item.dataset.idx);
       const rect = item.getBoundingClientRect();
       if (e.clientY >= rect.top + rect.height / 2) dropIdx++;
-      if (dropIdx === dragIdx || dropIdx === dragIdx + 1) return;
+      if (dropIdx === dragIdx || dropIdx === dragIdx + 1) { clearDragState(); return; }
       this._pushUndo('ルビルール並び替え');
       const [moved] = rules.splice(dragIdx, 1);
       rules.splice(dropIdx > dragIdx ? dropIdx - 1 : dropIdx, 0, moved);
       this._refreshAutoRubyDisplay();
       this._markDirty({ skipUndo: true });
+      clearDragState();
       this.renderRubyPanel(panelContainer);
     });
   },

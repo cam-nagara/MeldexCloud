@@ -14,21 +14,42 @@
     try { return !!window.matchMedia?.(query)?.matches; } catch { return false; }
   }
 
+  function _storageValue(key) {
+    try {
+      const value = localStorage.getItem(key);
+      if (value === '1') return true;
+      if (value === '0') return false;
+    } catch {}
+    return null;
+  }
+
   function _storageFlag(key) {
-    try { return localStorage.getItem(key) === '1'; } catch { return false; }
+    return _storageValue(key) === true;
   }
 
   function _setStorageFlag(key, enabled) {
     try {
-      if (enabled) localStorage.setItem(key, '1');
-      else localStorage.removeItem(key);
+      localStorage.setItem(key, enabled ? '1' : '0');
     } catch {}
   }
 
+  function _preferenceEnabled(name) {
+    if (name === 'highContrast') {
+      const stored = _storageValue(STORAGE.highContrast);
+      return stored === null ? _matches('(prefers-contrast: more)') : stored;
+    }
+    if (name === 'reducedMotion') {
+      const stored = _storageValue(STORAGE.reducedMotion);
+      return stored === null ? _matches('(prefers-reduced-motion: reduce)') : stored;
+    }
+    if (name === 'colorblindSafe') return _storageFlag(STORAGE.colorblindSafe);
+    return false;
+  }
+
   function applyPreferences() {
-    const highContrast = _storageFlag(STORAGE.highContrast) || _matches('(prefers-contrast: more)');
-    const reducedMotion = _storageFlag(STORAGE.reducedMotion) || _matches('(prefers-reduced-motion: reduce)');
-    const colorblindSafe = _storageFlag(STORAGE.colorblindSafe);
+    const highContrast = _preferenceEnabled('highContrast');
+    const reducedMotion = _preferenceEnabled('reducedMotion');
+    const colorblindSafe = _preferenceEnabled('colorblindSafe');
     ROOT.classList.toggle('meldex-high-contrast', highContrast);
     ROOT.classList.toggle('meldex-reduced-motion', reducedMotion);
     ROOT.classList.toggle('meldex-colorblind-safe', colorblindSafe);
@@ -68,7 +89,11 @@
 
   function ensureControlLabels(root) {
     const scope = root || document;
-    scope.querySelectorAll('input, select, textarea, button, [role="button"], [tabindex]').forEach(el => {
+    const selector = 'input, select, textarea, button, [role="button"], [tabindex]';
+    const controls = [];
+    if (scope.nodeType === 1 && scope.matches?.(selector)) controls.push(scope);
+    scope.querySelectorAll?.(selector).forEach(el => controls.push(el));
+    controls.forEach(el => {
       if (el.disabled || el.hidden || el.getAttribute('aria-hidden') === 'true') return;
       const label = _labelFromElement(el);
       if (label) el.setAttribute('aria-label', label);
@@ -84,9 +109,15 @@
     }
     const msg = document.getElementById('sb-msg');
     if (msg) {
-      msg.setAttribute('role', 'status');
-      msg.setAttribute('aria-live', 'polite');
-      msg.setAttribute('aria-atomic', 'true');
+      if (status && status.contains(msg)) {
+        msg.removeAttribute('role');
+        msg.removeAttribute('aria-live');
+        msg.removeAttribute('aria-atomic');
+      } else {
+        msg.setAttribute('role', 'status');
+        msg.setAttribute('aria-live', 'polite');
+        msg.setAttribute('aria-atomic', 'true');
+      }
     }
     const warn = document.getElementById('sb-warn');
     if (warn) {
@@ -175,6 +206,7 @@
     ensureControlLabels,
     ensureLiveRegions,
     browserSupport: _browserSupport,
+    isPreferenceEnabled: _preferenceEnabled,
     isReducedMotion: () => ROOT.classList.contains('meldex-reduced-motion'),
   };
 })();

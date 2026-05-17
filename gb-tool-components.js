@@ -271,6 +271,11 @@ class SearchComponent extends ToolComponent {
 
 // === VersionComponent ===
 class VersionComponent extends ToolComponent {
+  destroy() {
+    this._destroyed = true;
+    super.destroy();
+  }
+
   create() {
     this.el = document.createElement('div');
     this.el.className = 'gb-tool-version';
@@ -306,8 +311,11 @@ class VersionComponent extends ToolComponent {
   }
 
   async _loadVersions(path, vType) {
+    const loadSeq = (this._loadSeq || 0) + 1;
+    this._loadSeq = loadSeq;
     this.state.versionPath = path;
     this.state.versionType = vType;
+    if (!this.el || this._destroyed) return;
     this.el.innerHTML = '<div class="gb-history-loading" style="padding:16px;color:var(--fg2);">読み込み中...</div>';
     const isFolder = vType === 'folder';
     const isDb = vType === 'db';
@@ -332,6 +340,7 @@ class VersionComponent extends ToolComponent {
       if (timelineActorKind) params.set('actor_kind', timelineActorKind);
       timeline = await apiFetch('/version-panel/timeline?' + params.toString());
     } catch {}
+    if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     this._timelineEntries = Array.isArray(timeline?.entries) ? timeline.entries : [];
     this.el.innerHTML = this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
     this._bindVersionActions();

@@ -5,6 +5,7 @@
   const MAX_RECENT_ITEMS = 16;
   const MAX_FILE_RESULTS = 60;
   const GLOBAL_FILE_MIN_QUERY = 1;
+  const GLOBAL_INDEX_REFRESH_TTL_MS = 30000;
   const LEFT_CHROME_POLL_MS = 3000;
 
   const state = {
@@ -21,6 +22,7 @@
     parentItem: null,
     globalIndexPromise: null,
     globalIndexFiles: null,
+    globalIndexLoadedAt: 0,
     floatingChrome: null,
     leftChromeSyncRaf: 0,
     leftChromePollTimer: 0,
@@ -75,10 +77,16 @@
     image: '画像',
     audio: '音声',
     video: '動画',
+    media: 'メディア',
     html: 'HTML',
     pdf: 'PDF',
     folder: 'フォルダ',
     entity: 'エントリ',
+    text: 'テキスト',
+    data: 'データ',
+    chat: 'チャット',
+    archive: '圧縮ファイル',
+    other: 'ファイル',
   };
 
   const FILE_NAV_TYPES = {
@@ -92,10 +100,13 @@
     image: 'image',
     audio: 'audio',
     video: 'video',
+    pdf: 'media',
     html: 'html',
     entity: 'entity',
     folder: 'folder',
   };
+
+  const GLOBAL_INDEX_PAGE_CATEGORIES = new Set(['text', 'data', 'chat', 'archive', 'calendar', 'other']);
 
   function _icon(name, size = 16) {
     if (!name) return '';
@@ -126,6 +137,7 @@
       priority: options.priority || 0,
       keywords,
       subcommands: options.subcommands || null,
+      fileKey: options.fileKey || '',
     };
   }
 
@@ -172,18 +184,77 @@
     if (typeof addPanelMenuTool === 'function') addPanelMenuTool(type);
   }
 
+  function _entryOpenPath(entry) {
+    return String(entry?.openPath || entry?.absPath || entry?.abs_path || entry?.path || '');
+  }
+
+  function _entryRootKey(entry) {
+    return String(entry?.root_type || entry?.rootType || entry?.root_name || entry?.rootName || '');
+  }
+
+  function _entryExtension(entry) {
+    const raw = String(entry?.ext || _entryOpenPath(entry).split('/').pop() || '');
+    const ext = raw.includes('.') ? raw.split('.').pop() : raw;
+    return ext.toLowerCase();
+  }
+
+  function _mediaTypeForEntry(entry, type) {
+    if (entry?.mediaType) return String(entry.mediaType);
+    const category = String(entry?.category || '').toLowerCase();
+    if (['image', 'audio', 'video', 'pdf'].includes(category)) return category;
+    const entryType = String(entry?.type || '').toLowerCase();
+    if (['image', 'audio', 'video', 'pdf'].includes(entryType)) return entryType;
+    const ext = _entryExtension(entry);
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return 'image';
+    if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'].includes(ext)) return 'audio';
+    if (['mp4', 'webm', 'mov', 'avi', 'mkv', 'ogv'].includes(ext)) return 'video';
+    if (ext === 'pdf') return 'pdf';
+    return type === 'media' ? 'image' : '';
+  }
+
+  function _navTypeForEntry(entry) {
+    const category = String(entry?.category || '').toLowerCase();
+    if (category) {
+      if (GLOBAL_INDEX_PAGE_CATEGORIES.has(category)) return 'page';
+      return FILE_NAV_TYPES[category] || category || 'page';
+    }
+    const raw = String(entry?.type || 'page');
+    return FILE_NAV_TYPES[raw] || FILE_NAV_TYPES[raw.toLowerCase()] || raw || 'page';
+  }
+
+  function _displayTypeForEntry(entry, type, mediaType) {
+    const category = String(entry?.category || '').toLowerCase();
+    return mediaType || category || type;
+  }
+
+  function _commandFileKey(entry, type) {
+    const openPath = _entryOpenPath(entry);
+    return `${type || _navTypeForEntry(entry)}:${_entryRootKey(entry)}:${String(entry?.path || '')}:${openPath}`;
+  }
+
+  function invalidateCommandPaletteGlobalIndex() {
+    state.globalIndexFiles = null;
+    state.globalIndexLoadedAt = 0;
+    state.globalIndexPromise = null;
+  }
+
   function _openFile(entry) {
-    if (!entry?.path) return;
+    const openPath = _entryOpenPath(entry);
+    if (!openPath) return;
+    const type = entry.type || _navTypeForEntry(entry);
+    const label = entry.label || entry.name || openPath;
+    const mediaType = _mediaTypeForEntry(entry, type);
     if (typeof navOpen === 'function') {
       navOpen({
-        type: entry.type || 'page',
-        label: entry.label || entry.name || entry.path,
-        path: entry.path,
-        mediaType: entry.mediaType,
+        ...entry,
+        type,
+        label,
+        path: openPath,
+        mediaType,
       });
       return;
     }
-    if (entry.type === 'page' && typeof openPage === 'function') openPage(entry.label, entry.path);
+    if (type === 'page' && typeof openPage === 'function') openPage(label, openPath);
   }
 
   function _readRecentItems() {
@@ -200,16 +271,24 @@
       .filter(entry => entry && entry.path)
       .slice(0, MAX_RECENT_ITEMS)
       .map((entry, index) => {
-        const type = entry.type || 'page';
+        const type = _navTypeForEntry(entry);
+        const mediaType = _mediaTypeForEntry(entry, type);
+        const displayType = _displayTypeForEntry(entry, type, mediaType);
         const label = entry.label || entry.name || entry.path;
+        const fileKey = _commandFileKey(entry, type);
         return _command(
-          `recent:${type}:${entry.path}`,
+          `recent:${fileKey}`,
           '最近使った項目',
           label,
-          `${FILE_TYPE_LABELS[type] || type} / ${entry.path}`,
-          _iconForFileType(type),
-          () => _openFile({ type, label, path: entry.path }),
-          { keywords: ['最近', 'recent', entry.path], priority: 30 - index, meta: '開く' },
+          `${FILE_TYPE_LABELS[displayType] || FILE_TYPE_LABELS[type] || type} / ${entry.path}`,
+          _iconForFileType(displayType),
+          () => _openFile({ ...entry, type, label, mediaType }),
+          {
+            keywords: ['最近', 'recent', entry.path, entry.abs_path, entry.root_name, entry.root_type],
+            priority: 30 - index,
+            meta: '開く',
+            fileKey,
+          },
         );
       });
   }
@@ -226,27 +305,38 @@
       image: 'image',
       audio: 'music',
       video: 'video',
+      media: 'file',
       html: 'code',
       pdf: 'fileText',
       folder: 'folder',
       entity: 'userRound',
+      text: 'fileText',
+      data: 'braces',
+      chat: 'messagesSquare',
+      archive: 'archive',
+      other: 'file',
     };
     return map[type] || 'file';
   }
 
-  async function _loadGlobalFiles() {
-    if (state.globalIndexFiles) return state.globalIndexFiles;
+  async function _loadGlobalFiles(options = {}) {
+    const now = Date.now();
+    const stale = !state.globalIndexLoadedAt || (now - state.globalIndexLoadedAt) > GLOBAL_INDEX_REFRESH_TTL_MS;
+    const refresh = !!options.refresh;
+    if (state.globalIndexFiles && !refresh && !stale) return state.globalIndexFiles;
     if (!state.globalIndexPromise) {
       state.globalIndexPromise = (async () => {
         if (typeof apiFetch !== 'function') return [];
-        const data = await apiFetch('/global-index');
+        const data = await apiFetch('/global-index' + (refresh ? '?refresh=1' : ''));
         const files = Array.isArray(data?.files) ? data.files : [];
         state.globalIndexFiles = files;
+        state.globalIndexLoadedAt = Date.now();
         return files;
       })().catch((error) => {
         console.warn('[command-palette] global index load failed', error);
+        return state.globalIndexFiles || [];
+      }).finally(() => {
         state.globalIndexPromise = null;
-        return [];
       });
     }
     return state.globalIndexPromise;
@@ -257,19 +347,26 @@
     if (!tokens.length) return [];
     const out = [];
     for (const file of files || []) {
-      const type = FILE_NAV_TYPES[file.category] || FILE_NAV_TYPES[file.type] || '';
+      const type = _navTypeForEntry(file);
       if (!type || !file.path) continue;
+      const openPath = _entryOpenPath(file);
+      const mediaType = _mediaTypeForEntry(file, type);
+      const displayType = _displayTypeForEntry(file, type, mediaType);
       const label = file.name || file.label || file.path;
-      const key = `${type}:${file.path}`;
+      const key = _commandFileKey(file, type);
       if (existingKeys.has(key)) continue;
       const item = _command(
         `file:${key}`,
         'ファイル',
         label,
-        `${FILE_TYPE_LABELS[type] || type} / ${file.root_name || ''}${file.path ? ' / ' + file.path : ''}`,
-        _iconForFileType(type),
-        () => _openFile({ type, label, path: file.path, mediaType: file.category }),
-        { keywords: [file.path, file.abs_path, file.root_name, file.ext, 'file', 'open'], meta: '開く' },
+        `${FILE_TYPE_LABELS[displayType] || FILE_TYPE_LABELS[type] || type} / ${file.root_name || ''}${file.path ? ' / ' + file.path : ''}`,
+        _iconForFileType(displayType),
+        () => _openFile({ ...file, type, label, openPath, mediaType }),
+        {
+          keywords: [file.path, file.abs_path, file.root_name, file.root_type, file.ext, 'file', 'open'],
+          meta: '開く',
+          fileKey: key,
+        },
       );
       const score = _scoreItem(item, tokens);
       if (score >= 0) out.push({ item, score });
@@ -494,7 +591,7 @@
     });
   }
 
-  async function _refreshItems() {
+  async function _refreshItems(options = {}) {
     const seq = ++state.seq;
     state.query = state.input?.value || '';
     let items = _filterItems(_baseCommands(), state.query);
@@ -503,13 +600,9 @@
     _renderList();
 
     if (state.mode !== 'root' || _tokenize(state.query).length < GLOBAL_FILE_MIN_QUERY) return;
-    const files = await _loadGlobalFiles();
+    const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
     if (seq !== state.seq) return;
-    const existingKeys = new Set(
-      items
-        .filter(item => item.id.startsWith('recent:'))
-        .map(item => item.id.replace(/^recent:/, '')),
-    );
+    const existingKeys = new Set(items.filter(item => item.fileKey).map(item => item.fileKey));
     const fileItems = _globalFileCommands(files, state.query, existingKeys);
     items = _filterItems([...items, ...fileItems], state.query);
     state.items = items;
@@ -674,6 +767,7 @@
 
   function showCommandPalette(options = {}) {
     _ensureOverlay();
+    if (options.refreshGlobalIndex !== false) invalidateCommandPaletteGlobalIndex();
     state.mode = 'root';
     state.parentItem = null;
     state.activeIndex = 0;
@@ -681,7 +775,7 @@
     state.overlay.hidden = false;
     document.body.classList.add('gb-command-palette-open');
     _syncPaletteViewportClamp();
-    _refreshItems();
+    _refreshItems({ refreshGlobalIndex: !!options.refreshGlobalIndex });
     _syncPaletteViewportClamp();
     requestAnimationFrame(() => {
       _syncPaletteViewportClamp();
@@ -696,10 +790,11 @@
     document.body.classList.remove('gb-command-palette-open');
   }
 
-  function refreshCommandPalette() {
+  function refreshCommandPalette(options = {}) {
+    if (options.refreshGlobalIndex || options.globalIndex) invalidateCommandPaletteGlobalIndex();
     _syncLeftChromeUser();
     if (state.overlay && !state.overlay.hidden) {
-      _refreshItems();
+      _refreshItems({ refreshGlobalIndex: !!(options.refreshGlobalIndex || options.globalIndex) });
       _syncPaletteViewportClamp();
     }
   }
@@ -768,6 +863,16 @@
     return visible[0]?.el || null;
   }
 
+  function _elementIntersectsViewport(rect) {
+    if (!rect) return false;
+    const viewportWidth = Math.max(document.documentElement?.clientWidth || 0, window.innerWidth || 0);
+    const viewportHeight = Math.max(document.documentElement?.clientHeight || 0, window.innerHeight || 0);
+    return rect.right > 1
+      && rect.bottom > 1
+      && rect.left < viewportWidth - 1
+      && rect.top < viewportHeight - 1;
+  }
+
   function _syncLeftChromePlacement(sidebarVisible) {
     const floating = _leftChromeFloatingEl();
     if (!floating) return;
@@ -787,7 +892,13 @@
     if (sidebar) {
       const style = window.getComputedStyle ? window.getComputedStyle(sidebar) : null;
       const rect = sidebar.getBoundingClientRect?.();
-      visible = !!(style && style.display !== 'none' && style.visibility !== 'hidden' && rect && rect.width > 20 && rect.height > 20);
+      visible = !!(style
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && rect
+        && rect.width > 20
+        && rect.height > 20
+        && _elementIntersectsViewport(rect));
     }
     if (document.body) document.body.dataset.leftChromeSidebarVisible = visible ? '1' : '0';
     _syncLeftChromePlacement(visible);
@@ -876,6 +987,7 @@
   window.showCommandPalette = showCommandPalette;
   window.closeCommandPalette = closeCommandPalette;
   window.refreshCommandPalette = refreshCommandPalette;
+  window.invalidateCommandPaletteGlobalIndex = invalidateCommandPaletteGlobalIndex;
   window.updateLeftChromeUser = _syncLeftChromeUser;
 
   if (document.readyState === 'loading') {

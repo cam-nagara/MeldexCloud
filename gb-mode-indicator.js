@@ -16,6 +16,12 @@
     return window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
   }
 
+  function _localWorkspaceSource() {
+    const currentState = (typeof state !== 'undefined' && state) ? state : null;
+    const homeFolder = (typeof _homeFolderPath !== 'undefined' && _homeFolderPath) ? _homeFolderPath : '';
+    return String(currentState?.vaultPath || homeFolder || window.state?.vaultPath || window._homeFolderPath || '');
+  }
+
   function getModeInfo() {
     const runtime = _runtimeMode();
     const touch = _isTouchMode();
@@ -27,7 +33,7 @@
         detail: workspace?.path || workspace?.accountName || 'Dropboxと接続中',
       };
     }
-    const source = String(window.state?.vaultPath || window._homeFolderPath || '');
+    const source = _localWorkspaceSource();
     const hybrid = /dropbox/i.test(source);
     return {
       id: touch ? 'mobile-local' : (hybrid ? 'hybrid' : 'local'),

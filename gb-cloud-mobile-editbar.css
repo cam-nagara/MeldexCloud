@@ -1,6 +1,6 @@
 /* Smartphone-only Dropbox UI. This layer hides desktop bars and provides bottom sheets/toolbars. */
 
-@media (max-width: 1024px), (pointer: coarse) {
+@media (min-width: 0px), (max-width: 1024px), (pointer: coarse) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] {
     --cloud-mobile-editbar-keyboard-avoidance: 0px;
     --cloud-mobile-editbar-safe-bottom: calc(var(--cloud-mobile-editbar-bottom, 0px) + var(--cloud-mobile-editbar-keyboard-avoidance, 0px) + env(safe-area-inset-bottom));
@@ -476,6 +476,30 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-annotationbar-open="1"] #ann-overlay,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-annotationbar-open="1"] #bd-canvas {
     scroll-padding-bottom: 96px;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-editbar-open="1"] .gb-pane-content,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-editbar-open="1"] #page-content,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-editbar-open="1"] #entity-freetext,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-editbar-open="1"] #dp-editable,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-editbar-open="1"] #board-note-editable,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-editbar-open="1"] .sn2-editor,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-inputbar-open="1"] .gb-pane-content,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-inputbar-open="1"] #pivot-view,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-inputbar-open="1"] #pivot-table,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-inputbar-open="1"] .pivot-table,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-chatbar-open="1"] .gb-pane-content,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-chatbar-open="1"] #chat-messages,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-chatbar-open="1"] #team-messages,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-chatbar-open="1"] #chat-input,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-chatbar-open="1"] #team-input {
+    scroll-padding-bottom: max(92px, 34vh);
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-annotationbar-open="1"] .gb-pane-content,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-annotationbar-open="1"] #ann-overlay,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-keyboard="1"][data-cloud-mobile-annotationbar-open="1"] #bd-canvas {
+    scroll-padding-bottom: max(96px, 34vh);
   }
 
 }

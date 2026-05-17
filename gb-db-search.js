@@ -125,7 +125,7 @@ function showDbSearchModal(options) {
   }
 
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') doSearch();
+    if (e.key === 'Enter' && !e.isComposing) doSearch();
     if (e.key === 'Escape') overlay.remove();
   });
 
@@ -170,7 +170,7 @@ function _renderDbSearchResults(container, results, query) {
       propDiv.style.cssText = 'font-size:11px;color:var(--fg2);margin-top:4px;line-height:1.5;';
       propKeys.forEach(pn => {
         const vals = props[pn] || [];
-        const valTexts = vals.slice(0, 3).map(v => v.value || '').filter(Boolean);
+        const valTexts = vals.slice(0, 3).map(v => _dbSearchValueText(v?.value)).filter(v => v !== '');
         if (valTexts.length > 0) {
           const line = document.createElement('div');
           line.innerHTML = '<b>' + esc(pn) + ':</b> ' + _highlightMatch(valTexts.join(', '), qLower);
@@ -205,6 +205,23 @@ function _highlightMatch(text, qLower) {
   } catch { return escaped; }
 }
 
+function _dbSearchValueText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(v => _dbSearchValueText(v)).join(', ');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function _dbSearchCsvSafeValue(value) {
+  const text = _dbSearchValueText(value);
+  return /^[\s]*[=+\-@]/.test(text) ? "'" + text : text;
+}
+
+function _dbSearchCsvCell(value) {
+  const text = _dbSearchCsvSafeValue(value);
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
 /* --- DBスコープ選択肢を列挙 --- */
 
 function _populateDbScopeOptions(select) {
@@ -237,7 +254,7 @@ async function _exportDbSearchCsv(results) {
   // CSV生成
   const rows = [];
   const header = ['エントリ名', 'シート名', 'ルート', ...propList];
-  rows.push(header.map(h => '"' + h.replace(/"/g, '""') + '"').join(','));
+  rows.push(header.map(h => _dbSearchCsvCell(h)).join(','));
 
   results.forEach(entry => {
     const row = [
@@ -247,9 +264,9 @@ async function _exportDbSearchCsv(results) {
     ];
     propList.forEach(p => {
       const vals = (entry.matched_props || {})[p] || [];
-      row.push(vals.map(v => v.value || '').join('; '));
+      row.push(vals.map(v => _dbSearchValueText(v?.value)).join('; '));
     });
-    rows.push(row.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(','));
+    rows.push(row.map(v => _dbSearchCsvCell(v)).join(','));
   });
 
   if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {

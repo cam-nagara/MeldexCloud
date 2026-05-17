@@ -233,12 +233,19 @@ function isDragDroppedOutsideWindow(e) {
 if (typeof window !== 'undefined') window.isDragDroppedOutsideWindow = isDragDroppedOutsideWindow;
 
 // 単一タブ窓として items を URL で開く共通ヘルパー（タブ/ツリー/folder-view 共用）。
-// items: [{ name, path, type }] 形式。type は database を pivot に正規化する。
+// items: [{ name, path, type }] 形式。type はURL復元側が処理できる名称に正規化する。
 // 単一窓モード（?single=1）で開くことで、新規窓ではサイドバー等が隠れ、
 // その item の内容だけが表示される。
+function _singleTabOpenTypeForItem(item) {
+  const type = item?.type || '';
+  if (typeof _normalizeOpenTypeForNav === 'function') return _normalizeOpenTypeForNav(type);
+  if (type === 'database') return 'pivot';
+  if (type === 'scenario') return 'scriptnote';
+  return type || 'page';
+}
 function buildSingleTabWindowUrl(item) {
   if (!item || !item.path) return '';
-  const openType = item.type === 'database' ? 'pivot' : (item.type || 'page');
+  const openType = _singleTabOpenTypeForItem(item);
   if (window.MeldexResourceUrl?.appEntry) {
     return window.MeldexResourceUrl.appEntry({
       single: 1,
@@ -479,13 +486,14 @@ function rgbToHex(rgb) {
 // 定数
 // ============================================================
 const FILE_TYPE_LABELS = {
-  folder: 'フォルダ', database: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'キャンバス', calendar: 'カレンダー',
+  folder: 'フォルダ', database: 'シート', pivot: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー',
+  entity: 'ページ', 'smart-db': 'スマートシート', chat: 'チャット',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
   archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
 };
 
-const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder']);
+const NATIVE_TYPES = new Set(['page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','smart-db','scenario','chat']);
 
 const PALETTE_COLORS = [
   '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
@@ -772,6 +780,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-preview') || cls.includes('ico-tvMinimal')) name = 'tvMinimal';
     else if (cls.includes('ico-detail')) name = 'panelRight';
     else if (cls.includes('ico-info')) name = 'info';
+    else if (cls.includes('ico-settings2') || cls.includes('ico-slidersHorizontal')) name = 'settings2';
     else if (cls.includes('ico-gear') || cls.includes('ico-settings')) name = 'settings';
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
@@ -784,7 +793,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-play')) name = 'play';
     else if (cls.includes('ico-refreshCw')) name = 'refreshCw';
     else if (cls.includes('ico-minus')) name = 'minus';
-    else if (cls.includes('ico-columns')) name = 'columns';
+    else if (cls.includes('ico-columns3') || cls.includes('ico-columns')) name = 'columns';
     else if (cls.includes('ico-clock')) name = 'clock';
     else if (cls.includes('ico-arrowLeftS')) name = 'arrowLeftS';
     else if (cls.includes('ico-arrowRightS')) name = 'arrowRightS';
@@ -805,6 +814,9 @@ function replaceIcons(root) {
     else if (cls.includes('ico-paperclip')) name = 'paperclip';
     else if (cls.includes('ico-mic')) name = 'mic';
     else if (cls.includes('ico-fileText')) name = 'fileText';
+    else if (cls.includes('ico-calendarPlus')) name = 'calendarPlus';
+    else if (cls.includes('ico-calendarDays')) name = 'calendarDays';
+    else if (cls.includes('ico-calendarRange')) name = 'calendarRange';
     else if (cls.includes('ico-calendar')) name = 'calendar';
     else if (cls.includes('ico-arrowRight')) name = 'arrowRight';
     else if (cls.includes('ico-arrowLeft')) name = 'arrowLeft';
@@ -816,12 +828,14 @@ function replaceIcons(root) {
     else if (cls.includes('ico-gitBranch')) name = 'gitBranch';
     else if (cls.includes('ico-history')) name = 'history';
     else if (cls.includes('ico-x')) name = 'x';
+    else if (cls.includes('ico-chevronDown')) name = 'chevronDown';
     else if (cls.includes('ico-chevronRight')) name = 'chevronRight';
     else if (cls.includes('ico-chevronLeft')) name = 'chevronLeft';
     else if (cls.includes('ico-lightbulb')) name = 'lightbulb';
     else if (cls.includes('ico-menu')) name = 'menu';
     else if (cls.includes('ico-checkSquare')) name = 'checkSquare';
-    else if (cls.includes('ico-settings2')) name = 'settings2';
+    else if (cls.includes('ico-unlock')) name = 'unlock';
+    else if (cls.includes('ico-lock')) name = 'lock';
     else if (cls.includes('ico-alignLeft')) name = 'alignLeft';
     else if (cls.includes('ico-helpCircle')) name = 'helpCircle';
     // ツールバー統一 v0.5.131 (toolbar-unification-plan §4-2)
@@ -834,9 +848,6 @@ function replaceIcons(root) {
     else if (cls.includes('ico-quote')) name = 'quote';
     else if (cls.includes('ico-heading')) name = 'heading';
     else if (cls.includes('ico-wrapText')) name = 'wrapText';
-    else if (cls.includes('ico-calendarPlus')) name = 'calendarPlus';
-    else if (cls.includes('ico-calendarDays')) name = 'calendarDays';
-    else if (cls.includes('ico-calendarRange')) name = 'calendarRange';
     else if (cls.includes('ico-listChecks')) name = 'listChecks';
     else if (cls.includes('ico-zoomIn')) name = 'zoomIn';
     else if (cls.includes('ico-zoomOut')) name = 'zoomOut';
@@ -889,7 +900,18 @@ function inheritParentTheme() {
 
 // テーマをAPI経由で取得（iframe以外の単独起動用）
 // テーマは editor-theme-name で管理されているため、meldex-theme-vars は不要
-async function loadThemeFromServer() {}
+async function loadThemeFromServer() {
+  try {
+    const manager = window.MeldexThemeManager;
+    if (!manager?.applyDefaultTheme) return;
+    const themeId = typeof manager.getDefaultThemeId === 'function'
+      ? manager.getDefaultThemeId()
+      : (localStorage.getItem('meldex-default-theme-id') || localStorage.getItem('editor-theme-name') || '');
+    manager.applyDefaultTheme(themeId, { silent: true, preserveStoredThemeUi: true, skipHistory: true });
+  } catch (error) {
+    try { console.warn('テーマを復元できませんでした', error); } catch {}
+  }
+}
 
 // ============================================================
 // 初期化ヘルパー

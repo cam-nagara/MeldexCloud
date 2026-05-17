@@ -16,9 +16,31 @@
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
   }
 
+  function crAuthToken() {
+    try {
+      if (typeof _authToken !== 'undefined' && _authToken) return _authToken;
+    } catch {}
+    try {
+      const storage = window?.['local' + 'Storage'];
+      return storage?.getItem?.('meldex-auth-token') || storage?.getItem?.('crossfolio-auth-token') || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function crNormalizePriority(value, fallback = 100) {
+    const raw = String(value ?? '').trim();
+    const fallbackNumber = Number(fallback);
+    const number = raw === '' ? fallbackNumber : Number(raw);
+    const safe = Number.isFinite(number) ? number : (Number.isFinite(fallbackNumber) ? fallbackNumber : 100);
+    return Math.max(0, Math.min(Math.trunc(safe), 9999));
+  }
+
   async function crApi(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const token = crAuthToken();
+    if (token && !headers.Authorization) headers.Authorization = 'Bearer ' + token;
     const res = await fetch(API_BASE + path, { ...opts, headers });
     const text = await res.text();
     let payload = {};
@@ -73,7 +95,7 @@
     if (!container) return;
     const roleWasLoaded = getState(container).roleLoaded;
     const writable = canWrite(container);
-    container.classList.add('chat-rules-view');
+    container.classList.add('chat-rules-view', 'chat-rules-modal');
     container.innerHTML = `
       <section class="gb-section gb-section--boxed">
         <div class="gb-field-row" style="justify-content:space-between;gap:8px;">
@@ -173,12 +195,18 @@
     if (title == null) return;
     const body = window.prompt('ルール本文');
     if (!body) return;
-    const scope = window.prompt('スコープ: global / project / source_folder / personal / team', 'project') || 'project';
-    await crApi('/chat_rules', {
-      method: 'POST',
-      body: JSON.stringify({ title, body, scope, enabled: true, pinned: true, priority: 50 }),
-    });
-    loadRules(container);
+    const scopeInput = window.prompt('スコープ: global / project / source_folder / personal / team', 'project');
+    if (scopeInput == null) return;
+    const scope = scopeInput || 'project';
+    try {
+      await crApi('/chat_rules', {
+        method: 'POST',
+        body: JSON.stringify({ title, body, scope, enabled: true, pinned: true, priority: 50 }),
+      });
+      await loadRules(container);
+    } catch (err) {
+      setAlert(container, '保存に失敗: ' + (err.message || err), true);
+    }
   }
 
   async function editRule(container, id) {
@@ -190,17 +218,25 @@
     const body = window.prompt('ルール本文', rule.body || '');
     if (body == null) return;
     const priority = window.prompt('優先度（小さいほど先）', String(rule.priority ?? 100));
-    const scope = window.prompt('スコープ: global / project / source_folder / personal / team', rule.scope || 'project') || 'project';
-    await updateRule(container, id, { title, body, priority: Number(priority || 100), scope });
+    if (priority == null) return;
+    const scopeInput = window.prompt('スコープ: global / project / source_folder / personal / team', rule.scope || 'project');
+    if (scopeInput == null) return;
+    const scope = scopeInput || 'project';
+    await updateRule(container, id, { title, body, priority: crNormalizePriority(priority, rule.priority ?? 100), scope });
   }
 
   async function updateRule(container, id, patch) {
     if (!ensureCanWrite(container)) return;
-    await crApi('/chat_rules/' + encodeURIComponent(id), {
-      method: 'PUT',
-      body: JSON.stringify(patch || {}),
-    });
-    loadRules(container);
+    try {
+      await crApi('/chat_rules/' + encodeURIComponent(id), {
+        method: 'PUT',
+        body: JSON.stringify(patch || {}),
+      });
+      await loadRules(container);
+    } catch (err) {
+      setAlert(container, '保存に失敗: ' + (err.message || err), true);
+      renderList(container);
+    }
   }
 
   async function deleteRule(container, id) {
@@ -211,8 +247,12 @@
       ? await cfConfirm(`ルール「${label}」を削除しますか？`)
       : window.confirm(`ルール「${label}」を削除しますか？`);
     if (!ok) return;
-    await crApi('/chat_rules/' + encodeURIComponent(id), { method: 'DELETE' });
-    loadRules(container);
+    try {
+      await crApi('/chat_rules/' + encodeURIComponent(id), { method: 'DELETE' });
+      await loadRules(container);
+    } catch (err) {
+      setAlert(container, '削除に失敗: ' + (err.message || err), true);
+    }
   }
 
   function openChatRulesView(container) {
@@ -228,7 +268,7 @@
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
-      <div class="modal" style="width:760px;max-width:92vw;height:560px;max-height:85vh;display:flex;flex-direction:column;">
+      <div class="modal chat-rules-modal" style="width:760px;max-width:92vw;height:560px;max-height:85vh;display:flex;flex-direction:column;">
         <div class="gb-field-row" style="justify-content:space-between;gap:8px;margin-bottom:8px;">
           <h3 style="margin:0;">チャットルール</h3>
           <button type="button" class="gb-btn gb-btn-sm" data-cr-close>${crIcon('x', 14)}</button>

@@ -18,6 +18,7 @@ function activateSplitView(dbPathForPaneB) {
 
   const mainViews = document.getElementById('main-views');
   if (!mainViews) return;
+  const dbPathForPaneA = state.currentDbPath || '';
   _splitActive = true;
 
   // 既存ビューを非表示
@@ -57,8 +58,8 @@ function activateSplitView(dbPathForPaneB) {
   splitContainer.addEventListener('pointerdown', _onSplitPaneClick);
 
   // 現在のDBがあればPane Aに読み込み
-  if (state.currentDbPath) {
-    openDbInPane(state.currentDbPath, 'pane-a');
+  if (dbPathForPaneA) {
+    openDbInPane(dbPathForPaneA, 'pane-a');
   }
 
   // Pane Bに指定DBがあれば読み込み
@@ -87,7 +88,9 @@ function deactivateSplitView() {
 
   // PaneContext破棄
   const activeCtx = getActivePane();
-  const restoreDbPath = activeCtx?.dbPath || state.currentDbPath;
+  const paneA = getPaneContext('pane-a');
+  const paneB = getPaneContext('pane-b');
+  const restoreDbPath = activeCtx?.dbPath || paneA?.dbPath || paneB?.dbPath || state.currentDbPath;
   destroyPaneContext('pane-a');
   destroyPaneContext('pane-b');
 
@@ -277,6 +280,7 @@ function _createPaneDOM(paneId) {
 function openDbInPane(dbPath, paneId) {
   const ctx = getPaneContext(paneId);
   if (!ctx) return;
+  setActivePaneById(paneId);
 
   // ペインヘッダーのタイトル更新 + 空表示オーバーレイ除去
   const paneEl = ctx.containerEl;

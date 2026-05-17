@@ -92,7 +92,7 @@
 .gb-timer-countup-toggle[aria-pressed="true"] {
   background: var(--timer-active-bg);
   border-color: var(--timer-accent);
-  color: var(--timer-accent);
+  color: var(--timer-active-fg);
 }
 .gb-timer-toolbar-row--controls .gb-btn {
   background: var(--timer-bg);
@@ -333,12 +333,12 @@
   .gb-cal-day-event { font-size: 9px; }
   .gb-cal-task-board { flex-direction: column; }
   .gb-cal-task-column { min-width: auto; width: 100%; }
-  .gb-cal-modal { min-width: auto !important; width: 95vw !important; }
+  .gb-cal-modal { min-width: auto !important; width: 95vw !important; max-width: 95vw !important; }
   [data-event-id] > input.gb-cal-event-select-check { width: 16px; height: 16px; min-width: 16px; min-height: 16px; }
   .gb-timer-advanced { grid-template-columns: 1fr; max-height: 340px; }
   .gb-timer-settings-modal .gb-timer-advanced { max-height: none; }
   .gb-timer-row { flex-wrap: wrap; }
-  .gb-timer-settings-modal { min-width: auto; width: 95vw; }
+  .gb-timer-settings-modal { min-width: auto; width: 95vw; max-width: 95vw; }
   .gb-timer-toolbar-row--main { gap: 6px; }
   .gb-timer-inputs { flex-wrap: wrap; }
 }

@@ -13,11 +13,13 @@
     'board-depth-style',
     'sn2-roles',
     'file-style',
+    'publish',
     'sn2-theme',
     'sn2-ruby',
     'sn2-rowset',
     'backlinks',
   ];
+  let _draggedTabId = '';
 
   function _readStoredOrder() {
     try {
@@ -96,15 +98,19 @@
         event.preventDefault();
         return;
       }
+      _draggedTabId = id;
       event.dataTransfer?.setData('application/x-detail-tab-id', id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
       tab.classList.add('dragging');
     });
 
-    tab.addEventListener('dragend', () => _clearIndicators(bar));
+    tab.addEventListener('dragend', () => {
+      _draggedTabId = '';
+      _clearIndicators(bar);
+    });
 
     tab.addEventListener('dragover', event => {
-      const draggedId = event.dataTransfer?.getData('application/x-detail-tab-id') || '';
+      const draggedId = _draggedTabId;
       if (!draggedId || tab.hidden) return;
       event.preventDefault();
       _tabs(bar).forEach(el => el.classList.remove('drag-over-left', 'drag-over-right'));
@@ -118,12 +124,13 @@
     tab.addEventListener('dragleave', () => tab.classList.remove('drag-over-left', 'drag-over-right'));
 
     tab.addEventListener('drop', event => {
-      const draggedId = event.dataTransfer?.getData('application/x-detail-tab-id') || '';
+      const draggedId = _draggedTabId || event.dataTransfer?.getData('application/x-detail-tab-id') || '';
       if (!draggedId || tab.hidden) return;
       event.preventDefault();
       const dragged = bar.querySelector(`.detail-tab[data-detail-tab="${_cssEscape(draggedId)}"]`);
       const insertBefore = tab.classList.contains('drag-over-left');
       _insertDragged(bar, dragged, tab, insertBefore);
+      _draggedTabId = '';
       _clearIndicators(bar);
     });
   }

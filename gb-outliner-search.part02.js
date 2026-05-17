@@ -274,7 +274,7 @@ function applyTreeNameSearch() {
   const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
     ? _getTreeSearchIncludeEntities()
     : localStorage.getItem('tree-search-include-entities') === 'true';
-  const allNodes = document.querySelectorAll('#outliner-tree .tree-node');
+  const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node');
 
   if (!q) {
     // 検索クリア: グローバルフィルタのみ適用状態に戻す
@@ -511,11 +511,35 @@ function highlightMatch(text, query, caseSensitive, useRegex) {
   } catch { return esc(source); }
 }
 
+function _searchResultLabel(path) {
+  return String(path || '').split('/').pop()
+    .replace(/\.smart-db\.json$/i, '')
+    .replace(/\.scriptnote\.json$/i, '')
+    .replace(/\.scenario\.json$/i, '')
+    .replace(/\.board\.md$/i, '')
+    .replace(/\.\w+$/, '');
+}
+
+function _searchResultKind(path, type) {
+  const lower = String(path || '').toLowerCase();
+  if (type === 'smart-db' || lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
+  if (type === 'csv' || lower.endsWith('.csv')) return 'csv';
+  if (type === 'board' || lower.endsWith('.board.md')) return 'board';
+  if (type === 'database') return 'database';
+  return type || 'page';
+}
+
 function openSearchResult(path, type) {
   const _expOpts = { fromExplorer: true };
-  if (type === 'scriptnote' || type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, path.split('/').pop().replace(/\.\w+$/, ''), _expOpts); }
-  else if (type === 'board') openBoard(path.split('/').pop().replace(/\.\w+$/, ''), path, _expOpts);
-  else openPage(path.split('/').pop().replace(/\.\w+$/, ''), path, _expOpts);
+  const kind = _searchResultKind(path, type);
+  const label = _searchResultLabel(path);
+  if (kind === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, label, _expOpts); }
+  else if (kind === 'board') openBoard(label, path, _expOpts);
+  else if (kind === 'csv' && typeof openCsvFile === 'function') openCsvFile(label, path, _expOpts);
+  else if (kind === 'smart-db' && typeof openSmartDbFile === 'function') openSmartDbFile(label, path, _expOpts);
+  else if (kind === 'database' && typeof selectDatabase === 'function') selectDatabase(path, null, _expOpts);
+  else openPage(label, path, _expOpts);
 }
 
 async function doVaultReplace(all) {
@@ -530,7 +554,7 @@ async function doVaultReplace(all) {
   const searchPath = folderOnly ? _selectedSearchFolderPath() : '';
 
   // まず検索して対象ファイルを取得
-  const params = new URLSearchParams({ q, case: caseSensitive, regex: useRegex });
+  const params = new URLSearchParams({ q, case: caseSensitive, regex: useRegex, full_scan: '1' });
   if (searchPath) params.set('path', searchPath);
   const data = await apiFetch('/search?' + params.toString());
   if (data.error) {
@@ -539,18 +563,24 @@ async function doVaultReplace(all) {
     return;
   }
   let totalCount = 0;
+  const failures = [];
 
   for (const file of (data.results || [])) {
     try {
       const res = await apiPut('/replace', { path: file.path, search: q, replace: r, case: caseSensitive, regex: useRegex, all });
       totalCount += res.count || 0;
     } catch (e) {
-      showStatus('置換に失敗: ' + (e.message || e), true);
+      failures.push({ path: file.path, message: e.message || String(e) });
     }
   }
 
-  showStatus(`${totalCount}箇所を置換しました`);
-  doVaultSearch(); // 結果を更新
+  const statusText = failures.length
+    ? `${totalCount}箇所を置換しました。${failures.length}ファイルで失敗しました: ${failures.slice(0, 3).map(f => f.path).join(', ')}`
+    : `${totalCount}箇所を置換しました`;
+  showStatus(statusText, failures.length > 0);
+  document.getElementById('sp-status').textContent = statusText;
+  await doVaultSearch(); // 結果を更新
+  document.getElementById('sp-status').textContent = statusText;
 
   // 開いているファイルを再読み込み（置換結果を反映）
   try {

@@ -433,36 +433,56 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
   scroller.addEventListener('pointerup', endLasso);
   scroller.addEventListener('pointercancel', endLasso);
 })();
+
+function _readOutlinerDroppedFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = ev => resolve(ev.target.result);
+    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
+    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function _uploadOutlinerDroppedFile(file, parentPath) {
+  try {
+    const data = await _readOutlinerDroppedFile(file);
+    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data, filename: file.name }),
+    });
+    return { ok: true, name: file.name };
+  } catch (error) {
+    return {
+      ok: false,
+      name: file?.name || 'ファイル',
+      error: error?.message ? String(error.message) : '取り込みに失敗しました',
+    };
+  }
+}
+
 document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
   e.preventDefault();
-  const files = e.dataTransfer.files; if (!files.length) return;
+  const files = Array.from(e.dataTransfer.files || []); if (!files.length) return;
   let parentPath = '';
   // ドロップ先のフォルダを検出
-  const nodeEl = e.target.closest('.tree-node');
+  const nodeEl = e.target?.closest?.('.tree-node');
   if (nodeEl && nodeEl._nodeData) {
     const nd = nodeEl._nodeData;
     if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
   }
   showStatus(`${files.length}個のファイルをインポート中...`);
-  const promises = [];
-  for (const f of files) {
-    const p = new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onload = async ev => {
-        try {
-          await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({data: ev.target.result, filename: f.name})
-          });
-        } catch(err) {}
-        resolve();
-      };
-      reader.readAsDataURL(f);
-    });
-    promises.push(p);
-  }
-  await Promise.all(promises);
+  const results = await Promise.all(files.map(file => _uploadOutlinerDroppedFile(file, parentPath)));
   await loadOutliner();
-  showStatus(files.length + '個のファイルをインポートしました');
+  const succeeded = results.filter(result => result.ok);
+  const failed = results.filter(result => !result.ok);
+  if (failed.length) {
+    const names = failed.slice(0, 3).map(result => result.name).join('、');
+    const suffix = failed.length > 3 ? ` ほか${failed.length - 3}件` : '';
+    showStatus(`${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`, true);
+  } else {
+    showStatus(files.length + '個のファイルをインポートしました');
+  }
 });

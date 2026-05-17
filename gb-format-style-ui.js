@@ -162,6 +162,18 @@
     }
   }
 
+  function _styleBgColorWithPreservedAlpha(def, currentValue, color) {
+    const next = color || '';
+    if (def?.bgType !== 'rgba') return next;
+    if (!next || next === 'transparent' || !/^#[0-9a-f]{3,6}$/i.test(next)) return next;
+    const parsed = typeof parseColorToHexAlpha === 'function' ? parseColorToHexAlpha(currentValue) : null;
+    const alpha = Number.isFinite(parsed?.alpha) ? parsed.alpha : 1;
+    if (alpha > 0 && alpha < 1 && typeof hexAlphaToRgba === 'function') {
+      return hexAlphaToRgba(next, alpha);
+    }
+    return next;
+  }
+
   function _mapSettingsDef(def) {
     const map = {};
     const fields = [];
@@ -307,6 +319,8 @@
     const value = _numberSpecValue(spec);
     const unit = spec.unit || '';
     const controlId = _e2eId('settings-theme-number', key);
+    const label = spec.label || key || '数値';
+    const labelAttrs = `aria-label="${_e(label)}" title="${_e(label)}"`;
     const common = [
       `data-number-key="${_e(key)}"`,
       `data-unit="${_e(unit)}"`,
@@ -314,11 +328,11 @@
       _numberAttr('max', spec.max).trim(),
       _numberAttr('step', spec.step ?? 1).trim(),
     ].filter(Boolean).join(' ');
-    const range = spec.slider ? `<input type="range" class="cs-alpha cs-number-range" value="${_e(value)}" ${common} data-e2e-id="${_e(controlId + '-range')}" data-oninput="setNumericStyleSetting(this)">` : '';
+    const range = spec.slider ? `<input type="range" class="cs-alpha cs-number-range" value="${_e(value)}" ${common} ${labelAttrs} data-e2e-id="${_e(controlId + '-range')}" data-oninput="setNumericStyleSetting(this)">` : '';
     return `<div class="cs-row-group cs-row-group--number">
       <span class="cs-row-group-label">${_e(spec.label || '')}</span>
       ${range}
-      <input type="number" class="cs-width-input cs-number-input" value="${_e(value)}" ${common} data-e2e-id="${_e(controlId + '-input')}" data-oninput="setNumericStyleSetting(this)" data-onchange="setNumericStyleSetting(this)">
+      <input type="number" class="cs-width-input cs-number-input" value="${_e(value)}" ${common} ${labelAttrs} data-e2e-id="${_e(controlId + '-input')}" data-oninput="setNumericStyleSetting(this)" data-onchange="setNumericStyleSetting(this)">
       <span class="cs-number-unit">${_e(unit)}</span>
     </div>`;
   }
@@ -341,7 +355,7 @@
       const bgStyle = _isTransparent(raw) ? _CHECKER_BG_INLINE_STYLE : `background:${raw}`;
       return `<div class="cs-row">
       <span class="cs-row-label">${_e(def.label)}</span>
-      <button type="button" class="gb-fmt-swatch-bg cs-row-bg-swatch" data-e2e-id="${_e(_e2eId('settings-theme-bg-swatch', def.bg || styleId))}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-style-bg-key="${_e(def.bg)}" data-action="openStyleBgOnlyPalette(this)" title="クリックで色を変更" style="${_e(bgStyle)}"></button>
+      <button type="button" class="gb-fmt-swatch-bg cs-row-bg-swatch" data-e2e-id="${_e(_e2eId('settings-theme-bg-swatch', def.bg || styleId))}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-style-bg-key="${_e(def.bg)}" data-style-bg-type="${_e(def.bgType || '')}" data-action="openStyleBgOnlyPalette(this)" title="クリックで色を変更" style="${_e(bgStyle)}"></button>
     </div>`;
     }
     if (def.previewType === 'slider') {
@@ -383,9 +397,10 @@
     openFormatPopup(previewEl, {
       fields,
       values: _settingsValues(def, map),
+      bgColorType: def.bgType || '',
       onChange(prop, value) {
         if (prop === 'textColor' && map.textColor) _setThemeStyle(map.textColor, value || '');
-        else if (prop === 'bgColor' && map.bgColor) _setThemeStyle(map.bgColor, value || '');
+        else if (prop === 'bgColor' && map.bgColor) _setThemeStyle(map.bgColor, _styleBgColorWithPreservedAlpha(def, _cssVar(map.bgColor), value));
         else if (prop === 'fontWeight' && map.fontWeight) _setThemeStyle(map.fontWeight, value === 'bold' ? 'bold' : 'normal');
         else if (prop === 'fontStyle' && map.fontStyle) _setThemeStyle(map.fontStyle, value === 'italic' ? 'italic' : 'normal');
         else if (prop === 'fontSize' && map.fontSize) _setThemeStyle(map.fontSize, value == null ? '' : value + 'px');
@@ -412,8 +427,10 @@
     }
     const key = swatchEl.dataset.styleBgKey || '';
     if (!key) return;
-    openColorPalette(swatchEl, _cssVar(key), (color) => {
-      _setThemeStyle(key, color || '');
+    const def = _defByPreview(swatchEl) || { bgType: swatchEl.dataset.styleBgType || '' };
+    const currentValue = _cssVar(key);
+    openColorPalette(swatchEl, currentValue, (color) => {
+      _setThemeStyle(key, _styleBgColorWithPreservedAlpha(def, currentValue, color));
       _applyBgOnlySwatchBackground(swatchEl, key);
     });
   }
@@ -489,6 +506,10 @@
     return Object.assign({ key: `${base}${suffix}`, label, type, virtual: true }, extra || {});
   }
 
+  function _supportsGeneratedFileStyleBase(base) {
+    return SETTINGS_GENERATED_STYLE_BASE_RE.test(String(base || ''));
+  }
+
   function _isStrokeColorField(field) {
     return field.type === 'color' && /stroke|フチ|縁/i.test(_fieldText(field)) && !/width|幅/i.test(_fieldText(field));
   }
@@ -535,21 +556,22 @@
     const base = _fileRowBase(fields);
     const hasTextStyle = base && !map.caretColor && !((map.borderColor || map.borderWidth) && !map.textColor && !map.bgColor && !map.fontFamily)
       && (map.textColor || map.bgColor || map.fontWeight || map.fontStyle || map.fontSize || map.fontFamily);
+    const supportsGeneratedTextStyle = hasTextStyle && _supportsGeneratedFileStyleBase(base);
     if (hasTextStyle) {
-      add('fontSize', _findField(fields, _isFontSizeField) || _virtualFileField(base, '-font-size', 'フォントサイズ', 'pxtext'));
-      add('fontFamily', map.fontFamily || _virtualFileField(base, '-font', 'フォント', 'select', {
+      add('fontSize', _findField(fields, _isFontSizeField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-font-size', 'フォントサイズ', 'pxtext') : null));
+      add('fontFamily', map.fontFamily || (supportsGeneratedTextStyle ? _virtualFileField(base, '-font', 'フォント', 'select', {
         options: typeof getFontFamilyOptions === 'function' ? getFontFamilyOptions : undefined,
         normalize: typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue : undefined,
         preview: 'fontSample',
-      }));
-      add('fontWeight', map.fontWeight || _virtualFileField(base, '-bold', '太字', 'toggle', { on: 'bold', off: 'normal' }), 'bold');
-      add('fontStyle', map.fontStyle || _virtualFileField(base, '-italic', '斜体', 'toggle', { on: 'italic', off: 'normal' }), 'italic');
-      add('bgColor', map.bgColor || _virtualFileField(base, '-bg', '背景色', 'color'));
-      add('textStrokeColor', _findField(fields, _isStrokeColorField) || _virtualFileField(base, '-stroke-color', '文字フチ色', 'color'));
-      add('textStrokeWidth', _findField(fields, _isStrokeWidthField) || _virtualFileField(base, '-stroke-width', '文字フチ幅', 'pxtext'));
-      add('leftAccent', _findField(fields, _isLeftAccentField) || _virtualFileField(base, '-left-accent', '左アクセントバー', 'toggle', { on: STYLE_LEFT_ACCENT_WIDTH, off: '' }));
-      add('underline', _findField(fields, _isUnderlineField) || _virtualFileField(base, '-underline', '行の下線', 'toggle', { on: STYLE_UNDERLINE_WIDTH, off: '' }));
-      add('accentColor', _findField(fields, _isAccentColorField) || _virtualFileField(base, '-accent-color', 'アクセントカラー', 'color'));
+      }) : null));
+      add('fontWeight', map.fontWeight || (supportsGeneratedTextStyle ? _virtualFileField(base, '-bold', '太字', 'toggle', { on: 'bold', off: 'normal' }) : null), 'bold');
+      add('fontStyle', map.fontStyle || (supportsGeneratedTextStyle ? _virtualFileField(base, '-italic', '斜体', 'toggle', { on: 'italic', off: 'normal' }) : null), 'italic');
+      add('bgColor', map.bgColor || (supportsGeneratedTextStyle ? _virtualFileField(base, '-bg', '背景色', 'color') : null));
+      add('textStrokeColor', _findField(fields, _isStrokeColorField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-stroke-color', '文字フチ色', 'color') : null));
+      add('textStrokeWidth', _findField(fields, _isStrokeWidthField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-stroke-width', '文字フチ幅', 'pxtext') : null));
+      add('leftAccent', _findField(fields, _isLeftAccentField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-left-accent', '左アクセントバー', 'toggle', { on: STYLE_LEFT_ACCENT_WIDTH, off: '' }) : null));
+      add('underline', _findField(fields, _isUnderlineField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-underline', '行の下線', 'toggle', { on: STYLE_UNDERLINE_WIDTH, off: '' }) : null));
+      add('accentColor', _findField(fields, _isAccentColorField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-accent-color', 'アクセントカラー', 'color') : null));
     }
     return { map, fields: [...new Set(popupFields.map(prop => prop === 'fontWeight' ? 'bold' : prop === 'fontStyle' ? 'italic' : prop))] };
   }
@@ -717,7 +739,9 @@
     if (rpDetail && typeof _ensureDetailTabShell === 'function') _ensureDetailTabShell(rpDetail);
     const el = document.getElementById('detail-tab-file-style');
     if (!el) return;
-    const ctxLabel = { folder: 'フォルダ', page: 'ノート', db: 'シート', scriptnote: 'シナリオ', board: 'ボード' }[ctx] || '';
+    el.dataset.fileStyleContext = ctx || '';
+    if (ctx !== 'calendar') el.removeAttribute('data-calendar-style');
+    const ctxLabel = { folder: 'フォルダ', page: 'ノート', db: 'シート', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー' }[ctx] || '';
     const spec = _FS_FIELDS[ctx] || { display: [], editOps: [] };
     const adapter = _fsGetAdapter(ctx);
     el.innerHTML = '';

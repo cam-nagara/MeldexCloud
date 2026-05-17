@@ -267,6 +267,7 @@
   padding: clamp(18px, 5vw, 40px);
   background: var(--bg);
   color: var(--fg);
+  overflow: auto;
 }
 
 .meldex-cloud-home-only-panel {
@@ -292,6 +293,7 @@
 }
 
 .meldex-cloud-home-only-actions {
+  display: flex;
   justify-content: flex-start;
   flex-wrap: wrap;
   gap: 10px;

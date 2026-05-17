@@ -294,7 +294,7 @@
 
 .status-policies-view .sp-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 1560px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 12px;
@@ -333,14 +333,43 @@
   width: 116px;
 }
 
+.status-policies-view .sp-table th:nth-child(n+4):nth-child(-n+12),
+.status-policies-view .sp-table td:nth-child(n+4):nth-child(-n+12) {
+  width: 84px;
+  text-align: center;
+}
+
+.status-policies-view .sp-table th:nth-child(7),
+.status-policies-view .sp-table td:nth-child(7),
+.status-policies-view .sp-table th:nth-child(11),
+.status-policies-view .sp-table td:nth-child(11) {
+  width: 104px;
+}
+
 .status-policies-view .sp-table th:nth-child(9),
 .status-policies-view .sp-table td:nth-child(9) {
   width: 118px;
 }
 
-.status-policies-view .sp-table th:nth-child(11),
-.status-policies-view .sp-table td:nth-child(11) {
-  width: 190px;
+.status-policies-view .sp-table th:nth-child(13),
+.status-policies-view .sp-table td:nth-child(13) {
+  width: 156px;
+}
+
+.status-policies-view .sp-table th:nth-child(14),
+.status-policies-view .sp-table td:nth-child(14) {
+  width: 92px;
+  text-align: center;
+}
+
+.status-policies-view .sp-table th:nth-child(15),
+.status-policies-view .sp-table td:nth-child(15) {
+  width: 260px;
+}
+
+.status-policies-view .sp-table th:nth-child(16),
+.status-policies-view .sp-table td:nth-child(16) {
+  width: 116px;
 }
 
 .status-policies-view .sp-row.is-selected {
@@ -413,7 +442,7 @@
 
 .status-policies-view .sp-weight-cell {
   display: grid;
-  grid-template-columns: minmax(70px, 1fr) 32px;
+  grid-template-columns: minmax(96px, 1fr) 36px;
   align-items: center;
   gap: 6px;
 }

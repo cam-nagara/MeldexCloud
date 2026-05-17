@@ -97,7 +97,15 @@ function bdColorPicker() {
     const ctx2 = canvas2.getContext('2d'); ctx2.drawImage(img, 0, 0);
     const sx = (e.clientX - rect.left) / rect.width * canvas2.width;
     const sy = (e.clientY - rect.top) / rect.height * canvas2.height;
-    const px = ctx2.getImageData(Math.round(sx), Math.round(sy), 1, 1).data;
+    const ix = Math.max(0, Math.min(canvas2.width - 1, Math.floor(sx)));
+    const iy = Math.max(0, Math.min(canvas2.height - 1, Math.floor(sy)));
+    let px;
+    try {
+      px = ctx2.getImageData(ix, iy, 1, 1).data;
+    } catch {
+      showStatus('色を取得できませんでした', true);
+      return;
+    }
     const hex = '#' + [px[0], px[1], px[2]].map(v => v.toString(16).padStart(2, '0')).join('');
     navigator.clipboard.writeText(hex).then(() => showStatus('色をコピー: ' + hex));
   };
@@ -113,7 +121,18 @@ function bdPasteImage() {
           const reader = new FileReader();
           reader.onload = () => {
             bdPushUndo();
-            const n = bdNode('', 100 + Math.random() * 200, 100 + Math.random() * 200, 300, 0, { img: reader.result });
+            const canvasEl = document.getElementById('bd-canvas');
+            let pos = { x: 200, y: 160 };
+            if (canvasEl && typeof bdScreenToWorld === 'function') {
+              const rect = canvasEl.getBoundingClientRect();
+              pos = bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            } else if (canvasEl) {
+              pos = {
+                x: ((canvasEl.offsetWidth || 600) / 2 - (bd.panX || 0)) / (bd.zoom || 1),
+                y: ((canvasEl.offsetHeight || 400) / 2 - (bd.panY || 0)) / (bd.zoom || 1),
+              };
+            }
+            const n = bdNode('', pos.x - 150, pos.y - 100, 300, 0, { img: reader.result });
             bd.nodes.push(n);
             if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(n)) {
               if (typeof bdRequestFullRender === 'function') bdRequestFullRender('paste-image-fallback');
@@ -133,68 +152,152 @@ function bdPasteImage() {
   }).catch(() => showStatus('クリップボードアクセスに失敗', true));
 }
 // --- 10. Canvas Export as Image ---
-function bdExportImage() {
-  const world = document.getElementById('bd-world');
-  if (!world) return;
+function _bdExportImageBounds() {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const includeRect = (x, y, w, h) => {
+    if (![x, y, w, h].every(Number.isFinite)) return;
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + w);
+    y1 = Math.max(y1, y + h);
+  };
   bd.nodes.forEach(n => {
-    if (n.contained) return; // contained は親の範囲に含まれるためスキップ
     const el = document.getElementById('bdn-' + n.id);
     if (!el) return;
-    x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
-    x1 = Math.max(x1, n.x + el.offsetWidth); y1 = Math.max(y1, n.y + el.offsetHeight);
+    const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
+    includeRect(pos.x, pos.y, el.offsetWidth || n.w || 160, el.offsetHeight || n.h || 40);
   });
-  if (x0 === Infinity) return;
-  const pad = 20;
-  const w = x1 - x0 + pad * 2, h = y1 - y0 + pad * 2;
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = getComputedStyle(document.getElementById('bd-canvas')).backgroundColor || '#1e1e1e';
-  ctx.fillRect(0, 0, w, h);
-  const promises = bd.nodes.map(n => {
-    const el = document.getElementById('bdn-' + n.id);
-    if (!el) return Promise.resolve();
-    const imgEl = el.querySelector('.bd-img');
-    if (imgEl) {
-      return new Promise(res => {
-        const img2 = new Image(); img2.crossOrigin = 'anonymous';
-        img2.onload = () => { ctx.drawImage(img2, n.x - x0 + pad, n.y - y0 + pad, el.offsetWidth, el.offsetHeight); res(); };
-        img2.onerror = res;
-        img2.src = imgEl.src;
-      });
-    } else {
-      ctx.fillStyle = '#3e3e3e';
-      ctx.fillRect(n.x - x0 + pad, n.y - y0 + pad, el.offsetWidth, el.offsetHeight);
-      ctx.fillStyle = '#d4d4d4'; ctx.font = '13px sans-serif';
-      ctx.fillText(n.text || '', n.x - x0 + pad + 8, n.y - y0 + pad + 20);
-      return Promise.resolve();
+  document.querySelectorAll('#bd-svg .bd-conn-path, #bd-svg .bd-conn-arrow, #bd-svg .bd-conn-label-path').forEach(path => {
+    try {
+      const b = path.getBBox();
+      includeRect(b.x, b.y, b.width, b.height);
+    } catch {}
+  });
+  document.querySelectorAll('.bd-frame, .bd-conn-label, .bd-line-comment-badge').forEach(el => {
+    const x = parseFloat(el.style.left);
+    const y = parseFloat(el.style.top);
+    includeRect(x, y, el.offsetWidth || 0, el.offsetHeight || 0);
+  });
+  if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) return null;
+  const pad = 40;
+  return {
+    x0: x0 - pad,
+    y0: y0 - pad,
+    x1: x1 + pad,
+    y1: y1 + pad,
+    width: Math.max(1, Math.ceil(x1 - x0 + pad * 2)),
+    height: Math.max(1, Math.ceil(y1 - y0 + pad * 2)),
+  };
+}
+
+function _bdLoadHtml2CanvasForExport() {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-html2canvas-loader="1"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(window.html2canvas), { once: true });
+      existing.addEventListener('error', () => reject(new Error('html2canvas の読み込みに失敗しました')), { once: true });
+      return;
     }
+    const script = document.createElement('script');
+    script.dataset.html2canvasLoader = '1';
+    script.src = 'vendor/html2canvas.min.js';
+    script.onload = () => window.html2canvas ? resolve(window.html2canvas) : reject(new Error('html2canvas を初期化できませんでした'));
+    script.onerror = () => reject(new Error('html2canvas の読み込みに失敗しました'));
+    document.head.appendChild(script);
   });
-  Promise.all(promises).then(() => {
-    c.toBlob(blob => {
-      if (!blob) {
-        showStatus('ボードの画像化に失敗しました', true);
-        return;
-      }
-      if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveBlob !== 'function') {
-        showStatus('保存ダイアログを初期化できませんでした', true);
-        return;
-      }
-      const path = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : '';
-      const baseName = (typeof MeldexExportSave.guessNameFromPath === 'function')
-        ? MeldexExportSave.guessNameFromPath(path, 'board')
-        : 'board';
-      const stem = String(baseName || 'board').replace(/\.[^.]+$/, '') || 'board';
-      MeldexExportSave.saveBlob(blob, {
-        filename: stem + '.png',
-        extension: '.png',
-        dialogTitle: 'ボード画像として保存',
-        filetypes: [['PNGファイル', '*.png'], ['すべてのファイル', '*.*']],
-        okMessage: 'ボードをエクスポートしました',
-        errorMessage: 'ボードの保存に失敗しました',
-      });
+}
+
+function _bdCreateExportStage(world, bounds) {
+  const canvasEl = document.getElementById('bd-canvas');
+  const bg = canvasEl ? (getComputedStyle(canvasEl).backgroundColor || '#1e1e1e') : '#1e1e1e';
+  const stage = document.createElement('div');
+  stage.className = 'bd-export-stage';
+  stage.style.cssText = [
+    'position:fixed',
+    'left:-100000px',
+    'top:0',
+    `width:${bounds.width}px`,
+    `height:${bounds.height}px`,
+    'overflow:hidden',
+    `background:${bg}`,
+    'pointer-events:none',
+    'z-index:0',
+  ].join(';');
+  const clone = world.cloneNode(true);
+  clone.style.position = 'absolute';
+  clone.style.left = '0';
+  clone.style.top = '0';
+  clone.style.transformOrigin = '0 0';
+  clone.style.transform = `translate(${-bounds.x0}px, ${-bounds.y0}px)`;
+  clone.style.minWidth = Math.max(bounds.width, bounds.x1 + Math.abs(bounds.x0)) + 'px';
+  clone.style.minHeight = Math.max(bounds.height, bounds.y1 + Math.abs(bounds.y0)) + 'px';
+  clone.querySelectorAll('[data-bd-role="svg"]').forEach(svg => {
+    const svgWidth = Math.max(bounds.width, bounds.x1 + Math.abs(bounds.x0));
+    const svgHeight = Math.max(bounds.height, bounds.y1 + Math.abs(bounds.y0));
+    svg.setAttribute('width', String(svgWidth));
+    svg.setAttribute('height', String(svgHeight));
+    svg.style.width = svgWidth + 'px';
+    svg.style.height = svgHeight + 'px';
+    svg.style.overflow = 'visible';
+  });
+  stage.appendChild(clone);
+  document.body.appendChild(stage);
+  return stage;
+}
+
+async function bdExportImage() {
+  const world = document.getElementById('bd-world');
+  if (!world) return;
+  const bounds = _bdExportImageBounds();
+  if (!bounds) return;
+  if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveBlob !== 'function') {
+    showStatus('保存ダイアログを初期化できませんでした', true);
+    return;
+  }
+  let stage = null;
+  try {
+    showStatus('ボード画像を生成中...');
+    if (document.fonts?.ready) await document.fonts.ready.catch(() => {});
+    stage = _bdCreateExportStage(world, bounds);
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const html2canvas = await _bdLoadHtml2CanvasForExport();
+    const stageRect = stage.getBoundingClientRect();
+    const canvas = await html2canvas(stage, {
+      backgroundColor: getComputedStyle(stage).backgroundColor || '#1e1e1e',
+      scale: window.devicePixelRatio || 1,
+      useCORS: true,
+      logging: false,
+      x: -stageRect.left,
+      y: -stageRect.top,
+      width: bounds.width,
+      height: bounds.height,
+      windowWidth: bounds.width,
+      windowHeight: bounds.height,
     });
-  });
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) {
+      showStatus('ボードの画像化に失敗しました', true);
+      return;
+    }
+    const path = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : '';
+    const baseName = (typeof MeldexExportSave.guessNameFromPath === 'function')
+      ? MeldexExportSave.guessNameFromPath(path, 'board')
+      : 'board';
+    const stem = String(baseName || 'board').replace(/\.[^.]+$/, '') || 'board';
+    MeldexExportSave.saveBlob(blob, {
+      filename: stem + '.png',
+      extension: '.png',
+      dialogTitle: 'ボード画像として保存',
+      filetypes: [['PNGファイル', '*.png'], ['すべてのファイル', '*.*']],
+      okMessage: 'ボードをエクスポートしました',
+      errorMessage: 'ボードの保存に失敗しました',
+    });
+  } catch (err) {
+    showStatus('ボードの画像化に失敗しました: ' + (err?.message || err), true);
+  } finally {
+    if (stage) stage.remove();
+  }
 }
 // --- 11. Slideshow ---
 let _bdSlideshow = null;
@@ -237,22 +340,34 @@ function _bdGetNumber(nodeId) {
   if (!bd._numbering) return '';
   const n = bd.nodes.find(v => v.id === nodeId);
   if (!n) return '';
-  const parts = [];
+  const lineage = [];
   let cur = n;
   const seen = new Set();
-  while (cur.parent && !seen.has(cur.id)) {
+  const limit = Math.max(50, (bd.nodes || []).length + 1);
+  let guard = 0;
+  while (cur && !seen.has(cur.id) && guard < limit) {
     seen.add(cur.id);
-    const parent = bd.nodes.find(v => v.id === cur.parent);
-    if (!parent) break;
-    const siblings = bdChildren(parent.id);
-    const idx = siblings.findIndex(s => s.id === cur.id) + 1;
-    parts.unshift(idx);
-    cur = parent;
+    lineage.unshift(cur);
+    if (!cur.parent) break;
+    const parentId = cur.parent;
+    cur = bd.nodes.find(v => v.id === parentId);
+    guard += 1;
   }
-  const roots = bd.nodes.filter(v => !v.parent);
-  const rootIdx = roots.findIndex(v => v.id === (parts.length ? roots.find(r => bdDescendants(r.id).includes(nodeId) || r.id === nodeId)?.id : nodeId));
-  if (rootIdx >= 0 && parts.length === 0) return (rootIdx + 1) + '. ';
-  return parts.join('.') + (parts.length ? '. ' : '');
+  if (!lineage.length) return '';
+  const nums = [];
+  lineage.forEach((node, index) => {
+    if (index === 0) {
+      const roots = bd.nodes.filter(v => !v.parent);
+      const idx = roots.findIndex(v => v.id === node.id);
+      if (idx >= 0) nums.push(idx + 1);
+      return;
+    }
+    const parentNode = lineage[index - 1];
+    const siblings = bdChildren(parentNode.id);
+    const idx = siblings.findIndex(s => s.id === node.id);
+    if (idx >= 0) nums.push(idx + 1);
+  });
+  return nums.length ? nums.join('.') + '. ' : '';
 }
 
 // --- Note Panel ---
@@ -687,17 +802,28 @@ function bdConnContextMenu(e, conn) {
   menu.appendChild(titleRow);
   sep();
   item('テキスト編集', () => {
-    if (!conn.label) { bdPushUndo(); conn.label = 'テキスト'; conn._labelWasEmpty = true; bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-label-edit' }); bdDirty(); }
+    if (!conn.label) { bdPushUndo(); conn.label = 'テキスト'; conn._labelWasEmpty = true; conn._labelPlaceholderUndoCaptured = true; bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-label-edit' }); bdDirty(); }
     if (typeof bdEditConnLabel === 'function') bdEditConnLabel(conn);
   });
   if (conn.label) {
     item('テキストを削除', () => { bdPushUndo(); conn.label = ''; bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-label-delete' }); bdDirty(); });
   } else {
-    item('テキストを追加', () => { bdPushUndo(); conn.label = 'テキスト'; bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-label-add' }); bdDirty(); if (typeof bdEditConnLabel === 'function') bdEditConnLabel(conn); });
+    item('テキストを追加', () => { bdPushUndo(); conn.label = 'テキスト'; conn._labelWasEmpty = true; conn._labelPlaceholderUndoCaptured = true; bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-label-add' }); bdDirty(); if (typeof bdEditConnLabel === 'function') bdEditConnLabel(conn); });
   }
   item('反転 (from / to 入替)', () => {
     bdPushUndo();
     const tmp = conn.from; conn.from = conn.to; conn.to = tmp;
+    const tmpFromPoint = conn.fromPoint;
+    const tmpToPoint = conn.toPoint;
+    if (tmpToPoint !== undefined) conn.fromPoint = tmpToPoint; else delete conn.fromPoint;
+    if (tmpFromPoint !== undefined) conn.toPoint = tmpFromPoint; else delete conn.toPoint;
+    const tmpFromAnchor = conn.fromAnchor;
+    const tmpToAnchor = conn.toAnchor;
+    if (tmpToAnchor !== undefined) conn.fromAnchor = tmpToAnchor; else delete conn.fromAnchor;
+    if (tmpFromAnchor !== undefined) conn.toAnchor = tmpFromAnchor; else delete conn.toAnchor;
+    if (Array.isArray(conn.controlPoints) && conn.controlPoints.length === 2) {
+      conn.controlPoints = [{ ...conn.controlPoints[1] }, { ...conn.controlPoints[0] }];
+    }
     if (conn.arrow === 'start') conn.arrow = 'end';
     else if (conn.arrow === 'end') conn.arrow = 'start';
     bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-reverse' }); bdDirty();
@@ -710,8 +836,7 @@ function bdConnContextMenu(e, conn) {
     bd.connections.push(duplicated);
     bdDrawConns({ connIds: [conn.id, duplicated.id], reason: 'conn-menu-duplicate' }); bdDirty();
   });
-  // Audit-P1 H-4: ライン上コメント追加導線（既存 board_card target_kind に準じる扱い。
-  // target_ref.cardId にライン ID を格納する）。インライン textarea 入力（H-5）。
+  // ライン上コメント追加導線。カードとは別の board_line target_kind として保存する。
   item('コメントを追加', () => {
     if (typeof addCommentHere !== 'function') return;
     const filePath = (typeof bd !== 'undefined' && bd?.path) || '';
@@ -720,9 +845,9 @@ function bdConnContextMenu(e, conn) {
     const cx = e.clientX, cy = e.clientY;
     const anchorEl = { getBoundingClientRect: () => ({ left: cx, top: cy, right: cx, bottom: cy, width: 0, height: 0, x: cx, y: cy }) };
     addCommentHere({
-      targetKind: 'board_card',
+      targetKind: 'board_line',
       filePath,
-      targetRef: { file: filePath, cardId: conn.id },
+      targetRef: { file: filePath, lineId: conn.id },
       snapshot: snippet || 'ライン',
     }, { anchorEl });
   });
@@ -834,9 +959,17 @@ function bdConnContextMenu(e, conn) {
     else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns(); bdDirty(); }
   });
   document.body.appendChild(menu);
-  const r = menu.getBoundingClientRect();
-  if (r.right > window.innerWidth) menu.style.left = (window.innerWidth - r.width - 4) + 'px';
-  if (r.bottom > window.innerHeight) menu.style.top = (window.innerHeight - r.height - 4) + 'px';
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+  } else {
+    const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
+    const r = menu.getBoundingClientRect();
+    const vw = window.innerWidth / z;
+    const vh = window.innerHeight / z;
+    if (r.right / z > vw) menu.style.left = Math.max(4, vw - (r.width / z) - 4) + 'px';
+    if (r.bottom / z > vh) menu.style.top = Math.max(4, vh - (r.height / z) - 4) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
   setTimeout(() => document.addEventListener('pointerdown', function h(ev) {
     const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
     if (!inAny) {

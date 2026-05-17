@@ -592,7 +592,11 @@ class ScriptNoteComponent extends ToolComponent {
             const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote' });
             if (res?.new_path) {
               // エディタのパスとレジストリを更新
-              if (typeof _sn2Editors !== 'undefined') { delete _sn2Editors[oldPath]; _sn2Editors[res.new_path] = this._editor; }
+              if (typeof _sn2Editors !== 'undefined') {
+                delete _sn2Editors[oldPath];
+                _sn2Editors[res.new_path] = this._editor;
+                if (this._editor._historyScopeId) _sn2Editors[this._editor._historyScopeId] = this._editor;
+              }
               this._editor._path = res.new_path;
               this.state.scenarioPath = res.new_path;
               if (typeof renameAppPathReferences === 'function') {
@@ -647,7 +651,9 @@ class ScriptNoteComponent extends ToolComponent {
           } else {
             this._editor._filterRoles = preset.visible ? new Set(preset.visible) : null;
             this._editor._hideRoles = (preset.hidden && preset.hidden.length) ? new Set(preset.hidden) : null;
-            this._editor._filterStatuses = (preset.visibleStatuses && preset.visibleStatuses.length) ? new Set(preset.visibleStatuses) : null;
+            this._editor._filterStatuses = Object.prototype.hasOwnProperty.call(preset, 'visibleStatuses') && preset.visibleStatuses !== null
+              ? new Set(preset.visibleStatuses || [])
+              : null;
             this._editor._hideStatuses = (preset.hiddenStatuses && preset.hiddenStatuses.length) ? new Set(preset.hiddenStatuses) : null;
           }
           if (!this._editor.doc?.editor?.statusEnabled) {
@@ -724,11 +730,36 @@ class ScriptNoteComponent extends ToolComponent {
     setTimeout(() => document.addEventListener('pointerdown', close), 0);
   }
 
+  _syncTabStateFromScenario() {
+    const path = this._editor?._path || this.state.scenarioPath || '';
+    const label = this.state.label || this._editor?.doc?.title || (path ? path.split('/').pop().replace(/\.\w+$/, '') : '');
+    if (path) this.state.scenarioPath = path;
+    if (label) this.state.label = label;
+    if (typeof GBTabs !== 'undefined' && this.tabId && label) {
+      GBTabs.setTabLabel?.(this.tabId, label);
+    }
+    if (typeof GBLayout === 'undefined' || !this.paneId || !this.tabId) return;
+    const paneInfo = GBLayout.findNode?.(GBLayout.root, this.paneId);
+    const tab = paneInfo?.node?.tabs?.find?.(item => item.id === this.tabId) || null;
+    if (!tab) return;
+    if (path) tab.path = path;
+    if (label) tab.label = label;
+    tab.state = {
+      ...(tab.state || {}),
+      scenarioPath: path,
+      label,
+      noteLayoutMode: this.state.noteLayoutMode || tab.state?.noteLayoutMode || '',
+    };
+    GBLayout.saveLayout?.();
+  }
+
   async _loadScenario(path, options = {}) {
     const nextPath = path || '';
     const loadSeq = (this._loadSeq || 0) + 1;
     this._loadSeq = loadSeq;
     const isStaleLoad = () => this._loadSeq !== loadSeq;
+    const previousPath = this._editor?._path || this.state.scenarioPath || '';
+    const previousLabel = this.state.label || this._editor?.doc?.title || (previousPath ? previousPath.split('/').pop().replace(/\.\w+$/, '') : '');
     const fallbackLabel = nextPath ? nextPath.split('/').pop().replace(/\.\w+$/, '') : '';
     const showGlobalLoading = !options.silent && !options.skipGlobalUi
       && typeof showLoading === 'function' && typeof hideLoading === 'function';
@@ -767,6 +798,7 @@ class ScriptNoteComponent extends ToolComponent {
       const layoutSel = this.el?.querySelector?.('#scenario-note-layout-select');
       if (layoutSel) layoutSel.value = parsed.layoutMode || 'manga';
       this.state.noteLayoutMode = parsed.layoutMode || 'manga';
+      this._syncTabStateFromScenario();
       // ボタン状態同期
       const vm = parsed.editor?.viewMode || 'horizontal';
       const wm = parsed.editor?.wrapMode ?? true;
@@ -802,6 +834,12 @@ class ScriptNoteComponent extends ToolComponent {
         this.state.scenarioPath = '';
         this.state.label = '';
         this._renderEmptyState();
+        this._syncTabStateFromScenario();
+      } else {
+        this.state.scenarioPath = this._editor._path || previousPath;
+        this.state.label = this._editor.doc?.title || previousLabel;
+        this.state.noteLayoutMode = this._editor.doc?.layoutMode || this.state.noteLayoutMode || '';
+        this._syncTabStateFromScenario();
       }
       if (!options.skipStatus && typeof showStatus === 'function') showStatus('シナリオの読み込みに失敗: ' + err.message, true);
     } finally {

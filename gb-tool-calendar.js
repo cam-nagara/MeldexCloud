@@ -39,6 +39,7 @@ class CalendarComponent extends ToolComponent {
     this._renderSeq = 0;
     this._initialized = false;
     this._initPromise = null;
+    this._destroyed = false;
   }
 
   // === DOM生成 ===
@@ -209,6 +210,7 @@ class CalendarComponent extends ToolComponent {
   }
 
   destroy() {
+    this._destroyed = true;
     if (this._alarmInterval) clearInterval(this._alarmInterval);
     if (typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
     super.destroy();
@@ -218,10 +220,12 @@ class CalendarComponent extends ToolComponent {
     if (this._initialized) return;
     this._initialized = true;
     await Promise.all([this._loadEvents(), this._loadTasks(), this._loadCalendars()]);
+    if (this._destroyed || !this._active) return;
     this._refreshAfterActivation();
   }
 
   _refreshAfterActivation() {
+    if (this._destroyed || !this._active) return;
     this._render();
     this._renderMiniCal();
     this._renderTodayTasks();
@@ -230,6 +234,7 @@ class CalendarComponent extends ToolComponent {
   }
 
   _ensureAlarmTimer() {
+    if (this._destroyed || !this._active) return;
     if (!this._alarmInterval) {
       this._alarmInterval = setInterval(() => this._checkAlarms(), 60000);
       setTimeout(() => this._checkAlarms(), 3000);
@@ -339,10 +344,20 @@ class CalendarComponent extends ToolComponent {
     const end = new Date(y, m + 2, 0).toISOString();
     try {
       this._events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
-    } catch { this._events = []; }
+    } catch {
+      if (!Array.isArray(this._events)) this._events = [];
+      this._showStatus('予定の読み込みに失敗', true);
+    }
   }
 
-  async _loadTasks() { try { this._tasks = await apiFetch('/cal/tasks?user=' + encodeURIComponent(this._getUser())); } catch { this._tasks = []; } }
+  async _loadTasks() {
+    try {
+      this._tasks = await apiFetch('/cal/tasks?user=' + encodeURIComponent(this._getUser()));
+    } catch {
+      if (!Array.isArray(this._tasks)) this._tasks = [];
+      this._showStatus('タスクの読み込みに失敗', true);
+    }
+  }
 
   async _loadCalendars() {
     try {
@@ -358,8 +373,25 @@ class CalendarComponent extends ToolComponent {
   }
 
   // === Undo/Redo ===
+  _eventIsUndoable(ev) {
+    return ev && !ev._recurrence_instance;
+  }
+
+  _snapshotEventsForUndo() {
+    const seen = new Set();
+    return (this._events || []).filter(ev => {
+      if (!this._eventIsUndoable(ev) || !ev.id || seen.has(ev.id)) return false;
+      seen.add(ev.id);
+      return true;
+    }).map(ev => JSON.parse(JSON.stringify(ev)));
+  }
+
+  _snapshotTasksForUndo() {
+    return JSON.parse(JSON.stringify(this._tasks || []));
+  }
+
   _pushUndo(label) {
-    this._undoStack.push({ label, events: JSON.parse(JSON.stringify(this._events)), tasks: JSON.parse(JSON.stringify(this._tasks)) });
+    this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo() });
     if (this._undoStack.length > this._UNDO_MAX) this._undoStack.shift();
     this._redoStack.length = 0;
     this._notifyParentHistory();
@@ -367,32 +399,38 @@ class CalendarComponent extends ToolComponent {
 
   async _undo() {
     if (!this._undoStack.length) return;
-    this._redoStack.push({ label: '(現在)', events: JSON.parse(JSON.stringify(this._events)), tasks: JSON.parse(JSON.stringify(this._tasks)) });
+    this._redoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo() });
     await this._restoreSnapshot(this._undoStack.pop());
     this._notifyParentHistory();
   }
 
   async _redo() {
     if (!this._redoStack.length) return;
-    this._undoStack.push({ label: '(現在)', events: JSON.parse(JSON.stringify(this._events)), tasks: JSON.parse(JSON.stringify(this._tasks)) });
+    this._undoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo() });
     await this._restoreSnapshot(this._redoStack.pop());
     this._notifyParentHistory();
   }
 
   async _restoreSnapshot(snap) {
     try {
-      const snapEvIds = new Set(snap.events.map(e => e.id));
-      const curEvIds = new Set(this._events.map(e => e.id));
-      for (const ev of this._events) { if (!snapEvIds.has(ev.id)) await apiFetch('/cal/events/' + ev.id, { method: 'DELETE' }).catch(() => {}); }
-      for (const ev of snap.events) {
+      const snapEvents = (snap.events || []).filter(ev => this._eventIsUndoable(ev));
+      const curEvents = (this._events || []).filter(ev => this._eventIsUndoable(ev));
+      const snapEvIds = new Set(snapEvents.map(e => e.id));
+      const curEvIds = new Set(curEvents.map(e => e.id));
+      for (const ev of curEvents) { if (!snapEvIds.has(ev.id)) await apiFetch('/cal/events/' + ev.id, { method: 'DELETE' }).catch(() => {}); }
+      for (const ev of snapEvents) {
         const { id, ...data } = ev; data.user = data.user || this._getUser();
-        if (curEvIds.has(id)) await apiPut('/cal/events/' + id, data).catch(() => {});
-        else await apiPost('/cal/events', { ...data, id }).catch(() => {});
+        if (curEvIds.has(id)) {
+          await apiPut('/cal/events/' + id, data).catch(() => {});
+        } else {
+          await apiPost('/cal/events', { ...data, id }).catch(() => apiPut('/cal/events/' + id, data).catch(() => {}));
+        }
       }
-      const snapTkIds = new Set(snap.tasks.map(t => t.id));
-      const curTkIds = new Set(this._tasks.map(t => t.id));
-      for (const t of this._tasks) { if (!snapTkIds.has(t.id)) await apiFetch('/cal/tasks/' + t.id, { method: 'DELETE' }).catch(() => {}); }
-      for (const t of snap.tasks) {
+      const snapTasks = snap.tasks || [];
+      const snapTkIds = new Set(snapTasks.map(t => t.id));
+      const curTkIds = new Set((this._tasks || []).map(t => t.id));
+      for (const t of this._tasks || []) { if (!snapTkIds.has(t.id)) await apiFetch('/cal/tasks/' + t.id, { method: 'DELETE' }).catch(() => {}); }
+      for (const t of snapTasks) {
         const { id, ...data } = t;
         if (curTkIds.has(id)) await apiPut('/cal/tasks/' + id, data).catch(() => {});
         else await apiPost('/cal/tasks', { ...data, id }).catch(() => {});

@@ -4,7 +4,15 @@
   if (window.MeldexOnboarding) return;
 
   const DONE_KEY = 'meldex-onboarding-complete-v1';
-  let state = { step: 0, startup: null, sample: true };
+  let state = { step: 0, startup: null, sample: true, busy: false };
+
+  function _setOnboardingActive(active) {
+    try {
+      if (!document.body) return;
+      if (active) document.body.dataset.meldexOnboardingActive = '1';
+      else delete document.body.dataset.meldexOnboardingActive;
+    } catch (_) {}
+  }
 
   function _isBypassMode() {
     try {
@@ -42,6 +50,7 @@
   }
 
   function _openSampleGuide() {
+    _setOnboardingActive(false);
     document.getElementById('meldex-onboarding-overlay')?.remove();
     if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
       openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
@@ -113,12 +122,13 @@
 
   function render() {
     const overlay = _overlay();
+    const busy = !!state.busy;
     overlay.innerHTML = `<div class="modal" style="width:min(680px, calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;">
       ${_renderSteps()}
       <section class="gb-section gb-section--boxed">${_body()}</section>
       <div class="btn-row" style="margin-top:12px;">
-        <button data-onboarding-action="prev" ${state.step === 0 ? 'disabled' : ''}>戻る</button>
-        <button class="primary" data-onboarding-action="${state.step >= 3 ? 'finish' : 'next'}">${state.step >= 3 ? '最初のノートを作って開始' : '次へ'}</button>
+        <button data-onboarding-action="prev" ${state.step === 0 || busy ? 'disabled' : ''}>戻る</button>
+        <button class="primary" data-onboarding-action="${state.step >= 3 ? 'finish' : 'next'}" ${busy ? 'disabled' : ''}>${busy ? '処理中...' : (state.step >= 3 ? '最初のノートを作って開始' : '次へ')}</button>
       </div>
     </div>`;
     replaceIcons(overlay);
@@ -144,25 +154,73 @@
   }
 
   async function _createFirstNote() {
-    let result = null;
+    const result = await apiPost('/outliner/add', { type: 'page', label: '無題' });
     try {
-      result = await apiPost('/outliner/add', { type: 'page', label: '無題' });
       if (typeof loadOutliner === 'function') await loadOutliner();
       const node = result?.node || {};
       if (node.path && typeof openPage === 'function') openPage(node.label || '無題', node.path, { fromExplorer: true, skipAutoAppLayout: true });
     } catch (error) {
-      window.MeldexDiagnostics?.showSupportDialog?.(error, { kind: 'onboarding-create-note' });
-      throw error;
+      if (typeof showStatus === 'function') showStatus('最初のノートは作成しました。表示の更新に失敗したため、フォルダツリーから開いてください。', true);
     }
+    return result;
+  }
+
+  async function _changeHomeFolderForOnboarding() {
+    if (typeof _changeHomeFolder === 'function') {
+      await _changeHomeFolder();
+      return _homePath();
+    }
+    let path = null;
+    try {
+      const res = await apiFetch('/add-outliner-root', { method: 'POST' });
+      if (res.ok && res.path) path = res.path;
+      else if (res.needManualInput && typeof _promptFolderPath === 'function') path = await _promptFolderPath();
+    } catch {
+      if (typeof _promptFolderPath === 'function') path = await _promptFolderPath();
+    }
+    if (!path) return _homePath();
+    await apiPut('/home-folder', { path });
+    window._homeFolderPath = path;
+    if (typeof _homeFolderPath !== 'undefined') _homeFolderPath = path;
+    try {
+      const res = await apiFetch('/home-folder');
+      if (typeof setSystemLockedItems === 'function') setSystemLockedItems(res.locked_paths || []);
+      if (typeof _ensureLocksLoaded === 'function') await _ensureLocksLoaded({ force: true }).catch(() => {});
+    } catch {}
+    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+    if (typeof showStatus === 'function') showStatus('ホームフォルダを変更しました');
+    window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'home-folder-changed', homePath: path });
+    return path;
+  }
+
+  function _bringConsentDialogToFront() {
+    const overlay = document.getElementById('meldex-beta-consent-overlay');
+    if (!overlay) return false;
+    overlay.style.zIndex = '100060';
+    overlay.querySelector('input, button, a')?.focus?.();
+    return true;
+  }
+
+  function _showConsentFromOnboarding() {
+    const shown = window.MeldexBetaRelease?.showConsentDialog?.({
+      force: !window.MeldexBetaRelease?.hasConsent?.(),
+      showInstallAfterConsent: false,
+    });
+    if (shown === false && window.MeldexBetaRelease?.hasConsent?.()) {
+      if (typeof showStatus === 'function') showStatus('利用条件は確認済みです');
+      return;
+    }
+    _bringConsentDialogToFront();
   }
 
   async function handleAction(action) {
+    if (state.busy) return;
     if (action === 'prev') state.step = Math.max(0, state.step - 1);
     else if (action === 'next') state.step = Math.min(3, state.step + 1);
     else if (action === 'change-home') {
       document.getElementById('meldex-onboarding-overlay')?.remove();
-      if (typeof _changeHomeFolder === 'function') await _changeHomeFolder();
-      state.startup.homePath = _homePath();
+      state.startup = state.startup || {};
+      state.startup.homePath = await _changeHomeFolderForOnboarding();
       render();
       return;
     }
@@ -175,23 +233,33 @@
     else if (action === 'sample-download') { _openSampleDownload(); return; }
     else if (action === 'sample-install') { await window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'onboarding-samples', homePath: _homePath() }); return; }
     else if (action === 'sample-guide') { _openSampleGuide(); return; }
-    else if (action === 'consent') { window.MeldexBetaRelease?.showConsentDialog?.({ force: !window.MeldexBetaRelease?.hasConsent?.() }); return; }
+    else if (action === 'consent') { _showConsentFromOnboarding(); return; }
     else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(); return; }
     else if (action === 'finish') {
       if (window.MeldexBetaRelease && !window.MeldexBetaRelease.hasConsent?.()) {
-        window.MeldexBetaRelease.showConsentDialog?.({ force: true });
+        _showConsentFromOnboarding();
         return;
       }
-      await _createFirstNote();
-      _setDone();
-      document.getElementById('meldex-onboarding-overlay')?.remove();
+      state.busy = true;
+      render();
+      try {
+        await _createFirstNote();
+        _setDone();
+        _setOnboardingActive(false);
+        document.getElementById('meldex-onboarding-overlay')?.remove();
+      } catch (error) {
+        state.busy = false;
+        window.MeldexDiagnostics?.showSupportDialog?.(error, { kind: 'onboarding-create-note' });
+        render();
+      }
       return;
     }
     render();
   }
 
   function showSourceSetupWizard(startup) {
-    state = { step: 0, startup: startup || {}, sample: true };
+    state = { step: 0, startup: startup || {}, sample: true, busy: false };
+    _setOnboardingActive(true);
     if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
     render();
     return true;

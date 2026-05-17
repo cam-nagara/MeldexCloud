@@ -154,7 +154,12 @@ function _sn2SetActiveScriptNotePath(ctx, targetPath) {
   editor._path = targetPath;
   editor._dirty = false;
   if (typeof createScriptNoteRowIdSet === 'function') editor._lastSavedRowIds = createScriptNoteRowIdSet(editor.doc);
-  if (typeof _sn2Editors !== 'undefined') _sn2Editors[targetPath] = editor;
+  if (typeof _sn2Editors !== 'undefined') {
+    _sn2Editors[targetPath] = editor;
+    if (editor._historyScopeId) _sn2Editors[editor._historyScopeId] = editor;
+    editor._sn2RegisteredPath = targetPath;
+    editor._sn2RegisteredScopeId = editor._historyScopeId || '';
+  }
   const label = typeof getScriptNoteLabelFromPath === 'function'
     ? getScriptNoteLabelFromPath(targetPath, editor.doc?.title || '')
     : (targetPath.split('/').pop() || targetPath).replace(/\.scriptnote\.json$/i, '');
@@ -165,6 +170,34 @@ function _sn2SetActiveScriptNotePath(ctx, targetPath) {
   if (typeof GBTabs !== 'undefined' && comp?.tabId) GBTabs.setTabLabel?.(comp.tabId, label);
   if (typeof historySetScope === 'function' && typeof editor._historyScope === 'function') historySetScope(editor._historyScope());
   if (typeof startAutoVersion === 'function') startAutoVersion(targetPath, 'file');
+}
+
+async function _sn2ScriptNoteFileExists(path) {
+  if (!path || typeof apiFetch !== 'function') return false;
+  try {
+    await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true });
+    return true;
+  } catch (err) {
+    if (err?.status === 404) return false;
+    return true;
+  }
+}
+
+async function _sn2ConfirmScriptNoteOverwrite(targetPath, sourcePath = '', options = {}) {
+  const normalizePath = (value) => String(value || '').replace(/\\/g, '/');
+  if (normalizePath(targetPath) === normalizePath(sourcePath)) return true;
+  const exists = await _sn2ScriptNoteFileExists(targetPath);
+  if (!exists) return true;
+  if (options.forceOverwrite) return true;
+  if (typeof cfConfirm !== 'function') {
+    if (typeof showStatus === 'function') showStatus('同名のシナリオファイルが既にあります', true);
+    return false;
+  }
+  return await cfConfirm('同名のシナリオファイルが既にあります。上書きしますか？', {
+    danger: true,
+    okLabel: '上書き',
+    cancelLabel: 'キャンセル',
+  });
 }
 
 async function _sn2FetchCssWithImports(url, seen = new Set()) {
@@ -192,7 +225,7 @@ async function _sn2FetchCssWithImports(url, seen = new Set()) {
   return out;
 }
 
-async function saveCurrentScriptNoteAs(path) {
+async function saveCurrentScriptNoteAs(path, options = {}) {
   const targetPath = String(path || '').trim();
   if (!targetPath) return false;
   const ctx = _sn2GetActiveSaveContext();
@@ -201,12 +234,24 @@ async function saveCurrentScriptNoteAs(path) {
     return false;
   }
   const { editor } = ctx;
+  const sourcePath = editor._path || ctx.comp?.state?.scenarioPath || '';
+  const clearPendingSave = () => {
+    if (editor._saveTimer) {
+      clearTimeout(editor._saveTimer);
+      editor._saveTimer = null;
+    }
+  };
+  clearPendingSave();
   if (typeof editor._syncAllFromDom === 'function') editor._syncAllFromDom();
   const exportDoc = typeof editor.collectDoc === 'function'
     ? editor.collectDoc()
     : (typeof serializeScriptNoteDoc === 'function' ? serializeScriptNoteDoc(editor.doc) : editor.doc);
+  clearPendingSave();
+  if (!(await _sn2ConfirmScriptNoteOverwrite(targetPath, sourcePath, options))) return false;
+  const targetExists = await _sn2ScriptNoteFileExists(targetPath);
   await apiPut('/file?path=' + encodeURIComponent(targetPath), {
-    content: JSON.stringify(exportDoc, null, 2)
+    content: JSON.stringify(exportDoc, null, 2),
+    force_overwrite: targetExists,
   });
   _sn2SetActiveScriptNotePath(ctx, targetPath);
   return true;

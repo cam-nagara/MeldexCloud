@@ -12,10 +12,12 @@
     _readJsonSafe,
     _requirePwaProvider,
     _pathExists,
+    _iterateWorkspaceFiles,
   } = internals;
 
   const STORE_DIR = '_knowledge';
   const MEMORY_DIRECTIVES_PATH = '/memory_directives';
+  const DEFAULT_STATUS = '(未設定)';
   const BOOL_FIELDS = [
     'is_canonical',
     'override_protection',
@@ -180,12 +182,82 @@
   function _countBy(items, field) {
     const counts = new Map();
     (items || []).forEach(item => {
-      const key = String(item?.[field] || '(未設定)');
+      const key = String(item?.[field] || DEFAULT_STATUS);
       counts.set(key, (counts.get(key) || 0) + 1);
     });
     return [...counts.entries()]
       .map(([key, count]) => ({ [field]: key, count }))
       .sort((a, b) => Number(b.count || 0) - Number(a.count || 0) || String(a[field] || '').localeCompare(String(b[field] || ''), 'ja'));
+  }
+
+  function _statusText(value) {
+    let text = String(value == null ? '' : value).trim();
+    if (!text) return DEFAULT_STATUS;
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === 'string') text = parsed.trim();
+    } catch {}
+    text = text.replace(/^['"]|['"]$/g, '').trim();
+    return text || DEFAULT_STATUS;
+  }
+
+  function _frontmatterBlock(raw) {
+    const match = String(raw || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    return match ? match[1] : '';
+  }
+
+  function _frontmatterStatus(raw) {
+    const block = _frontmatterBlock(raw);
+    if (!block) return DEFAULT_STATUS;
+    const direct = block.match(/(?:^|\n)status\s*:\s*([^\r\n]+)/);
+    if (direct) return _statusText(direct[1]);
+    const sourceStatus = block.match(/(?:^|\n)(?:source_status|sourceStatus|状態|ステータス)\s*:\s*([^\r\n]+)/);
+    if (sourceStatus) return _statusText(sourceStatus[1]);
+    const nested = block.match(/(?:^|\n)\s+status\s*:\s*([^\r\n]+)/);
+    return nested ? _statusText(nested[1]) : DEFAULT_STATUS;
+  }
+
+  function _policyForStatus(policies, status) {
+    const value = _statusText(status);
+    return (policies || []).find(policy => policy.status_value === value)
+      || (policies || []).find(policy => policy.status_value === DEFAULT_STATUS)
+      || null;
+  }
+
+  async function _statusFromPath(provider, rawPath) {
+    const path = _normalizeFolderPath(rawPath || '');
+    if (!path) return { status: DEFAULT_STATUS, path: '' };
+    try {
+      const raw = await provider.readText(path);
+      return { status: _frontmatterStatus(raw), path };
+    } catch {
+      return { status: DEFAULT_STATUS, path };
+    }
+  }
+
+  async function resolveStatusPolicyForPath(provider, url) {
+    const explicitStatus = url.searchParams.get('status');
+    const path = url.searchParams.get('path') || '';
+    const resolved = explicitStatus ? { status: _statusText(explicitStatus), path } : await _statusFromPath(provider, path);
+    const payload = await listStatusPolicies(provider);
+    return { status: resolved.status, path: resolved.path, policy: _policyForStatus(payload.policies, resolved.status) };
+  }
+
+  async function countStatusUsage(provider, statusValue) {
+    const targetStatus = _statusText(statusValue);
+    const usage = { entry_count: 0, knowledge_item_count: 0, reclassify_count: 0 };
+    const knowledge = await listKnowledgeItems(provider, { include_superseded: true, include_deleted: true }).catch(() => ({ items: [] }));
+    usage.knowledge_item_count = (knowledge.items || []).filter(item => _statusText(item?.source_status) === targetStatus).length;
+    if (typeof _iterateWorkspaceFiles !== 'function') return usage;
+    await _iterateWorkspaceFiles(provider, async (filePath) => {
+      const path = _normalizeFolderPath(filePath || '');
+      if (!path || !/\.md$/i.test(path)) return;
+      try {
+        const raw = await provider.readText(path);
+        if (_frontmatterStatus(raw) === targetStatus) usage.entry_count += 1;
+      } catch {}
+    }, '').catch(() => {});
+    return usage;
   }
 
   async function knowledgeSummary(provider) {
@@ -264,6 +336,16 @@
     return { ok: true, created_count: 1, items: [created.item] };
   }
 
+  function _normalizeRulePriority(value, fallback = 100) {
+    if (value == null || value === '') value = fallback;
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      const fallbackNumber = Number(fallback);
+      return Number.isFinite(fallbackNumber) ? _normalizeRulePriority(fallbackNumber, 100) : 100;
+    }
+    return Math.max(0, Math.min(Math.trunc(number), 9999));
+  }
+
   function _cleanRule(body, existing) {
     const now = _nowIso();
     const row = { ...(existing || {}) };
@@ -272,7 +354,7 @@
     row.scope = String(body?.scope ?? row.scope ?? 'project').trim() || 'project';
     row.enabled = Object.prototype.hasOwnProperty.call(body || {}, 'enabled') ? _asBool(body.enabled) : row.enabled !== false;
     row.pinned = Object.prototype.hasOwnProperty.call(body || {}, 'pinned') ? _asBool(body.pinned) : !!row.pinned;
-    row.priority = Number.isFinite(Number(body?.priority)) ? Number(body.priority) : Number(row.priority ?? 100);
+    row.priority = _normalizeRulePriority(body?.priority, row.priority ?? 100);
     row.source_chat_path = _normalizeFolderPath(body?.source_chat_path ?? row.source_chat_path ?? '');
     row.source_msg_id = String(body?.source_msg_id ?? row.source_msg_id ?? '').trim();
     row.created_by = String(body?.created_by ?? row.created_by ?? '').trim();
@@ -537,19 +619,20 @@
 
   async function _handler({ method, body, url, pathname }) {
     if (pathname === '/auth/me' && method === 'GET') return _authMe(url);
+    const knowledgeSearchPath = pathname === '/knowledge_items/search';
     const knowledgePath = /^\/knowledge_items(?:\/(\d+))?$/.exec(pathname);
     const rulesPath = /^\/chat_rules(?:\/(\d+))?$/.exec(pathname);
     const tastePath = /^\/taste\/principles(?:\/(\d+))?$/.exec(pathname);
     const statusDelete = /^\/status_policies\/(.+)$/.exec(pathname);
     const memoryPath = pathname === MEMORY_DIRECTIVES_PATH;
-    const supported = knowledgePath || rulesPath || tastePath || memoryPath
+    const supported = knowledgeSearchPath || knowledgePath || rulesPath || tastePath || memoryPath
       || pathname.startsWith('/knowledge/')
       || pathname.startsWith('/status_policies')
       || pathname.startsWith('/taste/');
     if (!supported) return NOT_HANDLED;
     const provider = await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite');
 
-    if (pathname === '/knowledge_items/search' && method === 'GET') return searchKnowledgeItems(provider, url.searchParams.get('q') || '', url.searchParams.get('limit') || 10);
+    if (knowledgeSearchPath && method === 'GET') return searchKnowledgeItems(provider, url.searchParams.get('q') || '', url.searchParams.get('limit') || 10);
     if (pathname === '/knowledge/summary' && method === 'GET') return knowledgeSummary(provider);
     if (knowledgePath && method === 'GET') return listKnowledgeItems(provider, {
       q: url.searchParams.get('q') || '',
@@ -575,11 +658,12 @@
       const payload = await listStatusPolicies(provider);
       return { policies: payload.policies, exported_at: _nowIso(), version: 1 };
     }
-    if (/^\/status_policies\/usage\//.test(pathname) && method === 'GET') return { entry_count: 0, knowledge_item_count: 0, reclassify_count: 0 };
+    if (/^\/status_policies\/usage\//.test(pathname) && method === 'GET') {
+      const statusValue = decodeURIComponent(pathname.replace(/^\/status_policies\/usage\//, '').split('?')[0]);
+      return countStatusUsage(provider, statusValue);
+    }
     if (pathname === '/status_policies/resolve' && method === 'GET') {
-      const status = url.searchParams.get('status') || '(未設定)';
-      const payload = await listStatusPolicies(provider);
-      return { status, path: url.searchParams.get('path') || '', policy: payload.policies.find(policy => policy.status_value === status) || payload.policies.find(policy => policy.status_value === '(未設定)') };
+      return resolveStatusPolicyForPath(provider, url);
     }
     if (statusDelete && method === 'DELETE') return deleteStatusPolicy(provider, decodeURIComponent(statusDelete[1].split('?')[0]));
 

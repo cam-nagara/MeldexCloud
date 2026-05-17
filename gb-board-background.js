@@ -30,8 +30,10 @@ function bdLoadBoardBackgroundFromStyle() {
     bd._bgColor = String(style['--bd-bg'] || '').trim();
   }
   bd._bgImage = String(style[BD_BG_IMAGE_STYLE_KEY] || '').trim();
-  bd._bgImageFit = _bdNormalizeBackgroundFit(style[BD_BG_IMAGE_FIT_STYLE_KEY]);
-  bd._bgImageScale = _bdNormalizeBackgroundScale(style[BD_BG_IMAGE_SCALE_STYLE_KEY]);
+  bd._bgImageFit = bd._bgImage ? _bdNormalizeBackgroundFit(style[BD_BG_IMAGE_FIT_STYLE_KEY]) : '';
+  bd._bgImageScale = bd._bgImage && Object.prototype.hasOwnProperty.call(style, BD_BG_IMAGE_SCALE_STYLE_KEY)
+    ? _bdNormalizeBackgroundScale(style[BD_BG_IMAGE_SCALE_STYLE_KEY])
+    : (bd._bgImage ? 1 : '');
 }
 
 function bdApplyBoardFontVariables(canvasEl, worldEl) {
@@ -59,6 +61,38 @@ function _bdBackgroundCssUrl(value) {
   return url ? `url("${url}")` : '';
 }
 
+function _bdBackgroundDisplayUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return window.MeldexPwaFileUrl?.displayUrl?.(raw)
+    || window.MeldexResourceUrl?.rewriteInternalUrl?.(raw)
+    || raw;
+}
+
+function _bdResolveBackgroundDisplayUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || !window.MeldexPwaFileUrl?.ensureDisplayUrl) return Promise.resolve(_bdBackgroundDisplayUrl(raw));
+  return window.MeldexPwaFileUrl.ensureDisplayUrl(raw, { allowLargeBlob: true })
+    .then(info => info?.url || _bdBackgroundDisplayUrl(raw))
+    .catch(() => _bdBackgroundDisplayUrl(raw));
+}
+
+function _bdSetCanvasBackgroundImage(canvas, imageUrl) {
+  if (!canvas) return;
+  const raw = String(imageUrl || '').trim();
+  if (!raw) {
+    delete canvas.dataset.bdBgImageSource;
+    canvas.style.backgroundImage = '';
+    return;
+  }
+  canvas.dataset.bdBgImageSource = raw;
+  canvas.style.backgroundImage = _bdBackgroundCssUrl(_bdBackgroundDisplayUrl(raw));
+  _bdResolveBackgroundDisplayUrl(raw).then(url => {
+    if (!canvas.isConnected || canvas.dataset.bdBgImageSource !== raw || !url) return;
+    canvas.style.backgroundImage = _bdBackgroundCssUrl(url);
+  });
+}
+
 function _bdBackgroundImageName() {
   const raw = String(bd._bgImage || '');
   if (!raw) return '';
@@ -83,6 +117,29 @@ function _bdBoardThemeCssVar(canvas, key) {
     || (typeof getCssVar === 'function' ? (getCssVar(key) || '').trim() : '');
 }
 
+function _bdClearCanvasBackgroundFileStyleVars(canvasEl) {
+  const canvas = canvasEl
+    || (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : null)
+    || document.getElementById('bd-canvas');
+  if (!canvas) return;
+  [BD_BG_IMAGE_STYLE_KEY, BD_BG_IMAGE_FIT_STYLE_KEY, BD_BG_IMAGE_SCALE_STYLE_KEY].forEach(key => {
+    canvas.style.removeProperty(key);
+  });
+}
+
+function _bdRefreshBoardBackgroundThemeRuntime(canvasEl) {
+  if (typeof MeldexThemeManager === 'undefined' || typeof MeldexThemeManager.applyBoardThemeRuntime !== 'function') {
+    return false;
+  }
+  const canvas = canvasEl
+    || (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : null)
+    || document.getElementById('bd-canvas');
+  const world = (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('world') : null)
+    || document.getElementById('bd-world');
+  MeldexThemeManager.applyBoardThemeRuntime(bd, canvas, world);
+  return true;
+}
+
 function _bdApplyWorldBackgroundImage(imageUrl, scale) {
   const world = (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('world') : null)
     || document.getElementById('bd-world');
@@ -103,8 +160,14 @@ function _bdApplyWorldBackgroundImage(imageUrl, scale) {
     layer.appendChild(img);
     world.insertBefore(layer, world.firstChild);
   }
+  layer.dataset.bdBgImageSource = imageUrl;
   const imgEl = layer.querySelector('img');
-  if (imgEl && imgEl.src !== imageUrl) imgEl.src = imageUrl;
+  const displayUrl = _bdBackgroundDisplayUrl(imageUrl);
+  if (imgEl && imgEl.src !== displayUrl) imgEl.src = displayUrl;
+  _bdResolveBackgroundDisplayUrl(imageUrl).then(url => {
+    if (!layer.isConnected || layer.dataset.bdBgImageSource !== imageUrl || !imgEl || !url) return;
+    if (imgEl.src !== url) imgEl.src = url;
+  });
   const s = _bdNormalizeBackgroundScale(scale);
   layer.style.transform = `scale(${s})`;
 }
@@ -132,36 +195,39 @@ function bdApplyCanvasBackground(canvasEl, fallbackColor) {
   canvas.style.backgroundColor = color || 'var(--bg)';
 
   // ファイル固有値が未設定のときはボード専用テーマ値、なければ :root 値を参照
-  const themeBgImage = String(fileStyle['--bd-bg-image'] || '').trim()
-    || _bdBoardThemeCssVar(canvas, '--bd-bg-image');
-  const themeBgFit = String(fileStyle['--bd-bg-image-fit'] || '').trim()
-    || _bdBoardThemeCssVar(canvas, '--bd-bg-image-fit');
-  const themeBgScale = String(fileStyle['--bd-bg-image-scale'] || '').trim()
-    || _bdBoardThemeCssVar(canvas, '--bd-bg-image-scale');
-  const rawImage = String(bd._bgImage || '').trim() || themeBgImage;
+  const fileBgImage = String(bd._bgImage || fileStyle[BD_BG_IMAGE_STYLE_KEY] || '').trim();
+  const hasFileBgImage = !!fileBgImage;
+  const themeBgImage = hasFileBgImage ? '' : _bdBoardThemeCssVar(canvas, BD_BG_IMAGE_STYLE_KEY);
+  const themeBgFit = hasFileBgImage ? '' : _bdBoardThemeCssVar(canvas, BD_BG_IMAGE_FIT_STYLE_KEY);
+  const themeBgScale = hasFileBgImage ? '' : _bdBoardThemeCssVar(canvas, BD_BG_IMAGE_SCALE_STYLE_KEY);
+  const rawImage = fileBgImage || themeBgImage;
   const image = rawImage;
-  const fit = _bdNormalizeBackgroundFit(bd._bgImageFit || themeBgFit);
-  const scale = _bdNormalizeBackgroundScale(
-    bd._bgImageScale !== undefined && bd._bgImageScale !== null && bd._bgImageScale !== ''
+  const fileFit = hasFileBgImage ? (bd._bgImageFit || fileStyle[BD_BG_IMAGE_FIT_STYLE_KEY]) : '';
+  const fit = _bdNormalizeBackgroundFit(fileFit || themeBgFit);
+  const fileScale = hasFileBgImage
+    ? (bd._bgImageScale !== undefined && bd._bgImageScale !== null && bd._bgImageScale !== ''
       ? bd._bgImageScale
-      : themeBgScale
+      : fileStyle[BD_BG_IMAGE_SCALE_STYLE_KEY])
+    : '';
+  const scale = _bdNormalizeBackgroundScale(
+    hasFileBgImage ? fileScale : themeBgScale
   );
   if (image && fit === 'world') {
     // ボード要素と一緒にパン/ズーム/回転する: bd-canvas の background-image は使わず、
     // bd-world の子要素として img を配置する (transform が連動する)。
-    canvas.style.backgroundImage = '';
+    _bdSetCanvasBackgroundImage(canvas, '');
     canvas.style.backgroundPosition = '';
     canvas.style.backgroundRepeat = '';
     canvas.style.backgroundSize = '';
     _bdApplyWorldBackgroundImage(image, scale);
   } else if (image) {
-    canvas.style.backgroundImage = _bdBackgroundCssUrl(image);
+    _bdSetCanvasBackgroundImage(canvas, image);
     canvas.style.backgroundPosition = 'center center';
     canvas.style.backgroundRepeat = fit === 'repeat' ? 'repeat' : 'no-repeat';
     canvas.style.backgroundSize = fit === 'repeat' ? 'auto' : fit;
     _bdRemoveWorldBackgroundImage();
   } else {
-    canvas.style.backgroundImage = '';
+    _bdSetCanvasBackgroundImage(canvas, '');
     canvas.style.backgroundPosition = '';
     canvas.style.backgroundRepeat = '';
     canvas.style.backgroundSize = '';
@@ -317,8 +383,10 @@ function bdSetBoardBackgroundImage(url, fit, scale) {
     delete style[BD_BG_IMAGE_STYLE_KEY];
     delete style[BD_BG_IMAGE_FIT_STYLE_KEY];
     delete style[BD_BG_IMAGE_SCALE_STYLE_KEY];
+    _bdClearCanvasBackgroundFileStyleVars();
   }
-  _bdApplyCurrentBoardBackground();
+  const refreshedTheme = !bd._bgImage && _bdRefreshBoardBackgroundThemeRuntime();
+  if (!refreshedTheme) _bdApplyCurrentBoardBackground();
   if (typeof bdDirty === 'function') bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   if (typeof bdMarkExtrasDirty === 'function') {
@@ -350,7 +418,8 @@ function bdClearBoardBackground() {
   delete style[BD_BG_IMAGE_STYLE_KEY];
   delete style[BD_BG_IMAGE_FIT_STYLE_KEY];
   delete style[BD_BG_IMAGE_SCALE_STYLE_KEY];
-  _bdApplyCurrentBoardBackground();
+  _bdClearCanvasBackgroundFileStyleVars();
+  if (!_bdRefreshBoardBackgroundThemeRuntime()) _bdApplyCurrentBoardBackground();
   if (typeof bdDirty === 'function') bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   if (typeof bdMarkExtrasDirty === 'function') {

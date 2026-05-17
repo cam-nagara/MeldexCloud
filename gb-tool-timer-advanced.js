@@ -161,7 +161,7 @@
       id: item?.id || _timerId('timer'),
       name: String(item?.name || fallbackName || 'タイマー'),
       totalSeconds: seconds,
-      countUp: false,
+      countUp: !!item?.countUp,
       displayMode: ['digital', 'analog', 'circle', 'bar'].includes(item?.displayMode) ? item.displayMode : 'digital',
       alarmSound: ['none', 'beep', 'chime', 'bell'].includes(item?.alarmSound) ? item.alarmSound : undefined,
       countdownEnabled: item?.countdownEnabled === undefined ? undefined : !!item.countdownEnabled,
@@ -202,6 +202,8 @@
 
   const baseDestroy = TimerComponent.prototype.destroy;
   TimerComponent.prototype.destroy = function() {
+    this._timerAdvancedClearPendingAutoStart?.();
+    this._timerAdvancedCancelSpeech?.();
     this._timerAdvancedStopCalendarPolling?.();
     this._timerAdvancedCancelSequence?.();
     this._timerAdvancedCloseSettingsDialog?.();
@@ -242,6 +244,22 @@
     baseStartTicking.call(this);
   };
 
+  const baseStartTimer = TimerComponent.prototype._startTimer;
+  TimerComponent.prototype._startTimer = function() {
+    this._timerAdvancedClearPendingAutoStart?.();
+    this._timerAdvancedCancelSpeech?.();
+    this._timerAdvancedTimerSource = this._timerAdvancedNextStartSource || 'manual';
+    this._timerAdvancedNextStartSource = '';
+    return baseStartTimer.call(this);
+  };
+
+  const basePauseTimer = TimerComponent.prototype._pauseTimer;
+  TimerComponent.prototype._pauseTimer = function() {
+    this._timerAdvancedClearPendingAutoStart?.();
+    this._timerAdvancedCancelSpeech?.();
+    return basePauseTimer.call(this);
+  };
+
   const baseUpdateElapsed = TimerComponent.prototype._updateElapsedFromClock;
   TimerComponent.prototype._updateElapsedFromClock = function() {
     baseUpdateElapsed.call(this);
@@ -250,9 +268,11 @@
 
   const baseResetTimer = TimerComponent.prototype._resetTimer;
   TimerComponent.prototype._resetTimer = function() {
+    this._timerAdvancedClearPendingAutoStart?.();
     this._timerAdvancedCancelSequence?.();
     baseResetTimer.call(this);
     this._timerAdvancedActiveLabel = '';
+    this._timerAdvancedTimerSource = '';
     this._timerAdvancedResetCountdownState();
     this._timerAdvancedSyncControls?.();
   };
@@ -269,6 +289,9 @@
     this._timerAdvancedSequenceIndex = -1;
     this._timerAdvancedDragIndex = -1;
     this._timerAdvancedActiveLabel = this._timerAdvancedActiveLabel || '';
+    this._timerAdvancedAutoStartTimer = null;
+    this._timerAdvancedTimerSource = this._timerAdvancedTimerSource || '';
+    this._timerAdvancedNextStartSource = '';
   };
 
   TimerComponent.prototype._timerAdvancedReloadFromStorage = function(changedKeys) {
@@ -507,7 +530,7 @@
       id: _timerId('timer'),
       name: name || this._timerAdvancedActiveLabel || `タイマー ${this._formatTime(this.totalSeconds)}`,
       totalSeconds: this.totalSeconds,
-      countUp: false,
+      countUp: this.countUp,
       displayMode: this.displayMode,
       alarmSound: this._timerAdvancedSettings.alarmSound,
       countdownEnabled: this._timerAdvancedSettings.countdownEnabled,
@@ -555,9 +578,11 @@
   TimerComponent.prototype._timerAdvancedApplyItem = function(item, start, options = {}) {
     if (!item) return;
     const normalized = _timerNormalizeItem(item);
+    this._timerAdvancedClearPendingAutoStart();
+    this._timerAdvancedCancelSpeech();
     if (this.timerRunning || this._timerInterval) this._pauseTimer();
     this.totalSeconds = normalized.totalSeconds;
-    this.countUp = false;
+    this.countUp = !!normalized.countUp;
     this.displayMode = normalized.displayMode;
     this.elapsed = 0;
     this.elapsedAtStart = 0;
@@ -569,7 +594,7 @@
     this._updateModeButtons();
     this._timerAdvancedSyncControls();
     this._drawTimer();
-    if (start) this._startTimer();
+    if (start) this._timerAdvancedStartTimerAs(options.source || 'preset');
   };
 
   TimerComponent.prototype._timerAdvancedApplyItemSettings = function(item, options = {}) {
@@ -647,7 +672,7 @@
       this._timerAdvancedStopSequence(false);
       return;
     }
-    this._timerAdvancedApplyItem(item, true, { skipSettingsHistory: true });
+    this._timerAdvancedApplyItem(item, true, { skipSettingsHistory: true, source: 'sequence' });
     this._timerAdvancedRenderSequence();
   };
 
@@ -669,6 +694,8 @@
   };
 
   TimerComponent.prototype._timerAdvancedStopSequence = function(pauseTimer = true) {
+    this._timerAdvancedClearPendingAutoStart();
+    this._timerAdvancedCancelSpeech();
     this._timerAdvancedSequenceRunning = false;
     this._timerAdvancedSequenceIndex = -1;
     if (pauseTimer) this._pauseTimer();
@@ -676,6 +703,7 @@
   };
 
   TimerComponent.prototype._timerAdvancedCancelSequence = function() {
+    this._timerAdvancedClearPendingAutoStart();
     this._timerAdvancedSequenceRunning = false;
     this._timerAdvancedSequenceIndex = -1;
   };
@@ -735,6 +763,32 @@
     _timerWriteJson(SEQUENCE_KEY, this._timerSequence);
     _timerPushStorageHistory('タイマー: 実行リスト並べ替え', before, [SEQUENCE_KEY], moved?.name || '');
     this._timerAdvancedRenderSequence();
+  };
+
+  TimerComponent.prototype._timerAdvancedClearPendingAutoStart = function() {
+    if (this._timerAdvancedAutoStartTimer) {
+      clearTimeout(this._timerAdvancedAutoStartTimer);
+      this._timerAdvancedAutoStartTimer = null;
+    }
+  };
+
+  TimerComponent.prototype._timerAdvancedScheduleAutoStart = function(callback) {
+    this._timerAdvancedClearPendingAutoStart();
+    this._timerAdvancedAutoStartTimer = setTimeout(() => {
+      this._timerAdvancedAutoStartTimer = null;
+      callback();
+    }, 700);
+  };
+
+  TimerComponent.prototype._timerAdvancedCancelSpeech = function() {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch {}
+    }
+  };
+
+  TimerComponent.prototype._timerAdvancedStartTimerAs = function(source) {
+    this._timerAdvancedNextStartSource = source || 'manual';
+    this._startTimer();
   };
 
   TimerComponent.prototype._timerAdvancedResetCountdownState = function() {
@@ -834,14 +888,15 @@
   };
 
   TimerComponent.prototype._timerAdvancedHandleTimerDone = function() {
+    const source = this._timerAdvancedTimerSource || 'manual';
     if (this._timerAdvancedSequenceRunning) {
-      setTimeout(() => this._timerAdvancedRunNextSequenceItem(), 700);
+      this._timerAdvancedScheduleAutoStart(() => this._timerAdvancedRunNextSequenceItem());
       return;
     }
-    if (this._timerAdvancedSettings?.repeatSingle && !this.countUp && this.totalSeconds > 0) {
-      setTimeout(() => {
+    if (source !== 'calendar' && this._timerAdvancedSettings?.repeatSingle && !this.countUp && this.totalSeconds > 0) {
+      this._timerAdvancedScheduleAutoStart(() => {
         if (!this.timerRunning) this._startTimer();
-      }, 700);
+      });
     }
   };
 
@@ -937,7 +992,7 @@
     this._writeControlsFromState();
     this._timerAdvancedSyncControls();
     this._drawTimer();
-    this._startTimer();
+    this._timerAdvancedStartTimerAs('calendar');
     if (typeof showStatus === 'function') {
       showStatus(`カレンダー連動: ${this._timerAdvancedActiveLabel} のタイマーを開始しました`);
     }

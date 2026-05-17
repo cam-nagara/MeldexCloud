@@ -23,7 +23,7 @@ function _imagePropOptions(ptc) {
   return {
     maxCount: opts.max_count == null || opts.max_count === '' ? 100 : Math.max(1, parseInt(opts.max_count, 10) || 100),
     accept,
-    thumbSize: Math.max(40, Math.min(320, parseInt(opts.thumbnail_size, 10) || 96)),
+    thumbSize: Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256)),
   };
 }
 
@@ -32,13 +32,25 @@ function _imageSrc(item, preferThumb) {
   if (!rel) return '';
   if (/^(https?:|data:|blob:)/.test(rel)) return rel;
   if (rel.startsWith('/')) return rel;
-  return '/api/media/file?path=' + rel;
+  return '/api/media/file?path=' + encodeURIComponent(rel);
 }
 
 function _isAcceptedImageFile(file, accept) {
-  if (!file || !file.type?.startsWith('image/')) return false;
+  if (!file) return false;
+  const type = String(file.type || '').toLowerCase();
+  if (type && !type.startsWith('image/')) return false;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   return accept.includes(ext) || (ext === 'jpg' && accept.includes('jpeg')) || (ext === 'jpeg' && accept.includes('jpg'));
+}
+
+function _imagePropDbPathForEntity(entityPath) {
+  if (typeof _dbPathFromEntityPath === 'function') return _dbPathFromEntityPath(entityPath);
+  return state.currentDbPath || '';
+}
+
+function _imagePropLockMessage(entityPath, propName) {
+  const dbPath = _imagePropDbPathForEntity(entityPath);
+  return dbPath && typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
 }
 
 async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
@@ -80,7 +92,8 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
 
 async function saveImagePropertyItems(entityPath, propName, val, items) {
   const newValue = stringifyImagePropertyValue(items);
-  if (val && val.file && val.candidate_index != null) {
+  const isExistingValue = !!(val && val.file && (val.candidate_index != null || _imagePropNormalizePath(val.file) !== _imagePropNormalizePath(entityPath)));
+  if (isExistingValue) {
     await _apiPutValue(val, { new_value: newValue });
     val.value = newValue;
   } else {
@@ -96,6 +109,14 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
   apiPost('/media/rebuild-refs', {}).catch(() => {});
   if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(document.activeElement, entityPath, propName);
   else if (state.currentDbPath && typeof selectDatabase === 'function') selectDatabase(state.currentDbPath, undefined, { silent: true });
+}
+
+function _imagePropNormalizePath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _imagePropCloneItems(items) {
+  return JSON.parse(JSON.stringify(Array.isArray(items) ? items : []));
 }
 
 function createImagePropertyValueElement(val, entityPath, propName, thumbSize, ptc) {
@@ -134,12 +155,13 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
   wrap.addEventListener('drop', async (e) => {
     stop(e);
     wrap.classList.remove('gb-cell-dropzone-active');
-    const lockMsg = checkColumnEditable(state.currentDbPath, propName);
+    const dbPath = _imagePropDbPathForEntity(entityPath);
+    const lockMsg = _imagePropLockMessage(entityPath, propName);
     if (lockMsg) { showStatus(lockMsg); return; }
     try {
       await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
       showStatus('画像を追加しました');
-      if (state.currentDbPath) selectDatabase(state.currentDbPath, undefined, { silent: true });
+      if (dbPath) selectDatabase(dbPath, undefined, { silent: true });
     } catch (err) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     }
@@ -154,6 +176,8 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
 function showImageGalleryModal(entityPath, propName, val, ptc) {
   const options = _imagePropOptions(ptc);
   let items = parseImagePropertyValue(val?.value);
+  const lockMsg = _imagePropLockMessage(entityPath, propName);
+  const canEdit = !lockMsg;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `<div class="modal gb-image-gallery-modal">
@@ -167,6 +191,8 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
   </div>`;
   document.body.appendChild(overlay);
   const list = overlay.querySelector('#gb-img-gallery-list');
+  const fileInput = overlay.querySelector('#gb-img-file-input');
+  if (fileInput) fileInput.disabled = !canEdit;
   const render = () => {
     list.innerHTML = '';
     if (!items.length) {
@@ -189,9 +215,17 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       cap.type = 'text';
       cap.value = item.caption || '';
       cap.placeholder = item.filename || 'キャプション';
+      cap.disabled = !canEdit;
       cap.addEventListener('change', async () => {
-        items[idx].caption = cap.value;
-        await saveImagePropertyItems(entityPath, propName, val, items);
+        if (!canEdit) {
+          cap.value = item.caption || '';
+          if (lockMsg) showStatus(lockMsg, true);
+          return;
+        }
+        const nextItems = _imagePropCloneItems(items);
+        if (!nextItems[idx]) return;
+        nextItems[idx].caption = cap.value;
+        await saveNextItems(nextItems);
       });
       meta.appendChild(cap);
       const actions = document.createElement('div');
@@ -202,32 +236,49 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
         b.className = 'gb-icon-btn';
         b.innerHTML = typeof lucide === 'function' ? lucide(icon, 14) : title;
         b.title = title;
+        b.disabled = !canEdit;
         b.addEventListener('click', fn);
         return b;
       };
       actions.appendChild(actionBtn('arrowUp', '上へ', async () => {
         if (idx <= 0) return;
-        [items[idx - 1], items[idx]] = [items[idx], items[idx - 1]];
-        await saveImagePropertyItems(entityPath, propName, val, items);
-        render();
+        const nextItems = _imagePropCloneItems(items);
+        [nextItems[idx - 1], nextItems[idx]] = [nextItems[idx], nextItems[idx - 1]];
+        await saveNextItems(nextItems);
       }));
       actions.appendChild(actionBtn('arrowDown', '下へ', async () => {
         if (idx >= items.length - 1) return;
-        [items[idx + 1], items[idx]] = [items[idx], items[idx + 1]];
-        await saveImagePropertyItems(entityPath, propName, val, items);
-        render();
+        const nextItems = _imagePropCloneItems(items);
+        [nextItems[idx + 1], nextItems[idx]] = [nextItems[idx], nextItems[idx + 1]];
+        await saveNextItems(nextItems);
       }));
       actions.appendChild(actionBtn('trash2', '削除', async () => {
-        items.splice(idx, 1);
-        await saveImagePropertyItems(entityPath, propName, val, items);
-        render();
+        if (typeof confirm === 'function' && !confirm('この画像を削除しますか？')) return;
+        const nextItems = _imagePropCloneItems(items);
+        nextItems.splice(idx, 1);
+        await saveNextItems(nextItems);
       }));
       meta.appendChild(actions);
       card.appendChild(meta);
       list.appendChild(card);
     });
   };
+  const saveNextItems = async (nextItems) => {
+    const prevItems = _imagePropCloneItems(items);
+    try {
+      await saveImagePropertyItems(entityPath, propName, val, nextItems);
+      items = _imagePropCloneItems(nextItems);
+    } catch (err) {
+      items = prevItems;
+      showStatus(err?.message || '画像プロパティの保存に失敗しました', true);
+    }
+    render();
+  };
   const addFiles = async (files) => {
+    if (!canEdit) {
+      if (lockMsg) showStatus(lockMsg, true);
+      return;
+    }
     try {
       items = await uploadImagePropertyFiles(files, entityPath, propName, val, ptc);
       render();
@@ -235,7 +286,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     }
   };
-  overlay.querySelector('#gb-img-file-input')?.addEventListener('change', (e) => addFiles(e.target.files));
+  fileInput?.addEventListener('change', (e) => addFiles(e.target.files));
   list.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.add('gb-cell-dropzone-active'); });
   list.addEventListener('dragleave', (e) => { e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); });
   list.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); addFiles(e.dataTransfer.files); });

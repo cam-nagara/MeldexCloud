@@ -42,8 +42,21 @@
     'textBefore', 'textAfter', 'textAlign', 'textValign', 'textOverflow',
   ];
 
+  function _commitFormatInput(input) {
+    if (input && typeof input._gbFmtCommit === 'function') input._gbFmtCommit();
+  }
+
+  function _commitPendingFormatInputs(root) {
+    root?.querySelectorAll?.('input, textarea').forEach(_commitFormatInput);
+  }
+
+  function _removeFormatPopup(popup, options) {
+    if (!(options && options.skipCommit)) _commitPendingFormatInputs(popup);
+    popup?.remove?.();
+  }
+
   function closeAllFormatPopups() {
-    document.querySelectorAll('.' + POPUP_CLASS).forEach((el) => el.remove());
+    document.querySelectorAll('.' + POPUP_CLASS).forEach((el) => _removeFormatPopup(el));
   }
 
   function closeAllPalettePopups() {
@@ -125,7 +138,17 @@
     return el;
   }
 
-  function _makeSwatchBg(title, initialColor, onPick) {
+  function _colorWithPreservedAlpha(currentColor, nextColor, options) {
+    const next = nextColor || '';
+    if (options?.bgType !== 'rgba') return next;
+    if (!next || next === 'transparent' || !/^#[0-9a-f]{3,6}$/i.test(next)) return next;
+    const parsed = typeof parseColorToHexAlpha === 'function' ? parseColorToHexAlpha(currentColor) : null;
+    const alpha = Number.isFinite(parsed?.alpha) ? parsed.alpha : 1;
+    if (alpha > 0 && alpha < 1 && typeof hexAlphaToRgba === 'function') return hexAlphaToRgba(next, alpha);
+    return next;
+  }
+
+  function _makeSwatchBg(title, initialColor, onPick, options = {}) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'gb-fmt-swatch gb-fmt-swatch-bg';
@@ -138,7 +161,7 @@
         // 透明を選んだ場合は 'transparent' を伝播させ、各項目の bg を明示的に
         // 透過へ切り替える。空文字にすると CSS 変数の宣言が削除され、
         // テーマ既定値に戻ってしまうため透明指定が反映されなくなる。
-        const resolved = color || '';
+        const resolved = _colorWithPreservedAlpha(currentColor, color, options);
         currentColor = resolved;
         _setSwatchBg(btn, resolved);
         onPick(resolved);
@@ -197,15 +220,26 @@
     inp.className = 'gb-fmt-num';
     if (width) inp.style.width = (typeof width === 'number' ? width + 'px' : width);
     if (value !== '' && value != null) inp.value = value;
-    inp.addEventListener('change', () => {
+    inp.defaultValue = inp.value;
+    inp._gbFmtCommittedValue = inp.value;
+    const commit = () => {
       if (inp.value === '') {
         if (allowEmpty) { onChange(null); }
         else { onChange(Math.max(minV, Math.min(maxV, parseInt(inp.defaultValue, 10) || minV))); }
       } else {
-        const v = Math.max(minV, Math.min(maxV, parseInt(inp.value, 10)));
+        const parsed = parseInt(inp.value, 10);
+        const fallback = parseInt(inp.defaultValue, 10);
+        const raw = Number.isFinite(parsed) ? parsed : (Number.isFinite(fallback) ? fallback : minV);
+        const v = Math.max(minV, Math.min(maxV, raw));
         onChange(v);
       }
-    });
+      inp._gbFmtCommittedValue = inp.value;
+    };
+    inp._gbFmtCommit = () => {
+      if (inp.value === inp._gbFmtCommittedValue) return;
+      commit();
+    };
+    inp.addEventListener('change', () => inp._gbFmtCommit());
     return inp;
   }
 
@@ -252,7 +286,13 @@
     inp.className = 'gb-fmt-text';
     if (value != null) inp.value = value;
     if (placeholder) inp.placeholder = placeholder;
-    inp.addEventListener('change', () => onChange(inp.value));
+    inp._gbFmtCommittedValue = inp.value;
+    inp._gbFmtCommit = () => {
+      if (inp.value === inp._gbFmtCommittedValue) return;
+      inp._gbFmtCommittedValue = inp.value;
+      onChange(inp.value);
+    };
+    inp.addEventListener('change', () => inp._gbFmtCommit());
     return inp;
   }
 
@@ -421,7 +461,7 @@
     row3.className = 'gb-fmt-popup-row gb-fmt-popup-row--decoration';
 
     if (fields.has('bgColor')) {
-      row3.appendChild(_makeSwatchBg('背景色', values.bgColor, (c) => emit('bgColor', c)));
+      row3.appendChild(_makeSwatchBg('背景色', values.bgColor, (c) => emit('bgColor', c), { bgType: options.bgColorType || '' }));
     }
     if (fields.has('leftAccent')) {
       row3.appendChild(_makeToggleBtn(_lucideOr('panelLeft', 14, '|'), '左アクセントバー', !!values.leftAccent, (on) => emit('leftAccent', on)));
@@ -482,7 +522,7 @@
         _bindPressAction(resetBtn, () => {
           closeAllPalettePopups();
           options.onReset();
-          popup.remove();
+          _removeFormatPopup(popup, { skipCommit: true });
         });
         row4.appendChild(resetBtn);
       }
@@ -493,7 +533,7 @@
     if (options.closeButton !== false && typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: () => options.focusTarget || anchorEl,
-        close: () => popup.remove(),
+        close: () => _removeFormatPopup(popup),
       });
     }
 
@@ -509,7 +549,7 @@
       setTimeout(() => {
         const closeHandler = (ev) => {
           if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-palette-popup')) {
-            popup.remove();
+            _removeFormatPopup(popup);
             document.removeEventListener('pointerdown', closeHandler, true);
           }
         };
@@ -578,7 +618,7 @@
   window.gbFmt = {
     makeSwatchBg(opts) {
       opts = opts || {};
-      return _makeSwatchBg(opts.title, opts.color, opts.onPick || (() => {}));
+      return _makeSwatchBg(opts.title, opts.color, opts.onPick || (() => {}), { bgType: opts.bgType || '' });
     },
     makeSwatchText(opts) {
       opts = opts || {};

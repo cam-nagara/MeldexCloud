@@ -45,6 +45,55 @@
 
   function isOpen() { return !!_popup; }
 
+  function _dockPopupZoom() {
+    const z = (typeof _getZoom === 'function')
+      ? Number(_getZoom())
+      : parseFloat(document.documentElement.style.zoom || '1');
+    return Number.isFinite(z) && z > 0 ? z : 1;
+  }
+
+  function _viewportCssSize() {
+    const z = _dockPopupZoom();
+    return {
+      w: Math.max(MIN_W, (window.innerWidth || document.documentElement.clientWidth || MIN_W) / z - 16),
+      h: Math.max(MIN_H, (window.innerHeight || document.documentElement.clientHeight || MIN_H) / z - 16),
+    };
+  }
+
+  function _clampPopupSize(size) {
+    const viewport = _viewportCssSize();
+    const w = Number(size?.w);
+    const h = Number(size?.h);
+    return {
+      w: Math.max(MIN_W, Math.min(Number.isFinite(w) ? w : MIN_W, viewport.w)),
+      h: Math.max(MIN_H, Math.min(Number.isFinite(h) ? h : MIN_H, viewport.h)),
+    };
+  }
+
+  function _clampPopupRect(rect) {
+    const viewport = _viewportCssSize();
+    const size = _clampPopupSize({ w: rect?.w, h: rect?.h });
+    const maxLeft = Math.max(8, viewport.w - size.w - 8);
+    const maxTop = Math.max(8, viewport.h - size.h - 8);
+    const rawLeft = Number(rect?.left);
+    const rawTop = Number(rect?.top);
+    return {
+      left: Math.max(8, Math.min(Number.isFinite(rawLeft) ? rawLeft : 8, maxLeft)),
+      top: Math.max(8, Math.min(Number.isFinite(rawTop) ? rawTop : 8, maxTop)),
+      w: size.w,
+      h: size.h,
+    };
+  }
+
+  function _applyPopupRect(popup, rect) {
+    const next = _clampPopupRect(rect);
+    popup.style.left = next.left + 'px';
+    popup.style.top = next.top + 'px';
+    popup.style.width = next.w + 'px';
+    popup.style.height = next.h + 'px';
+    return next;
+  }
+
   function _collectPanelsetTabTypes(panelsetNode) {
     const types = [];
     const walk = (node) => {
@@ -75,37 +124,36 @@
     // ユーザーがリサイズした後は panelset.popupRect が優先される。
     const parent = anchorEl?.closest?.('.gb-dock') || anchorEl?.closest?.('.gb-column') || document.body;
     const rect = parent.getBoundingClientRect();
+    const z = _dockPopupZoom();
     const defaultWidth = _inferDefaultPopupWidth(panelsetNode);
-    const maxW = Math.max(MIN_W, document.documentElement.clientWidth - 16);
-    const maxH = Math.max(MIN_H, document.documentElement.clientHeight - 16);
-    const rawW = defaultWidth > 0 ? Math.max(MIN_W, Math.round(defaultWidth)) : Math.max(MIN_W, Math.floor(rect.width * DEFAULT_W_RATIO));
-    const w = Math.min(maxW, rawW);
-    const h = Math.min(maxH, Math.max(MIN_H, Math.floor(rect.height * DEFAULT_H_RATIO)));
-    return { w, h };
+    const rawW = defaultWidth > 0 ? Math.max(MIN_W, Math.round(defaultWidth)) : Math.max(MIN_W, Math.floor((rect.width / z) * DEFAULT_W_RATIO));
+    const rawH = Math.max(MIN_H, Math.floor((rect.height / z) * DEFAULT_H_RATIO));
+    return _clampPopupSize({ w: rawW, h: rawH });
   }
 
   function _positionPopup(popup, anchorEl, size) {
+    const safeSize = _clampPopupSize(size);
     const anchorRect = anchorEl?.getBoundingClientRect?.();
     if (!anchorRect) {
-      popup.style.left = '100px';
-      popup.style.top = '100px';
-      popup.style.width = size.w + 'px';
-      popup.style.height = size.h + 'px';
+      _applyPopupRect(popup, { left: 100, top: 100, w: safeSize.w, h: safeSize.h });
       return;
     }
-    const vw = document.documentElement.clientWidth;
-    const vh = document.documentElement.clientHeight;
+    const z = _dockPopupZoom();
+    const vw = (window.innerWidth || document.documentElement.clientWidth) / z;
+    const vh = (window.innerHeight || document.documentElement.clientHeight) / z;
+    const cssAnchor = {
+      left: anchorRect.left / z,
+      right: anchorRect.right / z,
+      top: anchorRect.top / z,
+    };
     // ドックバーは右側にあるため、ポップアップはアンカーの左側に開く。
     // 左側に入らなければ右側へフォールバック。
-    let left = anchorRect.left - size.w - 2;
-    if (left < 8) left = Math.min(vw - size.w - 8, anchorRect.right + 2);
+    let left = cssAnchor.left - safeSize.w - 2;
+    if (left < 8) left = Math.min(vw - safeSize.w - 8, cssAnchor.right + 2);
     if (left < 8) left = 8;
-    let top = anchorRect.top;
-    if (top + size.h > vh - 8) top = Math.max(8, vh - size.h - 8);
-    popup.style.left = left + 'px';
-    popup.style.top = top + 'px';
-    popup.style.width = size.w + 'px';
-    popup.style.height = size.h + 'px';
+    let top = cssAnchor.top;
+    if (top + safeSize.h > vh - 8) top = Math.max(8, vh - safeSize.h - 8);
+    _applyPopupRect(popup, { left, top, w: safeSize.w, h: safeSize.h });
   }
 
   function _buildPopupDom(title) {
@@ -272,14 +320,16 @@
         e.stopPropagation();
         const dir = h.dataset.dir || 'se';
         const rect = popup.getBoundingClientRect();
+        const z = _dockPopupZoom();
         _resizeState = {
           dir,
           startX: e.clientX,
           startY: e.clientY,
-          startW: rect.width,
-          startH: rect.height,
-          startLeft: rect.left,
-          startTop: rect.top,
+          startW: rect.width / z,
+          startH: rect.height / z,
+          startLeft: rect.left / z,
+          startTop: rect.top / z,
+          zoom: z,
           panelsetNode,
         };
         h.setPointerCapture?.(e.pointerId);
@@ -298,8 +348,9 @@
   function _onResizeMove(e, popup) {
     if (!_resizeState) return;
     const { dir, startX, startY, startW, startH, startLeft, startTop } = _resizeState;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
+    const z = _resizeState.zoom || _dockPopupZoom();
+    const dx = (e.clientX - startX) / z;
+    const dy = (e.clientY - startY) / z;
     let newW = startW, newH = startH, newLeft = startLeft, newTop = startTop;
     if (dir.includes('e')) newW = Math.max(MIN_W, startW + dx);
     if (dir.includes('s')) newH = Math.max(MIN_H, startH + dy);
@@ -313,19 +364,23 @@
       newTop = startTop + (startH - h);
       newH = h;
     }
-    popup.style.width = newW + 'px';
-    popup.style.height = newH + 'px';
-    popup.style.left = newLeft + 'px';
-    popup.style.top = newTop + 'px';
+    _applyPopupRect(popup, { left: newLeft, top: newTop, w: newW, h: newH });
   }
 
   function _onResizeEnd(e, popup, panelsetNode) {
     if (!_resizeState) return;
     _resizeState = null;
     const rect = popup.getBoundingClientRect();
+    const z = _dockPopupZoom();
+    const clamped = _applyPopupRect(popup, {
+      left: rect.left / z,
+      top: rect.top / z,
+      w: rect.width / z,
+      h: rect.height / z,
+    });
     // panelset.popupRect に保存
     if (panelsetNode) {
-      panelsetNode.popupRect = { w: Math.round(rect.width), h: Math.round(rect.height) };
+      panelsetNode.popupRect = { w: Math.round(clamped.w), h: Math.round(clamped.h) };
       if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
     }
   }
@@ -333,14 +388,13 @@
   function _reclampOnWindowResize(popup) {
     if (!popup) return;
     const rect = popup.getBoundingClientRect();
-    const vw = document.documentElement.clientWidth;
-    const vh = document.documentElement.clientHeight;
-    let left = rect.left;
-    let top = rect.top;
-    if (left + rect.width > vw - 8) left = Math.max(8, vw - rect.width - 8);
-    if (top + rect.height > vh - 8) top = Math.max(8, vh - rect.height - 8);
-    popup.style.left = left + 'px';
-    popup.style.top = top + 'px';
+    const z = _dockPopupZoom();
+    _applyPopupRect(popup, {
+      left: rect.left / z,
+      top: rect.top / z,
+      w: rect.width / z,
+      h: rect.height / z,
+    });
   }
 
   function openPopup({ panelsetNode, groupId, paneNode, tab, tabIdx, anchorEl }) {
@@ -358,7 +412,7 @@
     // サイズ決定: panelset.popupRect → fallback
     const savedRect = panelsetNode.popupRect;
     const size = (savedRect && savedRect.w >= MIN_W && savedRect.h >= MIN_H)
-      ? { w: savedRect.w, h: savedRect.h }
+      ? _clampPopupSize({ w: savedRect.w, h: savedRect.h })
       : _defaultRect(anchorEl, panelsetNode);
 
     // ポップアップ DOM 作成

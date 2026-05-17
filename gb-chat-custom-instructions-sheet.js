@@ -63,6 +63,26 @@ function _chatCustomInstructionDbNotePath(dbPath) {
   return String(dbPath || CHAT_CUSTOM_INSTRUCTIONS_DB_NAME).replace(/\/$/, '') + '/' + name + '.md';
 }
 
+async function _readChatCustomInstructionNote(dbPath) {
+  try {
+    const res = await apiFetch('/file?path=' + encodeURIComponent(_chatCustomInstructionDbNotePath(dbPath)), { silentError: true });
+    return String(res?.content || '');
+  } catch (_) {
+    return '';
+  }
+}
+
+function _chatCustomInstructionOwnsNoteContent(content) {
+  const match = String(content || '').match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return false;
+  const fm = match[1];
+  const escapedCategory = CHAT_CUSTOM_INSTRUCTIONS_DB_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hasSettingsType = /^type:\s*settings-db\s*$/m.test(fm);
+  const hasRole = new RegExp(`(^roles:\\s*\\[[^\\]]*${CHAT_CUSTOM_INSTRUCTIONS_ROLE}[^\\]]*\\]\\s*$)|(^\\s*-\\s*${CHAT_CUSTOM_INSTRUCTIONS_ROLE}\\s*$)`, 'm').test(fm);
+  const hasCategory = new RegExp(`^category:\\s*["']?${escapedCategory}["']?\\s*$`, 'm').test(fm);
+  return hasSettingsType && (hasRole || hasCategory);
+}
+
 async function _chatCustomInstructionNoteExists(dbPath) {
   try {
     await apiFetch('/file?path=' + encodeURIComponent(_chatCustomInstructionDbNotePath(dbPath)));
@@ -72,13 +92,44 @@ async function _chatCustomInstructionNoteExists(dbPath) {
   }
 }
 
+async function _findChatCustomInstructionSheet() {
+  try {
+    const dbs = await apiFetch('/databases', { silentError: true });
+    for (const item of Array.isArray(dbs) ? dbs : []) {
+      const path = String(item?.path || '').trim();
+      const name = String(item?.name || path.split('/').pop() || '').trim();
+      if (!path || !name.startsWith(CHAT_CUSTOM_INSTRUCTIONS_DB_NAME)) continue;
+      const note = await _readChatCustomInstructionNote(path);
+      if (_chatCustomInstructionOwnsNoteContent(note)) return path;
+    }
+  } catch (_) {}
+  return '';
+}
+
 function _applyChatCustomInstructionViewConfig(dbPath) {
   try {
     const key = typeof getDbViewConfigStorageKey === 'function'
       ? getDbViewConfigStorageKey(dbPath)
       : 'dbViewConfig:' + dbPath;
     const current = JSON.parse(localStorage.getItem(key) || '{}') || {};
-    localStorage.setItem(key, JSON.stringify({ ...current, ..._chatCustomInstructionViewConfig() }));
+    const defaults = _chatCustomInstructionViewConfig();
+    const formView = defaults.savedViews[0];
+    const currentViews = Array.isArray(current.savedViews) ? current.savedViews.slice() : [];
+    const formIndex = currentViews.findIndex(view =>
+      view?.viewMode === 'form'
+      && (view?.typeSpecific?.form?.formConfig?.id === formView.typeSpecific.form.formConfig.id || view?.name === formView.name)
+    );
+    const savedViews = formIndex >= 0
+      ? currentViews.map((view, index) => index === formIndex ? { ...view, name: formView.name, viewMode: formView.viewMode, typeSpecific: formView.typeSpecific } : view)
+      : [formView, ...currentViews];
+    const rawIdx = Number.isInteger(current.currentViewIdx) ? current.currentViewIdx : 0;
+    const nextIdx = formIndex < 0 && currentViews.length ? rawIdx + 1 : rawIdx;
+    localStorage.setItem(key, JSON.stringify({
+      ...current,
+      propertyTypes: defaults.propertyTypes,
+      savedViews,
+      currentViewIdx: nextIdx >= 0 && nextIdx < savedViews.length ? nextIdx : 0,
+    }));
   } catch (_) {}
 }
 
@@ -91,16 +142,36 @@ async function _saveChatCustomInstructionMetadata(dbPath) {
   });
 }
 
+async function _chatCustomInstructionCreateSheet() {
+  const res = await apiPost('/outliner/add', { type: 'database', label: CHAT_CUSTOM_INSTRUCTIONS_DB_NAME, parent: '' });
+  return res?.node?.path || CHAT_CUSTOM_INSTRUCTIONS_DB_NAME;
+}
+
+async function _chatCustomInstructionPathType(dbPath) {
+  try {
+    const res = await apiFetch('/check-type?path=' + encodeURIComponent(dbPath), { silentError: true });
+    return String(res?.type || '');
+  } catch (_) {
+    return '';
+  }
+}
+
 async function ensureChatCustomInstructionSheet() {
   let dbPath = CHAT_CUSTOM_INSTRUCTIONS_DB_NAME;
   let metadataSaved = false;
+  const pathType = await _chatCustomInstructionPathType(dbPath);
+  const existingNote = pathType === 'database' ? await _readChatCustomInstructionNote(dbPath) : '';
+  if (pathType && pathType !== 'unknown' && pathType !== 'database') {
+    dbPath = await _findChatCustomInstructionSheet() || await _chatCustomInstructionCreateSheet();
+  } else if (pathType === 'database' && !_chatCustomInstructionOwnsNoteContent(existingNote)) {
+    dbPath = await _findChatCustomInstructionSheet() || await _chatCustomInstructionCreateSheet();
+  }
   if (!await _chatCustomInstructionNoteExists(dbPath)) {
     try {
       await _saveChatCustomInstructionMetadata(dbPath);
       metadataSaved = true;
     } catch (_) {
-      const res = await apiPost('/outliner/add', { type: 'database', label: CHAT_CUSTOM_INSTRUCTIONS_DB_NAME, parent: '' });
-      dbPath = res?.node?.path || dbPath;
+      dbPath = await _chatCustomInstructionCreateSheet();
     }
   }
   if (!metadataSaved) await _saveChatCustomInstructionMetadata(dbPath);
@@ -123,7 +194,7 @@ function _setChatCustomInstructionValue(key, value) {
   else localStorage.removeItem(key);
 }
 
-async function applyChatCustomInstructionsFromForm(fields, cfg) {
+async function applyChatCustomInstructionsFromForm(fields, cfg, options = {}) {
   const data = fields || {};
   const about = [
     _chatCustomInstructionSection('私について', data['私について']),
@@ -138,7 +209,14 @@ async function applyChatCustomInstructionsFromForm(fields, cfg) {
   ].filter(Boolean).join('\n\n');
   const wantsSource = String(data['利用範囲'] || '').trim() === '現在のソースフォルダ';
   const source = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
+  if (wantsSource && !source) {
+    if (!options?.silent && typeof showStatus === 'function') showStatus('ソースフォルダを選択してから反映してください', true);
+    return { ok: false, scope: 'source', error: 'source-folder-required', formConfig: cfg || null };
+  }
   const suffix = wantsSource && source ? ':' + encodeURIComponent(source) : '';
+  if (options?.validateOnly) {
+    return { ok: true, scope: suffix ? 'source' : 'global', formConfig: cfg || null };
+  }
   _setChatCustomInstructionValue('chat-custom-about' + suffix, about);
   _setChatCustomInstructionValue('chat-custom-instructions' + suffix, instructions);
   if (typeof showStatus === 'function') {

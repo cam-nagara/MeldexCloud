@@ -34,7 +34,7 @@
   function _canUseKnowledge(item, policies) {
     const status = String(item?.source_status || '(未設定)') || '(未設定)';
     const policy = policies.get(status) || policies.get('(未設定)');
-    if (!policy) return true;
+    if (!policy) return false;
     return _truthy(policy.llm_reference) && _truthy(policy.chat_response);
   }
 
@@ -103,13 +103,15 @@
     const [knowledge, rules, policies, tasteSettings, taste, memory] = await Promise.all([
       store.searchKnowledgeItems(provider, query, 10).catch(() => ({ results: [] })),
       store.listChatRules(provider).catch(() => ({ rules: [] })),
-      store.listStatusPolicies(provider).catch(() => ({ policies: [] })),
+      store.listStatusPolicies(provider).then(payload => ({ ...(payload || {}), policy_load_ok: true })).catch(() => ({ policies: [], policy_load_ok: false })),
       store.getTasteSettings(provider).catch(() => ({ settings: { enabled: false } })),
       store.listTastePrinciples(provider, { limit: 20 }).catch(() => ({ items: [] })),
       store.listMemoryDirectives(provider).catch(() => ({ items: [] })),
     ]);
-    const policiesByStatus = _policyMap(policies.policies || []);
-    const knowledgeItems = (knowledge.results || []).filter(item => _canUseKnowledge(item, policiesByStatus));
+    const policiesByStatus = policies.policy_load_ok === true ? _policyMap(policies.policies || []) : new Map();
+    const knowledgeItems = policies.policy_load_ok === true
+      ? (knowledge.results || []).filter(item => _canUseKnowledge(item, policiesByStatus))
+      : [];
     const sections = [
       _knowledgeSection(knowledgeItems, policiesByStatus),
       _rulesSection(rules.rules || []),

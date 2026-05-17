@@ -5,6 +5,7 @@
 // Ctrl+F: 検索のみモードで開く / Ctrl+H: 置換行も展開して開く。
 // Enter: 次へ、Shift+Enter: 前へ、Escape: 閉じる。
 function bdOpenFindBar(mode) {
+  _bdCommitActiveBoardTextEditBeforeFind();
   let bar = document.getElementById('bd-find-bar');
   if (!bar) bar = _bdCreateFindBar();
   bar.style.display = '';
@@ -24,6 +25,18 @@ function bdCloseFindBar() {
   bd._findQuery = '';
   const canvas = document.getElementById('bd-canvas');
   if (canvas) canvas.focus();
+}
+function _bdCommitActiveBoardTextEditBeforeFind() {
+  const bar = document.getElementById('bd-find-bar');
+  const active = document.activeElement;
+  if (bar && active && bar.contains(active)) return;
+  if (typeof bd !== 'undefined' && bd.editing && typeof bdFinishEdit === 'function') {
+    bdFinishEdit();
+    return;
+  }
+  if (active?.isContentEditable && !(bar && bar.contains(active))) {
+    try { active.blur(); } catch {}
+  }
 }
 function _bdCreateFindBar() {
   const bar = document.createElement('div');
@@ -86,9 +99,18 @@ function _bdFindUpdateMatches(query) {
   bd._findMatches = [];
   bd._findIndex = 0;
   if (!query) { _bdFindUpdateUI(); _bdApplyFindHighlight(''); return; }
-  const ql = query.toLowerCase();
-  bd.nodes.forEach(n => { if (n.text && n.text.toLowerCase().includes(ql)) bd._findMatches.push({ type: 'node', id: n.id }); });
-  bd.connections.forEach(c => { if (c.label && c.label.toLowerCase().includes(ql)) bd._findMatches.push({ type: 'conn', id: c.id }); });
+  bd.nodes.forEach(n => {
+    if (!n.text || !document.getElementById('bdn-' + n.id)) return;
+    _bdFindOccurrences(n.text, query).forEach((start, occurrence) => {
+      bd._findMatches.push({ type: 'node', id: n.id, occurrence, start });
+    });
+  });
+  bd.connections.forEach(c => {
+    if (!c.label || !_bdFindConnLabelElements(c.id).length) return;
+    _bdFindOccurrences(c.label, query).forEach((start, occurrence) => {
+      bd._findMatches.push({ type: 'conn', id: c.id, occurrence, start });
+    });
+  });
   _bdFindUpdateUI();
   _bdApplyFindHighlight(query);
   _bdFindScrollToCurrent();
@@ -102,22 +124,67 @@ function _bdFindShowCurrent() {
 // ズームは変えずに panX/Y を調整してビューに収める。
 function _bdFindScrollToCurrent() {
   const cur = bd._findMatches && bd._findMatches[bd._findIndex];
-  if (!cur || cur.type !== 'node') return;
+  if (!cur) return;
+  if (cur.type === 'conn') {
+    const c = bd.connections.find(x => x.id === cur.id);
+    const rect = _bdFindConnectionWorldRect(c);
+    if (!rect) return;
+    _bdFindEnsureWorldRectVisible(rect.x, rect.y, rect.w, rect.h);
+    return;
+  }
   const n = bd.nodes.find(x => x.id === cur.id);
   if (!n) return;
   const canvasEl = document.getElementById('bd-canvas');
   const el = document.getElementById('bdn-' + n.id);
   if (!canvasEl || !el) return;
-  const cw = canvasEl.offsetWidth, ch = canvasEl.offsetHeight;
   const nw = el.offsetWidth, nh = el.offsetHeight;
-  const sx = n.x * bd.zoom + bd.panX;
-  const sy = n.y * bd.zoom + bd.panY;
+  const pos = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(n) : { x: n.x, y: n.y };
+  _bdFindEnsureWorldRectVisible(pos.x, pos.y, nw, nh);
+}
+function _bdFindNodeCenter(node) {
+  if (!node) return null;
+  const pos = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(node) : { x: node.x, y: node.y };
+  const el = document.getElementById('bdn-' + node.id);
+  return {
+    x: (Number(pos.x) || 0) + ((el?.offsetWidth || node._rw || node.w || 160) / 2),
+    y: (Number(pos.y) || 0) + ((el?.offsetHeight || node._rh || node.h || 36) / 2),
+  };
+}
+function _bdFindConnectionEndpoint(conn, side) {
+  if (!conn) return null;
+  const nodeId = side === 'from' ? conn.from : conn.to;
+  const node = nodeId ? bd.nodes.find(x => x.id === nodeId) : null;
+  if (node) return _bdFindNodeCenter(node);
+  const point = typeof bdNormalizeConnectionPoint === 'function'
+    ? bdNormalizeConnectionPoint(side === 'from' ? conn.fromPoint : conn.toPoint)
+    : (side === 'from' ? conn.fromPoint : conn.toPoint);
+  return point ? { x: Number(point.x) || 0, y: Number(point.y) || 0 } : null;
+}
+function _bdFindConnectionWorldRect(conn) {
+  const from = _bdFindConnectionEndpoint(conn, 'from');
+  const to = _bdFindConnectionEndpoint(conn, 'to');
+  if (!from && !to) return null;
+  const a = from || to;
+  const b = to || from;
+  const x1 = Math.min(a.x, b.x);
+  const y1 = Math.min(a.y, b.y);
+  const x2 = Math.max(a.x, b.x);
+  const y2 = Math.max(a.y, b.y);
+  return { x: x1, y: y1, w: Math.max(80, x2 - x1), h: Math.max(40, y2 - y1) };
+}
+function _bdFindEnsureWorldRectVisible(x, y, width, height) {
+  const canvasEl = document.getElementById('bd-canvas');
+  if (!canvasEl) return;
+  const zoom = bd.zoom || 1;
+  const cw = canvasEl.offsetWidth, ch = canvasEl.offsetHeight;
+  const sx = x * zoom + bd.panX;
+  const sy = y * zoom + bd.panY;
   const margin = 40;
   let dx = 0, dy = 0;
   if (sx < margin) dx = margin - sx;
-  else if (sx + nw * bd.zoom > cw - margin) dx = cw - margin - (sx + nw * bd.zoom);
+  else if (sx + width * zoom > cw - margin) dx = cw - margin - (sx + width * zoom);
   if (sy < margin) dy = margin - sy;
-  else if (sy + nh * bd.zoom > ch - margin) dy = ch - margin - (sy + nh * bd.zoom);
+  else if (sy + height * zoom > ch - margin) dy = ch - margin - (sy + height * zoom);
   if (dx !== 0 || dy !== 0) {
     bd.panX += dx;
     bd.panY += dy;
@@ -127,25 +194,98 @@ function _bdFindScrollToCurrent() {
 // マッチ語を <mark> で囲んでカードテキスト / ラインラベルの innerHTML を書き換える。
 // q が空文字のときはハイライト解除 (通常のエスケープ済み表示に戻す)。
 function _bdApplyFindHighlight(q) {
+  if (!q) {
+    _bdRestoreFindRender();
+    return;
+  }
   const cur = bd._findMatches && bd._findMatches[bd._findIndex];
-  const curKey = cur ? (cur.type + ':' + cur.id) : '';
   bd.nodes.forEach(n => {
     const el = document.getElementById('bdn-' + n.id);
     if (!el) return;
     const txt = el.querySelector('.bd-text');
     if (!txt) return;
-    const isCurrent = ('node:' + n.id) === curKey;
-    txt.innerHTML = _bdRenderTextWithHighlight(n.text || '', q, isCurrent);
+    const currentOccurrence = cur && cur.type === 'node' && cur.id === n.id ? cur.occurrence : -1;
+    txt.innerHTML = _bdRenderTextWithHighlight(n.text || '', q, currentOccurrence);
   });
   bd.connections.forEach(c => {
     if (!c.label) return;
-    const labelEl = document.querySelector(`.bd-conn-label[data-conn-id="${c.id}"]`);
-    if (!labelEl) return;
-    const isCurrent = ('conn:' + c.id) === curKey;
-    labelEl.innerHTML = _bdRenderTextWithHighlight(c.label, q, isCurrent);
+    const currentOccurrence = cur && cur.type === 'conn' && cur.id === c.id ? cur.occurrence : -1;
+    _bdFindConnLabelElements(c.id).forEach(labelEl => {
+      _bdApplyConnLabelHighlight(labelEl, c.label, q, currentOccurrence);
+    });
   });
 }
-function _bdRenderTextWithHighlight(text, q, isCurrent) {
+function _bdFindOccurrences(text, query) {
+  const source = String(text || '');
+  const needle = String(query || '');
+  if (!source || !needle) return [];
+  const sourceLower = source.toLowerCase();
+  const needleLower = needle.toLowerCase();
+  const matches = [];
+  let cursor = 0;
+  while (cursor <= source.length) {
+    const idx = sourceLower.indexOf(needleLower, cursor);
+    if (idx < 0) break;
+    matches.push(idx);
+    cursor = idx + Math.max(needle.length, 1);
+  }
+  return matches;
+}
+function _bdFindConnLabelElements(connId) {
+  const id = String(connId || '');
+  if (!id) return [];
+  return Array.from(document.querySelectorAll('.bd-conn-label, .bd-conn-label-path'))
+    .filter(el => String(el.dataset?.connId || '') === id);
+}
+function _bdRestoreFindRender() {
+  if (typeof bdRequestFullRender === 'function') {
+    bdRequestFullRender('find-clear');
+    if (typeof bdFlushBoardUpdates === 'function') bdFlushBoardUpdates();
+    return;
+  }
+  if (typeof bdRender === 'function') bdRender();
+}
+function _bdRememberSvgConnLabelStyle(labelEl) {
+  if (!labelEl || labelEl.dataset?.bdFindStyleSaved === '1') return;
+  labelEl.dataset.bdFindStyleSaved = '1';
+  labelEl.dataset.bdFindStyleAttr = labelEl.getAttribute('style') || '';
+  labelEl.dataset.bdFindPaintOrderAttr = labelEl.getAttribute('paint-order') || '';
+}
+function _bdRestoreSvgConnLabelStyle(labelEl) {
+  if (!labelEl || labelEl.dataset?.bdFindStyleSaved !== '1') return;
+  const styleAttr = labelEl.dataset.bdFindStyleAttr || '';
+  const paintOrder = labelEl.dataset.bdFindPaintOrderAttr || '';
+  if (styleAttr) labelEl.setAttribute('style', styleAttr);
+  else labelEl.removeAttribute('style');
+  if (paintOrder) labelEl.setAttribute('paint-order', paintOrder);
+  else labelEl.removeAttribute('paint-order');
+  delete labelEl.dataset.bdFindStyleSaved;
+  delete labelEl.dataset.bdFindStyleAttr;
+  delete labelEl.dataset.bdFindPaintOrderAttr;
+}
+function _bdApplyConnLabelHighlight(labelEl, label, q, currentOccurrence) {
+  if (!labelEl) return;
+  const isSvg = labelEl.namespaceURI === 'http://www.w3.org/2000/svg';
+  if (!isSvg) {
+    labelEl.innerHTML = _bdRenderTextWithHighlight(label, q, currentOccurrence);
+    return;
+  }
+  const matched = _bdFindOccurrences(label, q).length > 0;
+  const textPath = labelEl.querySelector('textPath');
+  if (textPath) textPath.textContent = label || '';
+  else labelEl.textContent = label || '';
+  labelEl.classList.toggle('bd-find-hl', matched);
+  labelEl.classList.toggle('bd-find-hl-current', currentOccurrence >= 0);
+  if (matched) {
+    _bdRememberSvgConnLabelStyle(labelEl);
+    labelEl.style.paintOrder = 'stroke';
+    labelEl.style.stroke = currentOccurrence >= 0 ? 'rgba(255, 140, 0, 0.80)' : 'rgba(255, 220, 50, 0.50)';
+    labelEl.style.strokeWidth = currentOccurrence >= 0 ? '5px' : '4px';
+  } else {
+    _bdRestoreSvgConnLabelStyle(labelEl);
+  }
+}
+function _bdRenderTextWithHighlight(text, q, currentOccurrence) {
   const safeText = text || '';
   if (!q) {
     // 通常描画に戻す (auto-link も復活させる)
@@ -156,12 +296,15 @@ function _bdRenderTextWithHighlight(text, q, isCurrent) {
   const tLower = safeText.toLowerCase();
   let result = '';
   let i = 0;
+  let occurrence = 0;
   while (i < safeText.length) {
     const idx = tLower.indexOf(qLower, i);
     if (idx < 0) { result += esc(safeText.slice(i)); break; }
     if (idx > i) result += esc(safeText.slice(i, idx));
+    const isCurrent = occurrence === currentOccurrence;
     const cls = isCurrent ? 'bd-find-hl bd-find-hl-current' : 'bd-find-hl';
     result += `<mark class="${cls}">${esc(safeText.slice(idx, idx + q.length))}</mark>`;
+    occurrence += 1;
     i = idx + q.length;
   }
   return result.replace(/\n/g, '<br>');
@@ -200,6 +343,35 @@ function _bdReplaceFindQuery(text, query, replacement, limit) {
   });
   return { text: nextText, count };
 }
+function _bdReplaceFindOccurrence(text, query, replacement, occurrence) {
+  const source = String(text || '');
+  const needle = String(query || '');
+  const index = _bdFindOccurrences(source, needle)[Math.max(0, occurrence || 0)];
+  if (index == null) return { text: source, count: 0 };
+  return {
+    text: source.slice(0, index) + String(replacement || '') + source.slice(index + needle.length),
+    count: 1,
+  };
+}
+function _bdReplaceFindOccurrencesByIndex(text, query, replacement, occurrenceIndexes) {
+  const source = String(text || '');
+  const needle = String(query || '');
+  const wanted = occurrenceIndexes instanceof Set ? occurrenceIndexes : new Set(occurrenceIndexes || []);
+  if (!source || !needle || !wanted.size) return { text: source, count: 0 };
+  const starts = _bdFindOccurrences(source, needle);
+  let result = '';
+  let cursor = 0;
+  let count = 0;
+  starts.forEach((start, occurrence) => {
+    if (!wanted.has(occurrence)) return;
+    result += source.slice(cursor, start) + String(replacement || '');
+    cursor = start + needle.length;
+    count += 1;
+  });
+  if (!count) return { text: source, count: 0 };
+  result += source.slice(cursor);
+  return { text: result, count };
+}
 function _bdFindReplaceOne() {
   const q = bd._findQuery;
   const rEl = document.getElementById('bd-find-r');
@@ -215,14 +387,14 @@ function _bdFindReplaceOne() {
     if (n && n.text) {
       target = n;
       field = 'text';
-      replacementResult = _bdReplaceFindQuery(n.text, q, r, 0);
+      replacementResult = _bdReplaceFindOccurrence(n.text, q, r, cur.occurrence);
     }
   } else {
     const c = bd.connections.find(x => x.id === cur.id);
     if (c && c.label) {
       target = c;
       field = 'label';
-      replacementResult = _bdReplaceFindQuery(c.label, q, r, 0);
+      replacementResult = _bdReplaceFindOccurrence(c.label, q, r, cur.occurrence);
     }
   }
   if (!target || !replacementResult?.count) return;
@@ -243,11 +415,20 @@ function _bdFindReplaceAll() {
   const rEl = document.getElementById('bd-find-r');
   const r = rEl ? rEl.value : '';
   if (!q) return;
+  _bdFindUpdateMatches(q);
+  const nodeOccurrences = new Map();
+  const connOccurrences = new Map();
+  (bd._findMatches || []).forEach(match => {
+    if (!match || !match.id) return;
+    const target = match.type === 'conn' ? connOccurrences : nodeOccurrences;
+    if (!target.has(match.id)) target.set(match.id, new Set());
+    target.get(match.id).add(match.occurrence || 0);
+  });
   const updates = [];
   let count = 0;
   bd.nodes.forEach(n => {
     if (!n.text) return;
-    const result = _bdReplaceFindQuery(n.text, q, r, 0);
+    const result = _bdReplaceFindOccurrencesByIndex(n.text, q, r, nodeOccurrences.get(n.id));
     if (result.count) {
       updates.push(() => { n.text = result.text; });
       count += result.count;
@@ -255,7 +436,7 @@ function _bdFindReplaceAll() {
   });
   bd.connections.forEach(c => {
     if (!c.label) return;
-    const result = _bdReplaceFindQuery(c.label, q, r, 0);
+    const result = _bdReplaceFindOccurrencesByIndex(c.label, q, r, connOccurrences.get(c.id));
     if (result.count) {
       updates.push(() => { c.label = result.text; });
       count += result.count;

@@ -6,7 +6,9 @@ const MeldexDnD = (() => {
   function isPanelDnD(types, ctrlKey) {
     if (types.includes('application/meldex-tool') ||
         types.includes('application/x-gb-tab') ||
-        types.includes('application/x-gb-pane')) return true;
+        types.includes('application/x-gb-pane') ||
+        types.includes('application/x-gb-panelset-group') ||
+        types.includes('application/x-gb-column')) return true;
     if (types.includes('application/x-meldex-node') && ctrlKey) return true;
     return false;
   }

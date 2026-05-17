@@ -167,6 +167,55 @@ function _relationEntityPathFromMap(dbPath, entityName, map) {
   return map?.new_format ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
 }
 
+function _bidirectionalValueSnapshot(val) {
+  if (!val) return { existed: false };
+  return {
+    existed: true,
+    file: val.file || '',
+    property: val.property || '',
+    candidate_index: val.candidate_index,
+    value: val.value || '',
+    status: val.status || '採用',
+    note: val.note || '',
+    rich_html: val.rich_html || '',
+  };
+}
+
+function _bidirectionalValueObjFromSnapshot(snapshot, propName) {
+  return {
+    file: snapshot.file,
+    property: snapshot.property || propName,
+    candidate_index: snapshot.candidate_index,
+    value: snapshot.value,
+    status: snapshot.status,
+    note: snapshot.note,
+    rich_html: snapshot.rich_html,
+  };
+}
+
+async function _restoreBidirectionalValueSnapshot(entityPath, propName, snapshot, changeKind, createdResult) {
+  if (snapshot?.existed) {
+    if (changeKind === 'deleted' || !snapshot.file) {
+      await _apiPostValue(entityPath, propName, snapshot.value, snapshot.status || '採用', snapshot.note || '', snapshot.rich_html || '');
+      return;
+    }
+    await _apiPutValue(_bidirectionalValueObjFromSnapshot(snapshot, propName), {
+      new_value: snapshot.value,
+      new_status: snapshot.status || '採用',
+      new_note: snapshot.note || '',
+      new_rich_html: snapshot.rich_html || '',
+    });
+    return;
+  }
+  if (changeKind === 'created' && createdResult) {
+    await _apiPutValue({
+      file: createdResult.path || createdResult.file || entityPath,
+      property: createdResult.property || propName,
+      candidate_index: createdResult.candidate_index,
+    }, { _delete: true });
+  }
+}
+
 async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropName, sourceId, adding) {
   const map = await _getRelationMap(remoteDbPath);
   const targetName = map.idToName[targetId] || (map.entities?.[targetId] ? targetId : '');
@@ -188,6 +237,12 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   });
   const currentVal = adoptedVals[0];
   const currentIds = _splitRelationIdsForSync(currentVal?.value || '');
+  if (adding && isSingle) {
+    const conflictingIds = currentIds.filter(id => id && id !== sourceId);
+    if (conflictingIds.length) {
+      throw new Error('参照先エントリは既に別エントリに紐づいています: ' + targetName);
+    }
+  }
   let nextIds = currentIds.slice();
   if (adding) {
     if (isSingle) nextIds = [sourceId];
@@ -195,14 +250,27 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   } else {
     nextIds = nextIds.filter(id => id !== sourceId);
   }
+  if (currentVal && nextIds.join(', ') === currentIds.join(', ')) return null;
+  if (!currentVal && !adding) return null;
+  const snapshot = _bidirectionalValueSnapshot(currentVal);
+  let changeKind = 'none';
+  let createdResult = null;
   if (currentVal) {
-    if (nextIds.length === 0) await _apiPutValue(currentVal, { _delete: true });
-    else await _apiPutValue(currentVal, { new_value: nextIds.join(', ') });
+    if (nextIds.length === 0) {
+      changeKind = 'deleted';
+      await _apiPutValue(currentVal, { _delete: true });
+    } else {
+      changeKind = 'updated';
+      await _apiPutValue(currentVal, { new_value: nextIds.join(', ') });
+    }
   } else if (adding) {
-    await _apiPostValue(targetPath, remotePropName, sourceId, '採用', '');
+    changeKind = 'created';
+    createdResult = await _apiPostValue(targetPath, remotePropName, sourceId, '採用', '');
   }
   _relationCache[remoteDbPath] = null;
-  return true;
+  return {
+    undo: () => _restoreBidirectionalValueSnapshot(targetPath, remotePropName, snapshot, changeKind, createdResult),
+  };
 }
 
 async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propName, ptc, oldValue, newValue }) {
@@ -217,23 +285,30 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
   const rollbackOps = [];
   try {
     for (const targetId of removed) {
-      await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, false);
-      rollbackOps.push({ targetId, adding: true });
+      const op = await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, false);
+      if (op?.undo) rollbackOps.push(op.undo);
     }
     for (const targetId of added) {
-      await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, true);
-      rollbackOps.push({ targetId, adding: false });
+      const op = await _syncBidirectionalRemoteValue(cfg.remoteDbPath, targetId, cfg.remotePropName, sourceId, true);
+      if (op?.undo) rollbackOps.push(op.undo);
     }
   } catch (err) {
     for (let i = rollbackOps.length - 1; i >= 0; i -= 1) {
-      const op = rollbackOps[i];
       try {
-        await _syncBidirectionalRemoteValue(cfg.remoteDbPath, op.targetId, cfg.remotePropName, sourceId, op.adding);
+        await rollbackOps[i]();
       } catch (rollbackErr) {
         console.warn('[db-relations] rollback failed:', rollbackErr);
       }
     }
     throw err;
   }
-  return { ...cfg, sourceId };
+  return {
+    ...cfg,
+    sourceId,
+    undo: async () => {
+      for (let i = rollbackOps.length - 1; i >= 0; i -= 1) {
+        await rollbackOps[i]();
+      }
+    },
+  };
 }

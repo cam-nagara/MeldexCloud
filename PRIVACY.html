@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="ja">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
@@ -47,9 +48,9 @@
         <h1>プライバシーポリシー</h1>
         <p class="doc-lead">Meldexで作成した作品・データがどこに保存され、どの操作で外部サービスへ送信される可能性があるかを説明します。</p>
         <ul class="doc-meta">
-          <li>最終更新日: 2026-05-04</li>
+          <li>最終更新日: 2026-05-10</li>
           <li>配布者: cam-nagara / Meldex 開発者</li>
-          <li>問い合わせ: GitHub Issues または配布ページ記載の連絡先</li>
+          <li>問い合わせ: <a href="https://github.com/cam-nagara/MeldexCloud/issues">GitHub Issues</a> または配布ページ記載の連絡先</li>
         </ul>
       </header>
 
@@ -79,7 +80,7 @@
           <li>直前操作の概要</li>
           <li>機能利用頻度、パフォーマンスメトリクス</li>
         </ul>
-        <div class="callout"><strong>送信対象に含めないもの:</strong> 作品本文、ファイル名、ユーザー識別情報、LLM APIキーは送信対象に含めません。ユーザーが同意するまで、テレメトリは送信されません。同意は設定画面から後で変更できます。</div>
+        <div class="callout"><strong>送信対象に含めないもの:</strong> 作品本文、作品ファイル名、現在開いている作品パス、ユーザー識別情報、LLM APIキーは送信対象に含めません。ユーザーが同意するまで、テレメトリは送信されません。同意は設定画面から後で変更できます。</div>
       </section>
 
       <section class="legal-section" id="llm">
@@ -127,12 +128,14 @@
       <section class="legal-section" id="sync">
         <h2>Dropboxなどの同期サービス</h2>
         <p>ユーザーがDropboxなどのクラウドストレージ内にMeldexのソースフォルダを置いた場合、作品・データ、ゴミ箱（<code>_trash/</code>）配下のファイル、設定ファイルがそのサービスの同期対象になります。</p>
+        <p>Dropbox接続中は、同じDropboxアカウントで使う端末間のプロフィール同期のため、Dropboxの <code>accountId</code>、ユーザー名、ユーザーアイコン、アイコン背景色がDropbox内の <code>MeldexSettings/_meldex/profiles.v1.json</code> に保存されることがあります。</p>
+        <p>LLM APIキーをクラウド保存する場合、APIキーはユーザーが設定したパスフレーズで暗号化され、Dropbox内の <code>_meldex/secrets/llm-api-keys.v1.json</code> に保存されます。Meldex開発者は復号用パスフレーズを取得しません。</p>
         <p>クラウドストレージ側で削除・巻き戻しを行った場合、Meldex側でも影響を受けることがあります。</p>
       </section>
 
       <section class="legal-section" id="changes">
         <h2>第三者ライブラリと変更</h2>
-        <p>Meldexは第三者ライブラリとフォントを同梱します。ライセンス情報は <code>THIRD-PARTY.md</code> と <code>CREDITS.md</code> を参照してください。</p>
+        <p>Meldexは第三者ライブラリとフォントを同梱します。ライセンス情報は <a href="THIRD-PARTY.md"><code>THIRD-PARTY.md</code></a> と <a href="CREDITS.md"><code>CREDITS.md</code></a> を参照してください。</p>
         <p>本ポリシーは、機能追加や配布方法の変更に応じて更新される場合があります。</p>
       </section>
     </article>

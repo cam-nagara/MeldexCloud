@@ -82,6 +82,27 @@ function bdIsNodeRenderable(node, renderContext) {
   return true;
 }
 
+function bdIsContainedNodeRenderable(node, renderContext) {
+  if (!node || !node.contained) return false;
+  const ctx = renderContext || bdCreateRenderContext();
+  if (ctx.hiddenIds?.has(node.id)) return false;
+  if (ctx.drillIds && !ctx.drillIds.has(node.id)) return false;
+  const board = typeof bd !== 'undefined' ? bd : null;
+  if (board?.statusFilter && node.status !== board.statusFilter) return false;
+  return true;
+}
+
+function bdFindRenderableContainerRoot(node) {
+  if (!node || !node.contained || typeof bd === 'undefined') return null;
+  let current = node;
+  const seen = new Set();
+  while (current?.contained && current.parent && !seen.has(current.id)) {
+    seen.add(current.id);
+    current = bd.nodes.find(item => item?.id === current.parent) || null;
+  }
+  return current && !current.contained ? current : null;
+}
+
 function bdNodeA11yLabel(node) {
   const text = String(node?.text || node?.link || node?.id || '').replace(/\s+/g, ' ').trim();
   return text ? `ボードカード: ${text}` : 'ボードカード';
@@ -93,6 +114,7 @@ function bdSelectNodeForKeyboard(nodeId) {
   bd.selected.clear();
   bd.selected.add(nodeId);
   if (bd.selectedConnIds instanceof Set) bd.selectedConnIds.clear();
+  bd.selectedConnId = '';
   const after = [nodeId, ...before];
   if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(after, 'keyboard-focus');
   else if (typeof bdApplySelectionDomClass === 'function') bdApplySelectionDomClass();
@@ -248,7 +270,7 @@ function bdAppendNodeHuds(div, node, opts) {
   if (opts.showStatus && !opts.fastCardRender) bdAppendStatusHud(div, node);
   if (opts.showMarkers && typeof BD_MARKERS !== 'undefined') bdAppendMarkerHud(div, node);
   if (!opts.fastCardRender) bdAppendCommentHud(div, node);
-  const anchorPositions = opts.fastCardRender ? [] : ['top', 'bottom', 'left', 'right'];
+  const anchorPositions = (opts.fastCardRender || opts.showAnchors === false) ? [] : ['top', 'bottom', 'left', 'right'];
   anchorPositions.forEach(pos => bdAppendAnchorHud(div, node, pos));
   if (opts.showLinkBadges && node.link) bdAppendLinkBadge(div, node, opts.showStatus);
   if (opts.showMenuButtons) bdAppendCardMenuButton(div, node);
@@ -643,7 +665,7 @@ function bdAppendContainedNodes(div, node, ctx, fastCardRender) {
   const innerDiv = document.createElement('div');
   innerDiv.className = 'bd-inner-nodes';
   bd.nodes.filter(ch => ch.parent === node.id && ch.contained).forEach(ch => {
-    if (ctx.hiddenIds?.has(ch.id)) return;
+    if (!bdIsContainedNodeRenderable(ch, ctx)) return;
     const chDiv = bdRenderContainedNode(ch, ctx, fastCardRender);
     if (chDiv) innerDiv.appendChild(chDiv);
   });
@@ -657,8 +679,12 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
   chDiv.id = 'bdn-' + ch.id;
   chDiv.dataset.cardId = ch.id;
   chDiv.dataset.styleId = ch.cardStyle || bd.cardStyles?.[0]?.id || 'default';
+  chDiv.tabIndex = 0;
+  chDiv.setAttribute('role', 'button');
+  chDiv.setAttribute('aria-label', bdNodeA11yLabel(ch));
   const depthStyleIndex = bdGetAutoDepthStyleIndexForNode(ch, ctx.autoDepthStyleMap);
   if (depthStyleIndex) chDiv.dataset.depthStyleIndex = depthStyleIndex;
+  if (ch.img) chDiv.classList.add('bd-image-node');
   chDiv.oncontextmenu = ev => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -666,30 +692,44 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
     bdContextMenu(ev, ch.id);
     return false;
   };
+  chDiv.addEventListener('focus', () => bdSelectNodeForKeyboard(ch.id));
+  chDiv.addEventListener('keydown', (ev) => bdHandleNodeKeyboard(ev, ch.id));
   if (bd.selected.has(ch.id)) chDiv.classList.add('bd-selected');
   chDiv.dataset.shape = chStyle.shape || 'rect';
   const chGroupColor = ctx.parentChildGroupColors?.get(ch.id);
   if (chGroupColor && typeof _bdApplyParentChildGroupHighlight === 'function') _bdApplyParentChildGroupHighlight(chDiv, chStyle.shape || '', chGroupColor);
+  const showStatus = !bd.displayFilters || bd.displayFilters.showStatus !== false;
+  const showMarkers = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showMarkers !== false);
+  const showLinkBadges = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showLinkBadges !== false);
+  const showMenuButtons = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showMenuButtons !== false);
+  const showImageNames = !bd.displayFilters || bd.displayFilters.showImageNames !== false;
+  bdApplyNodeBaseStyles(chDiv, ch, chStyle, showStatus);
   chDiv.style.position = 'relative';
   chDiv.style.display = 'inline-block';
   chDiv.style.margin = '4px';
-  if (ch.w) chDiv.style.width = ch.w + 'px';
-  if (chStyle.bgColor) chDiv.style.background = chStyle.bgColor;
-  if (chStyle.textColor) chDiv.style.color = chStyle.textColor;
+  chDiv.style.left = '';
+  chDiv.style.top = '';
+  bdAppendNodeHuds(chDiv, ch, {
+    fastCardRender,
+    nodeStyle: chStyle,
+    showStatus,
+    showMarkers,
+    showLinkBadges,
+    showMenuButtons,
+    showAnchors: false,
+  });
+  bdAppendNodeImage(chDiv, ch);
+  bdAppendNodeText(chDiv, ch, chStyle, { fastCardRender, showImageNames });
+  if (ch.collapsed) chDiv.classList.add('bd-collapsed');
+  if (ch.container) bdAppendContainedNodes(chDiv, ch, ctx, fastCardRender);
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      if (chDiv.isConnected && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(ch, chDiv);
+    });
+  }
   const chRing = document.createElement('div');
   chRing.className = 'bd-selection-ring';
   chDiv.appendChild(chRing);
-  const chTxt = document.createElement('div');
-  chTxt.className = 'bd-text';
-  if (chStyle.textColor) chTxt.style.color = chStyle.textColor;
-  const chTextStrokeWidth = Math.max(0, +chStyle.textStrokeWidth || 0);
-  if (chTextStrokeWidth && typeof _bdTextOutlineShadow === 'function') {
-    const chStrokeColor = chStyle.textStrokeColor || 'rgba(15,23,42,0.9)';
-    chTxt.style.textShadow = _bdTextOutlineShadow(chTextStrokeWidth, chStrokeColor);
-  }
-  const chTextHtml = esc(ch.text).replace(/\n/g, '<br>');
-  chTxt.innerHTML = fastCardRender ? chTextHtml : applyAutoLinks(chTextHtml, bd.path);
-  chDiv.appendChild(chTxt);
   return chDiv;
 }
 
@@ -744,6 +784,14 @@ function bdUpdateNodePosition(nodeOrId) {
 function bdReplaceNodeElement(nodeOrId, options = {}) {
   const node = typeof nodeOrId === 'string' ? bd.nodes.find(n => n.id === nodeOrId) : nodeOrId;
   if (!node || !node.id || typeof document === 'undefined') return false;
+  if (node.contained) {
+    const renderRoot = bdFindRenderableContainerRoot(node);
+    if (renderRoot) return bdReplaceNodeElement(renderRoot, options);
+    const existingContained = document.getElementById('bdn-' + node.id);
+    if (existingContained) existingContained.remove();
+    if (typeof bdRemoveSelectionUiForMissingNodes === 'function') bdRemoveSelectionUiForMissingNodes();
+    return true;
+  }
   const container = document.getElementById('bd-nodes');
   if (!container) return false;
   const ctx = options.renderContext || bdCreateRenderContext(options);

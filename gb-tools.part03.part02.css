@@ -1,0 +1,161 @@
+#page-content kbd,
+#entity-freetext kbd,
+#dp-editable kbd,
+#board-note-editable kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: var(--page-kbd-font-size, 0.85em);
+  font-family: var(--page-kbd-font, inherit);
+  font-weight: var(--page-kbd-bold, normal);
+  font-style: var(--page-kbd-italic, normal);
+  color: var(--page-kbd-fg, var(--fg));
+  background: var(--page-kbd-bg, var(--bg3));
+  border: var(--page-kbd-border-width, 1px) solid var(--page-kbd-border, var(--border));
+  border-bottom-width: var(--page-kbd-border-bottom-width, 2px);
+  border-radius: var(--page-kbd-radius, 4px);
+  box-shadow: 0 1px 0 var(--page-kbd-shadow, var(--border));
+  vertical-align: middle;
+  line-height: 1.4;
+}
+
+/* === Note styling: details/summary (collapsible) === */
+#page-content details,
+#entity-freetext details,
+#dp-editable details,
+#board-note-editable details {
+  margin: 8px 0;
+  border: var(--page-details-border-width, 1px) solid var(--page-details-border, var(--border));
+  border-radius: var(--page-details-radius, 4px);
+  overflow: hidden;
+  background: var(--page-details-bg, transparent);
+}
+#page-content details summary,
+#entity-freetext details summary,
+#dp-editable details summary,
+#board-note-editable details summary {
+  padding: 8px 12px;
+  background: var(--page-details-summary-bg, var(--bg2));
+  color: var(--page-details-summary-fg, var(--fg));
+  font-size: var(--page-details-summary-font-size, inherit);
+  font-family: var(--page-details-summary-font, inherit);
+  cursor: pointer;
+  font-weight: var(--page-details-summary-bold, bold);
+  font-style: var(--page-details-summary-italic, normal);
+  user-select: none;
+}
+#page-content details summary:hover,
+#entity-freetext details summary:hover,
+#dp-editable details summary:hover,
+#board-note-editable details summary:hover {
+  background: var(--page-details-summary-hover-bg, var(--bg3));
+  color: var(--page-details-summary-hover-fg, var(--page-details-summary-fg, var(--fg)));
+}
+#page-content details[open] summary,
+#entity-freetext details[open] summary,
+#dp-editable details[open] summary,
+#board-note-editable details[open] summary {
+  border-bottom: var(--page-details-open-border-width, 1px) solid var(--page-details-open-border, var(--page-details-border, var(--border)));
+}
+#page-content details > :not(summary),
+#entity-freetext details > :not(summary),
+#dp-editable details > :not(summary),
+#board-note-editable details > :not(summary) {
+  padding: 8px 12px;
+}
+
+/* === Note styling: heading icon === */
+#page-content .heading-icon,
+#entity-freetext .heading-icon,
+#dp-editable .heading-icon,
+#board-note-editable .heading-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 4px;
+  color: var(--page-heading-icon-fg, var(--accent));
+  font-size: var(--page-heading-icon-font-size, inherit);
+  font-family: var(--page-heading-icon-font, inherit);
+  font-weight: var(--page-heading-icon-bold, normal);
+  font-style: var(--page-heading-icon-italic, normal);
+  opacity: var(--page-heading-icon-opacity, 0.8);
+}
+
+/* === Note styling: title heading block === */
+#page-content .note-title,
+#entity-freetext .note-title,
+#dp-editable .note-title,
+#board-note-editable .note-title {
+  font-size: var(--page-title-font-size, 28px);
+  font-weight: var(--page-title-bold, bold);
+  font-style: var(--page-title-italic, normal);
+  font-family: var(--page-title-font, inherit);
+  color: var(--page-title-fg);
+  background: var(--page-title-bg, transparent);
+  -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
+  -webkit-text-stroke-width: var(--page-title-stroke-width, 0px);
+  paint-order: stroke fill;
+  box-shadow: calc(-1 * var(--page-title-left-accent, 0px)) 0 0 0 var(--page-title-accent-color, var(--page-title-fg));
+  border-bottom: var(--page-title-underline, 0px) solid var(--page-title-accent-color, currentColor);
+  padding-left: var(--page-title-left-accent, 0px);
+  margin: 16px 0 8px;
+}
+
+/* === Note styling: toolbar file name edit ===
+   ツールバー上のファイル名欄は UI 部品として扱い、本文の「タイトル」書式は適用しない。 */
+#page-rt-toolbar #page-title {
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  font-style: normal;
+  font-size: var(--ui-font-12);
+  background: transparent;
+  -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
+  -webkit-text-stroke-width: 0;
+  paint-order: stroke fill;
+  box-shadow: none;
+  border-bottom: 0;
+  padding-left: var(--ui-space-3);
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#page-rt-toolbar #page-title:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ui-fg-muted);
+}
+
+/* === Note styling: block drag handle === */
+#page-content .dragging { opacity: var(--page-dragging-opacity, 0.4); }
+#page-content .drag-guide-top { border-top: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important; }
+#page-content .drag-guide-bottom { border-bottom: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important; }
+
+/* === Note styling: heading indent sections === */
+.heading-section {
+  margin-left: 4px;
+  padding-left: 16px;
+}
+.heading-section.level-5,
+.heading-section.level-6 { padding-left: 12px; }
+/* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。#page-content h2等にpadding-leftがあるため、ID付きで上書きする */
+#page-content .heading-section > h1,
+#page-content .heading-section > h2,
+#page-content .heading-section > h3,
+#page-content .heading-section > h4,
+#entity-freetext .heading-section > h1,
+#entity-freetext .heading-section > h2,
+#entity-freetext .heading-section > h3,
+#entity-freetext .heading-section > h4 {
+  margin-left: -12px;
+  padding-left: 4px;
+}
+#page-content .heading-section > h5,
+#page-content .heading-section > h6,
+#entity-freetext .heading-section > h5,
+#entity-freetext .heading-section > h6 {
+  margin-left: -8px;
+  padding-left: 4px;
+}

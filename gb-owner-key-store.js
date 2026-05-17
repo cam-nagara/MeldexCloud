@@ -22,6 +22,20 @@
     return Uint8Array.from(raw, ch => ch.charCodeAt(0));
   }
 
+  function _normalizeRawKey(value) {
+    const bytes = _base64ToBytes(value);
+    if (bytes.length < 32) throw new Error('管理者鍵が短すぎます');
+    return _bytesToBase64(bytes);
+  }
+
+  function _readFallbackKey() {
+    try { return localStorage.getItem(FALLBACK_KEY) || ''; } catch { return ''; }
+  }
+
+  function _removeFallbackKey() {
+    try { localStorage.removeItem(FALLBACK_KEY); } catch {}
+  }
+
   function _openDb() {
     if (_dbPromise) return _dbPromise;
     _dbPromise = new Promise((resolve, reject) => {
@@ -35,13 +49,20 @@
         if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath: 'id' });
       };
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
-      req.onblocked = () => reject(new Error('IndexedDB open blocked'));
+      req.onerror = () => {
+        _dbPromise = null;
+        reject(req.error || new Error('IndexedDB open failed'));
+      };
+      req.onblocked = () => {
+        _dbPromise = null;
+        reject(new Error('IndexedDB open blocked'));
+      };
     });
     return _dbPromise;
   }
 
   async function _readStoredKey() {
+    const fallbackValue = _readFallbackKey();
     try {
       const db = await _openDb();
       const row = await new Promise((resolve, reject) => {
@@ -49,14 +70,25 @@
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
       });
-      return String(row?.value || '');
+      const value = String(row?.value || '');
+      if (value) {
+        if (fallbackValue) _removeFallbackKey();
+        return value;
+      }
+      if (fallbackValue) {
+        await _writeStoredKey(fallbackValue);
+        return fallbackValue;
+      }
+      return '';
     } catch {
-      try { return localStorage.getItem(FALLBACK_KEY) || ''; } catch { return ''; }
+      return fallbackValue;
     }
   }
 
   async function _writeStoredKey(value) {
     const row = { id: KEY_ID, value: String(value || ''), updatedAt: new Date().toISOString() };
+    let stored = false;
+    let lastError = null;
     try {
       const db = await _openDb();
       await new Promise((resolve, reject) => {
@@ -66,9 +98,12 @@
         tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
         tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
       });
-    } catch {
-      try { localStorage.setItem(FALLBACK_KEY, row.value); } catch {}
+      stored = true;
+      _removeFallbackKey();
+    } catch (err) {
+      lastError = err;
     }
+    if (!stored) throw lastError || new Error('管理者鍵を保存できませんでした');
     return row;
   }
 
@@ -89,12 +124,10 @@
   }
 
   async function setRawKey(value) {
-    const bytes = _base64ToBytes(value);
-    if (bytes.length < 32) throw new Error('管理者鍵が短すぎます');
-    return _writeStoredKey(_bytesToBase64(bytes));
+    return _writeStoredKey(_normalizeRawKey(value));
   }
 
-  async function deriveFromPassphrase(passphrase, saltText = KDF_SALT) {
+  async function deriveRawFromPassphrase(passphrase, saltText = KDF_SALT) {
     const pass = String(passphrase || '');
     if (pass.length < PASSPHRASE_MIN_LENGTH) throw new Error(`管理者パスフレーズは${PASSPHRASE_MIN_LENGTH}文字以上にしてください`);
     const enc = new TextEncoder();
@@ -104,13 +137,17 @@
       keyMaterial,
       256
     );
-    const value = _bytesToBase64(new Uint8Array(bits));
+    return _bytesToBase64(new Uint8Array(bits));
+  }
+
+  async function deriveFromPassphrase(passphrase, saltText = KDF_SALT) {
+    const value = await deriveRawFromPassphrase(passphrase, saltText);
     await _writeStoredKey(value);
     return value;
   }
 
   async function importHmacKey(options = {}) {
-    const raw = await getRawKey(options);
+    const raw = options.rawKey ? _normalizeRawKey(options.rawKey) : await getRawKey(options);
     if (!raw) return null;
     return crypto.subtle.importKey('raw', _base64ToBytes(raw), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
   }
@@ -131,6 +168,8 @@
     getRawKey,
     createRandomKey,
     setRawKey,
+    normalizeRawKey: _normalizeRawKey,
+    deriveRawFromPassphrase,
     deriveFromPassphrase,
     importHmacKey,
     clear,

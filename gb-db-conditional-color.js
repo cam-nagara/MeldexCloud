@@ -7,12 +7,30 @@ function setConditionalColors(dbPath, colors, options = {}) {
   });
 }
 
-function showConditionalColorModal(propName) {
-  const dbPath = state.currentDbPath;
+function _conditionalColorContext(dbPath, ctx) {
+  if (ctx) return ctx;
+  if (typeof _dbFindPaneContextForPath === 'function') return _dbFindPaneContextForPath(dbPath);
+  return null;
+}
+
+function _conditionalColorPivotData(dbPath, ctx) {
+  const paneCtx = _conditionalColorContext(dbPath, ctx);
+  if (paneCtx?.pivotData) return paneCtx.pivotData;
+  if (state.currentDbPath === dbPath) return state.pivotData;
+  return null;
+}
+
+function _conditionalColorRules(colors, propName) {
+  if (!colors || !Object.prototype.hasOwnProperty.call(colors, propName)) return [];
+  return Array.isArray(colors[propName]) ? colors[propName] : [];
+}
+
+function showConditionalColorModal(propName, dbPathOverride = '', ctx = null) {
+  const dbPath = dbPathOverride || state.currentDbPath;
   if (!dbPath) return;
-  if (!propName) { showConditionalColorPickerModal(); return; }
+  if (!propName) { showConditionalColorPickerModal(dbPath, ctx); return; }
   const colors = getConditionalColors(dbPath);
-  const rules = colors[propName] || [];
+  const rules = _conditionalColorRules(colors, propName);
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
@@ -35,11 +53,11 @@ function showConditionalColorModal(propName) {
     addConditionalColorRow(container, null);
   });
   o.querySelector('#cc-cancel-btn').addEventListener('click', () => o.remove());
-  o.querySelector('#cc-apply-btn').addEventListener('click', () => applyConditionalColors(propName));
+  o.querySelector('#cc-apply-btn').addEventListener('click', () => applyConditionalColors(propName, dbPath, ctx));
 }
 
-function showConditionalColorPickerModal() {
-  const dbPath = state.currentDbPath;
+function showConditionalColorPickerModal(dbPathOverride = '', ctx = null) {
+  const dbPath = dbPathOverride || state.currentDbPath;
   if (!dbPath) return;
   const propTypes = getPropertyTypes(dbPath) || {};
   const props = [];
@@ -47,7 +65,7 @@ function showConditionalColorPickerModal() {
     const type = propTypes[prop]?.type;
     if (prop && !props.includes(prop) && !['button', 'chat', 'multi-source-relation'].includes(type)) props.push(prop);
   };
-  (state.pivotData?.properties || []).forEach(add);
+  (_conditionalColorPivotData(dbPath, ctx)?.properties || []).forEach(add);
   (getColOrder(dbPath) || []).forEach(add);
   Object.keys(propTypes).forEach(add);
   if (props.length === 0) {
@@ -73,7 +91,7 @@ function showConditionalColorPickerModal() {
   o.querySelector('#cc-picker-open')?.addEventListener('click', () => {
     const propName = o.querySelector('#cc-picker-prop')?.value || props[0];
     o.remove();
-    showConditionalColorModal(propName);
+    showConditionalColorModal(propName, dbPath, ctx);
   });
 }
 
@@ -158,8 +176,9 @@ function addConditionalColorRow(container, rule) {
 window.addConditionalColorRule = addConditionalColorRule;
 window.addConditionalColorRow = addConditionalColorRow;
 
-function applyConditionalColors(propName) {
-  const dbPath = state.currentDbPath;
+function applyConditionalColors(propName, dbPathOverride = '', ctx = null) {
+  const dbPath = dbPathOverride || state.currentDbPath;
+  if (!dbPath || !propName) return;
   const rows = document.querySelectorAll('#cc-rules [data-cc-row]');
   const rules = [];
   rows.forEach(row => {
@@ -175,17 +194,32 @@ function applyConditionalColors(propName) {
   });
   const colors = getConditionalColors(dbPath);
   if (rules.length > 0) colors[propName] = rules;
-  else delete colors[propName];
+  else if (Object.prototype.hasOwnProperty.call(colors, propName)) delete colors[propName];
   setConditionalColors(dbPath, colors);
   closeConditionModal('#cc-rules');
-  renderPivot();
+  const renderCtx = _conditionalColorContext(dbPath, ctx);
+  renderPivot(renderCtx);
+}
+
+function _conditionalColorText(value) {
+  if (Array.isArray(value)) {
+    return value.map(v => {
+      if (v && typeof v === 'object') return v.value == null ? '' : String(v.value);
+      return v == null ? '' : String(v);
+    }).join(', ');
+  }
+  if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'value')) {
+    return value.value == null ? '' : String(value.value);
+  }
+  const v = value == null ? '' : String(value);
+  return v;
 }
 
 function getCellColor(value, propName, dbPath) {
   const colors = getConditionalColors(dbPath);
-  const rules = colors[propName];
+  const rules = _conditionalColorRules(colors, propName);
   if (!Array.isArray(rules)) return null;
-  const v = value == null ? '' : String(value);
+  const v = _conditionalColorText(value);
   for (const r of rules) {
     const ruleValue = r.value == null ? '' : String(r.value);
     if (_conditionalColorRuleNeedsValue(r.op) && ruleValue === '') continue;

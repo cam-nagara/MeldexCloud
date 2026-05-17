@@ -1,9 +1,9 @@
 /* gb-split-loader.js: split script loader */
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '88e44d6ccdb0' },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '24f0b4451ae8' },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '4f3ae4c10e3a' },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '911523dfa5e2', parts: { 'meldex-core.bundle.part01.js': '1d2d132f9267', 'meldex-core.bundle.part02.js': '35b580016aec', 'meldex-core.bundle.part03.js': '9c9407c386a6' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '0107cf51a2c8', parts: { 'gb-app.bundle.part01.js': '4c4b08991b63', 'gb-app.bundle.part02.js': 'abba47528592', 'gb-app.bundle.part03.js': '9ca7e5650b9a', 'gb-app.bundle.part04.js': '910fbab154ec', 'gb-app.bundle.part05.js': 'd4dd7336494e' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '5ea1b035d291', parts: { 'gb-theme-manager.bundle.part01.js': '5475f1289280', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': 'fb85674b6b41', 'gb-theme-manager.bundle.part04.js': 'd2dac753b53b' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -77,6 +77,57 @@
     }
   }
 
+  function _prebuiltChunkHash(chunkName) {
+    for (const bundle of Object.values(PREBUILT_SPLIT_BUNDLES)) {
+      if (bundle?.parts && Object.prototype.hasOwnProperty.call(bundle.parts, chunkName)) {
+        return bundle.parts[chunkName] || '';
+      }
+    }
+    return '';
+  }
+
+  function _extractNestedSplitChunks(entryName, source) {
+    if (!source || !source.includes('__loadSplitScript')) return [];
+    const escaped = entryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp("__loadSplitScript\\(\\s*['\"]" + escaped + "['\"]\\s*,\\s*\\[([\\s\\S]*?)\\]\\s*\\)");
+    const match = source.match(pattern);
+    if (!match) return [];
+    const chunks = [];
+    const chunkPattern = /['"]([^'"]+\.part\d+(?:\.part\d+)?\.js)['"]/g;
+    let chunkMatch;
+    while ((chunkMatch = chunkPattern.exec(match[1]))) chunks.push(chunkMatch[1]);
+    return chunks;
+  }
+
+  function _splitInlinePrefix(source) {
+    const match = source.match(/__loadSplitScript\s*\(\s*['"][^'"]+\.js['"]\s*,\s*\[/);
+    if (!match) return '';
+    const lines = source.slice(0, match.index).split(/\r?\n/).filter(line => {
+      const stripped = line.trim();
+      if (!stripped) return false;
+      if (stripped.includes('split loader stub')) return false;
+      if (stripped.startsWith('if (typeof __loadSplitScript')) return false;
+      return true;
+    });
+    return lines.length ? lines.join('\n') + '\n' : '';
+  }
+
+  function _loadChunkSource(currentScript, chunkName, seen) {
+    const key = chunkName;
+    if (seen.has(key)) throw new Error(`split chunk cycle detected: ${chunkName}`);
+    seen.add(key);
+    const url = _withFingerprint(_resolveChunkUrl(currentScript, chunkName), _prebuiltChunkHash(chunkName));
+    const source = _loadChunkText(url);
+    const nested = _extractNestedSplitChunks(chunkName, source);
+    if (!nested.length) return source;
+    let expanded = _splitInlinePrefix(source);
+    for (const nestedChunk of nested) {
+      expanded += _loadChunkSource(currentScript, nestedChunk, seen);
+      if (!expanded.endsWith('\n')) expanded += '\n';
+    }
+    return expanded;
+  }
+
   global.__loadSplitScript = function __loadSplitScript(entryName, chunkNames) {
     if (!Array.isArray(chunkNames) || chunkNames.length === 0) return;
     const currentScript = document.currentScript;
@@ -87,7 +138,7 @@
     }
     let source = '';
     for (const chunkName of chunkNames) {
-      source += _loadChunkText(_withFingerprint(_resolveChunkUrl(currentScript, chunkName), ''));
+      source += _loadChunkSource(currentScript, chunkName, new Set([entryName]));
       if (!source.endsWith('\n')) source += '\n';
     }
     _executeClassicScript(entryName, source);

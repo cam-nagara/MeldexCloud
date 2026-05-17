@@ -42,6 +42,12 @@
   opacity: 0.85;
 }
 
+@media (pointer: coarse) {
+  .tl-header-more-btn {
+    opacity: 0.85;
+  }
+}
+
 .tl-header-more-btn:hover {
   background: var(--ui-hover-bg);
   color: var(--ui-hover-fg);

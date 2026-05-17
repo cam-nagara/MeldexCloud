@@ -11,9 +11,18 @@ let _bdDirtyState = bdCreateEmptyDirtyState();
 // v0.5.318: querySelectorAll('.bd-node').forEach(...) で全ノード走査していた箇所の置換用。
 const _bdAppliedSelection = new Set();
 
+function _bdSelectionIdFromNodeElement(el) {
+  const raw = el?.dataset?.nodeId || el?.id || '';
+  return String(raw).replace(/^bdn-/, '');
+}
+
 function bdApplySelectionDomClass() {
   if (typeof bd === 'undefined' || !bd) return;
-  const next = bd.selected instanceof Set ? bd.selected : new Set();
+  const next = new Set([...(bd.selected instanceof Set ? bd.selected : new Set())].map(id => String(id)));
+  document.querySelectorAll('.bd-node.bd-selected').forEach(el => {
+    const id = _bdSelectionIdFromNodeElement(el);
+    if (!next.has(id)) el.classList.remove('bd-selected');
+  });
   // 1) DOM から外すべきもの（以前付与されていたが now 解除）
   _bdAppliedSelection.forEach(id => {
     if (next.has(id)) return;
@@ -55,6 +64,7 @@ function bdMarkNodeDirty(nodeId, reason) {
   _bdDirtyState.dirtyNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
   _bdDirtyState.dirtyCommentNodeIds.add(nodeId);
+  _bdDirtyState.dirtyFrames = true;
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'node');
   bdMarkConnectionsDirtyByNodes([nodeId], reason || 'node');
@@ -79,6 +89,7 @@ function bdMarkNodesMoved(nodeIds, reason) {
 function bdMarkConnectionDirty(connId, reason) {
   if (!connId) return;
   _bdDirtyState.dirtyConnIds.add(connId);
+  _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'connection');
   bdScheduleBoardUpdates();
 }
@@ -91,6 +102,7 @@ function bdMarkConnectionsDirtyByNodes(nodeIds, reason) {
   (bd.connections || []).forEach(conn => {
     if ((ids.has(conn.from) || ids.has(conn.to)) && conn.id) _bdDirtyState.dirtyConnIds.add(conn.id);
   });
+  _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'connection-by-node');
   bdScheduleBoardUpdates();
 }
@@ -248,6 +260,7 @@ function bdFlushDirtySelection(state, rendered) {
   const ids = new Set([...state.dirtySelectionIds, ...rendered]);
   if (state.dirtySelection && bd?.selected) bd.selected.forEach(id => ids.add(id));
   if (!ids.size && !state.dirtySelection) return;
+  bdApplySelectionDomClass();
   if (typeof bdRemoveSelectionUiForMissingNodes === 'function') bdRemoveSelectionUiForMissingNodes();
   ids.forEach(id => {
     if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
@@ -294,6 +307,7 @@ function bdFlushDirtyMinimap(dirtyState) {
   if (!dirtyState.dirtyMinimap || typeof bdUpdateMinimap !== 'function') return;
   const pane = document.getElementById('gb-preview-pane');
   if (!pane || (typeof state !== 'undefined' && state.view !== 'board')) return;
+  if (typeof bdShouldRenderMinimapInPreviewPane === 'function' && !bdShouldRenderMinimapInPreviewPane(pane)) return;
   // ノード/接続/スタイル更新系の dirty はキャッシュも無効化 (bdTransform からの pure transform 呼び出しと区別する)
   if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
   bdUpdateMinimap();

@@ -53,7 +53,11 @@
       await apiPost('/team/remove', { name: oldUsername }).catch(() => {});
     }
     const avatar = localStorage.getItem('meldex-avatar') || '';
-    await apiPost('/team/sync', { name: username, avatar }).catch(() => {});
+    if (window.MeldexDropboxProfileSync?.afterLocalProfileChanged) {
+      await window.MeldexDropboxProfileSync.afterLocalProfileChanged({ displayName: username, avatar });
+    } else {
+      await apiPost('/team/sync', { name: username, avatar }).catch(() => {});
+    }
   }
 
   // LLM APIキー保存
@@ -140,15 +144,7 @@
       throw new Error('フォルダツリールートの保存に失敗しました');
     }
 
-    // 最初の可視ルートをルートフォルダパスとして同期（後方互換）
-    const firstVisible = _outlinerRoots.find(r => r.visible && r.path && r.path !== '.');
-    if (firstVisible) {
-      const currentVaultPath = state.vaultPath || '';
-      if (firstVisible.path !== currentVaultPath) {
-        await apiPut('/vault', { path: firstVisible.path });
-        state.vaultPath = firstVisible.path;
-      }
-    }
+    await _syncSettingsVaultPathFromOutlinerRoots(_outlinerRoots);
 
     if (sourceFolderHistoryBefore && typeof pushOutlinerRootsSettingsHistory === 'function'
       && typeof captureOutlinerRootsSettingsSnapshot === 'function') {
@@ -183,6 +179,28 @@
   } finally {
     hideLoading();
   }
+}
+
+function _isSettingsLocalVaultPath(path) {
+  const value = String(path || '').trim();
+  if (!value || value === '.') return false;
+  if (/^__[^/\\]+__/.test(value)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return true;
+  if (/^\\\\[^\\]/.test(value)) return true;
+  if (value.startsWith('/')) return true;
+  return false;
+}
+
+async function _syncSettingsVaultPathFromOutlinerRoots(roots) {
+  const localVisible = Array.isArray(roots)
+    ? roots.find(root => root && root.visible && _isSettingsLocalVaultPath(root.path))
+    : null;
+  const nextPath = localVisible ? String(localVisible.path || '').trim() : '';
+  const currentVaultPath = (typeof state !== 'undefined' ? state.vaultPath : '') || '';
+  if (nextPath === currentVaultPath) return true;
+  await apiPut('/vault', { path: nextPath });
+  if (typeof state !== 'undefined') state.vaultPath = nextPath;
+  return true;
 }
 
 function _settingsCliEsc(value) {
@@ -461,6 +479,10 @@ async function renderTrashSettings(root) {
       statusEl.textContent = '保持日数を保存しました';
     });
     container.querySelector('#settings-trash-cleanup')?.addEventListener('click', async () => {
+      const ok = typeof cfConfirm === 'function'
+        ? await cfConfirm('期限切れのゴミ箱項目を削除しますか？この操作は元に戻せません。')
+        : confirm('期限切れのゴミ箱項目を削除しますか？この操作は元に戻せません。');
+      if (!ok) return;
       const next = Number(container.querySelector('#settings-trash-retention')?.value || 30);
       const res = await apiPost('/data-protection/trash-cleanup', { trash_retention_days: next });
       statusEl.textContent = `削除: ${res.deleted || 0}件 / 残り ${_formatBytes(res.bytes || 0)}`;
@@ -493,9 +515,9 @@ async function renderDatabaseMaintenanceSettings(root) {
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('clock',14)} 保持期間</div>
-        <label class="gb-field-row"><span class="gb-label">操作履歴</span><input id="settings-db-audit-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.db_audit_log_ttl_days || 90)}"><span class="gb-section-desc">日（0で無期限）</span></label>
-        <label class="gb-field-row"><span class="gb-label">カレンダーログ</span><input id="settings-db-calendar-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.calendar_log_ttl_days || 365)}"><span class="gb-section-desc">日</span></label>
-        <label class="gb-field-row"><span class="gb-label">LLM利用ログ</span><input id="settings-db-chat-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.chat_usage_log_ttl_days || 365)}"><span class="gb-section-desc">日</span></label>
+        <label class="gb-field-row"><span class="gb-label">操作履歴</span><input id="settings-db-audit-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.db_audit_log_ttl_days ?? 90)}"><span class="gb-section-desc">日（0で無期限）</span></label>
+        <label class="gb-field-row"><span class="gb-label">カレンダーログ</span><input id="settings-db-calendar-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.calendar_log_ttl_days ?? 365)}"><span class="gb-section-desc">日</span></label>
+        <label class="gb-field-row"><span class="gb-label">LLM利用ログ</span><input id="settings-db-chat-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.chat_usage_log_ttl_days ?? 365)}"><span class="gb-section-desc">日</span></label>
         <button type="button" class="gb-btn gb-btn-sm" id="settings-db-ttl-save">保持期間を保存</button>
       </section>
       <section class="gb-section gb-section--boxed">
@@ -517,6 +539,10 @@ async function renderDatabaseMaintenanceSettings(root) {
       statusEl.textContent = res.ok ? 'バックアップを作成しました: ' + res.path : 'バックアップはスキップされました';
     });
     container.querySelector('#settings-db-cleanup')?.addEventListener('click', async () => {
+      const ok = typeof cfConfirm === 'function'
+        ? await cfConfirm('保持期間を過ぎたデータベースログを削除しますか？この操作は元に戻せません。')
+        : confirm('保持期間を過ぎたデータベースログを削除しますか？この操作は元に戻せません。');
+      if (!ok) return;
       const res = await apiPost('/data-protection/db-cleanup', {});
       statusEl.textContent = 'クリーンアップ完了: ' + JSON.stringify(res.deleted || {});
     });
@@ -563,7 +589,8 @@ function _chatCostRoot(root) {
 }
 
 function _chatCostNumber(container, id, fallback) {
-  const value = container?.querySelector?.('#' + id)?.value;
+  const value = String(container?.querySelector?.('#' + id)?.value ?? '').trim();
+  if (!value) return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
@@ -701,6 +728,8 @@ async function runExportToDb() {
 const _UI_CONFIG_KEYS = [
   // UI設定
   'editor-theme', 'editor-theme-name', 'ui-scale', 'meldex-user', 'meldex-statusbar-hidden',
+  'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
+  'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
   // カレンダー / チャット
   'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'meldex-wheel-speed',
@@ -724,7 +753,7 @@ const _UI_STRUCTURED_KEYS = [
 ];
 // dbViewConfig:* 等の動的キーのプレフィックス
 const _UI_DYNAMIC_PREFIXES = [
-  'dbViewConfig:', 'validationRules:', 'entityTemplates:', 'chat-model:', 'chat-models:',
+  'dbViewConfig:', 'validationRules:', 'entityTemplates:', 'chat-model:', 'chat-models:', 'chat-custom-about:', 'chat-custom-instructions:',
 ];
 
 function _settingsDialogStorageKeys() {

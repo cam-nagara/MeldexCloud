@@ -11,6 +11,9 @@
   const OUTER_R = 178;
   const EVENT_OUTER_R = 154;
   const EVENT_INNER_R = 74;
+  const CLOCK12_AM_OUTER_R = 112;
+  const CLOCK12_PM_INNER_R = 118;
+  const CLOCK12_HALF_THRESHOLD_R = (CLOCK12_AM_OUTER_R + CLOCK12_PM_INNER_R) / 2;
 
   function _clockEsc(value) {
     return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -58,6 +61,11 @@
     const d = new Date(dateStr + 'T00:00:00');
     d.setMinutes(Math.max(0, Math.min(1439, minutes)));
     return d;
+  }
+
+  function _clockMinutesOfDay(date) {
+    if (!date || Number.isNaN(date.getTime())) return 0;
+    return date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60 + date.getMilliseconds() / 60000;
   }
 
   function _clockEventTitle(ev) {
@@ -139,15 +147,17 @@
     const start = rawStart < dayStart ? dayStart : rawStart;
     const end = rawEnd > dayEnd ? dayEnd : rawEnd;
     if (end <= start) return [];
-    const startMin = Math.max(0, Math.floor((start - dayStart) / 60000));
-    const endMin = Math.min(1440, Math.ceil((end - dayStart) / 60000));
-    if (ev.all_day || endMin - startMin >= 1439) return [{ start: 0, end: mode === 24 ? 1440 : 720 }];
+    const startMin = rawStart < dayStart ? 0 : Math.max(0, Math.floor(_clockMinutesOfDay(start)));
+    const endMin = rawEnd > dayEnd ? 1440 : Math.min(1440, Math.ceil(_clockMinutesOfDay(end)));
+    if (ev.all_day || endMin - startMin >= 1439) {
+      return mode === 24 ? [{ start: 0, end: 1440, half: 0 }] : [{ start: 0, end: 720, half: 0 }, { start: 0, end: 720, half: 1 }];
+    }
     if (mode === 24) return [{ start: startMin, end: endMin }];
     const intervals = [];
     [[0, 720], [720, 1440]].forEach(([from, to]) => {
       const s = Math.max(startMin, from);
       const e = Math.min(endMin, to);
-      if (e > s) intervals.push({ start: s - from, end: e - from });
+      if (e > s) intervals.push({ start: s - from, end: e - from, half: from >= 720 ? 1 : 0 });
     });
     return intervals;
   };
@@ -159,18 +169,44 @@
       if (typeof this._eventIntersectsDay === 'function') return this._eventIntersectsDay(ev, dateStr);
       return String(ev.start || '').startsWith(dateStr);
     });
-    let html = '';
+    const slices = [];
     events.forEach((ev, eventIndex) => {
       const color = this._sanitizeEventColor ? this._sanitizeEventColor(ev.color) : (ev.color || '#569cd6');
       this._clockEventIntervals(ev, dateStr, mode).forEach((interval, intervalIndex) => {
         const start = Math.max(0, Math.min(period, interval.start));
         const end = Math.min(period, Math.max(start + 4, interval.end));
-        const startAngle = (start / period) * 360;
-        const endAngle = Math.min(360, (end / period) * 360);
-        const path = _clockDonutPath(startAngle, endAngle, EVENT_OUTER_R - (eventIndex % 3) * 7, EVENT_INNER_R + (eventIndex % 3) * 7);
-        html += `<path class="gb-cal-clock-event-slice" data-event-id="${_clockEsc(ev.id)}" data-calendar-id="${_clockEsc(ev.calendar_id || '_calendar')}" d="${path}" fill="${_clockEsc(color)}" fill-rule="evenodd"><title>${_clockEsc(_clockEventTitle(ev))}</title></path>`;
-        void intervalIndex;
+        slices.push({ ev, eventIndex, intervalIndex, color, start, end, half: interval.half || 0 });
       });
+    });
+    const laneGroups = new Map();
+    slices
+      .slice()
+      .sort((a, b) => (a.half - b.half) || (a.start - b.start) || (a.end - b.end))
+      .forEach(slice => {
+        const key = mode === 24 ? 'full' : String(slice.half);
+        const group = laneGroups.get(key) || { ends: [], count: 0 };
+        let lane = group.ends.findIndex(end => end <= slice.start);
+        if (lane < 0) lane = group.ends.length;
+        group.ends[lane] = slice.end;
+        group.count = Math.max(group.count, lane + 1);
+        slice.lane = lane;
+        laneGroups.set(key, group);
+      });
+    let html = '';
+    slices.forEach(slice => {
+        const startAngle = (slice.start / period) * 360;
+        const endAngle = Math.min(360, (slice.end / period) * 360);
+        const key = mode === 24 ? 'full' : String(slice.half);
+        const laneCount = Math.max(1, laneGroups.get(key)?.count || 1);
+        const outerBase = mode === 24 ? EVENT_OUTER_R : (slice.half ? EVENT_OUTER_R : CLOCK12_AM_OUTER_R);
+        const innerBase = mode === 24 ? EVENT_INNER_R : (slice.half ? CLOCK12_PM_INNER_R : EVENT_INNER_R);
+        const band = Math.max(4, (outerBase - innerBase) / laneCount);
+        const outer = outerBase - slice.lane * band;
+        const inner = Math.max(innerBase, outer - Math.max(3, band - 2));
+        const path = _clockDonutPath(startAngle, endAngle, outer, inner);
+        html += `<path class="gb-cal-clock-event-slice" data-event-id="${_clockEsc(slice.ev.id)}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" d="${path}" fill="${_clockEsc(slice.color)}" fill-rule="evenodd"><title>${_clockEsc(_clockEventTitle(slice.ev))}</title></path>`;
+        void slice.eventIndex;
+        void slice.intervalIndex;
     });
     return html;
   };
@@ -217,16 +253,14 @@
     const rect = svg.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * SIZE - CX;
     const y = ((event.clientY - rect.top) / Math.max(1, rect.height)) * SIZE - CY;
+    const radius = Math.sqrt(x * x + y * y);
     let angle = Math.atan2(y, x) * 180 / Math.PI + 90;
     if (angle < 0) angle += 360;
     const period = mode === 24 ? 1440 : 720;
     let minutes = Math.round((angle / 360) * period / 15) * 15;
     minutes = ((minutes % period) + period) % period;
     if (mode === 12) {
-      const today = new Date();
-      const selectedDate = new Date(dateStr + 'T00:00:00');
-      const halfDayOffset = _clockSameDate(today, selectedDate) && today.getHours() >= 12 ? 720 : 0;
-      minutes += halfDayOffset;
+      minutes += radius >= CLOCK12_HALF_THRESHOLD_R ? 720 : 0;
     }
     return Math.max(0, Math.min(1439, minutes));
   };

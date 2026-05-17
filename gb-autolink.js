@@ -89,33 +89,102 @@ const MeldexAutoLink = (() => {
   // ── リンク辞書 ──
   let _linkDict = [];
   let _dictLoadSeq = 0;
+  let _dictScope = '';
+  let _dictRevision = 0;
+
+  function _normalizeDictScope(workFolder) {
+    return String(workFolder || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function _currentWorkFolderScope() {
+    const wf = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
+    return _normalizeDictScope(wf);
+  }
+
+  function _isCloudLinkDictUnavailable() {
+    return !!(window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox');
+  }
+
+  function _notifyDictChanged(scope) {
+    _dictRevision += 1;
+    try {
+      window.dispatchEvent(new CustomEvent('meldex-autolink-dict-change', {
+        detail: { scope, revision: _dictRevision },
+      }));
+    } catch {}
+    if (!MeldexDisplayLayers.isEnabled('autoLinks')) return;
+    MeldexDisplayLayers.scheduleIdle(() => {
+      try {
+        if (typeof reloadCurrentOpenFile === 'function') reloadCurrentOpenFile();
+      } catch {}
+    }, 1000);
+  }
+
+  function _normalizeDictEntries(entries) {
+    if (!Array.isArray(entries)) return [];
+    return entries
+      .filter(entry => entry && typeof entry.text === 'string' && entry.text.length >= 2)
+      .map(entry => ({
+        ...entry,
+        text: entry.text,
+        path: typeof entry.path === 'string' ? entry.path : '',
+        ruby: typeof entry.ruby === 'string' ? entry.ruby : '',
+      }));
+  }
 
   async function loadDict(workFolder) {
     const seq = ++_dictLoadSeq;
+    const scope = _normalizeDictScope(workFolder);
+    if (_isCloudLinkDictUnavailable()) {
+      _dictScope = scope;
+      _linkDict = [];
+      _notifyDictChanged(scope);
+      return _linkDict;
+    }
+    if (scope !== _dictScope) {
+      _dictScope = scope;
+      _linkDict = [];
+      _notifyDictChanged(scope);
+    }
     try {
       const url = workFolder ? '/link-dict?work=' + encodeURIComponent(workFolder) : '/link-dict';
       const data = await apiFetch(url);
-      if (seq === _dictLoadSeq) _linkDict = data.entries || [];
+      if (seq === _dictLoadSeq) {
+        const next = _normalizeDictEntries(data.entries);
+        _dictScope = scope;
+        _linkDict = next;
+        _notifyDictChanged(scope);
+      }
     } catch {
-      // 一時的な取得失敗では既存辞書を保持する
+      // 一時的な取得失敗では既存辞書を保持する。同じ作業範囲の再読込失敗なら空にしない。
+      if (seq === _dictLoadSeq && scope !== _dictScope) {
+        _dictScope = scope;
+        _linkDict = [];
+        _notifyDictChanged(scope);
+      }
     }
     return _linkDict;
   }
 
   function getDict() { return _linkDict; }
-  function setDict(dict) { _dictLoadSeq += 1; _linkDict = dict || []; }
+  function setDict(dict) {
+    _dictLoadSeq += 1;
+    _dictScope = _currentWorkFolderScope();
+    _linkDict = _normalizeDictEntries(dict);
+    _notifyDictChanged(_dictScope);
+  }
 
   // ── 共通: テキストノード収集 ──
   function _collectTextNodes(el) {
     const nodes = [];
+    const skippedTags = new Set(['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'CODE', 'PRE', 'KBD', 'SAMP', 'RT']);
     for (const child of el.childNodes) {
       if (child.nodeType === 3 && child.textContent) {
         nodes.push(child);
       } else if (child.nodeType === 1
         && !child.classList?.contains('auto-link')
         && !child.dataset?.autoLink
-        && !['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(child.tagName)
-        && child.tagName !== 'RT'
+        && !skippedTags.has(child.tagName)
         && !child.dataset?.autoRuby) {
         nodes.push(..._collectTextNodes(child));
       }
@@ -125,7 +194,7 @@ const MeldexAutoLink = (() => {
 
   // ── 共通: ソート済み辞書を取得 ──
   function _sortedDict() {
-    return [..._linkDict].sort((a, b) => b.text.length - a.text.length);
+    return _normalizeDictEntries(_linkDict).sort((a, b) => b.text.length - a.text.length);
   }
 
   // ── 共通: span 要素を生成 ──
@@ -155,6 +224,7 @@ const MeldexAutoLink = (() => {
   function _isInWorkFolderScope(filePath) {
     if (typeof getWorkFolder !== 'function') return true;
     const wf = getWorkFolder();
+    if (_dictScope !== _normalizeDictScope(wf)) return false;
     if (!wf || !filePath) return true;
     const roots = [wf];
     const vaultPath = (typeof state !== 'undefined' && state?.vaultPath) ? String(state.vaultPath) : '';

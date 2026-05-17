@@ -170,7 +170,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       bindMeldexDropdownKeySwitch(anchorBtn, {
         getItems: () => items.map(item => ({ value: item.value, item })),
         getCurrentValue: () => row.status || '',
-        onSelect: item => applyStatus(item.value),
+        onSelect: item => {
+          closePopup(false);
+          applyStatus(item.value);
+        },
         getFreshTrigger: () => anchorBtn.isConnected ? anchorBtn : null,
       });
     }

@@ -60,6 +60,7 @@
   }
 
   async function _export(root) {
+    if (!_isOwner()) return _status(root, '管理者のみ実行できます', true);
     try {
       const value = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
       if (!value) return _status(root, '管理者鍵は未設定です', true);
@@ -73,6 +74,11 @@
     } catch (err) {
       _status(root, err?.message || String(err), true);
     }
+  }
+
+  function _openRecovery(root) {
+    if (!_isOwner()) return _status(root, '管理者のみ実行できます', true);
+    window.MeldexOwnerKeyRecovery?.showRecoveryDialog?.();
   }
 
   async function _import(root) {
@@ -93,6 +99,12 @@
       const result = await window.MeldexKnowledgeIntegrity?.checkAll?.();
       if (!result || result.skipped) return _status(root, 'Dropbox provider が未初期化です', true);
       if (result.ok) return _status(root, `署名検証OK (${result.items.length}件)`);
+      const missingKey = (result.failed || []).some(item => item?.verification?.missing_key || item?.verification?.reason === 'owner-key-missing');
+      if (missingKey) {
+        _status(root, '管理者鍵がこの端末にありません。復旧UIを開いてください。', true);
+        if (_isOwner()) window.MeldexOwnerKeyRecovery?.showRecoveryDialog?.({ reason: '署名検証に必要な管理者鍵がこの端末にありません。' });
+        return;
+      }
       _status(root, `署名検証NG: ${result.failed.map(item => item.label).join('、')}`, true);
       window.MeldexKnowledgeIntegrity?.openRecoveryDialog?.(result.failed);
     } catch (err) {
@@ -154,11 +166,11 @@
       </label>
       <div class="gb-field-row" style="justify-content:flex-start;gap:6px;flex-wrap:wrap;">
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-verify" data-owner-key-action="verify">署名検証</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-export" data-owner-key-action="export">鍵をコピー</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-export" data-owner-key-action="export" ${owner ? '' : 'disabled'}>鍵をコピー</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-import" data-owner-key-action="import" ${owner ? '' : 'disabled'}>鍵をインポート</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-rotate" data-owner-key-action="rotate" ${owner ? '' : 'disabled'}>鍵ローテーション</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-audit" data-owner-key-action="audit">監査ログ</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-recovery" data-owner-key-action="recovery">復旧UI</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-setting="owner-key-recovery" data-owner-key-action="recovery" ${owner ? '' : 'disabled'}>復旧UI</button>
       </div>
       <div class="gb-section-desc" data-owner-key-status>${owner ? '管理者権限あり' : '閲覧のみ。鍵更新は管理者のみ可能です。'}</div>
     `;
@@ -171,7 +183,7 @@
       if (action === 'import') _import(section);
       if (action === 'verify') _verify(section);
       if (action === 'audit') _audit(section);
-      if (action === 'recovery') window.MeldexOwnerKeyRecovery?.showRecoveryDialog?.();
+      if (action === 'recovery') _openRecovery(section);
     });
     panel.appendChild(section);
   }

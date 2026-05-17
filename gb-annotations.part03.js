@@ -4,11 +4,11 @@ function _getActiveViewLockInfo() {
   if (typeof ViewLock === 'undefined' || typeof state === 'undefined') return null;
   const viewName = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
   const target = (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '';
-  if (!target || !target.includes('/')) return null;
+  if (!target) return null;
   const kindMap = {
     page: 'page', entity: 'page',
     database: 'db', pivot: 'db', gallery: 'db', kanban: 'db', timeline: 'db',
-    chart: 'db', graph: 'db', 'smart-db': 'db',
+    chart: 'db', graph: 'db', form: 'db', 'smart-db': 'db',
     scriptnote: 'scriptnote', calendar: 'calendar',
     media: 'media', folder: 'folder',
     compare: 'compare',
@@ -41,8 +41,9 @@ function _annotationScrollbarHitTest(clientX, clientY) {
   if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return false;
   const vertical = sc.scrollHeight > sc.clientHeight;
   const horizontal = sc.scrollWidth > sc.clientWidth;
-  const gutterX = Math.max(12, Math.min(24, (sc.offsetWidth || 0) - (sc.clientWidth || 0) || 17));
-  const gutterY = Math.max(12, Math.min(24, (sc.offsetHeight || 0) - (sc.clientHeight || 0) || 17));
+  const zoom = (typeof _annotationUiZoom === 'function') ? _annotationUiZoom() : 1;
+  const gutterX = Math.max(12, Math.min(24, (sc.offsetWidth || 0) - (sc.clientWidth || 0) || 17)) * zoom;
+  const gutterY = Math.max(12, Math.min(24, (sc.offsetHeight || 0) - (sc.clientHeight || 0) || 17)) * zoom;
   if (vertical && clientX >= rect.right - gutterX) return true;
   if (horizontal && clientY >= rect.bottom - gutterY) return true;
   return false;
@@ -64,8 +65,10 @@ function _routeAnnotationWheelToScrollContainer(event) {
   const line = 16;
   const page = Math.max(1, sc.clientHeight || 1);
   const unit = event.deltaMode === 1 ? line : (event.deltaMode === 2 ? page : 1);
-  if (canScrollX) sc.scrollLeft += event.deltaX * unit;
-  if (canScrollY) sc.scrollTop += event.deltaY * unit;
+  const horizontalDelta = event.deltaX + (event.shiftKey ? event.deltaY : 0);
+  const verticalDelta = event.shiftKey && canScrollX ? 0 : event.deltaY;
+  if (canScrollX) sc.scrollLeft += horizontalDelta * unit;
+  if (canScrollY) sc.scrollTop += verticalDelta * unit;
   event.preventDefault();
   event.stopPropagation();
 }
@@ -90,10 +93,11 @@ function _updateRectFillEl(rect, data, color, opacity, preview) {
   rect.setAttribute('width', Math.max(1, Number(data?.width) || 0));
   rect.setAttribute('height', Math.max(1, Number(data?.height) || 0));
   rect.setAttribute('fill', color);
-  rect.setAttribute('fill-opacity', String((Number(opacity) || 1) * (preview ? 0.2 : 0.4)));
+  const normalizedOpacity = _normalizeAnnotationOpacity(opacity, 1);
+  rect.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
   rect.setAttribute('stroke', color);
   rect.setAttribute('stroke-width', '1');
-  rect.setAttribute('stroke-opacity', String(Number(opacity) || 1));
+  rect.setAttribute('stroke-opacity', String(normalizedOpacity));
   if (preview) rect.setAttribute('stroke-dasharray', '4,4');
   else rect.removeAttribute('stroke-dasharray');
   return rect;
@@ -107,6 +111,8 @@ annOverlay?.addEventListener('wheel', _routeAnnotationWheelToScrollContainer, { 
 
 annOverlay.addEventListener('pointerdown', async (e) => {
   if (!ann.active) return;
+  if (ann.drawing) return;
+  if (e.button != null && e.button !== 0) return;
   if (typeof _annotationScrollbarHitTest === 'function' && _annotationScrollbarHitTest(e.clientX, e.clientY)) {
     if (typeof _updateAnnotationOverlayScrollPassthrough === 'function') {
       _updateAnnotationOverlayScrollPassthrough(e.clientX, e.clientY);
@@ -147,15 +153,17 @@ annOverlay.addEventListener('pointerdown', async (e) => {
 
 annOverlay.addEventListener('pointermove', (e) => {
   if (!ann.drawing) return;
+  if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  ann.currentPath.push(_annotationPointFromEvent(e));
-  ann.currentPressures.push(e.pressure || 0.5);
+  _appendAnnotationStrokePointFromEvent(e);
   _renderAnnotationPreview();
 });
 
 annOverlay.addEventListener('pointerup', (e) => {
   if (!ann.drawing) return;
+  if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
+  _appendAnnotationStrokePointFromEvent(e);
   ann.strokeEndRequested = true;
   try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
   if (ann.strokeReady) _finishAnnotationStroke();
@@ -163,7 +171,8 @@ annOverlay.addEventListener('pointerup', (e) => {
 
 annOverlay.addEventListener('pointercancel', (e) => {
   if (!ann.drawing) return;
+  if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  ann.strokeEndRequested = true;
-  if (ann.strokeReady) _finishAnnotationStroke();
+  try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
+  _resetAnnotationStrokeState();
 });

@@ -5,6 +5,27 @@
   let consecutiveSaveFailures = 0;
   let modalOpen = false;
   const CONFLICT_PATHS_KEY = 'meldex-save-conflict-paths';
+  const SAVE_MUTATION_ENDPOINTS = [
+    '/annotations',
+    '/cal/events',
+    '/cal/tasks',
+    '/calendar',
+    '/calendar-db',
+    '/database',
+    '/data-protection',
+    '/db-metadata',
+    '/entity',
+    '/file',
+    '/file-content',
+    '/import-csv',
+    '/outliner',
+    '/property-layout-templates',
+    '/quick-memo',
+    '/trash',
+    '/upload-file',
+    '/upload-image',
+    '/value',
+  ];
 
   const CODE_LABELS = {
     no_space: '容量不足',
@@ -21,11 +42,24 @@
     return String(opts?.method || 'GET').toUpperCase();
   }
 
+  function _apiPathname(path) {
+    try {
+      const url = new URL(String(path || ''), window.location.origin || 'http://localhost');
+      return String(url.pathname || '').replace(/^\/api(?=\/)/, '').replace(/\/+$/, '') || '/';
+    } catch {
+      return String(path || '').split(/[?#]/, 1)[0].replace(/^\/api(?=\/)/, '').replace(/\/+$/, '') || '/';
+    }
+  }
+
+  function _matchesSaveMutationEndpoint(pathname, endpoint) {
+    return pathname === endpoint || pathname.startsWith(endpoint + '/');
+  }
+
   function isSaveMutation(path, opts) {
     const method = _method(opts);
     if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return false;
-    const value = String(path || '');
-    return /\/(file|value|upload-file|upload-image|outliner|database|calendar|trash|data-protection)\b/.test(value);
+    const pathname = _apiPathname(path);
+    return SAVE_MUTATION_ENDPOINTS.some(endpoint => _matchesSaveMutationEndpoint(pathname, endpoint));
   }
 
   function _message(error) {

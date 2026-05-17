@@ -4,15 +4,17 @@
   const internals = window.__MeldexPwaDataAccessInternals;
   if (!internals) return;
 
-  const { _readJsonSafe } = internals;
+  const { _pathExists } = internals;
   const TARGETS = [
     { scope: 'knowledge_items', path: '_knowledge/knowledge_items.json', label: '記憶継承' },
     { scope: 'chat_rules', path: '_knowledge/chat_rules.json', label: 'チャットルール' },
     { scope: 'status_policies', path: '_knowledge/status_policies.json', label: 'ステータス別ポリシー' },
     { scope: 'taste_settings', path: '_knowledge/taste_settings.json', label: '感性設定' },
     { scope: 'taste_principles', path: '_knowledge/taste_principles.json', label: '感性原則' },
+    { scope: 'taste_feedback', path: '_knowledge/taste_feedback.json', label: '感性フィードバック' },
     { scope: 'memory_directives', path: '_knowledge/memory_directives.json', label: 'メモリ指令' },
     { scope: 'file_locks', path: '_meldex/file_locks.json', label: '編集ロック' },
+    { scope: 'audit_log', path: '_meldex/audit-log.json', label: '監査ログ' },
   ];
   const CHECK_INTERVAL_MS = 5 * 60 * 1000;
   let _timer = 0;
@@ -34,15 +36,25 @@
   }
 
   async function _readPayload(provider, target) {
-    const payload = await _readJsonSafe(provider, target.path, null);
-    if (!payload || typeof payload !== 'object') return null;
-    return payload;
+    const exists = typeof _pathExists === 'function' ? await _pathExists(provider, target.path).catch(() => false) : true;
+    if (!exists) return { payload: null, missing_store: true };
+    try {
+      const raw = await provider.readText(target.path);
+      const payload = JSON.parse(String(raw || 'null'));
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return { payload: null, malformed_store: true, error: 'JSON object expected' };
+      }
+      return { payload, missing_store: false };
+    } catch (err) {
+      return { payload: null, malformed_store: true, error: err?.message || String(err) };
+    }
   }
 
   async function checkTarget(provider, target) {
-    const payload = await _readPayload(provider, target);
-    if (!payload) return { ...target, ok: true, missing_store: true, verification: { ok: true, skipped: true, reason: 'store-missing' } };
-    const verification = await window.MeldexKnowledgeSignature?.verify?.(provider, target.scope, payload).catch(err => ({ ok: false, error: err?.message || String(err) }));
+    const read = await _readPayload(provider, target);
+    if (read.missing_store) return { ...target, ok: true, missing_store: true, verification: { ok: true, skipped: true, reason: 'store-missing' } };
+    if (read.malformed_store) return { ...target, ok: false, malformed_store: true, verification: { ok: false, error: read.error || 'broken-json' } };
+    const verification = await window.MeldexKnowledgeSignature?.verify?.(provider, target.scope, read.payload).catch(err => ({ ok: false, error: err?.message || String(err) }));
     return { ...target, ok: verification?.ok !== false, verification };
   }
 
@@ -57,6 +69,7 @@
     const result = { ok: failed.length === 0, items, failed, checked_at: new Date().toISOString() };
     _lastResult = result;
     if (failed.length) showIntegrityBanner(failed);
+    else _removeBanner();
     return result;
   }
 
@@ -65,9 +78,9 @@
     if (!p) throw new Error('Dropbox provider が未初期化です');
     const signed = [];
     for (const target of TARGETS) {
-      const payload = await _readPayload(p, target);
-      if (!payload) continue;
-      await window.MeldexKnowledgeSignature?.sign?.(p, target.scope, payload, { signer: typeof getUsername === 'function' ? getUsername() : '' });
+      const read = await _readPayload(p, target);
+      if (!read.payload) continue;
+      await window.MeldexKnowledgeSignature?.sign?.(p, target.scope, read.payload, { signer: typeof getUsername === 'function' ? getUsername() : '' });
       signed.push(target.scope);
     }
     await window.MeldexKnowledgeSignature?.recordAudit?.(p, 'owner_key', { action: 'resign-all', scopes: signed }).catch(() => {});

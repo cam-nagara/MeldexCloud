@@ -12,10 +12,79 @@
   const _autoSyncTimers = {}; // { timerKey: intervalId }
   let _syncInProgress = false; // 同期の同時実行防止
   let _currentOverlay = null;  // 現在開いているモーダルの参照
+  const _SYNC_LOCK_KEY = 'meldex-notion-sync-lock-v1';
+  const _SYNC_LOCK_TTL_MS = 10 * 60 * 1000;
+  const _syncClientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   function _isCloudMode() {
     return window.MeldexRuntimeAdapter?.isDropboxMode?.()
       || document.body?.dataset?.cloudMode === 'dropbox';
+  }
+
+  function _nowMs() {
+    return Date.now();
+  }
+
+  function _readSyncLock() {
+    try {
+      const raw = localStorage.getItem(_SYNC_LOCK_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _acquireSyncLock(reason) {
+    const token = `${_syncClientId}-${_nowMs()}`;
+    try {
+      const lock = _readSyncLock();
+      if (lock?.expiresAt && lock.expiresAt > _nowMs() && lock.owner !== _syncClientId) return null;
+      localStorage.setItem(_SYNC_LOCK_KEY, JSON.stringify({
+        owner: _syncClientId,
+        token,
+        reason: reason || 'sync',
+        expiresAt: _nowMs() + _SYNC_LOCK_TTL_MS,
+      }));
+      const current = _readSyncLock();
+      return current?.token === token ? token : null;
+    } catch (_) {
+      return token;
+    }
+  }
+
+  function _releaseSyncLock(token) {
+    if (!token) return;
+    try {
+      const lock = _readSyncLock();
+      if (!lock || lock.owner === _syncClientId || lock.token === token) {
+        localStorage.removeItem(_SYNC_LOCK_KEY);
+      }
+    } catch (_) {}
+  }
+
+  function _countValue(value) {
+    if (Array.isArray(value)) return value.length;
+    const number = Number(value || 0);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function _syncResultParts(res) {
+    const parts = [];
+    if (_countValue(res?.pushed)) parts.push(`Push: ${_countValue(res.pushed)}件`);
+    if (_countValue(res?.skipped)) parts.push(`スキップ: ${_countValue(res.skipped)}件`);
+    if (_countValue(res?.conflicts)) parts.push(`競合: ${_countValue(res.conflicts)}件`);
+    if (_countValue(res?.errors)) parts.push(`エラー: ${_countValue(res.errors)}件`);
+    if (_countValue(res?.tmp_cleaned)) parts.push(`tmp削除: ${_countValue(res.tmp_cleaned)}件`);
+    return parts;
+  }
+
+  function _syncResultHasIssues(res) {
+    return _countValue(res?.errors) > 0 || _countValue(res?.error_messages) > 0 || _countValue(res?.conflicts) > 0;
+  }
+
+  function _syncResultErrorMessage(res) {
+    const messages = Array.isArray(res?.error_messages) ? res.error_messages.filter(Boolean).slice(0, 2) : [];
+    return messages.length ? `: ${messages.join(' / ')}` : '';
   }
 
   // === Notion同期設定UI ===
@@ -51,6 +120,7 @@
 
     const folders = cfg.folders || [];
     const hasToken = cfg.has_token || false;
+    container.dataset.notionHasToken = hasToken ? '1' : '0';
 
     container.innerHTML = `
       <details style="margin-bottom:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;" ${hasToken ? '' : 'open'}>
@@ -160,6 +230,7 @@
     card.dataset.notionPageId = folder.notion_page_id || '';
     card.dataset.notionPageTitle = folder.notion_page_title || '';
     card.dataset.syncMode = 'push';
+    card.dataset.notionHasToken = root?.dataset?.notionHasToken || '';
 
     const folderName = folder.path ? folder.path.split(/[/\\]/).pop() : '（未選択）';
     const notionTitle = folder.notion_page_title || '';
@@ -205,6 +276,7 @@
         <span style="font-size:11px;color:var(--fg2);margin-left:auto;white-space:nowrap;">最終同期: ${lastSync}</span>
       </div>
       <div style="display:flex;gap:4px;">
+        <button class="notion-save-folder" style="font-size:12px;padding:3px 10px;background:none;border:1px solid var(--border);border-radius:3px;cursor:pointer;">設定を保存</button>
         <button class="notion-sync-now" style="font-size:12px;padding:3px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:3px;cursor:pointer;">${lucide('refreshCw', 12)} 今すぐ同期</button>
         <span class="notion-folder-status" style="font-size:12px;color:var(--fg2);align-self:center;margin-left:8px;"></span>
       </div>
@@ -214,8 +286,19 @@
     card.querySelector('.notion-remove-folder').addEventListener('click', () => _removeFolder(index, root, options));
     card.querySelector('.notion-pick-folder').addEventListener('click', () => _pickFolderFromTree(card));
     card.querySelector('.notion-resolve-page').addEventListener('click', () => _resolveNotionPage(card));
+    card.querySelector('.notion-save-folder').addEventListener('click', () => _saveFolderConfigFromCard(card, '設定を保存しました'));
     card.querySelector('.notion-sync-now').addEventListener('click', () => _syncFolder(card, index));
     card.querySelector('.notion-sync-interval').addEventListener('change', (e) => _updateAutoSync(card, index, parseInt(e.target.value)));
+    card.querySelectorAll('.notion-folder-path, .notion-page-url').forEach(input => {
+      input.addEventListener('change', () => _saveFolderConfigFromCard(card, '設定を保存しました'));
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          input.blur();
+          _saveFolderConfigFromCard(card, '設定を保存しました');
+        }
+      });
+    });
 
     return card;
   }
@@ -451,6 +534,20 @@
     }
   }
 
+  async function _saveFolderConfigFromCard(card, successMessage) {
+    const statusEl = card?.querySelector?.('.notion-folder-status');
+    if (statusEl) {
+      statusEl.textContent = '保存中...';
+      statusEl.style.color = 'var(--fg2)';
+    }
+    const saved = await _saveFolderConfig(card, {});
+    if (statusEl) {
+      statusEl.textContent = saved ? (successMessage || '保存しました') : '保存に失敗しました';
+      statusEl.style.color = saved ? 'var(--green)' : 'var(--red)';
+    }
+    return saved;
+  }
+
   function _refreshNotionSyncSettings(root, options = {}) {
     if (root?.isConnected) {
       _renderNotionSyncSettings(root, options);
@@ -527,6 +624,13 @@
 
     const ready = await _ensureNotionPageReady(card, statusEl);
     if (!ready) return;
+    const lockToken = _acquireSyncLock('manual');
+    if (!lockToken) {
+      statusEl.textContent = '別ウィンドウでNotion同期中です';
+      statusEl.style.color = 'var(--red)';
+      showStatus('別ウィンドウでNotion同期中です。完了後に再試行してください。', true);
+      return;
+    }
 
     _syncInProgress = true;
     statusEl.textContent = '同期中...';
@@ -537,21 +641,18 @@
 
     try {
       const res = await apiPost('/notion/sync', { folder_index: index, mode: 'push' });
-      const parts = [];
-      if (res.pushed) parts.push(`Push: ${res.pushed}件`);
-      if (res.skipped) parts.push(`スキップ: ${res.skipped}件`);
-      if (res.conflicts) parts.push(`競合: ${res.conflicts}件`);
-      if (res.errors) parts.push(`エラー: ${res.errors}件`);
-      if (res.tmp_cleaned) parts.push(`tmp削除: ${res.tmp_cleaned}件`);
-      statusEl.textContent = '同期完了 — ' + (parts.join(', ') || '変更なし');
-      statusEl.style.color = res.conflicts ? 'var(--yellow)' : 'var(--green)';
-      showStatus((res.conflicts ? 'Notion同期で競合があります: ' : 'Notion同期しました: ') + path.split(/[/\\]/).pop(), !!res.conflicts);
+      const parts = _syncResultParts(res);
+      const hasIssues = _syncResultHasIssues(res);
+      statusEl.textContent = (hasIssues ? '同期に確認が必要 — ' : '同期完了 — ') + (parts.join(', ') || '変更なし') + _syncResultErrorMessage(res);
+      statusEl.style.color = hasIssues ? 'var(--red)' : 'var(--green)';
+      showStatus((hasIssues ? 'Notion同期に未完了の項目があります: ' : 'Notion同期しました: ') + path.split(/[/\\]/).pop(), hasIssues);
       if (typeof loadOutliner === 'function') await loadOutliner();
     } catch (e) {
       statusEl.textContent = '同期失敗: ' + (e.message || e);
       statusEl.style.color = 'var(--red)';
     } finally {
       _syncInProgress = false;
+      _releaseSyncLock(lockToken);
       syncBtn.disabled = false;
     }
   }
@@ -585,8 +686,43 @@
 
   // === 自動同期設定更新 ===
   async function _updateAutoSync(card, index, intervalMinutes) {
+    const select = card?.querySelector?.('.notion-sync-interval');
+    const statusEl = card?.querySelector?.('.notion-folder-status');
+    const disableAutoSync = async (message) => {
+      if (select) select.value = '0';
+      if (statusEl) {
+        statusEl.textContent = message;
+        statusEl.style.color = 'var(--red)';
+      }
+      await _saveFolderConfig(card, {});
+      showStatus(message, true);
+    };
     try {
-      const saved = await _saveFolderConfig(card, {});
+      if (intervalMinutes > 0) {
+        const path = card.querySelector('.notion-folder-path').value.trim();
+        const notionUrl = card.querySelector('.notion-page-url').value.trim();
+        if (!path) {
+          await disableAutoSync('自動同期にはフォルダ指定が必要です');
+          return;
+        }
+        if (!notionUrl) {
+          await disableAutoSync('自動同期にはNotionページURLが必要です');
+          return;
+        }
+        const cfg = await apiFetch('/notion/config');
+        if (!cfg?.has_token) {
+          card.dataset.notionHasToken = '0';
+          await disableAutoSync('自動同期にはNotionトークンの保存が必要です');
+          return;
+        }
+        card.dataset.notionHasToken = '1';
+        const ready = await _ensureNotionPageReady(card, statusEl);
+        if (!ready) {
+          await disableAutoSync('Notionページを確認できないため、自動同期を無効にしました');
+          return;
+        }
+      }
+      const saved = intervalMinutes > 0 ? true : await _saveFolderConfig(card, {});
       if (!saved) return;
 
       if (intervalMinutes > 0) {
@@ -635,7 +771,7 @@
         if (!p) return;
         const key = _timerKey(index, f);
         aliveKeys.add(key);
-        if (f.auto_sync && f.sync_interval > 0) {
+        if (f.auto_sync && f.sync_interval > 0 && cfg.has_token && f.notion_page_id) {
           // 設定変更が無くても clearInterval → setInterval で冪等に更新
           _resetAutoSyncTimer(key, f, f.sync_interval);
         } else if (_autoSyncTimers[key]) {
@@ -657,6 +793,8 @@
 
   async function _autoSyncExecute(timerKey) {
     if (_syncInProgress) return; // 他の同期中はスキップ
+    const lockToken = _acquireSyncLock('auto');
+    if (!lockToken) return;
     // 実行時点で最新の config から設定行の index を再解決（ドリフト対策）
     let currentIndex = -1;
     let folders = [];
@@ -664,22 +802,29 @@
       const cfg = await apiFetch('/notion/config');
       folders = cfg.folders || [];
       currentIndex = folders.findIndex((f, index) => _timerKey(index, f) === timerKey);
-      if (currentIndex < 0) {
+      const folder = currentIndex >= 0 ? folders[currentIndex] : null;
+      if (currentIndex < 0 || !cfg.has_token || !folder?.notion_page_id) {
         // 該当設定行が削除されていた。自分のタイマーも片付ける
         if (_autoSyncTimers[timerKey]) {
           clearInterval(_autoSyncTimers[timerKey]);
           delete _autoSyncTimers[timerKey];
         }
+        _releaseSyncLock(lockToken);
         return;
       }
     } catch (e) {
       console.warn('Notion auto-sync config fetch failed for', timerKey, e);
+      _releaseSyncLock(lockToken);
       return;
     }
     _syncInProgress = true;
     try {
       const res = await apiPost('/notion/sync', { folder_index: currentIndex, mode: 'push' });
-      const total = res.pushed || 0;
+      const total = _countValue(res.pushed);
+      if (_syncResultHasIssues(res)) {
+        showStatus(`Notion自動同期に未完了の項目があります${_syncResultErrorMessage(res)}`, true);
+        return;
+      }
       if (total > 0) {
         showStatus(`Notion自動同期: ${total}件の変更を同期しました`);
         if (typeof loadOutliner === 'function') await loadOutliner();
@@ -688,6 +833,7 @@
       console.warn('Notion auto-sync failed for', timerKey, e);
     } finally {
       _syncInProgress = false;
+      _releaseSyncLock(lockToken);
     }
   }
 

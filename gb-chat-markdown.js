@@ -8,7 +8,23 @@
 
   function _trimTrailingPunctuation(value) {
     let text = String(value || '');
-    while (/[.,;:!?、。）」』】）\]]$/.test(text)) text = text.slice(0, -1);
+    const bracketPairs = { ')': '(', ']': '[', '）': '（', '」': '「', '』': '『', '】': '【' };
+    const isBalancedClosing = (close) => {
+      const open = bracketPairs[close];
+      let depth = 0;
+      for (const ch of text) {
+        if (ch === open) depth += 1;
+        else if (ch === close) depth -= 1;
+      }
+      return depth >= 0;
+    };
+    const shouldTrim = () => {
+      const ch = text.slice(-1);
+      if (!ch) return false;
+      if (/[.,;:!?、。]/.test(ch)) return true;
+      return Object.prototype.hasOwnProperty.call(bracketPairs, ch) && !isBalancedClosing(ch);
+    };
+    while (shouldTrim()) text = text.slice(0, -1);
     return text;
   }
 
@@ -80,7 +96,23 @@
       target = target.slice(1, -1).trim();
     }
     if ((target.startsWith("'") && target.endsWith("'"))) target = target.slice(1, -1).trim();
-    return target;
+    return _unescapeMarkdownText(target);
+  }
+
+  function _unescapeMarkdownText(value) {
+    return String(value || '').replace(/\\([\\`*_{}\[\]()#+\-.!|>])/g, '$1');
+  }
+
+  function _findUnescapedChar(text, start, targetChar) {
+    for (let i = Math.max(0, Number(start) || 0); i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === targetChar) return i;
+    }
+    return -1;
   }
 
   function _appendText(parent, text) {
@@ -159,8 +191,8 @@
 
   function _safeInlineFont(value) {
     const raw = String(value || '').trim();
-    if (!raw || /url\s*\(|expression\s*\(|[<>[\]]/.test(raw)) return '';
-    return /^[\w\s.,'"()-]+$/.test(raw) ? raw : '';
+    if (!raw || raw.length > 160 || /url\s*\(|expression\s*\(|[<>[\]{};\\]/i.test(raw)) return '';
+    return raw;
   }
 
   function _makeChatStyleSpan(rawAttrs) {
@@ -383,12 +415,12 @@
       }
 
       if (rest.startsWith('![')) {
-        const closeBracket = text.indexOf(']', i + 2);
+        const closeBracket = _findUnescapedChar(text, i + 2, ']');
         if (closeBracket > i && text[closeBracket + 1] === '(') {
           const closeParen = _findMarkdownLinkEnd(text, closeBracket + 1);
           if (closeParen > closeBracket) {
             flush();
-            parent.appendChild(_makeImage(text.slice(i + 2, closeBracket), text.slice(closeBracket + 2, closeParen)));
+            parent.appendChild(_makeImage(_unescapeMarkdownText(text.slice(i + 2, closeBracket)), text.slice(closeBracket + 2, closeParen)));
             i = closeParen + 1;
             continue;
           }
@@ -396,12 +428,12 @@
       }
 
       if (rest.startsWith('[')) {
-        const closeBracket = text.indexOf(']', i + 1);
+        const closeBracket = _findUnescapedChar(text, i + 1, ']');
         if (closeBracket > i && text[closeBracket + 1] === '(') {
           const closeParen = _findMarkdownLinkEnd(text, closeBracket + 1);
           if (closeParen > closeBracket) {
             flush();
-            parent.appendChild(_makeLink(text.slice(i + 1, closeBracket), text.slice(closeBracket + 2, closeParen)));
+            parent.appendChild(_makeLink(_unescapeMarkdownText(text.slice(i + 1, closeBracket)), text.slice(closeBracket + 2, closeParen)));
             i = closeParen + 1;
             continue;
           }

@@ -58,6 +58,11 @@
     return overlay.querySelector(LIVE_DIALOG_SELECTOR);
   }
 
+  function _hasVisibleDirectContent(overlay) {
+    if (!overlay?.children) return false;
+    return Array.from(overlay.children).some((child) => _isVisibleElement(child));
+  }
+
   function _isShellDisabled(overlay, modal) {
     return overlay?.dataset?.modalShell === 'off'
       || overlay?.dataset?.modalShellEnhanced === 'skip'
@@ -76,8 +81,8 @@
     if (!overlay?.matches?.(OVERLAY_SELECTOR)) return false;
     if (!_isVisibleElement(overlay)) return false;
     const dialog = _directLiveDialog(overlay);
-    if (!dialog) return true;
-    return !_isVisibleElement(dialog);
+    if (dialog) return !_isVisibleElement(dialog) && !_hasVisibleDirectContent(overlay);
+    return !_hasVisibleDirectContent(overlay);
   }
 
   function cleanupStaleOverlays() {

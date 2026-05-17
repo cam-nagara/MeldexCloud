@@ -4,7 +4,6 @@
   if (window.MeldexSampleInstaller) return;
 
   const DECISION_KEY_PREFIX = 'meldex-sample-install-decision-v1:';
-  const DEFAULT_SAMPLE_DOWNLOAD_URL = 'https://github.com/cam-nagara/MeldexCloud/releases/latest/download/MeldexSamples.zip';
   let _promptVisible = false;
   let _scheduled = false;
 
@@ -63,7 +62,7 @@
   function _sampleDownloadUrl() {
     const cfg = window.MeldexCloudRuntimeConfig || {};
     const url = String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
-    return /\.zip(?:[?#].*)?$/i.test(url) ? url : DEFAULT_SAMPLE_DOWNLOAD_URL;
+    return /\.zip(?:[?#].*)?$/i.test(url) ? url : '';
   }
 
   function _showStatus(message, isError) {
@@ -83,10 +82,17 @@
 
   function _resultMessage(result) {
     const copied = Number(result?.copied || 0);
+    const updated = Number(result?.updated || 0);
     const skipped = Number(result?.skipped || 0);
     const failed = Number(result?.failed || 0);
+    if (result?.ok === false) {
+      const message = result?.message || result?.error || result?.detail?.message || result?.skipped || '';
+      return message ? `サンプルファイルを追加できませんでした: ${message}` : 'サンプルファイルを追加できませんでした';
+    }
     if (failed > 0) return `サンプルファイルの追加に失敗しました（失敗 ${failed} 件）`;
+    if (copied > 0 && updated > 0) return `サンプルファイルを追加・更新しました（追加 ${copied} 件 / 更新 ${updated} 件）`;
     if (copied > 0) return `サンプルファイルを追加しました（追加 ${copied} 件）`;
+    if (updated > 0) return `サンプルファイルを更新しました（更新 ${updated} 件）`;
     if (skipped > 0) return 'サンプルファイルは既に追加済みです';
     return 'サンプルファイルを確認しました';
   }
@@ -102,7 +108,9 @@
       return result;
     }
     if (typeof apiPost !== 'function') throw new Error('サンプル追加APIを呼び出せませんでした');
-    const result = await apiPost('/samples/install', { downloadUrl: _sampleDownloadUrl() }, { silentError: true });
+    const downloadUrl = _sampleDownloadUrl();
+    const body = downloadUrl ? { downloadUrl } : {};
+    const result = await apiPost('/samples/install', body, { silentError: true });
     if (result?.ok) _writeDecision(ctx, 'installed');
     if (typeof loadOutliner === 'function') loadOutliner()?.catch?.(() => {});
     if (typeof renderHomeFolderTree === 'function') {
@@ -158,7 +166,13 @@
         try {
           const result = await installNow(ctx);
           status.textContent = _resultMessage(result);
-          setTimeout(() => close(result), 700);
+          if (result?.ok) {
+            setTimeout(() => close(result), 700);
+            return;
+          }
+          installButton.disabled = false;
+          laterButton.disabled = false;
+          _showStatus(status.textContent, true);
         } catch (error) {
           status.textContent = error?.message || String(error);
           installButton.disabled = false;

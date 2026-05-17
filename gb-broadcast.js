@@ -4,7 +4,8 @@
 const MeldexBroadcast = (() => {
   const CHANNEL_NAME = 'meldex';
   let channel = null;
-  const windowId = crypto.randomUUID();
+  const windowId = globalThis.crypto?.randomUUID?.()
+    || 'win-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   const _listeners = {};
 
   function init() {
@@ -25,7 +26,7 @@ const MeldexBroadcast = (() => {
   function send(type, payload) {
     if (!channel) init();
     if (!channel) return;
-    channel.postMessage({ type, windowId, timestamp: Date.now(), ...payload });
+    channel.postMessage({ ...(payload || {}), type, windowId, timestamp: Date.now() });
   }
 
   function on(type, callback) {
@@ -78,9 +79,11 @@ const MeldexBroadcast = (() => {
       .replace(/\]/g, '\\]')
       .replace(/\r?\n/g, ' ');
     const escapeMarkdownPath = (text) => String(text || '')
+      .replace(/\\/g, '/')
+      .replace(/\)/g, '\\)')
       .replace(/>/g, '%3E')
       .replace(/\r?\n/g, '');
-    const md = `[${escapeMarkdownLabel(name)}](<${escapeMarkdownPath(path)}>)`;
+    const md = `[${escapeMarkdownLabel(name)}](${escapeMarkdownPath(path)})`;
     const icon = typeof MeldexDnD !== 'undefined' ? MeldexDnD.getIconForType(type) : 'file';
     const html = `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${typeof lucide !== 'undefined' ? lucide(icon, 12) : ''}${esc(name)}</span>`;
     try {

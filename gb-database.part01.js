@@ -70,6 +70,64 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
   });
 }
 
+function _renderDbLoadError(ctx, error) {
+  ctx = _normalizeDbRenderContext(ctx);
+  clearPivot(ctx);
+  const message = 'シートを読み込めませんでした: ' + (error?.message || error || '不明なエラー');
+  const safeMessage = typeof esc === 'function'
+    ? esc(message)
+    : String(message).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const tblId = ctx?.tableId || 'pivot-table';
+  const tbody = _paneEl(ctx, '#' + tblId + ' tbody') || document.querySelector('#pivot-table tbody');
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="999" style="padding:24px;color:var(--fg2);">${safeMessage}</td></tr>`;
+  }
+  const errorHtml = `<div class="db-load-error" role="alert" style="padding:40px;text-align:center;color:var(--fg2);">${safeMessage}</div>`;
+  ['.gallery-view', '.kanban-view', '.timeline-view', '.chart-view', '.graph-view', '.form-view'].forEach(selector => {
+    const container = _paneEl(ctx, selector) || document.querySelector(selector);
+    if (container) container.innerHTML = errorHtml;
+  });
+}
+
+function _dbViewFormConfigId(view) {
+  return view?.typeSpecific?.form?.formConfig?.id || view?.formConfig?.id || '';
+}
+
+function _applyBackendDbViewConfig(dbPath, viewConfig) {
+  if (!viewConfig || !Array.isArray(viewConfig.savedViews) || !viewConfig.savedViews.length) return false;
+  const current = typeof getDbViewConfig === 'function' ? (getDbViewConfig(dbPath) || {}) : {};
+  const currentViews = Array.isArray(current.savedViews) ? current.savedViews.slice() : [];
+  let changed = false;
+  const nextViews = currentViews.slice();
+  viewConfig.savedViews.forEach(serverView => {
+    if (!serverView || typeof serverView !== 'object') return;
+    const serverId = _dbViewFormConfigId(serverView);
+    const index = nextViews.findIndex(view => {
+      if (!view || view.viewMode !== serverView.viewMode) return false;
+      const viewId = _dbViewFormConfigId(view);
+      return (serverId && viewId === serverId) || (view.name || '') === (serverView.name || '');
+    });
+    if (index >= 0) {
+      const before = JSON.stringify(nextViews[index] || {});
+      nextViews[index] = { ...nextViews[index], ...serverView, typeSpecific: { ...(nextViews[index]?.typeSpecific || {}), ...(serverView.typeSpecific || {}) } };
+      changed = changed || before !== JSON.stringify(nextViews[index] || {});
+    } else {
+      nextViews.push(serverView);
+      changed = true;
+    }
+  });
+  if (!changed && currentViews.length === nextViews.length) return false;
+  const next = { ...current, savedViews: nextViews };
+  if (!Number.isInteger(current.currentViewIdx) && Number.isInteger(viewConfig.currentViewIdx)) {
+    next.currentViewIdx = Math.max(0, Math.min(viewConfig.currentViewIdx, nextViews.length - 1));
+  } else if (!Number.isInteger(next.currentViewIdx) || next.currentViewIdx < 0 || next.currentViewIdx >= nextViews.length) {
+    next.currentViewIdx = 0;
+  }
+  if (typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, next, { skipHistory: true });
+  else if (typeof localStorage !== 'undefined') localStorage.setItem('dbViewConfig:' + (dbPath || ''), JSON.stringify(next));
+  return true;
+}
+
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
   const showOpenLoading = !openOpts.silent
@@ -98,8 +156,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   ctx._dbLoadSeq = dbLoadSeq;
   const isStaleDbLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
     || ctx._dbLoadSeq !== dbLoadSeq
-    || ctx.dbPath !== dbPath
-    || state.currentDbPath !== dbPath;
+    || ctx.dbPath !== dbPath;
   if (!openOpts.skipSaveLastView) saveLastView({type:'pivot', dbPath});
   if (!openOpts.skipNavPush) {
     const _navEntry = {type:'pivot', path: dbPath};
@@ -107,7 +164,12 @@ async function selectDatabase(dbPath, ctx, opts) {
   }
   if (!openOpts.skipRecent) addRecent(dbPath.split('/').pop() || '', dbPath, 'database');
   if (!openOpts.skipAutoVersion) startAutoVersion(dbPath, 'db');
-  if (!openOpts.skipHistoryScope) historySetScope('db:' + (dbPath.split('/').pop() || dbPath));
+  if (!openOpts.skipHistoryScope) {
+    const historyScope = typeof _dbViewConfigHistoryScope === 'function'
+      ? _dbViewConfigHistoryScope(dbPath)
+      : 'db:' + (dbPath.split('/').pop() || dbPath);
+    historySetScope(historyScope);
+  }
 
   // フォルダツリーで対応するノードをハイライト
   if (!openOpts.skipHighlight) highlightOutlinerNode(dbPath);
@@ -183,6 +245,15 @@ async function selectDatabase(dbPath, ctx, opts) {
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
     if (isStaleDbLoad()) return;
     state.dbMetadata = dbMetadata;
+    ctx.dbMetadata = dbMetadata;
+    if (_applyBackendDbViewConfig(dbPath, state.dbMetadata?.view_config)) {
+      const latestMode = getCurrentViewMode(dbPath);
+      if (latestMode && latestMode !== dbViewMode) {
+        dbViewMode = latestMode;
+        ctx.viewMode = dbViewMode;
+        if (!openOpts.skipShowView) showView(dbViewMode, ctx);
+      }
+    }
     // DB自身のスタイル（style: 優先、旧 theme: も後方互換で読む）は DB パネルにのみ適用
     const _dbStyle = state.dbMetadata && (state.dbMetadata.style || state.dbMetadata.theme);
     if (!openOpts.skipGlobalUi && _dbStyle && typeof applyFileStyleToPanel === 'function') {
@@ -190,7 +261,8 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
   } catch {
     if (isStaleDbLoad()) return;
-    state.dbMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null };
+    state.dbMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
+    ctx.dbMetadata = state.dbMetadata;
   }
 
   // localStorage → バックエンドへの自動マイグレーション（property_types）
@@ -214,10 +286,24 @@ async function selectDatabase(dbPath, ctx, opts) {
       await _preloadRelationMapsForDb(dbPath, ctx.pivotData);
       if (isStaleDbLoad()) return;
     }
+    const latestDbViewMode = getCurrentViewMode(dbPath);
+    if (latestDbViewMode && latestDbViewMode !== dbViewMode) {
+      dbViewMode = latestDbViewMode;
+      ctx.viewMode = dbViewMode;
+      if (!openOpts.skipShowView) showView(dbViewMode, ctx);
+    }
     // カレンダーDBは初回表示時にカレンダービューに自動切替
     if (ctx.pivotData.calendar_db && dbViewMode === 'pivot') {
       dbViewMode = 'calendar';
       ctx.viewMode = dbViewMode;
+      const calendarCfg = getDbViewConfig(dbPath);
+      const calendarView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+        ? _getCurrentDbViewConfigEntryFromConfig(calendarCfg)
+        : null;
+      if (calendarView && calendarView.viewMode !== 'calendar') {
+        calendarView.viewMode = 'calendar';
+        saveDbViewConfig(dbPath, calendarCfg, { skipHistory: true });
+      }
       if (!openOpts.skipShowView) showView('timeline', ctx);
     }
     const entityCountForLoading = Object.keys(ctx.pivotData.entities || {}).length;
@@ -251,12 +337,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     ctx.pivotData = null;
     state.pivotData = null;
     state.dbMetadata = null;
-    clearPivot(ctx);
-    const tbody = _paneEl(ctx, '#pivot-table tbody') || document.querySelector('#pivot-table tbody');
-    if (tbody) {
-      const message = esc('シートを読み込めませんでした: ' + (e?.message || e || '不明なエラー'));
-      tbody.innerHTML = `<tr><td colspan="999" style="padding:24px;color:var(--fg2);">${message}</td></tr>`;
-    }
+    _renderDbLoadError(ctx, e);
     if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
       showStatus('シート読み込みエラー: ' + (e?.message || e), true);
     }
@@ -405,7 +486,13 @@ function clearPivot(ctx) {
 // ヘッダーのインラインリネーム
 /* インライン編集・キーボードナビゲーション → gb-db-inline-edit.js に分離 */
 
-function _dbScope() { return state.currentDbPath ? 'db:' + state.currentDbPath.split('/').pop() : ''; }
+function _dbScope() {
+  if (!state.currentDbPath) return '';
+  if (typeof _dbViewConfigHistoryScope === 'function') {
+    return _dbViewConfigHistoryScope(state.currentDbPath);
+  }
+  return 'db:' + String(state.currentDbPath).replace(/\\/g, '/');
+}
 
 function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml) {
   const dbPath = state.currentDbPath;

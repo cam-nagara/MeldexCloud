@@ -3,17 +3,26 @@
     const srcSel = _ptGet('pt-date-source', scope);
     const rangeCb = _ptGet('pt-date-range', scope);
     const rangeNote = _ptGet('pt-date-range-note', scope);
-    srcSel?.addEventListener('change', () => {
+    const syncCb = _ptGet('pt-calsync-enabled', scope);
+    const syncBody = _ptGet('pt-calsync-body', scope);
+    const refreshDateSourceUi = () => {
       if (!rangeCb || !rangeNote) return;
       if (srcSel.value === 'modified') {
-        rangeCb.checked = false;
         rangeCb.disabled = true;
         rangeNote.style.display = '';
+        if (syncCb) {
+          syncCb.disabled = true;
+        }
+        if (syncBody) syncBody.style.display = 'none';
       } else {
         rangeCb.disabled = false;
         rangeNote.style.display = 'none';
+        if (syncCb) syncCb.disabled = false;
+        if (syncBody && syncCb?.checked) syncBody.style.display = '';
       }
-    });
+    };
+    refreshDateSourceUi();
+    srcSel?.addEventListener('change', refreshDateSourceUi);
   } else if (type === 'user' || type === 'multi-user') {
     const curSource = current.source || '';
     optDiv.innerHTML = `<div class="field"><label>データソース</label>
@@ -65,21 +74,35 @@ function _ptGet(id, root) {
 
 function _ptState(root) {
   const scope = _ptResolveRoot(root);
+  const useWindowFallback = scope === document || !scope._ptDbPath;
+  const dbPath = scope._ptDbPath || (useWindowFallback ? window._ptDbPath : '') || state.currentDbPath || '';
+  const isCurrent = typeof _ptIsCurrentDbPath === 'function'
+    ? _ptIsCurrentDbPath(dbPath)
+    : (!dbPath || !state.currentDbPath || dbPath === state.currentDbPath);
   return {
-    current: scope._ptCurrent || window._ptCurrent || {},
-    existing: scope._ptExistingValues || window._ptExistingValues || [],
-    propName: scope._ptPropName || window._ptPropName || '',
+    current: scope._ptCurrent || (useWindowFallback ? window._ptCurrent : null) || {},
+    existing: scope._ptExistingValues || (useWindowFallback ? window._ptExistingValues : null) || [],
+    propName: scope._ptPropName || (useWindowFallback ? window._ptPropName : '') || '',
+    dbPath,
+    pivotData: scope._ptPivotData || (useWindowFallback ? window._ptPivotData : null) || (isCurrent ? state.pivotData : null) || null,
+    ctx: scope._ptCtx || (useWindowFallback ? window._ptCtx : null) || null,
   };
 }
 
-function _ptSetState(root, current, existing, propName) {
+function _ptSetState(root, current, existing, propName, dbPath, pivotData, ctx) {
   const scope = _ptResolveRoot(root);
   scope._ptCurrent = current || {};
   scope._ptExistingValues = existing || [];
   scope._ptPropName = propName || '';
+  scope._ptDbPath = dbPath || state.currentDbPath || '';
+  scope._ptPivotData = pivotData || null;
+  scope._ptCtx = ctx || null;
   window._ptCurrent = scope._ptCurrent;
   window._ptExistingValues = scope._ptExistingValues;
   window._ptPropName = scope._ptPropName;
+  window._ptDbPath = scope._ptDbPath;
+  window._ptPivotData = scope._ptPivotData;
+  window._ptCtx = scope._ptCtx;
 }
 
 function _ptReadUiType(root) {
@@ -106,10 +129,25 @@ function _renderPropertyMultiplicityControls(currentType, scopeId) {
   </div>`;
 }
 
-function _propertySettingsExistingValues(propName) {
+function _ptContextForDbPath(dbPath) {
+  if (typeof _dbFindPaneContextForPath === 'function' && dbPath) return _dbFindPaneContextForPath(dbPath);
+  return null;
+}
+
+function _ptPivotDataForDbPath(dbPath) {
+  const ctx = _ptContextForDbPath(dbPath);
+  if (ctx?.pivotData) return ctx.pivotData;
+  if (typeof _ptIsCurrentDbPath === 'function' ? _ptIsCurrentDbPath(dbPath) : (!dbPath || dbPath === state.currentDbPath)) {
+    return state.pivotData || null;
+  }
+  return null;
+}
+
+function _propertySettingsExistingValues(propName, pivotData) {
   const existingValues = new Set();
-  if (state.pivotData) {
-    Object.values(state.pivotData.entities).forEach(ent => {
+  const data = pivotData || state.pivotData;
+  if (data?.entities) {
+    Object.values(data.entities).forEach(ent => {
       (ent[propName] || []).forEach(v => existingValues.add(v.value));
     });
   }
@@ -121,7 +159,11 @@ async function applyPropertyType(propName, root) {
   window._ptActiveRoot = scope;
   const type = _ptReadUiType(scope);
   const config = { type };
-  const prev = _ptState(scope).current || {};
+  const stateInfo = _ptState(scope);
+  const dbPath = stateInfo.dbPath || state.currentDbPath || '';
+  const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
+  const pivotData = stateInfo.pivotData || _ptPivotDataForDbPath(dbPath);
+  const prev = stateInfo.current || {};
 
   if (type === 'select' || type === 'multi-select') {
     const textarea = _ptGet('pt-select-options', scope);
@@ -149,7 +191,7 @@ async function applyPropertyType(propName, root) {
     const src = _ptGet('pt-formula-src', scope);
     if (src) config.formula = src.value;
   } else if (type === 'rollup' && typeof collectRollupConfig === 'function') {
-    Object.assign(config, collectRollupConfig());
+    Object.assign(config, collectRollupConfig(scope));
   } else if (type === 'button') {
     config.label = _ptGet('pt-btn-label', scope)?.value || '実行';
     config.actions = _collectButtonActions(scope);
@@ -180,7 +222,7 @@ async function applyPropertyType(propName, root) {
   // Phase 3 §5.1: calendarSync（date 型のみ）
   if (type === 'date') {
     let cs = null;
-    try { cs = _collectCalendarSyncConfig(scope); }
+    try { cs = config.source === 'modified' ? null : _collectCalendarSyncConfig(scope); }
     catch { return; /* バリデーションエラーは既に showStatus 済み */ }
     if (cs) config.calendarSync = cs;
   }
@@ -199,7 +241,7 @@ async function applyPropertyType(propName, root) {
 
   if ((type === 'relation' || type === 'multi-relation') && config.bidirectional && typeof _ensureBidirectionalRelationConfig === 'function') {
     try {
-      Object.assign(config, await _ensureBidirectionalRelationConfig(state.currentDbPath, propName, config));
+      Object.assign(config, await _ensureBidirectionalRelationConfig(dbPath, propName, config));
     } catch (e) {
       showStatus('双方向リレーション設定に失敗: ' + (e?.message || e), true);
       return;
@@ -207,15 +249,15 @@ async function applyPropertyType(propName, root) {
   }
   if (typeof _disableBidirectionalRelationConfig === 'function') {
     try {
-      await _disableBidirectionalRelationConfig(state.currentDbPath, propName, prev, config);
+      await _disableBidirectionalRelationConfig(dbPath, propName, prev, config);
     } catch (e) {
       showStatus('双方向リレーション解除に失敗: ' + (e?.message || e), true);
       return;
     }
   }
 
-  const savePromise = setPropertyType(state.currentDbPath, propName, config);
-  _ptSetState(scope, config, _propertySettingsExistingValues(propName), propName);
+  const savePromise = setPropertyType(dbPath, propName, config);
+  _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   if (prev.type === 'image' && type !== 'image') {
     Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).then(() => apiPost('/media/gc', {})).catch(() => {});
   }
@@ -225,7 +267,7 @@ async function applyPropertyType(propName, root) {
   if (type === 'formula') {
     for (const k in _formulaCache) delete _formulaCache[k];
   }
-  renderPivot();
+  renderPivot(ctx);
   return config;
 }
 
@@ -237,12 +279,18 @@ function testFormula(root) {
   if (!src.trim()) { resultEl.textContent = ''; return; }
   if (typeof _ptUpdateFormulaPreview === 'function') _ptUpdateFormulaPreview(scope);
   // 最初のエントリでテスト
-  const data = state.pivotData;
+  const { dbPath, pivotData } = _ptState(scope);
+  const data = pivotData || state.pivotData;
   if (!data || !data.entities) { resultEl.textContent = 'データがありません'; return; }
   const firstEntity = Object.keys(data.entities)[0];
   if (!firstEntity) { resultEl.textContent = 'エントリがありません'; return; }
   const entityData = data.entities[firstEntity];
-  const result = formulaEvalForEntity(src, entityData);
+  let result;
+  try {
+    result = formulaEvalForEntity(src, entityData, { propTypes: getPropertyTypes(dbPath), dbPath });
+  } catch (e) {
+    result = { error: e?.message || String(e) };
+  }
   if (result.error) {
     const loc = Number.isFinite(result.errorPos) ? '（位置 ' + (result.errorPos + 1) + '）' : '';
     resultEl.innerHTML = '<span style="color:var(--red);">エラー' + loc + ': ' + esc(result.error) + '</span>';
@@ -251,8 +299,8 @@ function testFormula(root) {
   }
 }
 
-function _ptFormulaProps() {
-  const props = state.pivotData?.properties || [];
+function _ptFormulaProps(root) {
+  const props = _ptState(root).pivotData?.properties || state.pivotData?.properties || [];
   return Array.isArray(props) ? props : [];
 }
 
@@ -265,7 +313,7 @@ function _ptFormulaTemplates() {
 }
 
 function _ptBuildFormulaOptionsHtml(current, root) {
-  const props = _ptFormulaProps();
+  const props = _ptFormulaProps(root);
   const propButtons = props.length
     ? props.map(p => '<button type="button" class="pt-small-btn" data-formula-prop="' + esc(p) + '">prop("' + esc(p) + '")</button>').join('')
     : '<span class="pt-hint">利用可能なプロパティがありません</span>';
@@ -309,7 +357,12 @@ function _ptFormulaTokenClass(token) {
 function _ptHighlightFormula(src) {
   if (!src) return '';
   if (typeof formulaTokenize !== 'function') return esc(src);
-  const tokens = formulaTokenize(src);
+  let tokens = [];
+  try {
+    tokens = formulaTokenize(src);
+  } catch {
+    return esc(src);
+  }
   let cursor = 0;
   let html = '';
   tokens.forEach(token => {
@@ -328,7 +381,11 @@ function _ptUpdateFormulaPreview(root) {
   const textarea = _ptGet('pt-formula-src', scope);
   const preview = _ptGet('pt-formula-preview', scope);
   if (!textarea || !preview) return;
-  preview.innerHTML = _ptHighlightFormula(textarea.value || '');
+  try {
+    preview.innerHTML = _ptHighlightFormula(textarea.value || '');
+  } catch {
+    preview.textContent = textarea.value || '';
+  }
 }
 
 function _ptBindFormulaEditor(root) {
@@ -374,6 +431,8 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     target.innerHTML = `<div class="gb-empty-placeholder" style="padding:16px;">列を選択してください</div>`;
     return;
   }
+  const ctx = _ptContextForDbPath(dbPath);
+  const pivotData = ctx?.pivotData || _ptPivotDataForDbPath(dbPath);
   if (propName === '__entity__') {
     const pinned = typeof getEntityColumnPinned === 'function'
       ? getEntityColumnPinned(dbPath)
@@ -397,11 +456,11 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
           historyDetail: this.checked ? '固定' : '解除',
         });
       }
-      if (typeof renderPivot === 'function') renderPivot();
+      if (typeof renderPivot === 'function') renderPivot(ctx);
     });
     return;
   }
-  const availableProps = state.pivotData?.properties || [];
+  const availableProps = pivotData?.properties || [];
   if (availableProps.length && !availableProps.includes(propName)) {
     target.innerHTML = `<div class="gb-empty-placeholder" style="padding:16px;">列を選択してください</div>`;
     return;
@@ -428,15 +487,18 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     </div>
   </div>`;
   const root = target.querySelector('[data-pt-root]');
-  _ptSetState(root, current, _propertySettingsExistingValues(propName), propName);
+  _ptSetState(root, current, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   onPropertyTypeChange(root);
   root.querySelector('#pt-settings-apply')?.addEventListener('click', () => applyDbPropertySettings(propName, root));
-  root.querySelector('#pt-settings-open-modal')?.addEventListener('click', () => showPropertyTypeModal(propName));
+  root.querySelector('#pt-settings-open-modal')?.addEventListener('click', () => showPropertyTypeModal(propName, dbPath, ctx));
 }
 
 async function applyDbPropertySettings(originalPropName, root) {
   const scope = _ptResolveRoot(root);
-  const dbPath = state.currentDbPath;
+  const stateInfo = _ptState(scope);
+  const dbPath = stateInfo.dbPath || state.currentDbPath;
+  const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
+  const pivotData = stateInfo.pivotData || _ptPivotDataForDbPath(dbPath);
   if (!dbPath || !originalPropName) return;
   let propName = originalPropName;
   const nameInput = scope.querySelector('#pt-prop-name');
@@ -446,11 +508,27 @@ async function applyDbPropertySettings(originalPropName, root) {
     return;
   }
   if (newName !== originalPropName) {
-    await renameDbProperty(dbPath, originalPropName, newName);
+    const existingProps = new Set([
+      ...(Array.isArray(pivotData?.properties) ? pivotData.properties : []),
+      ...(Array.isArray(getDbViewConfig(dbPath).colOrder) ? getDbViewConfig(dbPath).colOrder : []),
+      ...Object.keys(getPropertyTypes(dbPath) || {}),
+    ]);
+    if (existingProps.has(newName)) {
+      showStatus('同じ名前の列が既にあります: ' + newName, true);
+      return;
+    }
+    try {
+      const ok = await renameDbProperty(dbPath, originalPropName, newName);
+      if (!ok) return;
+    } catch (e) {
+      showStatus('列名変更に失敗: ' + (e?.message || e), true);
+      return;
+    }
     propName = newName;
   }
-  _ptSetState(scope, getPropertyTypes(dbPath)[propName] || {}, _propertySettingsExistingValues(propName), propName);
-  await applyPropertyType(propName, scope);
+  _ptSetState(scope, getPropertyTypes(dbPath)[propName] || {}, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
+  const savedConfig = await applyPropertyType(propName, scope);
+  if (!savedConfig) return;
   if (typeof _setSelectedColumns === 'function') _setSelectedColumns(dbPath, [propName], propName);
   if (typeof state !== 'undefined') state.selectedColumn = { dbPath, propName };
   renderDbPropertySettingsPanel(dbPath, propName);

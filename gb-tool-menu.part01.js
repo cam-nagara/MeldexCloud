@@ -124,7 +124,7 @@ function _buildRecentSubmenuItems(toolType) {
   return recent.map(entry => ({
     label: entry.label || entry.path?.split('/').pop() || '',
     action: () => {
-      if (toolType === 'scriptnote' && entry?.type === 'scenario' && entry.path && typeof openScenarioInScriptNote === 'function') {
+      if (entry?.type === 'scenario' && entry.path && typeof openScenarioInScriptNote === 'function') {
         openScenarioInScriptNote(entry.path, entry.label || '');
         return;
       }
@@ -199,9 +199,14 @@ function getScriptNoteLabelFromPath(path = '', fallback = '') {
 async function _probeJsonFile(path) {
   try {
     const data = await apiFetch('/file?path=' + encodeURIComponent(path));
-    return { exists: true, parsed: JSON.parse(data?.content || '{}') };
-  } catch {
-    return { exists: false, parsed: null };
+    try {
+      return { exists: true, parsed: JSON.parse(data?.content || '{}'), parseError: null };
+    } catch (error) {
+      return { exists: true, parsed: null, parseError: error };
+    }
+  } catch (error) {
+    if (error?.status === 404) return { exists: false, parsed: null, error };
+    return { exists: true, parsed: null, error, inaccessible: true };
   }
 }
 
@@ -307,10 +312,8 @@ function openScenarioInScriptNote(path, label = '', opts) {
         return;
       }
       // activate()が正しいpathで既にロード済みならスキップ
-      if (comp._hasLoadedScenarioPath?.(target.path) && comp._hasRenderedScriptNoteDom?.()) return;
-      if (typeof comp.restoreState === 'function') comp.restoreState(tabState);
-      comp.state.scenarioPath = target.path;
-      comp.state.label = tabLabel;
+      if (!_openOpts.forceReload && comp._hasLoadedScenarioPath?.(target.path) && comp._hasRenderedScriptNoteDom?.()) return;
+      if (typeof comp.restoreState === 'function' && !comp._editor?.doc) comp.restoreState(tabState);
       comp._loadScenario(target.path, { skipNavPush: true });
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => loadIntoTab());
@@ -521,13 +524,6 @@ function showScriptNoteImportModal() {
 function loadScenarioIntoActiveScriptNote(path, label = '') {
   const comp = getActiveScriptNoteComponent();
   if (!comp || typeof comp._loadScenario !== 'function' || !path || !isScriptNotePath(path)) return false;
-  comp.state.scenarioPath = path;
-  comp.state.label = label || comp.state.label || '';
-  const activeTab = typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function' ? GBTabs.getActiveTab() : null;
-  if (activeTab && activeTab.type === 'scriptnote') {
-    activeTab.state = { ...(activeTab.state || {}), scenarioPath: comp.state.scenarioPath, label: comp.state.label };
-    GBLayout.saveLayout?.();
-  }
   comp._loadScenario(path);
   return true;
 }

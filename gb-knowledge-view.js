@@ -11,9 +11,22 @@
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
   }
 
+  function kvAuthToken() {
+    try {
+      if (typeof _authToken !== 'undefined' && _authToken) return _authToken;
+    } catch {}
+    try {
+      return localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || '';
+    } catch {
+      return '';
+    }
+  }
+
   async function kvApi(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const token = kvAuthToken();
+    if (token && !headers.Authorization) headers.Authorization = 'Bearer ' + token;
     const res = await fetch(API_BASE + path, { ...opts, headers });
     const text = await res.text();
     let payload = {};
@@ -360,8 +373,13 @@
     if (!ensureCanWrite(container)) return;
     const item = itemById(container, id);
     if (!item) return;
-    const statement = window.prompt('記憶内容を編集', item.statement || '');
-    if (statement == null) return;
+    const rawStatement = window.prompt('記憶内容を編集', item.statement || '');
+    if (rawStatement == null) return;
+    const statement = String(rawStatement || '').trim();
+    if (!statement) {
+      setAlert(container, '記憶内容を空にはできません。', true);
+      return;
+    }
     await kvApi('/knowledge_items/' + encodeURIComponent(id), {
       method: 'PUT',
       body: JSON.stringify({ statement }),
@@ -381,14 +399,20 @@
 
   function openSourceChat(container, id) {
     const item = itemById(container, id);
-    if (item?.source_chat_path && typeof openSavedChat === 'function') openSavedChat(item.source_chat_path);
+    if (item?.source_chat_path && typeof openSavedChat === 'function') {
+      openSavedChat(item.source_chat_path, item.source_msg_id || '', item.source_folder || undefined);
+    }
   }
 
   async function showManualAdd(container) {
     if (!ensureCanWrite(container)) return;
-    const statement = window.prompt('新しい記憶内容');
+    const rawStatement = window.prompt('新しい記憶内容');
+    if (rawStatement == null) return;
+    const statement = String(rawStatement || '').trim();
     if (!statement) return;
-    const subject = window.prompt('主語・対象', statement.slice(0, 40)) || statement.slice(0, 40);
+    const rawSubject = window.prompt('主語・対象', statement.slice(0, 40));
+    if (rawSubject == null) return;
+    const subject = String(rawSubject || '').trim() || statement.slice(0, 40);
     await kvApi('/knowledge_items', {
       method: 'POST',
       body: JSON.stringify({ type: 'decision', subject, statement, pinned: true, confidence: 1 }),

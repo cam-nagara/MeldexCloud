@@ -2,6 +2,10 @@
 
 function startHeaderInlineRename(th, oldName, dbPath) {
   if (th.querySelector('.th-rename-input')) return;
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(th, { dbPath })
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const targetDbPath = (ctx && ctx.dbPath) || dbPath || state.currentDbPath;
   const label = th.querySelector('.th-label');
   if (label) label.style.display = 'none';
   const inp = document.createElement('input');
@@ -40,32 +44,40 @@ function startHeaderInlineRename(th, oldName, dbPath) {
     committed = true;
     const newName = inp.value.trim();
     if (!newName || newName === oldName) {
-      renderPivot();
+      renderPivot(ctx);
       restoreActiveCellByProp(oldName);
       return;
     }
+    const pivotData = (ctx && ctx.pivotData) || state.pivotData;
     const existingProps = [
-      ...(state.pivotData?.properties || []),
-      ...(getColOrder(dbPath) || []),
-      ...Object.keys(getPropertyTypes(dbPath) || {}),
+      ...(pivotData?.properties || []),
+      ...(getColOrder(targetDbPath) || []),
+      ...Object.keys(getPropertyTypes(targetDbPath) || {}),
     ];
     if (existingProps.some(name => name === newName && name !== oldName)) {
       showStatus('同名のプロパティが既にあります: ' + newName, true);
-      renderPivot();
+      renderPivot(ctx);
       restoreActiveCellByProp(oldName);
       return;
     }
-    if (typeof renameDbProperty === 'function') {
-      await renameDbProperty(dbPath, oldName, newName);
+    try {
+      if (typeof renameDbProperty === 'function') {
+        await renameDbProperty(targetDbPath, oldName, newName);
+      }
+    } catch (err) {
+      showStatus('プロパティ名の変更に失敗: ' + (err?.message || err), true);
+      renderPivot(ctx);
+      restoreActiveCellByProp(oldName);
+      return;
     }
-    const selected = _getSelectedColumns(dbPath).map(name => name === oldName ? newName : name);
-    _setSelectedColumns(dbPath, selected, newName);
-    renderPivot();
+    const selected = _getSelectedColumns(targetDbPath).map(name => name === oldName ? newName : name);
+    _setSelectedColumns(targetDbPath, selected, newName);
+    renderPivot(ctx);
     restoreActiveCellByProp(newName);
   };
   inp.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; renderPivot(); restoreActiveCellByProp(oldName); }
+    if (e.key === 'Escape') { committed = true; renderPivot(ctx); restoreActiveCellByProp(oldName); }
     if (e.key === 'Tab') { e.preventDefault(); commit(); }
   });
   inp.addEventListener('blur', commit);
@@ -286,7 +298,9 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
 // 型対応インラインセル入力
 // D-7: ctx を最初に取得して state 参照を排除。Undo callback は closure 内 dbPath を使う
 function startCellInlineAdd(td, entityPath, entityName, propName) {
-  const ctx = _currentPaneState();
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(td, { dbPath: typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : state.currentDbPath })
+    : _currentPaneState();
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   // 列ロックチェック
   const lockMsg = checkColumnEditable(dbPath, propName);
@@ -337,8 +351,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       if ((type === 'relation' || type === 'multi-relation')
           && typeof _clearCascadeDependentValues === 'function') {
-        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, '', value);
+        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, '', value, { dbPath, ctx });
       }
+      const historyScope = typeof _dbScopeForPath === 'function'
+        ? _dbScopeForPath(dbPath)
+        : (typeof _dbScope === 'function' && dbPath === state.currentDbPath ? _dbScope() : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
       if (filePath) {
         const candIdx = result?.candidate_index;
         const undoFn = (candIdx != null)
@@ -357,7 +374,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
               await _restoreCascadeDependentValues(entityPath, cascadeClears);
             }
-            await selectDatabase(dbPath, undefined, { silent: true });
+            await selectDatabase(dbPath, ctx, { silent: true });
           }
           : async () => {
             await apiPost('/outliner/delete', { path: filePath });
@@ -374,7 +391,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
               await _restoreCascadeDependentValues(entityPath, cascadeClears);
             }
-            await selectDatabase(dbPath, undefined, { silent: true });
+            await selectDatabase(dbPath, ctx, { silent: true });
           };
         historyPush('値追加: ' + propName + '=' + value,
           undoFn,
@@ -393,9 +410,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             if (cascadeClears.length && typeof _redoCascadeDependentValues === 'function') {
               await _redoCascadeDependentValues(entityPath, cascadeClears);
             }
-            await selectDatabase(dbPath, undefined, { silent: true });
+            await selectDatabase(dbPath, ctx, { silent: true });
           },
-          _dbScope()
+          historyScope
         );
       }
       if ((type === 'relation' || type === 'multi-relation')
@@ -407,15 +424,16 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           candidate_index: result?.candidate_index,
           status: '案',
           note: '',
-        });
-        await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName));
+        }, ctx);
+        await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
         return;
       }
       // 楽観的増分更新: pivotData をローカルで更新してからセル DOM だけ書き換える
       // フォールバック条件 (group化中等) では従来通り全再描画
-      if (state.pivotData?.entities) {
+      const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+      if (pivotData?.entities) {
         const _entName = entityPath.replace(/\.md$/, '').split('/').pop();
-        const _entData = state.pivotData.entities[_entName];
+        const _entData = pivotData.entities[_entName];
         if (_entData) {
           if (!Array.isArray(_entData[propName])) _entData[propName] = [];
           _entData[propName].push({
@@ -429,9 +447,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         }
       }
       const _refreshed = typeof _tryRefreshPivotCellLocal === 'function'
-        && _tryRefreshPivotCellLocal(td, entityPath, propName);
+        && _tryRefreshPivotCellLocal(td, entityPath, propName, { dbPath, ctx });
       if (!_refreshed) {
-        await selectDatabase(dbPath, undefined, { silent: true });
+        await selectDatabase(dbPath, ctx, { silent: true });
       }
       _restoreCellPos(pos, moveTo);
     } catch(e) { cancel(); }
@@ -730,10 +748,16 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
 }
 
 // 列をインラインで挿入（ダイアログなし）
-function insertPropertyInline(refProp, direction) {
-  const dbPath = state.currentDbPath;
+function insertPropertyInline(refProp, direction, ctxOrDbPath) {
+  const ctx = (typeof ctxOrDbPath === 'object' && ctxOrDbPath)
+    ? ctxOrDbPath
+    : (typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(null, { dbPath: typeof ctxOrDbPath === 'string' ? ctxOrDbPath : state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
+  const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
-  const order = getColOrder(dbPath) || [...(state.pivotData?.properties || [])];
+  const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+  const order = getColOrder(dbPath) || [...(pivotData?.properties || [])];
   let idx = 1, name = 'プロパティ';
   while (order.includes(name)) { idx++; name = 'プロパティ' + idx; }
   const refIdx = order.indexOf(refProp);
@@ -745,10 +769,10 @@ function insertPropertyInline(refProp, direction) {
   }
   setColOrder(dbPath, order, { skipHistory: true });
   setPropertyType(dbPath, name, { type: 'text' });
-  renderPivot();
+  renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
   setTimeout(() => {
-    const _ctx = _currentPaneState();
+    const _ctx = ctx || _currentPaneState();
     const th = _paneEl(_ctx, '#' + (_ctx.tableId || 'pivot-table') + ` thead th[data-prop="${name}"]`);
     if (th) startHeaderInlineRename(th, name, dbPath);
   }, 30);
@@ -831,8 +855,8 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
     // 拡張集計エンジン使用（gb-db-aggregate.js）
     const resolvedType = fPtc?.type || (typeof inferPropertyType === 'function' ? inferPropertyType(propName, entitiesMap, entityNames) : 'text');
     const result = typeof calcAggregation === 'function'
-      ? calcAggregation(propName, entitiesMap, entityNames, countType, fPtc)
-      : calcColumnCount(propName, entitiesMap, entityNames, countType, fPtc);
+      ? calcAggregation(propName, entitiesMap, entityNames, countType, fPtc, propTypes)
+      : calcColumnCount(propName, entitiesMap, entityNames, countType, fPtc, propTypes);
 
     const wrapper = document.createElement('div');
     wrapper.style.cssText = 'display:flex;align-items:center;gap:4px;';

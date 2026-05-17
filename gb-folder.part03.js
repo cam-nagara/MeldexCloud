@@ -10,7 +10,9 @@ function _folderContextCreateParent(item) {
 }
 
 function _folderOpenType(item) {
+  if (typeof _normalizeOpenTypeForNav === 'function') return _normalizeOpenTypeForNav(item?.type);
   if (item?.type === 'database') return 'pivot';
+  if (item?.type === 'scenario') return 'scriptnote';
   return item?.type || 'page';
 }
 
@@ -20,11 +22,16 @@ function _folderRefreshCurrentFolder() {
 }
 
 function _folderCopyMeldexLink(item) {
-  if (!item?.path || typeof MeldexBroadcast === 'undefined') return;
+  if (!item?.path) return;
+  if (typeof MeldexBroadcast === 'undefined') {
+    showStatus('リンクをコピーできませんでした', true);
+    return;
+  }
   const name = item.name || item.path.split(/[\\/]/).pop() || item.path;
   MeldexBroadcast.copyMeldexLink(name, item.path, item.type).then(ok => {
     if (ok) showStatus('リンクをコピーしました');
-  });
+    else showStatus('リンクをコピーできませんでした', true);
+  }).catch(() => showStatus('リンクをコピーできませんでした', true));
 }
 
 function _folderOpenItemInNewTab(item) {
@@ -36,7 +43,12 @@ function _folderOpenItemInNewTab(item) {
 function _folderOpenItemInNewWindow(item) {
   if (!item?.path) return;
   const openType = _folderOpenType(item);
-  const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(item.path) + '&label=' + encodeURIComponent(item.name || '');
+  const openItem = { name: item.name || '', path: item.path, type: openType };
+  const openUrl = typeof buildSingleTabWindowUrl === 'function'
+    ? buildSingleTabWindowUrl(openItem)
+    : (window.MeldexResourceUrl?.appEntry
+      ? window.MeldexResourceUrl.appEntry({ single: 1, open: openType, path: item.path, label: item.name || '' })
+      : '/Meldex.html?single=1&open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(item.path) + '&label=' + encodeURIComponent(item.name || ''));
   if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
   else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
 }

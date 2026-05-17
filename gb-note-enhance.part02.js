@@ -45,6 +45,8 @@ function _saveFileTheme(theme) {
   }
 }
 
+let _dbFolderNoteStyleSaveQueue = Promise.resolve();
+
 function _syncDbMetadataFileStyle(theme) {
   if (!state?.dbMetadata) return;
   if (theme && Object.keys(theme).length > 0) {
@@ -79,35 +81,40 @@ function _saveFileThemeToNoteFrontmatter(theme) {
   pc.dispatchEvent(new Event('input'));
 }
 
-async function _saveFileThemeToDbFolderNote(theme) {
+function _saveFileThemeToDbFolderNote(theme) {
   const dbPath = state?.currentDbPath;
-  if (!dbPath) return;
+  if (!dbPath) return Promise.resolve();
+  const themeSnapshot = _cloneFileStyleObject(theme);
+  const saveTask = async () => {
   // フォルダノートのフロントマターをAPI経由で更新
-  const folderName = dbPath.split('/').pop();
-  const notePath = dbPath + '/' + folderName + '.md';
-  try {
-    const data = await apiFetch('/file?path=' + encodeURIComponent(notePath));
-    let content = data.content || '';
-    const styleYaml = _fileStyleToYaml(theme);
-    // フロントマター部分のみ操作（本文の style:/theme: と誤マッチ防止）
-    const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?)/);
-    if (fmMatch) {
-      let fm = fmMatch[1];
-      // 旧 theme: ブロックは必ず除去
-      fm = fm.replace(/theme:\s*\n(?:\s+--[^\n]+\n?)*/m, '');
-      if (_fileStyleBlockRegex().test(fm)) {
-        fm = fm.replace(_fileStyleBlockRegex(), styleYaml);
+    const folderName = dbPath.split('/').pop();
+    const notePath = dbPath + '/' + folderName + '.md';
+    try {
+      const data = await apiFetch('/file?path=' + encodeURIComponent(notePath));
+      let content = data.content || '';
+      const styleYaml = _fileStyleToYaml(themeSnapshot);
+      // フロントマター部分のみ操作（本文の style:/theme: と誤マッチ防止）
+      const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?)/);
+      if (fmMatch) {
+        let fm = fmMatch[1];
+        // 旧 theme: ブロックは必ず除去
+        fm = fm.replace(/theme:\s*\n(?:\s+--[^\n]+\n?)*/m, '');
+        if (_fileStyleBlockRegex().test(fm)) {
+          fm = fm.replace(_fileStyleBlockRegex(), styleYaml);
+        } else if (styleYaml) {
+          fm = fm.replace(/\r?\n---\r?\n?$/, '\n' + styleYaml + '---\n');
+        }
+        content = fm + content.substring(fmMatch[1].length);
       } else if (styleYaml) {
-        fm = fm.replace(/\r?\n---\r?\n?$/, '\n' + styleYaml + '---\n');
+        content = '---\n' + styleYaml + '---\n' + content;
       }
-      content = fm + content.substring(fmMatch[1].length);
-    } else if (styleYaml) {
-      content = '---\n' + styleYaml + '---\n' + content;
-    }
-    await apiPut('/file?path=' + encodeURIComponent(notePath), { content });
-    _syncDbMetadataFileStyle(theme);
-    showStatus('DBテーマを保存しました');
-  } catch (e) { showStatus('テーマ保存に失敗しました', true); }
+      await apiPut('/file?path=' + encodeURIComponent(notePath), { content });
+      if (state?.currentDbPath === dbPath) _syncDbMetadataFileStyle(themeSnapshot);
+      showStatus('DBテーマを保存しました');
+    } catch (e) { showStatus('テーマ保存に失敗しました', true); }
+  };
+  _dbFolderNoteStyleSaveQueue = _dbFolderNoteStyleSaveQueue.catch(() => {}).then(saveTask);
+  return _dbFolderNoteStyleSaveQueue;
 }
 
 // ============================================================
@@ -462,52 +469,10 @@ function _ensureTableRowDragHandle() {
   return handle;
 }
 
-const _NOTE_TABLE_SELECTOR = '#page-content table, #entity-freetext table, #dp-editable table, #board-note-editable table';
-const _NOTE_TABLE_EDITABLE_SELECTOR = '#page-content, #entity-freetext, #dp-editable, #board-note-editable';
-let _noteTableActiveCell = null;
-let _noteTableControls = null;
-
-function _noteTableUiZoom() {
-  return (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
-}
-
-function _noteTableCellFromTarget(target) {
-  const cell = target?.closest?.('td, th');
-  if (!cell || !cell.closest?.(_NOTE_TABLE_SELECTOR)) return null;
-  return cell;
-}
-
-function _noteTableEditable(table) {
-  return table?.closest?.(_NOTE_TABLE_EDITABLE_SELECTOR) || null;
-}
-
-function _noteTablePushCustomUndo(editable) {
-  if (editable && typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
-}
-
-function _noteTableDispatchInput(editable, beforeHtml) {
-  if (!editable) return;
-  if (beforeHtml !== undefined && editable.innerHTML === beforeHtml) return;
-  editable.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-function _noteTableConfirm(message) {
-  if (typeof cfConfirm === 'function') return cfConfirm(message);
-  return typeof window.confirm === 'function' ? window.confirm(message) : false;
-}
-
-function _noteTableColumnIndex(cell) {
-  const row = cell?.parentElement;
-  return row ? [...row.children].indexOf(cell) : -1;
-}
-
-function _noteTableNewCellForRow(row, rowIndex) {
-  return document.createElement(rowIndex === 0 && row?.querySelector?.('th') ? 'th' : 'td');
-}
-
 function _noteTableInsertRowNear(cell, where, editable = _noteTableEditable(cell?.closest?.('table'))) {
   const row = cell?.parentElement;
   if (!row) return null;
+  if (!_noteTableCanEdit(editable)) return null;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
   const beforeHtml = editable ? editable.innerHTML : '';
   const colCount = Math.max(row.children.length, 1);
@@ -527,10 +492,13 @@ function _noteTableInsertColumnNear(cell, where, editable = _noteTableEditable(c
   const table = cell?.closest?.('table');
   const row = cell?.parentElement;
   if (!table || !row) return null;
+  if (!_noteTableCanEdit(editable)) return null;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
+  const targetColIdx = where === 'before' ? colIdx : colIdx + 1;
   const beforeHtml = editable ? editable.innerHTML : '';
   let selected = null;
   _noteTablePushCustomUndo(editable);
+  _noteTableInsertColgroupColumn(table, targetColIdx);
   table.querySelectorAll('tr').forEach((tr, rowIndex) => {
     const newCell = _noteTableNewCellForRow(tr, rowIndex);
     const ref = tr.children[colIdx];
@@ -544,6 +512,7 @@ function _noteTableInsertColumnNear(cell, where, editable = _noteTableEditable(c
     }
     if (tr === row) selected = newCell;
   });
+  _noteTableSyncCellWidthsFromColgroup(table);
   _noteTableDispatchInput(editable, beforeHtml);
   return selected;
 }
@@ -552,6 +521,7 @@ async function _noteTableDeleteRow(cell, editable = _noteTableEditable(cell?.clo
   const table = cell?.closest?.('table');
   const row = cell?.parentElement;
   if (!table || !row) return false;
+  if (!_noteTableCanEdit(editable)) return false;
   const removesTable = table.querySelectorAll('tr').length <= 1;
   const ok = await _noteTableConfirm(removesTable ? '最後の行です。表全体を削除しますか？' : 'この行を削除しますか？');
   if (!ok) return false;
@@ -575,6 +545,7 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
   const table = cell?.closest?.('table');
   const row = cell?.parentElement;
   if (!table || !row) return false;
+  if (!_noteTableCanEdit(editable)) return false;
   const rows = [...table.rows];
   if (!rows.length) return false;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
@@ -588,9 +559,11 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
     table.remove();
     _closeNoteTableCellControls();
   } else {
+    _noteTableDeleteColgroupColumn(table, colIdx);
     rows.forEach((tr) => {
       if (colIdx < tr.cells.length) tr.deleteCell(colIdx);
     });
+    _noteTableSyncCellWidthsFromColgroup(table);
     if (nextCell?.isConnected) _showNoteTableCellControls(nextCell);
   }
   _noteTableDispatchInput(editable, beforeHtml);
@@ -599,6 +572,7 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
 
 async function _noteTableDeleteTable(table, editable = _noteTableEditable(table)) {
   if (!table) return false;
+  if (!_noteTableCanEdit(editable)) return false;
   const ok = await _noteTableConfirm('表を削除しますか？');
   if (!ok) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
@@ -689,6 +663,8 @@ function _ensureNoteTableCellControls() {
       _closeNoteTableCellControls();
       return;
     }
+    const editable = _noteTableEditable(cell.closest?.('table'));
+    if (!_noteTableCanEdit(editable)) return;
     let nextCell = null;
     if (action === 'insert-row-before') nextCell = _noteTableInsertRowNear(cell, 'before');
     else if (action === 'insert-row-after') nextCell = _noteTableInsertRowNear(cell, 'after');
@@ -755,6 +731,7 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
   const table = cell?.closest?.('table');
   const editable = options.editable || _noteTableEditable(table);
   if (!table) return null;
+  if (!_noteTableCanEdit(editable)) return null;
   document.querySelectorAll('.table-cell-menu, .gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'table-cell-menu gb-context-menu';
@@ -832,6 +809,8 @@ function _initTableOperations() {
     if (!cell || !cell.closest('#page-content table, #entity-freetext table')) return;
     if (cell.closest('[contenteditable="true"]')) return; // contentEditable内テーブルは gb-editor.js に委譲
     if (cell.querySelector('input.cell-edit')) return;
+    const editable = cell.closest('#page-content, #entity-freetext');
+    if (!_noteTableCanEdit(editable)) return;
 
     const input = document.createElement('input');
     input.className = 'cell-edit';
@@ -885,6 +864,7 @@ function _tableCellCtxMenuHandler(e) {
   if (!cell) return;
   const table = cell.closest('table');
   if (!table) return;
+  if (!_noteTableCanEdit(editable, { silent: true })) return;
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation?.();
@@ -934,7 +914,9 @@ function _notePlaceCaretAtStart(block) {
   if (!block) return;
   if (!block.childNodes.length) block.appendChild(document.createElement('br'));
   const range = document.createRange();
-  range.setStart(block, 0);
+  const lineIdSpan = block.firstElementChild?.classList?.contains('_nl-id') ? block.firstElementChild : null;
+  if (lineIdSpan) range.setStartAfter(lineIdSpan);
+  else range.setStart(block, 0);
   range.collapse(true);
   const sel = window.getSelection();
   sel.removeAllRanges();

@@ -84,9 +84,9 @@ function _rollupResolveEntityNames(names, targetData) {
 /**
  * 1エントリのロールアップ値を計算する
  */
-async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes) {
+async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes, sourceDbPath) {
   const { relationProp, targetProp, aggregation } = rollupConfig;
-  const { names, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes);
+  const { names, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath);
   if (names.length === 0 || !targetDbPath) return aggregation === 'count' ? 0 : '-';
 
   const targetData = await fetchRelatedDbData(targetDbPath);
@@ -113,21 +113,21 @@ async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes)
   const targetPropTypes = getPropertyTypes(targetDbPath);
   const targetPtc = targetPropTypes?.[targetProp] || null;
 
-  return calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc);
+  return calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes);
 }
 
 /**
  * DB全体のロールアップ値を一括計算（バッチ最適化）
  * @returns {Promise<Map<string, string|number>>} entityName → 集計値
  */
-async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes) {
+async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes, sourceDbPath) {
   const { relationProp, targetProp, aggregation } = rollupConfig;
   const results = new Map();
 
   // 参照先DBを1回だけ取得
   const sampleEntity = entityNames[0];
   if (!sampleEntity) return results;
-  const { targetDbPath } = resolveRelationNames(sampleEntity, entitiesMap, relationProp, propTypes);
+  const { targetDbPath } = resolveRelationNames(sampleEntity, entitiesMap, relationProp, propTypes, sourceDbPath);
   if (!targetDbPath) {
     entityNames.forEach(en => results.set(en, '-'));
     return results;
@@ -143,7 +143,7 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
   const targetPtc = targetPropTypes?.[targetProp] || null;
 
   entityNames.forEach(en => {
-    const { names } = resolveRelationNames(en, entitiesMap, relationProp, propTypes);
+    const { names } = resolveRelationNames(en, entitiesMap, relationProp, propTypes, sourceDbPath);
     if (names.length === 0) {
       results.set(en, aggregation === 'count' ? 0 : '-');
       return;
@@ -169,7 +169,7 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
       return;
     }
 
-    const val = calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc);
+    const val = calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes);
     results.set(en, val);
   });
 
@@ -181,7 +181,7 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
 /**
  * プロパティ型モーダル内のロールアップ設定HTMLを生成
  */
-function buildRollupOptionsHtml(current, dbProperties, propTypes) {
+function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
   // リレーション型プロパティのみフィルタ
   const relationProps = dbProperties.filter(p => {
     const pt = propTypes?.[p];
@@ -192,7 +192,7 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes) {
   const aggOptions = _rollupAggregationOptionsForType(initialTargetType);
 
   let html = '<div class="field"><label>リレーションプロパティ</label>';
-  html += '<select id="rollup-relation-prop" data-onchange="onRollupRelationChange(this.value)">';
+  html += '<select id="rollup-relation-prop">';
   html += '<option value="">選択...</option>';
   relationProps.forEach(p => {
     const sel = current?.relationProp === p ? ' selected' : '';
@@ -213,7 +213,7 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes) {
 
   // 初期ロード: 既存設定があれば参照先プロパティをロード
   if (current?.relationProp) {
-    setTimeout(() => onRollupRelationChange(current.relationProp, current.targetProp), 100);
+    setTimeout(() => onRollupRelationChange(current.relationProp, current.targetProp, root), 100);
   }
 
   return html;
@@ -222,56 +222,68 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes) {
 /**
  * リレーションプロパティ選択時に参照先DBのプロパティ一覧を動的取得
  */
-async function onRollupRelationChange(relationPropName, preselect) {
-  const sel = document.getElementById('rollup-target-prop');
+async function onRollupRelationChange(relationPropName, preselect, root) {
+  const scope = typeof _ptResolveRoot === 'function' ? _ptResolveRoot(root) : (root || document);
+  const sel = typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop');
   if (!sel) return;
-  const seq = ++_rollupRelationLoadSeq;
+  const seq = (scope._rollupRelationLoadSeq || 0) + 1;
+  scope._rollupRelationLoadSeq = seq;
+  _rollupRelationLoadSeq++;
   sel.innerHTML = '<option value="">読み込み中...</option>';
 
-  const dbPath = state.currentDbPath;
+  const dbPath = (typeof _ptState === 'function' ? _ptState(scope).dbPath : '') || state.currentDbPath;
   const propTypes = getPropertyTypes(dbPath);
   const ptc = propTypes?.[relationPropName];
   if (!ptc) {
-    if (seq !== _rollupRelationLoadSeq) return;
+    if (seq !== scope._rollupRelationLoadSeq) return;
     sel.innerHTML = '<option value="">(リレーション先未設定)</option>';
-    _rollupSetAggregationOptionsForType('', 'count');
+    _rollupSetAggregationOptionsForType('', 'count', scope);
     return;
   }
   // 自己参照: relationDb が未設定または '' の場合は現在のDBを指す
   const _relDb = (ptc.relationDb === '' || ptc.relationDb == null) ? dbPath : ptc.relationDb;
   const targetData = await fetchRelatedDbData(_relDb);
-  if (seq !== _rollupRelationLoadSeq || sel !== document.getElementById('rollup-target-prop')) return;
+  if (seq !== scope._rollupRelationLoadSeq || sel !== (typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop'))) return;
   if (!targetData || !targetData.properties) {
     sel.innerHTML = '<option value="">(取得失敗)</option>';
-    _rollupSetAggregationOptionsForType('', 'count');
+    _rollupSetAggregationOptionsForType('', 'count', scope);
     return;
   }
 
   const targetPropTypes = _rollupTargetPropertyTypes(_relDb, targetData);
+  const targetProps = Array.from(new Set([
+    ...(Array.isArray(targetData.properties) ? targetData.properties : []),
+    ...Object.keys(targetPropTypes || {}),
+    ...(preselect ? [preselect] : []),
+  ])).filter(p => p && !String(p).startsWith('_'));
   sel.innerHTML = '';
-  targetData.properties.forEach(p => {
+  targetProps.forEach(p => {
     const o = document.createElement('option');
     o.value = p;
     o.textContent = p;
     if (preselect === p) o.selected = true;
     sel.appendChild(o);
   });
-  if (preselect && !targetData.properties.includes(preselect) && sel.options.length) sel.selectedIndex = 0;
+  if (preselect && !targetProps.includes(preselect) && sel.options.length) sel.selectedIndex = 0;
   sel.onchange = () => {
     const pt = targetPropTypes?.[sel.value]?.type || '';
-    _rollupSetAggregationOptionsForType(pt, document.getElementById('rollup-aggregation')?.value || 'count');
+    const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
+    _rollupSetAggregationOptionsForType(pt, aggSel?.value || 'count', scope);
   };
   const selectedType = targetPropTypes?.[sel.value]?.type || '';
-  _rollupSetAggregationOptionsForType(selectedType, document.getElementById('rollup-aggregation')?.dataset.current || 'count');
+  const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
+  _rollupSetAggregationOptionsForType(selectedType, aggSel?.dataset.current || 'count', scope);
 }
 
 /**
  * ロールアップ設定を収集して返す
  */
-function collectRollupConfig() {
-  const relationProp = document.getElementById('rollup-relation-prop')?.value || '';
-  const targetProp = document.getElementById('rollup-target-prop')?.value || '';
-  const aggregation = document.getElementById('rollup-aggregation')?.value || 'count';
+function collectRollupConfig(root) {
+  const scope = typeof _ptResolveRoot === 'function' ? _ptResolveRoot(root) : (root || document);
+  const get = (id) => typeof _ptGet === 'function' ? _ptGet(id, scope) : document.getElementById(id);
+  const relationProp = get('rollup-relation-prop')?.value || '';
+  const targetProp = get('rollup-target-prop')?.value || '';
+  const aggregation = get('rollup-aggregation')?.value || 'count';
   return { type: 'rollup', relationProp, targetProp, aggregation };
 }
 
@@ -295,8 +307,9 @@ function _rollupTargetPropertyTypes(dbPath, targetData) {
   return typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
 }
 
-function _rollupSetAggregationOptionsForType(propType, preferred) {
-  const aggSel = document.getElementById('rollup-aggregation');
+function _rollupSetAggregationOptionsForType(propType, preferred, root) {
+  const scope = typeof _ptResolveRoot === 'function' ? _ptResolveRoot(root) : (root || document);
+  const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
   if (!aggSel) return;
   const options = _rollupAggregationOptionsForType(propType);
   const nextValue = options.some(a => a.key === preferred) ? preferred : 'count';

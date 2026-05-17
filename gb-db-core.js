@@ -68,17 +68,86 @@ function _isNewFormatDb() {
   return !!(state.pivotData && state.pivotData.new_format);
 }
 
-function _entityPath(dbPath, entityName) {
-  return _isNewFormatDb() ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
+function _dbNormalizePath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _dbPathContains(path, rootPath) {
+  const p = _dbNormalizePath(path);
+  const root = _dbNormalizePath(rootPath);
+  return !!root && (p === root || p.startsWith(root + '/'));
+}
+
+function _dbFormatInfoFromPivotData(pivotData) {
+  if (pivotData && Object.prototype.hasOwnProperty.call(pivotData, 'new_format')) {
+    return { known: true, newFormat: !!pivotData.new_format };
+  }
+  return { known: false, newFormat: false };
+}
+
+function _dbFormatInfoForPath(dbPath, pivotData) {
+  const explicit = _dbFormatInfoFromPivotData(pivotData);
+  if (explicit.known) return explicit;
+  const target = _dbNormalizePath(dbPath);
+  if (typeof state !== 'undefined') {
+    const current = _dbNormalizePath(state.currentDbPath);
+    const currentInfo = _dbFormatInfoFromPivotData(state.pivotData);
+    if (currentInfo.known && (!target || target === current)) return currentInfo;
+  }
+  const ctx = target && typeof _dbFindPaneContextForPath === 'function'
+    ? _dbFindPaneContextForPath(target)
+    : null;
+  const ctxInfo = _dbFormatInfoFromPivotData(ctx?.pivotData);
+  if (ctxInfo.known) return ctxInfo;
+  return { known: false, newFormat: _isNewFormatDb() };
+}
+
+function _dbFormatInfoForValueFile(filePath) {
+  const target = _dbNormalizePath(filePath);
+  let best = null;
+  const consider = (dbPath, pivotData) => {
+    const root = _dbNormalizePath(dbPath);
+    if (!root || !_dbPathContains(target, root)) return;
+    const info = _dbFormatInfoFromPivotData(pivotData);
+    if (!info.known) return;
+    if (!best || root.length > best.root.length) best = { root, ...info };
+  };
+  if (typeof state !== 'undefined') consider(state.currentDbPath, state.pivotData);
+  if (typeof getAllPanes === 'function') {
+    try {
+      const panes = getAllPanes() || {};
+      Object.values(panes).forEach(ctx => consider(ctx?.dbPath, ctx?.pivotData));
+    } catch {}
+  }
+  return best || { known: false, newFormat: _isNewFormatDb() };
+}
+
+function _dbIsNewFormat(dbPath, pivotData) {
+  return _dbFormatInfoForPath(dbPath, pivotData).newFormat;
+}
+
+function _entityPath(dbPath, entityName, pivotData) {
+  return _dbIsNewFormat(dbPath, pivotData) ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
 }
 
 function _resolveEntityPathFromValObj(val) {
   if (!val || !val.file) return state.currentEntityPath || '';
+  if (val.entry_path || val.entity_path || val.folder_path) {
+    return _dbNormalizePath(val.entry_path || val.entity_path || val.folder_path);
+  }
   const f = String(val.file).replace(/\\/g, '/');
   const parts = f.split('/');
   const leaf = parts[parts.length - 1] || '';
   if (!leaf.endsWith('.md')) return f;
   const stem = leaf.replace(/\.md$/, '');
+  const format = _dbFormatInfoForValueFile(f);
+  if (format.known) {
+    if (!format.newFormat && stem.includes('_')) {
+      parts.pop();
+      return parts.join('/');
+    }
+    return f;
+  }
   if (!_isNewFormatDb() && stem.includes('_')) {
     parts.pop();
     return parts.join('/');
@@ -113,6 +182,7 @@ async function _apiPutValue(valObj, updates) {
     body.candidate_index = valObj.candidate_index;
   }
   const res = await apiPut('/value?path=' + encodeURIComponent(valObj.file), body);
+  if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
   const entityPath = _resolveEntityPathFromValObj(valObj);
   const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
   const nextValue = updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
@@ -270,10 +340,11 @@ function _setSelectedColumns(dbPath, props, anchor) {
 
 function _dbFindPaneContextForPath(dbPath) {
   if (typeof getAllPanes !== 'function') return null;
+  const target = _dbNormalizePath(dbPath);
   try {
     const panes = getAllPanes() || {};
     for (const ctx of Object.values(panes)) {
-      if (ctx && (!dbPath || ctx.dbPath === dbPath)) return ctx;
+      if (ctx && (!target || _dbNormalizePath(ctx.dbPath) === target)) return ctx;
     }
   } catch {}
   return null;

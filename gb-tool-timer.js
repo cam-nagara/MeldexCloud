@@ -106,10 +106,18 @@ class TimerComponent extends ToolComponent {
     this.countUp = !!savedState.countUp;
     this.timerStarted = !!savedState.timerStarted;
     if (savedState.timerRunning) {
+      const now = Date.now();
+      const savedElapsedAtStart = Number(savedState.elapsedAtStart);
+      const savedStartMs = Number(savedState.timerStartMs);
       this.timerRunning = false;
-      this.elapsedAtStart = this.elapsed;
-      this.timerStartMs = Date.now();
+      this.elapsedAtStart = Number.isFinite(savedElapsedAtStart) ? Math.max(0, savedElapsedAtStart) : this.elapsed;
+      this.timerStartMs = Number.isFinite(savedStartMs) && savedStartMs > 0 ? savedStartMs : now;
+      const elapsedFromClock = Math.max(0, Math.floor((now - this.timerStartMs) / 1000));
+      this.elapsed = Math.min(this.totalSeconds, Math.max(this.elapsed, this.elapsedAtStart + elapsedFromClock));
       this._startTicking();
+    } else {
+      this.elapsedAtStart = this.elapsed;
+      this.timerStartMs = 0;
     }
     this._writeControlsFromState();
     this._updateModeButtons();
@@ -286,8 +294,8 @@ class TimerComponent extends ToolComponent {
       }
       this._drawTimer();
     };
-    tick();
     this._timerInterval = setInterval(tick, 1000);
+    tick();
   }
 
   _pauseTimer() {

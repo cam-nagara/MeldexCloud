@@ -69,6 +69,7 @@
         const sel = window.getSelection();
         if (!sel?.rangeCount) return;
         const range = sel.getRangeAt(0);
+        if (!this._rangeWithinElement(range, text)) return;
         this._pushUndo('セル内改行');
         // 旧実装は dataset.before / dataset.after が設定されていると先頭・末尾での Shift+Enter を弾いていたが、
         // これらの affix は CSS の ::before / ::after 疑似要素なので <br> を挿入しても視覚順序は変わらない (常に affix の内側で改行される)。
@@ -100,6 +101,7 @@
         // スクロール追従とカスタムキャレット再描画
         requestAnimationFrame(() => {
           const r2 = sel.getRangeAt(0);
+          if (!this._rangeWithinElement(r2, text)) return;
           const marker = document.createElement('span');
           r2.insertNode(marker);
           marker.scrollIntoView({ block: 'nearest', behavior: 'instant' });
@@ -399,16 +401,19 @@
       const textEl = e.target.closest?.('.sn2-text');
       if (!textEl) return;
       e.preventDefault();
+      const activeSel = window.getSelection();
+      const activeRange = activeSel?.rangeCount ? activeSel.getRangeAt(0) : null;
+      const pasteInCell = !!this._pasteInCellFlag;
+      this._pasteInCellFlag = false;
+      if (activeRange && !this._rangeWithinElement(activeRange, textEl)) return;
       const plain = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
       if (!plain) return;
       // Ctrl+Shift+V（フラグ）または単一行: セル内にそのまま挿入
-      const pasteInCell = !!this._pasteInCellFlag;
-      this._pasteInCellFlag = false;
       const lines = plain.split('\n');
       if (pasteInCell || lines.length <= 1) {
-        const sel = window.getSelection();
+        const sel = activeSel || window.getSelection();
         if (!sel?.rangeCount) return;
-        const range = sel.getRangeAt(0);
+        const range = activeRange || sel.getRangeAt(0);
         this._pushUndo(pasteInCell ? 'セル内貼り付け' : '貼り付け');
         range.deleteContents();
         range.insertNode(document.createTextNode(plain));
@@ -420,16 +425,12 @@
       }
       // 複数行: 現在行にカーソル前後のテキストを分割し、残りの行を新規追加
       this._pushUndo('複数行ペースト');
-      const pasteSel = window.getSelection();
-      if (pasteSel?.rangeCount && !pasteSel.isCollapsed) {
-        const range = pasteSel.getRangeAt(0);
-        const selectionInsideCell = textEl.contains(range.startContainer) && textEl.contains(range.endContainer);
-        if (selectionInsideCell) {
-          range.deleteContents();
-          range.collapse(false);
-          pasteSel.removeAllRanges();
-          pasteSel.addRange(range);
-        }
+      const pasteSel = activeSel || window.getSelection();
+      if (activeRange && pasteSel && !pasteSel.isCollapsed) {
+        activeRange.deleteContents();
+        activeRange.collapse(false);
+        pasteSel.removeAllRanges();
+        pasteSel.addRange(activeRange);
       }
       this._syncRowFromDom(textEl, { skipUndo: true });
       const pasteCaretOffset = this._getTextOffset(textEl);
@@ -446,7 +447,7 @@
         if (pos >= 0) visibleOffset = pos;
       }
       const [beforeText, afterText] = _sn2SplitRawTextByVisibleOffset(currentRow.text, visibleOffset);
-      const escapedLines = lines.map(line => _sn2EscapeRubyText(line));
+      const escapedLines = lines.map(line => _sn2EscapeScriptNotePlainText(line));
       // 最初の行は現在行に追加
       currentRow.text = beforeText + escapedLines[0];
       let newStatus = currentRow.status || '';
@@ -601,6 +602,8 @@
       menu.appendChild(mkItem('貼り付け', async () => {
         try {
           const text = await navigator.clipboard.readText();
+          const s = window.getSelection();
+          if (s?.rangeCount && !this._rangeWithinElement(s.getRangeAt(0), textEl)) return;
           this._pushUndo('貼り付け');
           document.execCommand('insertText', false, text);
           this._syncRowFromDom(textEl, { skipUndo: true });
@@ -613,6 +616,7 @@
           const s = window.getSelection();
           if (!s?.rangeCount) return;
           const r = s.getRangeAt(0);
+          if (!this._rangeWithinElement(r, textEl)) return;
           this._pushUndo('セル内貼り付け');
           r.deleteContents();
           r.insertNode(document.createTextNode(clipText));

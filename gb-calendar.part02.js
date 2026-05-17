@@ -61,6 +61,19 @@ function _collectCalendarEventMembers(root, prefix, creator) {
     return true;
   });
 }
+function _calendarEventInputApiValue(value, allDay) {
+  const parsed = _parseCalendarDateValue(value);
+  return _toCalendarApiValue(parsed, !!allDay) || String(value || '');
+}
+function _calendarTaskStatusColor(status) {
+  return {
+    backlog: '#7a8494',
+    todo: '#569cd6',
+    in_progress: '#d19a66',
+    review: '#c678dd',
+    done: '#98c379',
+  }[status] || '#569cd6';
+}
 
 function _showCalendarEventDetailPanel(dbPath, ev) {
   if (!ev) return;
@@ -68,8 +81,15 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
     _openMappedCalendarEventPanel(dbPath, ev);
     return;
   }
-  if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
-  else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
+  if (typeof _openDetailRightPanel === 'function') {
+    _openDetailRightPanel();
+  } else if (typeof _getDetailPanelCfg === 'function' && typeof toggleOptionPanel === 'function') {
+    if (_getDetailPanelCfg().visible !== true) toggleOptionPanel();
+  } else if (typeof toggleOptionPanel === 'function') {
+    toggleOptionPanel();
+  } else if (typeof toggleDetailPanel === 'function') {
+    toggleDetailPanel();
+  }
   const detailRoot = typeof _resolveDetailEl === 'function' ? _resolveDetailEl() : document.getElementById('rp-detail');
   if (!detailRoot) {
     _openEventEditPanel(dbPath, ev);
@@ -185,8 +205,10 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
     const title = body.querySelector('#cal-detail-title').value.trim() || '無題イベント';
     const creator = body.querySelector('#cal-detail-creator')?.value || _getUser();
     const allDay = body.querySelector('#cal-detail-allday').checked;
-    const start = body.querySelector('#cal-detail-start').value;
-    const end = body.querySelector('#cal-detail-end').value;
+    const startRaw = body.querySelector('#cal-detail-start').value;
+    const endRaw = body.querySelector('#cal-detail-end').value || startRaw;
+    const start = _calendarEventInputApiValue(startRaw, allDay);
+    const end = _calendarEventInputApiValue(endRaw, allDay);
     const alertMinutes = parseInt(body.querySelector('#cal-detail-alert').value, 10);
     let recurrence = '';
     const recMode = body.querySelector('#cal-detail-rec-type').value;
@@ -201,7 +223,7 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
     }
     _calPushUndo('イベント編集');
     try {
-      await apiPut('/calendar-db/events/' + encodeURIComponent(ev.name), {
+      const result = await apiPut('/calendar-db/events/' + encodeURIComponent(ev.name), {
         db_path: dbPath,
         title,
         start,
@@ -228,8 +250,9 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
         }
       } catch {}
       const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+      const savedName = result?.name || result?.id || (result?.path ? String(result.path).split(/[/\\]/).pop().replace(/\.md$/i, '') : '');
       await selectDatabase(dbPath, ctx);
-      const nextEvent = (_calRenderState.allEvents || []).find(item => item.name === title)
+      const nextEvent = (_calRenderState.allEvents || []).find(item => (savedName && item.name === savedName) || item.name === title)
         || { ...ev, name: title, allDay, color: getColorSwatchValue(colorSwatch, ev.color || ''), creator, members: _collectCalendarEventMembers(body, 'cal-detail', creator) };
       _showCalendarEventDetailPanel(dbPath, nextEvent);
       showStatus('イベントを更新しました');
@@ -244,7 +267,7 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
       await apiDelete('/calendar-db/events/' + encodeURIComponent(ev.name) + '?db_path=' + encodeURIComponent(dbPath));
       const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
       await selectDatabase(dbPath, ctx);
-      if (typeof clearDetailPanel === 'function') clearDetailPanel();
+      if (typeof clearDetailPanel === 'function') await clearDetailPanel();
       showStatus('イベントを削除しました');
     } catch {
       showStatus('イベントの削除に失敗しました', true);
@@ -256,7 +279,7 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
 /* ==============================
    イベント編集パネル（完全版）
    ============================== */
-function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay) {
+function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalendarId) {
   if (ev?._mapped && typeof _openMappedCalendarEventPanel === 'function') {
     _openMappedCalendarEventPanel(dbPath, ev);
     return;
@@ -292,7 +315,7 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay) {
   const url=isNew?'':(ev.url||'');
   const desc=isNew?'':(ev.description||'');
   const alertMin=isNew?-1:(ev.alertMinutes ?? -1);
-  const calId=isNew?'default':(ev.calendarId||'default');
+  const calId=isNew?(defCalendarId||'default'):(ev.calendarId||'default');
   const rec=isNew?{}:_recParse(ev);
   const recType=rec.type||'';
 
@@ -344,10 +367,11 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay) {
   // 保存
   panel.querySelector('#ep-save').addEventListener('click', async()=>{
     const t=panel.querySelector('#ep-title').value.trim()||'無題イベント';
-    const s=panel.querySelector('#ep-start').value,en=panel.querySelector('#ep-end').value;
+    const sRaw=panel.querySelector('#ep-start').value,enRaw=panel.querySelector('#ep-end').value||sRaw;
     const c=getColorSwatchValue(colorSwatch, color || ''),lc=panel.querySelector('#ep-location').value;
     const u=panel.querySelector('#ep-url').value,d=panel.querySelector('#ep-desc').value;
     const ad=panel.querySelector('#ep-allday').checked;
+    const s=_calendarEventInputApiValue(sRaw,ad),en=_calendarEventInputApiValue(enRaw,ad);
     const al=parseInt(panel.querySelector('#ep-alert').value);
     const ci=panel.querySelector('#ep-calid').value||'default';
     const creator=panel.querySelector('#ep-creator')?.value||_getUser();
@@ -404,13 +428,14 @@ function _openTaskModal(dbPath, task, defaultStatus) {
     const assignee=o.querySelector('#tk-assignee').value;
     const desc=o.querySelector('#tk-desc').value;
     const fullDesc=`status:${status} priority:${priority} ${desc}`.trim();
-    o.remove();
     _calPushUndo(isNew?'タスク作成':'タスク編集');
     try{
       const fallbackDate = task?.start ? _dateStr(task.start) : _dateStr(new Date());
       const taskDate = due || fallbackDate;
-      if(isNew) await apiPost('/calendar-db/events',{db_path:dbPath,title,start:taskDate,end:taskDate,description:fullDesc,calendar_id:assignee||'default',color:status==='done'?'#98c379':status==='in_progress'?'#d19a66':'#569cd6'});
-      else await apiPut('/calendar-db/events/'+encodeURIComponent(task.name),{db_path:dbPath,description:fullDesc,calendar_id:assignee||'default',title,start:taskDate,end:taskDate});
+      const color = _calendarTaskStatusColor(status);
+      if(isNew) await apiPost('/calendar-db/events',{db_path:dbPath,title,start:taskDate,end:taskDate,description:fullDesc,calendar_id:assignee||'default',color});
+      else await apiPut('/calendar-db/events/'+encodeURIComponent(task.name),{db_path:dbPath,description:fullDesc,calendar_id:assignee||'default',title,start:taskDate,end:taskDate,color});
+      o.remove();
       await selectDatabase(dbPath);
     }catch{showStatus('保存に失敗',true);}
   });
@@ -436,7 +461,7 @@ function _renderTaskBoard(container, dbPath, events) {
     body.addEventListener('drop',async e=>{e.preventDefault();body.style.background='';let data;try{data=JSON.parse(e.dataTransfer.getData('text/plain'));}catch{return;}if(!data||!data.name)return;
       _calPushUndo('タスク移動');
       const ev=events.find(x=>x.name===data.name);const oldDesc=(ev?.description||'').replace(/status:\w+/,'status:'+s.key);
-      try{await apiPut('/calendar-db/events/'+encodeURIComponent(data.name),{db_path:dbPath,description:oldDesc});await selectDatabase(dbPath);}catch{};
+      try{await apiPut('/calendar-db/events/'+encodeURIComponent(data.name),{db_path:dbPath,description:oldDesc,color:_calendarTaskStatusColor(s.key)});await selectDatabase(dbPath);}catch{};
     });
     taskEvs.forEach(ev=>{
       const card=document.createElement('div');
@@ -451,7 +476,7 @@ function _renderTaskBoard(container, dbPath, events) {
       // メタ行
       const meta=document.createElement('div');meta.style.cssText='font-size:10px;color:var(--fg2);margin-top:2px;display:flex;gap:6px;';
       meta.innerHTML=`<span style="color:${prioColors[priority]}">${priority}</span>`;
-      if(ev.end&&!isNaN(ev.end.getTime())) meta.innerHTML+=`<span>〆${(ev.end.toISOString()||'').substring(5,10)}</span>`;
+      if(ev.end&&!isNaN(ev.end.getTime())) meta.innerHTML+=`<span>〆${_dateStr(ev.end).substring(5,10)}</span>`;
       if(ev.calendarId&&ev.calendarId!=='default') meta.innerHTML+=`<span>${esc(ev.calendarId)}</span>`;
       card.appendChild(meta);
       card.addEventListener('click', ()=>_openTaskModal(dbPath,ev));
@@ -486,14 +511,14 @@ function _renderShiftView(container, dbPath, events) {
   container.appendChild(clockPanel);
   _updateClockStatus();
 
-  const users=[...new Set(events.map(e=>e.calendarId||'default'))];
+  const users=[...new Set([_getUser(), ...events.map(e=>e.calendarId||'default')].map(name => String(name || '').trim()).filter(Boolean))];
+  if (!users.length) users.push('default');
   const eventOverlapsDay = (ev, ds) => {
     const start = new Date(ev.start); start.setHours(0,0,0,0);
     const end = new Date(ev.end || ev.start); end.setHours(0,0,0,0);
-    const day = new Date(ds + 'T00:00');
+    const day = _parseCalendarDateValue(ds);
     return start <= day && day <= end;
   };
-  const dbPathArg = esc(JSON.stringify(dbPath));
   const table=document.createElement('div');table.style.cssText='overflow-x:auto;';
   let html='<table style="border-collapse:collapse;font-size:10px;width:max-content;">';
   html+='<tr><th style="border:1px solid var(--border);padding:2px 4px;background:var(--bg3);position:sticky;left:0;z-index:2;min-width:80px;">ユーザー</th>';
@@ -513,7 +538,7 @@ function _renderShiftView(container, dbPath, events) {
       const isWe=new Date(y,m,d).getDay()===0||new Date(y,m,d).getDay()===6;
       let content='',bg=isWe?'var(--bg4)':'';
       if(dayEvs.length>0){content=dayEvs.map(ev=>ev.allDay?lucide('circle',8):`${_p2(ev.start.getHours())}:${_p2(ev.start.getMinutes())}-${_p2(ev.end.getHours())}:${_p2(ev.end.getMinutes())}`).join('<br>');bg=dayEvs[0].color+'33';}
-      html+=`<td style="border:1px solid var(--border);padding:1px 2px;text-align:center;cursor:pointer;${bg?'background:'+bg+';':''}" ondblclick="_openEventEditPanel(${dbPathArg},null,new Date('${ds}T09:00'),new Date('${ds}T18:00'))">${content}</td>`;
+      html+=`<td style="border:1px solid var(--border);padding:1px 2px;text-align:center;cursor:pointer;${bg?'background:'+bg+';':''}" data-cal-shift-date="${ds}" data-cal-shift-user="${esc(user)}">${content}</td>`;
     }
     html+='</tr>';
     // 実績行（簡易 — 打刻データはAPIから取得する必要があるが、現時点ではイベントデータのみ）
@@ -526,14 +551,25 @@ function _renderShiftView(container, dbPath, events) {
   for(let d=1;d<=daysInMonth;d++){const ds=`${y}-${_p2(m+1)}-${_p2(d)}`;const count=events.filter(ev=>eventOverlapsDay(ev, ds)).length;
     html+=`<td style="border:1px solid var(--border);padding:1px 2px;text-align:center;font-size:9px;background:var(--bg3);">${count||''}</td>`;}
   html+='</tr></table>';
-  table.innerHTML=html;container.appendChild(table);
+  table.innerHTML=html;
+  table.querySelectorAll('[data-cal-shift-date]').forEach(cell => {
+    cell.addEventListener('dblclick', () => {
+      const day = _parseCalendarDateValue(cell.dataset.calShiftDate);
+      const start = new Date(day);
+      start.setHours(9,0,0,0);
+      const end = new Date(day);
+      end.setHours(18,0,0,0);
+      _openEventEditPanel(dbPath, null, start, end, false, cell.dataset.calShiftUser || 'default');
+    });
+  });
+  container.appendChild(table);
 }
 
 /* ==============================
    打刻
    ============================== */
 async function _clockAction(type) {
-  try{await apiPost('/cal/time',{type,user:_getUser(),timestamp:new Date().toISOString()});
+  try{await apiPost('/cal/time',{type,user:_getUser(),timestamp:_toCalendarInputValue(new Date())});
     const labels={clock_in:'出勤しました',clock_out:'退勤しました',break_start:'休憩開始',break_end:'休憩終了'};
     showStatus(labels[type]||type);_updateClockStatus();
   }catch{showStatus('打刻に失敗',true);}
@@ -544,7 +580,9 @@ async function _updateClockStatus() {
   try{const entries=await apiFetch('/cal/time?user='+encodeURIComponent(_getUser())+'&date_from='+_dateStr(new Date()));
     const last=entries[entries.length-1];if(!last){el.textContent='未出勤';return;}
     const labels={clock_in:'出勤中',clock_out:'退勤済み',break_start:'休憩中',break_end:'勤務中'};
-    el.textContent=(labels[last.type]||last.type)+' '+(last.timestamp||'').substring(11,16);
+    const parsed = _parseCalendarDateValue(last.timestamp || '');
+    const timeText = _calendarTimeLabel(parsed) || (last.timestamp||'').substring(11,16);
+    el.textContent=(labels[last.type]||last.type)+' '+timeText;
   }catch{el.textContent='';}
 }
 
@@ -556,8 +594,8 @@ function _renderMiniCalendar(sidebar,dbPath,events) {
   const box=document.createElement('div');box.style.cssText='background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:6px;';
   const hdr=document.createElement('div');hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
   hdr.innerHTML=`<button class="tl-nav-btn" type="button" data-e2e-id="calendar-mini-prev-month" aria-label="前の月" title="前の月" style="padding:0 4px;">${lucide('chevronLeft', 12)}</button><span style="font-size:11px;font-weight:bold;">${y}年${m+1}月</span><button class="tl-nav-btn" type="button" data-e2e-id="calendar-mini-next-month" aria-label="次の月" title="次の月" style="padding:0 4px;">${lucide('chevronRight', 12)}</button>`;
-  hdr.children[0].addEventListener('click', ()=>{const d=getCalendarDate(dbPath);d.setMonth(d.getMonth()-1);setCalendarDate(dbPath,d);renderCalendar();});
-  hdr.children[2].addEventListener('click', ()=>{const d=getCalendarDate(dbPath);d.setMonth(d.getMonth()+1);setCalendarDate(dbPath,d);renderCalendar();});
+  hdr.children[0].addEventListener('click', ()=>{setCalendarDate(dbPath,_addCalendarMonthsClamped(getCalendarDate(dbPath),-1));renderCalendar();});
+  hdr.children[2].addEventListener('click', ()=>{setCalendarDate(dbPath,_addCalendarMonthsClamped(getCalendarDate(dbPath),1));renderCalendar();});
   box.appendChild(hdr);
   const grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:repeat(7,1fr);gap:0;text-align:center;';
   _getDayNames().forEach(dn=>{const h=document.createElement('div');h.style.cssText='font-size:9px;color:var(--fg2);padding:1px;';h.textContent=dn;grid.appendChild(h);});
@@ -570,9 +608,14 @@ function _renderMiniCalendar(sidebar,dbPath,events) {
     el.style.cssText='font-size:10px;padding:2px;cursor:pointer;border-radius:3px;';
     if(ds===todayStr)el.style.cssText+='color:var(--accent);font-weight:bold;';
     if(ds===selStr)el.style.cssText+='background:var(--accent);color:var(--ui-fg-strong);';
-    const hasEv=events.some(ev=>{const s=new Date(ev.start);return s.getFullYear()===y&&s.getMonth()===m&&s.getDate()===d;});
+    const hasEv=events.some(ev=>{
+      const s=new Date(ev.start);s.setHours(0,0,0,0);
+      const e=new Date(ev.end||ev.start);e.setHours(0,0,0,0);
+      const day=new Date(y,m,d);day.setHours(0,0,0,0);
+      return s<=day&&day<=e;
+    });
     el.textContent=d;if(hasEv&&ds!==selStr)el.style.cssText+='text-decoration:underline;';
-    el.addEventListener('click', ()=>{setCalendarDate(dbPath,new Date(ds));renderCalendar();});
+    el.addEventListener('click', ()=>{setCalendarDate(dbPath,_parseCalendarDateValue(ds));renderCalendar();});
     grid.appendChild(el);
   }
   box.appendChild(grid);
@@ -625,6 +668,7 @@ function _renderTodayWidget(sidebar,dbPath,events) {
    カレンダーリスト（フィルタ付き）
    ============================== */
 let _calVisibleIds = null;
+let _calKnownIds = null;
 function _renderCalendarList(sidebar,dbPath,events) {
   const calIds=[...new Set(events.map(e=>e.calendarId||'default'))];
   if(calIds.length<=1) return;
@@ -658,7 +702,7 @@ function _startAlarmChecker(dbPath,events) {
       if(now>=alertTime && now<ev.start.getTime()+86400000){
         _calAlertedIds.add(key);
         _persistAlertedIds();
-        if('Notification' in window && Notification.permission==='granted') new Notification('Meldex カレンダー',{body:ev.name+'\n'+(ev.start.toISOString()||'').substring(11,16),icon:'/Meldex_icon.png'});
+        if('Notification' in window && Notification.permission==='granted') new Notification('Meldex カレンダー',{body:ev.name+'\n'+_calendarTimeLabel(ev.start),icon:'/Meldex_icon.png'});
         showStatus('🔔 '+ev.name);
       }
     });
@@ -702,6 +746,9 @@ async function _showTemplateModal(dbPath) {
   // イベントハンドラ
   o.querySelectorAll('[data-action="edit"]').forEach(btn => btn.addEventListener('click', () => { o.remove(); _editTemplate(dbPath, btn.dataset.tid); }));
   o.querySelectorAll('[data-action="delete"]').forEach(btn => btn.addEventListener('click', async () => {
+    const target = templates.find(t => String(t.id) === String(btn.dataset.tid));
+    const name = target?.name || 'テンプレート';
+    if (!await cfConfirm(`${name} を削除しますか？`)) return;
     try { await apiDelete('/cal/schedule-templates/' + btn.dataset.tid); } catch {}
     o.remove(); _showTemplateModal(dbPath);
   }));
@@ -796,7 +843,7 @@ async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
       try {
         await apiPost('/calendar-db/events', {
           db_path: dbPath, title: entry.title || '無題',
-          start: d.toISOString(), end: endD.toISOString(),
+          start: _toCalendarApiValue(d, false), end: _toCalendarApiValue(endD, false),
           creator: _getUser(), members: [],
         });
         count++;
@@ -840,8 +887,8 @@ function _showSyncModal(dbPath) {
     </div>
 
     <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">勤怠CSVエクスポート</div>
-      <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">打刻データを給与計算ソフト向けにCSV出力</div>
+      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">打刻CSVエクスポート</div>
+      <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">予定ではなく、出勤・退勤などの打刻データをCSV出力</div>
       <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
         <label style="font-size:11px;">開始: <input id="csv-from" type="date" style="padding:2px;font-size:11px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"></label>
         <label style="font-size:11px;">終了: <input id="csv-to" type="date" style="padding:2px;font-size:11px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"></label>

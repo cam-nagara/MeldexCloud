@@ -131,6 +131,40 @@
     return element.getAttribute('id') || element.tagName.toLowerCase();
   }
 
+  function _controlPrivacyHaystack(element) {
+    if (!element) return '';
+    return [
+      element.id,
+      element.className,
+      element.getAttribute?.('name'),
+      element.getAttribute?.('aria-label'),
+      element.getAttribute?.('title'),
+      element.getAttribute?.('placeholder'),
+      element.getAttribute?.('data-e2e-id'),
+      _elementLabel(element),
+    ].join(' ').toLowerCase();
+  }
+
+  function _isSensitiveControl(element) {
+    const tag = element?.tagName?.toLowerCase?.() || '';
+    const type = _controlKind(element);
+    if (tag === 'textarea' || element?.isContentEditable) return true;
+    if (type === 'password' || type === 'hidden' || type === 'file') return true;
+    const haystack = _controlPrivacyHaystack(element);
+    return /api|key|token|secret|password|authorization|credential|passphrase|本文|内容|プロンプト|添付|ファイル名|パス/.test(haystack);
+  }
+
+  function _controlPublicValue(element) {
+    const tag = element.tagName.toLowerCase();
+    const type = _controlKind(element);
+    if (tag === 'input' && ['checkbox', 'radio'].includes(type)) return element.checked;
+    if (tag === 'input' && ['range', 'number', 'color', 'date', 'time', 'datetime-local', 'month'].includes(type)) return String(element.value ?? '');
+    if (tag === 'select') return _controlValue(element);
+    if (_isSensitiveControl(element)) return _controlValue(element) ? '[送信しません]' : '';
+    if ('value' in element && String(element.value || '')) return '[入力済み]';
+    return '';
+  }
+
   function _controlKind(element) {
     const tag = element.tagName.toLowerCase();
     if (tag === 'input') return (element.getAttribute('type') || 'text').toLowerCase();
@@ -144,7 +178,7 @@
     const type = _controlKind(element);
     const ops = new Set();
     if (tag === 'select') ops.add('set_value');
-    if (tag === 'textarea' || element.isContentEditable) ops.add('set_value');
+    if (tag === 'textarea' || _isPlainTextEditableForLlm(element)) ops.add('set_value');
     if (tag === 'input') {
       if (['checkbox', 'radio'].includes(type)) {
         ops.add('set_checked');
@@ -185,7 +219,8 @@
       tag,
       type,
       role: element.getAttribute('role') || '',
-      value: _controlValue(element),
+      value: _controlPublicValue(element),
+      valueRedacted: _controlPublicValue(element) === '[送信しません]' || _controlPublicValue(element) === '[入力済み]',
       checked: typeof element.checked === 'boolean' ? element.checked : undefined,
       disabled: !!(element.disabled || element.getAttribute('aria-disabled') === 'true'),
       visible: _isVisible(element),
@@ -257,6 +292,7 @@
     }
     const q = raw.toLowerCase();
     return Array.from(document.querySelectorAll(CONTROL_SELECTOR)).find(element => {
+      if (!_isVisible(element)) return false;
       const label = _elementLabel(element).toLowerCase();
       return label && label.includes(q);
     }) || null;
@@ -307,6 +343,17 @@
     throw new Error(reason ? `編集ロック中のため操作できません（${lockedPath}: ${reason}）` : `編集ロック中のため操作できません（${lockedPath}）`);
   }
 
+  function _requirePathUnlocked(path) {
+    if (typeof isItemLocked !== 'function') return;
+    const normalized = _normalizePath(path);
+    if (!normalized) return;
+    let locked = false;
+    try { locked = isItemLocked(normalized); } catch { locked = false; }
+    if (!locked) return;
+    const reason = typeof getItemLockReason === 'function' ? getItemLockReason(normalized) : '';
+    throw new Error(reason ? `編集ロック中のため操作できません（${normalized}: ${reason}）` : `編集ロック中のため操作できません（${normalized}）`);
+  }
+
   function _captureLocalStorageAll() {
     const keys = [];
     try {
@@ -345,6 +392,7 @@
       checked: typeof element.checked === 'boolean' ? element.checked : undefined,
       ariaChecked: element.getAttribute('aria-checked'),
       text: element.isContentEditable ? element.textContent || '' : undefined,
+      html: element.isContentEditable ? element.innerHTML || '' : undefined,
     };
   }
 
@@ -365,7 +413,9 @@
     if (snapshot.ariaChecked !== null && snapshot.ariaChecked !== undefined) {
       element.setAttribute('aria-checked', snapshot.ariaChecked);
     }
-    if (element.isContentEditable && typeof snapshot.text === 'string') {
+    if (element.isContentEditable && typeof snapshot.html === 'string') {
+      element.innerHTML = snapshot.html;
+    } else if (element.isContentEditable && typeof snapshot.text === 'string') {
       element.textContent = snapshot.text;
     } else if (tag === 'select' && Array.isArray(snapshot.value)) {
       Array.from(element.options || []).forEach(option => {
@@ -383,6 +433,16 @@
     } catch {}
     if (typeof renderHistoryList === 'function') renderHistoryList();
     if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
+    _refreshDbViewAfterBridgeRestore(keys);
+  }
+
+  function _refreshDbViewAfterBridgeRestore(keys) {
+    if (!Array.isArray(keys) || !keys.some(key => String(key || '').startsWith('dbViewConfig:'))) return;
+    try {
+      if (typeof renderDbViewTabs === 'function') renderDbViewTabs();
+      if (typeof renderDbFormView === 'function') renderDbFormView();
+      if (typeof renderDbTable === 'function') renderDbTable();
+    } catch {}
   }
 
   function _restoreOperationSnapshot(snapshot) {
@@ -488,7 +548,8 @@
     }
     if (action === 'set_value' || action === 'select' || action === 'input_text') {
       if (element.tagName.toLowerCase() === 'select') _setSelectValue(element, args.value);
-      else if (element.isContentEditable) element.textContent = String(args.value ?? '');
+      else if (element.isContentEditable && _isPlainTextEditableForLlm(element)) element.textContent = String(args.value ?? '');
+      else if (element.isContentEditable) throw new Error('本文やリッチテキスト欄はLLM操作で直接書き換えられません');
       else if ('value' in element) element.value = String(args.value ?? '');
       else element.textContent = String(args.value ?? '');
       _dispatchInputEvents(element);
@@ -557,6 +618,11 @@
     return result;
   }
 
+  function _isPlainTextEditableForLlm(element) {
+    if (!element?.isContentEditable) return false;
+    return element.id === 'chat-rich-input' || element.dataset?.llmPlainText === 'true';
+  }
+
   async function _loadPropertyTypesForForm(dbPath) {
     try {
       if (typeof state !== 'undefined' && state.currentDbPath === dbPath && typeof getPropertyTypes === 'function') {
@@ -589,6 +655,8 @@
   async function configureFormView(args = {}) {
     const dbPath = _normalizePath(args.db_path || args.dbPath || args.path || '');
     if (!dbPath) throw new Error('db_path は必須です');
+    _requirePathUnlocked(dbPath);
+    await _ensureDbExistsForForm(dbPath);
     const fields = _stringArray(args.fields);
     if (!fields.length) throw new Error('fields は1件以上必要です');
     const required = _stringArray(args.required).filter(prop => fields.includes(prop));
@@ -662,6 +730,26 @@
       history: historyPushed,
       changed_keys: changedKeys,
     };
+  }
+
+  function _dbFolderNotePathForBridge(dbPath) {
+    const normalized = _normalizePath(dbPath);
+    if (!normalized) return '';
+    if (/\.md$/i.test(normalized)) return normalized;
+    const name = normalized.split('/').filter(Boolean).pop() || '';
+    return name ? normalized.replace(/\/+$/, '') + '/' + name + '.md' : '';
+  }
+
+  async function _ensureDbExistsForForm(dbPath) {
+    if (typeof state !== 'undefined' && state.currentDbPath === dbPath) return true;
+    if (typeof apiFetch !== 'function') {
+      throw new Error('対象シートを開いてからフォームビューを設定してください');
+    }
+    const folderNote = _dbFolderNotePathForBridge(dbPath);
+    if (!folderNote) throw new Error('対象シートが見つかりません');
+    const meta = await apiFetch('/file-meta?path=' + encodeURIComponent(folderNote), { silentError: true }).catch(() => null);
+    if (!meta) throw new Error('対象シートが見つかりません');
+    return true;
   }
 
   async function handleClientToolRequest(payload = {}) {

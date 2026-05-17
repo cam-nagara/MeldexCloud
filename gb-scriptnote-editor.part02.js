@@ -12,6 +12,10 @@
       // スクロール位置を復元
       scroll.scrollTop = savedScrollTop;
       scroll.scrollLeft = savedScrollLeft;
+      // 折り返し表示でも行コメントバッジを通常表示と同じタイミングで再描画する
+      if (this._path && typeof CommentBadges !== 'undefined') {
+        try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
+      }
       return;
     }
 
@@ -97,7 +101,7 @@
     });
   }
 
-  _buildRowEl(row, idx, calc, mergeDisplay = false, prevRow = null, prevCalc = null, customCols = null) {
+  _buildRowEl(row, idx, calc, mergeDisplay = false, prevRow = null, prevCalc = null, customCols = null, visibleCols = null) {
     if (!customCols) customCols = this._getCustomColumns();
     const el = document.createElement('div');
     el.className = 'sn2-row';
@@ -128,6 +132,11 @@
 
     // 列間枠線: どの列の右側に枠線を表示するかを判定
     const colBorderSet = this._getColumnBorderSet();
+    const appendCell = (colId, cell) => {
+      if (!cell) return;
+      cell.dataset.colId = colId;
+      el.appendChild(cell);
+    };
 
     // チェックボックス + ドラッグハンドル（ハンドルdiv内にチェックボックスを配置）
     if (visCols._handle !== false) {
@@ -157,7 +166,7 @@
       gripText.textContent = '⠿';
       gripText.style.cssText = 'pointer-events:none;';
       handle.appendChild(gripText);
-      el.appendChild(handle);
+      appendCell('_handle', handle);
     }
 
     // ガター（大区切り：ページ番号等）
@@ -192,7 +201,7 @@
       if (gutterSt.align) gutter.style.textAlign = gutterSt.align;
       if (gutterSt.valign) gutter.dataset.valign = gutterSt.valign;
       if (colBorderSet.has('_gutter')) gutter.dataset.colBorderRight = '';
-      el.appendChild(gutter);
+      appendCell('_gutter', gutter);
     }
     if (gutter2) {
       if (calc) {
@@ -211,7 +220,7 @@
       if (gutter2St.align) gutter2.style.textAlign = gutter2St.align;
       if (gutter2St.valign) gutter2.dataset.valign = gutter2St.valign;
       if (colBorderSet.has('_gutter2')) gutter2.dataset.colBorderRight = '';
-      el.appendChild(gutter2);
+      appendCell('_gutter2', gutter2);
     }
 
     // タイプボタン
@@ -228,7 +237,7 @@
       if (roleSt.align) roleBtn.style.textAlign = roleSt.align;
       if (roleSt.valign) roleBtn.dataset.valign = roleSt.valign;
       if (colBorderSet.has('_role')) roleBtn.dataset.colBorderRight = '';
-      el.appendChild(roleBtn);
+      appendCell('_role', roleBtn);
     }
 
     let statusBtn = null;
@@ -247,7 +256,7 @@
         ev.stopPropagation();
         this._showRowStatusMenu?.(statusBtn, row, el);
       });
-      el.appendChild(statusBtn);
+      appendCell('_status', statusBtn);
     }
 
     // テキスト
@@ -271,17 +280,17 @@
         const re = _sn2NewRubyRegex();
         let m;
         while ((m = re.exec(rowText)) !== null) {
-          if (m.index > last) frag.appendChild(document.createTextNode(_sn2UnescapeRubyText(rowText.slice(last, m.index))));
+          if (m.index > last) frag.appendChild(document.createTextNode(_sn2UnescapeScriptNotePlainText(rowText.slice(last, m.index))));
           const span = document.createElement('span');
           span.dataset.ruby = _sn2UnescapeRubyText(m[2]);
           span.textContent = _sn2UnescapeRubyText(m[1]);
           frag.appendChild(span);
           last = m.index + m[0].length;
         }
-        if (last < rowText.length) frag.appendChild(document.createTextNode(_sn2UnescapeRubyText(rowText.slice(last))));
+        if (last < rowText.length) frag.appendChild(document.createTextNode(_sn2UnescapeScriptNotePlainText(rowText.slice(last))));
         textDiv.appendChild(frag);
       } else {
-        textDiv.textContent = _sn2UnescapeRubyText(rowText);
+        textDiv.textContent = _sn2UnescapeScriptNotePlainText(rowText);
       }
       // 自動リンク（linkDict ルビ含む）→ シナリオ固有ルビの順で適用
       this._applyAutoLinks(textDiv);
@@ -295,7 +304,7 @@
       if (textSt.valign) textDiv.dataset.valign = textSt.valign;
       if (textSt.overflow) textDiv.dataset.overflow = textSt.overflow;
       if (colBorderSet.has('_text')) textDiv.dataset.colBorderRight = '';
-      el.appendChild(textDiv);
+      appendCell('_text', textDiv);
     }
 
     // カスタム列
@@ -320,7 +329,13 @@
         inp.className = 'sn2-custom-input';
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
         inp.value = val;
-        inp.addEventListener('change', () => { this._pushUndo('列値変更'); row.columns[col.id] = Number(inp.value) || 0; this._markDirty({ skipUndo: true }); });
+        inp.addEventListener('change', () => {
+          this._pushUndo('列値変更');
+          const rawValue = inp.value;
+          const numericValue = Number(rawValue);
+          row.columns[col.id] = rawValue === '' ? '' : (Number.isFinite(numericValue) ? numericValue : '');
+          this._markDirty({ skipUndo: true });
+        });
         cell.appendChild(inp);
         // 単位表示
         if (col.unit) {
@@ -353,8 +368,15 @@
         cell.appendChild(inp);
       }
       if (colBorderSet.has(col.id)) cell.dataset.colBorderRight = '';
-      el.appendChild(cell);
+      appendCell(col.id, cell);
     });
+
+    if (Array.isArray(visibleCols) && visibleCols.length) {
+      visibleCols.map(col => col.id).forEach(colId => {
+        const cell = Array.from(el.children).find(child => child.dataset?.colId === colId);
+        if (cell) el.appendChild(cell);
+      });
+    }
 
     // 右端スペーサー（テキスト列が固定幅の場合、行の残り部分をページ背景色に）
     const spacer = document.createElement('div');
@@ -481,6 +503,12 @@
       // 末尾にフォールバック
       this._focusText(textEl, 'end');
     }
+  }
+
+  _rangeWithinElement(range, el) {
+    if (!range || !el) return false;
+    return (range.startContainer === el || el.contains(range.startContainer))
+      && (range.endContainer === el || el.contains(range.endContainer));
   }
 
   // デバウンス付きで自動ルビ/自動リンク/縦中横を再適用する。
@@ -778,10 +806,17 @@
           marker.style.cssText = 'display:inline;';
           r.insertNode(marker);
           marker.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-          const parent = marker.parentNode;
+          const markerParent = marker.parentNode;
+          const markerIndex = markerParent ? Array.prototype.indexOf.call(markerParent.childNodes, marker) : -1;
           marker.remove();
           // マーカー除去後にselectionを復元
-          if (parent) sel.collapse(parent, Math.min(sel.anchorOffset, parent.childNodes.length));
+          if (markerParent && markerIndex >= 0) {
+            const restoreRange = document.createRange();
+            restoreRange.setStart(markerParent, Math.min(markerIndex, markerParent.childNodes.length));
+            restoreRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(restoreRange);
+          }
         });
       }
     });

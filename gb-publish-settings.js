@@ -90,6 +90,20 @@ function _buildSubmitUrl(serverUrl, submitUrl) {
   return base ? base + '/api/public-form/submit' : '';
 }
 
+function _publishEntityNameSourceForContext(ctx, prev) {
+  const fallback = prev?.form_entity_name_source || { kind: 'template', template: 'フォーム送信 {yyyy}-{MM}-{dd} {HH}:{mm}' };
+  if (ctx?.kind !== 'database' || typeof getActiveFormConfig !== 'function') return fallback;
+  try {
+    const props = state?.pivotData?.properties || [];
+    const propTypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(ctx.path) || {} : {};
+    const formCfg = getActiveFormConfig(ctx.path, props, propTypes);
+    const prop = String(formCfg?.entityNameProp || '').trim();
+    return prop ? { kind: 'property', property: prop } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function renderPublishSettingsPanel() {
   const ctx = getCurrentPublishContext();
   const cfg = getPublishConfigForContext(ctx);
@@ -187,11 +201,13 @@ async function savePublishSettingsFromPanel(root) {
   const ctx = getCurrentPublishContext();
   const prev = getPublishConfigForContext(ctx);
   const isDb = ctx.kind === 'database';
+  const serverUrlInput = panel.querySelector('#publish-server-url');
+  const submitUrlInput = panel.querySelector('#publish-submit-url');
   const serverUrl = isDb
-    ? (panel.querySelector('#publish-server-url')?.value || prev.server_public_url || '')
+    ? (serverUrlInput ? serverUrlInput.value.trim() : prev.server_public_url || '')
     : (prev.server_public_url || '');
   const submitUrl = isDb
-    ? _buildSubmitUrl(serverUrl, panel.querySelector('#publish-submit-url')?.value || prev.submit_url || '')
+    ? _buildSubmitUrl(serverUrl, submitUrlInput ? submitUrlInput.value.trim() : prev.submit_url || '')
     : (prev.submit_url || '');
   const cfg = {
     ...prev,
@@ -204,7 +220,7 @@ async function savePublishSettingsFromPanel(root) {
     form_submit_token: isDb
       ? (panel.querySelector('#publish-form-token')?.value || prev.form_submit_token || _publishToken())
       : prev.form_submit_token || '',
-    form_entity_name_source: prev.form_entity_name_source || { kind: 'template', template: 'フォーム送信 {yyyy}-{MM}-{dd} {HH}:{mm}' },
+    form_entity_name_source: _publishEntityNameSourceForContext(ctx, prev),
     server_public_url: serverUrl,
     submit_url: submitUrl,
     submit_method: prev.submit_method || 'tunnel',

@@ -1,0 +1,842 @@
+/* gb-ui.css — Meldex UI Design System (Phase 1+2)
+   仕様書: app/docs/ui-design-system-spec.md (v3.x)
+   役割: UIトークン + 共通コンポーネントの単一ソース
+   注意: このファイルは <head> 内で他の gb-*.css の後に読み込む。
+         同じセレクタで競合する旧定義を上書きする前提で書かれている。 */
+
+/* ============================================================
+   Phase 1: UI Token
+   ============================================================ */
+:root {
+  /* 色 — 意味ベース別名（gb-theme.css の素の変数を直接参照しないための層） */
+  --ui-bg-app: var(--bg);
+  --ui-bg-panel: var(--bg2);
+  --ui-bg-surface: var(--bg2);
+  --ui-bg-control: var(--bg3);
+  --ui-bg-control-hover: var(--bg4);
+  /* ポップアップ共通背景（ドロップダウン・コンテキストメニュー・書式ポップアップ） */
+  --ui-popup-bg: var(--bg2);
+  --ui-bg-control-active: color-mix(in srgb, var(--accent) 18%, var(--bg3));
+  --ui-bg-selected: color-mix(in srgb, var(--accent) 24%, transparent);
+  --ui-fg-default: var(--fg);
+  --ui-fg-muted: var(--fg2);
+  --ui-fg-strong: #fff;
+  --ui-header-fg: var(--fg2);
+  --ui-header-bg: var(--bg3);
+  --ui-header-font: inherit;
+  --ui-toolbar-fg: var(--fg);
+  --ui-toolbar-bg: var(--bg2);
+  --ui-toolbar-font: inherit;
+  --ui-muted-font: inherit;
+  --ui-hover-fg: var(--fg);
+  --ui-hover-bg: var(--bg4);
+  --ui-selection-fg: #fff;
+  --ui-selection-bg: var(--selection);
+  --ui-range-fill-bg: var(--ui-accent);
+  --ui-range-track-bg: color-mix(in srgb, var(--ui-border) 65%, var(--ui-toolbar-bg));
+  --ui-border: color-mix(in srgb, var(--border) 55%, var(--fg2) 28%);
+  --ui-border-strong: color-mix(in srgb, var(--border) 40%, var(--fg2) 45%);
+  --ui-accent: var(--accent);
+  --ui-inner-tabbar-bg: var(--ui-bg-panel);
+  --ui-inner-tabbar-border: var(--ui-border);
+  --ui-inner-tabbar-border-width: 1px;
+  --ui-inner-tab-fg: var(--ui-fg-muted);
+  --ui-inner-tab-bg: transparent;
+  --ui-inner-tab-hover-fg: var(--ui-hover-fg);
+  --ui-inner-tab-hover-bg: var(--ui-hover-bg);
+  --ui-inner-tab-active-fg: var(--ui-accent);
+  --ui-inner-tab-active-bg-alpha: 14%;
+  --ui-inner-tab-active-bg: color-mix(in srgb, var(--ui-inner-tab-active-fg) var(--ui-inner-tab-active-bg-alpha), transparent);
+  --ui-inner-tab-active-underline: var(--ui-accent);
+  --ui-inner-tab-height: var(--ui-h-sm);
+  --ui-inner-tab-padding-x: var(--ui-space-5);
+  --ui-inner-tab-font: inherit;
+  --ui-inner-tab-font-size: var(--ui-font-12);
+  --ui-inner-tab-font-weight: var(--ui-weight-medium);
+  --ui-inner-tab-active-font-weight: var(--ui-weight-semibold);
+  --ui-inner-tab-underline-width: 2px;
+  --ui-danger: var(--red);
+  --ui-warning: var(--orange);
+  --ui-success: var(--green);
+  --ui-overlay: rgba(0,0,0,0.6);
+
+  /* 文字サイズ */
+  --ui-font-10: 10px;
+  --ui-font-11: 11px;
+  --ui-font-12: 12px;
+  --ui-font-13: 13px;
+  --ui-font-14: 14px;
+  --ui-font-16: 16px;
+  --ui-font-18: 18px;
+
+  /* 文字ウェイト */
+  --ui-weight-regular: 400;
+  --ui-weight-medium: 500;
+  --ui-weight-semibold: 600;
+  --ui-weight-bold: 700;
+
+  /* 余白 */
+  --ui-space-1: 2px;
+  --ui-space-2: 4px;
+  --ui-space-3: 6px;
+  --ui-space-4: 8px;
+  --ui-space-5: 12px;
+  --ui-space-6: 16px;
+  --ui-space-7: 20px;
+  --ui-space-8: 24px;
+
+  /* 高さ */
+  --ui-h-xs: 22px;
+  --ui-h-sm: 28px;
+  --ui-h-md: 32px;
+  --ui-h-lg: 36px;
+  --ui-h-xl: 40px;
+  --ui-h-touch: 44px;
+
+  /* 角丸 */
+  --ui-radius-xs: 3px;
+  --ui-radius-sm: 4px;
+  --ui-radius-md: 6px;
+  --ui-radius-lg: 8px;
+  --ui-radius-pill: 999px;
+
+  /* 線幅 */
+  --ui-border-width: 1px;
+  --ui-focus-width: 1px;
+  --ui-active-width: 2px;
+
+  /* アイコンサイズ */
+  --ui-icon-xs: 12px;
+  --ui-icon-sm: 14px;
+  --ui-icon-md: 16px;
+  --ui-icon-lg: 18px;
+  --ui-icon-xl: 20px;
+
+  /* シャドウ */
+  --ui-shadow-sm: 0 2px 6px rgba(0,0,0,0.25);
+  --ui-shadow-md: 0 4px 12px rgba(0,0,0,0.35);
+  --ui-shadow-lg: 0 8px 24px rgba(0,0,0,0.45);
+
+  /* z-index */
+  --ui-z-toolbar: 20;
+  --ui-z-popover: 80;
+  --ui-z-menu: 200;
+  --ui-z-modal: 300;
+  --ui-z-toast: 400;
+  --ui-disabled-fg: color-mix(in srgb, var(--ui-fg-muted, #8a8a8a) 70%, #777);
+  --ui-disabled-bg: color-mix(in srgb, var(--ui-bg-control, #2a2a2a) 55%, #777);
+  --ui-disabled-border: color-mix(in srgb, var(--ui-border, #555) 55%, #777);
+  --ui-disabled-accent: #777;
+}
+
+/* ============================================================
+   Phase 1 (緊急実装): Color Swatch
+   gb-color-palette.js のJS注入版を v3.9 spec値で上書きする。
+   形状: 全て四角統一。サイズ: toolbar 22 / field 20 / inline 18 / detail 24。
+   フチ: 1px solid var(--ui-border) で統一。
+   ============================================================ */
+.gb-color-swatch {
+  position: relative;
+  display: inline-block;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  box-sizing: border-box;
+  flex-shrink: 0;
+  cursor: pointer;
+  appearance: none;
+  background-color: var(--ui-bg-app);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  vertical-align: middle;
+}
+.gb-color-swatch:hover { border-color: var(--ui-accent); }
+.gb-color-swatch:focus-visible {
+  outline: 1px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+.gb-color-swatch--toolbar { width: 22px; height: 22px; border-radius: var(--ui-radius-sm); }
+.gb-color-swatch--field   { width: 20px; height: 20px; border-radius: var(--ui-radius-sm); }
+.gb-color-swatch--inline  { width: 18px; height: 18px; border-radius: var(--ui-radius-sm); }
+.gb-color-swatch--detail  { width: 24px; height: 24px; border-radius: var(--ui-radius-sm); }
+/* 旧 modifier (--status, --round) は v3 で取り下げだが既存DOMが残っている可能性があるため
+   形状崩れを防ぐ目的で四角に正規化する */
+.gb-color-swatch--status  { width: 22px; height: 22px; border-radius: var(--ui-radius-sm); }
+.gb-color-swatch--round   { border-radius: var(--ui-radius-sm); }
+.modal button.gb-color-swatch {
+  padding: 0;
+}
+.modal button.gb-color-swatch--toolbar { width: 22px; height: 22px; min-width: 22px; min-height: 22px; }
+.modal button.gb-color-swatch--field   { width: 20px; height: 20px; min-width: 20px; min-height: 20px; }
+.modal button.gb-color-swatch--inline  { width: 18px; height: 18px; min-width: 18px; min-height: 18px; }
+.modal button.gb-color-swatch--detail  { width: 24px; height: 24px; min-width: 24px; min-height: 24px; }
+
+/* オーバーライドインジケータ */
+.gb-color-swatch.is-overridden::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-accent);
+  border: 1px solid var(--ui-bg-panel);
+  pointer-events: none;
+}
+
+/* ============================================================
+   Phase 2: Button
+   ============================================================ */
+.gb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-3);
+  height: var(--ui-h-md);
+  padding: 0 var(--ui-space-5);
+  font-size: var(--ui-font-13);
+  font-weight: var(--ui-weight-medium);
+  font-family: inherit;
+  line-height: 1;
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-control);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  box-sizing: border-box;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.gb-btn:hover { background: var(--ui-bg-control-hover); }
+.gb-btn:active { background: var(--ui-bg-control-active); }
+.gb-btn:focus-visible {
+  outline: none;
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 1px var(--ui-accent);
+}
+.gb-btn:disabled,
+.gb-btn[disabled],
+.gb-btn.is-disabled {
+  color: var(--ui-disabled-fg) !important;
+  background: var(--ui-disabled-bg) !important;
+  border-color: var(--ui-disabled-border) !important;
+  opacity: 1;
+  pointer-events: none;
+}
+
+/* サイズ */
+.gb-btn-xs {
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-3);
+  font-size: var(--ui-font-11);
+  border-radius: var(--ui-radius-xs);
+  gap: var(--ui-space-2);
+}
+.gb-btn-sm {
+  height: var(--ui-h-sm);
+  padding: 0 var(--ui-space-4);
+  font-size: var(--ui-font-12);
+  border-radius: var(--ui-radius-xs);
+  gap: var(--ui-space-2);
+}
+.gb-btn-md {
+  height: var(--ui-h-md);
+  padding: 0 var(--ui-space-5);
+  font-size: var(--ui-font-13);
+  border-radius: var(--ui-radius-sm);
+}
+.gb-btn-lg {
+  height: var(--ui-h-lg);
+  padding: 0 14px;
+  font-size: var(--ui-font-13);
+  border-radius: var(--ui-radius-sm);
+}
+
+/* バリアント */
+.gb-btn-primary {
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+  color: var(--ui-fg-strong);
+}
+.gb-btn-primary:hover { background: color-mix(in srgb, var(--ui-accent) 85%, #fff); }
+.gb-btn-primary:active { background: color-mix(in srgb, var(--ui-accent) 70%, #000); }
+
+.gb-btn-danger {
+  background: transparent;
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+}
+.gb-btn-danger:hover { background: color-mix(in srgb, var(--ui-danger) 14%, transparent); }
+.gb-btn-danger:active { background: color-mix(in srgb, var(--ui-danger) 22%, transparent); }
+
+.gb-btn-quiet {
+  background: var(--ui-bg-control);
+  color: var(--ui-fg-muted);
+  border-color: var(--ui-border);
+}
+.gb-btn-quiet:hover { color: var(--ui-fg-default); }
+
+.gb-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ui-fg-muted);
+}
+.gb-btn-ghost:hover {
+  background: var(--ui-bg-control-hover);
+  border-color: var(--ui-border);
+  color: var(--ui-fg-default);
+}
+
+/* アイコン専用 */
+.gb-btn-icon {
+  padding: 0;
+  min-width: var(--ui-h-md);
+  width: var(--ui-h-md);
+}
+.gb-btn-icon.gb-btn-xs { min-width: var(--ui-h-xs); width: var(--ui-h-xs); }
+.gb-btn-icon.gb-btn-sm { min-width: var(--ui-h-sm); width: var(--ui-h-sm); }
+.gb-btn-icon.gb-btn-md { min-width: var(--ui-h-md); width: var(--ui-h-md); }
+.gb-btn-icon.gb-btn-lg { min-width: var(--ui-h-lg); width: var(--ui-h-lg); }
+
+/* ============================================================
+   テキストボタン共通ルール (Q 分類独自クラス用)
+   v1 `.gb-btn*` 以外の独自ボタンクラスでも、テキストが改行して
+   ボタン形状が縦長/正方形に崩れるのを禁止する。
+   flex コンテナ内での shrink も禁止し、親が狭い場合は wrap 経路で処理する。
+   ============================================================ */
+.bd-detail-reset-btn,
+.bd-detail-tab-btn,
+.bd-detail-style-trigger,
+.bd-detail-inline-actions > button,
+.sn2-detail-add-btn,
+.sn2-detail-db-btn,
+.sn2-detail-act-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   Phase 2: Toolbar
+   ============================================================ */
+.gb-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;  /* 旧 gb-layout.css で設定されていた折返しを継承。gb-ui.css が cascade 順で勝つため明示必須 */
+  gap: var(--ui-space-3);
+  /* height ではなく min-height にする。Phase 4 で descendant セレクタが消えるまで
+     既存ツールバー内の button (~28px + padding) で 32px を超える可能性があるため */
+  min-height: var(--ui-h-md);
+  padding: var(--ui-space-2) var(--ui-space-4);
+  background: var(--ui-toolbar-bg);
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  overflow: visible;
+  position: relative;
+  z-index: var(--ui-z-toolbar);
+  box-sizing: border-box;
+}
+.gb-toolbar > .sep {
+  width: 1px;
+  height: 18px;
+  background: var(--ui-border);
+  margin: 0 var(--ui-space-1);
+  flex-shrink: 0;
+}
+.gb-toolbar-title {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ui-h-sm);
+  padding: 0 10px;
+  font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
+  font-size: var(--ui-font-14);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-toolbar-fg);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+}
+
+/* ツールバー内子要素のデフォルトスタイル (Phase 4-c: legacy 互換)
+   v0.5.131: ツールバー統一の .tb-* クラスは独自スタイルを持つため除外 */
+.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn),
+.gb-toolbar select:not(.tb-select),
+.gb-toolbar label {
+  font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
+  font-size: var(--ui-font-13); color: var(--ui-toolbar-fg); background: var(--ui-bg-control);
+  border: var(--ui-border-width) solid var(--ui-border); padding: 3px var(--ui-space-4);
+  border-radius: var(--ui-radius-xs); cursor: pointer; white-space: nowrap;
+}
+.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-fg-strong); border-color: var(--ui-accent); }
+.gb-toolbar input[type="color"] {
+  width: 24px; height: var(--ui-h-xs); padding: 0;
+  border: var(--ui-border-width) solid var(--ui-border); cursor: pointer; border-radius: var(--ui-radius-xs);
+}
+.gb-toolbar .gb-color-swatch,
+.toolbar-group .gb-color-swatch {
+  padding: 0; min-width: 0; white-space: normal; background-color: var(--ui-bg-app);
+}
+.gb-toolbar .gb-color-swatch:hover,
+.toolbar-group .gb-color-swatch:hover {
+  background-color: var(--ui-bg-app);
+}
+
+/* ============================================================
+   Phase 4 (2026-04-16): ツールバー統一クラス (.tb-*)
+   toolbar-unification-plan §2-2, §2-3 の仕様。
+   縦幅 32px (min-height)、フォント 12px、ボタン 24×24 を全ツールバー共通とする。
+   注: #tb-db は display:contents で #app-toolbar 直下に子を展開するため、
+   親要素への .gb-toolbar 依存は避け、単独セレクタで定義する。
+   ============================================================ */
+
+/* アイコン専用ボタン (24×24、SVG 16×16 中央配置) */
+.tb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  min-width: var(--ui-h-xs);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-toolbar-fg);
+  cursor: pointer;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.tb-icon-btn:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+  border-color: var(--ui-border);
+}
+.tb-icon-btn.active,
+.tb-icon-btn[aria-pressed="true"] {
+  background: var(--ui-bg-control-active);
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+.tb-icon-btn svg,
+.tb-icon-btn .ico {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* アイコン+テキストボタン (高さ24, padding 0 6px) */
+.tb-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-toolbar-fg);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.tb-text-btn:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+  border-color: var(--ui-border);
+}
+.tb-text-btn.active,
+.tb-text-btn[aria-pressed="true"] {
+  background: var(--ui-bg-control-active);
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+.tb-text-btn svg,
+.tb-text-btn .ico {
+  width: 14px;
+  height: 14px;
+}
+
+/* 色スウォッチ (22×22、書式ポップアップと同形) */
+.tb-swatch {
+  display: inline-block;
+  width: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  padding: 0;
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.tb-swatch:hover {
+  border-color: var(--ui-accent);
+}
+
+/* タイトル表示 (font 12px, weight 600) */
+.tb-title {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--ui-space-3);
+  font-size: var(--ui-font-12);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-toolbar-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ファイル名タイトル (固定幅 240px、表示/編集で幅が変動しないように統一)
+   ボード・台本・ノート・CSV・DB 等のツールバー内ファイル名欄に適用。 */
+.tb-file-title {
+  flex: 0 0 240px;
+  width: 240px;
+  max-width: 240px;
+  box-sizing: border-box;
+}
+.tb-file-title > input,
+.tb-file-title.tb-file-title--input {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: inherit;
+  font: inherit;
+  padding: 0 var(--ui-space-3);
+  height: var(--ui-h-xs);
+  outline: none;
+}
+.tb-file-title > input:focus,
+.tb-file-title.tb-file-title--input:focus {
+  background: var(--ui-bg-app);
+  border-color: var(--ui-accent);
+}
+
+/* 右寄せスペーサー (flex:1) */
+.tb-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* スライダー (80×14) */
+.tb-range {
+  width: 80px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tb-range-label {
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+  min-width: 36px;
+  flex-shrink: 0;
+}
+
+/* バッジ (フィルタ件数等) */
+.tb-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--ui-fg-strong);
+  background: var(--ui-accent);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+/* テキスト入力 (タイトル入力等) */
+.tb-input {
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-3);
+  background: var(--ui-bg-app);
+  color: var(--ui-toolbar-fg);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  font-size: var(--ui-font-12);
+  box-sizing: border-box;
+}
+.tb-input:focus {
+  outline: none;
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 1px var(--ui-accent);
+}
+
+/* select (高さ24) */
+.tb-select {
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-6) 0 var(--ui-space-3);
+  background: var(--ui-bg-control);
+  color: var(--ui-toolbar-fg);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+/* ツール別 modifier (Phase 4 で個別書換予定。現状はスケルトンのみ) */
+.gb-toolbar-app {}
+.gb-toolbar-app--vertical {
+  flex-direction: column;
+  height: auto;
+  width: var(--ui-h-xl);
+  border-bottom: none;
+  border-right: 1px solid var(--ui-border);
+}
+/* カレンダーツールバー modifier (Phase 4-d₀: gb-tools.css .gb-cal-toolbar から移植) */
+.gb-toolbar-cal {
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-2) var(--ui-space-4);
+}
+.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn) {
+  padding: var(--ui-space-2) 10px;
+  font-size: var(--ui-font-12);
+}
+/* ボードツールバー modifier (Phase 4-d₀: gb-tools.css .bd-toolbar から移植) */
+.gb-toolbar-board {
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-2) var(--ui-space-4);
+}
+.gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn) {
+  font-size: var(--ui-font-12);
+  padding: 3px var(--ui-space-4);
+  color: var(--ui-fg-muted);
+}
+
+/* ============================================================
+   Phase 2: Panel Header / Body / Subheader
+   ============================================================ */
+.gb-panel-header {
+  display: flex;
+  align-items: center;
+  height: var(--ui-h-md);
+  padding: 0 var(--ui-space-4);
+  background: var(--ui-header-bg);
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  box-sizing: border-box;
+  position: sticky;
+  top: 0;
+  z-index: var(--ui-z-toolbar);
+}
+.gb-panel-title {
+  font-size: var(--ui-font-14);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-header-fg);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  flex-shrink: 0;
+}
+
+.gb-panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.gb-panel-body-padded {
+  padding: var(--ui-space-4);
+  gap: var(--ui-space-6);
+}
+.gb-panel-body-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-6);
+  padding: var(--ui-space-4);
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  box-sizing: border-box;
+}
+[hidden] { display: none !important; }
+
+/* 詳細パネル用: 空プレースホルダー (note/db/board/calendar いずれもアクティブでない時) */
+.gb-empty-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  padding: var(--ui-space-6);
+  text-align: center;
+  min-height: 0;
+}
+
+/* 詳細パネル用: contenteditable 本文 (board-note 等) */
+.gb-contenteditable-body {
+  flex: 1 1 auto;
+  padding: var(--ui-space-5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  line-height: 1.7;
+  outline: none;
+  font-size: var(--ui-font-12);
+  color: var(--page-text-fg, var(--ui-fg-default));
+  background: var(--page-text-bg, var(--content-bg, var(--ui-bg-panel)));
+  min-height: 0;
+}
+.gb-panel-subheader {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: var(--ui-h-sm);
+  padding: var(--ui-space-1) var(--ui-space-4);
+  background: var(--ui-header-bg);
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.gb-panel-subheader > .sep {
+  width: 1px;
+  height: 16px;
+  background: var(--ui-border);
+  margin: 0 var(--ui-space-1);
+}
+
+/* ============================================================
+   Phase 2: Panel Tab (workspace) / Inner Tab (in-panel)
+   旧 .gb-tab とは別名前空間 (ui-spec-audit-report.md §6.1)
+   ============================================================ */
+.gb-tabbar {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 0;
+  background: var(--ui-inner-tabbar-bg);
+  border-bottom: var(--ui-inner-tabbar-border-width) solid var(--ui-inner-tabbar-border);
+  flex-shrink: 0;
+}
+/* 折返しではなく横スクロールしたい場面 (設定モーダル等) */
+.gb-tabbar--scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.gb-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  height: 30px;
+  padding: 0 var(--ui-space-4);
+  font-size: var(--ui-font-11);
+  font-weight: var(--ui-weight-medium);
+  color: var(--ui-fg-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.gb-panel-tab:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-panel-tab.gb-panel-tab-active,
+.gb-panel-tab-active {
+  color: var(--ui-accent);
+  font-weight: var(--ui-weight-semibold);
+  border-bottom-color: var(--ui-accent);
+}
+.gb-panel-tab.dragging { opacity: 0.4; }
+.gb-panel-tab-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  width: var(--ui-icon-sm);
+  height: var(--ui-icon-sm);
+}
+.gb-panel-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gb-panel-tab-close {
+  margin-left: var(--ui-space-2);
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ui-radius-xs);
+  opacity: 0;
+  cursor: pointer;
+}
+.gb-panel-tab:hover .gb-panel-tab-close { opacity: 0.6; }
+.gb-panel-tab-close:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+
+.gb-inner-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  height: var(--ui-inner-tab-height);
+  padding: 0 var(--ui-inner-tab-padding-x);
+  font-family: var(--ui-inner-tab-font, inherit);
+  font-size: var(--ui-inner-tab-font-size);
+  font-weight: var(--ui-inner-tab-font-weight);
+  color: var(--ui-inner-tab-fg);
+  background: var(--ui-inner-tab-bg);
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  border-bottom: var(--ui-inner-tab-underline-width) solid transparent;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.gb-inner-tab:hover { background: var(--ui-inner-tab-hover-bg); color: var(--ui-inner-tab-hover-fg); }
+.gb-inner-tab.gb-inner-tab-active,
+.gb-inner-tab-active {
+  color: var(--ui-inner-tab-active-fg);
+  font-weight: var(--ui-inner-tab-active-font-weight);
+  border-bottom: var(--ui-inner-tab-underline-width) solid var(--ui-inner-tab-active-underline);
+  background: var(--ui-inner-tab-active-bg);
+}
+.gb-inner-tab-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  width: var(--ui-icon-sm);
+  height: var(--ui-icon-sm);
+}
+.gb-inner-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================
+   Phase 2: Section
+   ============================================================ */
+.gb-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  margin-top: var(--ui-space-6);
+}
+.gb-section:first-child { margin-top: 0; }

@@ -41,22 +41,30 @@ const MeldexExportHtml = (() => {
   function cloneAndClean(el, opts) {
     const options = opts || {};
     const clone = el.cloneNode(true);
+    const allNodes = [clone, ...clone.querySelectorAll('*')];
     // contenteditable 除去
-    clone.querySelectorAll('[contenteditable]').forEach(node => {
+    allNodes.forEach(node => {
       node.removeAttribute('contenteditable');
     });
-    // data-action / data-sn-action 除去
-    clone.querySelectorAll('[data-action], [data-sn-action]').forEach(node => {
+    // data-action / data-sn-action / data-on* 除去
+    allNodes.forEach(node => {
       node.removeAttribute('data-action');
       node.removeAttribute('data-sn-action');
+      node.removeAttribute('data-args');
+      node.removeAttribute('data-onchange');
+      node.removeAttribute('data-oninput');
+      node.removeAttribute('data-onkeydown');
+      node.removeAttribute('data-onfocus');
     });
     // tabindex / draggable 除去
-    clone.querySelectorAll('[tabindex]').forEach(node => node.removeAttribute('tabindex'));
-    clone.querySelectorAll('[draggable]').forEach(node => node.removeAttribute('draggable'));
+    allNodes.forEach(node => {
+      node.removeAttribute('tabindex');
+      node.removeAttribute('draggable');
+    });
     // イベント属性除去
     const eventAttrs = ['onclick', 'onmouseover', 'onmouseout', 'onmousedown', 'onmouseup',
       'onkeydown', 'onkeyup', 'ondblclick', 'oncontextmenu', 'ondragstart', 'ondrop', 'oninput', 'onchange'];
-    clone.querySelectorAll('*').forEach(node => {
+    allNodes.forEach(node => {
       eventAttrs.forEach(attr => node.removeAttribute(attr));
     });
     // input / textarea / select をテキストに変換、button は無効化
@@ -172,12 +180,47 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
   // 6. CSS取得ヘルパー
   // ================================================================
 
-  /** 外部CSSファイルを取得する（キャッシュバイパス付き） */
-  async function fetchCss(url) {
+  function _resolveCssUrl(url, baseUrl) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
     try {
-      const res = await fetch(url + '?_=' + Date.now(), { cache: 'no-store' });
+      return new URL(raw, baseUrl ? new URL(baseUrl, document.baseURI) : document.baseURI).toString();
+    } catch {
+      return raw;
+    }
+  }
+
+  function _withCacheBust(url) {
+    const sep = String(url).includes('?') ? '&' : '?';
+    return `${url}${sep}_=${Date.now()}`;
+  }
+
+  async function _inlineCssImports(cssText, baseUrl, seen) {
+    const importRe = /@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?[^;]*;/gi;
+    let out = '';
+    let last = 0;
+    let match;
+    while ((match = importRe.exec(cssText))) {
+      out += cssText.slice(last, match.index);
+      const importUrl = _resolveCssUrl(match[1], baseUrl);
+      if (importUrl) out += await fetchCss(importUrl, seen) + '\n';
+      last = match.index + match[0].length;
+    }
+    return out + cssText.slice(last);
+  }
+
+  /** 外部CSSファイルを取得し、@import も自己完結用に展開する（キャッシュバイパス付き） */
+  async function fetchCss(url, seen) {
+    const resolvedUrl = _resolveCssUrl(url);
+    if (!resolvedUrl) return '';
+    const visited = seen || new Set();
+    if (visited.has(resolvedUrl)) return '';
+    visited.add(resolvedUrl);
+    try {
+      const res = await fetch(_withCacheBust(resolvedUrl), { cache: 'no-store' });
       if (!res.ok) return '';
-      return await res.text();
+      const cssText = await res.text();
+      return await _inlineCssImports(cssText, resolvedUrl, visited);
     } catch {
       return '';
     }
@@ -390,6 +433,10 @@ ${bodyHtml}
         const h1 = pc?.querySelector('h1, h2, h3');
         return h1?.textContent || pc?.dataset?.path?.split('/').pop()?.replace(/\.\w+$/, '') || 'ノート';
       }
+      case 'entity': {
+        const title = document.getElementById('entity-title')?.textContent?.trim();
+        return title || state?.currentEntityPath?.split(/[\\/]/).pop()?.replace(/\.\w+$/, '') || 'エントリ';
+      }
       case 'database':
         return state?.currentDbPath?.split('/').pop() || 'シート';
       case 'smart-db':
@@ -409,7 +456,7 @@ ${bodyHtml}
     if (!pc) { showStatus('ノートが開かれていません', true); return null; }
     return exportToHtml(pc, {
       title: _getViewTitle('page'),
-      cssFiles: ['gb-editor.css'],
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
       extraCss: `
         #page-content, [id="page-content"] {
           padding: 16px 60px;
@@ -456,7 +503,7 @@ ${bodyHtml}
     };
     return exportToHtml(table, {
       title: _getViewTitle('database'),
-      cssFiles: ['gb-database.css', 'gb-ui.css'],
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
       extraCss: `
         table { border-collapse: collapse; table-layout: fixed; width: 100%; }
         th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }

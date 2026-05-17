@@ -49,7 +49,7 @@
       `)}
       ${_syncCard('Microsoft Calendar', `
         <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
-        ${!microsoft.connected ? `
+        ${!microsoft.connected && microsoft.available ? `
           <div class="field"><label>Application (client) ID</label><input class="sync-ms-id" type="text" placeholder="Microsoft Entra のアプリID"></div>
           <div class="field"><label>Tenant</label><input class="sync-ms-tenant" type="text" value="${_calSyncEsc(microsoft.tenant || 'common')}"></div>
           <button class="sync-ms-auth" type="button" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Microsoftにログイン</button>
@@ -104,7 +104,7 @@
   CalendarComponent.prototype._googleCalPull = async function() {
     this._showStatus('Googleカレンダーから取得中...');
     try {
-      const res = await apiPost('/cal/sync/google/pull', {});
+      const res = await apiPost('/cal/sync/google/pull', { user: this._getUser() });
       this._showStatus(`取得完了: ${res.imported}件インポート, ${res.updated}件更新`);
       await this._loadEvents();
       this._render();
@@ -116,7 +116,7 @@
   CalendarComponent.prototype._googleCalPush = async function() {
     this._showStatus('Googleカレンダーに送信中...');
     try {
-      const res = await apiPost('/cal/sync/google/push', {});
+      const res = await apiPost('/cal/sync/google/push', { user: this._getUser() });
       this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Google送信失敗: ' + e.message, true);
@@ -173,7 +173,7 @@
   CalendarComponent.prototype._microsoftCalPull = async function() {
     this._showStatus('Microsoftカレンダーから取得中...');
     try {
-      const res = await apiPost('/cal/sync/microsoft/pull', {});
+      const res = await apiPost('/cal/sync/microsoft/pull', { user: this._getUser() });
       this._showStatus(`取得完了: ${res.imported}件インポート, ${res.updated}件更新`);
       await this._loadEvents();
       this._render();
@@ -185,7 +185,7 @@
   CalendarComponent.prototype._microsoftCalPush = async function() {
     this._showStatus('Microsoftカレンダーに送信中...');
     try {
-      const res = await apiPost('/cal/sync/microsoft/push', {});
+      const res = await apiPost('/cal/sync/microsoft/push', { user: this._getUser() });
       this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Microsoft送信失敗: ' + e.message, true);
@@ -199,7 +199,7 @@
     if (!url) { this._showStatus('iCal URLを入力してください', true); return; }
     this._showStatus('iCal URLから取得中...');
     try {
-      const res = await apiPost('/cal/sync/ical/url-import', { url, username, password });
+      const res = await apiPost('/cal/sync/ical/url-import', { url, username, password, user: this._getUser() });
       this._showStatus(`iCal取得完了: ${res.imported}件`);
       await this._loadEvents();
       this._render();
@@ -217,7 +217,7 @@
       if (!file) return;
       const text = await file.text();
       try {
-        const res = await apiPost('/cal/sync/ical/import', { ics: text });
+        const res = await apiPost('/cal/sync/ical/import', { ics: text, user: this._getUser() });
         this._showStatus(`iCalインポート完了: ${res.imported}件`);
         await this._loadEvents();
         this._render();
@@ -233,7 +233,7 @@
       this._showStatus('保存ダイアログを初期化できませんでした', true);
       return;
     }
-    await MeldexExportSave.saveUrl(API_BASE + '/cal/sync/ical/export', {
+    await MeldexExportSave.saveUrl(API_BASE + '/cal/sync/ical/export?user=' + encodeURIComponent(this._getUser()), {
       filename: `calendar-${this._localDateStr(new Date())}.ics`,
       extension: '.ics',
       dialogTitle: 'iCal として保存',

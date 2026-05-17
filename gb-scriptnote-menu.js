@@ -347,6 +347,26 @@ Object.assign(ScriptNoteEditor.prototype, {
     return span;
   },
 
+  _appendScriptNoteInlineFragment(frag, rawText) {
+    if (!frag || !rawText) return;
+    if (rawText.includes('{') && rawText.includes('|') && typeof _sn2NewRubyRegex === 'function') {
+      let last = 0;
+      const re = _sn2NewRubyRegex();
+      let m;
+      while ((m = re.exec(rawText)) !== null) {
+        if (m.index > last) frag.appendChild(document.createTextNode(_sn2UnescapeScriptNotePlainText(rawText.slice(last, m.index))));
+        const span = document.createElement('span');
+        span.dataset.ruby = _sn2UnescapeRubyText(m[2]);
+        span.textContent = _sn2UnescapeRubyText(m[1]);
+        frag.appendChild(span);
+        last = m.index + m[0].length;
+      }
+      if (last < rawText.length) frag.appendChild(document.createTextNode(_sn2UnescapeScriptNotePlainText(rawText.slice(last))));
+      return;
+    }
+    frag.appendChild(document.createTextNode(_sn2UnescapeScriptNotePlainText(rawText)));
+  },
+
   _buildManualLinkFragment(rawText) {
     const frag = document.createDocumentFragment();
     const re = /\[((?:\\.|[^\]])+)\]\(ml:([^)]+)\)/g;
@@ -355,14 +375,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     let m;
     while ((m = re.exec(rawText || '')) !== null) {
       matched = true;
-      if (m.index > last) frag.appendChild(document.createTextNode(_sn2UnescapeRubyText(rawText.slice(last, m.index))));
+      if (m.index > last) this._appendScriptNoteInlineFragment(frag, rawText.slice(last, m.index));
       let target = '';
       try { target = decodeURIComponent(m[2]); } catch { target = m[2]; }
       frag.appendChild(this._createManualLinkSpan(this._decodeManualLinkLabel(m[1]), target));
       last = m.index + m[0].length;
     }
     if (!matched) return null;
-    if (last < rawText.length) frag.appendChild(document.createTextNode(_sn2UnescapeRubyText(rawText.slice(last))));
+    if (last < rawText.length) this._appendScriptNoteInlineFragment(frag, rawText.slice(last));
     return frag;
   },
 

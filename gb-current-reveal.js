@@ -22,6 +22,15 @@
     return (typeof state !== 'undefined' && state) ? state[key] || '' : '';
   }
 
+  function _currentSmartDbPath() {
+    try {
+      const current = (typeof state !== 'undefined' && state) ? state.currentSmartDb : null;
+      return current?._filePath || current?.path || current?.id || '';
+    } catch {
+      return '';
+    }
+  }
+
   function _tabPath(tab, ...keys) {
     if (tab?.path) return tab.path;
     const tabState = tab?.state || {};
@@ -38,14 +47,13 @@
     if (type === 'page') return _tabPath(tab, 'pagePath') || _statePath('currentPagePath');
     if (type === 'board') return _tabPath(tab, 'boardPath') || _statePath('currentBoardPath');
     if (type === 'scriptnote') return _tabPath(tab, 'scenarioPath', 'scriptnotePath');
-    if (type === 'smart-db') return _tabPath(tab, 'smartDbPath', 'dbPath') || _statePath('currentSmartDb')?._filePath || _statePath('currentDbPath');
+    if (type === 'smart-db') return _tabPath(tab, 'smartDbPath', 'dbPath') || _currentSmartDbPath() || _statePath('currentDbPath');
     if (DB_VIEW_TYPES.has(type)) return _tabPath(tab, 'dbPath') || _statePath('currentDbPath');
     if (type === 'folder') return _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
     if (type === 'csv') return _tabPath(tab, 'csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : '');
     if (type === 'media') return _tabPath(tab, 'mediaPath', 'pagePath') || _statePath('currentPagePath');
-    if (type === 'calendar') return (typeof _calRenderState !== 'undefined' ? _calRenderState?.dbPath || '' : '')
-      || _tabPath(tab, 'calendarPath', 'dbPath')
-      || _statePath('currentDbPath');
+    if (type === 'calendar') return _tabPath(tab, 'calendarPath', 'dbPath')
+      || (tab ? '' : (typeof _calRenderState !== 'undefined' ? _calRenderState?.dbPath || '' : ''));
     return _tabPath(tab, 'path', 'dbPath', 'pagePath', 'boardPath', 'folderPath', 'csvPath', 'scenarioPath')
       || _statePath('currentEntityPath')
       || _statePath('currentPagePath')
@@ -162,6 +170,11 @@
     return !!document.querySelector('#outliner-tree .tree-node, #body-home .tree-node');
   }
 
+  function _hasVisibleOutlinerNodes() {
+    const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node');
+    return Array.from(nodes).some(node => _isTreeNodeVisible(node));
+  }
+
   function _ensureSidebarOutlinerVisible() {
     const sidebar = document.getElementById('sidebar');
     if (!sidebar) return false;
@@ -171,7 +184,7 @@
   }
 
   function _ensureOutlinerVisible(activeSnapshot) {
-    if (_hasOutlinerNodes() && _ensureSidebarOutlinerVisible()) return true;
+    if (_hasVisibleOutlinerNodes() && _ensureSidebarOutlinerVisible()) return true;
     const visible = _findOutlinerTab({ activeOnly: true });
     if (visible && !_wouldReplaceActiveTab(visible, activeSnapshot) && _activateOutlinerMatch(visible, activeSnapshot)) return true;
     if (_createOutlinerPane(activeSnapshot)) return true;
@@ -195,14 +208,26 @@
     if (!target) return null;
     if (typeof _findTreeNodeByPath === 'function') {
       const node = _findTreeNodeByPath(target);
-      if (node) return node;
+      if (node && _isTreeNodeVisible(node)) return node;
     }
     const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #sidebar .tree-node');
     for (const node of nodes) {
       const nodePath = _normalizePath(node._nodeData?.path || node.dataset?.path || '');
-      if (nodePath === target) return node;
+      if (nodePath === target && _isTreeNodeVisible(node)) return node;
     }
     return null;
+  }
+
+  function _isTreeNodeVisible(node) {
+    if (!node?.isConnected) return false;
+    let el = node;
+    while (el && el.nodeType === 1) {
+      if (el.hidden) return false;
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(el) : el.style;
+      if (style?.display === 'none' || style?.visibility === 'hidden') return false;
+      el = el.parentElement;
+    }
+    return true;
   }
 
   function _isAbsoluteRevealPath(path) {

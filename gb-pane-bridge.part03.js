@@ -81,13 +81,27 @@
 
     // 旧スプリットビュー → ペイン分割に置換
     let _legacySplitPair = null;
+    function _nodeContainsPane(node, paneId) {
+      if (!node || !paneId) return false;
+      if (node.type === 'pane') return node.id === paneId;
+      if (node.type === 'split') return (node.children || []).some(child => _nodeContainsPane(child, paneId));
+      if (node.type === 'panelset' && Array.isArray(node.groups)) {
+        return node.groups.some(group => _nodeContainsPane(group?.root, paneId));
+      }
+      return false;
+    }
     function _findDirectParentSplit(root, paneId) {
-      if (!root || root.type !== 'split') return null;
-      for (const child of (root.children || [])) {
-        if (!child) continue;
-        if (child.id === paneId) return root;
-        if (child.type === 'split') {
-          const found = _findDirectParentSplit(child, paneId);
+      if (!root || !paneId) return null;
+      if (root.type === 'split') {
+        for (const child of (root.children || [])) {
+          if (!child || !_nodeContainsPane(child, paneId)) continue;
+          return _findDirectParentSplit(child, paneId) || root;
+        }
+        return null;
+      }
+      if (root.type === 'panelset' && Array.isArray(root.groups)) {
+        for (const group of root.groups) {
+          const found = _findDirectParentSplit(group?.root, paneId);
           if (found) return found;
         }
       }
@@ -240,6 +254,7 @@
       if (!paneInfo || _isToolbarUtilityView(paneInfo.activeTab?.type)) return;
       _refreshMountedPane(paneId);
       const toolbarView = _toolbarViewForTab(paneInfo.activeTab) || state.view || '';
+      _ensureDbSubviewVisibleForPane(paneId, GBLayout.paneMap?.[paneId]?.contentEl || null, toolbarView, paneInfo.activeTab);
       _syncStateView();
       _mountFloatingAnnotationUi();
       if (toolbarView && typeof _updateToolbars === 'function') _updateToolbars(toolbarView);
@@ -445,10 +460,28 @@
     return true;
   }
 
+  function _disposeLayoutTreeComponents(node) {
+    if (!node) return;
+    if (node.type === 'pane') {
+      (node.tabs || []).forEach(tab => {
+        if (typeof removeComponentInstance === 'function') removeComponentInstance(tab.id);
+      });
+      return;
+    }
+    if (node.type === 'split') {
+      (node.children || []).forEach(_disposeLayoutTreeComponents);
+      return;
+    }
+    if (node.type === 'panelset' && Array.isArray(node.groups)) {
+      node.groups.forEach(group => _disposeLayoutTreeComponents(group?.root));
+    }
+  }
+
   function _resetDefaultLayout(options) {
     const before = !options?.skipHistory && typeof GBLayout.captureLayoutSnapshot === 'function'
       ? GBLayout.captureLayoutSnapshot()
       : null;
+    _disposeLayoutTreeComponents(GBLayout.root);
     _buildDefaultLayout(GBLayout.createPaneNode('pane-main', [], -1));
     if (before && typeof GBLayout.pushLayoutHistory === 'function') {
       GBLayout.pushLayoutHistory('レイアウト: 初期化', before, GBLayout.captureLayoutSnapshot(), '標準レイアウトへ戻す');

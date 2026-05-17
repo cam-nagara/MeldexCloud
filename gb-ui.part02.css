@@ -375,13 +375,17 @@
   top: calc(100% + 2px);
   left: 0;
   right: 0;
-  max-height: 220px;
+  max-height: var(--theme-ui-picker-menu-max-height, 220px);
   overflow: auto;
   padding: var(--ui-space-1);
   background: var(--ui-bg-panel);
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-sm);
   box-shadow: var(--ui-shadow-md);
+}
+.cs-theme-ui-picker-wrap--open-up .cs-theme-ui-picker-menu {
+  top: auto;
+  bottom: calc(100% + 2px);
 }
 .cs-theme-ui-option {
   width: 100%;
@@ -772,6 +776,7 @@
   font-size: var(--ui-font-12);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--ui-space-2);
   border-bottom: 1px solid var(--gb-history-border, var(--ui-border));
   background: var(--gb-history-row-bg, transparent);
@@ -826,13 +831,20 @@
 .gb-hp-title {
   color: var(--ui-fg-default);
   font-weight: var(--ui-weight-semibold);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .gb-hp-detail {
+  flex: 0 0 100%;
+  min-width: 0;
   margin-top: var(--ui-space-1);
   padding-left: var(--ui-space-1);
   color: var(--ui-fg-muted);
   font-size: var(--ui-font-11);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 /* 大きめのアバター (48px、設定モーダルのマイプロフィール等) */

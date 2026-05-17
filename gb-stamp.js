@@ -1,6 +1,6 @@
 /* gb-stamp.js - chat stamp picker and inline rendering */
 
-const STAMP_REGEX = /::stamp:([A-Za-z0-9:_-]+)::/g;
+const STAMP_REGEX = /::stamp:([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*)::/g;
 
 function _stampFallbackToEmoji(spec) {
   const raw = String(spec || '').replace(/^noto:/i, '').replace(/^emoji:/i, '').replace(/^twemoji:/i, '');

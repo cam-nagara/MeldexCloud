@@ -29,7 +29,7 @@
     { label: '入力欄', fg: '--cal-input-fg', bg: '--cal-input-bg', text: '入力欄' },
     { label: '操作ボタン', fg: '--cal-control-fg', bg: '--cal-control-bg', line: '--cal-control-border', text: 'ボタン' },
     { label: '補助表示', fg: '--cal-muted-fg', bg: '--cal-avatar-bg', text: '補助表示' },
-    { label: 'アクセント', fg: '--cal-accent', bg: '--cal-accent-fg', text: '選択' },
+    { label: 'アクセント', fg: '--cal-accent-fg', bg: '--cal-accent', text: '選択' },
     { label: 'タスク列', bg: '--cal-task-column-bg', text: '列' },
     { label: 'タスク見出し', fg: '--cal-task-fg', bg: '--cal-task-header-bg', text: '見出し' },
     { label: 'タスク', fg: '--cal-task-fg', bg: '--cal-task-bg', line: '--cal-task-border', text: 'タスク' },
@@ -129,6 +129,100 @@
     }
   }
 
+  function _calIsLocalCustomThemeId(id) {
+    return String(id || '') === (typeof _FILE_STYLE_LOCAL_CUSTOM_THEME_ID !== 'undefined' ? _FILE_STYLE_LOCAL_CUSTOM_THEME_ID : '__fileCustomTheme');
+  }
+
+  function _calNormalizeFieldValue(field, value) {
+    let raw = value;
+    if (field?.type === 'pxtext' && raw !== null && raw !== undefined && raw !== '') {
+      raw = String(raw).trim();
+      if (raw && !/(px|em|rem|%)$/i.test(raw)) raw += 'px';
+    }
+    return typeof _fsNormalizeFieldValue === 'function' ? _fsNormalizeFieldValue(field, raw) : raw;
+  }
+
+  function _calPaletteVars(themeDef) {
+    const vars = {};
+    if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeColorSet === 'function') {
+      const colors = MeldexThemeManager.getThemeColorSet(themeDef, { ignoreOsAccent: true });
+      if (Array.isArray(colors) && colors.length) {
+        for (let i = 0; i < 10; i += 1) vars[`--theme-palette-${i}`] = colors[i % colors.length];
+      }
+    }
+    return vars;
+  }
+
+  function _calDerivedThemeVars(vars) {
+    const next = { ...(vars || {}) };
+    const fallback = (key, sources, value) => {
+      if (next[key]) return;
+      for (const source of sources) {
+        if (next[source]) {
+          next[key] = next[source];
+          return;
+        }
+      }
+      if (value !== undefined) next[key] = value;
+    };
+    fallback('--ui-accent', ['--accent'], '#2563eb');
+    fallback('--ui-fg-strong', ['--fg'], '#ffffff');
+    fallback('--ui-toolbar-bg', ['--bg2', '--bg'], '#252525');
+    fallback('--ui-toolbar-fg', ['--fg'], '#d4d4d4');
+    fallback('--ui-hover-bg', ['--bg4', '--bg3'], '#3e3e3e');
+    fallback('--ui-hover-fg', ['--fg'], '#d4d4d4');
+    fallback('--ui-selection-bg', ['--accent', '--ui-accent'], '#264f78');
+    fallback('--ui-selection-fg', ['--ui-fg-strong', '--fg'], '#ffffff');
+    fallback('--cal-bg', ['--bg'], '#1e1e1e');
+    fallback('--cal-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-font-family', ['--ui-font'], 'inherit');
+    fallback('--cal-toolbar-bg', ['--ui-toolbar-bg', '--bg2'], '#252525');
+    fallback('--cal-toolbar-fg', ['--ui-toolbar-fg', '--fg'], '#d4d4d4');
+    fallback('--cal-sidebar-bg', ['--bg2'], '#252525');
+    fallback('--cal-sidebar-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-content-bg', ['--content-bg', '--bg'], '#1e1e1e');
+    fallback('--cal-panel-bg', ['--bg2'], '#252525');
+    fallback('--cal-panel-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-header-bg', ['--bg3', '--bg2'], '#2d2d2d');
+    fallback('--cal-header-fg', ['--fg2', '--fg'], '#969696');
+    fallback('--cal-saturday-fg', ['--blue'], '#6a9ad1');
+    fallback('--cal-sunday-fg', ['--red'], '#d1696a');
+    fallback('--cal-cell-bg', ['--content-bg', '--bg'], '#1e1e1e');
+    fallback('--cal-cell-hover-bg', ['--ui-hover-bg', '--bg4'], '#3e3e3e');
+    fallback('--cal-cell-hover-fg', ['--ui-hover-fg', '--fg'], '#d4d4d4');
+    fallback('--cal-today-bg', ['--ui-selection-bg', '--accent'], '#264f78');
+    fallback('--cal-today-fg', ['--ui-selection-fg', '--ui-fg-strong'], '#ffffff');
+    fallback('--cal-grid-line', ['--border'], '#333333');
+    fallback('--cal-time-fg', ['--fg2'], '#969696');
+    fallback('--cal-event-bg', ['--ui-accent', '--accent'], '#2563eb');
+    fallback('--cal-event-fg', ['--ui-fg-strong', '--fg'], '#ffffff');
+    fallback('--cal-event-border', ['--border'], 'rgba(0,0,0,0.25)');
+    fallback('--cal-event-create-gap', [], '18px');
+    fallback('--cal-task-column-bg', ['--bg2'], '#252525');
+    fallback('--cal-task-header-bg', ['--bg3', '--bg2'], '#2d2d2d');
+    fallback('--cal-task-bg', ['--content-bg', '--bg'], '#1e1e1e');
+    fallback('--cal-task-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-task-border', ['--border'], '#333333');
+    fallback('--cal-task-priority-urgent-bg', ['--red'], '#f44747');
+    fallback('--cal-task-priority-high-bg', ['--orange'], '#ce9178');
+    fallback('--cal-task-priority-medium-bg', ['--blue'], '#6fa8dc');
+    fallback('--cal-clock-bg', ['--bg3', '--bg2'], '#2d2d2d');
+    fallback('--cal-clock-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-mini-selected-bg', ['--ui-accent', '--accent'], '#2563eb');
+    fallback('--cal-mini-selected-fg', ['--ui-fg-strong', '--fg'], '#ffffff');
+    fallback('--cal-accent', ['--ui-accent', '--accent'], '#2563eb');
+    fallback('--cal-accent-fg', ['--ui-fg-strong', '--fg'], '#ffffff');
+    fallback('--cal-now-line-color', ['--red'], '#f44747');
+    fallback('--cal-input-bg', ['--content-bg', '--bg'], '#1e1e1e');
+    fallback('--cal-input-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-control-bg', ['--bg3', '--bg2'], '#2d2d2d');
+    fallback('--cal-control-fg', ['--fg'], '#d4d4d4');
+    fallback('--cal-control-border', ['--border'], '#333333');
+    fallback('--cal-muted-fg', ['--fg2'], '#969696');
+    fallback('--cal-avatar-bg', ['--bg3', '--bg2'], '#2d2d2d');
+    return next;
+  }
+
   function _calWriteStyle(style) {
     const clean = {};
     const knownKeys = _calKnownFieldKeys();
@@ -146,9 +240,10 @@
 
   function _calThemeVars(style) {
     const id = String(style?.__themeId || '');
-    if (id === '__fileCustomTheme') return {};
+    if (_calIsLocalCustomThemeId(id)) return {};
     if (!id || typeof MeldexThemeManager === 'undefined' || typeof MeldexThemeManager.getThemeById !== 'function') return {};
-    const vars = { ...(MeldexThemeManager.getThemeById(id)?.ui?.cssVars || {}) };
+    const themeDef = MeldexThemeManager.getThemeById(id);
+    const vars = { ..._calDerivedThemeVars(themeDef?.ui?.cssVars || {}), ..._calPaletteVars(themeDef) };
     ['--cal-content-bg', '--cal-scroll-thumb', '--cal-scroll-thumb-hover'].forEach(key => { delete vars[key]; });
     return vars;
   }
@@ -161,7 +256,8 @@
     }
     const out = {};
     Object.entries(vars).forEach(([key, value]) => {
-      if (key === '__themeId' || !String(key).startsWith('--cal-')) return;
+      if (key === '__themeId') return;
+      if (!String(key).startsWith('--cal-') && !String(key).startsWith('--theme-palette-') && key !== '--theme-os-accent' && key !== '--theme-os-accent-text') return;
       if (key === '--cal-content-bg' || key === '--cal-scroll-thumb' || key === '--cal-scroll-thumb-hover') return;
       if (value !== null && value !== undefined && value !== '') out[key] = value;
     });
@@ -193,9 +289,10 @@
         if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
           _fsEnsureLocalCustomThemeBeforeFieldSet(CALENDAR_CTX, field, this);
         }
+        const normalized = _calNormalizeFieldValue(field, val);
         const next = { ..._calReadStyle() };
-        if (val === null || val === undefined || val === '') delete next[field.key];
-        else next[field.key] = val;
+        if (normalized === null || normalized === undefined || normalized === '') delete next[field.key];
+        else next[field.key] = normalized;
         applyCalendarPanelStyle(_calWriteStyle(next));
       },
       applyCss() {
@@ -211,7 +308,7 @@
     const style = _calReadStyle();
     const vars = {};
     _calKnownFieldKeys().forEach(key => {
-      if (!String(key).startsWith('--cal-')) return;
+      if (!String(key).startsWith('--cal-') && !String(key).startsWith('--theme-palette-')) return;
       const value = style[key];
       if (value !== undefined && value !== null && value !== '') vars[key] = value;
     });
@@ -250,6 +347,14 @@
   }
 
   function _calInstallDetailHooks() {
+    if (typeof _fsGetStyleForContext === 'function') {
+      const original = _fsGetStyleForContext;
+      _fsGetStyleForContext = function(ctx) {
+        if (ctx === CALENDAR_CTX) return _calReadStyle();
+        return original(ctx);
+      };
+    }
+
     if (typeof _fsGetAdapter === 'function') {
       const original = _fsGetAdapter;
       _fsGetAdapter = function(ctx) {
@@ -308,6 +413,7 @@
               { label: 'アクセント', fields: pick(['--cal-accent', '--cal-accent-fg']) },
               { label: 'タスク列', fields: pick(['--cal-task-column-bg', '--cal-task-header-bg']) },
               { label: 'タスク', fields: pick(['--cal-task-fg', '--cal-task-bg', '--cal-task-border']) },
+              { label: 'タスク優先度', fields: pick(['--cal-task-priority-urgent-bg', '--cal-task-priority-high-bg', '--cal-task-priority-medium-bg']) },
               { label: '打刻', fields: pick(['--cal-clock-fg', '--cal-clock-bg']) },
               { label: 'ミニカレンダー選択', fields: pick(['--cal-mini-selected-fg', '--cal-mini-selected-bg']) },
             ],
@@ -337,7 +443,7 @@
           return;
         }
         const id = _calReadStyle().__themeId || '';
-        _calWriteStyle(id ? { __themeId: id } : {});
+        _calWriteStyle(id && !_calIsLocalCustomThemeId(id) ? { __themeId: id } : {});
         applyCalendarPanelStyle();
         _calRenderFileStyleTab();
         if (typeof showStatus === 'function') showStatus('デフォルトに戻しました');

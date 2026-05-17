@@ -362,9 +362,26 @@
 .sn2-text[data-align="center"] { text-align: center; }
 .sn2-text[data-align="right"] { text-align: right; }
 /* 垂直配置: セルの高さは維持（stretch）、内容の位置をflex配置で制御 */
-[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
-[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
-[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
+.sn2-gutter[data-valign="top"],
+.sn2-gutter2[data-valign="top"],
+.sn2-role-btn[data-valign="top"],
+.sn2-custom-text[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
+.sn2-gutter[data-valign="middle"],
+.sn2-gutter2[data-valign="middle"],
+.sn2-role-btn[data-valign="middle"],
+.sn2-custom-text[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
+.sn2-gutter[data-valign="bottom"],
+.sn2-gutter2[data-valign="bottom"],
+.sn2-role-btn[data-valign="bottom"],
+.sn2-custom-text[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
+.sn2-status-btn[data-valign],
+.sn2-custom-cell[data-valign] { flex-direction: row; }
+.sn2-status-btn[data-valign="top"],
+.sn2-custom-cell[data-valign="top"] { align-items: flex-start; }
+.sn2-status-btn[data-valign="middle"],
+.sn2-custom-cell[data-valign="middle"] { align-items: center; }
+.sn2-status-btn[data-valign="bottom"],
+.sn2-custom-cell[data-valign="bottom"] { align-items: flex-end; }
 /* .sn2-text: flex-columnだと::before/::afterが別のflex itemになり改行される。
    align-content（block layout対応）で垂直配置し、inline ::before/::afterを保持する */
 .sn2-text[data-valign] { display: block !important; flex-direction: initial !important; }
@@ -374,6 +391,9 @@
 .sn2-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; }
 .sn2-text[data-overflow="overflow"] { white-space: nowrap; overflow: visible; }
 .sn2-text[data-overflow="clip"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn2-scroll.sn2-vertical .sn2-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-text[data-overflow="overflow"] { white-space: nowrap; word-break: normal; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-text[data-overflow="clip"] { white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: clip; }
 /* カスタム列の配置設定 */
 .sn2-custom-cell[data-align="left"] { justify-content: flex-start; }
 .sn2-custom-cell[data-align="center"] { justify-content: center; }
@@ -520,6 +540,10 @@
 .sn2-row-check:checked { opacity: 1; }
 .sn2-row:hover .sn2-handle { color: var(--fg2); }
 .sn2-handle:hover { color: var(--fg) !important; }
+@media (hover: none), (pointer: coarse) {
+  .sn2-row-check { opacity: 1; }
+  .sn2-handle { color: var(--fg2); }
+}
 .sn2-row.sn2-dragging { opacity: 0.3; }
 /* 行入れ替えハイライト */
 .sn2-row.sn2-swap-highlight { animation: sn2-swap-flash 0.4s ease-out; }

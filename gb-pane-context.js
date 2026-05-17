@@ -53,6 +53,12 @@ function destroyPaneContext(paneId) {
   if (ctx) {
     ctx._renderToken = null;
     ctx._renderInProgress = false;
+    if (ctx._dragSelectPointerUp) {
+      document.removeEventListener('pointerup', ctx._dragSelectPointerUp);
+      document.removeEventListener('pointercancel', ctx._dragSelectPointerUp);
+      ctx._dragSelectPointerUp = null;
+    }
+    ctx._dragSelectState = null;
   }
   if (_activePane === _panes[paneId]) _activePane = null;
   delete _panes[paneId];

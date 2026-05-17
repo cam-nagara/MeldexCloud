@@ -351,8 +351,10 @@
 
 .tree-node { user-select: none; }
 .tree-node-row {
+  --tree-row-height: 22px;
   display: flex; align-items: center; gap: 4px;
-  padding: 3px 4px; cursor: pointer; border-radius: 3px; font-size: 13px;
+  height: var(--tree-row-height); min-height: var(--tree-row-height); box-sizing: border-box;
+  padding: 3px 4px; cursor: pointer; border-radius: 3px; font-size: 14px; line-height: 16px;
   background: var(--outliner-item-bg); color: var(--outliner-item-fg);
 }
 .tree-node-row.tree-root-row {
@@ -804,8 +806,14 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 .gb-cal-create-menu-item:hover { background: var(--ui-bg-control-hover); color: var(--ui-accent); }
 .gb-cal-clock-view { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
 .gb-cal-clock-view-meta { min-height: 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--cal-muted-fg, var(--fg2)); font-size: 12px; }
-.gb-cal-clock-stage { min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.gb-cal-clock-svg { width: min(100%, 72vh); height: min(100%, 72vh); max-width: 100%; max-height: 100%; aspect-ratio: 1 / 1; overflow: visible; cursor: crosshair; }
+.gb-cal-clock-stage { min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; container-type: size; }
+.gb-cal-clock-svg { display: block; flex: 0 0 auto; width: min(100%, 72vh); height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 1 / 1; overflow: visible; cursor: crosshair; }
+@supports (width: 1cqw) {
+  .gb-cal-clock-svg {
+    width: min(100cqw, 100cqh, 72vh);
+    height: min(100cqw, 100cqh, 72vh);
+  }
+}
 .gb-cal-clock-face { fill: var(--cal-cell-bg, var(--bg)); stroke: var(--cal-grid-line, var(--border)); stroke-width: 2; }
 .gb-cal-clock-tick { stroke: var(--cal-muted-fg, var(--fg2)); stroke-width: 1; opacity: 0.65; }
 .gb-cal-clock-tick.major { stroke: var(--cal-fg, var(--fg)); stroke-width: 2; opacity: 0.85; }
@@ -827,7 +835,7 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 .gb-cal-mini-day.gb-cal-today { color: var(--cal-today-fg, var(--accent)); font-weight: bold; }
 .gb-cal-mini-day.gb-cal-selected { background: var(--cal-mini-selected-bg, var(--accent)); color: var(--cal-mini-selected-fg, var(--ui-fg-strong)); }
 /* モーダル (document.bodyに追加されるためグローバル) */
-.gb-cal-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.gb-cal-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: var(--ui-z-modal, 300); display: flex; align-items: center; justify-content: center; }
 .gb-cal-modal { background: var(--cal-panel-bg, var(--bg2)); color: var(--cal-panel-fg, var(--fg)); border: 1px solid var(--cal-grid-line, var(--border)); border-radius: 6px; padding: 16px; min-width: 400px; max-width: 80vw; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
 .gb-cal-modal h3 { margin-bottom: 12px; color: var(--cal-accent, var(--accent)); flex-shrink: 0; }
 .gb-cal-modal .btn-row { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; flex-shrink: 0; }

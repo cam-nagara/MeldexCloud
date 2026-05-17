@@ -18,6 +18,10 @@
       labelTextColor:c.labelTextColor,
       labelBgColor:c.labelBgColor,
       labelBorderColor:c.labelBorderColor,
+      labelBorderWidth:c.labelBorderWidth,
+      fontBold:c.fontBold,
+      fontItalic:c.fontItalic,
+      fontFamily:c.fontFamily,
       textVisible:c.textVisible,
       textAlongPath:c.textAlongPath,
       textAutoFlip:c.textAutoFlip,
@@ -25,6 +29,8 @@
       textShadowColor:c.textShadowColor,
       fromAnchor:c.fromAnchor,
       toAnchor:c.toAnchor,
+      branchRatio:c.branchRatio,
+      cornerRadius:c.cornerRadius,
       controlPoints: Array.isArray(c.controlPoints) && c.controlPoints.length === 2
         ? [{ dx: c.controlPoints[0].dx, dy: c.controlPoints[0].dy },
            { dx: c.controlPoints[1].dx, dy: c.controlPoints[1].dy }]
@@ -61,6 +67,9 @@ function _bdSnapshot() {
     llmSemantics: bd.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null),
     _showShadow: !!bd._showShadow,
     _textRotateOnLine: !!bd._textRotateOnLine,
+    gapSiblings: bd.gapSiblings ?? null,
+    gapLevels: bd.gapLevels ?? null,
+    autoAlign: bd.autoAlign !== false,
   });
 }
 function bdPushUndo() {
@@ -88,6 +97,9 @@ function _bdApplySnapshot(s) {
   if (s.llmSemantics !== undefined) bd.llmSemantics = s.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null);
   if (s._showShadow !== undefined) bd._showShadow = !!s._showShadow;
   if (s._textRotateOnLine !== undefined) bd._textRotateOnLine = !!s._textRotateOnLine;
+  if (s.gapSiblings !== undefined) bd.gapSiblings = s.gapSiblings;
+  if (s.gapLevels !== undefined) bd.gapLevels = s.gapLevels;
+  if (s.autoAlign !== undefined) bd.autoAlign = !!s.autoAlign;
   if (s._bgColor !== undefined) {
     bd._bgColor = s._bgColor || '';
   }
@@ -133,6 +145,7 @@ function bdIsCurrentBoardOpenRequest(path) {
 }
 
 const BD_BOARD_OPEN_IO_TIMEOUT_MS = 30000;
+let _bdPendingOpenRollback = null;
 
 function _bdTimeoutError(label, timeoutMs) {
   const seconds = Math.max(1, Math.round(timeoutMs / 1000));
@@ -150,31 +163,43 @@ function _bdAwaitWithTimeout(promise, timeoutMs, label) {
 }
 
 // --- ボード開閉 ---
-async function bdOpenBoard(label, path) {
+async function bdOpenBoard(label, path, opts) {
+  const openOpts = opts || {};
   const titleEl = document.getElementById('bd-title');
   const prevTitle = titleEl ? titleEl.textContent : '';
   const nextPath = path || '';
-  const prevLoadedBoardPath = bd._loadedBoardPath || '';
+  const openSeq = (bd._openSeq || 0) + 1;
+  bd._openSeq = openSeq;
+  const isCurrentOpenRequest = () => bd._openSeq === openSeq && bdIsCurrentBoardOpenRequest(nextPath);
   clearTimeout(window._bdTimer);
-  if (bd.dirty && bd.path) {
+  if (bd.dirty && bd.path && !openOpts.skipDirtySave) {
     let saved = false;
     try {
       saved = await _bdAwaitWithTimeout(bdSave(), BD_BOARD_OPEN_IO_TIMEOUT_MS, '切替前のボード保存');
     } catch (err) {
+      if (!isCurrentOpenRequest()) return false;
       if (titleEl) titleEl.textContent = prevTitle;
       showStatus('ボード切替前の保存に失敗しました: ' + (err.message || err), true);
-      return;
+      return false;
     }
     if (!saved) {
+      if (!isCurrentOpenRequest()) return false;
       if (titleEl) titleEl.textContent = prevTitle;
-      return;
+      return false;
     }
   }
-  const openSeq = (bd._openSeq || 0) + 1;
-  bd._openSeq = openSeq;
+  if (!isCurrentOpenRequest()) return false;
+  const rollback = _bdPendingOpenRollback || {
+    title: prevTitle,
+    path: bd.path || '',
+    loadedBoardPath: bd._loadedBoardPath || '',
+    dump: typeof bdDumpState === 'function' ? bdDumpState() : null,
+  };
+  _bdPendingOpenRollback = rollback;
   if (titleEl) titleEl.textContent = label || '';
-  const prevPath = bd.path || '';
-  const prevDump = typeof bdDumpState === 'function' ? bdDumpState() : null;
+  const prevPath = rollback.path || '';
+  const prevLoadedBoardPath = rollback.loadedBoardPath || '';
+  const prevDump = rollback.dump || null;
   bdClearUndoStacks();
   bd.selected = new Set();
   if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
@@ -217,11 +242,11 @@ async function bdOpenBoard(label, path) {
       BD_BOARD_OPEN_IO_TIMEOUT_MS,
       'ボードファイル読み込み'
     );
-    if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return;
+    if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...');
-      if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return;
+      if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     }
     if (typeof _bdIsBoardWritablePath === 'function' && !_bdIsBoardWritablePath(nextPath)) {
       throw new Error('ボードとして開けない拡張子です: ' + nextPath);
@@ -244,14 +269,17 @@ async function bdOpenBoard(label, path) {
       && (parsed.groups?.length || 0) === 0
     ) {
       const only = bd.nodes[0];
+      const hasExplicitSize = (Number.isFinite(+only.w) && +only.w !== 160)
+        || (Number.isFinite(+only.h) && +only.h !== 0);
+      const hasBodyText = String(only.text || '').includes('\n');
       const hasAnyMeta = only.parent || only.structure || only.status || only.bgColor
-        || only.container || only.contained || only.balloon || only.link || only.linkType
+        || only.container || only.contained || only.balloon || only.link || only.linkType || only.img
         || only.cardStyle || only.shape || only.note || only.progress || only.markers
         || only.fontSize || only.fontBold || only.fontItalic || only.textColor
         || only.textStrokeColor || only.borderColor || only.borderWidth || only.borderRadius
         || only.collapsed || only.minimized || only.flipH || only.flipV
         || only.rotate || only.opacity || only.locked
-        || only._autoStyle || only._followChildren;
+        || only._autoStyle || only._followChildren || hasExplicitSize || hasBodyText;
       if (!hasAnyMeta) {
         only._autoStyle = true;
         only.structure = 'logic';
@@ -273,6 +301,7 @@ async function bdOpenBoard(label, path) {
     bd.activeLineStyle = parsed.boardUi?.activeLineStyle || '';
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
+    bd.displayFilters = parsed.boardUi?.displayFilters || {};
     bd._showShadow = !!parsed.boardUi?.showShadow;
     bd._textRotateOnLine = !!parsed.boardUi?.textRotateOnLine;
     if (typeof MeldexThemeMigration !== 'undefined' && typeof MeldexThemeMigration.migrateBoardState === 'function') {
@@ -336,11 +365,13 @@ async function bdOpenBoard(label, path) {
     if (bd.nodes.length > 5) bdFitAll();
     else bdTransform();
     showStatus('\u30ad\u30e3\u30f3\u30d0\u30b9: ' + label);
+    _bdPendingOpenRollback = null;
+    return true;
   } catch (err) {
-    if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return;
+    if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     bd.path = prevPath;
     bd._loadedBoardPath = prevLoadedBoardPath;
-    if (titleEl) titleEl.textContent = prevTitle;
+    if (titleEl) titleEl.textContent = rollback.title || '';
     if (prevDump && typeof bdLoadState === 'function') {
       bdLoadState(prevDump);
       if (typeof bdRender === 'function') bdRender();
@@ -358,6 +389,8 @@ async function bdOpenBoard(label, path) {
       }
     }
     showStatus('ボード読み込みエラー: ' + (err.message || err), true);
+    _bdPendingOpenRollback = null;
+    return false;
   }
 }
 

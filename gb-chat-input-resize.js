@@ -122,7 +122,8 @@
       const handle = document.getElementById(cfg.handleId);
       const input = document.getElementById(cfg.inputId);
       if (handle && input && input.dataset.chatManualHeight === '1') {
-        _applyHeight(handle, input, cfg, input.getBoundingClientRect().height, false);
+        const target = _resizeTarget(input);
+        _applyHeight(handle, input, cfg, target.getBoundingClientRect().height, false);
       }
     });
   });

@@ -80,6 +80,7 @@
 }
 
 .chat-rules-modal .chat-rules-list {
+  max-height: min(52vh, 520px);
   flex: 1;
   overflow-y: auto;
   background: var(--bg);

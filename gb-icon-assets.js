@@ -20,10 +20,16 @@
     for (const part of parts) {
       if (!part) return '';
       const cp = parseInt(part, 16);
-      if (!Number.isFinite(cp) || cp < 0 || cp > 0x10FFFF) return '';
+      if (!Number.isFinite(cp) || cp < 0 || cp > 0x10FFFF || _isPrivateUseCodePoint(cp)) return '';
       out.push(cp.toString(16).toUpperCase());
     }
     return out.join('-');
+  }
+
+  function _isPrivateUseCodePoint(cp) {
+    return (cp >= 0xE000 && cp <= 0xF8FF)
+      || (cp >= 0xF0000 && cp <= 0xFFFFD)
+      || (cp >= 0x100000 && cp <= 0x10FFFD);
   }
 
   function codeToEmoji(code) {

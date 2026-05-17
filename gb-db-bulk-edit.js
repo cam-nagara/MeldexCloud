@@ -1,15 +1,28 @@
 /* シート一括編集・複数選択 UI — gb-database.js から分離 */
 
+function _ensureSelectedEntities(ctx) {
+  const c = ctx || _currentPaneState();
+  if (!c) return null;
+  let selected = c._selectedEntities;
+  if (!selected || typeof selected.add !== 'function' || typeof selected.delete !== 'function') {
+    try { c._selectedEntities = new Set(); } catch {}
+    selected = c._selectedEntities;
+  }
+  if (!selected || typeof selected.add !== 'function' || typeof selected.delete !== 'function') return null;
+  return selected;
+}
+
 function _getSelectedEntities(ctx) {
   const c = ctx || _currentPaneState();
-  if (!c || !c._selectedEntities) return [];
+  const selected = _ensureSelectedEntities(c);
+  if (!c || !selected) return [];
   const ents = c.pivotData?.entities;
   if (ents) {
-    [...c._selectedEntities].forEach(name => {
-      if (ents[name] === undefined) c._selectedEntities.delete(name);
+    [...selected].forEach(name => {
+      if (ents[name] === undefined) selected.delete(name);
     });
   }
-  return [...c._selectedEntities];
+  return [...selected];
 }
 
 function _updateBulkEditBar(ctx) {
@@ -99,6 +112,7 @@ function _bulkValueSnapshotFromValues(entityName, entityPath, values) {
       value: v?.value == null ? '' : String(v.value),
       status: v?.status || '採用',
       note: v?.note || '',
+      rich_html: v?.rich_html || '',
     })),
   };
 }
@@ -114,7 +128,7 @@ async function _bulkReplaceEntityPropValues(entityPath, prop, values) {
     }
   }
   for (const v of values || []) {
-    await _apiPostValue(entityPath, prop, v.value, v.status || '採用', v.note || '');
+    await _apiPostValue(entityPath, prop, v.value, v.status || '採用', v.note || '', v.rich_html || '');
   }
 }
 
@@ -142,7 +156,15 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   if (typeof historyPush !== 'function' || !deletedItems.length) return;
   const scope = typeof _dbScope === 'function' ? _dbScope() : ('db:' + String(dbPath || '').split('/').pop());
   const names = deletedItems.map(item => item.name);
-  const toTrashRef = item => item?.trash_name ? { trash_name: item.trash_name, trash_root: item.trash_root || '' } : null;
+  const toTrashRef = (item, res = item) => {
+    const src = res && typeof res === 'object' ? res : item;
+    return src?.trash_name ? {
+      trash_name: src.trash_name,
+      trash_root: src.trash_root || '',
+      path: item?.path || '',
+      name: item?.name || '',
+    } : null;
+  };
   let trashRefs = deletedItems.map(toTrashRef).filter(Boolean);
   const refresh = async (restoreSelection) => {
     await selectDatabase(dbPath, ctx, { silent: true });
@@ -158,6 +180,11 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
           trash_name: ref.trash_name,
           ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
         }).catch(() => {});
+        try {
+          if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryRestored === 'function') {
+            await window.GbDbCalendarSync.onEntryRestored(dbPath, ref.path);
+          }
+        } catch {}
       }
       await refresh(true);
     },
@@ -165,7 +192,7 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
       const nextTrashRefs = [];
       for (const item of deletedItems) {
         const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
-        const ref = toTrashRef(res);
+        const ref = toTrashRef(item, res);
         if (ref) nextTrashRefs.push(ref);
         try {
           if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
@@ -183,12 +210,14 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
 function _showBulkEditModal(entityNames, ctx) {
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
-  const props = state.pivotData?.properties || [];
+  const pivotData = (ctx && ctx.pivotData) || (state.currentDbPath === dbPath ? state.pivotData : null) || {};
+  const props = pivotData.properties || [];
   const propTypes = getPropertyTypes(dbPath) || {};
   const statusOn = getStatusEnabled(dbPath);
   const editableProps = props.filter(p => {
     const t = propTypes[p]?.type;
-    return !['formula', 'button', 'chat', 'multi-source-relation', 'rollup'].includes(t);
+    const lockMsg = (typeof checkColumnEditable === 'function') ? checkColumnEditable(dbPath, p) : '';
+    return !lockMsg && !['formula', 'button', 'chat', 'multi-source-relation', 'rollup'].includes(t);
   });
   if (editableProps.length === 0) {
     showStatus('編集可能なプロパティがありません', true);
@@ -214,7 +243,7 @@ function _showBulkEditModal(entityNames, ctx) {
         <option value="掲載済み">掲載済み</option>
       </select>
     </div>` : ''}
-    <div class="field" id="bulk-edit-replace-row"><label><input id="bulk-edit-replace" type="checkbox" checked> 既存の値を置き換える（チェックなしで候補値として追加）</label></div>
+    <div class="field" id="bulk-edit-replace-row"><label><input id="bulk-edit-replace" type="checkbox" checked ${statusOn ? '' : 'disabled'}> ${statusOn ? '既存の値を置き換える（チェックなしで候補値として追加）' : '既存の値を置き換える'}</label></div>
     <div class="btn-row" style="margin-top:12px;">
       <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
       <button class="primary" id="bulk-edit-apply">適用</button>
@@ -235,8 +264,8 @@ function _showBulkEditModal(entityNames, ctx) {
     const baseStyle = 'width:100%;padding:4px;font-size:13px;';
     if (ptc.type === 'select') {
       const vals = new Set(ptc.options || []);
-      if (state.pivotData) {
-        Object.values(state.pivotData.entities).forEach(ent => {
+      if (pivotData?.entities) {
+        Object.values(pivotData.entities).forEach(ent => {
           (ent[propName] || []).forEach(v => { if (v.value) vals.add(v.value); });
         });
       }
@@ -247,8 +276,8 @@ function _showBulkEditModal(entityNames, ctx) {
       container.appendChild(select);
     } else if (ptc.type === 'multi-select') {
       const vals = new Set(ptc.options || []);
-      if (state.pivotData) {
-        Object.values(state.pivotData.entities).forEach(ent => {
+      if (pivotData?.entities) {
+        Object.values(pivotData.entities).forEach(ent => {
           (ent[propName] || []).forEach(v => (v.value || '').split(',').map(s => s.trim()).filter(Boolean).forEach(s => vals.add(s)));
         });
       }
@@ -395,7 +424,7 @@ function _showBulkEditModal(entityNames, ctx) {
     const statusEl = document.getElementById('bulk-edit-status');
     const status = statusEl ? statusEl.value : '採用';
     const replaceEl = document.getElementById('bulk-edit-replace');
-    const replace = replaceEl ? replaceEl.checked : true;
+    const replace = statusOn ? (replaceEl ? replaceEl.checked : true) : true;
     const ptc = propTypes[prop] || { type: 'text' };
     const canBatchUndo = !['relation', 'multi-relation'].includes(ptc.type) && !ptc.bidirectional;
     if (!prop) {
@@ -411,7 +440,7 @@ function _showBulkEditModal(entityNames, ctx) {
     for (const name of entityNames) {
       try {
         const ep = _entityPath(dbPath, name);
-        const entData = state.pivotData.entities?.[name];
+        const entData = pivotData.entities?.[name];
         const existingVals = [...(entData?.[prop] || [])];
         const beforeSnapshot = canBatchUndo ? _bulkValueSnapshotFromValues(name, ep, existingVals) : null;
         const primaryForOld = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(existingVals) : null) || existingVals[0];

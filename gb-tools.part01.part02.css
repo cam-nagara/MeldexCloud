@@ -1,0 +1,149 @@
+/* Calendar Week Grid */
+.cal-week-grid { display: grid; grid-template-columns: 50px repeat(7, 1fr); gap: 0; border: 1px solid var(--border); overflow-y: auto; max-height: calc(100vh - 200px); }
+.cal-week-corner { background: var(--bg3); border: 1px solid var(--border); }
+.cal-week-header { background: var(--bg3); color: var(--fg2); font-size: 11px; font-weight: bold; padding: 4px; text-align: center; border: 1px solid var(--border); position: sticky; top: 0; z-index: 2; }
+.cal-week-time { font-size: 10px; color: var(--fg2); padding: 2px 4px; text-align: right; border: 1px solid var(--border); background: var(--bg2); box-sizing: border-box; }
+.cal-week-cell { min-height: 28px; border: 1px solid var(--border); position: relative; box-sizing: border-box; }
+.cal-week-cell:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+
+/* Calendar Day Grid */
+.cal-day-grid { display: grid; grid-template-columns: 50px 1fr; gap: 0; border: 1px solid var(--border); overflow-y: auto; max-height: calc(100vh - 200px); }
+.cal-day-time { font-size: 10px; color: var(--fg2); padding: 2px 4px; text-align: right; border: 1px solid var(--border); background: var(--bg2); box-sizing: border-box; }
+.cal-day-cell { min-height: 32px; border: 1px solid var(--border); padding: 2px; position: relative; box-sizing: border-box; }
+.cal-day-cell:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.cal-day-event { font-size: 10px; padding: 2px 26px 2px 6px; margin: 1px 0; border-radius: 3px; color: #fff; cursor: pointer; position: relative; box-sizing: border-box; }
+.cal-event-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-day-event:hover { opacity: 0.8; }
+.cal-day-event[draggable=true] { cursor: grab; }
+.cal-drag-preview { opacity: 0.6; pointer-events: none; }
+.cal-week-cell { min-height: 40px; }
+.cal-week-time, .cal-day-time { height: 40px; line-height: 40px; }
+
+/* ==============================
+   エントリページ
+   ============================== */
+#entity-view { display: none; flex: 1; overflow: auto; padding: 16px; flex-direction: column; gap: 16px; }
+#entity-view.active { display: flex; }
+#entity-title {
+  font-size: 22px; font-weight: var(--page-title-bold); font-style: var(--page-title-italic);
+  font-family: var(--page-title-font, inherit);
+  color: var(--page-title-fg);
+  background: var(--page-title-bg, transparent);
+  -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
+  -webkit-text-stroke-width: var(--page-title-stroke-width, 0px);
+  paint-order: stroke fill;
+  box-shadow: calc(-1 * var(--page-title-left-accent, 0px)) 0 0 0 var(--page-title-accent-color, var(--page-title-fg));
+  text-decoration-line: var(--page-title-underline, none);
+  text-decoration-color: var(--page-title-accent-color, currentColor);
+  padding: 4px 0 12px 0; border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+/* プロパティテーブル（縦型） — 旧形式 */
+#entity-props-table {
+  border-collapse: collapse; width: 100%;
+}
+#entity-props-table th, #entity-props-table td {
+  border: 1px solid var(--border); padding: 3px 10px;
+  vertical-align: top; font-size: 13px; text-align: left;
+}
+#entity-props-table th {
+  background: var(--bg3); color: var(--fg2); font-weight: normal;
+  width: 140px; white-space: nowrap;
+}
+
+/* エントリ親 DB リンク */
+#entity-parent-link a {
+  color: var(--fg2); text-decoration: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+#entity-parent-link a:hover { color: var(--accent); text-decoration: underline; }
+
+/* エントリプロパティグリッド (複数段表示・D&D 並べ替え) */
+#entity-props-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 4px 12px;
+  padding: 6px 12px 12px;
+}
+.entry-prop-card {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: grab;
+  background: var(--bg2);
+  min-height: 28px;
+}
+.entry-prop-card:hover { border-color: var(--border); }
+.entry-prop-card.dragging { opacity: 0.4; }
+.entry-prop-card.drag-over-left { box-shadow: inset 3px 0 0 var(--accent); }
+.entry-prop-card.drag-over-right { box-shadow: inset -3px 0 0 var(--accent); }
+.entry-prop-name {
+  font-size: 12px; color: var(--fg2); font-weight: 500;
+  min-width: 80px; padding-top: 2px;
+  user-select: none;
+}
+.entry-prop-values {
+  flex: 1; display: flex; flex-direction: column; gap: 2px;
+  font-size: 13px; color: var(--fg);
+}
+
+/* エントリ「ノートを作成」ボタン */
+#entity-create-note-btn {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#entity-create-note-btn button {
+  padding: 6px 12px; font-size: 12px;
+  background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  cursor: pointer;
+}
+#entity-create-note-btn button:hover { background: var(--bg4); border-color: var(--accent); }
+
+/* 自由記述エリア */
+#entity-freetext {
+  min-height: 200px; padding: 12px;
+  background: var(--page-text-bg, var(--content-bg, var(--bg))); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--page-text-fg); font-size: 13px; line-height: 1.6;
+  font-weight: var(--page-text-bold); font-style: var(--page-text-italic);
+  outline: none; flex: 1;
+}
+#entity-freetext:focus { border-color: var(--accent); }
+/* ドラッグオーバー */
+.drop-caret { position: absolute; height: 2px; background: var(--accent); pointer-events: none; z-index: 100; left: 0; right: 0; transition: top 0.05s; }
+/* 埋め込みメディア */
+.embed-media { position: relative; display: block; margin: 4px auto; max-width: 100%; width: fit-content; }
+.embed-media img, .embed-media video { display: block; border-radius: 4px; max-width: 100%; }
+.embed-media:hover { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* フローティングメディアコントロール（body直下に生成） */
+#media-float-controls {
+  display: none; position: fixed; z-index: 200;
+  background: rgba(0,0,0,0.7); border-radius: 6px; padding: 3px; gap: 2px;
+  backdrop-filter: blur(4px);
+}
+#media-float-controls.visible { display: flex; }
+#media-float-controls button {
+  background: none; border: none; color: var(--ui-fg-strong); cursor: pointer; padding: 3px 7px; font-size: 11px; border-radius: 3px;
+}
+#media-float-controls button:hover { background: rgba(255,255,255,0.2); }
+#media-float-controls button.active { background: var(--accent); }
+/* リサイズハンドル */
+.em-resize-handle {
+  display: none; position: fixed; width: 14px; height: 14px; z-index: 201;
+  background: var(--accent); border: 2px solid var(--ui-fg-strong); border-radius: 2px; cursor: nwse-resize;
+}
+.em-resize-handle.visible { display: block; }
+/* アウトライナー読み込み中 */
+.tree-spinner { display: flex; align-items: center; padding: 2px 0; }
+/* グローバルフィルタバー */
+#global-filter-bar { background: var(--bg2); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.chat-spinner {
+  display: inline-block; width: 14px; height: 14px; border: 2px solid var(--fg2);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+#entity-freetext > div, #page-content > div { margin: 2px 0; }
+#entity-freetext:empty::before { content: '自由記述...'; color: var(--fg2); }

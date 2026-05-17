@@ -94,6 +94,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     presetRow.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 12px;border-bottom:1px solid var(--border);';
     const presetSel = document.createElement('select');
     presetSel.style.cssText = 'flex:1;font-size:11px;padding:2px 4px;';
+    presetSel.dataset.e2eId = 'scriptnote-rowset-preset-select';
+    presetSel.title = '行セットプリセットを選択';
+    presetSel.setAttribute('aria-label', '行セットプリセットを選択');
     this._refreshRowsetPresetOptions(presetSel);
     presetSel.addEventListener('change', () => {
       const val = presetSel.value;
@@ -112,6 +115,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     saveBtn.type = 'button';
     saveBtn.textContent = '保存';
     saveBtn.title = '現在の行セットをプリセットとして保存';
+    saveBtn.dataset.e2eId = 'scriptnote-rowset-save-preset';
+    saveBtn.setAttribute('aria-label', '現在の行セットをプリセットとして保存');
     saveBtn.addEventListener('click', () => {
       if (!this._rowsetRows.length) return;
       const overlay = document.createElement('div');
@@ -147,6 +152,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     delPresetBtn.type = 'button';
     delPresetBtn.textContent = '削除';
     delPresetBtn.title = '選択中のプリセットを削除';
+    delPresetBtn.dataset.e2eId = 'scriptnote-rowset-delete-preset';
+    delPresetBtn.setAttribute('aria-label', '選択中のプリセットを削除');
     delPresetBtn.addEventListener('click', () => {
       const val = presetSel.value;
       if (!val) return;
@@ -195,6 +202,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       // タイプ選択
       const sel = document.createElement('select');
       sel.style.cssText = 'flex:1;font-size:12px;padding:2px 4px;min-width:0;';
+      sel.dataset.e2eId = 'scriptnote-rowset-role-' + i;
+      sel.title = '行セット ' + (i + 1) + ' 行目のタイプ';
+      sel.setAttribute('aria-label', sel.title);
       const emptyOpt = document.createElement('option');
       emptyOpt.value = '';
       emptyOpt.textContent = '（なし）';
@@ -214,7 +224,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       delBtn.className = 'gb-fmt-btn';
       delBtn.type = 'button';
       delBtn.textContent = '✕';
-      delBtn.title = '削除';
+      delBtn.title = '行セット ' + (i + 1) + ' 行目を削除';
+      delBtn.dataset.e2eId = 'scriptnote-rowset-delete-row-' + i;
+      delBtn.setAttribute('aria-label', delBtn.title);
       delBtn.style.cssText = 'font-size:10px;color:var(--fg2);flex-shrink:0;';
       delBtn.addEventListener('click', () => {
         this._rowsetRows.splice(i, 1);
@@ -236,6 +248,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     addBtn.className = 'sn2-detail-add-btn';
     addBtn.type = 'button';
     addBtn.textContent = '＋ 行を追加';
+    addBtn.dataset.e2eId = 'scriptnote-rowset-add-row';
+    addBtn.title = '行セットに行を追加';
+    addBtn.setAttribute('aria-label', '行セットに行を追加');
     addBtn.style.cssText = 'margin:4px 12px;';
     addBtn.addEventListener('click', () => {
       this._rowsetRows.push({ role: '' });
@@ -255,6 +270,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     repeatInput.min = '1';
     repeatInput.max = '100';
     repeatInput.value = this._rowsetRepeat || '1';
+    repeatInput.dataset.e2eId = 'scriptnote-rowset-repeat';
+    repeatInput.title = '行セットの追加回数';
+    repeatInput.setAttribute('aria-label', '行セットの追加回数');
     repeatInput.style.cssText = 'width:50px;font-size:12px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--fg);';
     repeatInput.addEventListener('change', () => { this._rowsetRepeat = parseInt(repeatInput.value) || 1; });
     execRow.appendChild(repeatInput);
@@ -262,6 +280,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     execBtn.className = 'sn2-detail-add-btn';
     execBtn.type = 'button';
     execBtn.textContent = 'シナリオに追加';
+    execBtn.dataset.e2eId = 'scriptnote-rowset-insert';
+    execBtn.title = '行セットをシナリオに追加';
+    execBtn.setAttribute('aria-label', '行セットをシナリオに追加');
     execBtn.style.cssText = 'padding:4px 12px;font-size:12px;font-weight:600;';
     execBtn.addEventListener('click', () => this._execRowsetInsert(container));
     execRow.appendChild(execBtn);
@@ -293,11 +314,16 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     this._pushUndo('行セット追加');
     const newRows = [];
+    let newStatus = '';
+    if (this._filterStatuses && this._filterStatuses.size === 1) {
+      newStatus = [...this._filterStatuses][0];
+    }
     for (let r = 0; r < repeat; r++) {
       this._rowsetRows.forEach(entry => {
         newRows.push({
           id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: entry.role || '',
+          status: newStatus,
           text: '',
           columns: {},
         });
@@ -338,6 +364,10 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _setupRowsetDragDrop(listEl, panelContainer) {
     let dragIdx = -1;
+    const clearDragState = () => {
+      dragIdx = -1;
+      listEl.querySelectorAll('.sn2-detail-item').forEach(el => el.classList.remove('sn2-dragging', 'sn2-drop-above', 'sn2-drop-below'));
+    };
     listEl.addEventListener('dragstart', (e) => {
       const item = e.target.closest('.sn2-detail-item');
       if (!item) return;
@@ -357,18 +387,19 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     });
     listEl.addEventListener('dragend', () => {
-      listEl.querySelectorAll('.sn2-detail-item').forEach(el => el.classList.remove('sn2-dragging', 'sn2-drop-above', 'sn2-drop-below'));
+      clearDragState();
     });
     listEl.addEventListener('drop', (e) => {
       e.preventDefault();
       const item = e.target.closest('.sn2-detail-item');
-      if (!item || dragIdx < 0) return;
+      if (!item || dragIdx < 0) { clearDragState(); return; }
       let dropIdx = Number(item.dataset.idx);
       const rect = item.getBoundingClientRect();
       if (e.clientY >= rect.top + rect.height / 2) dropIdx++;
-      if (dropIdx === dragIdx || dropIdx === dragIdx + 1) return;
+      if (dropIdx === dragIdx || dropIdx === dragIdx + 1) { clearDragState(); return; }
       const [moved] = this._rowsetRows.splice(dragIdx, 1);
       this._rowsetRows.splice(dropIdx > dragIdx ? dropIdx - 1 : dropIdx, 0, moved);
+      clearDragState();
       this.renderRowsetPanel(panelContainer);
     });
   },

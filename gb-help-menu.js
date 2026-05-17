@@ -173,11 +173,24 @@ function showMeldexHelpMenu(event) {
   }, 0);
 }
 
+function _meldexLegalDocUrl(filename) {
+  const name = String(filename || '').replace(/^\/+/, '');
+  if (name === 'THIRD-PARTY.md' && window.location?.protocol === 'file:') {
+    const path = String(window.location.pathname || '').replace(/\\/g, '/');
+    if (/\/app\/Meldex(?:-dev)?\.html$/i.test(path)) return '../THIRD-PARTY.md';
+  }
+  return name;
+}
+
+function _openMeldexLegalDoc(filename) {
+  window.open(_meldexLegalDocUrl(filename), '_blank', 'noopener');
+}
+
 function showMeldexAboutDialog() {
   _closeMeldexHelpMenu();
   const o = document.createElement('div');
   o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:520px;max-width:680px;max-height:85vh;overflow-y:auto;">
+  o.innerHTML = `<div class="modal" style="width:min(680px, calc(100vw - 24px));max-width:680px;max-height:85vh;overflow-y:auto;">
     <h3 style="display:flex;align-items:center;gap:8px;">${lucide('info',16)} Meldexについて</h3>
     <section class="gb-section gb-section--boxed">
       <div class="gb-section-title">${lucide('info',14)} Meldex BETA</div>
@@ -218,9 +231,9 @@ function showMeldexAboutDialog() {
         詳細は <code>LICENSE</code>, <code>THIRD-PARTY.md</code>, <code>CREDITS.md</code>, <code>fonts/OFL.txt</code> を参照してください。
       </div>
       <div class="btn-row" style="margin-top:10px;justify-content:flex-start;">
-        <button type="button" data-action="window.open('PRIVACY.html','_blank','noopener')">プライバシーポリシー</button>
-        <button type="button" data-action="window.open('TERMS-OF-USE.html','_blank','noopener')">利用規約</button>
-        <button type="button" data-action="window.open('THIRD-PARTY.md','_blank','noopener')">OSSライセンス</button>
+        <button type="button" data-action="_openMeldexLegalDoc('PRIVACY.html')">プライバシーポリシー</button>
+        <button type="button" data-action="_openMeldexLegalDoc('TERMS-OF-USE.html')">利用規約</button>
+        <button type="button" data-action="_openMeldexLegalDoc('THIRD-PARTY.md')">OSSライセンス</button>
         <button type="button" data-action="window.MeldexDiagnostics?.exportDiagnostics?.()">診断情報を保存</button>
       </div>
     </section>
@@ -237,7 +250,7 @@ async function showMeldexChangelogDialog() {
   _closeMeldexHelpMenu();
   const o = document.createElement('div');
   o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:520px;max-width:760px;max-height:85vh;">
+  o.innerHTML = `<div class="modal" style="width:min(760px, calc(100vw - 24px));max-width:760px;max-height:85vh;">
     <h3 style="display:flex;align-items:center;gap:8px;">${lucide('history',16)} 更新履歴</h3>
     <pre id="meldex-changelog-body" style="flex:1;overflow:auto;white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</pre>
     <div class="btn-row" style="margin-top:12px;">

@@ -94,6 +94,10 @@
     localStorage.setItem(key, String(value));
   }
 
+  function _accountIdFromAccount(account) {
+    return String(account?.account_id || account?.accountId || '').trim();
+  }
+
   function getAppMode() {
     const mode = _readStorage(APP_MODE_KEY, 'developer');
     return mode === 'custom' ? 'custom' : 'developer';
@@ -400,16 +404,19 @@
   async function _persistSession(payload, meta) {
     const now = Date.now();
     const current = (await _idbGet(SESSION_KEY)) || {};
+    const nextAccountId = String(payload.account_id || current.accountId || '').trim();
+    const currentAccountId = _accountIdFromAccount(current.account);
+    const canKeepAccount = !payload.account_id || !currentAccountId || currentAccountId === nextAccountId;
     const next = {
       accessToken: payload.access_token || current.accessToken || '',
       refreshToken: payload.refresh_token || current.refreshToken || '',
       tokenType: payload.token_type || current.tokenType || 'bearer',
       scope: payload.scope || current.scope || '',
-      accountId: payload.account_id || current.accountId || '',
+      accountId: nextAccountId,
       expiresAt: payload.expires_in ? (now + (Number(payload.expires_in) * 1000)) : current.expiresAt || 0,
       appKey: meta?.appKey || current.appKey || getAppKey(),
       redirectUri: meta?.redirectUri != null ? meta.redirectUri : (current.redirectUri || ''),
-      account: current.account || null,
+      account: canKeepAccount ? (current.account || null) : null,
       savedAt: new Date(now).toISOString(),
     };
     await _idbPut(SESSION_KEY, next);
@@ -617,56 +624,76 @@
     });
   }
 
+  async function _refreshAfterUnauthorized() {
+    const session = await getSession();
+    if (!session?.refreshToken) return false;
+    try {
+      await refreshSession(session.appKey);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function apiRpc(route, body) {
-    const token = await getValidAccessToken();
-    if (!token) throw new Error('Dropboxへもう一度接続してください');
-    const response = await _fetchDropboxWithRetry(route, async () => fetch('https://api.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), {
-      method: 'POST',
-      headers: await _fileApiHeaders(route, {
-        Authorization: 'Bearer ' + token,
-        'Content-Type': 'application/json',
-      }),
-      body: body == null ? 'null' : JSON.stringify(body),
-    }));
-    if (!response.ok) {
-      if (response.status === 401) {
-        await clearSession();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await getValidAccessToken();
+      if (!token) throw new Error('Dropboxへもう一度接続してください');
+      const response = await _fetchDropboxWithRetry(route, async () => fetch('https://api.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), {
+        method: 'POST',
+        headers: await _fileApiHeaders(route, {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json',
+        }),
+        body: body == null ? 'null' : JSON.stringify(body),
+      }));
+      if (response.ok) {
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {}
+        return payload;
+      }
+      if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) {
+        continue;
       }
       const detail = await _readDropboxError(response);
+      if (response.status === 401) await clearSession();
       throw new Error(String(detail));
     }
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {}
-    return payload;
+    throw new Error('Dropboxへもう一度接続してください');
   }
 
   async function apiContent(route, arg, init) {
-    const token = await getValidAccessToken();
-    if (!token) throw new Error('Dropboxへもう一度接続してください');
-    const requestInit = init ? { ...init } : {};
-    requestInit.method = requestInit.method || 'POST';
-    requestInit.headers = await _fileApiHeaders(route, {
-      Authorization: 'Bearer ' + token,
-      'Dropbox-API-Arg': _jsonHeaderValue(arg || {}),
-      ...(requestInit.headers || {}),
-    });
-    const response = await _fetchDropboxWithRetry(route, async () => fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit));
-    if (!response.ok) {
-      if (response.status === 401) await clearSession();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await getValidAccessToken();
+      if (!token) throw new Error('Dropboxへもう一度接続してください');
+      const requestInit = init ? { ...init } : {};
+      requestInit.method = requestInit.method || 'POST';
+      requestInit.headers = await _fileApiHeaders(route, {
+        Authorization: 'Bearer ' + token,
+        'Dropbox-API-Arg': _jsonHeaderValue(arg || {}),
+        ...(requestInit.headers || {}),
+      });
+      const response = await _fetchDropboxWithRetry(route, async () => fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit));
+      if (response.ok) return response;
+      if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) {
+        continue;
+      }
       const detail = await _readDropboxError(response);
+      if (response.status === 401) await clearSession();
       throw new Error(String(detail));
     }
-    return response;
+    throw new Error('Dropboxへもう一度接続してください');
   }
 
   async function getCurrentAccount(refresh) {
     const session = await getSession();
     if (!refresh && session?.account) return session.account;
     const account = await apiRpc('users/get_current_account', null);
-    if (session) {
-      await _idbPut(SESSION_KEY, { ...session, account });
+    const latestSession = (await getSession()) || session;
+    if (latestSession) {
+      await _idbPut(SESSION_KEY, { ...latestSession, account });
     }
     return account;
   }

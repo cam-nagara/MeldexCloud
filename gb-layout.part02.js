@@ -27,6 +27,7 @@
   // - 通常 split: 配下の各 pane のすべてのタブのアイコンを順番通りに表示
   // - panelset: 各グループのアイコン（GBPanelSet.collectGroupTabTypes の最初の type）を縦並び表示
   function _appendCollapsedIcons(bar, node, onClick) {
+    const panelSetApi = typeof GBPanelSet !== 'undefined' ? GBPanelSet : null;
     const addIcon = (iconName, title, onClickInner) => {
       const icon = document.createElement('span');
       icon.className = 'gb-split-collapsed-icon';
@@ -45,8 +46,8 @@
         // 通常のタブバーと同じ renderGroupIconButton を流用し、縦並びで全アイコンを表示
         n.groups.forEach((g) => {
           if (!g?.root) return;
-          if (typeof GBPanelSet?.renderGroupIconButton === 'function') {
-            const btn = GBPanelSet.renderGroupIconButton(n, g);
+          if (typeof panelSetApi?.renderGroupIconButton === 'function') {
+            const btn = panelSetApi.renderGroupIconButton(n, g);
             // 折りたたみ時のクリックは「グループ切替 + 展開」をまとめて 1 回の render で処理する。
             // capture 段階で stopImmediatePropagation することで、renderGroupIconButton が登録した
             // click ハンドラ (switchGroup → render) の発火を抑止する。
@@ -59,8 +60,8 @@
             bar.appendChild(btn);
           } else {
             // フォールバック
-            const types = (typeof GBPanelSet?.collectGroupTabTypes === 'function')
-              ? GBPanelSet.collectGroupTabTypes(g.root) : [];
+            const types = (typeof panelSetApi?.collectGroupTabTypes === 'function')
+              ? panelSetApi.collectGroupTabTypes(g.root) : [];
             const firstType = types[0] || 'page';
             const iconName = (typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function')
               ? GBTabs.tabIcon(firstType) : 'page';
@@ -448,19 +449,40 @@
       secondEl.style[_sizeKey] = secondPct + '%';
     };
     const _syncHandleA11y = () => {
+      const bounds = _keyboardResizeRatioBounds();
       handle.tabIndex = 0;
       handle.setAttribute('role', 'separator');
       handle.setAttribute('aria-orientation', node.direction === 'horizontal' ? 'vertical' : 'horizontal');
       handle.setAttribute('aria-label', node.direction === 'horizontal' ? '左右パネル幅を調整' : '上下パネル高さを調整');
-      handle.setAttribute('aria-valuemin', '5');
-      handle.setAttribute('aria-valuemax', '95');
+      handle.setAttribute('aria-valuemin', String(Math.round(bounds.min * 100)));
+      handle.setAttribute('aria-valuemax', String(Math.round(bounds.max * 100)));
       handle.setAttribute('aria-valuenow', String(Math.round((node.ratio || 0.5) * 100)));
+    };
+    const _keyboardResizeRatioBounds = () => {
+      let min = 0.05;
+      let max = 0.95;
+      const secondEl = _getSecondEl();
+      if (!secondEl) return { min, max, canResize: false };
+      const splitRect = _splitLogicalRect(splitEl.getBoundingClientRect());
+      const handleRect = _splitLogicalRect(handle.getBoundingClientRect());
+      const totalSize = node.direction === 'horizontal' ? splitRect.width : splitRect.height;
+      const handleSize = node.direction === 'horizontal' ? handleRect.width : handleRect.height;
+      const contentSize = totalSize - handleSize;
+      if (contentSize > 0) {
+        const minByPx = MIN_PANE_SIZE / contentSize;
+        if (minByPx > 0.5) return { min: 0.5, max: 0.5, canResize: false };
+        min = Math.max(min, minByPx);
+        max = Math.min(max, 1 - minByPx);
+      }
+      return { min, max, canResize: min <= max };
     };
     const _commitKeyboardResize = (delta) => {
       const secondEl = _getSecondEl();
       if (!secondEl || node.children?.[0]?.collapsed || node.children?.[1]?.collapsed) return;
       const before = captureLayoutSnapshot();
-      const nextRatio = Math.max(0.05, Math.min(0.95, (node.ratio || 0.5) + delta));
+      const bounds = _keyboardResizeRatioBounds();
+      if (!bounds.canResize) return;
+      const nextRatio = Math.max(bounds.min, Math.min(bounds.max, (node.ratio || 0.5) + delta));
       if (Math.abs(nextRatio - node.ratio) < 0.0001) return;
       node.ratio = nextRatio;
       _setChildRatioSizes(node.ratio);
@@ -814,12 +836,24 @@
     let done = false;
     let fallbackTimer = null;
     let pointerUpTimer = null;
+    let pointerStillDown = true;
     const cleanup = () => {
       document.removeEventListener('click', onClick, true);
+      document.removeEventListener('pointermove', onPointerMove, true);
       document.removeEventListener('pointerup', onPointerUp, true);
       document.removeEventListener('pointercancel', finish, true);
       if (fallbackTimer != null) clearTimeout(fallbackTimer);
       if (pointerUpTimer != null) clearTimeout(pointerUpTimer);
+    };
+    const scheduleFallback = () => {
+      fallbackTimer = setTimeout(() => {
+        fallbackTimer = null;
+        if (pointerStillDown) {
+          scheduleFallback();
+          return;
+        }
+        finish();
+      }, 2000);
     };
     const finish = () => {
       if (done) return;
@@ -829,14 +863,19 @@
         if (_activePane === paneId) setActivePane(paneId, { sync: true });
       }, 0);
     };
-    const onClick = () => finish();
+    const onClick = () => { pointerStillDown = false; finish(); };
+    const onPointerMove = (e) => {
+      pointerStillDown = !!(e && typeof e.buttons === 'number' ? (e.buttons & 1) : pointerStillDown);
+    };
     const onPointerUp = () => {
+      pointerStillDown = false;
       if (pointerUpTimer == null) pointerUpTimer = setTimeout(finish, 80);
     };
     document.addEventListener('click', onClick, true);
+    document.addEventListener('pointermove', onPointerMove, true);
     document.addEventListener('pointerup', onPointerUp, true);
     document.addEventListener('pointercancel', finish, true);
-    fallbackTimer = setTimeout(finish, 2000);
+    scheduleFallback();
   }
 
   function setActivePane(paneId, opts) {

@@ -1,0 +1,729 @@
+
+@media (max-width: 480px) {
+  /* 超小画面: さらにコンパクト */
+  #toolbar { font-size: 10px; }
+  .toolbar-group button { font-size: 10px; padding: 1px 4px; }
+  #cal-toolbar button { font-size: 10px; padding: 2px 4px; }
+  .cal-day { min-height: 50px; }
+  .cal-day-num { font-size: 10px; }
+  .task-column { min-width: 180px; width: 180px; }
+  .ann-tool { font-size: 12px; padding: 2px 4px; }
+  #ann-toolbar { padding: 2px 4px; gap: 2px; }
+}
+
+/* ==============================
+   v5.0 ペインシステム（gb-layout.js）
+   ============================== */
+/* レイアウトルート */
+#gb-layout-root {
+  flex: 1; display: flex; overflow: hidden; min-width: 0; min-height: 0;
+}
+
+/* ペイン */
+.gb-pane {
+  display: flex; flex-direction: column; flex: 1;
+  min-width: 32px; min-height: 32px; overflow: hidden;
+  border: 1px solid transparent;
+}
+.gb-pane-active {
+  border-color: var(--accent);
+}
+
+/* ペインタブバー */
+.gb-pane-tabs {
+  display: flex; align-items: center; gap: 0;
+  background: var(--ui-pane-tabbar-bg, var(--bg2)); border-bottom: 1px solid var(--border);
+  flex-shrink: 0; min-height: 30px;
+  flex-wrap: nowrap; overflow: hidden;
+}
+/* タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls/nav-ctrls が
+   切られないよう、タブ部分だけを横スクロール可能な中間コンテナに分離する。 */
+.gb-pane-tabs-scroll {
+  display: flex; align-items: center;
+  flex: 1 1 auto; min-width: 0;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+}
+.gb-pane-tabs-scroll::-webkit-scrollbar { display: none; }
+.gb-tab {
+  display: flex; align-items: center; gap: 2px; padding: 0 5px;
+  cursor: pointer; font-size: 11px; color: var(--fg2); white-space: nowrap;
+  flex-shrink: 0; height: 30px; border-right: 1px solid var(--border);
+  max-width: 160px; user-select: none;
+  -webkit-touch-callout: none;
+}
+/* 幅不足時はラベルを隠してアイコン化（JS で gb-tabs-compact を付与） */
+.gb-pane-tabs.gb-tabs-compact .gb-tab .gb-tab-label { display: none; }
+.gb-pane-tabs.gb-tabs-compact .gb-tab .gb-tab-close { display: none; }
+.gb-pane-tabs.gb-tabs-compact .gb-tab { padding: 0 4px; gap: 0; }
+.gb-tab:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-tab.active { color: var(--fg); background: var(--ui-pane-tab-active-bg, var(--bg)); border-bottom: 2px solid var(--accent); }
+.gb-tab.dragging { opacity: 0.4; }
+.gb-tab-icon { flex-shrink: 0; display: flex; align-items: center; }
+.gb-tab-label { overflow: hidden; text-overflow: ellipsis; }
+.gb-tab-close {
+  font-size: 9px; padding: 1px 2px; border-radius: 2px; opacity: 0;
+  margin-left: 3px; flex-shrink: 0; cursor: pointer;
+}
+.gb-tab:hover .gb-tab-close { opacity: 0.6; }
+.gb-tab-close:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-pane-collapse {
+  width: 28px; height: 28px; color: var(--fg2); cursor: pointer;
+  font-size: 22px; opacity: 0.6; flex-shrink: 0; user-select: none;
+  border-radius: 4px; display: flex; align-items: center; justify-content: center;
+}
+.gb-pane-collapse:hover { opacity: 1; color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
+/* Windows風 3ボタン（最小化 / 最大化↔復元 / 閉じる） */
+.gb-pane-ctrls {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-left: auto; padding-right: 4px; flex-shrink: 0;
+}
+.gb-pane-btn {
+  width: 22px; height: 22px; color: var(--fg2); cursor: pointer;
+  opacity: 0.7; flex-shrink: 0; user-select: none; border-radius: 3px;
+  padding: 0; border: 1px solid transparent; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.gb-pane-btn:hover { opacity: 1; color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
+.gb-pane-btn.is-active { opacity: 1; color: var(--ui-selection-fg); background: var(--ui-selection-bg); }
+.gb-pane-btn:disabled,
+.gb-pane-btn[aria-disabled="true"] {
+  opacity: 0.25;
+  cursor: not-allowed;
+  color: var(--fg2);
+  background: transparent;
+}
+.gb-pane-btn:disabled:hover,
+.gb-pane-btn[aria-disabled="true"]:hover {
+  color: var(--fg2);
+  background: transparent;
+}
+.gb-pane-locked > .gb-pane-tabs { box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ui-selection-bg) 45%, transparent); }
+.gb-pane-collapsed > .gb-pane-tabs .gb-pane-ctrls { display: none !important; }
+/* 後方互換（旧クラス名が参照されていた場合のため残存） */
+.gb-pane-maximize { display: none; }
+.gb-pane-drag-handle {
+  padding: 0 4px; color: var(--fg2); cursor: grab;
+  font-size: 14px; opacity: 0.5; flex-shrink: 0;
+}
+.gb-pane-drag-handle:hover { opacity: 1; color: var(--ui-hover-fg); }
+.gb-pane-locked > .gb-pane-tabs .gb-pane-drag-handle { opacity: 0.2; cursor: not-allowed; }
+.gb-pane-nav-ctrls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  flex-shrink: 0;
+}
+.gb-pane-nav-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.8;
+}
+.gb-pane-nav-btn:hover:not(:disabled) {
+  color: var(--ui-hover-fg);
+  background: var(--ui-hover-bg);
+  border-color: var(--border);
+}
+.gb-pane-nav-btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+/* ====== 折り畳み状態 ====== */
+.gb-pane-collapsed > .gb-pane-content { display: none !important; }
+.gb-pane-collapsed { min-width: 32px !important; min-height: 30px !important; border: none !important; }
+
+/* 折り畳みタブバー: タブを非表示にし、アイコンボタンを並べる */
+.gb-pane-collapsed > .gb-pane-tabs {
+  border: none; height: auto; min-height: auto;
+  gap: 0; padding: 0; margin: 0; background: var(--ui-collapsed-tabbar-bg, var(--ui-pane-tabbar-bg, var(--bg2)));
+  flex-wrap: nowrap;
+  box-sizing: border-box;
+}
+/* 水平分割(左右) → ボタン縦並び。32px幅に収め、あふれたら縦スクロール */
+.gb-pane-collapsed-horizontal > .gb-pane-tabs {
+  flex-direction: column;
+  width: 32px; max-width: 32px;
+  overflow-y: auto; overflow-x: hidden;
+}
+.gb-pane-collapsed-horizontal > .gb-pane-tabs > .gb-pane-tabs-scroll {
+  flex-direction: column;
+  width: 100%; max-width: 32px;
+  overflow-x: hidden; overflow-y: visible;
+  box-sizing: border-box;
+}
+/* 垂直分割(上下) → ボタン横並び。32px高さに収め、あふれたら横スクロール */
+.gb-pane-collapsed-vertical > .gb-pane-tabs {
+  flex-direction: row;
+  height: 32px; max-height: 32px;
+  overflow-x: auto; overflow-y: hidden;
+}
+.gb-pane-collapsed-vertical > .gb-pane-tabs > .gb-pane-tabs-scroll {
+  flex-direction: row;
+  height: 100%; max-height: 32px;
+  overflow-x: visible; overflow-y: hidden;
+  box-sizing: border-box;
+}
+
+/* タブ → アイコンボタン化 */
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab {
+  width: 32px; height: 32px; max-width: none; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 4px; flex-shrink: 0;
+}
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab.active { border-bottom: none; background: var(--ui-selection-bg); color: var(--ui-selection-fg); }
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab-icon svg { width: 18px; height: 18px; }
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab-label { display: none !important; }
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab-close { display: none !important; }
+.gb-pane-collapsed > .gb-pane-tabs .gb-pane-nav-ctrls { display: none !important; }
+
+/* 折り畳みボタン: 先頭に表示 */
+.gb-pane-collapsed > .gb-pane-tabs .gb-pane-collapse {
+  width: 32px; height: 32px; margin: 0; padding: 0; order: -1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; opacity: 0.7; border-radius: 4px;
+}
+.gb-pane-collapsed > .gb-pane-tabs .gb-pane-collapse:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+/* 折りたたみ時のドラッグハンドル: アイコンボタンサイズに合わせて表示 */
+.gb-pane-collapsed > .gb-pane-tabs .gb-pane-drag-handle {
+  width: 32px; height: 16px; padding: 0; display: flex; align-items: center; justify-content: center;
+  opacity: 0.3; cursor: grab; order: -2;
+}
+.gb-pane-collapsed > .gb-pane-tabs .gb-pane-drag-handle:hover { opacity: 0.8; }
+/* 縦長バー（水平分割での折りたたみ）時はグリップアイコンを横向きに回転 */
+.gb-pane-collapsed-horizontal > .gb-pane-tabs .gb-pane-drag-handle svg {
+  transform: rotate(90deg);
+}
+
+/* ====== スプリット列の折り畳み ====== */
+.gb-split-collapsed {
+  display: flex; align-items: center; justify-content: flex-start;
+  background: var(--ui-collapsed-tabbar-bg, var(--ui-pane-tabbar-bg, var(--bg2))); border: 1px solid var(--border);
+  gap: 4px; padding: 2px;
+  box-sizing: border-box;
+}
+/* 水平分割の子が折り畳み: 縦バー（上から順にアイコンを並べ、あふれたらスクロール） */
+.gb-split-collapsed-horizontal {
+  flex-direction: column; width: 32px; min-width: 32px; max-width: 32px;
+  height: 100%; overflow-y: auto; overflow-x: hidden;
+}
+/* 垂直分割の子が折り畳み: 横バー（左から順にアイコンを並べ、あふれたらスクロール） */
+.gb-split-collapsed-vertical {
+  flex-direction: row; height: 32px; min-height: 32px; max-height: 32px;
+  width: 100%; overflow-x: auto; overflow-y: hidden;
+}
+.gb-split-expand-btn {
+  cursor: pointer; font-size: 16px; color: var(--fg2);
+  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+  border-radius: 3px; flex-shrink: 0;
+}
+.gb-split-expand-btn:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-split-collapsed-icon {
+  cursor: pointer; width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 3px; color: var(--fg2); flex-shrink: 0;
+}
+.gb-split-collapsed-icon:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-split-collapsed-icon.active { background: var(--ui-selection-bg); color: var(--ui-selection-fg); }
+
+/* 折りたたみ縦バー内の panelset-icon (renderGroupIconButton 流用) を幅制約 */
+.gb-split-collapsed-horizontal .gb-panelset-icon {
+  min-width: 24px; max-width: 28px; height: 28px; padding: 0 2px;
+  flex: 0 0 auto;
+}
+/* 折りたたみ横バー内の panelset-icon */
+.gb-split-collapsed-vertical .gb-panelset-icon {
+  min-height: 24px; max-height: 28px; padding: 2px 4px;
+  flex: 0 0 auto;
+}
+
+/* 折りたたみバー先頭のドラッグハンドル: カラム移動用 */
+.gb-split-collapsed-drag-handle {
+  display: flex; align-items: center; justify-content: center;
+  cursor: grab; opacity: 0.35; color: var(--fg2);
+  flex-shrink: 0; user-select: none;
+}
+.gb-split-collapsed-drag-handle:hover { opacity: 0.9; color: var(--ui-hover-fg); }
+.gb-split-collapsed-drag-handle:active { cursor: grabbing; }
+/* 縦長バー: ハンドルを横棒2本（gripVerticalを90度回転）で表示 */
+.gb-split-collapsed-horizontal > .gb-split-collapsed-drag-handle {
+  width: 24px; height: 16px;
+}
+.gb-split-collapsed-horizontal > .gb-split-collapsed-drag-handle svg {
+  transform: rotate(90deg);
+}
+/* 横長バー: ハンドルは縦棒2本（gripVerticalそのまま） */
+.gb-split-collapsed-vertical > .gb-split-collapsed-drag-handle {
+  width: 16px; height: 24px;
+}
+
+/* ペインコンテンツ */
+.gb-pane-content {
+  flex: 1; overflow: hidden; position: relative; min-height: 0;
+  display: flex; flex-direction: column;
+}
+/* ペインコンテンツ内のレガシービューコンテナ */
+.gb-pane-content > [id$="-view"],
+.gb-pane-content > #db-view-container {
+  flex: 1; min-height: 0; overflow: auto;
+}
+/* サイドバーがペイン内に配置された場合 */
+.gb-pane-content > #sidebar {
+  position: static !important; inset: auto !important; z-index: auto !important;
+  transform: none !important; transition: none !important;
+  width: auto !important; height: auto !important; min-height: 0;
+  flex: 1; border-right: none;
+  display: flex !important; flex-direction: column; overflow-x: hidden; overflow-y: auto;
+}
+/* 詳細パネルがペイン内に配置された場合 */
+.gb-pane-content > #rp-detail {
+  flex: 1; display: flex !important; flex-direction: column; overflow: hidden;
+}
+/* 詳細パネルのフォントサイズ統一（12px） */
+#rp-detail { font-size: var(--ui-font-12); }
+#rp-detail input, #rp-detail textarea, #rp-detail select, #rp-detail button { font-size: var(--ui-font-12) !important; }
+#rp-detail table { font-size: var(--ui-font-12); }
+#rp-detail .dp-field label { font-size: var(--ui-font-12) !important; }
+/* 2026-04-18: 詳細パネル内の右寄せ項目がパネル端で見切れないよう、
+   padding 未指定のタブコンテンツ（.gb-panel-body）に左右の余白を入れる。
+   scroll 版（.gb-panel-body-scroll）は既に 8px の padding を持つのでそのまま。 */
+#rp-detail > .gb-panel-body:not(.gb-panel-body-scroll):not(.gb-panel-body-padded) {
+  padding-inline: var(--ui-space-4);
+}
+/* RPコンテナがペイン内に配置された場合 */
+.gb-pane-content > .rp-content {
+  flex: 1; display: flex !important; flex-direction: column; overflow: hidden;
+}
+/* プレビューペイン */
+.gb-pane-content > #gb-preview-pane {
+  flex: 1; display: flex !important; flex-direction: column; overflow: auto;
+  align-items: center; justify-content: center;
+  --bg: var(--preview-bg);
+  --bg2: var(--preview-card-bg);
+  --bg3: var(--preview-hover-bg);
+  --fg: var(--preview-fg);
+  --fg2: var(--preview-muted-fg);
+  --border: var(--preview-border);
+  --accent: var(--preview-accent);
+  background: var(--preview-bg); color: var(--preview-fg); padding: 16px;
+}
+
+/* スプリット */
+.gb-split {
+  display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+}
+.gb-split-horizontal { flex-direction: row; }
+.gb-split-vertical { flex-direction: column; }
+.gb-split-child { overflow: hidden; display: flex; min-width: 0; min-height: 0; }
+.gb-split-handle {
+  flex-shrink: 0; background: var(--border); transition: background 0.15s;
+  position: relative; overflow: visible;
+  z-index: 20; touch-action: none;
+  --gb-split-anchor-x: 50%;
+  --gb-split-anchor-y: 50%;
+}
+.gb-split-horizontal > .gb-split-handle { width: 4px; cursor: col-resize; }
+.gb-split-vertical > .gb-split-handle { height: 4px; cursor: row-resize; }
+.gb-split-handle:hover, .gb-split-handle.active { background: var(--accent); }
+
+/* 掴みやすさ向上: 本体は 4px のまま、擬似要素で当たり判定を 8px に拡張 */
+.gb-split-handle::before {
+  content: ""; position: absolute; z-index: 1;
+  background: transparent; transition: background 0.15s;
+}
+.gb-split-horizontal > .gb-split-handle::before {
+  top: 0; bottom: 0; left: -2px; right: -2px;
+  cursor: col-resize;
+}
+.gb-split-vertical > .gb-split-handle::before {
+  left: 0; right: 0; top: -2px; bottom: -2px;
+  cursor: row-resize;
+}
+.gb-split-handle:hover::before,
+.gb-split-handle.active::before { background: color-mix(in srgb, var(--ui-selection-bg) 35%, transparent); }
+
+/* ドロップインジケータ */
+.gb-drop-indicator {
+  position: fixed; pointer-events: none; z-index: 9999;
+  background: color-mix(in srgb, var(--ui-selection-bg) 40%, transparent);
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  transition: all 0.1s;
+}
+
+/* === タッチフレンドリー: pointer:coarse === */
+@media (pointer: coarse) {
+  /* Part 3-1: タブ×ボタン常時表示 */
+  .tab-item .tab-close { opacity: 0.5; }
+  .gb-tab .gb-tab-close { opacity: 0.5; }
+  /* Part 3-5: パネル制御ボタン常時表示 */
+  .gb-pane-collapse { opacity: 0.8; }
+  .gb-pane-btn { opacity: 0.9; }
+  /* Part 2-3: 分割ハンドル折りたたみボタン */
+  .split-collapse-btn { opacity: 0.6; }
+  /* タッチ時はハンドルの当たり判定をさらに拡張 (合計 12px) */
+  .gb-split-horizontal > .gb-split-handle::before {
+    left: -4px; right: -4px;
+  }
+  .gb-split-vertical > .gb-split-handle::before {
+    top: -4px; bottom: -4px;
+  }
+}
+
+/* Part 2-3: 分割ハンドル折りたたみボタン (border 上の hover ボタン、双方向 2 個) */
+.split-collapse-btn {
+  position: absolute;
+  width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+  font-size: 9px; color: var(--fg); background: var(--bg3); border: 1px solid var(--border); border-radius: 50%;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s; z-index: 5;
+  user-select: none; pointer-events: auto;
+}
+.gb-split-handle:hover .split-collapse-btn,
+.split-collapse-btn:hover { opacity: 1; }
+.gb-split-handle.active .split-collapse-btn { opacity: 0; pointer-events: none; }
+/* 横分割 (handle が縦線): ボタンを境界線に沿って上下に並べる */
+.gb-split-horizontal > .gb-split-handle .split-collapse-btn-prev {
+  top: var(--gb-split-anchor-y, 50%);
+  left: 50%;
+  transform: translate(-50%, calc(-100% - 8px));
+}
+.gb-split-horizontal > .gb-split-handle .split-collapse-btn-next {
+  top: var(--gb-split-anchor-y, 50%);
+  left: 50%;
+  transform: translate(-50%, 8px);
+}
+/* 縦分割 (handle が横線): ボタンを境界線に沿って左右に並べる */
+.gb-split-vertical > .gb-split-handle .split-collapse-btn-prev {
+  top: 50%;
+  left: var(--gb-split-anchor-x, 50%);
+  transform: translate(calc(-100% - 8px), -50%);
+}
+.gb-split-vertical > .gb-split-handle .split-collapse-btn-next {
+  top: 50%;
+  left: var(--gb-split-anchor-x, 50%);
+  transform: translate(8px, -50%);
+}
+.split-collapse-btn:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); border-color: var(--accent); }
+
+/* タブの D&D 並び替えインジケータ (DOM 挿入は bar のレイアウトを変動させるため、
+   target タブ自身の box-shadow inset で描く) */
+/* ドロップインジケータ: アクティブタブの背景に隠れないよう疑似要素で
+   絶対配置 + z-index で常に前面に描画。太さ 3px + 上下 2px はみ出しで視認性を確保。 */
+.gb-tab.gb-tab-drop-before,
+.gb-tab.gb-tab-drop-after {
+  position: relative;
+}
+.gb-tab.gb-tab-drop-before::before,
+.gb-tab.gb-tab-drop-after::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  background: var(--accent, #4a90d9);
+  z-index: 10;
+  pointer-events: none;
+  border-radius: 1px;
+}
+.gb-tab.gb-tab-drop-before::before { left: -1px; }
+.gb-tab.gb-tab-drop-after::after { right: -1px; }
+
+
+/* === 列（カラム）: 水平スプリットの子 or 単独ルート === */
+.gb-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* 列ヘッダバーは廃止。カラム D&D は Shift+ドラッグで発動。
+   パネルセット時のタブバーは .gb-panelset-tabbar で直接表示。 */
+.gb-column-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.gb-column-body > * { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.gb-panelset-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.gb-panelset-content > * { flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+/* === パネルセットのアイコンタブバー（列ヘッダ内に入る） === */
+.gb-panelset-tabbar {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 2px;
+  padding: 2px 4px;
+  width: 100%;
+  flex: 0 0 auto;
+  background: var(--ui-panelset-tabbar-bg, var(--bg2, #222));
+  overflow-x: auto;
+}
+.gb-panelset-tabbar-drop {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.gb-panelset-icon[draggable="true"] {
+  cursor: grab;
+}
+.gb-panelset-icon[draggable="true"]:active {
+  cursor: grabbing;
+}
+.gb-panelset-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg2, #bbb);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.gb-panelset-icon:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-panelset-icon.active {
+  background: var(--ui-selection-bg);
+  color: var(--ui-selection-fg);
+  border-color: var(--accent, #4a90d9);
+}
+/* ドラッグ中の並び替えインジケータ（タブの前後に挿入線） */
+.gb-panelset-icon { position: relative; }
+.gb-panelset-icon.gb-panelset-drop-before::before,
+.gb-panelset-icon.gb-panelset-drop-after::after {
+  content: ""; position: absolute; top: 2px; bottom: 2px;
+  width: 2px; background: var(--accent, #4a90d9); z-index: 5;
+}
+.gb-panelset-icon.gb-panelset-drop-before::before { left: -2px; }
+.gb-panelset-icon.gb-panelset-drop-after::after { right: -2px; }
+.gb-panelset-icon-box {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+.gb-panelset-mini-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+}
+.gb-panelset-mini-icon svg { width: 12px; height: 12px; display: block; }
+.gb-panelset-mini-extra {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--fg2, #888);
+  margin-left: 2px;
+}
+.gb-panelset-mini-empty {
+  color: var(--fg2, #888);
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* =========================================================================
+   CSP パレット方式リデザイン (Phase 1)
+   ドックバー / ドックポップアップ / サブウィンドウモード
+   ========================================================================= */
+
+/* ドックバー本体: 各 panelset ノードの右端に常設される 32px 幅の縦バー（単独ペインのカラムでは非表示） */
+.gb-dock-bar {
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  flex: 0 0 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--ui-dockbar-bg, var(--ui-pane-tabbar-bg, var(--bg2)));
+  border: none;
+  padding: 0;
+  gap: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  user-select: none;
+}
+
+/* ドラッグハンドル: ドックを別位置へ移動するためのつまみ */
+.gb-dock-bar-handle {
+  width: 32px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.3;
+  cursor: grab;
+  color: var(--fg2);
+  flex: 0 0 16px;
+}
+.gb-dock-bar-handle:hover { opacity: 0.8; }
+.gb-dock-bar-handle:active { cursor: grabbing; }
+.gb-dock-bar-handle svg { width: 14px; height: 14px; }
+
+/* ドックタブスペーサー: group 間の視覚的な隙間（クリック操作はなし、純粋な余白）*/
+.gb-dock-tab-spacer {
+  width: 32px;
+  height: 12px;
+  min-height: 12px;
+  flex: 0 0 12px;
+  pointer-events: none;
+}
+.gb-dock-tab-spacer:first-of-type { display: none; }
+
+/* ドックバー内のパネルアイコンボタン */
+.gb-dock-icon {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  margin: 2px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ui-bg-control);
+  border: none;
+  border-radius: var(--ui-radius-sm, 4px);
+  color: var(--ui-fg-default);
+  cursor: pointer;
+  flex: 0 0 28px;
+  padding: 0;
+  position: relative;
+}
+.gb-dock-icon svg { width: 16px; height: 16px; }
+.gb-dock-icon:hover { background: var(--ui-bg-control-hover); color: var(--ui-fg-default); }
+.gb-dock-icon.active {
+  background: var(--ui-accent);
+  color: var(--ui-fg-strong);
+}
+.gb-dock-icon.active::before {
+  content: '';
+  position: absolute;
+  right: -3px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+/* ドロップインジケータ (ドックタブ挿入位置) */
+.gb-dock-tab-insert-indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* =========================================================================
+   ドックポップアップ: ドックバーアイコンのクリックで一時表示
+   ========================================================================= */
+.gb-dock-popup {
+  position: fixed;
+  z-index: 10050;
+  background: var(--bg);
+  border: 1px solid var(--border, rgba(128,128,128,0.3));
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  min-height: 150px;
+  overflow: hidden;
+}
+.gb-dock-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border, rgba(128,128,128,0.2));
+  font-size: 12px;
+  flex: 0 0 auto;
+  cursor: default;
+}
+.gb-dock-popup-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-dock-popup-close {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg2);
+  border-radius: 3px;
+}
+.gb-dock-popup-close:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-dock-popup-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+.gb-dock-popup ~ .gb-context-menu,
+.gb-dock-popup ~ .ab-dropdown,
+.gb-dock-popup ~ .bd-style-picker-menu,
+.gb-dock-popup ~ #chat-title-dropdown {
+  z-index: 10080 !important;
+}
+
+/* 8方向リサイズハンドル */
+.gb-dock-popup-resize-handle {
+  position: absolute;
+  z-index: 1;
+}
+.gb-dock-popup-resize-handle[data-dir="n"]  { top: 0; left: 4px; right: 4px; height: 4px; cursor: ns-resize; }
+.gb-dock-popup-resize-handle[data-dir="s"]  { bottom: 0; left: 4px; right: 4px; height: 4px; cursor: ns-resize; }
+.gb-dock-popup-resize-handle[data-dir="e"]  { top: 4px; bottom: 4px; right: 0; width: 4px; cursor: ew-resize; }
+.gb-dock-popup-resize-handle[data-dir="w"]  { top: 4px; bottom: 4px; left: 0; width: 4px; cursor: ew-resize; }
+.gb-dock-popup-resize-handle[data-dir="ne"] { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.gb-dock-popup-resize-handle[data-dir="nw"] { top: 0; left: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.gb-dock-popup-resize-handle[data-dir="se"] { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.gb-dock-popup-resize-handle[data-dir="sw"] { bottom: 0; left: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+
+/* =========================================================================
+   サブウィンドウモード: ?subwindow=1 起動時の chrome 非表示
+   ========================================================================= */
+.gb-subwindow-mode #activity-bar,
+.gb-subwindow-mode [id^="sb-"],
+.gb-subwindow-mode #gb-sidebar {
+  display: none !important;
+}
+.gb-subwindow-mode .gb-subwindow-hidden { display: none !important; }

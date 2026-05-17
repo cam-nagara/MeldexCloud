@@ -17,12 +17,12 @@
     if (!actionStr) return null;
     const match = actionStr.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\((.*)\)$/);
     if (match) {
-      return { fn: match[1], argsStr: match[2] };
+      return { fn: match[1], argsStr: match[2], isCall: true };
     }
     // 引数なし: "functionName" のみ
     const matchSimple = actionStr.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)$/);
     if (matchSimple) {
-      return { fn: matchSimple[1], argsStr: '' };
+      return { fn: matchSimple[1], argsStr: '', isCall: false };
     }
     return null;
   }
@@ -64,7 +64,8 @@
       if (typeof fn === 'function') {
         const argsStr = parsed.argsStr.trim();
         if (!argsStr) {
-          fn(event);
+          if (parsed.isCall) fn();
+          else fn(event);
           return;
         }
         // 引数にネストした関数呼び出しやthisがある場合はraw実行にフォールバック

@@ -18,6 +18,25 @@ const AnnotationStickyTail = (() => {
     return { x: (clientX - rect.left) * sx, y: (clientY - rect.top) * sy };
   }
 
+  function _sheetCellId(entryName, propName) {
+    return JSON.stringify([String(entryName || ''), String(propName || '')]);
+  }
+
+  function _parseSheetCellId(id) {
+    const raw = String(id || '');
+    if (raw.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length >= 2) {
+          return [String(parsed[0] || ''), String(parsed[1] || '')];
+        }
+      } catch {}
+    }
+    const sep = raw.lastIndexOf('::');
+    if (sep < 0) return [raw, ''];
+    return [raw.slice(0, sep), raw.slice(sep + 2)];
+  }
+
   function _targetFromPoint(clientX, clientY, note) {
     const elements = document.elementsFromPoint(clientX, clientY)
       .filter(el => el && el !== note && !note.contains(el) && !el.closest?.('.ann-tail-handle,.ann-tail-shape,#ann-toolbar,._note-ctx-menu'));
@@ -31,7 +50,7 @@ const AnnotationStickyTail = (() => {
       const sheetCell = el.closest?.('td[data-prop-name]');
       const sheetRow = sheetCell?.closest?.('tr[data-entity-name]');
       if (sheetCell && sheetRow) {
-        return _targetDescriptor('sheet_cell', sheetRow.dataset.entityName + '::' + sheetCell.dataset.propName, sheetCell, clientX, clientY);
+        return _targetDescriptor('sheet_cell', _sheetCellId(sheetRow.dataset.entityName, sheetCell.dataset.propName), sheetCell, clientX, clientY);
       }
       const calendarEvent = el.closest?.('[data-event-id],.cal-event[data-id]');
       const eventId = calendarEvent?.dataset?.eventId || calendarEvent?.dataset?.id || '';
@@ -60,7 +79,7 @@ const AnnotationStickyTail = (() => {
     if (target.kind === 'scriptnote_line') return document.querySelector(`.sn2-row[data-row-id="${_cssEscape(target.id)}"]`);
     if (target.kind === 'note_line') return document.querySelector(`span._nl-id[data-line-id="${_cssEscape(target.id)}"]`)?.parentElement || null;
     if (target.kind === 'sheet_cell') {
-      const [entryId, propName] = String(target.id).split('::');
+      const [entryId, propName] = _parseSheetCellId(target.id);
       return document.querySelector(`tr[data-entity-name="${_cssEscape(entryId)}"] td[data-prop-name="${_cssEscape(propName)}"]`);
     }
     if (target.kind === 'calendar_event') {
@@ -73,9 +92,10 @@ const AnnotationStickyTail = (() => {
     const el = _findTarget(target);
     if (!el || !el.isConnected) return null;
     const rect = el.getBoundingClientRect();
+    const { fx, fy } = _targetOffsetFraction(target, el);
     return {
-      x: rect.left + Math.max(0, Math.min(rect.width, Number(target.offsetX) || rect.width / 2)),
-      y: rect.top + Math.max(0, Math.min(rect.height, Number(target.offsetY) || rect.height / 2)),
+      x: rect.left + rect.width * fx,
+      y: rect.top + rect.height * fy,
     };
   }
 
@@ -145,11 +165,15 @@ const AnnotationStickyTail = (() => {
   function _setTail(note, tail, persist) {
     const ctx = note._annTailCtx;
     if (!ctx) return;
+    const prevTarget = ctx.data.tail?.target || null;
+    const nextTarget = tail?.target || null;
+    const targetChanged = JSON.stringify(prevTarget || null) !== JSON.stringify(nextTarget || null);
     ctx.data.tail = tail;
     delete ctx.data.tailX;
     delete ctx.data.tailY;
     ctx.lastTargetClient = null;
     ctx.lastNoteClient = null;
+    if (targetChanged) ctx.lastTargetLayout = null;
     _updateDom(note);
     persist?.();
   }
@@ -160,6 +184,9 @@ const AnnotationStickyTail = (() => {
     delete ctx.data.tail;
     delete ctx.data.tailX;
     delete ctx.data.tailY;
+    ctx.lastTargetClient = null;
+    ctx.lastNoteClient = null;
+    ctx.lastTargetLayout = null;
     _updateDom(note);
     persist?.();
   }
@@ -233,13 +260,22 @@ const AnnotationStickyTail = (() => {
     document.addEventListener('pointerup', onUp);
   }
 
-  function _absoluteLayoutPos(el) {
-    let x = 0, y = 0;
-    let cur = el;
-    while (cur) {
-      x += cur.offsetLeft || 0;
-      y += cur.offsetTop || 0;
-      cur = cur.offsetParent;
+  function _finiteNumber(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function _elementLayoutPos(el) {
+    if (!el) return null;
+    let x = 0;
+    let y = 0;
+    let current = el;
+    let depth = 0;
+    while (current && current.nodeType === 1 && depth < 64) {
+      x += _finiteNumber(current.offsetLeft, 0);
+      y += _finiteNumber(current.offsetTop, 0);
+      current = current.offsetParent;
+      depth += 1;
     }
     return { x, y };
   }
@@ -249,11 +285,21 @@ const AnnotationStickyTail = (() => {
     const h = targetEl.offsetHeight || 1;
     const fx = (target.offsetXRatio != null && !Number.isNaN(Number(target.offsetXRatio)))
       ? Math.max(0, Math.min(1, Number(target.offsetXRatio)))
-      : Math.max(0, Math.min(1, (Number(target.offsetX) || w / 2) / w));
+      : Math.max(0, Math.min(1, _finiteNumber(target.offsetX, w / 2) / w));
     const fy = (target.offsetYRatio != null && !Number.isNaN(Number(target.offsetYRatio)))
       ? Math.max(0, Math.min(1, Number(target.offsetYRatio)))
-      : Math.max(0, Math.min(1, (Number(target.offsetY) || h / 2) / h));
+      : Math.max(0, Math.min(1, _finiteNumber(target.offsetY, h / 2) / h));
     return { fx, fy };
+  }
+
+  function _targetLayoutPoint(target, targetEl) {
+    const pos = _elementLayoutPos(targetEl);
+    if (!pos) return null;
+    const { fx, fy } = _targetOffsetFraction(target, targetEl);
+    return {
+      x: pos.x + (targetEl.offsetWidth || 0) * fx,
+      y: pos.y + (targetEl.offsetHeight || 0) * fy,
+    };
   }
 
   function _refreshTargets() {
@@ -271,19 +317,16 @@ const AnnotationStickyTail = (() => {
         // しっぽが消える不具合の原因)。
         return;
       }
-      // レイアウト座標 (offsetLeft/Top) は CSS transform (pan/zoom/rotate) の影響を受けないため、
-      // 「ターゲットが実際にレイアウト上で動いた」場合だけを検出できる。
-      const layoutX = targetEl.offsetLeft;
-      const layoutY = targetEl.offsetTop;
+      // offsetParent 由来のレイアウト座標は CSS transform、表示倍率、スクロール表示位置の
+      // 影響を受けないため、「対象そのものが実際に移動した」場合だけを検出できる。
+      const targetLayout = _targetLayoutPoint(tail.target, targetEl);
       const clientPt = _targetClientPoint(tail.target);
-      if (ctx.lastTargetLayout) {
-        const layoutDx = layoutX - ctx.lastTargetLayout.x;
-        const layoutDy = layoutY - ctx.lastTargetLayout.y;
+      if (targetLayout && ctx.lastTargetLayout) {
+        const layoutDx = targetLayout.x - ctx.lastTargetLayout.x;
+        const layoutDy = targetLayout.y - ctx.lastTargetLayout.y;
         if (Math.abs(layoutDx) > 0.5 || Math.abs(layoutDy) > 0.5) {
-          // note.style.left/top および data.x/y はレイアウト座標 (bd-world 等の
-          // transform 内座標) で管理されているため、追従もレイアウト座標の差分で
-          // 行う。client 座標差分を使うと Meldex 表示倍率 (documentElement.style.zoom)
-          // やボード zoom の影響で、距離が徐々にズレてしまう。
+          // note.style.left/top および data.x/y は表示座標ではなくコンテンツ座標で管理する。
+          // ここで client 座標を使うとパン、ズーム、スクロールだけで保存位置が汚れる。
           note.style.left = (note.offsetLeft + layoutDx) + 'px';
           note.style.top = (note.offsetTop + layoutDy) + 'px';
           ctx.data.x = (Number(ctx.data.x) || 0) + layoutDx;
@@ -294,15 +337,13 @@ const AnnotationStickyTail = (() => {
           ctx.followSaveTimer = window.setTimeout(() => ctx.persist?.(), 300);
         }
       }
-      ctx.lastTargetLayout = { x: layoutX, y: layoutY };
-      if (clientPt) ctx.lastTargetClient = clientPt;
-      // しっぽ終点の算出: note と target が共通の変換親 (bd-world 等) を共有するため、
-      // 絶対レイアウト座標の差分で終点を求めれば CSS transform (zoom/rotate/pan) の影響を受けない。
-      const targetAbs = _absoluteLayoutPos(targetEl);
-      const noteAbs = _absoluteLayoutPos(note);
-      const { fx, fy } = _targetOffsetFraction(tail.target, targetEl);
-      tail.endX = (targetAbs.x + targetEl.offsetWidth * fx) - noteAbs.x;
-      tail.endY = (targetAbs.y + targetEl.offsetHeight * fy) - noteAbs.y;
+      if (targetLayout) ctx.lastTargetLayout = targetLayout;
+      if (clientPt) {
+        ctx.lastTargetClient = clientPt;
+        const clientLocal = _localPoint(note, clientPt.x, clientPt.y);
+        tail.endX = clientLocal.x;
+        tail.endY = clientLocal.y;
+      }
       _updateDom(note);
     });
   }

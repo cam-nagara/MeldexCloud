@@ -178,7 +178,9 @@ async function openSmartDbFile(label, path, opts) {
   try {
     const data = await apiFetch('/file?path=' + encodeURIComponent(pathText));
     if (!isLegacyLoadCurrent()) return;
-    const def = normalizeSmartDbDefinition(JSON.parse(data.content || '{}'));
+    const rawDef = JSON.parse(data.content || '{}');
+    if (!rawDef.name && label) rawDef.name = label;
+    const def = normalizeSmartDbDefinition(rawDef);
     def.id = def.id || 'file:' + pathText;
     def.name = def.name || label;
     def._filePath = pathText;
@@ -383,17 +385,21 @@ function _smartDbSourceEntityName(ent) {
   return String(ent?.name || pathName || '');
 }
 
-function _smartDbFindSourceRow(entityName) {
+function _smartDbFindSourceRow(entityName, ctx) {
   if (!entityName) return null;
-  const rows = [...document.querySelectorAll('tr[data-entity-name]')];
+  const table = (typeof _currentPivotTable === 'function' ? _currentPivotTable(ctx) : null)
+    || (typeof _paneEl === 'function' ? _paneEl(ctx, '#pivot-table') : null)
+    || document.getElementById('pivot-table');
+  const root = table || document;
+  const rows = [...root.querySelectorAll('tr[data-entity-name]')];
   return rows.find(row => row.dataset.entityName === entityName && row.getClientRects().length > 0)
     || rows.find(row => row.dataset.entityName === entityName)
     || null;
 }
 
-async function _smartDbHighlightSourceRow(entityName) {
+async function _smartDbHighlightSourceRow(entityName, ctx) {
   for (let i = 0; i < 30; i++) {
-    const row = _smartDbFindSourceRow(entityName);
+    const row = _smartDbFindSourceRow(entityName, ctx);
     if (row) {
       row.scrollIntoView({ block: 'center', inline: 'nearest' });
       if (typeof setActiveCell === 'function') setActiveCell(row.children[0]);
@@ -431,8 +437,9 @@ async function openSmartDbRowInSourceSheet(ent) {
     return false;
   }
   if (typeof selectDatabase === 'function') await selectDatabase(dbPath);
+  const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
   _smartDbEnsureSourcePivotView(dbPath);
-  const highlighted = await _smartDbHighlightSourceRow(entityName);
+  const highlighted = await _smartDbHighlightSourceRow(entityName, ctx);
   if (typeof showStatus === 'function') {
     showStatus(highlighted ? '元シートで行を開きました' : '元シートを開きました');
   }
@@ -639,12 +646,14 @@ async function _saveSmartDbFilters(smartDbId) {
   const def = _findSmartDbDefinition(smartDbId);
   if (def) {
     const before = _captureSmartDbHistorySnapshot(def);
-    def.name = name;
-    def.filters = filters;
-    try { await saveSmartDbDef(def); }
+    const nextDef = normalizeSmartDbDefinition(JSON.parse(JSON.stringify({ ...def, name, filters })));
+    if (def._filePath) nextDef._filePath = def._filePath;
+    if (def._fileId) nextDef._fileId = def._fileId;
+    try { await saveSmartDbDef(nextDef); }
     catch (e) { showStatus('スマートシートの保存に失敗しました: ' + e.message, true); return; }
+    Object.assign(def, nextDef);
     if (typeof pushSmartDbDefinitionHistory === 'function') {
-      pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, def, def.name);
+      pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, nextDef, nextDef.name);
     }
     renderSmartDbList();
     showStatus('フィルタを保存しました');

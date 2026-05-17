@@ -86,13 +86,38 @@ function _resolveDbActionRelativePath(baseDbPath, relativePath) {
   return _normalizeDbActionPath((base ? base + '/' : '') + raw);
 }
 
+function _dbActionBaseDbPath(entityPath) {
+  if (typeof _dbPathFromEntityPath === 'function') {
+    const fromEntityPath = _dbPathFromEntityPath(entityPath);
+    if (fromEntityPath) return fromEntityPath;
+  }
+  const fallbackEntity = state.currentEntityPath || '';
+  if (fallbackEntity && typeof _dbPathFromEntityPath === 'function') {
+    const fromCurrentEntity = _dbPathFromEntityPath(fallbackEntity);
+    if (fromCurrentEntity) return fromCurrentEntity;
+  }
+  return state.currentDbPath || '';
+}
+
+async function _getDbActionMetadata(dbPath) {
+  if (!dbPath) return { actions: [], backlinks: [] };
+  if (state.currentDbPath === dbPath && state.dbMetadata) return state.dbMetadata;
+  try {
+    return await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
+  } catch {
+    return { actions: [], backlinks: [] };
+  }
+}
+
 // === エントリ詳細にアクションボタンを表示 ===
-function _renderEntityActions(data, entityPath) {
+async function _renderEntityActions(data, entityPath) {
   const container = document.getElementById('entity-freetext');
   if (!container) return;
   container.parentElement.querySelector('.db-action-bar')?.remove();
 
-  const meta = state.dbMetadata;
+  const dbPath = _dbActionBaseDbPath(entityPath);
+  const meta = await _getDbActionMetadata(dbPath);
+  if (state.currentEntityPath && state.currentEntityPath !== entityPath) return;
   if (!meta || !meta.actions || meta.actions.length === 0) return;
 
   let bar = container.parentElement.querySelector('.db-action-bar');
@@ -194,7 +219,7 @@ async function _executeDbAction(action, data, entityPath, inputValues) {
   const properties = data.properties || {};
 
   // target_db パス解決（現在のDB相対）
-  const dbPath = state.currentDbPath || '';
+  const dbPath = _dbActionBaseDbPath(entityPath);
   const targetDb = _resolveDbActionRelativePath(dbPath, action.target_db || '');
 
   // エントリ名テンプレート展開 + サニタイズ
@@ -255,14 +280,15 @@ async function _renderEntityBacklinks(data, entityPath) {
   // 既存のバックリンクセクションを除去
   parent.querySelectorAll('.db-backlinks-section').forEach(s => s.remove());
 
-  const meta = state.dbMetadata;
+  const dbPath = _dbActionBaseDbPath(entityPath);
+  const meta = await _getDbActionMetadata(dbPath);
+  if (state.currentEntityPath && state.currentEntityPath !== entityPath) return;
   if (!meta || !meta.backlinks || meta.backlinks.length === 0) return;
 
   const entryName = data.entity || '';
   const properties = data.properties || {};
 
   for (const bl of meta.backlinks) {
-    const dbPath = state.currentDbPath || '';
     const sourceDb = _resolveDbActionRelativePath(dbPath, bl.source_db || '');
     const matchValue = _expandTemplate(bl.match_value || '', entryName, properties);
 
@@ -315,14 +341,13 @@ async function _appendBacklinkSummaryColumns(ctx) {
   if (backlinkDefs.length === 0) return;
 
   const dbPath = ctx.dbPath || state.currentDbPath || '';
-  const dbDir = dbPath.replace(/[/\\][^/\\]*$/, '');
   const table = _paneEl(ctx, '#pivot-table') || document.getElementById('pivot-table');
   if (!table) return;
   const renderToken = ctx?._renderToken;
   table.querySelectorAll('[data-backlink-summary="true"]').forEach(el => el.remove());
 
   for (const bl of backlinkDefs) {
-    const sourceDb = dbDir + '/' + (bl.source_db || '').replace(/^\.\//, '');
+    const sourceDb = _resolveDbActionRelativePath(dbPath, bl.source_db || '');
     try {
       const result = await apiFetch('/backlinks/summary?source_db=' + encodeURIComponent(sourceDb)
         + '&match_property=' + encodeURIComponent(bl.match_property || '')

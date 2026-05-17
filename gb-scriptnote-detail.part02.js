@@ -104,6 +104,8 @@
     const gs = chara.gutterStyle || {};
     const gs2 = chara.gutter2Style || {};
     const indentNum = parseFloat(chara.indent) || '';
+    const textShiftColsValue = Number.isFinite(Number(chara.textShiftCols)) ? Math.max(1, Math.min(10, Number(chara.textShiftCols))) : '';
+    const outlineWidthValue = Number.isFinite(Number(chara.outlineWidth)) ? Math.max(0.5, Math.min(10, Number(chara.outlineWidth))) : 1;
     popup.innerHTML = `
       <div class="sn2-role-opts-title">オプション設定</div>
       <div class="sn2-role-opts-body">
@@ -137,7 +139,7 @@
             <option value="before"${chara.textShiftDir === 'before' ? ' selected' : ''}>前にズラす</option>
             <option value="after"${chara.textShiftDir === 'after' ? ' selected' : ''}>後にズラす</option>
           </select>
-          <input type="number" class="sn2-role-opts-input-num sn2-role-opts-input-num--sm" data-opt="textShiftCols" value="${chara.textShiftCols || ''}" placeholder="1" min="1" max="10">
+          <input type="number" class="sn2-role-opts-input-num sn2-role-opts-input-num--sm" data-opt="textShiftCols" value="${e(textShiftColsValue)}" placeholder="1" min="1" max="10">
           <span class="sn2-role-opts-unit">列</span>
         </div>
         <div class="sn2-role-opts-divider">
@@ -148,7 +150,7 @@
             <span class="sn2-role-opts-sep">色</span>
             <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg gb-fmt-swatch--sm" data-outline-color="outlineColor"></button>
             <span class="sn2-role-opts-unit">太さ</span>
-            <input type="number" class="sn2-role-opts-input-num sn2-role-opts-input-num--sm" data-opt="outlineWidth" value="${parseFloat(chara.outlineWidth) || 1}" placeholder="1" min="0.5" max="10" step="0.5">
+            <input type="number" class="sn2-role-opts-input-num sn2-role-opts-input-num--sm" data-opt="outlineWidth" value="${e(outlineWidthValue)}" placeholder="1" min="0.5" max="10" step="0.5">
             <span class="sn2-role-opts-unit">px</span>
           </div>
         </div>
@@ -168,7 +170,7 @@
       }
       this._pushUndo('タイプ複製');
       const dup = this._cloneChara(chara);
-      dup.name = (chara.name || '') + '（コピー）';
+      dup.name = this._uniqueRoleName((chara.name || 'タイプ') + '（コピー）', chara);
       const idx = this.doc.characters.indexOf(chara);
       if (idx >= 0) this.doc.characters.splice(idx + 1, 0, dup);
       else this.doc.characters.push(dup);
@@ -189,6 +191,8 @@
         const idx = this.doc.characters.indexOf(chara);
         if (idx >= 0) this.doc.characters.splice(idx, 1);
         this._detailSelection?.clear();
+        this._calcCache = null;
+        this._render();
         this._markDirty();
         popup.remove();
         this.renderDetailPanel(panelContainer);
@@ -229,6 +233,26 @@
         this._pushUndo('オプション設定変更');
         const key = cb.dataset.optCheck;
         chara[key] = cb.checked;
+        if (key === 'isBreak' && cb.checked) {
+          chara.isSummary = false;
+          const summaryCb = popup.querySelector('[data-opt-check="isSummary"]');
+          if (summaryCb) summaryCb.checked = false;
+        } else if (key === 'isBreak' && !cb.checked) {
+          chara.isSpread = false;
+          const spreadCb = popup.querySelector('[data-opt-check="isSpread"]');
+          if (spreadCb) spreadCb.checked = false;
+        } else if (key === 'isSummary' && cb.checked) {
+          chara.isBreak = false;
+          chara.isSpread = false;
+          const breakCb = popup.querySelector('[data-opt-check="isBreak"]');
+          const spreadCb = popup.querySelector('[data-opt-check="isSpread"]');
+          if (breakCb) breakCb.checked = false;
+          if (spreadCb) spreadCb.checked = false;
+        } else if (key === 'isSpread' && cb.checked && !chara.isBreak) {
+          chara.isSpread = false;
+          cb.checked = false;
+          if (typeof showStatus === 'function') showStatus('見開きは区切りタイプでのみ使えます', true);
+        }
         // 区切り/プロットはページ採番に影響するのでキャッシュクリア
         if (key === 'isBreak' || key === 'isSummary') this._calcCache = null;
         this._render(); this._markDirty();
@@ -280,6 +304,22 @@
     }
     if (src.autoColorTarget && typeof src.autoColorTarget === 'object') out.autoColorTarget = { ...src.autoColorTarget };
     return out;
+  },
+
+  _uniqueRoleName(baseName, excludeChara = null) {
+    const base = String(baseName || '').trim() || '新しいタイプ';
+    const used = new Set((this.doc?.characters || [])
+      .filter(c => c && c !== excludeChara && !c.isDefault)
+      .map(c => String(c.name || '').trim())
+      .filter(Boolean));
+    if (!used.has(base)) return base;
+    let index = 2;
+    let candidate = `${base}（${index}）`;
+    while (used.has(candidate)) {
+      index++;
+      candidate = `${base}（${index}）`;
+    }
+    return candidate;
   },
 
   // 列の「全行に適用」ルール (doc.editor.columnAllRules) をchara に適用する
@@ -342,6 +382,7 @@
     this.doc.rows.forEach(row => {
       if (targets.has(row.role)) row.role = '';
     });
+    this._calcCache = null;
     this.host?.querySelectorAll('.sn2-row').forEach(rowEl => {
       const rowId = rowEl.dataset.rowId;
       const row = this.doc.rows.find(r => r.id === rowId);
@@ -354,6 +395,12 @@
 
   _setupDetailDragDrop(listEl, panelContainer) {
     let dragIdx = -1;
+    const clearDragState = () => {
+      dragIdx = -1;
+      listEl.querySelectorAll('.sn2-detail-item').forEach(el => {
+        el.classList.remove('sn2-dragging', 'sn2-drop-above', 'sn2-drop-below');
+      });
+    };
     listEl.addEventListener('dragstart', (e) => {
       const item = e.target.closest('.sn2-detail-item');
       if (!item) return;
@@ -379,20 +426,18 @@
       }
     });
     listEl.addEventListener('dragend', () => {
-      listEl.querySelectorAll('.sn2-detail-item').forEach(el => {
-        el.classList.remove('sn2-dragging', 'sn2-drop-above', 'sn2-drop-below');
-      });
+      clearDragState();
     });
     listEl.addEventListener('drop', (e) => {
       e.preventDefault();
       const item = e.target.closest('.sn2-detail-item');
-      if (!item || dragIdx < 0) return;
+      if (!item || dragIdx < 0) { clearDragState(); return; }
       // デフォルト行はドラッグ元・ドロップ先のいずれでも対象外（末尾固定）
-      if (this.doc.characters[dragIdx]?.isDefault) return;
+      if (this.doc.characters[dragIdx]?.isDefault) { clearDragState(); return; }
       let dropIdx = Number(item.dataset.idx);
       const rect = item.getBoundingClientRect();
       if (e.clientY >= rect.top + rect.height / 2) dropIdx++;
-      if (dropIdx === dragIdx || dropIdx === dragIdx + 1) return;
+      if (dropIdx === dragIdx || dropIdx === dragIdx + 1) { clearDragState(); return; }
       // デフォルト行の位置 (= 末尾) より後ろには挿入させない
       const defIdx = this.doc.characters.findIndex(c => c.isDefault);
       if (defIdx >= 0 && dropIdx > defIdx) dropIdx = defIdx;
@@ -403,6 +448,7 @@
       this._ensureDefaultChara();
       this._detailSelection.clear();
       this._markDirty();
+      dragIdx = -1;
       this.renderDetailPanel(panelContainer);
     });
   },
@@ -447,33 +493,43 @@
       ? Math.max(0.5, Math.min(5, rawWheelSpeed))
       : 2.5;
     const selOpt = (val, cur) => val === cur ? ' selected' : '';
+    const clampNumberText = (value, fallback, min, max) => {
+      const num = Number(value);
+      const next = Number.isFinite(num) ? num : fallback;
+      return String(Math.max(min, Math.min(max, next)));
+    };
     const mkCountRow = (prefix, label, defLabel) => {
-      const pad = cc[prefix + 'Pad'] ?? cc.padDigits ?? 2;
+      const pad = clampNumberText(cc[prefix + 'Pad'] ?? cc.padDigits, 2, 0, 5);
       const pos = cc[prefix + 'Pos'] ?? cc.labelPosition ?? 'before';
-      const lb = cc[prefix + 'LabelBefore'] ?? '';
-      const la = cc[prefix + 'LabelAfter'] ?? '';
+      const lbRaw = cc[prefix + 'LabelBefore'];
+      const laRaw = cc[prefix + 'LabelAfter'];
       const unitVal = cc[prefix + 'Label'] ?? defLabel;
+      const lb = (lbRaw === undefined || lbRaw === null) ? unitVal : lbRaw;
+      const la = (laRaw === undefined || laRaw === null) ? unitVal : laRaw;
+      const labelText = e(label);
       return `
       <div class="sn2-detail-settings-row">
-        <label class="sn2-detail-settings-label sn2-detail-settings-label--w48">${label}</label>
+        <label class="sn2-detail-settings-label sn2-detail-settings-label--w48">${labelText}</label>
         <label class="sn2-detail-settings-label">単位</label>
-        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w56" data-setting="${prefix}Label" value="${e(unitVal)}" placeholder="${defLabel}">
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w56" data-setting="${prefix}Label" data-e2e-id="scriptnote-theme-${prefix}-label" value="${e(unitVal)}" placeholder="${e(defLabel)}" title="${labelText}の単位" aria-label="${labelText}の単位">
         <label class="sn2-detail-settings-label">桁</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}Pad" value="${pad}" min="0" max="5">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}Pad" data-e2e-id="scriptnote-theme-${prefix}-pad" value="${e(pad)}" min="0" max="5" title="${labelText}の桁" aria-label="${labelText}の桁">
         <label class="sn2-detail-settings-label">位置</label>
-        <select class="sn2-detail-settings-select" data-setting="${prefix}Pos">
+        <select class="sn2-detail-settings-select" data-setting="${prefix}Pos" data-e2e-id="scriptnote-theme-${prefix}-position" title="${labelText}の表示位置" aria-label="${labelText}の表示位置">
           <option value="before"${selOpt('before', pos)}>単位+数</option>
           <option value="after"${selOpt('after', pos)}>数+単位</option>
           <option value="both"${selOpt('both', pos)}>前+数+後</option>
         </select>
         ${pos === 'both' ? `
-          <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}LabelBefore" value="${e(lb !== undefined && lb !== null ? lb : unitVal)}" placeholder="前" title="前の単位">
-          <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}LabelAfter" value="${e(la !== undefined && la !== null ? la : unitVal)}" placeholder="後" title="後の単位">
+          <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}LabelBefore" data-e2e-id="scriptnote-theme-${prefix}-label-before" value="${e(lb)}" placeholder="前" title="${labelText}の前の単位" aria-label="${labelText}の前の単位">
+          <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}LabelAfter" data-e2e-id="scriptnote-theme-${prefix}-label-after" value="${e(la)}" placeholder="後" title="${labelText}の後の単位" aria-label="${labelText}の後の単位">
         ` : ''}
       </div>`;
     };
     const settings = document.createElement('div');
     settings.className = 'sn2-detail-settings';
+    const spreadBorderStartValue = clampNumberText(this.doc.editor?.spreadBorder?.start, 1, 1, 999);
+    const spreadBorderEveryValue = clampNumberText(this.doc.editor?.spreadBorder?.every, 2, 1, 99);
     settings.innerHTML = `
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label">枠線</label>
@@ -484,7 +540,7 @@
           <option value="none"${selOpt('none', borderMode)}>非表示</option>
         </select>
         <label class="sn2-detail-settings-label">色</label>
-        <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg gb-fmt-swatch--xs" data-setting-color="borderColor" title="枠線の色"></button>
+        <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg gb-fmt-swatch--xs" data-setting-color="borderColor" data-e2e-id="scriptnote-theme-border-color" title="枠線の色" aria-label="枠線の色"></button>
         <label class="sn2-detail-settings-label">太さ</label>
         <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="borderWidth" value="${e(borderWidthValue)}" placeholder="1" min="0" max="10" step="0.5">
         <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0">px</span>
@@ -498,7 +554,7 @@
       </div>
       <div class="sn2-detail-settings-row" style="flex-wrap:nowrap;">
         <label class="sn2-detail-settings-label">ホイール速度</label>
-        <input type="range" class="gb-range" style="min-width:120px;flex:1;" min="0.5" max="5" step="0.1" value="${e(wheelSpeed.toFixed(1))}" data-sn2-wheel-speed>
+        <input type="range" class="gb-range" style="min-width:120px;flex:1;" min="0.5" max="5" step="0.1" value="${e(wheelSpeed.toFixed(1))}" data-sn2-wheel-speed data-e2e-id="scriptnote-theme-wheel-speed" title="ホイール速度" aria-label="ホイール速度">
         <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0" style="width:48px;text-align:right;" data-sn2-wheel-speed-value>${e(wheelSpeed.toFixed(1))}倍</span>
       </div>
       <div class="sn2-detail-settings-row">
@@ -506,9 +562,9 @@
           <input type="checkbox" data-setting="spreadBorderEnabled"${this.doc.editor?.spreadBorder?.enabled ? ' checked' : ''}> 見開き区切り
         </label>
         <label class="sn2-detail-settings-label">開始</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderStart" value="${this.doc.editor?.spreadBorder?.start ?? 1}" min="1" max="999" title="区切り線を引く最初のページ番号">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderStart" value="${e(spreadBorderStartValue)}" min="1" max="999" title="区切り線を引く最初のページ番号">
         <label class="sn2-detail-settings-label">間隔</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderEvery" value="${this.doc.editor?.spreadBorder?.every ?? 2}" min="1" max="99" title="何ページごとに区切り線を引くか">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderEvery" value="${e(spreadBorderEveryValue)}" min="1" max="99" title="何ページごとに区切り線を引くか">
         <span class="sn2-detail-settings-label">p</span>
       </div>
       <div class="sn2-detail-settings-row">
@@ -602,6 +658,11 @@
       } else if (key.endsWith('Pos') && el.value === 'both') {
         // 「前+数+後」選択時はパネルを再描画して前後入力欄を表示
         this.doc.editor.countConfig[key] = el.value;
+        const prefix = key.slice(0, -3);
+        const unitKey = prefix + 'Label';
+        const unitVal = this.doc.editor.countConfig[unitKey] ?? this._getCountDef()?.[prefix === 'primary' ? 'primaryLabel' : 'secondaryLabel'] ?? '';
+        if (this.doc.editor.countConfig[prefix + 'LabelBefore'] == null) this.doc.editor.countConfig[prefix + 'LabelBefore'] = unitVal;
+        if (this.doc.editor.countConfig[prefix + 'LabelAfter'] == null) this.doc.editor.countConfig[prefix + 'LabelAfter'] = unitVal;
         this._calcCache = null;
         this._updateGuttersFrom(0);
         this._markDirty();

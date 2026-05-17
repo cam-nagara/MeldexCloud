@@ -24,6 +24,28 @@ function setGraphConfig(dbPath, config, options = {}) {
   });
 }
 
+function _graphPropertyAllowed(propName) {
+  return !!propName && !String(propName).startsWith('_');
+}
+
+function _collectGraphProperties(pivotData, dbPath) {
+  const entities = pivotData?.entities || {};
+  if (typeof _collectChartProperties === 'function') {
+    return _collectChartProperties(entities, pivotData, dbPath);
+  }
+  const propSet = new Set();
+  const add = (propName) => {
+    if (_graphPropertyAllowed(propName)) propSet.add(propName);
+  };
+  (pivotData?.properties || []).forEach(add);
+  const propTypes = pivotData?.propertyTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {});
+  Object.keys(propTypes || {}).forEach(add);
+  Object.values(entities).forEach(entData => {
+    Object.keys(entData || {}).forEach(add);
+  });
+  return [...propSet];
+}
+
 /* --- データ準備 --- */
 
 function _graphNodeKey(dbPath, entityName) {
@@ -51,6 +73,41 @@ function _graphRelationRawValues(entityData, propName, ptc) {
   return rawNames;
 }
 
+function _graphOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function _graphParseMsrValue(value) {
+  if (typeof _parseMsrValue === 'function') return _parseMsrValue(value);
+  return String(value || '').split(',').map(s => s.trim()).filter(Boolean).map(s => {
+    const sep = s.indexOf('::');
+    if (sep < 0) return { db: '', id: s };
+    return { db: s.substring(0, sep), id: s.substring(sep + 2) };
+  });
+}
+
+async function _graphResolveMsrTargets(entityData, propName) {
+  const vals = typeof filterValues === 'function' ? filterValues(entityData?.[propName] || []) : (entityData?.[propName] || []);
+  const rawEntries = [];
+  vals.forEach(v => _graphParseMsrValue(v?.value || '').forEach(entry => rawEntries.push(entry)));
+  const targets = [];
+  for (const entry of rawEntries) {
+    const targetDbPath = entry.db || '';
+    const raw = entry.id || '';
+    if (!targetDbPath || !raw) continue;
+    const map = typeof _getRelationMap === 'function' ? await _getRelationMap(targetDbPath) : null;
+    const mappedName = _graphOwn(map?.idToName, raw) ? map.idToName[raw] : raw;
+    const name = String(mappedName || raw);
+    targets.push({
+      name,
+      dbPath: targetDbPath,
+      pivotData: { new_format: !!map?.new_format },
+      known: _graphOwn(map?.entities, name),
+    });
+  }
+  return targets;
+}
+
 async function _graphResolveRelationTargets(rawValues, sourceDbPath, ptc, entityIdToName) {
   const targetDbPath = (ptc.relationDb === '' || ptc.relationDb == null) ? sourceDbPath : ptc.relationDb;
   if (!targetDbPath) return [];
@@ -64,12 +121,13 @@ async function _graphResolveRelationTargets(rawValues, sourceDbPath, ptc, entity
   }
   const map = typeof _getRelationMap === 'function' ? await _getRelationMap(targetDbPath) : null;
   return rawValues.map(raw => {
-    const name = map?.idToName?.[raw] || raw;
+    const mappedName = _graphOwn(map?.idToName, raw) ? map.idToName[raw] : raw;
+    const name = String(mappedName || raw);
     return {
       name,
       dbPath: targetDbPath,
       pivotData: { new_format: !!map?.new_format },
-      known: !!map?.entities?.[name],
+      known: _graphOwn(map?.entities, name),
     };
   });
 }
@@ -79,11 +137,16 @@ async function _graphResolveRelationTargets(rawValues, sourceDbPath, ptc, entity
  */
 async function buildGraphData(pivotData, dbPath, graphConfig) {
   const entities = pivotData.entities || {};
-  const entityNames = Object.keys(entities);
+  let entityNames = Object.keys(entities);
+  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath) : [];
+  if (Array.isArray(advFilters) && advFilters.length > 0 && typeof _dbEntityPassesAdvancedFilters === 'function') {
+    entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters));
+  }
   const propTypes = getPropertyTypes(dbPath);
   const nodes = [];
   const edges = [];
   const nodeMap = new Map();
+  const visibleEntitySet = new Set(entityNames);
   const entityIdToName = new Map();
   entityNames.forEach(name => {
     const id = entities[name]?._id;
@@ -106,14 +169,16 @@ async function buildGraphData(pivotData, dbPath, graphConfig) {
   const externalNodes = new Map();
   for (const propName of Object.keys(propTypes)) {
     const ptc = propTypes[propName];
-    if (!ptc || (ptc.type !== 'relation' && ptc.type !== 'multi-relation')) continue;
+    if (!ptc || !['relation', 'multi-relation', 'multi-source-relation'].includes(ptc.type)) continue;
 
     for (const en of entityNames) {
-      const rawValues = _graphRelationRawValues(entities[en], propName, ptc);
-      const targets = await _graphResolveRelationTargets(rawValues, dbPath, ptc, entityIdToName);
+      const targets = ptc.type === 'multi-source-relation'
+        ? await _graphResolveMsrTargets(entities[en], propName)
+        : await _graphResolveRelationTargets(_graphRelationRawValues(entities[en], propName, ptc), dbPath, ptc, entityIdToName);
       targets.forEach(target => {
         const targetName = target.name;
         const resolvedTargetDbPath = target.dbPath || dbPath || '';
+        if (resolvedTargetDbPath === dbPath && !visibleEntitySet.has(targetName)) return;
         const targetKey = _graphNodeKey(resolvedTargetDbPath, targetName);
         edges.push({
           source: _graphNodeKey(dbPath, en),
@@ -462,8 +527,13 @@ function _buildGraphSettingsBar(dbPath, config, allProps, ctx) {
 
 async function renderGraph(ctx) {
   ctx = ctx || _currentPaneState();
-  const container = _paneEl(ctx, '.graph-view') || document.getElementById('graph-view');
+  const container = typeof _dbViewSurfaceEl === 'function'
+    ? _dbViewSurfaceEl(ctx, '.graph-view', 'graph-view')
+    : ((ctx?.containerEl ? ctx.containerEl.querySelector('.graph-view') : null) || document.getElementById('graph-view') || document.querySelector('.graph-view'));
   if (!container) return;
+  container.style.display = 'flex';
+  const renderSeq = (container._graphRenderSeq || 0) + 1;
+  container._graphRenderSeq = renderSeq;
   container.innerHTML = '';
 
   const dbPath = ctx.dbPath || state.currentDbPath;
@@ -480,7 +550,7 @@ async function renderGraph(ctx) {
   }
 
   const config = getGraphConfig(dbPath);
-  const allProps = pivotData.properties || [];
+  const allProps = _collectGraphProperties(pivotData, dbPath);
 
   // 設定バー
   const bar = _buildGraphSettingsBar(dbPath, config, allProps, ctx);
@@ -493,6 +563,7 @@ async function renderGraph(ctx) {
 
   // データ構築＆レイアウト
   const { nodes, edges } = await buildGraphData(pivotData, dbPath, config);
+  if (container._graphRenderSeq !== renderSeq) return;
   const rect = container.getBoundingClientRect();
   const w = Math.max(rect.width || 600, 400);
   const h = Math.max(rect.height - 40 || 400, 300);
@@ -531,8 +602,14 @@ async function renderGraph(ctx) {
     e.stopPropagation();
     const nodeName = circle.dataset.entityName || circle.dataset.nodeId;
     const nodeDbPath = circle.dataset.dbPath || dbPath;
-    const entityPath = circle.dataset.entityPath || _entityPath(nodeDbPath, nodeName);
+    const isExt = circle.dataset.isExternal === '1';
+    const entityPath = circle.dataset.entityPath;
+    if (isExt && !entityPath) {
+      if (typeof showStatus === 'function') showStatus('参照先エントリが見つかりません: ' + nodeName, true);
+      return;
+    }
+    const resolvedPath = entityPath || _entityPath(nodeDbPath, nodeName);
     if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, nodeName);
-    selectEntity(entityPath);
+    selectEntity(resolvedPath);
   });
 }

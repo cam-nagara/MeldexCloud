@@ -3,6 +3,22 @@
    2ファイルの並列表示＋行単位の差分ハイライト
    ============================== */
 
+const SIMPLE_DIFF_MIN_LOOKAHEAD = 2000;
+const SIMPLE_DIFF_MAX_LOOKAHEAD = 20000;
+const COMPARE_LARGE_FILE_SKIP_BYTES = 5 * 1024 * 1024;
+const COMPARE_BINARY_PREVIEW_BYTES = 512;
+const COMPARE_TEXT_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'js', 'mjs', 'cjs', 'css', 'html',
+  'htm', 'xml', 'yaml', 'yml', 'log', 'py', 'ts', 'tsx', 'jsx', 'vue', 'svelte',
+  'ini', 'cfg', 'conf', 'toml', 'sql', 'svg', 'ics', 'vtt', 'srt',
+]);
+const COMPARE_BINARY_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tif', 'tiff', 'heic',
+  'mp4', 'mov', 'avi', 'mkv', 'webm', 'mp3', 'wav', 'flac', 'ogg', 'm4a',
+  'pdf', 'zip', '7z', 'rar', 'tar', 'gz', 'bz2', 'xz', 'psd', 'ai', 'clip',
+  'blend', 'exe', 'dll', 'bin', 'dat',
+]);
+
 /**
  * 比較ビューを開く
  * @param {string} pathA - 左側ファイルパス
@@ -31,52 +47,154 @@ async function openCompareView(pathA, pathB) {
 }
 
 async function _fetchCompareSide(path) {
+  const meta = await _fetchCompareMeta(path);
+  if (_shouldSkipCompareRawFetch(path, meta)) {
+    return {
+      mode: 'binary',
+      content: await _binaryCompareSummary(path, null, '', meta),
+    };
+  }
   const response = await fetch(API_BASE + '/file-raw?path=' + encodeURIComponent(path));
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   const contentType = response.headers.get('content-type') || '';
   const bytes = new Uint8Array(await response.arrayBuffer());
-  const text = _decodeUtf8(bytes);
-  if (text != null && _looksTextLike(text, contentType)) {
-    return { mode: 'text', content: text };
+  const decoded = _decodeCompareText(bytes, contentType, path);
+  if (decoded?.text != null && _looksTextLike(decoded.text, contentType)) {
+    return { mode: 'text', content: decoded.text, encoding: decoded.encoding };
   }
   return {
     mode: 'binary',
-    content: await _binaryCompareSummary(path, bytes, contentType),
+    content: await _binaryCompareSummary(path, bytes, contentType, meta),
   };
 }
 
-function _decodeUtf8(bytes) {
+async function _fetchCompareMeta(path) {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const response = await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(path));
+    if (!response?.ok || typeof response.json !== 'function') return null;
+    const meta = await response.json();
+    const size = Number(meta?.size);
+    return Number.isFinite(size) ? { ...meta, size } : meta;
   } catch (_) {
     return null;
   }
 }
 
-function _looksTextLike(text, contentType) {
+function _decodeUtf8(bytes) {
+  return _decodeWithEncoding(bytes, 'utf-8');
+}
+
+function _decodeWithEncoding(bytes, encoding) {
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  } catch (_) {
+    return null;
+  }
+}
+
+function _comparePathExtension(path) {
+  const name = String(path || '').split(/[\\/]/).pop() || '';
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+function _contentTypeCharset(contentType) {
+  const match = String(contentType || '').match(/charset\s*=\s*([^;\s]+)/i);
+  return match ? match[1].replace(/^["']|["']$/g, '').toLowerCase() : '';
+}
+
+function _shouldTryLegacyTextDecode(contentType, path) {
   const type = String(contentType || '').toLowerCase();
   if (type.startsWith('text/') || /json|xml|javascript|csv|markdown|yaml/.test(type)) return true;
+  return COMPARE_TEXT_EXTENSIONS.has(_comparePathExtension(path));
+}
+
+function _isLikelyTextPath(path) {
+  return COMPARE_TEXT_EXTENSIONS.has(_comparePathExtension(path));
+}
+
+function _shouldSkipCompareRawFetch(path, meta) {
+  const size = Number(meta?.size);
+  if (!Number.isFinite(size) || size <= COMPARE_LARGE_FILE_SKIP_BYTES) return false;
+  const ext = _comparePathExtension(path);
+  if (COMPARE_BINARY_EXTENSIONS.has(ext)) return true;
+  return !_isLikelyTextPath(path);
+}
+
+function _looksLikeUtf16(bytes, littleEndian) {
+  const sample = bytes?.slice ? bytes.slice(0, Math.min(bytes.length, 512)) : [];
+  if (!sample || sample.length < 4) return false;
+  let zeroSlots = 0;
+  let printableSlots = 0;
+  const zeroOffset = littleEndian ? 1 : 0;
+  const charOffset = littleEndian ? 0 : 1;
+  for (let i = zeroOffset; i < sample.length; i += 2) {
+    if (sample[i] === 0) zeroSlots++;
+  }
+  for (let i = charOffset; i < sample.length; i += 2) {
+    const b = sample[i];
+    if (b === 9 || b === 10 || b === 13 || (b >= 32 && b <= 126)) printableSlots++;
+  }
+  return zeroSlots >= Math.max(2, Math.floor(sample.length / 4)) && printableSlots >= Math.max(1, zeroSlots / 2);
+}
+
+function _decodeCompareText(bytes, contentType, path) {
+  const encodings = [];
+  const push = (encoding) => {
+    const key = String(encoding || '').trim().toLowerCase();
+    if (key && !encodings.includes(key)) encodings.push(key);
+  };
+  const legacyText = _shouldTryLegacyTextDecode(contentType, path);
+  const charset = _contentTypeCharset(contentType);
+  if (legacyText) {
+    if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) push('utf-8');
+    if (bytes[0] === 0xFF && bytes[1] === 0xFE) push('utf-16le');
+    if (bytes[0] === 0xFE && bytes[1] === 0xFF) push('utf-16be');
+  }
+  push(charset);
+  if (legacyText && !charset) {
+    if (_looksLikeUtf16(bytes, true)) push('utf-16le');
+    if (_looksLikeUtf16(bytes, false)) push('utf-16be');
+  }
+  push('utf-8');
+  if (legacyText) {
+    push('utf-16le');
+    push('utf-16be');
+    push('shift_jis');
+  }
+  for (const encoding of encodings) {
+    const text = _decodeWithEncoding(bytes, encoding);
+    if (text != null && _looksTextLike(text, contentType)) return { text, encoding };
+  }
+  return null;
+}
+
+function _looksTextLike(text, contentType) {
+  const type = String(contentType || '').toLowerCase();
   if (!text) return true;
   if (text.includes('\u0000')) return false;
   const controls = text.split('').filter(ch => {
     const code = ch.charCodeAt(0);
     return code < 32 && ch !== '\n' && ch !== '\r' && ch !== '\t';
   }).length;
-  return controls / Math.max(text.length, 1) < 0.01;
+  if (controls / Math.max(text.length, 1) >= 0.01) return false;
+  if (type.startsWith('text/') || /json|xml|javascript|csv|markdown|yaml/.test(type)) return true;
+  return true;
 }
 
-async function _binaryCompareSummary(path, bytes, contentType) {
-  const hash = await _sha256Hex(bytes);
-  const preview = _hexPreview(bytes, 512);
+async function _binaryCompareSummary(path, bytes, contentType, meta) {
+  const hasBytes = bytes instanceof Uint8Array;
+  const size = hasBytes ? bytes.length : Number(meta?.size || 0);
+  const hash = hasBytes ? await _sha256Hex(bytes) : '';
+  const preview = hasBytes ? _hexPreview(bytes, COMPARE_BINARY_PREVIEW_BYTES) : '';
   const lines = [
     '[バイナリ/非テキスト形式]',
-    `ファイル: ${path}`,
     `Content-Type: ${contentType || '不明'}`,
-    `サイズ: ${bytes.length} bytes`,
-    `SHA-256: ${hash || '計算不可'}`,
+    `サイズ: ${Number.isFinite(size) ? size : '不明'} bytes`,
+    `SHA-256: ${hasBytes ? (hash || '計算不可') : '未計算（大きいファイルのため省略）'}`,
     '',
     '先頭バイト（最大512 bytes）:',
-    preview || '(空ファイル)',
+    hasBytes ? (preview || '(空ファイル)') : '(大きいファイルのため先頭バイト取得を省略)',
   ];
   return lines.join('\n');
 }
@@ -104,13 +222,50 @@ function _hexPreview(bytes, limit) {
   return rows.join('\n');
 }
 
+function _splitCompareRows(text) {
+  const source = String(text ?? '');
+  if (!source) return [{ text: '', ending: '' }];
+  const rows = [];
+  const re = /([^\r\n]*)(\r\n|\r|\n|$)/g;
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    const line = match[1] || '';
+    const ending = match[2] || '';
+    if (!line && !ending && match.index === source.length) break;
+    rows.push({ text: line, ending });
+    if (!ending) break;
+  }
+  return rows.length ? rows : [{ text: '', ending: '' }];
+}
+
+function _newlineMarker(ending) {
+  if (ending === '\r\n') return ' [CRLF]';
+  if (ending === '\r') return ' [CR]';
+  if (ending === '\n') return ' [LF]';
+  return ' [EOF]';
+}
+
+function _lineEndingsDiffer(rowsA, rowsB) {
+  const max = Math.max(rowsA.length, rowsB.length);
+  for (let i = 0; i < max; i++) {
+    if ((rowsA[i]?.ending || '') !== (rowsB[i]?.ending || '')) return true;
+  }
+  return false;
+}
+
+function _prepareCompareLines(textA, textB) {
+  const rowsA = _splitCompareRows(textA);
+  const rowsB = _splitCompareRows(textB);
+  const showNewlineMarkers = _lineEndingsDiffer(rowsA, rowsB);
+  const toLines = rows => rows.map(row => row.text + (showNewlineMarkers ? _newlineMarker(row.ending) : ''));
+  return { linesA: toLines(rowsA), linesB: toLines(rowsB), showNewlineMarkers };
+}
+
 /**
  * 比較ビュー全体を描画
  */
 function _renderCompareView(container, pathA, pathB, textA, textB, options) {
   container.innerHTML = '';
-  const normalizedTextA = String(textA || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const normalizedTextB = String(textB || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   // ヘッダー
   const header = document.createElement('div');
@@ -131,8 +286,7 @@ function _renderCompareView(container, pathA, pathB, textA, textB, options) {
   container.appendChild(header);
 
   // 差分計算
-  const linesA = normalizedTextA.split('\n');
-  const linesB = normalizedTextB.split('\n');
+  const { linesA, linesB, showNewlineMarkers } = _prepareCompareLines(textA, textB);
   const diff = _computeDiff(linesA, linesB);
 
   // 統計
@@ -148,6 +302,12 @@ function _renderCompareView(container, pathA, pathB, textA, textB, options) {
     mode.className = 'compare-stats';
     mode.textContent = '非テキスト形式はメタデータと先頭バイトで比較';
     header.appendChild(mode);
+  }
+  if (showNewlineMarkers) {
+    const newlineMode = document.createElement('span');
+    newlineMode.className = 'compare-stats';
+    newlineMode.textContent = '改行コード差分を表示';
+    header.appendChild(newlineMode);
   }
 
   // 並列パネル
@@ -194,6 +354,12 @@ function _renderCompareView(container, pathA, pathB, textA, textB, options) {
   body.appendChild(panelA);
   body.appendChild(panelB);
   container.appendChild(body);
+  const syncLineHeights = () => _syncCompareLineHeights(panelA, panelB);
+  syncLineHeights();
+  requestAnimationFrame(syncLineHeights);
+  if (container._compareResizeCleanup) container._compareResizeCleanup();
+  window.addEventListener('resize', syncLineHeights);
+  container._compareResizeCleanup = () => window.removeEventListener('resize', syncLineHeights);
 
   // 同期スクロール
   let syncing = false;
@@ -257,6 +423,27 @@ function _computeDiff(linesA, linesB) {
   return _coalesceDiffStack(stack);
 }
 
+function _syncCompareLineHeights(panelA, panelB) {
+  const linesA = Array.from(panelA?.children || []);
+  const linesB = Array.from(panelB?.children || []);
+  const max = Math.min(linesA.length, linesB.length);
+  for (let i = 0; i < max; i++) {
+    const a = linesA[i];
+    const b = linesB[i];
+    if (!a || !b) continue;
+    a.style.minHeight = '';
+    b.style.minHeight = '';
+    const h = Math.max(
+      a.getBoundingClientRect?.().height || a.scrollHeight || 0,
+      b.getBoundingClientRect?.().height || b.scrollHeight || 0,
+    );
+    if (h > 0) {
+      a.style.minHeight = h + 'px';
+      b.style.minHeight = h + 'px';
+    }
+  }
+}
+
 function _coalesceDiffStack(stack) {
   const result = [];
   for (let k = 0; k < stack.length; k++) {
@@ -287,7 +474,10 @@ function _coalesceDiffStack(stack) {
  */
 function _simpleDiff(linesA, linesB) {
   const result = [];
-  const lookahead = 80;
+  const lookahead = Math.min(
+    SIMPLE_DIFF_MAX_LOOKAHEAD,
+    Math.max(SIMPLE_DIFF_MIN_LOOKAHEAD, Math.ceil(Math.max(linesA.length, linesB.length) * 0.05)),
+  );
   let i = 0, j = 0;
   while (i < linesA.length || j < linesB.length) {
     const a = i < linesA.length ? linesA[i] : null;
@@ -326,20 +516,26 @@ function _findNextLine(lines, value, start, limit) {
 
 /* --- インライン差分ハイライト --- */
 
+function _compareTextUnits(text) {
+  return Array.from(String(text ?? ''));
+}
+
 /**
  * 変更行の中で、具体的にどの部分が変わったかをハイライト表示
  */
 function _renderInlineDiff(elA, elB, textA, textB) {
+  const charsA = _compareTextUnits(textA);
+  const charsB = _compareTextUnits(textB);
   // 共通プレフィックス・サフィックスを検出
   let prefix = 0;
-  while (prefix < textA.length && prefix < textB.length && textA[prefix] === textB[prefix]) prefix++;
-  let suffixA = textA.length, suffixB = textB.length;
-  while (suffixA > prefix && suffixB > prefix && textA[suffixA - 1] === textB[suffixB - 1]) { suffixA--; suffixB--; }
+  while (prefix < charsA.length && prefix < charsB.length && charsA[prefix] === charsB[prefix]) prefix++;
+  let suffixA = charsA.length, suffixB = charsB.length;
+  while (suffixA > prefix && suffixB > prefix && charsA[suffixA - 1] === charsB[suffixB - 1]) { suffixA--; suffixB--; }
 
-  const commonPre = textA.substring(0, prefix);
-  const diffPartA = textA.substring(prefix, suffixA);
-  const diffPartB = textB.substring(prefix, suffixB);
-  const commonSuf = textA.substring(suffixA);
+  const commonPre = charsA.slice(0, prefix).join('');
+  const diffPartA = charsA.slice(prefix, suffixA).join('');
+  const diffPartB = charsB.slice(prefix, suffixB).join('');
+  const commonSuf = charsA.slice(suffixA).join('');
 
   elA.innerHTML = '';
   elB.innerHTML = '';

@@ -13,7 +13,7 @@
   display: none;
 }
 
-@media (max-width: 1024px), (pointer: coarse) {
+@media (min-width: 0px), (max-width: 1024px), (pointer: coarse) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] {
     min-height: var(--cloud-visual-vh, 100dvh);
     --cloud-mobile-safe-top: env(safe-area-inset-top, 0px);
@@ -264,7 +264,9 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-tabs-scroll {
     flex: 1 1 auto;
     min-width: 0;
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-tab {
@@ -512,6 +514,18 @@
     box-shadow: none !important;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-grid .fv-item > .fv-check {
+    position: absolute !important;
+    top: 14px !important;
+    left: 14px !important;
+    width: 24px !important;
+    height: 24px !important;
+    min-width: 24px !important;
+    min-height: 24px !important;
+    opacity: 1 !important;
+    z-index: 11;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-backdrop {
     position: fixed;
     display: block;
@@ -701,6 +715,11 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] [role="dialog"] {
     max-width: calc(100vw - 16px) !important;
     max-height: calc(var(--cloud-visual-vh, 100dvh) - var(--cloud-mobile-safe-top, 0px) - var(--cloud-mobile-safe-bottom, 0px) - 16px) !important;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer[role="dialog"] {
+    max-width: min(72vw, 560px) !important;
+    max-height: var(--cloud-visual-vh, 100dvh) !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-modal-overlay,

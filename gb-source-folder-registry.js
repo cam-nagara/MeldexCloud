@@ -45,11 +45,12 @@
   }
 
   function normalizeDropboxPath(path) {
-    const normalized = String(path || '')
+    const raw = String(path || '')
       .trim()
       .replace(/\\/g, '/')
-      .replace(/\/+/g, '/')
-      .replace(/\/$/, '');
+      .replace(/\/+/g, '/');
+    if (raw === '/') return '/';
+    const normalized = raw.replace(/\/$/, '');
     if (!normalized) return '';
     return normalized.startsWith('/') ? normalized : ('/' + normalized);
   }
@@ -68,7 +69,8 @@
     const parts = Array.from(arguments);
     const first = normalizeDropboxPath(parts.shift() || '');
     const rest = parts.map(normalizeRelativePath).filter(Boolean).join('/');
-    return rest ? `${first}/${rest}` : first;
+    if (!rest) return first;
+    return first === '/' ? `/${rest}` : `${first}/${rest}`;
   }
 
   function getSettingsPath() {
@@ -137,6 +139,14 @@
 
   function _now() {
     return new Date().toISOString();
+  }
+
+  function _isRegistryNotFoundError(err) {
+    return /not_found|path\/not_found/i.test(err?.message || '');
+  }
+
+  function _isRegistryWriteConflictError(err) {
+    return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
   }
 
   function _normalizeRoot(root, existingIds) {
@@ -216,15 +226,16 @@
       await _rpc('files/create_folder_v2', { path: normalized, autorename: false });
       return true;
     } catch (err) {
+      let meta = null;
       try {
-        const meta = await _rpc('files/get_metadata', {
+        meta = await _rpc('files/get_metadata', {
           path: normalized,
           include_deleted: false,
           include_has_explicit_shared_members: false,
         });
-        if (meta?.['.tag'] === 'folder') return true;
       } catch {}
-      if (/conflict|folder/i.test(err?.message || '')) return true;
+      if (meta?.['.tag'] === 'folder') return true;
+      if (meta) throw new Error(normalized + ' はDropbox上でフォルダではありません');
       throw err;
     }
   }
@@ -236,31 +247,119 @@
     return true;
   }
 
-  async function _readRemoteRegistry() {
-    const response = await _content('files/download', { path: registryDropboxPath() });
-    const text = await response.text();
-    return normalizeRegistryPayload(JSON.parse(text));
+  function _rootMergeKey(root) {
+    const normalized = _normalizeRoot(root, new Set());
+    if (!normalized) return '';
+    return JSON.stringify({
+      id: normalized.id,
+      dropboxPath: normalized.dropboxPath,
+      name: normalized.name,
+      visible: normalized.visible,
+      deleted: normalized.deleted,
+    });
   }
 
-  async function writeRegistry(registry) {
-    const normalized = normalizeRegistryPayload(registry || {});
-    normalized.updatedAt = _now();
-    await ensureRegistryFolders();
-    const bytes = new TextEncoder().encode(JSON.stringify(normalized, null, 2));
-    await _content('files/upload', {
-      path: registryDropboxPath(),
-      mode: { '.tag': 'overwrite' },
-      autorename: false,
-      mute: false,
-      strict_conflict: false,
-    }, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: bytes,
+  function _mergeRegistryForWrite(incomingRegistry, remoteRegistry, baseRegistry) {
+    const incoming = normalizeRegistryPayload(incomingRegistry || {});
+    const remote = normalizeRegistryPayload(remoteRegistry || {});
+    const base = baseRegistry ? normalizeRegistryPayload(baseRegistry) : null;
+    const rootsById = new Map();
+    const baseById = new Map();
+    const touchedIds = new Set(incoming.roots.map(root => root.id));
+    const timestamp = _now();
+
+    if (base) base.roots.forEach(root => baseById.set(root.id, root));
+    remote.roots.forEach(root => rootsById.set(root.id, root));
+
+    if (base) {
+      base.roots.forEach((root) => {
+        if (touchedIds.has(root.id)) return;
+        const current = rootsById.get(root.id) || root;
+        rootsById.set(root.id, {
+          ...current,
+          visible: false,
+          deleted: true,
+          deletedAt: current.deletedAt || timestamp,
+          updatedAt: timestamp,
+        });
+      });
+    }
+
+    incoming.roots.forEach((root) => {
+      const baseRoot = baseById.get(root.id);
+      const remoteRoot = rootsById.get(root.id);
+      if (baseRoot && remoteRoot && _rootMergeKey(root) === _rootMergeKey(baseRoot)) return;
+      rootsById.set(root.id, root);
     });
-    _lastRegistry = normalized;
-    _writeJson(CACHE_KEY, normalized);
-    return normalized;
+    return normalizeRegistryPayload({
+      ...remote,
+      ...incoming,
+      roots: Array.from(rootsById.values()),
+    });
+  }
+
+  async function _readRemoteRegistryWithMetadata() {
+    const response = await _content('files/download', { path: registryDropboxPath() });
+    const text = await response.text();
+    let rev = '';
+    try {
+      const metadataText = response.headers?.get?.('dropbox-api-result') || '';
+      const metadata = metadataText ? JSON.parse(metadataText) : null;
+      rev = String(metadata?.rev || '');
+    } catch {}
+    return {
+      registry: normalizeRegistryPayload(JSON.parse(text)),
+      rev,
+    };
+  }
+
+  async function _readRemoteRegistry() {
+    const remote = await _readRemoteRegistryWithMetadata();
+    return remote.registry;
+  }
+
+  async function _readRemoteRegistryForWrite() {
+    try {
+      return await _readRemoteRegistryWithMetadata();
+    } catch (err) {
+      if (_isRegistryNotFoundError(err)) return null;
+      throw err;
+    }
+  }
+
+  async function writeRegistry(registry, options = {}) {
+    const incoming = normalizeRegistryPayload(registry || {});
+    await ensureRegistryFolders();
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const remote = options.mergeRemote === false ? null : await _readRemoteRegistryForWrite();
+      const normalized = remote
+        ? _mergeRegistryForWrite(incoming, remote.registry, options.baseRegistry)
+        : normalizeRegistryPayload(incoming);
+      normalized.updatedAt = _now();
+      const bytes = new TextEncoder().encode(JSON.stringify(normalized, null, 2));
+      try {
+        await _content('files/upload', {
+          path: registryDropboxPath(),
+          mode: remote?.rev ? { '.tag': 'update', update: remote.rev } : { '.tag': 'overwrite' },
+          autorename: false,
+          mute: false,
+          strict_conflict: true,
+        }, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: bytes,
+        });
+        _lastRegistry = normalized;
+        _writeJson(CACHE_KEY, normalized);
+        return normalized;
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0 && options.mergeRemote !== false && _isRegistryWriteConflictError(err)) continue;
+        throw err;
+      }
+    }
+    throw lastError;
   }
 
   function _legacyRoots() {
@@ -301,7 +400,7 @@
       if (options?.writeIfMissing !== false) return await writeRegistry(seeded);
       return seeded;
     } catch (err) {
-      if (/not_found|path\/not_found/i.test(err?.message || '')) {
+      if (_isRegistryNotFoundError(err)) {
         const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
         if (options?.writeIfMissing !== false) {
           try { return await writeRegistry(seeded); } catch {}
@@ -344,7 +443,7 @@
       usedIds.add(normalized.id);
       nextRoots.push(normalized);
     }
-    return writeRegistry({ ...existing, roots: nextRoots });
+    return writeRegistry({ ...existing, roots: nextRoots }, { baseRegistry: existing });
   }
 
   async function addDropboxRoot(dropboxPath, name) {
@@ -356,7 +455,7 @@
     const usedIds = new Set(registry.roots.map((root) => root.id));
     const root = _normalizeRoot({ dropboxPath: normalizedPath, name }, usedIds);
     const next = { ...registry, roots: [...registry.roots, root] };
-    await writeRegistry(next);
+    await writeRegistry(next, { baseRegistry: registry });
     return toOutlinerRoot(root);
   }
 
@@ -382,12 +481,14 @@
     const normalized = normalizeDropboxPath(dropboxPath);
     const registry = _lastRegistry || _registryFromCache();
     const roots = registry.roots.filter((root) => !root.deleted);
-    const candidates = sourceId ? roots.filter((root) => root.id === sourceId) : roots;
+    const candidates = (sourceId ? roots.filter((root) => root.id === sourceId) : roots)
+      .sort((left, right) => normalizeDropboxPath(right.dropboxPath).length - normalizeDropboxPath(left.dropboxPath).length);
     for (const root of candidates) {
       const base = normalizeDropboxPath(root.dropboxPath);
       const lower = normalized.toLowerCase();
       const baseLower = base.toLowerCase();
       if (lower === baseLower) return sourcePath(root.id, '');
+      if (base === '/') return sourcePath(root.id, normalized.replace(/^\/+/, ''));
       if (lower.startsWith(baseLower + '/')) return sourcePath(root.id, normalized.slice(base.length + 1));
     }
     return normalizeRelativePath(normalized);

@@ -321,10 +321,11 @@
       });
       return (Array.isArray(items) ? items : []).map((item) => {
         const path = _normalizeRelativePath(item?.path || '');
+        const itemType = String(item?.type || '');
         return {
           name: _basename(path),
           path,
-          kind: String(item?.type || '') === 'folder' ? 'directory' : 'file',
+          kind: ['folder', 'database', 'calendar'].includes(itemType) ? 'directory' : 'file',
           size: Number(item?.size || 0),
           modified: String(item?.modified || ''),
         };
@@ -416,6 +417,8 @@
       const newPath = _normalizeRelativePath(newRelativePath);
       if (!oldPath || !newPath) throw new Error('移動元または移動先が不正です');
       if (oldPath === newPath) return { ok: true, new_path: newPath };
+      const targetStat = await this.statPath(newPath);
+      if (targetStat) throw new Error(`移動先に既に存在します: ${newPath}`);
       let currentPath = oldPath;
       if (_dirname(oldPath) !== _dirname(newPath)) {
         const moved = await _fetchJson('/outliner/move', {

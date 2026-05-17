@@ -472,6 +472,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .gb-confirm-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--ui-space-4);
 }
@@ -511,8 +512,14 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap; border: 0;
 }
 /* 数値入力欄のスピンボタンは hover/focus 時のみ表示する */
+input[type="number"] {
+  -moz-appearance: auto !important;
+  appearance: auto !important;
+}
+
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: auto !important;
   opacity: 0;
   margin: 0;
   transition: opacity 0.12s ease;

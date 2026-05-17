@@ -14,6 +14,8 @@
   const CLOUD_SPACE_BLOCK_RATIO = 0.95;
   const CLOUD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
   let _cloudHealthTimer = 0;
+  let _cloudReadonlyObserver = null;
+  let _cloudReadonlySyncPending = false;
 
   function _isDropboxMode() {
     return _runtime()?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
@@ -291,42 +293,74 @@
     }, true);
   }
 
+  const CLOUD_READONLY_SELECTORS = [
+    '#file-search-bar #fsb-replace',
+    '#file-search-bar [data-action^="doFileReplace"]',
+    '#entity-props-grid button',
+    '#entity-props-grid input',
+    '#entity-props-grid textarea',
+    '#entity-props-grid select',
+    '#entity-create-note-btn button',
+    '#entity-rt-toolbar button',
+    '#entity-rt-toolbar input',
+    '#entity-rt-toolbar textarea',
+    '#entity-rt-toolbar select',
+    '#page-title',
+    '#page-rt-toolbar [data-action^="rtCmd"]',
+    '#page-rt-toolbar [data-action^="insertCallout"]',
+    '#page-rt-toolbar [data-action^="insertNoteTable"]',
+    '#page-rt-toolbar select[data-onchange*="rtHeading"]',
+    '#btn-tb-annotation',
+    '#csv-add-row',
+    '#csv-add-col',
+    '#csv-to-db',
+    '#csv-table-container input',
+    '#csv-table-container textarea',
+    '#csv-table-container select',
+    '#csv-table-container button',
+    '#folder-view [data-action^="fvBulkBoard"]',
+    '#folder-view [data-action^="fvBulkDelete"]',
+    '#sidebar .sidebar-section-btn[data-action*="_showHomeAddMenu"]',
+    '#sidebar .sidebar-section-btn[data-action*="addOutlinerRootFromSettings"]',
+    '#sidebar .sidebar-section-btn[data-action*="_openSourceFolderSettings"]',
+  ];
+
+  function _applyCloudReadonlyDomGuards() {
+    _disableSelectors(CLOUD_READONLY_SELECTORS);
+    _lockContentEditable();
+  }
+
+  function _scheduleCloudReadonlyDomGuards() {
+    if (document.body?.dataset?.cloudReadonly !== '1') return;
+    if (_cloudReadonlySyncPending) return;
+    _cloudReadonlySyncPending = true;
+    const run = () => {
+      _cloudReadonlySyncPending = false;
+      if (document.body?.dataset?.cloudReadonly === '1') _applyCloudReadonlyDomGuards();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else setTimeout(run, 0);
+  }
+
+  function _installCloudReadonlyObserver() {
+    if (_cloudReadonlyObserver || typeof MutationObserver !== 'function' || !document.body) return;
+    _cloudReadonlyObserver = new MutationObserver(_scheduleCloudReadonlyDomGuards);
+    _cloudReadonlyObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['contenteditable', 'disabled', 'readonly'],
+    });
+  }
+
   function _applyPhase1UiGuards(options) {
     const readonly = !!options?.readonly;
     document.body.dataset.cloudMode = 'dropbox';
     _hidePhase1UnsupportedUi();
     _installPhase1FeatureGuards();
     if (!readonly) return;
-    _disableSelectors([
-      '#app-toolbar button',
-      '#app-toolbar input',
-      '#app-toolbar textarea',
-      '#app-toolbar select',
-      '#file-search-bar button',
-      '#file-search-bar input',
-      '#file-search-bar textarea',
-      '#file-search-bar select',
-      '#entity-view button',
-      '#entity-view input',
-      '#entity-view textarea',
-      '#entity-view select',
-      '#page-view button',
-      '#page-view input',
-      '#page-view textarea',
-      '#page-view select',
-      '#csv-view button',
-      '#csv-view input',
-      '#csv-view textarea',
-      '#csv-view select',
-      '#folder-view button',
-      '#folder-view input',
-      '#folder-view textarea',
-      '#folder-view select',
-      '#sidebar .sidebar-section-btn[data-action*="_showHomeAddMenu"]',
-      '#sidebar .sidebar-section-btn[data-action*="addOutlinerRootFromSettings"]',
-      '#sidebar .sidebar-section-btn[data-action*="_openSourceFolderSettings"]',
-    ]);
-    _lockContentEditable();
+    _applyCloudReadonlyDomGuards();
+    _installCloudReadonlyObserver();
     _installReadonlyKeyGuard();
   }
 
@@ -687,6 +721,8 @@
     const callback = await _auth().handleRedirectCallback();
     if (callback.handled && !callback.ok) {
       await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');
+    } else if (callback.handled && callback.ok) {
+      _runtime().setMode('dropbox');
     }
     try {
       const params = new URLSearchParams(window.location.search);

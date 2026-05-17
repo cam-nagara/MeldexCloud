@@ -19,6 +19,7 @@
     const count = +info.rewritten_count || 0;
     const failed = +info.failed_count || 0;
     const rewritten = Array.isArray(info.rewritten_paths) ? info.rewritten_paths : [];
+    const truncated = !!info.truncated;
 
     // ステータス通知
     if (typeof showStatus === 'function') {
@@ -32,42 +33,57 @@
     }
 
     // 現在開いているタブが書き換え対象なら再読込
-    if (count > 0 && rewritten.length > 0) {
-      _reloadIfOpen(rewritten);
+    if (count > 0 && (rewritten.length > 0 || truncated)) {
+      _reloadIfOpen(rewritten, { truncated });
     }
 
     return count;
   }
 
   /** 現在開いているボード/ノート/シナリオ等が rewritten に含まれていたら再読込する。 */
-  function _reloadIfOpen(rewrittenPaths) {
+  function _reloadIfOpen(rewrittenPaths, opts) {
     const paths = new Set(rewrittenPaths.map(p => _normalize(p)));
+    const truncated = !!opts?.truncated;
 
     // ボード
     try {
-      if (typeof bd !== 'undefined' && bd && bd.path && paths.has(_normalize(bd.path))) {
+      if (typeof bd !== 'undefined' && bd && bd.path && _matchesRelocatedPath(bd.path, paths, truncated)) {
         if (typeof bdOpenBoard === 'function') {
-          // 未保存変更があれば先に保存
-          if (bd.dirty && typeof bdSave === 'function') {
-            try { bdSave(); } catch {}
+          if (bd.dirty) {
+            clearTimeout(window._bdTimer);
+            window._bdTimer = null;
+            const draft = (typeof bdToMd === 'function') ? bdToMd() : '';
+            if (draft && window.MeldexDraftRecovery?.saveDraft) {
+              window.MeldexDraftRecovery.saveDraft(bd.path, draft, '');
+            }
+            if (typeof showStatus === 'function') {
+              showStatus('未保存のボード編集を下書きに退避し、参照更新後の内容を再読み込みします', true, { passiveSave: true });
+            }
           }
           const label = bd.path.split('/').pop() || '';
-          bdOpenBoard(label, bd.path, { silent: true, skipHighlight: true });
+          bdOpenBoard(label, bd.path, { silent: true, skipHighlight: true, skipDirtySave: true });
         }
       }
     } catch {}
 
     // ノート (gb-app.part03.js で state.currentPagePath を管理)
     try {
-      if (typeof state !== 'undefined' && state?.currentPagePath && paths.has(_normalize(state.currentPagePath))) {
+      if (typeof state !== 'undefined' && state?.currentPagePath && _matchesRelocatedPath(state.currentPagePath, paths, truncated)) {
         if (typeof openPage === 'function') {
           if (_noteHasUnsavedChanges()) {
-            if (typeof flushPendingEditorAutosave === 'function') flushPendingEditorAutosave();
-            if (typeof showStatus === 'function') showStatus('未保存のノート編集を保存中のため、参照更新後の再読込を保留しました', false, { passiveSave: true });
-            return;
+            clearTimeout(window._noteAutoSaveTimer);
+            window._noteAutoSaveTimer = null;
+            const pc = document.getElementById('page-content');
+            const md = _noteMarkdownForDraft(pc);
+            if (md && window.MeldexDraftRecovery?.saveDraft) {
+              window.MeldexDraftRecovery.saveDraft(state.currentPagePath, md, pc?.dataset?.lastSavedMd || '');
+            }
+            if (typeof showStatus === 'function') {
+              showStatus('未保存のノート編集を下書きに退避し、参照更新後の内容を再読み込みします', true, { passiveSave: true });
+            }
           }
           const lbl = state.currentPagePath.split('/').pop() || '';
-          openPage(lbl, state.currentPagePath, { silent: true, skipHighlight: true });
+          openPage(lbl, state.currentPagePath, { silent: true, skipHighlight: true, skipDirtySave: true });
         }
       }
     } catch {}
@@ -77,11 +93,38 @@
       const getScriptnote = (typeof getActiveScriptNoteComponent === 'function') ? getActiveScriptNoteComponent : null;
       const snComp = getScriptnote ? getScriptnote() : null;
       const snPath = snComp?.state?.scenarioPath || snComp?.state?.path || '';
-      if (snPath && paths.has(_normalize(snPath)) && typeof openScenarioInScriptNote === 'function') {
+      if (snPath && _matchesRelocatedPath(snPath, paths, truncated)) {
         const lbl = snPath.split('/').pop() || '';
-        openScenarioInScriptNote(snPath, lbl, { silent: true, skipHighlight: true });
+        if (snComp && typeof snComp._loadScenario === 'function') {
+          if (typeof snComp.restoreState === 'function') snComp.restoreState({ scenarioPath: snPath, label: lbl });
+          if (snComp.state) {
+            snComp.state.scenarioPath = snPath;
+            snComp.state.label = lbl;
+          }
+          snComp._loadScenario(snPath, { skipNavPush: true, skipRecent: true, skipAutoVersion: true, skipSaveLastView: true, skipStatus: true, forceReload: true });
+        } else if (typeof openScenarioInScriptNote === 'function') {
+          openScenarioInScriptNote(snPath, lbl, { silent: true, skipHighlight: true, forceReload: true });
+        }
       }
     } catch {}
+  }
+
+  function _matchesRelocatedPath(path, paths, truncated) {
+    const normalized = _normalize(path);
+    return !!(normalized && (truncated || paths.has(normalized)));
+  }
+
+  function _noteMarkdownForDraft(pc) {
+    try {
+      if (typeof _noteMarkdownFromEditor === 'function') return _noteMarkdownFromEditor(pc);
+      if (!pc || typeof htmlToMd !== 'function') return '';
+      pc.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
+      pc.normalize();
+      const body = htmlToMd(pc.innerHTML || '');
+      return (pc.dataset.frontmatter || '') + body;
+    } catch {
+      return '';
+    }
   }
 
   function _noteHasUnsavedChanges() {

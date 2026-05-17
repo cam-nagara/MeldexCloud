@@ -12,12 +12,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     wrap.className = 'sn2-detail';
     const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-    const mkBtn = (label, title, onClick) => {
+    const mkBtn = (label, title, onClick, e2eId = '') => {
       const b = document.createElement('button');
       b.className = 'sn2-detail-add-btn';
       b.type = 'button';
       b.textContent = label;
       b.title = title;
+      if (e2eId) b.dataset.e2eId = e2eId;
       b.addEventListener('click', onClick);
       return b;
     };
@@ -27,7 +28,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     toolbar.className = 'sn2-detail-toolbar';
     toolbar.appendChild(mkBtn('＋追加', '新規タイプ追加', () => {
       this._pushUndo('タイプ追加');
-      const newChara = { name: '新しいキャラ' };
+      const newChara = { name: this._uniqueRoleName ? this._uniqueRoleName('新しいキャラ') : '新しいキャラ' };
       this._assignAutoColor(newChara);
       this._applyColumnAllRules(newChara);
       // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
@@ -37,7 +38,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._detailSelection.clear();
       this._markDirty();
       this.renderDetailPanel(container);
-    }));
+    }, 'scriptnote-detail-add-type'));
     toolbar.appendChild(mkBtn('複製', '選択中を複製', () => {
       if (!this._detailSelection.size) return;
       // デフォルトタイプは複製対象外
@@ -51,7 +52,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const src = this.doc.characters[i + offset];
         if (src) {
           const dup = this._cloneChara(src);
-          dup.name = src.name + '（コピー）';
+          dup.name = this._uniqueRoleName ? this._uniqueRoleName((src.name || 'タイプ') + '（コピー）', src) : src.name + '（コピー）';
           this.doc.characters.splice(i + offset + 1, 0, dup);
           offset++;
         }
@@ -59,7 +60,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._detailSelection.clear();
       this._markDirty();
       this.renderDetailPanel(container);
-    }));
+    }, 'scriptnote-detail-duplicate-selected'));
     toolbar.appendChild(mkBtn('削除', '選択中を削除', () => {
       if (!this._detailSelection.size) return;
       // デフォルトタイプは削除対象外
@@ -71,10 +72,12 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._clearRolesInRows(names);
         targetIdxs.sort((a, b) => b - a).forEach(i => this.doc.characters.splice(i, 1));
         this._detailSelection.clear();
+        this._calcCache = null;
+        this._render();
         this._markDirty();
         this.renderDetailPanel(container);
       });
-    }));
+    }, 'scriptnote-detail-delete-selected'));
     // 全選択ボタン
     const selectAllBtn = mkBtn('全選択', 'すべてのタイプを選択', () => {
       this.doc.characters.forEach((_, i) => this._detailSelection.add(i));
@@ -84,7 +87,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (cb) cb.checked = true;
       });
       this._updateBulkBar(toolbar);
-    });
+    }, 'scriptnote-detail-select-all');
     toolbar.appendChild(selectAllBtn);
     // 全解除ボタン
     const deselectBtn = mkBtn('全解除', '選択をすべて解除', () => {
@@ -96,7 +99,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (cb) cb.checked = false;
       });
       this._updateBulkBar(toolbar);
-    });
+    }, 'scriptnote-detail-deselect-all');
     deselectBtn.className += ' sn2-detail-bulk-btn';
     toolbar.appendChild(deselectBtn);
     // 一括操作（複数選択時のみ表示）— 背景色・文字色ボタン削除、一括設定のみ残す
@@ -108,14 +111,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     bulkCount.className = 'sn2-detail-bulk-count';
     bulkCount.textContent = '';
     toolbar.appendChild(bulkCount);
-    const bulkAllBtn = mkBtn('一括設定…', '全プロパティ一括変更', () => this._showBulkEditPopup(container));
+    const bulkAllBtn = mkBtn('一括設定…', '全プロパティ一括変更', () => this._showBulkEditPopup(container), 'scriptnote-detail-bulk-settings');
     bulkAllBtn.className += ' sn2-detail-bulk-btn';
     toolbar.appendChild(bulkAllBtn);
     // 右寄せスペーサー + DB読込
     const spacer = document.createElement('span');
     spacer.className = 'sn2-detail-toolbar-spacer';
     toolbar.appendChild(spacer);
-    toolbar.appendChild(mkBtn('DB読込', 'DBからキャラ読み込み', () => this._showDbImportModal(container)));
+    toolbar.appendChild(mkBtn('DB読込', 'DBからキャラ読み込み', () => this._showDbImportModal(container), 'scriptnote-detail-import-db'));
     this._detailBulkBar = toolbar;
 
     // キャラクターリスト（列×タイプ表形式）
@@ -197,6 +200,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const check = document.createElement('input');
     check.type = 'checkbox';
     check.className = 'sn2-detail-check';
+    check.dataset.e2eId = 'scriptnote-detail-row-check-' + idx;
+    check.dataset.sn2DetailIndex = String(idx);
+    const checkLabel = isDefaultRow
+      ? '空行を選択'
+      : '行を選択: ' + (chara.name || chara.label || chara.role || String(idx + 1));
+    check.setAttribute('aria-label', checkLabel);
+    check.title = checkLabel;
     check.checked = this._detailSelection?.has(idx) || false;
     check.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -292,13 +302,19 @@ Object.assign(ScriptNoteEditor.prototype, {
           nameInput.value = chara.name || '';
           nameInput.placeholder = 'タイプ名';
           nameInput.className = 'sn2-detail-cell-input';
+          nameInput.dataset.e2eId = 'scriptnote-detail-role-name-input-' + idx;
+          nameInput.dataset.sn2DetailIndex = String(idx);
           applyDynStyle(nameInput, dynStyle);
           nameInput.addEventListener('change', () => {
-            this._pushUndo('タイプ名変更');
             const oldName = chara.name;
-            chara.name = nameInput.value.trim();
+            const newName = this._uniqueRoleName ? this._uniqueRoleName(nameInput.value, chara) : (nameInput.value.trim() || oldName || 'タイプ');
+            nameInput.value = newName;
+            if (newName === oldName) return;
+            this._pushUndo('タイプ名変更');
+            chara.name = newName;
             this._renameRoleInRows(oldName, chara.name);
             this._markDirty();
+            this.renderDetailPanel(panelContainer);
           });
           nameInput.addEventListener('click', (e) => e.stopPropagation());
           nameInput.addEventListener('keydown', (e) => {
@@ -361,6 +377,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       optBtn.type = 'button';
       optBtn.textContent = 'オプション';
       optBtn.title = 'オプション設定';
+      optBtn.dataset.e2eId = 'scriptnote-detail-role-options-' + idx;
+      optBtn.dataset.sn2DetailIndex = String(idx);
       optBtn.addEventListener('click', () => this._showRoleOptionsPopup(optBtn, chara, panelContainer));
       const infoWrap = document.createElement('div');
       infoWrap.className = 'sn2-detail-opt-wrap';
@@ -657,42 +675,60 @@ Object.assign(ScriptNoteEditor.prototype, {
       document.body.appendChild(overlay);
       const treeHost = overlay.querySelector('#sn2-db-tree');
       const selectedNames = new Set();
-      // DBツリーを構築（簡易版: 設定フォルダのキャラDBを探す）
-      for (const root of roots) {
-        const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&all_files=true');
-        const dbFolders = (items || []).filter(it => it.type === 'folder' || it.type === 'database');
-        for (const folder of dbFolders) {
-          const entries = await apiFetch('/browse?path=' + encodeURIComponent(folder.path) + '&all_files=true');
-          const pages = (entries || []).filter(it => it.type === 'page' || it.type === 'entity');
-          if (!pages.length) continue;
-          const groupEl = document.createElement('div');
-          groupEl.className = 'sn2-db-import-group';
-          const groupLabel = document.createElement('div');
-          groupLabel.className = 'sn2-db-import-group-label';
-          groupLabel.textContent = folder.name || folder.path;
-          groupEl.appendChild(groupLabel);
-          pages.forEach(p => {
-            const label = document.createElement('label');
-            label.className = 'sn2-db-import-item';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.addEventListener('change', () => {
-              if (cb.checked) selectedNames.add(p.name); else selectedNames.delete(p.name);
-              overlay.querySelector('#sn2-db-selected').textContent = `選択: ${selectedNames.size}件`;
-            });
-            label.appendChild(cb);
-            label.appendChild(document.createTextNode(p.name || p.path));
-            groupEl.appendChild(label);
+      const isCharacterDbFolder = (item) => /キャラ|キャラクター|登場人物|人物|character|chara|cast/i.test(String(item?.name || item?.path || ''));
+      const visited = new Set();
+      const addPageGroup = (folder, pages) => {
+        const groupEl = document.createElement('div');
+        groupEl.className = 'sn2-db-import-group';
+        const groupLabel = document.createElement('div');
+        groupLabel.className = 'sn2-db-import-group-label';
+        groupLabel.textContent = folder.name || folder.path;
+        groupEl.appendChild(groupLabel);
+        pages.forEach(p => {
+          const label = document.createElement('label');
+          label.className = 'sn2-db-import-item';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.addEventListener('change', () => {
+            if (cb.checked) selectedNames.add(p.name); else selectedNames.delete(p.name);
+            overlay.querySelector('#sn2-db-selected').textContent = `選択: ${selectedNames.size}件`;
           });
-          treeHost.appendChild(groupEl);
+          label.appendChild(cb);
+          label.appendChild(document.createTextNode(p.name || p.path));
+          groupEl.appendChild(label);
+        });
+        treeHost.appendChild(groupEl);
+      };
+      const scanFolder = async (folder, depth = 0) => {
+        const path = String(folder?.path || '');
+        if (!path || visited.has(path) || depth > 4) return;
+        visited.add(path);
+        const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true').catch(() => []);
+        if ((folder.type === 'database' || folder.type === 'folder') && isCharacterDbFolder(folder)) {
+          const pages = (entries || []).filter(it => it.type === 'page' || it.type === 'entity');
+          if (pages.length) addPageGroup(folder, pages);
         }
+        const childFolders = (entries || []).filter(it => it.type === 'folder' || it.type === 'database');
+        for (const child of childFolders) await scanFolder(child, depth + 1);
+      };
+      // DBツリーを構築: ルート配下を再帰走査し、キャラ/登場人物系のシートだけを候補にする
+      for (const root of roots) {
+        const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&all_files=true').catch(() => []);
+        const dbFolders = (items || []).filter(it => it.type === 'folder' || it.type === 'database');
+        for (const folder of dbFolders) await scanFolder(folder, 0);
+      }
+      if (!treeHost.children.length) {
+        const empty = document.createElement('div');
+        empty.className = 'sn2-db-import-empty';
+        empty.textContent = 'キャラ用のシートが見つかりませんでした';
+        treeHost.appendChild(empty);
       }
       overlay.querySelector('#sn2-db-cancel').addEventListener('click', () => overlay.remove());
       overlay.querySelector('#sn2-db-ok').addEventListener('click', () => {
         this._pushUndo('DBインポート');
         selectedNames.forEach(name => {
           if (!this.doc.characters.some(c => !c.isDefault && c.name === name)) {
-            const newChara = { name };
+            const newChara = { name: this._uniqueRoleName ? this._uniqueRoleName(name) : name };
             this._assignAutoColor(newChara);
             this._applyColumnAllRules(newChara);
             // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
@@ -891,7 +927,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (needsLegacySync) {
           ['fontWeight', 'fontStyle', 'fontSize', 'fontFamily', 'textStrokeColor', 'textStrokeWidth'].forEach((p) => { delete chara[p]; });
         }
-        this._reapplyAutoColor(chara);
+        if (!chara.isDefault && isRoleCol) this._reapplyAutoColor(chara);
         this._refreshRowStyles();
         this._render();
         this._markDirty();

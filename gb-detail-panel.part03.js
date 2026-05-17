@@ -1,29 +1,4 @@
 /* gb-detail-panel.part03.js */
-  if (!el) return;
-  _ensureDetailTabShell(el);
-  const propSettings = el.querySelector('#detail-tab-db-property-settings');
-  if (!propSettings) return;
-  if (!await _dpSavePending()) return;
-  if (typeof showDbTabs === 'function') showDbTabs(true);
-  if (typeof switchDetailTab === 'function') {
-    switchDetailTab(typeof _resolveDetailTabForType === 'function'
-      ? _resolveDetailTabForType('database', 'db-property-settings')
-      : 'db-property-settings');
-  }
-  const titleEl = el.querySelector('#split-right-title');
-  if (titleEl) titleEl.textContent = label || path.split('/').pop();
-  // エントリ表示からの切替時に残った dp-editable を削除
-  _removeStaleDpEditables(el);
-  if (typeof renderDbPropertySettingsPanel === 'function') {
-    const s = (typeof state !== 'undefined') ? state : null;
-    const selected = s?.selectedColumn?.dbPath === path ? s.selectedColumn.propName : '';
-    renderDbPropertySettingsPanel(path, selected || '', propSettings);
-  } else {
-    propSettings.innerHTML = `<div class="gb-section-desc" style="padding:var(--ui-space-4);">
-      ${esc(label || path.split('/').pop())} のプロパティ設定を読み込めませんでした
-    </div>`;
-  }
-}
 
 function _fsRefreshRowPreview(row, adapter) {
   if (!row || !row._fsRowData || typeof _fsBuildRowPreview !== 'function') return;
@@ -252,7 +227,11 @@ async function openInSplitView(label, path) {
 }
 
 function _dpLoadFileInto(body, path) {
+  const loadSeq = ++_splitLoadSeq;
+  body.dataset.loadSeq = String(loadSeq);
+  body.contentEditable = 'false';
   apiFetch('/file?path=' + encodeURIComponent(path)).then(data => {
+    if (body.dataset.loadSeq !== String(loadSeq) || body.dataset.path !== path || _splitDirty) return;
     let md = data.content || '';
     const fmMatch = md.match(/^---\n[\s\S]*?\n---\n?/);
     const fm = fmMatch ? fmMatch[0] : '';
@@ -261,8 +240,11 @@ function _dpLoadFileInto(body, path) {
     _dpApplyNoteFileStyle(body, fm);
     const html = md.trim() ? applyAutoLinks(mdToHtml(md), path) : '';
     body.innerHTML = html || '<span style="color:var(--fg2)">内容がありません</span>';
+    body.contentEditable = 'true';
   }).catch(() => {
+    if (body.dataset.loadSeq !== String(loadSeq) || body.dataset.path !== path || _splitDirty) return;
     body.innerHTML = '<span style="color:var(--fg2)">読み込みに失敗しました</span>';
+    body.contentEditable = 'true';
   });
 }
 
@@ -436,11 +418,13 @@ async function openBoardNoteTab(label, path) {
 
   const body = document.getElementById('board-note-editable');
   if (!body) return;
+  body.contentEditable = 'false';
+  body.dataset.boardNoteLoadSeq = String(loadSeq);
   body.innerHTML = '<span style="color:var(--fg2)">読み込み中...</span>';
   body.dataset.frontmatter = '';
 
   apiFetch('/file?path=' + encodeURIComponent(path)).then(data => {
-    if (loadSeq !== _boardNoteLoadSeq || _boardNotePath !== path) return;
+    if (loadSeq !== _boardNoteLoadSeq || _boardNotePath !== path || body.dataset.boardNoteLoadSeq !== String(loadSeq) || _boardNoteDirty) return;
     let md = data.content || '';
     const fmMatch = md.match(/^---\n[\s\S]*?\n---\n?/);
     const fm = fmMatch ? fmMatch[0] : '';
@@ -448,10 +432,12 @@ async function openBoardNoteTab(label, path) {
     body.dataset.frontmatter = fm;
     _dpApplyNoteFileStyle(body, fm);
     body.innerHTML = md.trim() ? applyAutoLinks(mdToHtml(md), path) : '<span style="color:var(--fg2)">内容がありません</span>';
+    body.contentEditable = 'true';
     _boardNoteDirty = false;
   }).catch(() => {
-    if (loadSeq !== _boardNoteLoadSeq || _boardNotePath !== path) return;
+    if (loadSeq !== _boardNoteLoadSeq || _boardNotePath !== path || body.dataset.boardNoteLoadSeq !== String(loadSeq) || _boardNoteDirty) return;
     body.innerHTML = '<span style="color:var(--fg2)">読み込みに失敗しました</span>';
+    body.contentEditable = 'true';
   });
 
   // 自動保存バインド

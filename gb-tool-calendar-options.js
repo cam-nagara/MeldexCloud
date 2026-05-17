@@ -25,9 +25,37 @@
   }
 
   function _calLocalInputValue(component, value, fallbackDate) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return String(value) + 'T00:00';
     if (value) return String(value).substring(0, 16);
     const d = fallbackDate || new Date();
     return component._localDateTimeStr(d).substring(0, 16);
+  }
+
+  function _calLocalDateInputValue(component, value, fallbackDate) {
+    const raw = String(value || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    if (raw) return raw.substring(0, 10);
+    const d = fallbackDate || new Date();
+    return component._localDateStr(d);
+  }
+
+  function _calSetEventDateInputMode(component, startInput, endInput, allDay) {
+    if (!startInput || !endInput) return;
+    const startRaw = startInput.value || startInput.dataset.calRawValue || '';
+    const endRaw = endInput.value || endInput.dataset.calRawValue || startRaw;
+    if (allDay) {
+      startInput.type = 'date';
+      endInput.type = 'date';
+      startInput.value = _calLocalDateInputValue(component, startRaw);
+      endInput.value = _calLocalDateInputValue(component, endRaw || startRaw);
+    } else {
+      startInput.type = 'datetime-local';
+      endInput.type = 'datetime-local';
+      startInput.value = _calLocalInputValue(component, startRaw);
+      endInput.value = _calLocalInputValue(component, endRaw || startRaw);
+    }
+    startInput.dataset.calRawValue = startInput.value;
+    endInput.dataset.calRawValue = endInput.value;
   }
 
   function _calOptionContainer(title) {
@@ -558,6 +586,7 @@
     }
     const ev = this._events.find(e => e.id === editId);
     if (!ev) return;
+    if (typeof _calRecurringInteractionBlocked === 'function' && _calRecurringInteractionBlocked(this, ev)) return;
     this._setSelectedEvents([editId], editId);
     this._showEventOptionsPanel(ev, defaultStart, defaultEnd, defaultAllDay);
   };
@@ -570,14 +599,14 @@
     const startVal = _calLocalInputValue(this, ev?.start || defaultStart, now);
     const endVal = _calLocalInputValue(this, ev?.end || defaultEnd, new Date(now.getTime() + 3600000));
     const isAllDay = ev ? !!ev.all_day : !!defaultAllDay;
-    const calOpts = (this._calendars || []).map(c => `<option value="${_calEsc(c.id)}" ${ev?.calendar_id === c.id ? 'selected' : ''}>${_calEsc(c.name)}</option>`).join('');
+    const calOpts = `<option value="" ${!ev?.calendar_id ? 'selected' : ''}>未設定</option>` + (this._calendars || []).map(c => `<option value="${_calEsc(c.id)}" ${ev?.calendar_id === c.id ? 'selected' : ''}>${_calEsc(c.name)}</option>`).join('');
     const creator = _calEventCreator(ev, this._getUser());
     body.dataset.calEventMembers = JSON.stringify(_calUserListFromValue(ev?.members));
     body.innerHTML = `
       ${_calField('タイトル', `<input data-cal-event-title type="text" value="${_calEsc(ev?.title || '')}" placeholder="イベント名">`)}
       ${_calField('', `<label class="cal-option-check"><input data-cal-event-allday type="checkbox" ${isAllDay ? 'checked' : ''}> 終日</label>`)}
-      ${_calField('開始', `<input data-cal-event-start type="datetime-local" value="${startVal}" ${isAllDay ? 'disabled' : ''}>`)}
-      ${_calField('終了', `<input data-cal-event-end type="datetime-local" value="${endVal}" ${isAllDay ? 'disabled' : ''}>`)}
+      ${_calField('開始', `<input data-cal-event-start type="${isAllDay ? 'date' : 'datetime-local'}" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.start || defaultStart, now) : startVal)}">`)}
+      ${_calField('終了', `<input data-cal-event-end type="${isAllDay ? 'date' : 'datetime-local'}" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.end || defaultEnd || ev?.start || defaultStart, new Date(now.getTime() + 3600000)) : endVal)}">`)}
       ${calOpts ? _calField('カレンダー', `<select data-cal-event-calendar class="gb-select">${calOpts}</select>`) : ''}
       ${_calField('作成者', `<select data-cal-event-creator class="gb-select"><option value="${_calEsc(creator)}">${_calEsc(creator || 'anonymous')}</option></select>`)}
       ${_calField('メンバー', `<div data-cal-event-members class="cal-option-members"><span style="color:var(--fg2);font-size:12px;">読み込み中...</span></div>`)}
@@ -602,8 +631,10 @@
     const allDay = body.querySelector('[data-cal-event-allday]');
     const startInput = body.querySelector('[data-cal-event-start]');
     const endInput = body.querySelector('[data-cal-event-end]');
+    if (startInput) startInput.dataset.calRawValue = startInput.value || '';
+    if (endInput) endInput.dataset.calRawValue = endInput.value || '';
     allDay?.addEventListener('change', () => {
-      startInput.disabled = endInput.disabled = allDay.checked;
+      _calSetEventDateInputMode(this, startInput, endInput, allDay.checked);
     });
     _calBindSwatch(body.querySelector('[data-cal-event-color]'), ev?.color || this._eventColorDefault());
     this._populateEventUserControls(body, ev);
@@ -632,11 +663,16 @@
   CalendarComponent.prototype._saveEventOptions = async function(editId, body) {
     this._pushUndo('イベント編集');
     const creator = body.querySelector('[data-cal-event-creator]')?.value || this._getUser();
+    const allDay = body.querySelector('[data-cal-event-allday]')?.checked;
+    const startInput = body.querySelector('[data-cal-event-start]');
+    const endInput = body.querySelector('[data-cal-event-end]');
+    const startValue = allDay ? _calLocalDateInputValue(this, startInput?.value) : (startInput?.value || '');
+    const endValue = allDay ? _calLocalDateInputValue(this, endInput?.value || startValue) : (endInput?.value || '');
     const data = {
       title: body.querySelector('[data-cal-event-title]')?.value || '無題',
-      start: body.querySelector('[data-cal-event-start]')?.value || '',
-      end: body.querySelector('[data-cal-event-end]')?.value || '',
-      all_day: body.querySelector('[data-cal-event-allday]')?.checked ? 1 : 0,
+      start: startValue,
+      end: endValue,
+      all_day: allDay ? 1 : 0,
       color: _calGetSwatchValue(body.querySelector('[data-cal-event-color]'), ''),
       location: body.querySelector('[data-cal-event-location]')?.value || '',
       url: body.querySelector('[data-cal-event-url]')?.value || '',
@@ -766,7 +802,6 @@
   };
 
   CalendarComponent.prototype._deleteTaskFromOptions = async function(id) {
-    if (typeof cfConfirm === 'function' && !await cfConfirm('このタスクを削除しますか？')) return;
     if (await this._deleteTask(id)) {
       const body = _calOptionContainer('カレンダー');
       if (body) body.innerHTML = '<div class="cal-option-empty">タスクを削除しました</div>';

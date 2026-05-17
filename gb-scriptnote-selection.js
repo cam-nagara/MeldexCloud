@@ -19,6 +19,39 @@ Object.assign(ScriptNoteEditor.prototype, {
     return new Set(this._rowSelection || []);
   },
 
+  _isRowSelectionOwnerActive() {
+    if (!this.host?.isConnected || !this.doc?.rows) return false;
+    if (this.host.getClientRects && !this.host.getClientRects().length) return false;
+    const activeComp = typeof getActiveScriptNoteComponent === 'function' ? getActiveScriptNoteComponent() : null;
+    if (activeComp?._editor) return activeComp._editor === this;
+    return true;
+  },
+
+  _guardRowBulkAction() {
+    if (this._isRowSelectionOwnerActive()) return true;
+    if (this._rowSelection) this._rowSelection.clear();
+    if (this._rowBulkBar?.isConnected) this._rowBulkBar.remove();
+    this._rowBulkBar = null;
+    return false;
+  },
+
+  _startRowBulkBarGuard() {
+    if (this._rowBulkBarGuardTimer) return;
+    this._rowBulkBarGuardTimer = setInterval(() => {
+      if (!this._rowBulkBar?.isConnected || !this._rowSelection?.size) {
+        this._stopRowBulkBarGuard();
+        return;
+      }
+      if (!this._isRowSelectionOwnerActive()) this._clearRowSelection();
+    }, 250);
+  },
+
+  _stopRowBulkBarGuard() {
+    if (!this._rowBulkBarGuardTimer) return;
+    clearInterval(this._rowBulkBarGuardTimer);
+    this._rowBulkBarGuardTimer = null;
+  },
+
   _toggleRowSelection(rowId, idx, shiftKey, ctrlKey) {
     if (!this._rowSelection) this._rowSelection = new Set();
     if (shiftKey && this._lastSelectedIdx >= 0) {
@@ -69,6 +102,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _bulkDuplicateRows() {
+    if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
     this._pushUndo('一括複製');
@@ -102,9 +136,16 @@ Object.assign(ScriptNoteEditor.prototype, {
   _updateRowBulkBar() {
     let bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
     const count = this._rowSelection?.size || 0;
+    if (count >= 1 && !this._isRowSelectionOwnerActive()) {
+      if (bar) bar.remove();
+      this._rowBulkBar = null;
+      this._stopRowBulkBarGuard();
+      return;
+    }
     if (count < 1) {
       if (bar) bar.remove();
       this._rowBulkBar = null;
+      this._stopRowBulkBarGuard();
       return;
     }
     if (!bar) {
@@ -132,7 +173,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       button.dataset.e2eId = id;
       button.setAttribute('aria-label', title);
       button.style.cssText = 'font-size:11px;padding:2px 6px;background:var(--bg4);color:var(--fg);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
-      button.addEventListener('click', onClick);
+      button.addEventListener('click', () => {
+        if (!this._guardRowBulkAction()) return;
+        onClick();
+      });
       return button;
     };
     bar.appendChild(mkBtn('sn-row-bulk-role', 'タイプ変更', '選択行のタイプを一括変更', () => this._bulkChangeRole()));
@@ -140,9 +184,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     bar.appendChild(mkBtn('sn-row-bulk-delete', '削除', '選択行を一括削除', () => this._bulkDeleteRows()));
     bar.appendChild(mkBtn('sn-row-bulk-invert', '選択反転', '選択状態を反転', () => this._invertRowSelection()));
     bar.appendChild(mkBtn('sn-row-bulk-clear', '選択解除', '選択を解除', () => this._clearRowSelection()));
+    this._startRowBulkBarGuard();
   },
 
   _bulkChangeRole() {
+    if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
     const roles = (this.doc.characters || []).map((chara) => chara.name).filter(Boolean);
@@ -155,6 +201,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;border-radius:3px;';
       item.textContent = name;
       item.addEventListener('click', () => {
+        if (!this._guardRowBulkAction()) { popup.remove(); return; }
         popup.remove();
         this._pushUndo('一括タイプ変更');
         this.doc.rows.forEach((row) => { if (selectedIds.has(row.id)) row.role = name; });
@@ -181,6 +228,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _bulkDeleteRows() {
+    if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
     if ((this.doc?.rows?.length || 0) - selectedIds.size < 1) {

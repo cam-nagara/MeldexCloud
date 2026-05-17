@@ -118,7 +118,7 @@ const GBTabs = (() => {
     }
 
     let targetPaneId = paneId;
-    if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(targetPaneId) && (initialPaneInfo.node.tabs || []).length > 0) {
+    if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(targetPaneId)) {
       const fallbackPane = typeof GBLayout.findFirstUnlockedPane === 'function' ? GBLayout.findFirstUnlockedPane(targetPaneId) : null;
       if (fallbackPane?.id) {
         targetPaneId = fallbackPane.id;
@@ -235,6 +235,10 @@ const GBTabs = (() => {
     const opts = options || {};
     const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
     if (!paneInfo) return;
+    if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
+      if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
+      return;
+    }
     const pane = paneInfo.node;
 
     const idx = pane.tabs.findIndex(t => t.id === tabId);
@@ -308,6 +312,13 @@ const GBTabs = (() => {
     const idx = fromPane.tabs.findIndex(t => t.id === tabId);
     if (idx < 0) return;
 
+    const fromLocked = typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(fromPaneId);
+    const toLocked = typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(toPaneId);
+    if (fromLocked || toLocked) {
+      if (typeof showStatus === 'function') showStatus('ロック中のパネルとの間でタブは移動できません', true);
+      return;
+    }
+
     // 同ペイン内の並べ替え
     if (fromPaneId === toPaneId) {
       if (insertIndex == null || insertIndex === idx) return; // 移動なし
@@ -331,13 +342,8 @@ const GBTabs = (() => {
       return;
     }
 
-    if ((typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(fromPaneId)) ||
-        (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(toPaneId))) {
-      if (typeof showStatus === 'function') showStatus('ロック中のパネルとの間でタブは移動できません', true);
-      return;
-    }
-
     const before = typeof GBLayout.captureLayoutSnapshot === 'function' ? GBLayout.captureLayoutSnapshot() : null;
+    const movedWasActive = idx === fromPane.activeTabIndex;
     const [tab] = fromPane.tabs.splice(idx, 1);
     // 移動元の activeTabIndex を補正：移動タブがアクティブタブより前にあった場合はデクリメント
     if (idx < fromPane.activeTabIndex) {
@@ -376,6 +382,10 @@ const GBTabs = (() => {
     GBLayout.setActivePane(toPaneId, fastMoved ? { skipCallback: true } : undefined);
     if (!fastMoved) GBLayout.render();
     else if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
+      const sourcePaneStillPresent = fromPane.tabs.length > 0 && !!GBLayout.findNode(GBLayout.root, fromPaneId);
+      if (movedWasActive && sourcePaneStillPresent) {
+        GBPaneBridge.refreshPaneAfterTabSwitch(fromPaneId, { previousActivePane: toPaneId });
+      }
       GBPaneBridge.refreshPaneAfterTabSwitch(toPaneId, {
         previousActivePane: previousActivePane && previousActivePane !== toPaneId ? previousActivePane : fromPaneId,
       });

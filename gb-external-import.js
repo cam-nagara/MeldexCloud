@@ -2,6 +2,11 @@
   'use strict';
 
   const rootId = 'external-import-settings-container';
+  const runningSetIds = new Set();
+  const ENEX_WARN_BYTES = 8 * 1024 * 1024;
+  const ENEX_MAX_BYTES = 32 * 1024 * 1024;
+  const JOB_POLL_INTERVAL_MS = 1000;
+  const JOB_MAX_POLLS = 30 * 60;
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -36,6 +41,12 @@
 
   function serviceLabel(service) {
     return { notion: 'Notion', obsidian: 'Obsidian', evernote: 'Evernote', enex: 'Evernote' }[service] || service;
+  }
+
+  async function confirmAction(message, fallbackWhenUnavailable) {
+    if (typeof cfConfirm === 'function') return await cfConfirm(message);
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function') return window.confirm(message);
+    return !!fallbackWhenUnavailable;
   }
 
   async function loadConfig() {
@@ -73,7 +84,8 @@
       const runBtn = document.createElement('button');
       runBtn.type = 'button';
       runBtn.className = 'gb-btn gb-btn-sm';
-      runBtn.innerHTML = icon('refreshCw', 14) + ' 更新を反映';
+      runBtn.disabled = runningSetIds.has(item.id);
+      runBtn.innerHTML = icon('refreshCw', 14) + (runningSetIds.has(item.id) ? ' 取り込み中...' : ' 更新を反映');
       runBtn.addEventListener('click', () => runSet(item.id));
       row.appendChild(runBtn);
 
@@ -124,9 +136,10 @@
   }
 
   async function createSet(service, extra) {
-    const name = prompt(`${serviceLabel(service)}取り込みセット名`, serviceLabel(service));
+    const initialName = extra?.name || serviceLabel(service);
+    const name = prompt(`${serviceLabel(service)}取り込みセット名`, initialName);
     if (!name) return;
-    const body = { service, name, ...(extra || {}) };
+    const body = { ...(extra || {}), service, name };
     if (!body.save_dir) body.save_dir = `外部取り込み/${serviceLabel(service)}/${name}`;
     try {
       await apiPost('/external-import/sets', body, { silentError: true });
@@ -166,6 +179,12 @@
   }
 
   async function runSet(id) {
+    if (!id || runningSetIds.has(id)) {
+      setStatus('この取り込みセットは実行中です。完了までお待ちください。', false);
+      return;
+    }
+    runningSetIds.add(id);
+    try { await refresh(); } catch {}
     try {
       setStatus('取り込みを開始しました...', false);
       const job = await apiPost(`/external-import/sets/${encodeURIComponent(id)}/run`, {}, { silentError: true });
@@ -173,12 +192,15 @@
       await refresh();
     } catch (err) {
       setStatus('取り込みに失敗しました: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      runningSetIds.delete(id);
+      try { await refresh(); } catch {}
     }
   }
 
   async function pollJob(jobId) {
     if (!jobId) return;
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < JOB_MAX_POLLS; i += 1) {
       const job = await apiFetch(`/external-import/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
       if (job.status === 'done') {
         const r = job.result || {};
@@ -186,16 +208,17 @@
         return;
       }
       if (job.status === 'error') throw new Error(job.error || '取り込みに失敗しました');
-      await new Promise(resolve => setTimeout(resolve, 700));
+      if (i > 0 && i % 15 === 0) {
+        setStatus('取り込み処理中です。大きいデータでは時間がかかります...', false);
+      }
+      await new Promise(resolve => setTimeout(resolve, JOB_POLL_INTERVAL_MS));
     }
-    throw new Error('取り込みが完了しませんでした');
+    throw new Error('取り込み処理が長時間続いています。時間をおいて確認してください。');
   }
 
   async function deleteSet(id) {
-    if (typeof cfConfirm === 'function') {
-      const ok = await cfConfirm('取り込みセットを一覧から削除しますか？\\n取り込み済みファイルは削除しません。');
-      if (!ok) return;
-    }
+    const ok = await confirmAction('取り込みセットを一覧から削除しますか？\\n取り込み済みファイルは削除しません。', false);
+    if (!ok) return;
     try {
       await apiFetch(`/external-import/sets/${encodeURIComponent(id)}`, { method: 'DELETE', silentError: true });
       setStatus('取り込みセットを削除しました。', false);
@@ -205,15 +228,28 @@
     }
   }
 
-  async function importEnex(file) {
-    if (!file) return;
+  async function importEnex(file, inputEl) {
+    if (!file) {
+      if (inputEl) inputEl.value = '';
+      return;
+    }
     try {
+      if (file.size > ENEX_MAX_BYTES) {
+        setStatus('ENEXファイルが大きすぎます。32MB以下に分割してから取り込んでください。', true);
+        return;
+      }
+      if (file.size > ENEX_WARN_BYTES) {
+        const ok = await confirmAction('大きいENEXファイルです。読み込み中に時間がかかる場合があります。続けますか？', false);
+        if (!ok) return;
+      }
       setStatus('ENEXファイルを読み込んでいます...', false);
       const content = await file.text();
       const data = await apiPost('/external-import/enex/import', { filename: file.name, name: file.name.replace(/\\.enex$/i, ''), content }, { silentError: true });
       setStatus(`ENEX取り込み完了: 新規${data.created || 0} / 更新${data.updated || 0}`, false);
     } catch (err) {
       setStatus('ENEXを取り込めませんでした: ' + (err.userMessage || err.message || err), true);
+    } finally {
+      if (inputEl) inputEl.value = '';
     }
   }
 
@@ -224,12 +260,16 @@
     document.getElementById('external-import-evernote-connect')?.addEventListener('click', () => connect('evernote'));
     document.getElementById('external-import-evernote-add')?.addEventListener('click', () => createSet('evernote'));
     document.getElementById('external-import-enex-button')?.addEventListener('click', () => document.getElementById('external-import-enex-input')?.click());
-    document.getElementById('external-import-enex-input')?.addEventListener('change', event => importEnex(event.target.files?.[0]));
+    document.getElementById('external-import-enex-input')?.addEventListener('change', event => importEnex(event.target.files?.[0], event.target));
   }
 
   function renderExternalImportSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
-    if (!container || container.dataset.rendered === '1') return;
+    if (!container) return;
+    if (container.dataset.rendered === '1') {
+      refresh();
+      return;
+    }
     container.dataset.rendered = '1';
     container.innerHTML = `
       <section class="gb-section gb-section--boxed">

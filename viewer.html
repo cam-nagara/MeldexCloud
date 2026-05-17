@@ -1,13 +1,16 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
 <meta charset="UTF-8">
 <title>Meldex ビューワー</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='18' x='3' y='3' rx='2'/><circle cx='9' cy='9' r='2'/><path d='m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'/></svg>">
+<script src="gb-split-loader.js"></script>
 <script src="gb-runtime-adapter.js"></script>
 <script src="gb-resource-url.js"></script>
 <script src="gb-config.js"></script>
 <script src="gb-dropbox-auth.js"></script>
+<script src="gb-source-folder-registry.js"></script>
 <script src="gb-storage-adapter.js"></script>
 <script src="gb-storage-adapter-localfs.js"></script>
 <script src="gb-data-access.js"></script>
@@ -233,7 +236,7 @@ async function init() {
     // 複数ファイル選択 → 選択されたファイルだけを再生
     items = multiFilePaths.map(p => ({type: 'image', name: p.split('/').pop(), url: API + '/file-raw?path=' + encodeURIComponent(p), w: 0, h: 0, path: p}));
     await Promise.all(items.slice(0, 6).map(loadImageMeta));
-    items.slice(6).forEach(img => loadImageMeta(img));
+    preloadImageMeta(6);
   } else if (singleFile) {
     // 単一ファイル: そのファイルのフォルダ全体を読み込み、該当ファイルの位置から表示
     const fileParts = singleFile.split('/');
@@ -255,7 +258,7 @@ async function init() {
     const startIdx = items.findIndex(it => it.name === fileName);
     idx = startIdx >= 0 ? startIdx : 0;
     await Promise.all(items.slice(0, 6).map(loadImageMeta));
-    items.slice(6).forEach(img => loadImageMeta(img));
+    preloadImageMeta(6);
   } else if (folderPath) {
     let data = [];
     try {
@@ -267,7 +270,7 @@ async function init() {
     items = data.map(it => ({type: 'image', name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0, path: it.path}));
     if (items.length === 0) { document.getElementById('hud-info').textContent = '画像がありません'; return; }
     await Promise.all(items.slice(0, 6).map(loadImageMeta));
-    items.slice(6).forEach(img => loadImageMeta(img));
+    preloadImageMeta(6);
   }
   if (items.length > 0) {
     await showGroup(idx);
@@ -277,14 +280,38 @@ async function init() {
   }
 }
 
-function loadImageMeta(img) {
+function rawItemUrl(item) { return item?.path || item?.url || ''; }
+function displayItemUrl(item) { return item?.displayUrl || window.MeldexPwaFileUrl?.displayUrl?.(rawItemUrl(item)) || item?.url || ''; }
+async function ensureItemUrl(item) {
+  if (!item || item.type !== 'image') return displayItemUrl(item);
+  try {
+    const info = await window.MeldexPwaFileUrl?.ensureDisplayUrl?.(rawItemUrl(item), { allowLargeBlob: true });
+    if (info?.url) item.displayUrl = info.url;
+  } catch {}
+  return displayItemUrl(item);
+}
+
+async function loadImageMeta(img) {
+  if (img.w && img.h || img.type !== 'image') return;
+  const src = await ensureItemUrl(img);
   return new Promise(resolve => {
-    if (img.w && img.h || img.type !== 'image') { resolve(); return; }
     const i = new Image();
     i.onload = () => { img.w = i.naturalWidth; img.h = i.naturalHeight; resolve(); };
     i.onerror = () => resolve();
-    i.src = img.url;
+    i.src = src || img.url;
   });
+}
+
+async function preloadImageMeta(startIdx) {
+  let next = Math.max(0, startIdx || 0);
+  const workers = Array.from({ length: Math.min(3, Math.max(0, items.length - next)) }, async () => {
+    while (next < items.length) await loadImageMeta(items[next++]);
+  });
+  await Promise.all(workers);
+}
+
+async function ensureGroupMeta(startIdx) {
+  if (!isPdf) await Promise.all([items[startIdx], items[startIdx + 1]].filter(Boolean).map(loadImageMeta));
 }
 
 function isPortrait(it) { return it.h > it.w; }
@@ -310,6 +337,8 @@ function getGroup(startIdx) {
 
 const renderCache = new Map();
 
+function cssUrl(url) { return 'url("' + String(url || '').replace(/["\\\n\r\f]/g, ch => '\\' + ch) + '")'; }
+
 async function renderPdfPage(pageNum) {
   const key = pageNum + '_' + zoom.toFixed(4);
   if (renderCache.has(key)) return renderCache.get(key);
@@ -333,9 +362,16 @@ async function showGroup(newIdx) {
   if (newIdx >= items.length) newIdx = 0;
   // PDF見開き: 1ページ目は単体、以降は 2-3 / 4-5 相当の組に調整
   if (isPdf && mode !== 'single' && newIdx > 0 && newIdx % 2 === 0) newIdx--;
+  await ensureGroupMeta(newIdx);
+  if (token !== showGroupToken) return;
+  _markupPointerPath = '';
   idx = newIdx;
   const group = getGroup(idx);
   if (group.length === 0) return;
+  if (!isPdf) {
+    await Promise.all(group.map(i => ensureItemUrl(items[i])));
+    if (token !== showGroupToken) return;
+  }
   const target = activeLayer === 'A' ? 'B' : 'A';
   const layer = document.getElementById('layer' + target);
   layer.innerHTML = '';
@@ -347,7 +383,7 @@ async function showGroup(newIdx) {
       layer.appendChild(canvas);
     } else {
       const img = document.createElement('img');
-      img.className = 'img-single'; img.src = items[group[0]].url; img.draggable = true;
+      img.className = 'img-single'; img.src = displayItemUrl(items[group[0]]); img.draggable = true;
       img.addEventListener('dragstart', (ev) => {
         const item = items[group[0]];
         ev.dataTransfer.setData('text/plain', item.url);
@@ -368,7 +404,7 @@ async function showGroup(newIdx) {
         spread.appendChild(canvas);
       } else {
         const img = document.createElement('img');
-        img.src = items[i].url; img.draggable = true;
+        img.src = displayItemUrl(items[i]); img.draggable = true;
         img.addEventListener('dragstart', (ev) => {
           const item = items[i];
           ev.dataTransfer.setData('text/plain', item.url);
@@ -386,7 +422,7 @@ async function showGroup(newIdx) {
   if (bgBlur && !isPdf) {
     const bgT = activeLayer === 'A' ? 'bgB' : 'bgA';
     const bgO = activeLayer === 'A' ? 'bgA' : 'bgB';
-    document.getElementById(bgT).style.backgroundImage = 'url(' + items[group[0]].url + ')';
+    document.getElementById(bgT).style.backgroundImage = cssUrl(displayItemUrl(items[group[0]]));
     document.getElementById(bgT).classList.add('show');
     document.getElementById(bgO).classList.remove('show');
   }
@@ -423,10 +459,19 @@ function nextGroup() {
   const group = getGroup(idx);
   showGroup(idx + group.length);
 }
-function prevGroup() {
+async function prevGroup() {
   if (items.length === 0) return;
+  if (mode === 'single') { showGroup(idx <= 0 ? items.length - 1 : idx - 1); return; }
+  if (!isPdf && idx <= 0) {
+    await preloadImageMeta(0);
+    const starts = [];
+    for (let i = 0; i < items.length;) { starts.push(i); i += Math.max(1, getGroup(i).length); }
+    showGroup(starts[starts.length - 1] || 0);
+    return;
+  }
   let prev = idx - 1;
   if (prev < 0) prev = items.length - 1;
+  if (!isPdf) await Promise.all([items[prev], items[prev - 1]].filter(Boolean).map(loadImageMeta));
   if (mode !== 'single' && !isPdf && prev > 0 && items[prev] && items[prev-1] && isPortrait(items[prev]) && isPortrait(items[prev-1])) prev--;
   if (isPdf && mode !== 'single' && prev > 0) { prev = prev % 2 === 1 ? prev : prev - 1; }
   showGroup(prev);
@@ -617,11 +662,6 @@ async function loadSiblingFolders() {
   const parts = _currentFolderPath.split('/');
   parts.pop();
   const parentPath = parts.join('/');
-  if (!parentPath) {
-    document.getElementById('btn-prev-folder').disabled = true;
-    document.getElementById('btn-next-folder').disabled = true;
-    return;
-  }
   try {
     const items = await fetch(API + '/browse?path=' + encodeURIComponent(parentPath) + '&all_files=true').then(r => r.json());
     _siblingFolders = items.filter(it => it.type === 'folder').map(it => it.path);
@@ -654,7 +694,7 @@ async function goToFolder(folderPath) {
     if (items.length === 0) { flashStatus('画像がありません'); return; }
     idx = 0;
     await Promise.all(items.slice(0, 6).map(loadImageMeta));
-    items.slice(6).forEach(img => loadImageMeta(img));
+    preloadImageMeta(6);
     showGroup(0);
     updateHud();
     // 兄弟フォルダ一覧を更新
@@ -907,19 +947,32 @@ document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms');
 // メモ（アノテーション）
 let _markup = null;
 let _markupToolbar = null;
+let _markupPointerPath = '';
 const autoMarkup = params.get('markup') === '1';
 
-function getCurrentImagePath() {
-  if (items.length === 0) return '';
-  const item = items[idx];
-  if (isPdf) return (item?.path || pdfPath || '') + '#page=' + (item?.pageNum || idx + 1);
-  return item?.path || pdfPath || singleFile || '';
+function itemAnnotationPath(item) {
+  return !item ? '' : (isPdf ? (item.path || pdfPath || '') + '#page=' + (item.pageNum || idx + 1) : item.path || pdfPath || singleFile || '');
 }
+function currentDisplayOrder() { const group = getGroup(idx); return mode === 'manga' && group.length === 2 ? [group[1], group[0]] : group; }
+function updateMarkupPointerPath(e) {
+  const order = currentDisplayOrder();
+  const nodes = Array.from(document.querySelectorAll('#layer' + activeLayer + ' img, #layer' + activeLayer + ' canvas'));
+  for (let i = 0; i < nodes.length && i < order.length; i++) {
+    const r = nodes[i].getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+      _markupPointerPath = itemAnnotationPath(items[order[i]]); return;
+    }
+  }
+  _markupPointerPath = itemAnnotationPath(items[idx]);
+}
+
+function getCurrentImagePath() { return items.length ? (_markupPointerPath || itemAnnotationPath(items[idx])) : ''; }
 
 function toggleMarkup() {
   if (!_markup) {
     _markup = initStandaloneMarkup(document.getElementById('display'), getCurrentImagePath);
     _markupToolbar = createMarkupToolbar(_markup, document.body);
+    document.getElementById('display').addEventListener('pointerdown', e => { if (_markup?.ann.active) updateMarkupPointerPath(e); }, true);
   }
   const willActivate = !_markup.ann.active;
   _markup.toggle(willActivate);

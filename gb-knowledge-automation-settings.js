@@ -118,6 +118,7 @@
       rows.push('<div class="gb-section-desc">ソースフォルダが未設定です。</div>');
     }
     container.innerHTML = rows.join('');
+    container.dataset.knowledgeAutoTargetsLoaded = '1';
   }
 
   function _buildPanel(settings) {
@@ -184,6 +185,8 @@
     const homeInput = scope.querySelector('[data-knowledge-auto-target="home"]');
     const sourceInputs = [...scope.querySelectorAll('[data-knowledge-auto-target="source"]')];
     const previous = loadKnowledgeAutomationSettings();
+    const targetList = scope.querySelector('#knowledge-auto-target-list');
+    const targetsLoaded = targetList?.dataset?.knowledgeAutoTargetsLoaded === '1';
     return {
       enabled: scope.querySelector('#knowledge-auto-enabled')?.checked === true,
       provider: scope.querySelector('#knowledge-auto-provider')?.value || _defaultProvider(),
@@ -192,8 +195,8 @@
       writePolicy: scope.querySelector('#knowledge-auto-write-mode')?.value || 'admin_approval',
       targets: {
         home: {
-          enabled: homeInput ? homeInput.checked === true : previous.targets.home.enabled,
-          path: homeInput?.dataset?.path || previous.targets.home.path || '',
+          enabled: homeInput ? homeInput.checked === true : (!targetsLoaded && previous.targets.home.enabled === true),
+          path: homeInput?.dataset?.path || (!targetsLoaded ? previous.targets.home.path : ''),
         },
         sources: sourceInputs.length
           ? sourceInputs.map(input => ({
@@ -201,7 +204,7 @@
               name: input.dataset.name || '',
               path: input.dataset.path || '',
             })).filter(item => item.path)
-          : previous.targets.sources,
+          : (targetsLoaded ? [] : previous.targets.sources),
       },
     };
   }

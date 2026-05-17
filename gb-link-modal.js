@@ -59,7 +59,13 @@ const MeldexLinkModal = (() => {
       name = path.split('/').pop() || path;
       type = _inferTypeFromPath(path);
     }
-    if (!path) return;
+    if (!path) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+      if (typeof showStatus === 'function') showStatus('リンクにできるファイルを選択してください', true);
+      return;
+    }
 
     e.preventDefault();
     e.stopImmediatePropagation();

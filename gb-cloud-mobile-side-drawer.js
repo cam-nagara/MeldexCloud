@@ -53,6 +53,30 @@
     if (typeof bindTableCellContextMenu === 'function') bindTableCellContextMenu(el);
   }
 
+  function _bindAutoLinkClick(el) {
+    if (!el) return;
+    if (el._cloudMobileAutoLinkHandler) el.removeEventListener('click', el._cloudMobileAutoLinkHandler);
+    el._cloudMobileAutoLinkHandler = (event) => {
+      const link = event.target?.closest?.('.auto-link');
+      if (!link || !el.contains(link) || typeof onAutoLinkClick !== 'function') return;
+      event.preventDefault();
+      onAutoLinkClick(link, event);
+    };
+    el.addEventListener('click', el._cloudMobileAutoLinkHandler);
+  }
+
+  async function _openParentDatabase(parentDb) {
+    try {
+      const ok = await _flushActiveEditor();
+      if (!ok) return;
+      if (typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(parentDb));
+      _renderSeq += 1;
+      _hideDrawerNow();
+    } catch {
+      if (typeof showStatus === 'function') showStatus('親シートを開けませんでした', true);
+    }
+  }
+
   function _syncOpenButton() {
     const btn = document.querySelector('#' + DRAWER_ID + ' .cloud-mobile-side-drawer-open');
     if (!btn) return;
@@ -212,25 +236,46 @@
   }
 
   async function _saveEditor(editorState) {
-    if (!editorState?.dirty) return true;
+    if (!editorState) return true;
     clearTimeout(editorState.timer);
     editorState.timer = null;
-    const payload = _editorPayload(editorState);
-    if (!payload) {
-      editorState.dirty = false;
-      return true;
-    }
-    try {
-      if (payload.mode === 'value') {
-        await apiPut('/value?path=' + encodeURIComponent(payload.path), { new_body: payload.bodyMd });
-      } else {
-        await apiPut('/file?path=' + encodeURIComponent(payload.path), { content: payload.content });
+    editorState.saveRequested = true;
+    if (editorState.saving) return editorState.saving;
+
+    editorState.saving = (async () => {
+      let ok = true;
+      while (editorState.saveRequested) {
+        editorState.saveRequested = false;
+        if (!editorState.dirty) continue;
+        const payload = _editorPayload(editorState);
+        if (!payload) {
+          editorState.dirty = false;
+          continue;
+        }
+        try {
+          if (payload.mode === 'value') {
+            await apiPut('/value?path=' + encodeURIComponent(payload.path), { new_body: payload.bodyMd });
+          } else {
+            await apiPut('/file?path=' + encodeURIComponent(payload.path), { content: payload.content });
+          }
+          if (editorState.el?.innerHTML === payload.html) {
+            editorState.dirty = false;
+          } else {
+            editorState.dirty = true;
+            editorState.saveRequested = true;
+          }
+        } catch {
+          if (typeof showStatus === 'function') showStatus('エントリ本文の保存に失敗しました', true);
+          ok = false;
+          break;
+        }
       }
-      if (editorState.el?.innerHTML === payload.html) editorState.dirty = false;
-      return true;
-    } catch {
-      if (typeof showStatus === 'function') showStatus('エントリ本文の保存に失敗しました', true);
-      return false;
+      return ok;
+    })();
+    try {
+      return await editorState.saving;
+    } finally {
+      editorState.saving = null;
     }
   }
 
@@ -381,10 +426,7 @@
         parent.className = 'cloud-mobile-side-drawer-parent';
         parent.textContent = '← ' + (_fileName(parentDb) || parentDb);
         parent.title = parentDb;
-        parent.addEventListener('click', () => {
-          if (typeof selectDatabase === 'function') selectDatabase(parentDb);
-          close();
-        });
+        parent.addEventListener('click', () => { _openParentDatabase(parentDb); });
         props.appendChild(parent);
       }
       const grid = document.createElement('div');
@@ -424,13 +466,14 @@
         placeholder.textContent = 'タップして本文を編集';
         editor.appendChild(placeholder);
       }
-      const editorState = { el: editor, path: noteTarget.path, mode: noteTarget.mode, dirty: false, timer: null };
+      const editorState = { el: editor, path: noteTarget.path, mode: noteTarget.mode, dirty: false, timer: null, saving: null, saveRequested: false };
       editor.addEventListener('focus', () => {
         const placeholder = editor.querySelector('[data-cloud-mobile-placeholder="1"]');
         if (placeholder) editor.replaceChildren();
       });
       editor.addEventListener('input', () => _scheduleEditorSave(editorState));
       editor.addEventListener('blur', () => { _saveEditor(editorState); });
+      _bindAutoLinkClick(editor);
       _bindEditorHelpers(editor);
       _activeEditor = editorState;
       page.appendChild(editor);

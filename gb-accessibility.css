@@ -67,46 +67,111 @@
 
 html.meldex-high-contrast,
 html.meldex-high-contrast body {
-  --bg: #000000;
-  --bg2: #0b0b0b;
-  --bg3: #171717;
-  --bg4: #2b2b2b;
-  --fg: #ffffff;
-  --fg2: #d6d6d6;
-  --accent: #7cc7ff;
-  --accent2: #7fffd4;
-  --red: #ff8080;
-  --green: #b8ff8a;
-  --border: #f2f2f2;
-  --selection: #005fcc;
-  --a11y-focus-ring: #ffff00;
+  --bg: #000000 !important;
+  --bg2: #0b0b0b !important;
+  --bg3: #171717 !important;
+  --bg4: #2b2b2b !important;
+  --fg: #ffffff !important;
+  --fg2: #d6d6d6 !important;
+  --fg3: #bdbdbd !important;
+  --accent: #7cc7ff !important;
+  --accent2: #7fffd4 !important;
+  --red: #ff8080 !important;
+  --green: #b8ff8a !important;
+  --orange: #ffd166 !important;
+  --blue: #7cc7ff !important;
+  --border: #f2f2f2 !important;
+  --selection: #005fcc !important;
+  --ui-bg-app: #000000 !important;
+  --ui-bg-panel: #0b0b0b !important;
+  --ui-bg-surface: #0b0b0b !important;
+  --ui-bg-control: #171717 !important;
+  --ui-bg-control-hover: #2b2b2b !important;
+  --ui-bg-control-active: #003b73 !important;
+  --ui-bg-selected: #005fcc !important;
+  --ui-toolbar-bg: #000000 !important;
+  --ui-toolbar-fg: #ffffff !important;
+  --ui-header-bg: #0b0b0b !important;
+  --ui-header-fg: #ffffff !important;
+  --ui-hover-bg: #2b2b2b !important;
+  --ui-hover-fg: #ffffff !important;
+  --ui-selection-bg: #005fcc !important;
+  --ui-selection-fg: #ffffff !important;
+  --ui-popup-bg: #000000 !important;
+  --ui-fg-default: #ffffff !important;
+  --ui-fg-muted: #d6d6d6 !important;
+  --ui-fg-subtle: #bdbdbd !important;
+  --ui-fg-strong: #ffffff !important;
+  --ui-disabled-fg: #bdbdbd !important;
+  --ui-inner-tab-fg: #d6d6d6 !important;
+  --ui-inner-tab-hover-fg: #ffffff !important;
+  --ui-inner-tab-active-fg: #7cc7ff !important;
+  --ui-border: #f2f2f2 !important;
+  --ui-border-strong: #ffffff !important;
+  --ui-accent: #7cc7ff !important;
+  --ui-danger: #ff8080 !important;
+  --a11y-focus-ring: #ffff00 !important;
   color-scheme: dark;
 }
 
 html.meldex-colorblind-safe {
-  --red: #d55e00;
-  --green: #0072b2;
-  --orange: #e69f00;
-  --blue: #56b4e9;
-  --accent: #0072b2;
-  --accent2: #009e73;
+  --red: #d55e00 !important;
+  --green: #0072b2 !important;
+  --orange: #e69f00 !important;
+  --blue: #56b4e9 !important;
+  --accent: #0072b2 !important;
+  --accent2: #009e73 !important;
+  --ui-accent: #0072b2 !important;
+  --ui-danger: #d55e00 !important;
+  --ui-selection-bg: #0072b2 !important;
 }
 
 @media (prefers-contrast: more) {
   :root {
-    --bg: #000000;
-    --bg2: #0b0b0b;
-    --bg3: #171717;
-    --bg4: #2b2b2b;
-    --fg: #ffffff;
-    --fg2: #d6d6d6;
-    --accent: #7cc7ff;
-    --accent2: #7fffd4;
-    --red: #ff8080;
-    --green: #b8ff8a;
-    --border: #f2f2f2;
-    --selection: #005fcc;
-    --a11y-focus-ring: #ffff00;
+    --bg: #000000 !important;
+    --bg2: #0b0b0b !important;
+    --bg3: #171717 !important;
+    --bg4: #2b2b2b !important;
+    --fg: #ffffff !important;
+    --fg2: #d6d6d6 !important;
+    --fg3: #bdbdbd !important;
+    --accent: #7cc7ff !important;
+    --accent2: #7fffd4 !important;
+    --red: #ff8080 !important;
+    --green: #b8ff8a !important;
+    --orange: #ffd166 !important;
+    --blue: #7cc7ff !important;
+    --border: #f2f2f2 !important;
+    --selection: #005fcc !important;
+    --ui-bg-app: #000000 !important;
+    --ui-bg-panel: #0b0b0b !important;
+    --ui-bg-surface: #0b0b0b !important;
+    --ui-bg-control: #171717 !important;
+    --ui-bg-control-hover: #2b2b2b !important;
+    --ui-bg-control-active: #003b73 !important;
+    --ui-bg-selected: #005fcc !important;
+    --ui-toolbar-bg: #000000 !important;
+    --ui-toolbar-fg: #ffffff !important;
+    --ui-header-bg: #0b0b0b !important;
+    --ui-header-fg: #ffffff !important;
+    --ui-hover-bg: #2b2b2b !important;
+    --ui-hover-fg: #ffffff !important;
+    --ui-selection-bg: #005fcc !important;
+    --ui-selection-fg: #ffffff !important;
+    --ui-popup-bg: #000000 !important;
+    --ui-fg-default: #ffffff !important;
+    --ui-fg-muted: #d6d6d6 !important;
+    --ui-fg-subtle: #bdbdbd !important;
+    --ui-fg-strong: #ffffff !important;
+    --ui-disabled-fg: #bdbdbd !important;
+    --ui-inner-tab-fg: #d6d6d6 !important;
+    --ui-inner-tab-hover-fg: #ffffff !important;
+    --ui-inner-tab-active-fg: #7cc7ff !important;
+    --ui-border: #f2f2f2 !important;
+    --ui-border-strong: #ffffff !important;
+    --ui-accent: #7cc7ff !important;
+    --ui-danger: #ff8080 !important;
+    --a11y-focus-ring: #ffff00 !important;
   }
 }
 

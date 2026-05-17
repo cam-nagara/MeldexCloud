@@ -18,7 +18,7 @@
     try {
       const host = String(window.location.hostname || '').toLowerCase();
       if (!host) return window.location.protocol === 'file:';
-      return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
     } catch {
       return false;
     }
@@ -58,6 +58,36 @@
     } catch {}
   }
 
+  function _safeGetItem(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function _safeSetItem(key, value) {
+    try {
+      localStorage.setItem(key, String(value));
+    } catch {}
+  }
+
+  function _safeRemoveItem(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch {}
+  }
+
+  function _notifyModeChanged(reason) {
+    const detail = { mode: getMode(), reason: reason || 'updated' };
+    try {
+      document.dispatchEvent(new CustomEvent('meldex:mode-changed', { detail }));
+    } catch {}
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:mode-changed', { detail }));
+    } catch {}
+  }
+
   function getMode() {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -69,23 +99,21 @@
     try {
       if (sessionStorage.getItem(SAFE_MODE_KEY) === '1') return 'legacy';
     } catch {}
-    return _normalizeMode(localStorage.getItem(MODE_KEY));
+    return _normalizeMode(_safeGetItem(MODE_KEY));
   }
 
   function hasStoredMode() {
-    try {
-      return MODES.has(localStorage.getItem(MODE_KEY));
-    } catch {
-      return false;
-    }
+    return MODES.has(_safeGetItem(MODE_KEY));
   }
 
   function setMode(mode) {
-    localStorage.setItem(MODE_KEY, _normalizeMode(mode));
+    _safeSetItem(MODE_KEY, _normalizeMode(mode));
+    _notifyModeChanged('mode');
   }
 
   function clearMode() {
-    localStorage.removeItem(MODE_KEY);
+    _safeRemoveItem(MODE_KEY);
+    _notifyModeChanged('mode');
   }
 
   function isDropboxMode() {
@@ -128,14 +156,17 @@
 
   function setWorkspaceState(state) {
     if (!state) {
-      localStorage.removeItem(WORKSPACE_STATE_KEY);
+      _safeRemoveItem(WORKSPACE_STATE_KEY);
+      _notifyModeChanged('workspace');
       return;
     }
     _safeWriteJson(WORKSPACE_STATE_KEY, state);
+    _notifyModeChanged('workspace');
   }
 
   function clearWorkspaceState() {
-    localStorage.removeItem(WORKSPACE_STATE_KEY);
+    _safeRemoveItem(WORKSPACE_STATE_KEY);
+    _notifyModeChanged('workspace');
   }
 
   function enableSafeModeOnce() {
@@ -151,7 +182,8 @@
   }
 
   function getCompareLogs() {
-    return _safeReadJson(COMPARE_LOG_KEY, []);
+    const logs = _safeReadJson(COMPARE_LOG_KEY, []);
+    return Array.isArray(logs) ? logs : [];
   }
 
   function recordCompareLog(entry) {
@@ -166,7 +198,7 @@
   }
 
   function clearCompareLogs() {
-    localStorage.removeItem(COMPARE_LOG_KEY);
+    _safeRemoveItem(COMPARE_LOG_KEY);
   }
 
   window.MeldexRuntimeAdapter = {

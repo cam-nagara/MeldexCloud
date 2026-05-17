@@ -3,10 +3,13 @@
 
   const SNOOZE_KEY = 'meldex-cloud-conflict-snooze-until';
   const SNOOZE_MS = 60 * 60 * 1000;
+  const BINARY_FULL_HASH_MAX_BYTES = 5 * 1024 * 1024;
   let _overlay = null;
   let _conflicts = [];
   let _selectedPath = '';
   let _detailRequestSeq = 0;
+  let _conflictTotal = 0;
+  let _conflictTruncated = false;
 
   function _api() {
     return window.MeldexDataAccess;
@@ -97,7 +100,16 @@
     }
   }
 
-  function _renderLines(container, text, otherText) {
+  function _clearMeta(message) {
+    ['original', 'conflict'].forEach((name) => {
+      const card = _overlay?.querySelector?.(`[data-conflict-meta="${name}"]`);
+      if (!card) return;
+      card.textContent = '';
+      if (message) card.appendChild(_el('div', 'cloud-conflict-meta-label', message));
+    });
+  }
+
+  function _renderLines(container, text, otherText, options = {}) {
     container.textContent = '';
     const lines = String(text || '').split(/\r?\n/);
     const otherLines = String(otherText || '').split(/\r?\n/);
@@ -117,6 +129,9 @@
     }
     if (Math.max(lines.length, otherLines.length) > maxLines) {
       container.appendChild(_el('div', 'cloud-conflict-empty', '表示が長いため一部を省略しています'));
+    }
+    if (options.truncated) {
+      container.appendChild(_el('div', 'cloud-conflict-empty', 'ファイルが大きいため、本文プレビューの一部だけを表示しています'));
     }
   }
 
@@ -145,6 +160,18 @@
 
   async function _binarySideSummary(side, label) {
     if (!side?.exists || !side?.path) return `${label}\nファイルなし`;
+    const knownSize = Number(side?.size || 0);
+    if (knownSize > BINARY_FULL_HASH_MAX_BYTES) {
+      return [
+        label,
+        `ファイル: ${side.path}`,
+        `Content-Type: ${side?.mime || side?.content_type || '不明'}`,
+        `サイズ: ${knownSize} bytes`,
+        'SHA-256: 大きいため省略',
+        '',
+        '大きな非テキストファイルのため、本文と先頭バイトの読み込みを省略しています。',
+      ].join('\n');
+    }
     const response = await fetch(API_BASE + '/file-raw?path=' + encodeURIComponent(side.path));
     if (!response.ok) throw new Error(`${label}を読み込めませんでした: HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -187,6 +214,9 @@
       list.appendChild(_el('div', 'cloud-conflict-empty', '競合コピーはありません'));
       return;
     }
+    if (_conflictTruncated || _conflictTotal > _conflicts.length) {
+      list.appendChild(_el('div', 'cloud-conflict-empty', `表示中: ${_conflicts.length}件 / 検出: ${_conflictTotal || _conflicts.length}件`));
+    }
     _conflicts.forEach((item) => {
       const button = _el('button', 'cloud-conflict-list-item');
       button.type = 'button';
@@ -208,18 +238,24 @@
     card.appendChild(_el('div', 'cloud-conflict-meta-label', detail));
   }
 
-  function _setResolveButtonState(detail) {
+  function _setResolveButtonState(detail, busy = false) {
     const keepOriginal = _overlay?.querySelector?.('[data-conflict-action="keep_original"]');
     const keepConflict = _overlay?.querySelector?.('[data-conflict-action="keep_conflict"]');
     const loading = !detail;
     if (keepOriginal) {
-      keepOriginal.disabled = loading || detail?.original?.exists === false;
+      keepOriginal.disabled = busy || loading || detail?.original?.exists === false;
       keepOriginal.title = detail?.original?.exists === false ? '元ファイルが見つからないため選択できません' : '';
     }
     if (keepConflict) {
-      keepConflict.disabled = loading || detail?.conflict?.exists === false;
+      keepConflict.disabled = busy || loading || detail?.conflict?.exists === false;
       keepConflict.title = '';
     }
+  }
+
+  function _applyConflictPayload(payload) {
+    _conflicts = Array.isArray(payload?.items) ? payload.items : [];
+    _conflictTotal = Number(payload?.count || _conflicts.length) || _conflicts.length;
+    _conflictTruncated = !!payload?.truncated || _conflictTotal > _conflicts.length;
   }
 
   async function selectConflict(path) {
@@ -227,6 +263,7 @@
     _renderConflictList();
     _setStatus('読み込み中...');
     _setResolveButtonState(null);
+    _clearMeta('読み込み中...');
     _clearDetail('読み込み中...');
     const requestSeq = ++_detailRequestSeq;
     try {
@@ -243,18 +280,22 @@
         _renderLines(
           _overlay.querySelector('[data-conflict-pane="original"]'),
           detail.original?.content || '',
-          detail.conflict?.content || ''
+          detail.conflict?.content || '',
+          { truncated: !!detail.original?.truncated }
         );
         _renderLines(
           _overlay.querySelector('[data-conflict-pane="conflict"]'),
           detail.conflict?.content || '',
-          detail.original?.content || ''
+          detail.original?.content || '',
+          { truncated: !!detail.conflict?.truncated }
         );
-        _setStatus(detail.original?.exists === false ? '元ファイルなし: 競合コピーを残すと通常名へ戻します' : '');
+        const truncated = detail.original?.truncated || detail.conflict?.truncated;
+        _setStatus(truncated ? '大きなファイルのため一部プレビューです' : (detail.original?.exists === false ? '元ファイルなし: 競合コピーを残すと通常名へ戻します' : ''));
       }
       _setResolveButtonState(detail);
     } catch (err) {
       if (!_overlay || requestSeq !== _detailRequestSeq) return;
+      _clearMeta('詳細を読み込めませんでした');
       _clearDetail('詳細を読み込めませんでした');
       _setStatus(err?.message || String(err), true);
       _setResolveButtonState(null);
@@ -263,30 +304,52 @@
 
   async function _resolve(action) {
     if (!_selectedPath) return;
+    const targetPath = _selectedPath;
     const button = _overlay?.querySelector?.(`[data-conflict-action="${action}"]`);
     if (button?.disabled) return;
     const label = action === 'keep_original' ? '元ファイル' : '競合コピー';
     const ok = confirm(`${label}を残して競合を解消します。解消前のファイルは _meldex/conflict-backups に保存されます。続行しますか？`);
     if (!ok) return;
     _setStatus('解消中...');
+    _setResolveButtonState(null, true);
     try {
       await _api().requestJson('/cloud/conflict-resolve', {
         method: 'POST',
-        body: { conflict_path: _selectedPath, action },
+        body: { conflict_path: targetPath, action },
       });
-      _conflicts = _conflicts.filter((item) => item.path !== _selectedPath);
-      _selectedPath = _conflicts[0]?.path || '';
+      if (_conflictTotal > 0) _conflictTotal = Math.max(0, _conflictTotal - 1);
+      _conflicts = _conflicts.filter((item) => item.path !== targetPath);
+      if (!_overlay) {
+        if (!_conflictTruncated && _conflictTotal <= 0) _hideConflictBanner();
+        if (typeof loadOutliner === 'function') loadOutliner().catch(() => {});
+        return;
+      }
+      if (_conflictTruncated && !_conflicts.length) {
+        _setStatus('残りの競合を再検索中...');
+        const payload = await _api().requestJson('/cloud/conflicts?limit=50');
+        _applyConflictPayload(payload);
+      }
+      _selectedPath = _conflicts.find(item => item.path === _selectedPath)?.path || _conflicts[0]?.path || '';
       _renderConflictList();
       if (_selectedPath) await selectConflict(_selectedPath);
       else {
         _overlay.querySelector('[data-conflict-pane="original"]').textContent = '';
         _overlay.querySelector('[data-conflict-pane="conflict"]').textContent = '';
-        _setStatus('すべての競合を解消しました');
-        _hideConflictBanner();
+        if (_conflictTruncated || _conflictTotal > 0) {
+          _setStatus('表示分を解消しました。残りの競合を再検索してください', true);
+        } else {
+          _setStatus('すべての競合を解消しました');
+          _hideConflictBanner();
+        }
       }
       if (typeof loadOutliner === 'function') loadOutliner().catch(() => {});
     } catch (err) {
-      _setStatus(err?.message || String(err), true);
+      if (_overlay) {
+        _setStatus(err?.message || String(err), true);
+        if (_selectedPath) selectConflict(_selectedPath).catch(() => {});
+      } else if (typeof showStatus === 'function') {
+        showStatus('競合解消に失敗しました: ' + (err?.message || String(err)), true);
+      }
     }
   }
 
@@ -365,10 +428,11 @@
     document.body.appendChild(_overlay);
     _setStatus('競合を検索中...');
     _setResolveButtonState(null);
+    _clearMeta('競合を選択してください');
     _clearDetail('競合を選択してください');
     try {
       const payload = seed?.items ? seed : await _api().requestJson('/cloud/conflicts?limit=50');
-      _conflicts = Array.isArray(payload?.items) ? payload.items : [];
+      _applyConflictPayload(payload);
       _renderConflictList();
       const initialPath = _conflicts[0]?.path || '';
       if (initialPath) await selectConflict(initialPath);
@@ -384,6 +448,8 @@
     _overlay = null;
     _conflicts = [];
     _selectedPath = '';
+    _conflictTotal = 0;
+    _conflictTruncated = false;
     _detailRequestSeq += 1;
   }
 

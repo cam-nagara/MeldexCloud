@@ -4,6 +4,7 @@
 
 const _DB_DATE_TOKEN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/;
 const _DB_DATE_INPUT_RE = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+const _DB_DATE_OFFSET_INPUT_RE = /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})$/;
 const _DB_TIME_INPUT_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
 
 function _dbDateHasTimeToken(v) {
@@ -55,6 +56,11 @@ function _dbDateParseSinglePart(raw, baseDate) {
     }
     return _dbDateBuildPart(date, null, null, false, false);
   }
+  if (_DB_DATE_OFFSET_INPUT_RE.test(text)) {
+    const date = (typeof parseLocalDate === 'function') ? parseLocalDate(text) : new Date(text);
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    return _dbDateParseSinglePart(_dbDateValueFromDate(date, true), null);
+  }
   m = text.match(_DB_TIME_INPUT_RE);
   if (m) {
     const base = _dbDateCoerceBaseDate(baseDate);
@@ -65,6 +71,7 @@ function _dbDateParseSinglePart(raw, baseDate) {
 }
 
 function _dbDateSplitRangeText(text) {
+  if (_DB_DATE_OFFSET_INPUT_RE.test(String(text || '').trim())) return null;
   const pipeIdx = text.indexOf('|');
   if (pipeIdx >= 0) return { left: text.slice(0, pipeIdx).trim(), right: text.slice(pipeIdx + 1).trim(), sep: '|' };
   const tildeMatch = text.match(/\s*[~～〜]\s*/);
@@ -186,6 +193,8 @@ function _dbDateToInputValue(v, wantTime) {
 
 function _dbDateValueFromDate(date, withTime) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  if (withTime && typeof formatLocalDateTime === 'function') return formatLocalDateTime(date);
+  if (!withTime && typeof formatLocalDate === 'function') return formatLocalDate(date);
   const pad = n => String(n).padStart(2, '0');
   const y = date.getFullYear();
   const m = pad(date.getMonth() + 1);

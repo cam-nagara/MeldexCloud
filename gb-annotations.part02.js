@@ -17,7 +17,7 @@ async function eraseAtPoint(cx, cy) {
   const x = pt.x, y = pt.y;
   // SVG要素をヒットテスト
   const layer = document.getElementById('ann-layer') || annOverlay;
-  const els = Array.from(layer.querySelectorAll('path, polygon')).reverse();
+  const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
   const tolerance = Math.max(8, ann.widths?.eraser || _ANN_WIDTH_LIMITS.eraser.fallback);
   for (const el of els) {
     if (el.classList.contains('ann-preview')) continue;
@@ -121,6 +121,8 @@ function _sanitizeAnnotationHtml(html) {
       if (/^(italic|normal)$/i.test(fontStyle)) out.style.fontStyle = fontStyle;
       const textDecoration = node.style?.textDecoration || '';
       if (/underline|line-through/i.test(textDecoration)) out.style.textDecoration = textDecoration;
+      const textDecorationColor = node.style?.textDecorationColor || '';
+      if (/^(#[0-9a-f]{3,8}|rgb[a]?\(|hsl[a]?\()/i.test(textDecorationColor)) out.style.textDecorationColor = textDecorationColor;
       const bg = node.style?.backgroundColor || '';
       if (/^(#[0-9a-f]{3,8}|rgb[a]?\(|hsl[a]?\()/i.test(bg)) out.style.backgroundColor = bg;
       const strokeColor = node.style?.webkitTextStrokeColor || node.style?.textStrokeColor || '';
@@ -265,10 +267,15 @@ function _wrapAnnotationSelectionStyle(styles) {
   const selection = window.getSelection?.();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
   const range = selection.getRangeAt(0);
+  const entries = Object.entries(styles || {});
+  const clearKeys = entries.filter(([, value]) => value === '').map(([key]) => key);
+  if (clearKeys.length) {
+    _clearAnnotationSelectionStyles(range, clearKeys);
+  }
+  const setEntries = entries.filter(([, value]) => value != null && value !== '');
+  if (!setEntries.length) return;
   const span = document.createElement('span');
-  Object.entries(styles || {}).forEach(([key, value]) => {
-    if (value != null && value !== '') span.style[key] = value;
-  });
+  setEntries.forEach(([key, value]) => { span.style[key] = value; });
   if (!span.getAttribute('style')) return;
   try {
     range.surroundContents(span);
@@ -281,6 +288,32 @@ function _wrapAnnotationSelectionStyle(styles) {
   nextRange.selectNodeContents(span);
   selection.removeAllRanges();
   selection.addRange(nextRange);
+}
+
+function _clearAnnotationSelectionStyles(range, styleKeys) {
+  if (!range || !styleKeys?.length) return;
+  const roots = new Set();
+  const addElement = node => {
+    const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    if (el) roots.add(el);
+  };
+  addElement(range.startContainer);
+  addElement(range.endContainer);
+  const common = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+    ? range.commonAncestorContainer
+    : range.commonAncestorContainer?.parentElement;
+  if (common) {
+    const walker = document.createTreeWalker(common, NodeFilter.SHOW_ELEMENT);
+    for (let el = walker.currentNode; el; el = walker.nextNode()) {
+      try {
+        if (range.intersectsNode(el)) roots.add(el);
+      } catch {}
+    }
+  }
+  roots.forEach(el => {
+    styleKeys.forEach(key => { try { el.style[key] = ''; } catch {} });
+    if (!el.getAttribute('style')) el.removeAttribute('style');
+  });
 }
 
 function _applyAnnotationSelectionFormat(range, prop, value) {
@@ -306,7 +339,7 @@ function _applyAnnotationSelectionFormat(range, prop, value) {
   } else if (prop === 'leftAccent') {
     _wrapAnnotationSelectionStyle(value ? { boxShadow: 'inset 3px 0 0 currentColor', paddingLeft: '6px' } : { boxShadow: '', paddingLeft: '' });
   } else if (prop === 'accentColor') {
-    _wrapAnnotationSelectionStyle({ textDecorationColor: value || '', boxShadow: value ? `inset 3px 0 0 ${value}` : '' });
+    _wrapAnnotationSelectionStyle({ textDecorationColor: value || '' });
   } else if (prop === 'fontSize') {
     const size = Number(value);
     if (Number.isFinite(size) && size > 0) _wrapAnnotationSelectionStyle({ fontSize: Math.max(8, Math.min(96, size)) + 'px' });
@@ -371,8 +404,9 @@ function _installAnnotationNoteResize(note, data, persist) {
       const minW = 120;
       const minH = 60;
       const onMove = (ev) => {
-        const dx = ev.clientX - start.x;
-        const dy = ev.clientY - start.y;
+        const zoom = _annotationUiZoom();
+        const dx = (ev.clientX - start.x) / zoom;
+        const dy = (ev.clientY - start.y) / zoom;
         let left = start.left;
         let top = start.top;
         let width = start.width;
@@ -424,8 +458,19 @@ function addNoteTail(note, annId, data, initTailX, initTailY) {
     target: null,
   }, () => {
     const editor = note.querySelector('.ann-note-editor');
-    _putAnnotationWithHistory(annId, { data: _annotationNotePayload(data, editor, note) }, '注釈: 付箋更新', annId).catch(() => {});
+    _putAnnotationWithHistory(annId, { data: _annotationNotePayload(data, editor, note) }, '注釈: 付箋更新', annId)
+      .catch(error => _reportAnnotationSaveFailure(error));
   });
+}
+
+let _annLastSaveFailureAt = 0;
+function _reportAnnotationSaveFailure(error, message = '注釈の保存に失敗しました') {
+  const now = Date.now();
+  if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
+    showStatus(message, true);
+    _annLastSaveFailureAt = now;
+  }
+  try { console.warn(message, error); } catch {}
 }
 
 function _isStandaloneAnnotationNoteItem(item, data) {
@@ -462,6 +507,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   note.style.width = (data.width || 180) + 'px';
   note.style.height = (data.height || 100) + 'px';
   _applyAnnotationNoteColor(note, color);
+  note.style.opacity = String(_normalizeAnnotationOpacity(opacity, 1));
   note.addEventListener('pointerdown', () => {
     document.querySelectorAll('.ann-note-selected').forEach(el => el.classList.remove('ann-note-selected'));
     note.classList.add('ann-note-selected');
@@ -493,17 +539,26 @@ function renderNote(id, shape, data, color, opacity, user, created) {
 
   let editor;
   let saveTimer;
+  const cancelPendingSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  };
+  note._annCancelPendingSave = cancelPendingSave;
   const persist = () => {
-    if (note.dataset.deleted === '1') return;
+    if (note.dataset.deleted === '1') return Promise.resolve(false);
     const d = _annotationNotePayload(data, editor, note);
     data.text = d.text;
     data.html = d.html;
     data.width = d.width;
     data.height = d.height;
-    _putAnnotationWithHistory(id, { data: d }, '注釈: 付箋更新', id).catch(() => {});
+    return _putAnnotationWithHistory(id, { data: d }, '注釈: 付箋更新', id)
+      .catch(error => {
+        _reportAnnotationSaveFailure(error);
+        return false;
+      });
   };
   const scheduleSave = () => {
-    clearTimeout(saveTimer);
+    cancelPendingSave();
     saveTimer = setTimeout(persist, 600);
   };
   editor = _createAnnotationEditor(data, scheduleSave, id);
@@ -602,13 +657,15 @@ function renderNote(id, shape, data, color, opacity, user, created) {
           delete data.tail;
           delete data.tailX;
           delete data.tailY;
-          _putAnnotationWithHistory(id, { data: _annotationNotePayload(data, editor, noteEl) }, '注釈: 付箋更新', id).catch(() => {});
+          _putAnnotationWithHistory(id, { data: _annotationNotePayload(data, editor, noteEl) }, '注釈: 付箋更新', id)
+            .catch(error => _reportAnnotationSaveFailure(error));
         } else {
           if (!noteEl.querySelector('.ann-tail,.ann-tail-shape')) {
             data.tailX = 0;
             data.tailY = 60;
             addNoteTail(noteEl, id, data, data.tailX, data.tailY);
-            _putAnnotationWithHistory(id, { data: _annotationNotePayload(data, editor, noteEl) }, '注釈: 付箋更新', id).catch(() => {});
+            _putAnnotationWithHistory(id, { data: _annotationNotePayload(data, editor, noteEl) }, '注釈: 付箋更新', id)
+              .catch(error => _reportAnnotationSaveFailure(error));
           }
         }
       });
@@ -632,7 +689,8 @@ function renderNote(id, shape, data, color, opacity, user, created) {
       openColorPalette(noteEl, color, (newColor) => {
         color = newColor;
         _applyAnnotationNoteColor(noteEl, newColor);
-        _putAnnotationWithHistory(id, { color: newColor }, '注釈: 色変更', id).catch(() => {});
+        _putAnnotationWithHistory(id, { color: newColor }, '注釈: 色変更', id)
+          .catch(error => _reportAnnotationSaveFailure(error));
       });
     });
     deleteItem.addEventListener('click', () => {
@@ -714,7 +772,7 @@ async function loadAnnotations() {
     _setAnnotationRenderedTarget(targetPath);
   }
   try {
-    const items = await apiFetch('/annotations?target=' + encodeURIComponent(targetPath));
+    const items = await apiFetch(_annotationTargetFetchUrl(targetPath));
     if (
       loadSeq !== _annLoadSeq ||
       targetPath !== ann.targetPath ||
@@ -727,7 +785,8 @@ async function loadAnnotations() {
     _forEachStandaloneAnnotationNote(el => el.remove());
     _setAnnotationRenderedTarget(targetPath);
     items.forEach(item => {
-      const data = typeof item.data === 'string' ? JSON.parse(item.data) : item.data;
+      const data = _parseAnnotationData(item);
+      if (data == null) return;
       if (_isStandaloneAnnotationNoteItem(item, data)) {
         renderNote(item.id, item.shape || 'sticky', data, item.color, item.opacity, item.user, item.created);
       } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
@@ -764,26 +823,39 @@ async function annClear() {
   let historyBefore = [];
   if (ann.targetPath) {
     try {
-      historyBefore = await apiFetch('/annotations?target=' + encodeURIComponent(ann.targetPath));
+      historyBefore = await apiFetch(_annotationTargetFetchUrl(ann.targetPath));
     } catch {}
   }
   const ids = new Set();
   const softDeleted = new Map();
-  overlay?.querySelectorAll('[data-ann-id]').forEach(el => { ids.add(el.dataset.annId); el.remove(); });
-  bridge?.layer?.querySelectorAll('[data-ann-id]').forEach(el => { ids.add(el.dataset.annId); el.remove(); });
+  overlay?.querySelectorAll('[data-ann-id],[data-ann-pending]').forEach(el => {
+    if (el.dataset.annId) ids.add(el.dataset.annId);
+    el.dataset.deleted = '1';
+    el.remove();
+  });
+  bridge?.layer?.querySelectorAll('[data-ann-id],[data-ann-client-id]').forEach(el => {
+    if (el.dataset.annId) ids.add(el.dataset.annId);
+    el.dataset.deleted = '1';
+    el.remove();
+  });
   document.querySelectorAll(embedded ? '.ann-note.ann-note-embedded' : '.ann-note:not(.ann-note-embedded)').forEach(el => {
     if (el.dataset.annId) {
-      softDeleted.set(el.dataset.annId, { ...(el._annData || {}), deleted: true, deletedAt: new Date().toISOString() });
+      const deletedData = { ...(el._annData || {}), deleted: true, deletedAt: new Date().toISOString() };
+      if (el._annData) Object.assign(el._annData, deletedData);
+      el.dataset.deleted = '1';
+      el._annCancelPendingSave?.();
+      softDeleted.set(el.dataset.annId, deletedData);
       ids.delete(el.dataset.annId);
     }
     el.remove();
   });
   if (embedded && ann.targetPath) {
     try {
-      const items = await apiFetch('/annotations?target=' + encodeURIComponent(ann.targetPath));
+      const items = await apiFetch(_annotationTargetFetchUrl(ann.targetPath));
       (items || []).forEach(item => {
         if (!item?.id) return;
-        const data = typeof item.data === 'string' ? JSON.parse(item.data || '{}') : (item.data || {});
+        const data = _parseAnnotationData(item);
+        if (data == null) return;
         if (_isStandaloneAnnotationNoteItem(item, data)) {
           softDeleted.set(item.id, { ...data, deleted: true, deletedAt: new Date().toISOString() });
           ids.delete(item.id);
@@ -795,20 +867,28 @@ async function annClear() {
       });
     } catch {}
   }
-  await Promise.all([
-    ...[...ids].filter(id => !softDeleted.has(id)).map(id => apiDelete('/annotations/' + encodeURIComponent(id)).catch(() => {})),
-    ...[...softDeleted.entries()].map(([id, data]) => apiPut('/annotations/' + encodeURIComponent(id), { data }).catch(() => {})),
-  ]);
+  const operations = [
+    ...[...ids].filter(id => !softDeleted.has(id)).map(id => apiDelete('/annotations/' + encodeURIComponent(id))),
+    ...[...softDeleted.entries()].map(([id, data]) => apiPut('/annotations/' + encodeURIComponent(id), { data })),
+  ];
+  const results = await Promise.allSettled(operations);
+  const failedCount = results.filter(result => result.status === 'rejected').length;
   let historyAfter = [];
   if (ann.targetPath) {
     try {
-      historyAfter = await apiFetch('/annotations?target=' + encodeURIComponent(ann.targetPath));
+      historyAfter = await apiFetch(_annotationTargetFetchUrl(ann.targetPath));
     } catch {}
   }
   if (typeof _pushAnnotationBatchHistory === 'function') {
     _pushAnnotationBatchHistory('注釈: 全削除', historyBefore, historyAfter, ann.targetPath);
   }
   _markAnnotationMutated(ann.targetPath);
+  if (failedCount) {
+    if (typeof loadAnnotations === 'function' && !embedded) loadAnnotations();
+    else if (embedded && typeof _loadAnnotationsToIframe === 'function') _loadAnnotationsToIframe();
+    showStatus(`注釈を一部削除できませんでした（${failedCount}件）`, true);
+    return;
+  }
   showStatus('注釈を全削除しました');
 }
 
@@ -830,7 +910,18 @@ function jumpToAnnotation(targetPath) {
     showStatus('注釈の対象ファイルが見つかりません', true);
     return;
   }
-  if (targetPath.includes('/設定/') || targetPath.includes('/DB')) {
+  if (targetPath === 'calendar:panel') {
+    if (typeof openCalendar === 'function') openCalendar();
+    else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('calendar');
+  } else if (targetPath.startsWith('compare:')) {
+    const pair = targetPath.slice('compare:'.length).split('|');
+    if (pair[0] && pair[1] && typeof openCompareView === 'function') openCompareView(pair[0], pair[1]).catch?.(() => {});
+    else showStatus('比較ビューの注釈対象が見つかりません', true);
+  } else if (targetPath.endsWith('.smart-db.json')) {
+    const label = targetPath.split('/').pop().replace(/\.smart-db\.json$/i, '');
+    if (typeof openSmartDbFile === 'function') openSmartDbFile(label, targetPath);
+    else selectDatabase(targetPath);
+  } else if (targetPath.includes('/設定/') || targetPath.includes('/DB')) {
     selectDatabase(targetPath);
   } else if (targetPath.endsWith('.scriptnote.json') || targetPath.endsWith('.scenario.json')) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(targetPath, targetPath.split('/').pop());

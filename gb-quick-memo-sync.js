@@ -19,6 +19,14 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
   }
 
+  function jsonFetch(path, opts) {
+    const options = opts || {};
+    return apiFetch(path, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    });
+  }
+
   function nowIso() {
     return new Date().toISOString();
   }
@@ -151,13 +159,13 @@
     try {
       await apiFetch('/file?path=' + encodeURIComponent('メモ/メモ.md'), { silentError: true });
     } catch {
-      await apiFetch('/outliner/add', {
+      await jsonFetch('/outliner/add', {
         method: 'POST',
         silentError: true,
         body: JSON.stringify({ parent: '', label: 'メモ', type: 'database' }),
       }).catch(() => undefined);
     }
-    await apiFetch('/db-metadata?path=' + encodeURIComponent('メモ'), {
+    await jsonFetch('/db-metadata?path=' + encodeURIComponent('メモ'), {
       method: 'PUT',
       silentError: true,
       body: JSON.stringify({
@@ -174,7 +182,7 @@
     try {
       await apiFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), { silentError: true });
     } catch {
-      await apiFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), {
+      await jsonFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), {
         method: 'POST',
         silentError: true,
         body: JSON.stringify({ content: JSON.stringify(smartDbDefinition(), null, 2) }),
@@ -186,7 +194,7 @@
     await ensureMemoWorkspace();
     const path = memoPath(item);
     const content = frontmatterText(memoFrontmatter(item, path), memoBody(item));
-    await apiFetch('/file?path=' + encodeURIComponent(path), {
+    await jsonFetch('/file?path=' + encodeURIComponent(path), {
       method: 'POST',
       silentError: true,
       body: JSON.stringify({ content }),
@@ -197,7 +205,7 @@
 
   async function saveItem(item) {
     try {
-      const result = await apiFetch('/quick-memo', {
+      const result = await jsonFetch('/quick-memo', {
         method: 'POST',
         silentError: true,
         body: JSON.stringify(item),

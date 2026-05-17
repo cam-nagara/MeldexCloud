@@ -13,10 +13,15 @@ function _resolveAutoFillPlaceholder(raw) {
   if (!raw.startsWith('$')) return raw;
   const pad = n => String(n).padStart(2, '0');
   const d = new Date();
-  const ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const ymd = typeof formatLocalDate === 'function'
+    ? formatLocalDate(d)
+    : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const ymdhm = typeof formatLocalDateTime === 'function'
+    ? formatLocalDateTime(d).replace('T', ' ')
+    : `${ymd} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   switch (raw) {
     case '$today': return ymd;
-    case '$now': return `${ymd} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    case '$now': return ymdhm;
     case '$currentUser': return (typeof getUsername === 'function' ? getUsername() : '') || '';
     case '$version': return (window.__meldexVersionCache && window.__meldexVersionCache.version) || '';
     default: return raw;
@@ -32,6 +37,88 @@ async function _fetchVersionCache() {
   } catch {}
   window.__meldexVersionCache = { version: '', semver: '', commit: '', variant: 'dev' };
   return window.__meldexVersionCache;
+}
+
+function _autoFillEntityPathForWrite(entityPath) {
+  let ep = entityPath;
+  if (ep && ep.endsWith('.md')) {
+    const parts = ep.replace(/\\/g, '/').split('/');
+    const fname = parts[parts.length - 1].replace(/\.md$/, '');
+    if (fname.includes('_') && state.currentEntityPath) ep = state.currentEntityPath;
+  }
+  return ep || '';
+}
+
+function _autoFillEntityNameFromPath(entityPath) {
+  const parts = String(entityPath || '').replace(/\\/g, '/').split('/');
+  return (parts[parts.length - 1] || '').replace(/\.md$/, '');
+}
+
+function _findAutoFillExistingValue(entityData, propName, writeStatus) {
+  const vals = Array.isArray(entityData?.[propName]) ? entityData[propName] : [];
+  const statuses = [writeStatus, '採用', '掲載済み'].filter((status, idx, arr) => status && arr.indexOf(status) === idx);
+  return vals.find(v => statuses.includes(v.status || '')) || null;
+}
+
+function _recordAutoFillPivotValue(entityData, propName, value, status, created, entityPath) {
+  if (!entityData) return;
+  if (!Array.isArray(entityData[propName])) entityData[propName] = [];
+  const record = created && typeof created === 'object' ? { ...created } : {};
+  record.property = record.property || propName;
+  record.value = value;
+  record.status = status;
+  record.entry_path = record.entry_path || entityPath;
+  record.file = record.file || record.path || '';
+  entityData[propName].push(record);
+}
+
+function _autoFillValueRef(val, propName) {
+  if (!val) return null;
+  return {
+    file: val.file || val.path || '',
+    property: val.property || propName,
+    candidate_index: val.candidate_index,
+  };
+}
+
+async function _writeAutoFillValue(entityPath, entityData, propName, value, writeStatus) {
+  const existing = _findAutoFillExistingValue(entityData, propName, writeStatus);
+  if (existing) {
+    const ref = _autoFillValueRef(existing, propName);
+    const oldValue = existing.value || '';
+    await _apiPutValue(existing, { new_value: value });
+    existing.value = value;
+    return { kind: 'update', ref, oldValue, newValue: value };
+  }
+  const created = await _apiPostValue(entityPath, propName, value, writeStatus, '');
+  _recordAutoFillPivotValue(entityData, propName, value, writeStatus, created, entityPath);
+  const ref = _autoFillValueRef({ ...(created || {}), file: created?.path || created?.file, property: created?.property || propName }, propName);
+  return { kind: 'create', ref, entityPath, propName, value, status: writeStatus };
+}
+
+async function _undoAutoFillStatusOps(ops) {
+  for (let i = (ops || []).length - 1; i >= 0; i -= 1) {
+    const op = ops[i];
+    try {
+      if (op.kind === 'create' && op.ref?.file) await _apiPutValue(op.ref, { _delete: true });
+      else if (op.kind === 'update' && op.ref?.file) await _apiPutValue(op.ref, { new_value: op.oldValue || '' });
+    } catch {}
+  }
+}
+
+async function _redoAutoFillStatusOps(ops) {
+  for (const op of ops || []) {
+    try {
+      if (op.kind === 'create' && op.entityPath) {
+        const created = await _apiPostValue(op.entityPath, op.propName, op.value, op.status || '採用', '');
+        if (created?.path || created?.file) {
+          op.ref = _autoFillValueRef({ ...created, file: created.path || created.file, property: created.property || op.propName }, op.propName);
+        }
+      } else if (op.kind === 'update' && op.ref?.file) {
+        await _apiPutValue(op.ref, { new_value: op.newValue || '' });
+      }
+    } catch {}
+  }
 }
 
 async function _autoFillOnCreate(dbPath, entityPath, overrides) {
@@ -56,6 +143,7 @@ async function _autoFillOnCreate(dbPath, entityPath, overrides) {
 
 async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath) {
   if (!dbPath) return;
+  const ops = [];
   const ptypes = getPropertyTypes(dbPath);
   const needsVersion = Object.values(ptypes).some(p => {
     const a = p && p.autoFillOnStatus;
@@ -64,70 +152,32 @@ async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath) 
   if (needsVersion) await _fetchVersionCache();
   for (const [pName, ptc] of Object.entries(ptypes)) {
     let fillVal = null;
+    let writeStatus = ptc.writeStatus || '採用';
     if (ptc.autoFillOnStatus === newStatus && ptc.type === 'date') {
       fillVal = '__legacy_date__';
+      writeStatus = '採用';
     } else if (ptc.autoFillOnStatus && typeof ptc.autoFillOnStatus === 'object' && newStatus in ptc.autoFillOnStatus) {
       fillVal = _resolveAutoFillPlaceholder(ptc.autoFillOnStatus[newStatus]);
     }
     if (fillVal == null) continue;
-    if (fillVal === '__legacy_date__') {
-      const lockMsg = checkColumnEditable(dbPath, pName);
-      if (lockMsg) continue;
-      const now = typeof _dbDateCurrentValue === 'function'
-        ? _dbDateCurrentValue(ptc)
-        : new Date().toISOString().slice(0, 19);
-      let ep = entityPath;
-      if (ep && ep.endsWith('.md')) {
-        const parts = ep.replace(/\\/g, '/').split('/');
-        const fname = parts[parts.length - 1].replace(/\.md$/, '');
-        if (fname.includes('_') && state.currentEntityPath) ep = state.currentEntityPath;
-      }
-      if (!ep) continue;
-      if (state.pivotData) {
-        const epParts = ep.replace(/\\/g, '/').split('/');
-        const entName = epParts[epParts.length - 1].replace(/\.md$/, '');
-        const ent = state.pivotData.entities[entName];
-        if (ent) {
-          const existing = (ent[pName] || []).find(v => v.status === '採用' || v.status === '掲載済み');
-          if (existing) {
-            await _apiPutValue(existing, { new_value: now });
-            existing.value = now;
-          } else {
-            await _apiPostValue(ep, pName, now, '採用', '');
-          }
-          continue;
-        }
-      }
-      await _apiPostValue(ep, pName, now, '採用', '');
-    } else {
-      const lockMsg = checkColumnEditable(dbPath, pName);
-      if (lockMsg) continue;
-      let ep = entityPath;
-      if (ep && ep.endsWith('.md')) {
-        const parts = ep.replace(/\\/g, '/').split('/');
-        const fname = parts[parts.length - 1].replace(/\.md$/, '');
-        if (fname.includes('_') && state.currentEntityPath) ep = state.currentEntityPath;
-      }
-      if (!ep) continue;
-      const writeStatus = ptc.writeStatus || '採用';
-      if (state.pivotData) {
-        const epParts = ep.replace(/\\/g, '/').split('/');
-        const entName = epParts[epParts.length - 1].replace(/\.md$/, '');
-        const ent = state.pivotData.entities[entName];
-        if (ent) {
-          const existing = (ent[pName] || []).find(v => v.status === '採用' || v.status === '掲載済み');
-          if (existing) {
-            await _apiPutValue(existing, { new_value: fillVal });
-            existing.value = fillVal;
-          } else {
-            await _apiPostValue(ep, pName, fillVal, writeStatus, '');
-          }
-          continue;
-        }
-      }
-      await _apiPostValue(ep, pName, fillVal, writeStatus, '');
+    const lockMsg = checkColumnEditable(dbPath, pName);
+    if (lockMsg) continue;
+    const value = fillVal === '__legacy_date__'
+      ? (typeof _dbDateCurrentValue === 'function' ? _dbDateCurrentValue(ptc) : new Date().toISOString().slice(0, 19))
+      : fillVal;
+    if (value === '' || value == null) continue;
+    const ep = _autoFillEntityPathForWrite(entityPath);
+    if (!ep) continue;
+    const entName = _autoFillEntityNameFromPath(ep);
+    const ent = state.pivotData?.entities?.[entName] || null;
+    try {
+      const op = await _writeAutoFillValue(ep, ent, pName, value, writeStatus);
+      if (op) ops.push(op);
+    } catch {
+      // 他の自動入力を止めない。
     }
   }
+  return ops;
 }
 
 async function showDbAuditLogModal() {

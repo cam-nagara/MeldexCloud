@@ -32,6 +32,28 @@
     return Array.from(bytes || []).map(byte => byte.toString(16).padStart(2, '0')).join('');
   }
 
+  function _auditId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    return 'audit-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  }
+
+  function _auditKey(row) {
+    return String(row?.audit_id || [row?.type || '', row?.at || '', row?.user || '', JSON.stringify(_stable(row || {}))].join('\n'));
+  }
+
+  function _mergeAuditRows() {
+    const merged = new Map();
+    Array.from(arguments).forEach(rows => {
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        if (!row || typeof row !== 'object') return;
+        merged.set(_auditKey(row), row);
+      });
+    });
+    return [...merged.values()]
+      .sort((a, b) => String(a?.at || '').localeCompare(String(b?.at || '')) || _auditKey(a).localeCompare(_auditKey(b)))
+      .slice(-MAX_AUDIT_ROWS);
+  }
+
   async function hmac(payload, options = {}) {
     const key = await window.MeldexOwnerKeyStore?.importHmacKey?.(options);
     if (!key) return '';
@@ -61,23 +83,22 @@
     return { ok: true, ...entry };
   }
 
-  async function verify(provider, scope, payload) {
+  async function verify(provider, scope, payload, options = {}) {
     const signature = await readSignature(provider, scope);
-    const key = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
-    if (!key) {
-      if (signature?.hmac) {
-        window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('署名済みデータを検証する管理者鍵がこの端末にありません。');
-        return { ok: false, missing_key: true, reason: 'owner-key-missing', signature };
-      }
-      return { ok: true, skipped: true, missing_key: true, reason: 'owner-key-missing', signature };
+    const key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!signature?.hmac) {
+      return { ok: false, missing: true, missing_key: !key, reason: 'signature-missing', signature };
     }
-    if (!signature?.hmac) return { ok: false, missing: true, signature };
-    const digest = await hmac(payload, { create: false });
+    if (!key) {
+      window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('署名済みデータを検証する管理者鍵がこの端末にありません。');
+      return { ok: false, missing_key: true, reason: 'owner-key-missing', signature };
+    }
+    const digest = await hmac(payload, { create: false, rawKey: key });
     return { ok: digest === signature.hmac, expected: signature.hmac, actual: digest, signature };
   }
 
-  async function verifyStrict(provider, scope, payload) {
-    const result = await verify(provider, scope, payload);
+  async function verifyStrict(provider, scope, payload, options = {}) {
+    const result = await verify(provider, scope, payload, options);
     if (result?.ok === true && result.skipped) return { ...result, ok: false, strict: true };
     return result;
   }
@@ -85,16 +106,18 @@
   async function recordAudit(provider, type, entry = {}) {
     const { _readJsonSafe } = _internals();
     if (!provider || typeof provider.writeJson !== 'function') return { ok: false };
-    const rows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
-    const nextRows = Array.isArray(rows) ? rows : [];
-    nextRows.push({
+    const beforeRows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
+    const auditEntry = {
+      audit_id: _auditId(),
       type: String(type || 'event'),
       at: new Date().toISOString(),
       user: typeof getUsername === 'function' ? getUsername() : '',
       ...entry,
-    });
-    while (nextRows.length > MAX_AUDIT_ROWS) nextRows.shift();
+    };
+    const latestRows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => beforeRows);
+    const nextRows = _mergeAuditRows(beforeRows, latestRows, [auditEntry]);
     await provider.writeJson(AUDIT_LOG_PATH, nextRows);
+    await sign(provider, 'audit_log', nextRows, { signer: auditEntry.user }).catch(() => null);
     return { ok: true, count: nextRows.length };
   }
 
@@ -102,6 +125,10 @@
     const { _readJsonSafe } = _internals();
     const rows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
     const list = Array.isArray(rows) ? rows : [];
+    if (list.length) {
+      const verification = await verify(provider, 'audit_log', list);
+      if (verification?.ok === false) throw new Error('監査ログの署名検証に失敗しました');
+    }
     const wanted = String(type || '').trim();
     return wanted ? list.filter(row => row?.type === wanted) : list;
   }

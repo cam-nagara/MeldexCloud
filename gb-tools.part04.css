@@ -306,7 +306,9 @@
 .entity-row-more-btn:hover { background: var(--bg3); color: var(--fg); }
 .entity-row-more-btn svg { width: 12px; height: 12px; display: block; }
 #pivot-table tr:hover td.col-entity .entity-row-more-btn,
-#pivot-table td.col-entity:focus-within .entity-row-more-btn {
+.pivot-table tr:hover td.col-entity .entity-row-more-btn,
+#pivot-table td.col-entity:focus-within .entity-row-more-btn,
+.pivot-table td.col-entity:focus-within .entity-row-more-btn {
   opacity: 1; pointer-events: auto;
 }
 
@@ -369,7 +371,14 @@
 .gb-image-gallery-empty { grid-column: 1 / -1; display: grid; place-items: center; border: 1px dashed var(--border); border-radius: 6px; color: var(--fg2); }
 
 .form-view,
-.gb-form-view { flex-direction: column; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
+.gb-form-view {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  flex-direction: column;
+  background: var(--db-row-bg, var(--content-bg, var(--bg)));
+}
 .gb-form-toolbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .gb-form-editor { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 12px; padding: 12px; min-height: 0; }
 .gb-form-field-palette,

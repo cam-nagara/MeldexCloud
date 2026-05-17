@@ -90,13 +90,36 @@
     return { ...payload, verification };
   }
 
+  function _assertStoreVerifiedForWrite(store) {
+    const verification = store?.verification;
+    if (verification && verification.ok === false && !verification.skipped) {
+      const err = new Error('編集ロック情報の署名検証に失敗したため、ロック設定を更新できません');
+      err.status = 409;
+      err.lock_verification = verification;
+      throw err;
+    }
+  }
+
+  async function _signStorePayload(provider, payload) {
+    if (typeof window.MeldexKnowledgeSignature?.sign !== 'function') {
+      throw new Error('編集ロック情報の署名機能を読み込めませんでした');
+    }
+    const signature = await window.MeldexKnowledgeSignature.sign(provider, SIGNATURE_SCOPE, payload, {
+      signer: typeof getUsername === 'function' ? getUsername() : '',
+    });
+    if (!signature?.ok || !signature.hmac) {
+      throw new Error('編集ロック情報の署名を保存できませんでした');
+    }
+    return signature;
+  }
+
   async function _writeStore(provider, entries, audit) {
     const payload = {
       entries: entries.map(_cleanEntry).filter(Boolean).sort((a, b) => a.normalized_path.localeCompare(b.normalized_path)),
       updated_at: new Date().toISOString(),
     };
     await provider.writeJson(STORE_PATH, payload);
-    const signature = await window.MeldexKnowledgeSignature?.sign?.(provider, SIGNATURE_SCOPE, payload, { signer: typeof getUsername === 'function' ? getUsername() : '' }).catch(() => null);
+    const signature = await _signStorePayload(provider, payload);
     if (audit) await window.MeldexKnowledgeSignature?.recordAudit?.(provider, 'file_lock', audit).catch(() => {});
     return { ...payload, signature };
   }
@@ -337,6 +360,7 @@
     if (!entry) throw new Error('path は必須です');
     if (_isSystemExcluded(entry.path)) throw new Error('システムフォルダは編集ロックできません');
     const store = await _readStore(provider);
+    _assertStoreVerifiedForWrite(store);
     const next = store.entries.filter(row => row.normalized_path !== entry.normalized_path && row.file_id !== entry.file_id);
     next.push(entry);
     await _writeStore(provider, next, { action: 'lock', path: entry.path, reason: entry.lock_reason });
@@ -348,6 +372,7 @@
     const target = _normalize(path);
     if (!target) throw new Error('path は必須です');
     const store = await _readStore(provider);
+    _assertStoreVerifiedForWrite(store);
     const before = store.entries.length;
     const next = store.entries.filter(row => row.normalized_path !== target);
     await _writeStore(provider, next, { action: 'unlock', path: _normalizeFolderPath(path), removed: before - next.length });
@@ -357,6 +382,7 @@
   async function rewriteForPathMutation(provider, event = {}) {
     if (!provider || !event) return;
     const store = await _readStore(provider).catch(() => ({ entries: [] }));
+    _assertStoreVerifiedForWrite(store);
     let changed = false;
     const oldPath = _normalizeFolderPath(event.oldPath || event.path || '');
     const newPath = _normalizeFolderPath(event.newPath || '');

@@ -32,7 +32,7 @@ const MeldexExportSave = (() => {
   }
 
   function guessNameFromPath(path, fallback = '無題') {
-    const raw = String(path || '').split('/').pop() || String(path || '').split('\\').pop() || '';
+    const raw = String(path || '').replace(/\\/g, '/').split('/').pop() || '';
     return raw || fallback;
   }
 
@@ -145,12 +145,18 @@ const MeldexExportSave = (() => {
       });
       if (pickerResult !== null) return pickerResult;
     }
-    const reader = new FileReader();
-    const dataUrl = await new Promise((resolve, reject) => {
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
+    let dataUrl = '';
+    try {
+      const reader = new FileReader();
+      dataUrl = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('ファイル内容を読み込めませんでした'));
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      if (typeof showStatus === 'function') showStatus(options.errorMessage || (err?.message || '保存に失敗しました'), true);
+      return false;
+    }
     return _showDialog({
       title: options.dialogTitle || '書き出して保存',
       initialfile,
@@ -184,7 +190,13 @@ const MeldexExportSave = (() => {
 
   async function saveUrl(url, options = {}) {
     try {
-      const res = await fetch(url, { credentials: 'same-origin' });
+      const headers = { ...(options.headers || {}) };
+      try {
+        if (options.auth !== false && typeof _authToken !== 'undefined' && _authToken && !headers.Authorization) {
+          headers.Authorization = 'Bearer ' + _authToken;
+        }
+      } catch {}
+      const res = await fetch(url, { credentials: 'same-origin', headers });
       if (!res.ok) {
         throw new Error(options.errorMessage || `保存元の取得に失敗しました (${res.status})`);
       }
@@ -214,3 +226,7 @@ const MeldexExportSave = (() => {
   };
 
 })();
+
+if (typeof window !== 'undefined') {
+  window.MeldexExportSave = MeldexExportSave;
+}

@@ -12,6 +12,7 @@
     'unlock_requires_confirmation',
   ];
   const MAIN_BOOL_FIELDS = BOOL_FIELDS.filter(field => field !== 'unlock_requires_confirmation');
+  const DEFAULT_ADD_BOOL_FIELDS = new Set(['learnable', 'ideation_usable', 'llm_reference', 'chat_response']);
   const FIELD_LABELS = {
     status_value: 'ステータス',
     display_label: '表示名',
@@ -45,9 +46,23 @@
     return encodeURIComponent(String(value ?? '')).replace(/[^a-zA-Z0-9_-]/g, '_') || 'empty';
   }
 
+  function spAuthToken() {
+    try {
+      if (typeof _authToken !== 'undefined' && _authToken) return _authToken;
+    } catch {}
+    try {
+      const storage = window?.['local' + 'Storage'];
+      return storage?.getItem?.('meldex-auth-token') || storage?.getItem?.('crossfolio-auth-token') || '';
+    } catch {
+      return '';
+    }
+  }
+
   async function spApi(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const token = spAuthToken();
+    if (token && !headers.Authorization) headers.Authorization = 'Bearer ' + token;
     const res = await fetch(API_BASE + path, { ...opts, headers });
     const text = await res.text();
     let payload = {};
@@ -150,7 +165,7 @@
             <div class="sp-checks">
               ${BOOL_FIELDS.map(field => `
                 <label class="gb-check">
-                  <input type="checkbox" data-sp-add="${field}" ${['learnable', 'ideation_usable', 'llm_reference', 'chat_response'].includes(field) ? 'checked' : ''}>
+                  <input type="checkbox" data-sp-add="${field}" ${DEFAULT_ADD_BOOL_FIELDS.has(field) ? 'checked' : ''}>
                   <span>${spEsc(FIELD_LABELS[field])}</span>
                 </label>
               `).join('')}
@@ -378,7 +393,7 @@ ${spEsc(actionText)}</pre>
     }
   }
 
-  function handleClick(container, event) {
+  async function handleClick(container, event) {
     const actionEl = event.target.closest('[data-sp-action]');
     const row = event.target.closest('[data-sp-row]');
     if (row && !event.target.closest('input, textarea, button')) {
@@ -388,16 +403,20 @@ ${spEsc(actionText)}</pre>
     const action = actionEl.dataset.spAction;
     const writeActions = new Set(['show-add', 'hide-add', 'submit-add', 'define-status', 'reset-one', 'reset-all', 'delete-one', 'import-merge', 'import-replace']);
     if (writeActions.has(action) && !ensureCanWrite(container)) return;
-    if (action === 'show-add') showAddForm(container);
-    if (action === 'hide-add') hideAddForm(container);
-    if (action === 'submit-add') submitAddForm(container);
-    if (action === 'define-status') showAddForm(container, actionEl.dataset.status || '');
-    if (action === 'reset-one') resetOne(container, actionEl.closest('[data-sp-row]'));
-    if (action === 'reset-all') resetAll(container);
-    if (action === 'delete-one') deleteOne(container, actionEl.closest('[data-sp-row]'));
-    if (action === 'export-json') exportJson(container);
-    if (action === 'import-merge') startImport(container, 'merge');
-    if (action === 'import-replace') startImport(container, 'replace');
+    try {
+      if (action === 'show-add') return showAddForm(container);
+      if (action === 'hide-add') return hideAddForm(container);
+      if (action === 'submit-add') return await submitAddForm(container);
+      if (action === 'define-status') return showAddForm(container, actionEl.dataset.status || '');
+      if (action === 'reset-one') return await resetOne(container, actionEl.closest('[data-sp-row]'));
+      if (action === 'reset-all') return await resetAll(container);
+      if (action === 'delete-one') return await deleteOne(container, actionEl.closest('[data-sp-row]'));
+      if (action === 'export-json') return await exportJson(container);
+      if (action === 'import-merge') return startImport(container, 'merge');
+      if (action === 'import-replace') return startImport(container, 'replace');
+    } catch (err) {
+      if (typeof showStatus === 'function') showStatus('操作に失敗: ' + (err?.message || err), true);
+    }
   }
 
   function handleInput(container, event) {
@@ -480,59 +499,73 @@ ${spEsc(actionText)}</pre>
     const state = getState(container);
     const key = row.dataset.status || '';
     clearTimeout(state.timers.get(key));
+    row.dataset.spSavePending = '1';
     state.timers.set(key, setTimeout(() => saveRow(container, row), 300));
   }
 
   async function saveRow(container, row) {
     if (!ensureCanWrite(container)) return;
     const state = getState(container);
-    const payload = collectRowPayload(row);
-    payload.display_color = row.querySelector('[data-sp-color]')?.dataset.color || row.querySelector('[data-sp-color]')?.textContent?.trim() || '#94a3b8';
-    const validation = validatePolicy(payload, state);
-    if (validation) {
-      setRowMessage(row, validation, true);
+    const key = row.dataset.status || '';
+    if (state.saving.has(key)) {
+      row.dataset.spSavePending = '1';
       return;
     }
-    setRowMessage(row, '保存中...', false);
+    state.timers.delete(key);
+    state.saving.add(key);
+    row.dataset.spSavePending = '0';
     try {
-      const index = state.policies.findIndex(item => item.status_value === payload.original_status_value);
-      const oldUsage = index >= 0 ? usageFor(state.policies[index]) : {};
-      const renamed = payload.status_value !== payload.original_status_value;
-      if (renamed && Number(oldUsage.entry_count || 0) + Number(oldUsage.knowledge_item_count || 0) > 0) {
-        const choice = await spChoiceDialog(
-          'ステータス名の変更確認',
-          `「${payload.original_status_value}」は使用中です。既存エントリと記憶項目のステータス値は変更されず、旧ステータスは未登録として表示されます。続けますか？`,
-          [
-            { value: 'apply', label: '変更する', primary: true },
-            { value: '', label: 'キャンセル' },
-          ],
-        );
-        if (choice !== 'apply') {
-          await loadPolicies(container);
-          selectPolicy(container, payload.original_status_value);
-          return;
-        }
-      }
-      const res = await spApi('/status_policies', { method: 'POST', body: JSON.stringify(payload) });
-      const saved = res.policy;
-      if (renamed) {
-        await loadPolicies(container);
-        selectPolicy(container, saved.status_value);
+      const payload = collectRowPayload(row);
+      payload.display_color = row.querySelector('[data-sp-color]')?.dataset.color || row.querySelector('[data-sp-color]')?.textContent?.trim() || '#94a3b8';
+      const validation = validatePolicy(payload, state);
+      if (validation) {
+        setRowMessage(row, validation, true);
         return;
       }
-      if (index >= 0) state.policies[index] = { ...saved, usage: oldUsage };
-      row.dataset.status = saved.status_value;
-      row.dataset.updated = saved.updated || '';
-      state.selectedStatus = saved.status_value;
-      setRowMessage(row, '保存済み', false);
-      renderPreview(container);
-    } catch (err) {
-      if (err.status === 409) {
-        setRowMessage(row, '他のウィンドウで変更されました', true);
-        await loadPolicies(container);
-      } else {
-        setRowMessage(row, err.message, true);
+      setRowMessage(row, '保存中...', false);
+      try {
+        const index = state.policies.findIndex(item => item.status_value === payload.original_status_value);
+        const oldUsage = index >= 0 ? usageFor(state.policies[index]) : {};
+        const renamed = payload.status_value !== payload.original_status_value;
+        if (renamed && Number(oldUsage.entry_count || 0) + Number(oldUsage.knowledge_item_count || 0) > 0) {
+          const choice = await spChoiceDialog(
+            'ステータス名の変更確認',
+            `「${payload.original_status_value}」は使用中です。既存エントリと記憶項目のステータス値は変更されず、旧ステータスは未登録として表示されます。続けますか？`,
+            [
+              { value: 'apply', label: '変更する', primary: true },
+              { value: '', label: 'キャンセル' },
+            ],
+          );
+          if (choice !== 'apply') {
+            await loadPolicies(container);
+            selectPolicy(container, payload.original_status_value);
+            return;
+          }
+        }
+        const res = await spApi('/status_policies', { method: 'POST', body: JSON.stringify(payload) });
+        const saved = res.policy;
+        if (renamed) {
+          await loadPolicies(container);
+          selectPolicy(container, saved.status_value);
+          return;
+        }
+        if (index >= 0) state.policies[index] = { ...saved, usage: oldUsage };
+        row.dataset.status = saved.status_value;
+        row.dataset.updated = saved.updated || '';
+        state.selectedStatus = saved.status_value;
+        setRowMessage(row, '保存済み', false);
+        renderPreview(container);
+      } catch (err) {
+        if (err.status === 409) {
+          setRowMessage(row, '他のウィンドウで変更されました', true);
+          await loadPolicies(container);
+        } else {
+          setRowMessage(row, err.message, true);
+        }
       }
+    } finally {
+      state.saving.delete(key);
+      if (row.isConnected && row.dataset.spSavePending === '1') scheduleSave(container, row);
     }
   }
 
@@ -547,6 +580,9 @@ ${spEsc(actionText)}</pre>
     form.querySelector('[data-sp-add="taste_learning_weight"]').value = '1';
     form.querySelector('[data-sp-add-weight]').textContent = '1.0';
     form.querySelector('[data-sp-add-message]').textContent = '';
+    form.querySelectorAll('[data-sp-add]').forEach((input) => {
+      if (input.type === 'checkbox') input.checked = DEFAULT_ADD_BOOL_FIELDS.has(input.dataset.spAdd);
+    });
     setAddColor(form, '#94a3b8');
     form.querySelector('[data-sp-add="status_value"]').focus();
   }

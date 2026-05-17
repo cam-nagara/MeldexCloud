@@ -103,9 +103,19 @@
     return null;
   }
 
-  async function _ensureDirectory(provider, path) {
+  async function _requireUnlockedPath(provider, path, options = {}) {
+    const normalized = _normalizePath(path);
+    if (!normalized || !window.MeldexFileLockStore?.requireUnlocked) return;
+    await window.MeldexFileLockStore.requireUnlocked(provider, normalized, options);
+  }
+
+  async function _ensureDirectory(provider, path, options = {}) {
     const normalized = _normalizePath(path);
     if (!normalized || !provider?.ensureDirectory) return;
+    await _requireUnlockedPath(provider, normalized, {
+      action: options.action || 'sample-create-directory',
+      includeDescendants: !!options.includeDescendants,
+    });
     await provider.ensureDirectory(normalized);
   }
 
@@ -121,8 +131,8 @@
       const homePath = targetRoot.split('/')[0] || 'MeldexHome';
       const canWrite = await _hasWritePermission(provider);
       if (canWrite) {
-        await _ensureDirectory(provider, homePath);
-        if (opts.createSampleRoot) await _ensureDirectory(provider, targetRoot);
+        await _ensureDirectory(provider, homePath, { action: 'sample-prepare-home' });
+        if (opts.createSampleRoot) await _ensureDirectory(provider, targetRoot, { action: 'sample-prepare-root' });
         _rememberHome(homePath);
         return { ok: true, homePath, targetRoot, writable: true };
       }
@@ -144,12 +154,16 @@
     const meta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
     const sampleRoot = await _statPath(provider, targetRoot);
     const failed = Number(meta?.failed || 0);
+    const hasSampleFolder = sampleRoot?.kind === 'directory';
+    const contentHashMatches = !manifest.contentHash || String(meta?.contentHash || '') === String(manifest.contentHash || '');
     return {
       ok: true,
       targetRoot,
-      hasSampleFolder: sampleRoot?.kind === 'directory',
+      hasSampleFolder,
       hasInstallMeta: !!meta,
-      installed: !!meta && failed === 0,
+      installed: !!meta && failed === 0 && hasSampleFolder && contentHashMatches,
+      contentHashMatches,
+      needsUpdate: !!meta && hasSampleFolder && !contentHashMatches,
       meta,
     };
   }
@@ -178,9 +192,34 @@
     return bytes;
   }
 
-  async function _copyMissingEntries(provider, manifest) {
-    const result = { copied: 0, skipped: 0, failed: 0, errors: [] };
+  function _entryHashMap(manifest) {
+    const map = {};
+    (Array.isArray(manifest?.entries) ? manifest.entries : []).forEach((entry) => {
+      const targetPath = _normalizePath(entry?.targetPath);
+      const sha256 = String(entry?.sha256 || '').trim();
+      if (targetPath && sha256) map[targetPath] = sha256;
+    });
+    return map;
+  }
+
+  function _sampleContentNeedsRefresh(manifest, meta) {
+    return !!meta
+      && !!manifest?.contentHash
+      && String(meta?.contentHash || '') !== String(manifest.contentHash || '');
+  }
+
+  async function _existingFileMatchesManifest(provider, targetPath, entry) {
+    if (!entry?.sha256 || !window.crypto?.subtle || typeof provider?.downloadAsFile !== 'function') return false;
+    const file = await provider.downloadAsFile(targetPath);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const digest = await _sha256Hex(bytes);
+    return !!digest && digest === String(entry.sha256);
+  }
+
+  async function _copyMissingEntries(provider, manifest, options = {}) {
+    const result = { copied: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
     const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+    const refreshExisting = !!options.refreshExisting;
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index] || {};
       const targetPath = _normalizePath(entry.targetPath);
@@ -192,11 +231,19 @@
       try {
         const existing = await _statPath(provider, targetPath);
         if (existing?.kind === 'file') {
-          result.skipped += 1;
+          if (!refreshExisting || await _existingFileMatchesManifest(provider, targetPath, entry)) {
+            result.skipped += 1;
+            continue;
+          }
+          await _requireUnlockedPath(provider, targetPath, { action: 'sample-update' });
+          const bytes = await _fetchAsset(entry);
+          await provider.uploadBytes(targetPath, bytes);
+          result.updated += 1;
           continue;
         }
         const parent = _dirname(targetPath);
-        if (parent) await _ensureDirectory(provider, parent);
+        await _requireUnlockedPath(provider, targetPath, { action: 'sample-upload' });
+        if (parent) await _ensureDirectory(provider, parent, { action: 'sample-create-parent' });
         const bytes = await _fetchAsset(entry);
         await provider.uploadBytes(targetPath, bytes);
         result.copied += 1;
@@ -210,20 +257,20 @@
   }
 
   async function _writeSeedMeta(provider, manifest, result) {
-    try {
-      await _ensureDirectory(provider, _dirname(SEED_META_PATH));
-      await provider.writeJson(SEED_META_PATH, {
-        type: 'meldex-cloud-sample-seed-result',
-        contentHash: manifest.contentHash || '',
-        fileCount: manifest.fileCount || 0,
-        totalBytes: manifest.totalBytes || 0,
-        targetRoot: manifest.targetRoot || '',
-        copied: result.copied || 0,
-        skipped: result.skipped || 0,
-        failed: result.failed || 0,
-        updatedAt: new Date().toISOString(),
-      });
-    } catch {}
+    await _ensureDirectory(provider, _dirname(SEED_META_PATH));
+    await provider.writeJson(SEED_META_PATH, {
+      type: 'meldex-cloud-sample-seed-result',
+      contentHash: manifest.contentHash || '',
+      entryHashes: _entryHashMap(manifest),
+      fileCount: manifest.fileCount || 0,
+      totalBytes: manifest.totalBytes || 0,
+      targetRoot: manifest.targetRoot || '',
+      copied: result.copied || 0,
+      updated: result.updated || 0,
+      skipped: result.skipped || 0,
+      failed: result.failed || 0,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   async function _ensureNow() {
@@ -233,16 +280,25 @@
     const manifest = await _readManifest();
     const canWrite = await _hasWritePermission(provider);
     if (!canWrite) return { ok: false, skipped: 'readonly' };
+    const previousMeta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
     await prepareHome({ createSampleRoot: true });
     await _ensureDirectory(provider, _normalizePath(manifest.targetRoot));
-    const result = await _copyMissingEntries(provider, manifest);
-    await _writeSeedMeta(provider, manifest, result);
+    const result = await _copyMissingEntries(provider, manifest, {
+      refreshExisting: _sampleContentNeedsRefresh(manifest, previousMeta),
+    });
+    try {
+      await _writeSeedMeta(provider, manifest, result);
+    } catch (err) {
+      result.failed += 1;
+      result.errors.push({ targetPath: SEED_META_PATH, error: err?.message || String(err) });
+    }
     if (typeof refreshOutliner === 'function') {
       const refreshResult = refreshOutliner();
       refreshResult?.catch?.(() => {});
     }
-    if (result.copied > 0 && typeof showStatus === 'function') {
-      showStatus(`クラウド版サンプルを準備しました（追加 ${result.copied} 件）`);
+    if ((result.copied > 0 || result.updated > 0) && typeof showStatus === 'function') {
+      const updateText = result.updated > 0 ? ` / 更新 ${result.updated} 件` : '';
+      showStatus(`クラウド版サンプルを準備しました（追加 ${result.copied} 件${updateText}）`);
     }
     return { ok: result.failed === 0, ...result };
   }
@@ -252,7 +308,16 @@
       _running = _ensureNow()
         .catch((err) => {
           console.warn('[MeldexCloudSampleSeed] sample seed failed', err);
-          return { ok: false, error: err?.message || String(err) };
+          const message = err?.message || String(err);
+          return {
+            ok: false,
+            copied: 0,
+            updated: 0,
+            skipped: 0,
+            failed: 1,
+            errors: [{ targetPath: MANIFEST_URL, error: message }],
+            error: message,
+          };
         })
         .finally(() => {
           _running = null;

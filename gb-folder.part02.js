@@ -602,21 +602,27 @@ function openViewer(url, opts) {
   const iframe = document.getElementById('html-iframe');
   const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(url) || url;
   if (iframe) {
+    const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
+      ? _gbPrepareUntrustedIframe(iframe, resolvedUrl)
+      : iframe;
     if (typeof trackIframeLoading === 'function') {
       const inferredType = _inferViewerFileType(url);
       const loadingLabel = inferredType === 'pdf' ? 'PDFを読み込み中...' : 'ビューアを読み込み中...';
-      trackIframeLoading(iframe, loadingLabel, openOpts);
+      trackIframeLoading(preparedIframe || iframe, loadingLabel, openOpts);
     }
-    iframe.src = resolvedUrl;
+    if (preparedIframe) preparedIframe.src = resolvedUrl;
   }
   // ビューワー表示時に詳細パネルにファイル情報を表示
   if (!openOpts.skipGlobalUi) {
     const query = url.includes('?') ? url.substring(url.indexOf('?') + 1) : '';
     const params = new URLSearchParams(query);
-    const files = (params.get('files') || '').split(',').filter(Boolean);
-    const filePath = params.get('file') || params.get('pdf') || params.get('folder') || files[0] || '';
+    const filePath = _getViewerParam(params, 'file')
+      || _getViewerParam(params, 'pdf')
+      || _getViewerParam(params, 'folder')
+      || _firstViewerFilesPath(_getViewerParam(params, 'files'))
+      || '';
     if (filePath && typeof _showFileInfoInDetailPanel === 'function') {
-      _showFileInfoInDetailPanel(decodeURIComponent(filePath));
+      _showFileInfoInDetailPanel(filePath);
     }
   }
 }

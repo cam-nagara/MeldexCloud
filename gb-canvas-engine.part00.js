@@ -5,14 +5,147 @@ function bdYamlScalar(raw) {
   if (!value || value === 'null' || value === '~') return '';
   if (value === 'true') return true;
   if (value === 'false') return false;
+  if (value.startsWith('{') && value.endsWith('}')) return bdYamlFlowMap(value);
+  if (value.startsWith('[') && value.endsWith(']')) return bdYamlFlowList(value);
   if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
   if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
     const inner = value.slice(1, -1);
-    return value.startsWith("'")
-      ? inner.replace(/''/g, "'")
-      : inner.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    if (value.startsWith("'")) return inner.replace(/\\n/g, '\n').replace(/''/g, "'").replace(/\\'/g, "'");
+    return inner
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\(["\\/bfnrt])/g, (_, ch) => ({
+        '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t',
+      }[ch] || ch));
   }
   return value;
+}
+
+function bdYamlSplitFlowItems(raw) {
+  const parts = [];
+  let buf = '';
+  let quote = '';
+  let depth = 0;
+  const text = String(raw || '');
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      buf += ch;
+      if ((quote === '"' || quote === "'") && ch === '\\' && i + 1 < text.length) {
+        i += 1;
+        buf += text[i];
+        continue;
+      }
+      if (ch === quote) {
+        if (quote === "'" && text[i + 1] === "'") {
+          i += 1;
+          buf += text[i];
+          continue;
+        }
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      buf += ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[') {
+      depth += 1;
+      buf += ch;
+      continue;
+    }
+    if (ch === '}' || ch === ']') {
+      depth = Math.max(0, depth - 1);
+      buf += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      parts.push(buf.trim());
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  return parts;
+}
+
+function bdYamlSplitFlowPair(raw) {
+  let quote = '';
+  let depth = 0;
+  const text = String(raw || '');
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if ((quote === '"' || quote === "'") && ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) {
+        if (quote === "'" && text[i + 1] === "'") {
+          i += 1;
+          continue;
+        }
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}' || ch === ']') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === ':' && depth === 0) return [text.slice(0, i).trim(), text.slice(i + 1).trim()];
+  }
+  return null;
+}
+
+function bdYamlFlowMap(raw) {
+  const inner = String(raw || '').trim().slice(1, -1).trim();
+  if (!inner) return {};
+  const result = {};
+  bdYamlSplitFlowItems(inner).forEach(item => {
+    const pair = bdYamlSplitFlowPair(item);
+    if (!pair || !pair[0]) return;
+    const keyValue = bdYamlScalar(pair[0]);
+    const key = String(keyValue == null ? '' : keyValue).trim();
+    if (!key) return;
+    result[key] = bdYamlScalar(pair[1]);
+  });
+  return result;
+}
+
+function bdYamlFlowList(raw) {
+  const inner = String(raw || '').trim().slice(1, -1).trim();
+  if (!inner) return [];
+  return bdYamlSplitFlowItems(inner).map(item => bdYamlScalar(item));
+}
+
+function bdNormalizeConnectionControlPoints(raw) {
+  if (Array.isArray(raw) && raw.length === 2
+      && raw[0] && raw[1]
+      && Number.isFinite(+raw[0].dx) && Number.isFinite(+raw[0].dy)
+      && Number.isFinite(+raw[1].dx) && Number.isFinite(+raw[1].dy)) {
+    return [
+      { dx: +raw[0].dx, dy: +raw[0].dy },
+      { dx: +raw[1].dx, dy: +raw[1].dy },
+    ];
+  }
+  if (Array.isArray(raw) && raw.length === 4 && raw.every(value => Number.isFinite(+value))) {
+    return [
+      { dx: +raw[0], dy: +raw[1] },
+      { dx: +raw[2], dy: +raw[3] },
+    ];
+  }
+  return null;
 }
 
 function bdYamlTopLevelBlock(fm, key) {
@@ -64,7 +197,14 @@ function bdYamlListObjects(fm, key) {
     const item = line.match(/^\s*-\s*(.*)$/);
     if (item) {
       const rest = item[1].trim();
-      if (rest.startsWith('{') || rest.startsWith('[')) {
+      const flowValue = bdYamlScalar(rest);
+      if (flowValue && typeof flowValue === 'object' && !Array.isArray(flowValue)) {
+        current = flowValue;
+        nestedKey = '';
+        list.push(current);
+        continue;
+      }
+      if (Array.isArray(flowValue)) {
         current = null;
         nestedKey = '';
         continue;

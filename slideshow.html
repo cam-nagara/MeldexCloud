@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
 <meta charset="UTF-8">
 <title>Meldex スライドショー</title>
+<script src="gb-split-loader.js"></script>
 <script src="gb-runtime-adapter.js"></script>
 <script src="gb-resource-url.js"></script>
 <script src="gb-config.js"></script>
 <script src="gb-dropbox-auth.js"></script>
+<script src="gb-source-folder-registry.js"></script>
 <script src="gb-storage-adapter.js"></script>
 <script src="gb-storage-adapter-localfs.js"></script>
 <script src="gb-data-access.js"></script>
@@ -134,12 +137,31 @@ document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms');
 if (!hudVisible) document.getElementById('hud').classList.add('hidden');
 document.getElementById('btn-bg').classList.toggle('active', bgBlur);
 
+function showSlideshowError(message) {
+  pause();
+  document.getElementById('hud-status').textContent = '読み込み失敗';
+  setHudInfo([message || '画像を読み込めませんでした']);
+}
+
+async function fetchImageList(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  const data = await response.json();
+  if (!Array.isArray(data)) throw new Error('画像一覧の形式が正しくありません');
+  return data;
+}
+
 async function init() {
-  if (folderPath) {
-    const items = await fetch(API + '/images-in-folder?path=' + encodeURIComponent(folderPath)).then(r => r.json());
-    images = items.map(it => ({ name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0 }));
-  } else if (filePaths.length) {
-    images = filePaths.map(p => ({ name: p.split('/').pop(), url: API + '/file-raw?path=' + encodeURIComponent(p), w: 0, h: 0 }));
+  try {
+    if (folderPath) {
+      const items = await fetchImageList(API + '/images-in-folder?path=' + encodeURIComponent(folderPath));
+      images = items.map(it => ({ name: it.name, url: API + '/file-raw?path=' + encodeURIComponent(it.path), w: 0, h: 0 }));
+    } else if (filePaths.length) {
+      images = filePaths.map(p => ({ name: p.split('/').pop(), url: API + '/file-raw?path=' + encodeURIComponent(p), w: 0, h: 0 }));
+    }
+  } catch (e) {
+    showSlideshowError('画像一覧を読み込めませんでした: ' + (e?.message || e));
+    return;
   }
   if (images.length === 0) {
     document.getElementById('hud-info').textContent = '画像がありません';
@@ -150,7 +172,7 @@ async function init() {
   showGroup(0);
   updateHud();
   // 残りを非同期でプリロード
-  images.slice(6).forEach(img => loadMeta(img));
+  preloadRemainingImages(6);
 }
 
 function parseFilesParam() {
@@ -175,6 +197,38 @@ function loadMeta(img) {
   });
 }
 
+async function preloadRemainingImages(startIdx) {
+  let next = Math.max(0, startIdx || 0);
+  const workerCount = Math.min(3, Math.max(0, images.length - next));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (next < images.length) {
+      const current = next++;
+      await loadMeta(images[current]);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function ensureGroupMeta(startIdx) {
+  const targets = [images[startIdx], images[startIdx + 1]].filter(Boolean);
+  await Promise.all(targets.map(loadMeta));
+}
+
+async function ensureMetaRange(startIdx, endIdx) {
+  const start = Math.max(0, startIdx || 0);
+  const end = Math.min(images.length - 1, endIdx);
+  if (end < start) return;
+  let next = start;
+  const workerCount = Math.min(3, end - start + 1);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (next <= end) {
+      const current = next++;
+      await loadMeta(images[current]);
+    }
+  });
+  await Promise.all(workers);
+}
+
 function isPortrait(img) { return img.h > img.w; }
 
 function getGroup(startIdx) {
@@ -189,10 +243,18 @@ function getGroup(startIdx) {
   return [startIdx, startIdx + 1];
 }
 
-function showGroup(newIdx) {
+function cssUrl(url) {
+  return 'url("' + String(url || '').replace(/["\\\n\r\f]/g, ch => '\\' + ch) + '")';
+}
+
+let showSeq = 0;
+async function showGroup(newIdx) {
   if (images.length === 0) return;
   if (newIdx < 0) newIdx = images.length - 1;
   if (newIdx >= images.length) newIdx = 0;
+  const seq = ++showSeq;
+  await ensureGroupMeta(newIdx);
+  if (seq !== showSeq) return;
   idx = newIdx;
   const group = getGroup(idx);
   if (group.length === 0) return;
@@ -225,7 +287,7 @@ function showGroup(newIdx) {
   if (bgBlur) {
     const bgTarget = activeLayer === 'A' ? 'bgB' : 'bgA';
     const bgOld = activeLayer === 'A' ? 'bgA' : 'bgB';
-    document.getElementById(bgTarget).style.backgroundImage = 'url(' + images[group[0]].url + ')';
+    document.getElementById(bgTarget).style.backgroundImage = cssUrl(images[group[0]].url);
     document.getElementById(bgTarget).classList.add('show');
     document.getElementById(bgOld).classList.remove('show');
   }
@@ -246,13 +308,23 @@ function nextGroup() {
   const group = getGroup(idx);
   showGroup(idx + group.length);
 }
-function prevGroup() {
+async function prevGroup() {
   if (images.length === 0) return;
-  let prev = idx - 1;
-  if (prev < 0) prev = images.length - 1;
-  // 見開き: 前が縦長ペアなら2つ前に戻る
-  if (mode !== 'single' && prev > 0 && images[prev] && images[prev-1] && isPortrait(images[prev]) && isPortrait(images[prev-1])) prev--;
-  showGroup(prev);
+  if (mode === 'single') {
+    showGroup(idx <= 0 ? images.length - 1 : idx - 1);
+    return;
+  }
+  await ensureMetaRange(0, idx <= 0 ? images.length - 1 : idx);
+  const starts = [];
+  for (let i = 0; i < images.length;) {
+    starts.push(i);
+    i += Math.max(1, getGroup(i).length);
+  }
+  let pos = starts.findIndex(start => start >= idx);
+  if (pos < 0) pos = starts.length - 1;
+  if (starts[pos] !== idx) pos = Math.max(0, pos - 1);
+  const prevPos = pos <= 0 ? starts.length - 1 : pos - 1;
+  showGroup(starts[prevPos]);
 }
 
 function play() { if (images.length === 0) return; playing = true; document.getElementById('btn-play').textContent = '⏸'; scheduleNext(); }
@@ -292,7 +364,12 @@ document.getElementById('sel-mode').onchange = function() { mode = this.value; l
 document.getElementById('speed').oninput = function() { speed = parseFloat(this.value); document.getElementById('speed-label').textContent = speed + 's'; localStorage.setItem('ss-speed', speed); if (playing) scheduleNext(); };
 document.getElementById('fade').oninput = function() { fadeMs = parseFloat(this.value) * 1000; document.documentElement.style.setProperty('--fade-ms', fadeMs + 'ms'); localStorage.setItem('ss-fade', this.value); };
 document.getElementById('btn-bg').onclick = function() { bgBlur = !bgBlur; this.classList.toggle('active', bgBlur); localStorage.setItem('ss-bg', bgBlur); if (!bgBlur) { document.getElementById('bgA').classList.remove('show'); document.getElementById('bgB').classList.remove('show'); } else showGroup(idx); };
-document.getElementById('btn-hud').onclick = function() { hudVisible = !hudVisible; document.getElementById('hud').classList.toggle('hidden', !hudVisible); localStorage.setItem('ss-hud', hudVisible); };
+function setHudVisible(nextVisible) {
+  hudVisible = !!nextVisible;
+  document.getElementById('hud').classList.toggle('hidden', !hudVisible);
+  localStorage.setItem('ss-hud', hudVisible);
+}
+document.getElementById('btn-hud').onclick = function() { setHudVisible(!hudVisible); };
 document.getElementById('progress-bar').onclick = function(e) {
   if (images.length === 0) return;
   const r = this.getBoundingClientRect();
@@ -306,7 +383,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') { pause(); nextGroup(); }
   else if (e.key === 'ArrowLeft') { pause(); prevGroup(); }
   else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
-  else if (e.key === 'h' || e.key === 'H') { hudVisible = !hudVisible; document.getElementById('hud').classList.toggle('hidden', !hudVisible); }
+  else if (e.key === 'h' || e.key === 'H') { setHudVisible(!hudVisible); }
   else if (e.key === 'f' || e.key === 'F') {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen();

@@ -27,9 +27,9 @@
       leftWidth *= scale;
       rightWidth *= scale;
     }
-    const leftRatio = _clampRatio(leftWidth / totalWidth, 0.08, 0.45);
+    const leftRatio = leftWidth / totalWidth;
     const remainingWidth = Math.max(1, totalWidth - leftWidth);
-    const workRatio = _clampRatio((remainingWidth - rightWidth) / remainingWidth, 0.2, 0.9);
+    const workRatio = Math.max(1, remainingWidth - rightWidth) / remainingWidth;
     return {
       leftRatio,
       workRatio,
@@ -119,9 +119,12 @@
     const rootSplit = GBLayout.createSplitNode('horizontal', ratios.leftRatio, [leftDock, contentSplit]);
 
     GBLayout.root = rootSplit;
+    if (typeof GBLayout.revealPane === 'function') {
+      GBLayout.revealPane(mainPane.id, { activate: true, deferRender: true });
+    }
     GBLayout.render();
-    GBLayout.saveLayout();
     GBLayout.setActivePane(mainPane.id);
+    GBLayout.saveLayout();
     return { root: rootSplit, activePaneId: mainPane.id, ratios };
   }
 

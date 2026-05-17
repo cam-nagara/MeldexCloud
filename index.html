@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="ja">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
@@ -19,22 +20,18 @@
   <script>
     (function () {
       'use strict';
-
-      var fallbackReleases = 'https://github.com/cam-nagara/MeldexCloud/releases';
-      var fallbackVersion = 'v0.5.448 BETA';
+      var fallbackReleases = '';
+      var fallbackVersion = 'v0.6.0 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
-
       function normalizeVersion(value) {
         var raw = String(value || '').trim();
         if (!raw) return fallbackVersion;
         return /^v/i.test(raw) ? raw : 'v' + raw;
       }
-
       function escapeRepoPart(value) {
         return encodeURIComponent(String(value || '').replace(/^\/+|\/+$/g, ''));
       }
-
       function githubReleaseApiUrl(releasesUrl) {
         try {
           var url = new URL(releasesUrl || fallbackReleases);
@@ -45,7 +42,6 @@
           return '';
         }
       }
-
       function pickDesktopAsset(release) {
         var assets = Array.isArray(release && release.assets) ? release.assets : [];
         var preferred = assets.find(function (asset) {
@@ -55,7 +51,6 @@
           return /\.(zip|exe|msi)$/i.test(asset.name || '');
         }) || null;
       }
-
       function optionFromRelease(release) {
         var asset = pickDesktopAsset(release);
         var version = normalizeVersion(release && release.tag_name);
@@ -67,7 +62,6 @@
           assetName: asset && asset.name ? asset.name : '配布ページ',
         };
       }
-
       function fallbackOptions(desktop, releasesUrl) {
         var current = normalizeVersion(desktop.currentVersion || desktop.version || '');
         var downloadUrl = desktop.downloadUrl || releasesUrl;
@@ -79,37 +73,56 @@
             pageUrl: item.pageUrl || item.releasesUrl || releasesUrl,
             publishedAt: item.publishedAt || '',
             assetName: item.assetName || '配布ページ',
+            available: true,
           };
         }).filter(function (item) { return item.version; });
         if (mapped.length) return mapped;
+        if (!downloadUrl) {
+          return [{
+            version: current,
+            downloadUrl: '',
+            pageUrl: '',
+            publishedAt: '',
+            assetName: '公開URL未設定',
+            available: false,
+          }];
+        }
         return [{
           version: current,
           downloadUrl: downloadUrl,
           pageUrl: releasesUrl,
           publishedAt: '',
           assetName: desktop.downloadUrl ? 'Windows用ZIP' : '配布ページ',
+          available: true,
         }];
       }
-
       function formatDate(value) {
         if (!value) return '';
         var date = new Date(value);
         if (Number.isNaN(date.getTime())) return '';
         return date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' });
       }
-
       function setText(selector, value) {
         document.querySelectorAll(selector).forEach(function (node) {
           node.textContent = value;
         });
       }
-
       function setRuntimeHref(kind, value) {
         document.querySelectorAll('[data-runtime-href="' + kind + '"]').forEach(function (node) {
           node.setAttribute('href', value);
         });
       }
-
+      function setRuntimeLinkState(kind, value, available) {
+        document.querySelectorAll('[data-runtime-href="' + kind + '"]').forEach(function (node) {
+          if (available && value) {
+            node.setAttribute('href', value);
+            node.removeAttribute('aria-disabled');
+          } else {
+            node.removeAttribute('href');
+            node.setAttribute('aria-disabled', 'true');
+          }
+        });
+      }
       function renderVersionSelect() {
         var select = document.getElementById('desktop-version-select');
         if (!select) return;
@@ -122,17 +135,16 @@
         });
         select.value = String(selectedIndex);
       }
-
       function applySelectedVersion() {
         var item = releaseOptions[selectedIndex] || releaseOptions[0];
         if (!item) return;
-        setRuntimeHref('desktop-download', item.downloadUrl || item.pageUrl || fallbackReleases);
-        setRuntimeHref('desktop-release-page', item.pageUrl || fallbackReleases);
+        var available = item.available !== false && !!(item.downloadUrl || item.pageUrl || fallbackReleases);
+        setRuntimeLinkState('desktop-download', item.downloadUrl || item.pageUrl || fallbackReleases, available);
+        setRuntimeLinkState('desktop-release-page', item.pageUrl || fallbackReleases, available);
         setText('[data-runtime-text="desktop-version"]', item.version);
         setText('[data-runtime-text="desktop-asset"]', item.assetName || '配布ページ');
         setText('[data-runtime-text="desktop-published"]', formatDate(item.publishedAt) || '公開日未取得');
       }
-
       function bindVersionSelect() {
         var select = document.getElementById('desktop-version-select');
         if (!select || select.dataset.bound === '1') return;
@@ -142,7 +154,6 @@
           applySelectedVersion();
         });
       }
-
       async function loadReleaseOptions(releasesUrl, desktop) {
         var apiUrl = githubReleaseApiUrl(releasesUrl);
         if (!apiUrl) return fallbackOptions(desktop, releasesUrl);
@@ -160,13 +171,12 @@
           return fallbackOptions(desktop, releasesUrl);
         }
       }
-
       async function applyRuntimeLinks() {
         var cfg = window.MeldexCloudRuntimeConfig || {};
         var desktop = cfg.desktop || {};
         var releasesUrl = desktop.releasesUrl || fallbackReleases;
         var sampleUrl = (cfg.samples && cfg.samples.downloadUrl) || releasesUrl;
-        setRuntimeHref('desktop-releases', releasesUrl);
+        setRuntimeLinkState('desktop-releases', releasesUrl, !!releasesUrl);
         setRuntimeHref('sample-download', sampleUrl);
         releaseOptions = await loadReleaseOptions(releasesUrl, desktop);
         selectedIndex = 0;
@@ -174,7 +184,6 @@
         bindVersionSelect();
         applySelectedVersion();
       }
-
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', applyRuntimeLinks);
       } else {
@@ -196,30 +205,25 @@
       --danger: #d85b5b;
       --link: #8fa8ff;
     }
-
     * {
       box-sizing: border-box;
     }
-
     html {
       background: var(--bg);
       color: var(--fg);
       font-family: "Noto Sans JP", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.7;
     }
-
     body {
       margin: 0;
       min-width: 320px;
       background: var(--bg);
     }
-
     a {
       color: var(--link);
       text-decoration-thickness: 1px;
       text-underline-offset: 3px;
     }
-
     .topbar {
       position: sticky;
       top: 0;
@@ -233,7 +237,6 @@
       background: color-mix(in srgb, var(--bg) 92%, transparent);
       backdrop-filter: blur(14px);
     }
-
     .brand {
       display: inline-flex;
       align-items: center;
@@ -244,13 +247,11 @@
       text-decoration: none;
       letter-spacing: 0;
     }
-
     .brand img {
       width: 30px;
       height: 30px;
       flex: 0 0 auto;
     }
-
     .nav {
       display: flex;
       align-items: center;
@@ -258,16 +259,13 @@
       font-size: 13px;
       white-space: nowrap;
     }
-
     .nav a {
       color: var(--muted);
       text-decoration: none;
     }
-
     .nav a:hover {
       color: var(--fg);
     }
-
     .hero {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
@@ -277,11 +275,9 @@
       padding: clamp(34px, 5vw, 58px) clamp(16px, 4vw, 44px) clamp(32px, 4vw, 46px);
       border-bottom: 1px solid var(--line);
     }
-
     .hero-copy {
       max-width: 760px;
     }
-
     .eyebrow {
       margin: 0 0 10px;
       color: var(--accent);
@@ -289,7 +285,6 @@
       font-weight: 700;
       letter-spacing: 0;
     }
-
     h1 {
       margin: 0;
       color: var(--fg);
@@ -297,26 +292,22 @@
       line-height: 1.05;
       letter-spacing: 0;
     }
-
     .lead {
       margin: 18px 0 0;
       max-width: 700px;
       color: color-mix(in srgb, var(--fg) 88%, var(--muted));
       font-size: clamp(16px, 2.2vw, 19px);
     }
-
     .actions {
       display: flex;
       flex-wrap: wrap;
       gap: 12px;
       margin-top: 26px;
     }
-
     .button.subtle {
       background: transparent;
       color: var(--muted);
     }
-
     .button {
       display: inline-flex;
       align-items: center;
@@ -330,24 +321,24 @@
       font-weight: 700;
       text-decoration: none;
     }
-
     .button.primary {
       border-color: color-mix(in srgb, var(--accent) 68%, var(--line));
       background: var(--accent);
       color: #071d1a;
     }
-
     .button:hover {
       border-color: color-mix(in srgb, var(--accent) 65%, var(--line));
     }
-
+    .button[aria-disabled="true"] {
+      opacity: 0.58;
+      pointer-events: none;
+    }
     .status-panel {
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--surface);
       overflow: hidden;
     }
-
     .status-panel header {
       display: flex;
       align-items: center;
@@ -356,31 +347,26 @@
       border-bottom: 1px solid var(--line);
       background: var(--surface-2);
     }
-
     .status-panel img {
       width: 42px;
       height: 42px;
     }
-
     .status-panel h2 {
       margin: 0;
       font-size: 17px;
       letter-spacing: 0;
     }
-
     .status-panel p {
       margin: 2px 0 0;
       color: var(--muted);
       font-size: 13px;
     }
-
     .facts {
       display: grid;
       margin: 0;
       padding: 0;
       list-style: none;
     }
-
     .facts li {
       display: grid;
       grid-template-columns: 112px minmax(0, 1fr);
@@ -389,16 +375,13 @@
       border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
       font-size: 13px;
     }
-
     .facts li:last-child {
       border-bottom: 0;
     }
-
     .facts strong {
       color: var(--muted);
       font-weight: 600;
     }
-
     .version-picker {
       display: grid;
       gap: 10px;
@@ -408,7 +391,6 @@
       border-radius: 8px;
       background: var(--surface);
     }
-
     .version-picker label {
       display: grid;
       gap: 6px;
@@ -416,7 +398,6 @@
       font-size: 13px;
       font-weight: 700;
     }
-
     .version-picker select {
       min-height: 40px;
       padding: 7px 10px;
@@ -426,7 +407,6 @@
       color: var(--fg);
       font: inherit;
     }
-
     .version-meta {
       display: flex;
       flex-wrap: wrap;
@@ -434,43 +414,36 @@
       color: var(--muted);
       font-size: 13px;
     }
-
     .version-meta span {
       padding: 2px 8px;
       border: 1px solid var(--line);
       border-radius: 999px;
       background: var(--surface-2);
     }
-
     .section {
       padding: clamp(30px, 5vw, 58px) clamp(16px, 4vw, 44px);
       border-bottom: 1px solid var(--line);
     }
-
     .section-inner {
       max-width: 1120px;
       margin: 0 auto;
     }
-
     .section h2 {
       margin: 0 0 14px;
       font-size: clamp(22px, 3vw, 32px);
       line-height: 1.25;
       letter-spacing: 0;
     }
-
     .section p {
       margin: 0;
       color: var(--muted);
     }
-
     .grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-top: 18px;
     }
-
     .item {
       min-width: 0;
       padding: 16px;
@@ -478,51 +451,42 @@
       border-radius: 8px;
       background: var(--surface);
     }
-
     .item h3 {
       margin: 0 0 8px;
       font-size: 16px;
       letter-spacing: 0;
     }
-
     .item p,
     .item li {
       color: var(--muted);
       font-size: 14px;
     }
-
     .item ul,
     .notes {
       margin: 0;
       padding-left: 20px;
     }
-
     .notes {
       display: grid;
       gap: 8px;
       margin-top: 16px;
       color: var(--muted);
     }
-
     .available {
       border-left: 4px solid var(--accent);
     }
-
     .limited {
       border-left: 4px solid var(--accent-2);
     }
-
     .important {
       border-left: 4px solid var(--danger);
     }
-
     .mode-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-top: 18px;
     }
-
     .mode-card {
       display: flex;
       flex-direction: column;
@@ -533,18 +497,15 @@
       border-radius: 8px;
       background: var(--surface);
     }
-
     .mode-card h3 {
       margin: 0;
       font-size: 17px;
       line-height: 1.35;
       letter-spacing: 0;
     }
-
     .mode-card p {
       font-size: 14px;
     }
-
     .mode-list {
       display: grid;
       gap: 8px;
@@ -554,30 +515,25 @@
       color: var(--muted);
       font-size: 14px;
     }
-
     .mode-list li {
       padding-left: 18px;
       position: relative;
     }
-
     .mode-list li::before {
       position: absolute;
       left: 0;
       color: var(--accent);
       content: "•";
     }
-
     .mode-list.cons li::before {
       color: var(--accent-2);
     }
-
     .mode-actions {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
       margin-top: auto;
     }
-
     .table-wrap {
       margin-top: 18px;
       overflow-x: auto;
@@ -585,14 +541,12 @@
       border-radius: 8px;
       background: var(--surface);
     }
-
     .compare-table {
       width: 100%;
       min-width: 720px;
       border-collapse: collapse;
       font-size: 14px;
     }
-
     .compare-table th,
     .compare-table td {
       padding: 12px 14px;
@@ -600,17 +554,14 @@
       text-align: left;
       vertical-align: top;
     }
-
     .compare-table th {
       color: var(--fg);
       background: var(--surface-2);
       font-weight: 700;
     }
-
     .compare-table tr:last-child td {
       border-bottom: 0;
     }
-
     .speed-rank {
       display: inline-flex;
       align-items: center;
@@ -623,15 +574,12 @@
       font-weight: 700;
       white-space: nowrap;
     }
-
     .speed-rank.mid {
       background: color-mix(in srgb, var(--accent-2) 18%, var(--surface-2));
     }
-
     .speed-rank.low {
       background: color-mix(in srgb, var(--danger) 18%, var(--surface-2));
     }
-
     .footer {
       display: flex;
       flex-wrap: wrap;
@@ -641,42 +589,35 @@
       color: var(--muted);
       font-size: 12px;
     }
-
     @media (max-width: 860px) {
       .topbar {
         position: static;
         align-items: flex-start;
         flex-direction: column;
       }
-
       .nav {
         width: 100%;
         overflow-x: auto;
         padding-bottom: 2px;
       }
-
       .hero {
         grid-template-columns: 1fr;
         min-height: 0;
       }
-
       .grid,
       .mode-grid {
         grid-template-columns: 1fr;
       }
     }
-
     @media (max-width: 520px) {
       .facts li {
         grid-template-columns: 1fr;
         gap: 4px;
       }
-
       .actions,
       .mode-actions {
         flex-direction: column;
       }
-
       .button {
         width: 100%;
       }
@@ -699,7 +640,6 @@
       <a href="#support">サポート</a>
     </nav>
   </header>
-
   <main>
     <section class="hero" id="start">
       <div class="hero-copy">
@@ -710,13 +650,12 @@
           Windows PCではデスクトップ版とクラウド版、iPad・スマホ・Macなどではブラウザで使えるクラウド版を選べます。
         </p>
         <div class="actions">
-          <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
+          <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
           <a class="button primary" href="Meldex.html">クラウド版を起動</a>
           <a class="button subtle" href="#samples">サンプルの追加方法</a>
-          <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-releases">過去版を選ぶ</a>
+          <a class="button subtle" href="#download" data-runtime-href="desktop-releases">過去版を選ぶ</a>
         </div>
       </div>
-
       <aside class="status-panel" aria-label="配布状態">
         <header>
           <img src="Meldex_icon_128.png" alt="">
@@ -726,7 +665,7 @@
           </div>
         </header>
         <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.5.448 BETA</span></li>
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.6.0 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
@@ -734,7 +673,6 @@
         </ul>
       </aside>
     </section>
-
     <section class="section" id="download">
       <div class="section-inner">
         <h2>デスクトップ版をダウンロード</h2>
@@ -743,18 +681,18 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.5.448 BETA / 最新</option>
+              <option value="0">v0.6.0 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.5.448 BETA</strong></span>
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.6.0 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
           <div class="mode-actions">
-            <a class="button primary" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-download">選択した版をダウンロード</a>
-            <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-release-page">リリース詳細を見る</a>
-            <a class="button subtle" href="https://github.com/cam-nagara/MeldexCloud/releases" data-runtime-href="desktop-releases">すべての過去版を見る</a>
+            <a class="button primary" href="#download" data-runtime-href="desktop-download">選択した版をダウンロード</a>
+            <a class="button subtle" href="#download" data-runtime-href="desktop-release-page">リリース詳細を見る</a>
+            <a class="button subtle" href="#download" data-runtime-href="desktop-releases">すべての過去版を見る</a>
           </div>
         </div>
         <div class="grid">
@@ -773,7 +711,6 @@
         </div>
       </div>
     </section>
-
     <section class="section" id="samples">
       <div class="section-inner">
         <h2>サンプルデータ</h2>
@@ -795,18 +732,21 @@
         </ul>
       </div>
     </section>
-
     <section class="section" id="cloud">
       <div class="section-inner">
         <h2>クラウド版</h2>
-        <p>クラウド版は、インストールせずブラウザで <a href="Meldex.html">Meldex Cloud BETA</a> を開く利用形態です。Dropbox認証後、ユーザー自身のDropbox上のデータを読み書きします。</p>
+        <p>クラウド版は、インストールせずブラウザで <a href="Meldex.html">Meldex Cloud BETA</a> を開く利用形態です。利用にはDropboxアカウントが必要です。Dropbox認証後、ユーザー自身のDropbox上のデータを読み書きします。</p>
+        <p>Dropboxアカウントをまだ持っていない場合は、先にDropbox公式サイトで作成してください。無料のDropbox Basicでも利用できます。</p>
         <div class="version-picker" aria-label="クラウド版を起動">
           <div class="version-meta">
             <span>起動する版: <strong>公開中の最新版</strong></span>
             <span>保存先: <strong>ユーザー自身のDropbox</strong></span>
+            <span>必要なもの: <strong>Dropboxアカウント</strong></span>
           </div>
           <div class="mode-actions">
             <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+            <a class="button subtle" href="https://www.dropbox.com/register" target="_blank" rel="noopener">Dropboxアカウントを作成</a>
+            <a class="button subtle" href="https://www.dropbox.com/basic" target="_blank" rel="noopener">Dropbox Basicを確認</a>
           </div>
         </div>
         <div class="grid">
@@ -832,7 +772,6 @@
         </div>
       </div>
     </section>
-
     <section class="section" id="compare">
       <div class="section-inner">
         <h2>クラウド版とデスクトップ版の違い</h2>
@@ -875,15 +814,16 @@
               <li>端末を替えてもDropbox認証で続きから使える</li>
             </ul>
             <ul class="mode-list cons">
+              <li>Dropboxアカウントが必要</li>
               <li>通信速度とDropboxの応答待ちの影響を受ける</li>
               <li>PC内のコマンドラインツールやOS連携は使えない</li>
               <li>オフライン作業には向かない</li>
             </ul>
           </article>
         </div>
+        <p>デスクトップ版をDropboxに接続しても、このPCだけで使うローカルフォルダは引き続きソースフォルダにできます。ただし、そのフォルダはクラウド版や他端末からは開けません。他端末でも使いたいソースフォルダはDropbox内に置いてください。</p>
       </div>
     </section>
-
     <section class="section" id="speed">
       <div class="section-inner">
         <h2>速度比較</h2>
@@ -926,7 +866,6 @@
         </ul>
       </div>
     </section>
-
     <section class="section" id="scope">
       <div class="section-inner">
         <h2>対応範囲</h2>
@@ -998,7 +937,6 @@
         </div>
       </div>
     </section>
-
     <section class="section" id="support">
       <div class="section-inner">
         <h2>サポートと確認資料</h2>
@@ -1023,7 +961,6 @@
       </div>
     </section>
   </main>
-
   <footer class="footer">
     <span>Meldex BETA</span>
     <span>Meldex BETA 配布ページ</span>

@@ -1,7 +1,31 @@
 /* gb-settings-mobile-access.js: settings dialog mobile/tablet URL helpers */
 (function(global) {
   function _mobileUrlLabel(url) {
-    return String(url || '').replace(/\/+$/, '') + '/';
+    const text = String(url || '').trim();
+    if (!text) return '';
+    try {
+      const parsed = new URL(text, global.location?.href || undefined);
+      if (parsed.search || parsed.hash || /\.[a-z0-9]+$/i.test(parsed.pathname)) return text;
+    } catch {}
+    return text.replace(/\/+$/, '') + '/';
+  }
+
+  function _isUsableMobileIp(value) {
+    const ip = String(value || '').trim();
+    const parts = ip.split('.');
+    if (parts.length !== 4) return false;
+    const nums = parts.map(part => (/^\d{1,3}$/.test(part) ? Number(part) : NaN));
+    if (nums.some(num => !Number.isInteger(num) || num < 0 || num > 255)) return false;
+    if (nums[0] === 0 || nums[0] === 127) return false;
+    return true;
+  }
+
+  function _currentPageUrl() {
+    try {
+      return String(global.location?.href || '').split('#')[0];
+    } catch {
+      return '';
+    }
   }
 
   async function copyMobileUrl(url) {
@@ -49,10 +73,14 @@
     return typeof global.lucide === 'function' ? global.lucide(name, size) : '';
   }
 
-  function _renderUrlList(listEl, localUrl, urls) {
-    const rows = [
-      `<div>このPCで開くURL: <code style="user-select:all;">${_escapeHtml(localUrl)}</code></div>`,
-    ];
+  function _renderUrlList(listEl, localUrl, urls, options = {}) {
+    const localLabel = options.localLabel || 'このPCで開くURL';
+    const rows = [];
+    if (localUrl) {
+      rows.push(`<div>${_escapeHtml(localLabel)}: <code style="user-select:all;">${_escapeHtml(localUrl)}</code></div>`);
+    } else {
+      rows.push('<div>接続URLを取得できませんでした。</div>');
+    }
     if (urls.length) {
       rows.push('<div style="margin-top:4px;">スマホ・タブレット用候補URL:</div>');
       urls.forEach((url, index) => {
@@ -81,18 +109,21 @@
     listEl.textContent = '接続情報を取得中...';
     try {
       const info = await global.apiFetch('/server-info');
-      const port = parseInt(info.port || 8001, 10) || 8001;
+      const rawPort = parseInt(info.port, 10);
+      const hasServerPort = Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535;
+      const port = hasServerPort ? rawPort : 8001;
       const ips = (Array.isArray(info.local_ips) ? info.local_ips : [info.local_ip])
         .map(ip => String(ip || '').trim())
-        .filter(Boolean);
+        .filter(_isUsableMobileIp);
       const urls = ips
         .filter(ip => ip !== 'localhost' && ip !== '127.0.0.1')
         .map(ip => `http://${ip}:${port}/`);
-      const localUrl = `http://localhost:${port}/`;
+      const localUrl = hasServerPort ? `http://localhost:${port}/` : _currentPageUrl();
+      const localLabel = hasServerPort ? 'このPCで開くURL' : 'この画面のURL';
       const primary = urls[0] || localUrl;
-      primaryEl.textContent = primary;
+      primaryEl.textContent = primary || '取得できませんでした';
       primaryEl.dataset.url = primary;
-      _renderUrlList(listEl, localUrl, urls);
+      _renderUrlList(listEl, localUrl, urls, { localLabel });
     } catch (e) {
       primaryEl.textContent = '取得できませんでした';
       listEl.textContent = '接続URLを取得できませんでした。Meldexを再読み込みしてからもう一度開いてください。';

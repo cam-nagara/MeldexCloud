@@ -307,50 +307,98 @@
   }
 
   // 計画書 §8.4: ロック中の表示状態を変える操作を「入力段階でブロック」するため、
-  // document の capture フェーズで click/change をインターセプトする。
-  //   - ガード対象: アクティブビューの scroll container 内にあるインタラクティブ要素
-  //     (button/select/input/[data-vl-guard] 等)。タブバー・ペインヘッダー・ロックアイコン・
-  //     モーダル・コンテキストメニュー等は除外して副作用を避ける。
-  //   - 解除「はい」時は元要素を再 click して操作を通す（change の場合は再発火できないため
-  //     ユーザーに再操作を促す動作になる）。
+  // document の capture フェーズで click/change/beforeinput/paste をインターセプトする。
+  //   - ガード対象: アクティブビュー内部、関連ツールバー、明示的な data-vl-guard 要素。
+  //   - テキスト入力や contenteditable も、キャッシュ未取得時は一旦止めてからロック状態を確認する。
   let _interceptInstalled = false;
   function installInteractionInterceptor(getActiveInfo, getScrollContainerEl) {
     if (_interceptInstalled) return;
     _interceptInstalled = true;
-    const interactiveSel = 'button, select, input[type=checkbox], input[type=radio], input[type=range], input[type=button], input[type=submit], a[href], [role="button"], [data-vl-guard]';
-    const excludeSel = '.vl-lock-icon, .gb-tabs, .gb-tab, .gb-pane-header, .gb-dock-handle, .gb-split-handle, .cf-modal, .modal, .gb-context-menu, .cf-confirm, .cf-prompt, ._inline-comment-input, ._note-ctx-menu, #ann-overlay, #ann-toolbar, #right-panel, .gb-right-panel';
+    const editableInputSel = 'textarea, input:not([type]), input[type=text], input[type=search], input[type=url], input[type=email], input[type=password], input[type=number], input[type=date], input[type=datetime-local], input[type=month], input[type=time], input[type=week], input[type=color]';
+    const editableSel = `${editableInputSel}, [contenteditable="true"], [contenteditable="plaintext-only"], [contenteditable]:not([contenteditable="false"]), [role="textbox"]`;
+    const interactiveSel = `button, select, input[type=checkbox], input[type=radio], input[type=range], input[type=button], input[type=submit], a[href], [role="button"], [data-vl-guard], ${editableSel}`;
+    const pointerGuardSel = '.gb-split-handle, .gb-resize-handle, .resize-handle, .sidebar-resizer, [data-resize-handle], [data-vl-guard-pointer]';
+    const toolbarSel = '#app-toolbar, .gb-toolbar, .gb-pane-toolbar, .gb-tool-header, [data-vl-toolbar]';
+    const excludeSel = '.vl-lock-icon, .gb-tabs, .gb-tab, .gb-pane-header, .gb-dock-handle, .cf-modal, .modal, .gb-context-menu, .cf-confirm, .cf-prompt, ._inline-comment-input, ._note-ctx-menu, #ann-overlay, #ann-toolbar, #right-panel, .gb-right-panel';
+    const isElementNode = (node) => {
+      const ctor = (typeof Element !== 'undefined') ? Element : null;
+      return !!node && (!ctor || node instanceof ctor) && typeof node.closest === 'function';
+    };
+    const isInstance = (el, name) => {
+      const ctor = (typeof window !== 'undefined' && window[name]) || globalThis?.[name];
+      return typeof ctor === 'function' && el instanceof ctor;
+    };
+    const isEditableHost = (el) => {
+      if (!el) return false;
+      if (el.isContentEditable) return true;
+      const attr = typeof el.getAttribute === 'function' ? el.getAttribute('contenteditable') : null;
+      return !!attr && String(attr).toLowerCase() !== 'false';
+    };
     const readValue = (el) => {
       if (!el) return undefined;
-      if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) return !!el.checked;
-      if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) return el.value;
+      if (isInstance(el, 'HTMLInputElement') && (el.type === 'checkbox' || el.type === 'radio')) return !!el.checked;
+      if (isInstance(el, 'HTMLInputElement') || isInstance(el, 'HTMLSelectElement') || isInstance(el, 'HTMLTextAreaElement')) return el.value;
+      if (isEditableHost(el)) return typeof el.innerHTML === 'string' ? el.innerHTML : el.textContent;
       return undefined;
     };
     const writeValue = (el, value) => {
       if (value === undefined || !el) return;
-      if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) el.checked = !!value;
-      else if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) el.value = value;
+      if (isInstance(el, 'HTMLInputElement') && (el.type === 'checkbox' || el.type === 'radio')) el.checked = !!value;
+      else if (isInstance(el, 'HTMLInputElement') || isInstance(el, 'HTMLSelectElement') || isInstance(el, 'HTMLTextAreaElement')) el.value = value;
+      else if (isEditableHost(el)) {
+        if (typeof el.innerHTML === 'string') el.innerHTML = String(value);
+        else el.textContent = String(value);
+      }
+    };
+    const resolveGuardElement = (target, eventType) => {
+      if (!isElementNode(target)) return null;
+      if (eventType === 'pointerdown') return target.closest(`${pointerGuardSel}, ${interactiveSel}`);
+      return target.closest(interactiveSel);
+    };
+    const isStructuralPointerGuard = (el) => !!(el && typeof el.matches === 'function' && el.matches(pointerGuardSel));
+    const isInGuardArea = (target, info, el, eventType) => {
+      if (!isElementNode(target) || !info?.viewKey) return false;
+      if (el && typeof el.matches === 'function' && el.matches('[data-vl-guard], [data-vl-guard-pointer]')) return true;
+      if (eventType === 'pointerdown' && isStructuralPointerGuard(el)) return true;
+      const scEl = (typeof getScrollContainerEl === 'function') ? getScrollContainerEl() : null;
+      if (scEl && typeof scEl.contains === 'function' && scEl.contains(target)) return true;
+      const activePane = document.querySelector?.('.gb-pane-active, .gb-pane.is-active, .gb-pane[data-active="true"]');
+      if (activePane && typeof activePane.contains === 'function' && activePane.contains(target)) return true;
+      const toolbar = target.closest(toolbarSel);
+      return !!toolbar;
     };
     const rememberValue = (e) => {
       const t = e.target;
-      if (!t || !(t instanceof Element)) return;
-      const el = t.closest(interactiveSel);
-      if (el && el._vlPrevValue === undefined) el._vlPrevValue = readValue(el);
+      if (!isElementNode(t) || t.closest(excludeSel)) return;
+      const info = (typeof getActiveInfo === 'function') ? getActiveInfo() : null;
+      if (!info || !info.viewKey) return;
+      const el = resolveGuardElement(t, 'remember');
+      if (!el || !isInGuardArea(t, info, el, 'remember')) return;
+      const cached = _cache.get(info.viewKey);
+      if (cached && !cached.locked) {
+        delete el._vlPrevValue;
+        return;
+      }
+      const value = readValue(el);
+      if (value !== undefined) el._vlPrevValue = value;
     };
     const handler = (e) => {
       try {
         const t = e.target;
-        if (!t || !(t instanceof Element)) return;
+        if (!isElementNode(t)) return;
         if (t.closest(excludeSel)) return;
         const info = (typeof getActiveInfo === 'function') ? getActiveInfo() : null;
         if (!info || !info.viewKey) return;
-        if (!isLocked(info.viewKey)) return;
-        // ガード対象はスクロールコンテナ内部に限る
-        const scEl = (typeof getScrollContainerEl === 'function') ? getScrollContainerEl() : null;
-        if (!scEl || typeof scEl.contains !== 'function') return;
-        if (!scEl.contains(t)) return;
-        const el = t.closest(interactiveSel);
+        const el = resolveGuardElement(t, e.type);
         if (!el) return;
-        const prevValue = el._vlPrevValue;
+        if (e.type === 'pointerdown' && !isStructuralPointerGuard(el)) return;
+        if (!isInGuardArea(t, info, el, e.type)) return;
+        const cached = _cache.get(info.viewKey);
+        if (cached && !cached.locked) {
+          delete el._vlPrevValue;
+          return;
+        }
+        const prevValue = el._vlPrevValue !== undefined ? el._vlPrevValue : readValue(el);
         e.preventDefault(); e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
         guardAction(info.viewKey, info.kind).then((ok) => {
@@ -361,7 +409,7 @@
             }
             if (e.type === 'change') {
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            } else if (el.isConnected && typeof el.click === 'function') {
+            } else if (e.type === 'click' && el.isConnected && typeof el.click === 'function') {
               el.click();
             }
           } catch (_) {}
@@ -374,8 +422,11 @@
     document.addEventListener('pointerdown', rememberValue, { capture: true });
     document.addEventListener('focusin', rememberValue, { capture: true });
     document.addEventListener('keydown', rememberValue, { capture: true });
+    document.addEventListener('pointerdown', handler, { capture: true });
     document.addEventListener('click', handler, { capture: true });
     document.addEventListener('change', handler, { capture: true });
+    document.addEventListener('beforeinput', handler, { capture: true });
+    document.addEventListener('paste', handler, { capture: true });
   }
 
   window.ViewLock = {

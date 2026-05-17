@@ -63,7 +63,7 @@
       return data;
     } catch (e) {
       console.error('[global-index] load failed', e);
-      return { files: [], source_roots: [], total: 0 };
+      throw e;
     }
   }
   window.loadGlobalIndexData = loadGlobalIndexData;
@@ -254,6 +254,16 @@
       </div>`;
     }
 
+    function refreshRowForColumn(row) {
+      if (!row) return;
+      const column = row.querySelector('[data-field="column"]')?.value || 'category';
+      const currentOp = row.querySelector('[data-field="operator"]')?.value || 'equals';
+      const currentValue = row.querySelector('[data-field="value"]')?.value || '';
+      const ops = ALL_FILES_COLUMNS[column]?.ops || ['equals'];
+      const operator = ops.includes(currentOp) ? currentOp : ops[0];
+      row.outerHTML = rowHtml({ column, operator, value: currentValue }, row.dataset.idx || -1);
+    }
+
     let filtersHtml = '';
     (def.filters || []).forEach((f, i) => { filtersHtml += rowHtml(f, i); });
 
@@ -272,6 +282,10 @@
     </div>`;
     document.body.appendChild(o);
     if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(o, '#gif-filters');
+    const filtersHost = document.getElementById('gif-filters');
+    filtersHost.addEventListener('change', (ev) => {
+      if (ev.target?.matches?.('[data-field="column"]')) refreshRowForColumn(ev.target.closest('.sdf-row'));
+    });
     document.getElementById('gif-add-row').addEventListener('click', () => {
       document.getElementById('gif-filters').insertAdjacentHTML('beforeend', rowHtml({}, -1));
     });
@@ -289,13 +303,17 @@
         const value = valueEl ? valueEl.value : '';
         if (column) filters.push({ column, operator, value });
       });
-      def.name = name;
-      def.filters = filters;
+      const nextDef = typeof normalizeSmartDbDefinition === 'function'
+        ? normalizeSmartDbDefinition(JSON.parse(JSON.stringify({ ...def, name, filters })))
+        : JSON.parse(JSON.stringify({ ...def, name, filters }));
+      if (def._filePath) nextDef._filePath = def._filePath;
+      if (def._fileId) nextDef._fileId = def._fileId;
       if (typeof saveSmartDbDef === 'function') {
-        try { await saveSmartDbDef(def); } catch (e) { showStatus('保存失敗: ' + e.message, true); return; }
+        try { await saveSmartDbDef(nextDef); } catch (e) { showStatus('保存失敗: ' + e.message, true); return; }
       }
+      Object.assign(def, nextDef);
       if (typeof pushSmartDbDefinitionHistory === 'function') {
-        pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, def, def.name);
+        pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, nextDef, nextDef.name);
       }
       if (typeof renderSmartDbList === 'function') renderSmartDbList();
       showStatus('フィルタを保存しました');

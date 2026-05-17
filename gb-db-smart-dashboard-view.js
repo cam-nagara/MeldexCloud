@@ -102,14 +102,19 @@ function normalizeGlobalIndexAsDbLike(result) {
   files.forEach((file, idx) => {
     const name = String(file?.name || file?.path || file?.abs_path || `file-${idx + 1}`);
     const key = entities[name] ? `${name} (${idx + 1})` : name;
+    const filePath = file?.path || file?.abs_path || '';
     entities[key] = {
       [labels.category]: [{ value: file?.category || '', status: '採用' }],
       [labels.type]: [{ value: file?.type || '', status: '採用' }],
       [labels.source]: [{ value: file?.source_name || file?.root_name || '', status: '採用' }],
-      [labels.path]: [{ value: file?.path || file?.abs_path || '', status: '採用' }],
+      [labels.path]: [{ value: filePath, status: '採用' }],
       [labels.size]: [{ value: file?.size ?? '', status: '採用' }],
       [labels.modified]: [{ value: file?.modified || '', status: '採用' }],
-      [labels.backlinks]: [{ value: file?.backlinks_count ?? file?.backlink_count ?? '', status: '採用' }],
+      [labels.backlinks]: [{ value: _smartDbDashboardBacklinkCount(file), status: '採用' }],
+      _path: filePath,
+      _abs_path: file?.abs_path || filePath,
+      _category: file?.category || '',
+      _file_type: file?.type || '',
     };
   });
   return {
@@ -119,6 +124,29 @@ function normalizeGlobalIndexAsDbLike(result) {
     new_format: true,
     source_type: 'global-index',
     total_dbs_scanned: result?.total || files.length,
+  };
+}
+
+function _smartDbDashboardBacklinkCount(file) {
+  return file?.backlinks_count
+    ?? file?.backlink_count
+    ?? file?.backlink_file_count
+    ?? file?.backlinks
+    ?? '';
+}
+
+function _smartDbDashboardGlobalIndexResult(result, def) {
+  let files = Array.isArray(result?.files) ? result.files.slice() : [];
+  if (def && typeof applyGlobalIndexFilters === 'function') {
+    files = applyGlobalIndexFilters(files, def.filters || []);
+  }
+  if (def && typeof applyGlobalIndexSort === 'function') {
+    files = applyGlobalIndexSort(files, def.sortBy || 'modified', def.sortDir || 'desc');
+  }
+  return {
+    ...(result || {}),
+    files,
+    filtered_total: files.length,
   };
 }
 
@@ -137,7 +165,7 @@ async function resolveWidgetData(source, opts) {
   const currentPath = state.currentSmartDb?._filePath || '';
   if (currentPath && normalized.path === currentPath && state.smartDbData) {
     const data = state.currentSmartDb?.sourceType === 'all-files'
-      ? normalizeGlobalIndexAsDbLike(state.smartDbData)
+      ? normalizeGlobalIndexAsDbLike(_smartDbDashboardGlobalIndexResult(state.smartDbData, state.currentSmartDb))
       : normalizeSmartSheetAsDbLike(state.smartDbData);
     return { ok: true, data, source: normalized };
   }
@@ -145,7 +173,7 @@ async function resolveWidgetData(source, opts) {
   if (!loaded.ok) return loaded;
   if (loaded.def?.sourceType === 'all-files') {
     const result = await (typeof loadGlobalIndexData === 'function' ? loadGlobalIndexData(loaded.def) : Promise.resolve({ files: [], total: 0 }));
-    return { ok: true, data: normalizeGlobalIndexAsDbLike(result), source: normalized };
+    return { ok: true, data: normalizeGlobalIndexAsDbLike(_smartDbDashboardGlobalIndexResult(result, loaded.def)), source: normalized };
   }
   const url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(loaded.def.filters || []));
   const result = await apiFetch(url);
@@ -306,7 +334,7 @@ async function renderSmartDbStatWidget(widget, container, resolved) {
   if (cfg.property) {
     const propTypes = await _getSmartDbDashboardPropertyTypes(resolved.source);
     const ptc = propTypes?.[cfg.property] || null;
-    value = calcAggregation(cfg.property, data.entities, entityNames, cfg.aggregation || 'count', ptc);
+    value = calcAggregation(cfg.property, data.entities, entityNames, cfg.aggregation || 'count', ptc, propTypes);
   }
   const numDiv = document.createElement('div');
   numDiv.className = 'smart-db-stat-value';
@@ -382,8 +410,7 @@ async function renderSmartDbListWidget(widget, container, resolved) {
     const tr = document.createElement('tr');
     tr.className = 'smart-db-list-row';
     tr.addEventListener('click', () => {
-      const entityPath = _smartDbDashboardEntityPath(data, resolved.source, en);
-      if (entityPath && typeof selectEntity === 'function') selectEntity(entityPath);
+      _smartDbDashboardOpenEntity(data, resolved.source, en);
     });
     const tdName = document.createElement('td');
     tdName.className = 'smart-db-list-name';
@@ -442,6 +469,23 @@ function _smartDbDashboardEntityPath(data, source, entityName) {
   return data.new_format ? source.path + '/' + entityName + '.md' : source.path + '/' + entityName;
 }
 
+function _smartDbDashboardOpenEntity(data, source, entityName) {
+  const entity = data.entities?.[entityName] || {};
+  const entityPath = _smartDbDashboardEntityPath(data, source, entityName);
+  if (!entityPath) return;
+  const category = entity._category || '';
+  const label = entityName.split(/[\\/]/).pop().replace(/\.\w+$/, '');
+  if ((category === 'scriptnote' || category === 'scenario') && typeof openScenarioInScriptNote === 'function') {
+    openScenarioInScriptNote(entityPath, label);
+    return;
+  }
+  if (category === 'board' && typeof openBoard === 'function') {
+    openBoard(label, entityPath);
+    return;
+  }
+  if (typeof selectEntity === 'function') selectEntity(entityPath);
+}
+
 function _smartDbDashboardValueText(value) {
   if (value == null) return '';
   if (Array.isArray(value)) return value.join(', ');
@@ -455,7 +499,7 @@ async function _getSmartDbDashboardPropertyTypes(source) {
   if (_smartDbDashboardDbMetadataCache[normalized.path]) return _smartDbDashboardDbMetadataCache[normalized.path];
   try {
     const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(normalized.path));
-    _smartDbDashboardDbMetadataCache[normalized.path] = meta?.propertyTypes || meta || {};
+    _smartDbDashboardDbMetadataCache[normalized.path] = meta?.property_types || meta?.propertyTypes || meta || {};
   } catch (e) {
     _smartDbDashboardDbMetadataCache[normalized.path] = {};
   }
@@ -468,6 +512,7 @@ async function removeSmartDbWidget(widgetId) {
   const before = (typeof _captureSmartDbHistorySnapshot === 'function')
     ? _captureSmartDbHistorySnapshot(state.currentSmartDb)
     : null;
+  const previousWidgets = JSON.parse(JSON.stringify(view.widgets || []));
   const beforeLength = (view.widgets || []).length;
   view.widgets = (view.widgets || []).filter(w => w.id !== widgetId);
   if (view.widgets.length === beforeLength) return;
@@ -478,6 +523,8 @@ async function removeSmartDbWidget(widgetId) {
     }
     renderSmartDbDashboardView();
   } catch (e) {
+    view.widgets = previousWidgets;
+    renderSmartDbDashboardView();
     showStatus('スマートシートの保存に失敗しました: ' + e.message, true);
   }
 }
@@ -564,6 +611,7 @@ function showSmartDbWidgetEditor(existingWidget) {
     const before = (typeof _captureSmartDbHistorySnapshot === 'function')
       ? _captureSmartDbHistorySnapshot(state.currentSmartDb)
       : null;
+    const previousWidgets = JSON.parse(JSON.stringify(view.widgets || []));
     widget.title = titleInput.value.trim() || _defaultSmartDbWidgetTitle(typeSel.value);
     widget.type = typeSel.value;
     widget.source = { kind: sourceKind.value === 'smart-sheet' ? 'smart-sheet' : 'sheet', path: sourceInput.value.trim() };
@@ -580,6 +628,7 @@ function showSmartDbWidgetEditor(existingWidget) {
       overlay.remove();
       renderSmartDbDashboardView();
     } catch (e) {
+      view.widgets = previousWidgets;
       showStatus('スマートシートの保存に失敗しました: ' + e.message, true);
     }
   });

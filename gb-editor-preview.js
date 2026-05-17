@@ -43,13 +43,15 @@ function _updateLinkedPreview(filePath) {
         try {
           const json = JSON.parse(text);
           if (json.rows && json.title !== undefined) {
+            const totalRows = Array.isArray(json.rows) ? json.rows.length : 0;
             const rows = (json.rows || []).slice(0, 20);
             let html = `<div style="font-size:13px;font-weight:bold;margin-bottom:8px;color:var(--fg);display:flex;align-items:center;gap:4px;">${lucide('fileText',14)} ${esc(json.title || fileName)}</div>`;
-            html += `<div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">${rows.length}行のシナリオ</div>`;
+            html += `<div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">${totalRows}行のシナリオ</div>`;
             html += '<div style="font-size:12px;max-height:80%;overflow:auto;">';
             rows.forEach(r => {
               html += `<div style="padding:2px 0;border-bottom:1px solid var(--border);display:flex;gap:4px;">`;
-              if (r.character) html += `<span style="color:var(--accent);font-weight:bold;min-width:60px;">${esc(r.character)}</span>`;
+              const roleName = r.character || r.role || '';
+              if (roleName) html += `<span style="color:var(--accent);font-weight:bold;min-width:60px;">${esc(roleName)}</span>`;
               html += `<span style="color:var(--fg);">${esc((r.text || '').split('\n')[0].slice(0, 60))}</span></div>`;
             });
             html += '</div>';

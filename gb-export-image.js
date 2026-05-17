@@ -53,7 +53,20 @@ const MeldexExportImage = (() => {
   async function _fallbackHtml2Canvas(contentEl, options) {
     const h2c = await _loadHtml2Canvas();
     const scale = (options?.dpr || window.devicePixelRatio || 1);
-    const canvas = await h2c(contentEl, { scale, useCORS: true, logging: false });
+    const rect = contentEl.getBoundingClientRect?.() || {};
+    const width = Math.ceil(options?.width || contentEl.scrollWidth || rect.width || contentEl.clientWidth || 1200);
+    const height = Math.ceil(options?.height || contentEl.scrollHeight || rect.height || contentEl.clientHeight || 800);
+    const canvas = await h2c(contentEl, {
+      scale,
+      useCORS: true,
+      logging: false,
+      width,
+      height,
+      windowWidth: width,
+      windowHeight: height,
+      scrollX: 0,
+      scrollY: 0,
+    });
     return new Promise((resolve, reject) => {
       canvas.toBlob(blob => {
         if (blob) resolve(blob);
@@ -160,12 +173,6 @@ const MeldexExportImage = (() => {
       return;
     }
 
-    const el = getEl();
-    if (!el) {
-      showStatus('エクスポート対象が見つかりません', true);
-      return;
-    }
-
     const titleMap = {
       page: () => {
         const pc = document.getElementById('page-content');
@@ -182,8 +189,6 @@ const MeldexExportImage = (() => {
       calendar: () => 'カレンダー',
     };
 
-    const title = (titleMap[viewType] || (() => '無題'))();
-
     // シナリオは特別処理: rAF×2 で縦書きレンダリング完了を待つ
     if (viewType === 'scriptnote') {
       const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
@@ -194,6 +199,14 @@ const MeldexExportImage = (() => {
       }
     }
 
+    const el = getEl();
+    if (!el) {
+      showStatus('エクスポート対象が見つかりません', true);
+      return;
+    }
+
+    const title = (titleMap[viewType] || (() => '無題'))();
+
     await exportToPng(el, {
       title,
       htmlOptions: _getHtmlOptionsForView(viewType),
@@ -201,11 +214,50 @@ const MeldexExportImage = (() => {
   }
 
   /** ビューごとの HTML 出力オプション */
+  function _collectCalendarIframeCss() {
+    const iframe = document.querySelector('#calendar-container iframe, iframe[src*="calendar"]');
+    let css = '';
+    if (!iframe?.contentDocument) return css;
+    for (const sheet of iframe.contentDocument.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) css += rule.cssText + '\n';
+      } catch {}
+    }
+    return css;
+  }
+
+  function _databasePreTransformOptions() {
+    const table = document.getElementById('pivot-table');
+    const origCells = table ? Array.from(table.querySelectorAll('th, td')) : [];
+    const cellWidths = origCells.map(cell => cell.getBoundingClientRect().width);
+    const origBadges = table ? Array.from(table.querySelectorAll('[class*="status-"]')) : [];
+    const badgeStyles = origBadges.map(badge => {
+      const cs = getComputedStyle(badge);
+      return { bg: cs.backgroundColor, color: cs.color };
+    });
+    return {
+      preTransform: (clone) => {
+        const cloneCells = clone.querySelectorAll('th, td');
+        cellWidths.forEach((w, i) => {
+          if (!cloneCells[i]) return;
+          cloneCells[i].style.width = w + 'px';
+          cloneCells[i].style.minWidth = w + 'px';
+        });
+        const cloneBadges = clone.querySelectorAll('[class*="status-"]');
+        cloneBadges.forEach((badge, i) => {
+          if (!badgeStyles[i]) return;
+          badge.style.backgroundColor = badgeStyles[i].bg;
+          badge.style.color = badgeStyles[i].color;
+        });
+      },
+    };
+  }
+
   function _getHtmlOptionsForView(viewType) {
     switch (viewType) {
       case 'page':
         return {
-          cssFiles: ['gb-editor.css'],
+          cssFiles: ['gb-tools.css', 'gb-ui.css'],
           extraCss: `
             #page-content, [id="page-content"] {
               padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto;
@@ -230,13 +282,14 @@ const MeldexExportImage = (() => {
         };
       case 'database':
         return {
-          cssFiles: ['gb-database.css', 'gb-ui.css'],
+          cssFiles: ['gb-tools.css', 'gb-ui.css'],
           extraCss: `
             table { border-collapse: collapse; table-layout: fixed; width: 100%; }
             th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }
             body { padding: 16px; }
           `,
           embedImages: false,
+          ..._databasePreTransformOptions(),
         };
       case 'smart-db':
         return {
@@ -255,6 +308,12 @@ const MeldexExportImage = (() => {
             th, td { border: 1px solid var(--border, #333); padding: 4px 8px; }
             body { padding: 16px; }
           `,
+          embedImages: false,
+        };
+      case 'calendar':
+        return {
+          cssFiles: ['gb-tools.css', 'gb-ui.css'],
+          extraCss: _collectCalendarIframeCss() + '\nbody { padding: 16px; }',
           embedImages: false,
         };
       default:

@@ -8,6 +8,40 @@
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
 
+  function _draftScope() {
+    let mode = 'legacy';
+    let workspace = null;
+    let vaultPath = '';
+    try {
+      mode = window.MeldexRuntimeAdapter?.getMode?.() || (document.body?.dataset?.cloudMode === 'dropbox' ? 'dropbox' : 'legacy');
+      workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
+    } catch {}
+    try {
+      if (typeof state !== 'undefined' && state?.vaultPath) vaultPath = String(state.vaultPath || '');
+    } catch {}
+    const accountId = String(workspace?.accountId || workspace?.ownerId || '').trim();
+    const workspacePath = String(workspace?.path || window.MeldexDropboxAuth?.getVaultPath?.() || vaultPath || '').trim();
+    const fallback = `${location.origin || ''}${location.pathname || ''}`;
+    return [mode, accountId, workspacePath || fallback].map(part => String(part || '').replace(/\s+/g, ' ').trim()).join('|');
+  }
+
+  function _draftStorageKey(path) {
+    return `${_draftScope()}\n${String(path || '').trim()}`;
+  }
+
+  function _draftTimerKey(path) {
+    return _draftStorageKey(path);
+  }
+
+  function _isCurrentScopeDraft(item, scope) {
+    return String(item?.scope || '') === String(scope || '');
+  }
+
+  function _publicDraft(item) {
+    const filePath = String(item?.filePath || '').trim() || String(item?.path || '');
+    return { ...item, storageKey: item?.path || '', path: filePath };
+  }
+
   function _openDb() {
     return new Promise((resolve, reject) => {
       if (!window.indexedDB) {
@@ -54,9 +88,11 @@
     return new Blob([String(value || '')]).size;
   }
 
-  async function _prune(store) {
+  async function _prune(store, scope) {
     const all = await _request(store.getAll());
-    const sorted = all.sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
+    const sorted = all
+      .filter(item => _isCurrentScopeDraft(item, scope))
+      .sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
     for (const item of sorted.slice(MAX_DRAFTS)) store.delete(item.path);
   }
 
@@ -75,32 +111,48 @@
     const safePath = String(path || '').trim();
     if (!safePath || _byteLength(content) > MAX_BYTES) return { ok: false, skipped: true };
     if (_isPathLocked(safePath)) return { ok: false, skipped: true };
+    const scope = _draftScope();
+    const key = _draftStorageKey(safePath);
     const savedAt = new Date().toISOString();
     return _store('readwrite', (store) => {
-      store.put({ path: safePath, content: String(content || ''), savedAt, lastSyncedAt: String(lastSyncedAt || '') });
-      _prune(store).catch(() => {});
+      store.put({ path: key, filePath: safePath, scope, content: String(content || ''), savedAt, lastSyncedAt: String(lastSyncedAt || '') });
+      _prune(store, scope).catch(() => {});
       return { ok: true, path: safePath, savedAt };
     }).catch(() => ({ ok: false }));
   }
 
   function queueDraft(path, content, lastSyncedAt) {
-    const key = String(path || '');
+    const safePath = String(path || '').trim();
+    const key = _draftTimerKey(safePath);
     clearTimeout(timers.get(key));
-    if (_isPathLocked(key)) return;
+    if (!safePath || _isPathLocked(safePath)) return;
     timers.set(key, setTimeout(() => {
       timers.delete(key);
-      saveDraft(key, content, lastSyncedAt);
+      saveDraft(safePath, content, lastSyncedAt);
     }, 250));
   }
 
   async function clearAllDrafts() {
-    await _store('readwrite', (store) => store.clear()).catch(() => {});
+    const scope = _draftScope();
+    for (const timer of timers.keys()) {
+      if (String(timer).startsWith(scope + '\n')) {
+        clearTimeout(timers.get(timer));
+        timers.delete(timer);
+      }
+    }
+    await _store('readwrite', async (store) => {
+      const all = await _request(store.getAll());
+      all.filter(item => _isCurrentScopeDraft(item, scope)).forEach(item => store.delete(item.path));
+    }).catch(() => {});
   }
 
   async function clearDraft(path) {
     const safePath = String(path || '').trim();
     if (!safePath) return;
-    await _store('readwrite', (store) => store.delete(safePath)).catch(() => {});
+    const key = _draftTimerKey(safePath);
+    clearTimeout(timers.get(key));
+    timers.delete(key);
+    await _store('readwrite', (store) => store.delete(_draftStorageKey(safePath))).catch(() => {});
   }
 
   function markSynced(path) {
@@ -108,8 +160,12 @@
   }
 
   async function listDrafts() {
+    const scope = _draftScope();
     const all = await _store('readonly', (store) => _request(store.getAll())).catch(() => []);
-    return (Array.isArray(all) ? all : []).sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
+    return (Array.isArray(all) ? all : [])
+      .filter(item => _isCurrentScopeDraft(item, scope))
+      .map(_publicDraft)
+      .sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
   }
 
   function _fileLabel(path) {
@@ -128,14 +184,35 @@
     if (typeof showStatus === 'function') showStatus('未保存ドラフトを上書き保存しました');
   }
 
+  async function _fileExists(path) {
+    if (typeof apiFetch !== 'function') return false;
+    try {
+      await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true });
+      return true;
+    } catch (error) {
+      if (error?.status === 404) return false;
+      return true;
+    }
+  }
+
   async function _saveDraftAs(item) {
-    if (typeof cfPrompt !== 'function' || typeof apiPut !== 'function') return;
+    if (typeof cfPrompt !== 'function' || typeof apiPut !== 'function') return false;
     const fallback = String(item.path || '').replace(/(\.[^/.]+)?$/, '_recovered$1');
     const nextPath = await cfPrompt('未保存ドラフトを別名で保存', fallback);
-    if (!nextPath) return;
-    await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: item.content || '' });
+    if (!nextPath) return false;
+    const exists = await _fileExists(nextPath);
+    if (exists) {
+      if (typeof cfConfirm !== 'function') {
+        if (typeof showStatus === 'function') showStatus('同名のファイルが既にあります', true);
+        return false;
+      }
+      const ok = await cfConfirm('同名のファイルが既にあります。上書きしますか？', { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' });
+      if (!ok) return false;
+    }
+    await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: item.content || '', force_overwrite: exists });
     await clearDraft(item.path);
     if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
+    return true;
   }
 
   async function showRecoveryDialog() {
@@ -176,8 +253,8 @@
         await _overwriteDraft(item);
         overlay.remove();
       } else if (action === 'save-as') {
-        await _saveDraftAs(item);
-        overlay.remove();
+        const saved = await _saveDraftAs(item);
+        if (saved) overlay.remove();
       } else if (action === 'discard') {
         await clearDraft(item.path);
         event.target.closest('div')?.remove();

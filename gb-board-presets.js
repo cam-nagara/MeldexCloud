@@ -21,6 +21,32 @@ function _bdPresetReadableTextColor(bgColor) {
   return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? '#1e1e1e' : '#ffffff';
 }
 
+function _bdPresetSafeCssColor(value, fallback = '') {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return fallback;
+  if (raw.length > 120 || /[<>{};\\]/.test(raw) || /url\s*\(|expression\s*\(|@/i.test(raw)) return fallback;
+  if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
+  if (/^(?:rgba?|hsla?)\([0-9a-z\s.,%/+:-]+\)$/i.test(raw)) return raw;
+  if (/^var\(--[A-Za-z0-9_-]+(?:\s*,\s*(?:#[0-9a-f]{3,8}|[A-Za-z]+|(?:rgba?|hsla?)\([0-9a-z\s.,%/+:-]+\)))?\)$/i.test(raw)) return raw;
+  if (/^(?:transparent|currentColor|Canvas|CanvasText|AccentColor|AccentColorText)$/i.test(raw)) return raw;
+  return /^[A-Za-z]+$/.test(raw) ? raw : fallback;
+}
+
+function _bdPresetSafeFontFamily(value) {
+  const normalized = typeof normalizeFontFamilyValue === 'function'
+    ? normalizeFontFamilyValue(value)
+    : String(value == null ? '' : value).trim();
+  if (!normalized || normalized.length > 160) return '';
+  if (/[<>{};\\]/.test(normalized) || /url\s*\(|expression\s*\(|@/i.test(normalized)) return '';
+  return normalized;
+}
+
+function _bdPresetClampedNumber(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 function _bdPresetBoardThemeColors(board) {
   const palette = typeof bdGetThemeColorSet === 'function' ? bdGetThemeColorSet(board) : null;
   return Array.isArray(palette) && palette.length ? palette : BD_PRESET_THEME_COLORS.slice();
@@ -436,7 +462,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換">${_bdIcon('search', 16)}</button>
       <button type="button" data-bd-action="detail" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="オプションを開く">${_bdIcon('panelRight', 16)}</button>
     </div>
-    <div id="${idFor('bd-canvas')}" data-bd-role="canvas" data-gb-tooltip-disabled="true" tabindex="0" style="position:relative;flex:1;overflow:hidden;outline:none;background:var(--bd-bg,var(--content-bg,var(--bg)));" oncontextmenu="return false;">
+    <div id="${idFor('bd-canvas')}" data-bd-role="canvas" data-gb-tooltip-disabled="true" tabindex="0" aria-label="ボードキャンバス" title="ボードキャンバス" style="position:relative;flex:1;overflow:hidden;outline:none;background:var(--bd-bg,var(--content-bg,var(--bg)));" oncontextmenu="return false;">
       <div id="${idFor('bd-world')}" data-bd-role="world" style="position:absolute;transform-origin:0 0;">
         <svg id="${idFor('bd-svg')}" data-bd-role="svg"></svg>
         <div id="${idFor('bd-nodes')}" data-bd-role="nodes"></div>
@@ -542,16 +568,17 @@ function _bdCardPathShapePreviewHtml(style, common) {
   const shape = style.shape || 'cloud';
   const path = _bdCardPreviewPathData(shape, style);
   if (!path.d) return '';
-  const fill = style.bgColor || 'var(--bg4)';
-  const borderColor = style.borderColor || 'rgba(148,163,184,0.55)';
-  const borderWidth = Number.isFinite(+style.borderWidth) ? Math.max(0, +style.borderWidth) : 0;
+  const fill = _bdPresetSafeCssColor(style.bgColor, 'var(--bg4)');
+  const borderColor = _bdPresetSafeCssColor(style.borderColor, 'rgba(148,163,184,0.55)');
+  const textColor = _bdPresetSafeCssColor(style.textColor, 'var(--fg)');
+  const borderWidth = _bdPresetClampedNumber(style.borderWidth, 0, 0, 24);
   const strokeAttrs = borderWidth > 0
     ? `stroke="${_bdEscAttr(borderColor)}" stroke-width="${borderWidth * 2}"`
     : 'stroke="none"';
   const joinAttrs = shape === 'thorn' || shape === 'thorn-curve'
     ? 'stroke-linejoin="miter" stroke-miterlimit="40"'
     : 'stroke-linejoin="round"';
-  return `<span class="bd-style-card-preview bd-style-card-preview--path-shape" style="background:transparent;color:${_bdEscAttr(style.textColor || 'var(--fg)')};border:0;border-radius:0;overflow:visible;position:relative;font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${common.fontCss}${common.shadowCss}"><svg class="bd-style-card-preview-shape" viewBox="0 0 ${path.w} ${path.h}" preserveAspectRatio="none" overflow="visible" aria-hidden="true" focusable="false"><path d="${_bdEscAttr(path.d)}" fill="${_bdEscAttr(fill)}" ${strokeAttrs} ${joinAttrs} paint-order="stroke fill"/></svg><span class="bd-style-card-preview-text">Aa</span></span>`;
+  return `<span class="bd-style-card-preview bd-style-card-preview--path-shape" style="background:transparent;color:${_bdEscAttr(textColor)};border:0;border-radius:0;overflow:visible;position:relative;font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${common.fontCss}${common.shadowCss}"><svg class="bd-style-card-preview-shape" viewBox="0 0 ${path.w} ${path.h}" preserveAspectRatio="none" overflow="visible" aria-hidden="true" focusable="false"><path d="${_bdEscAttr(path.d)}" fill="${_bdEscAttr(fill)}" ${strokeAttrs} ${joinAttrs} paint-order="stroke fill"/></svg><span class="bd-style-card-preview-text">Aa</span></span>`;
 }
 
 // テキストフチを text-shadow の多方向重ねで擬似描画する。
@@ -582,29 +609,32 @@ function _bdTextOutlineShadow(width, color) {
 
 function _bdCardStylePreviewHtml(style) {
   if (!style) return '<span class="bd-style-card-preview"></span>';
-  const borderColor = style.borderColor || 'rgba(148,163,184,0.55)';
-  const borderWidth = Number.isFinite(+style.borderWidth) ? +style.borderWidth : 0;
+  const bgColor = _bdPresetSafeCssColor(style.bgColor, 'var(--bg4)');
+  const textColor = _bdPresetSafeCssColor(style.textColor, 'var(--fg)');
+  const borderColor = _bdPresetSafeCssColor(style.borderColor, 'rgba(148,163,184,0.55)');
+  const borderWidth = _bdPresetClampedNumber(style.borderWidth, 0, 0, 24);
   // 文字フチはスタイルの textStrokeWidth をそのまま使う (実カードと同じ比率感)。
   // フォントサイズは CSS 側 (`.bd-style-card-preview` / `-large` / `-list-preview` /
   // `.bd-style-editor-preview`) で箇所ごとに制御する。インラインで font-size を入れると
   // CSS を上書きしてスタイル管理ダイアログ等の大型プレビューが小さくなる副作用が出る。
-  const strokeWidth = Math.max(0, +style.textStrokeWidth || 0);
-  const strokeColor = style.textStrokeColor || 'transparent';
+  const strokeWidth = _bdPresetClampedNumber(style.textStrokeWidth, 0, 0, 12);
+  const strokeColor = _bdPresetSafeCssColor(style.textStrokeColor, 'transparent');
   const shapeStyle = _bdCardPreviewShapeStyle(style.shape || 'rect', style.borderRadius);
   const textShadow = strokeWidth > 0 ? _bdTextOutlineShadow(strokeWidth, strokeColor) : '';
   const shadowCss = textShadow ? `text-shadow:${_bdEscAttr(textShadow)};` : '';
-  const fontCss = style.fontFamily ? `font-family:${_bdEscAttr(style.fontFamily)};` : '';
+  const safeFontFamily = _bdPresetSafeFontFamily(style.fontFamily);
+  const fontCss = safeFontFamily ? `font-family:${_bdEscAttr(safeFontFamily)};` : '';
   if (_bdIsPathPreviewShape(style.shape || '')) {
     const pathHtml = _bdCardPathShapePreviewHtml(style, { fontCss, shadowCss });
     if (pathHtml) return pathHtml;
   }
-  return `<span class="bd-style-card-preview" style="background:${_bdEscAttr(style.bgColor || 'var(--bg4)')};color:${_bdEscAttr(style.textColor || 'var(--fg)')};border:${borderWidth}px solid ${_bdEscAttr(borderColor)};${shapeStyle}font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${fontCss}${shadowCss}">Aa</span>`;
+  return `<span class="bd-style-card-preview" style="background:${_bdEscAttr(bgColor)};color:${_bdEscAttr(textColor)};border:${borderWidth}px solid ${_bdEscAttr(borderColor)};${shapeStyle}font-weight:${style.fontBold ? '700' : '500'};font-style:${style.fontItalic ? 'italic' : 'normal'};${fontCss}${shadowCss}">Aa</span>`;
 }
 
 function _bdLineStylePreviewHtml(style) {
   if (!style) return '<span class="bd-style-line-preview-empty"></span>';
-  const color = style.color || 'var(--accent)';
-  const strokeWidth = Number.isFinite(+style.width) ? Math.max(0, +style.width) : 2;
+  const color = _bdPresetSafeCssColor(style.color, 'var(--accent)');
+  const strokeWidth = _bdPresetClampedNumber(style.width, 2, 0, 24);
   const dash = style.style === 'dashed' ? 'stroke-dasharray="6 3"' : '';
   // v0.5.320: 旧 free-bezier → curve、orthogonal-curve → orthogonal に統合。
   // 直角線のコーナー半径 >0 ならプレビューでも角丸表示。
@@ -630,18 +660,19 @@ function _bdLineStylePreviewHtml(style) {
   // Phase 6: textVisible=true なら「Aa」サンプル文字を表示
   const textVisible = style.textVisible !== undefined ? !!style.textVisible : true;
   const textAlongPath = !!style.textAlongPath;
-  const textShadowWidth = Number.isFinite(+style.textShadowWidth) ? Math.max(0, +style.textShadowWidth) : 0;
-  const textShadowColor = style.textShadowColor || '';
-  const labelTextColor = style.labelTextColor || 'var(--fg2)';
-  const labelBgColor = style.labelBgColor || '';
-  const labelBorderColor = style.labelBorderColor || '';
-  const labelBorderWidth = Number.isFinite(+style.labelBorderWidth) ? Math.max(0, +style.labelBorderWidth) : 0;
+  const textShadowWidth = _bdPresetClampedNumber(style.textShadowWidth, 0, 0, 12);
+  const textShadowColor = _bdPresetSafeCssColor(style.textShadowColor, '');
+  const labelTextColor = _bdPresetSafeCssColor(style.labelTextColor, 'var(--fg2)');
+  const labelBgColor = _bdPresetSafeCssColor(style.labelBgColor, '');
+  const labelBorderColor = _bdPresetSafeCssColor(style.labelBorderColor, '');
+  const labelBorderWidth = _bdPresetClampedNumber(style.labelBorderWidth, 0, 0, 12);
   let labelSvg = '';
   if (textVisible) {
     const strokeAttr = textShadowWidth > 0
       ? `paint-order="stroke" stroke="${_bdEscAttr(textShadowColor)}" stroke-width="${textShadowWidth * 2}" stroke-linejoin="round"`
       : '';
-    const fontAttr = style.fontFamily ? `style="font-family:${_bdEscAttr(style.fontFamily)};"` : '';
+    const safeFontFamily = _bdPresetSafeFontFamily(style.fontFamily);
+    const fontAttr = safeFontFamily ? `style="font-family:${_bdEscAttr(safeFontFamily)};"` : '';
     if (textAlongPath) {
       labelSvg = `<text text-anchor="middle" dominant-baseline="middle" fill="${_bdEscAttr(labelTextColor)}" font-size="9" ${fontAttr} ${strokeAttr}><textPath href="#${pathId}" startOffset="50%">Aa</textPath></text>`;
     } else {

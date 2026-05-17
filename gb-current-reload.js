@@ -32,13 +32,21 @@
     try { return GBTabs.getActiveTab(paneId); } catch { return null; }
   }
 
-  function _tabFromEvent(event) {
+  function _paneIdFromEvent(event) {
     const paneEl = event?.target?.closest?.('.gb-pane[data-pane-id]');
-    return _tabFromPaneId(paneEl?.dataset?.paneId || '') || null;
+    return paneEl?.dataset?.paneId || '';
   }
 
-  function _currentTab(event) {
-    return _tabFromEvent(event) || _tabFromPaneId(_activePaneId());
+  function _tabFromEvent(event) {
+    return _tabFromPaneId(_paneIdFromEvent(event)) || null;
+  }
+
+  function _currentTarget(event) {
+    const eventPaneId = _paneIdFromEvent(event);
+    const eventTab = _tabFromEvent(event);
+    if (eventTab) return { tab: eventTab, paneId: eventPaneId };
+    const paneId = _activePaneId();
+    return { tab: _tabFromPaneId(paneId), paneId };
   }
 
   function _tabPath(tab) {
@@ -53,8 +61,9 @@
     return String(path || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || '';
   }
 
-  function _bridgeOpts() {
+  function _bridgeOpts(paneId) {
     return {
+      paneId: paneId || '',
       bridgeLoad: true,
       skipGlobalUi: true,
       skipHistoryScope: true,
@@ -64,6 +73,24 @@
       skipSaveLastView: true,
       skipHighlight: true,
     };
+  }
+
+  async function _withTargetPane(paneId, fn) {
+    if (paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function' && GBLayout.activePane !== paneId) {
+      GBLayout.setActivePane(paneId, { sync: true });
+    }
+    return fn();
+  }
+
+  async function _handled(call) {
+    const result = await call();
+    return result !== false;
+  }
+
+  async function _flushPendingEditorBeforeReload(type) {
+    if (type !== 'page' && type !== 'entity') return;
+    if (typeof flushPendingEditorAutosave !== 'function') return;
+    await Promise.resolve(flushPendingEditorAutosave()).catch(() => {});
   }
 
   function _clearLegacyDataset(type) {
@@ -82,31 +109,40 @@
     return result !== false;
   }
 
-  async function _reloadLegacyTab(tab, path, label) {
+  async function _reloadLegacyTab(tab, path, label, paneId) {
     const type = tab?.type || '';
-    const opts = _bridgeOpts();
+    const opts = _bridgeOpts(paneId);
     _clearLegacyDataset(type);
-    if (type === 'folder' && typeof openFolder === 'function') return openFolder(label, path, opts);
-    if (type === 'page' && typeof openPage === 'function') return openPage(label, path, opts);
-    if (type === 'entity' && typeof selectEntity === 'function') return selectEntity(path, opts);
-    if (type === 'media' && typeof openMedia === 'function') return openMedia(label, path, tab?.state?.mediaType || 'image', opts);
-    if (type === 'csv' && typeof openCsvFile === 'function') return openCsvFile(label, path, opts);
-    if (type === 'smart-db' && typeof openSmartDbFile === 'function') return openSmartDbFile(label, path, opts);
-    if (type === 'board' && typeof openBoard === 'function') return openBoard(label, path, opts);
-    if (type === 'html' && typeof openViewer === 'function') {
-      openViewer(tab?.state?.urlExternal ? path : '/viewer?file=' + encodeURIComponent(path), opts);
-      return true;
-    }
-    if (DB_VIEW_TYPES.has(type) && typeof selectDatabase === 'function') return selectDatabase(path, null, opts);
-    if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
-      GBPaneBridge.refreshPaneAfterTabSwitch(_activePaneId(), { force: true });
-      return true;
-    }
-    return false;
+    return _withTargetPane(paneId, async () => {
+      await _flushPendingEditorBeforeReload(type);
+      if (type === 'folder' && typeof openFolder === 'function') return _handled(() => openFolder(label, path, opts));
+      if (type === 'page' && typeof openPage === 'function') return _handled(() => openPage(label, path, opts));
+      if (type === 'entity' && typeof selectEntity === 'function') return _handled(() => selectEntity(path, opts));
+      if (type === 'media' && typeof openMedia === 'function') return _handled(() => openMedia(label, path, tab?.state?.mediaType || 'image', opts));
+      if (type === 'csv' && typeof openCsvFile === 'function') return _handled(() => openCsvFile(label, path, opts));
+      if (type === 'smart-db' && typeof openSmartDbFile === 'function') return _handled(() => openSmartDbFile(label, path, opts));
+      if (type === 'board' && typeof openBoard === 'function') return _handled(() => openBoard(label, path, opts));
+      if (type === 'html' && tab?.state?.urlExternal && typeof openViewer === 'function') {
+        openViewer(path, opts);
+        return true;
+      }
+      if (type === 'html' && typeof openHtmlFile === 'function') return _handled(() => openHtmlFile(label, path, opts));
+      if (type === 'html' && typeof openViewer === 'function') {
+        openViewer('/viewer?file=' + encodeURIComponent(path), opts);
+        return true;
+      }
+      if (DB_VIEW_TYPES.has(type) && typeof selectDatabase === 'function') return _handled(() => selectDatabase(path, null, opts));
+      if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
+        GBPaneBridge.refreshPaneAfterTabSwitch(paneId || _activePaneId(), { force: true });
+        return true;
+      }
+      return false;
+    });
   }
 
   async function reloadCurrentOpenFile(event) {
-    const tab = _currentTab(event);
+    const current = _currentTarget(event);
+    const tab = current.tab;
     if (!tab) {
       if (typeof showStatus === 'function') showStatus('再読み込みできるファイルがありません', true);
       return false;
@@ -114,7 +150,7 @@
     const path = _tabPath(tab);
     const label = _tabLabel(tab, path);
     try {
-      const handled = await _reloadComponent(tab) || (path ? await _reloadLegacyTab(tab, path, label) : false);
+      const handled = await _reloadComponent(tab) || (path ? await _reloadLegacyTab(tab, path, label, current.paneId) : false);
       if (!handled) {
         if (typeof showStatus === 'function') showStatus('この表示は再読み込み対象ではありません', true);
         return false;

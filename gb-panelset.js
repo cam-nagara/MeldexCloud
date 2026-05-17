@@ -307,9 +307,17 @@
       bar.removeAttribute('data-drop-side');
       if (typeof GBDocking?.hideIndicator === 'function') GBDocking.hideIndicator();
       try {
+        if (typeof GBDocking !== 'undefined' && typeof GBDocking.hasLockedPaneInNode === 'function' && GBDocking.hasLockedPaneInNode(panelsetNode.id)) {
+          if (typeof showStatus === 'function') showStatus('ロック中のパネルには追加できません', true);
+          return;
+        }
         if (isColumn) {
           const data = JSON.parse(e.dataTransfer.getData('application/x-gb-column') || '{}');
           if (!data.nodeId || data.nodeId === panelsetNode.id) return;
+          if (typeof GBDocking !== 'undefined' && typeof GBDocking.hasLockedPaneInNode === 'function' && GBDocking.hasLockedPaneInNode(data.nodeId)) {
+            if (typeof showStatus === 'function') showStatus('ロック中のパネルを含むカラムは移動できません', true);
+            return;
+          }
           if ((side === 'left' || side === 'right') && typeof GBLayout?.insertColumnAround === 'function') {
             GBLayout.insertColumnAround(data.nodeId, panelsetNode.id, side);
           } else if (typeof GBLayout?.applyColumnDrop === 'function') {
@@ -319,6 +327,10 @@
         }
         const data = JSON.parse(e.dataTransfer.getData('application/x-gb-panelset-group') || '{}');
         if (!data.groupId) return;
+        if (typeof GBDocking !== 'undefined' && typeof GBDocking.hasLockedPaneInGroup === 'function' && GBDocking.hasLockedPaneInGroup(data.panelsetId, data.groupId)) {
+          if (typeof showStatus === 'function') showStatus('ロック中のパネルを含むグループは移動できません', true);
+          return;
+        }
         if (side === 'left' || side === 'right') {
           // グループを新カラムとして挿入。panelset 自身のカラム ID を target に
           if (typeof GBLayout?._findColumnAncestorId === 'function'
@@ -695,6 +707,14 @@
         const data = JSON.parse(e.dataTransfer.getData('application/x-gb-panelset-group') || '{}');
         if (!data.panelsetId || !data.groupId) return;
         if (data.panelsetId === panelsetNode.id) return; // 同 panelset 内の末尾drop は active 切替で代替
+        if (typeof GBDocking !== 'undefined' && typeof GBDocking.hasLockedPaneInNode === 'function' && GBDocking.hasLockedPaneInNode(panelsetNode.id)) {
+          if (typeof showStatus === 'function') showStatus('ロック中のパネルには追加できません', true);
+          return;
+        }
+        if (typeof GBDocking !== 'undefined' && typeof GBDocking.hasLockedPaneInGroup === 'function' && GBDocking.hasLockedPaneInGroup(data.panelsetId, data.groupId)) {
+          if (typeof showStatus === 'function') showStatus('ロック中のパネルを含むグループは移動できません', true);
+          return;
+        }
         moveGroupToPanelset(data.panelsetId, data.groupId, panelsetNode.id);
       } catch {}
     });

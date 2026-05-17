@@ -90,14 +90,46 @@ function _getPivotEntityName(entityPath) {
   return (entityPath || '').split('/').pop().replace(/\.md$/, '');
 }
 
-function _getPivotEntityData(entityPath) {
-  const entityName = _getPivotEntityName(entityPath);
-  return state.pivotData?.entities?.[entityName] || null;
+function _dbPivotContextFromTarget(targetEl, options = {}) {
+  if (options && options.ctx) return options.ctx;
+  const dbPath = (options && options.dbPath)
+    || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(options?.entityPath || '') : '')
+    || (typeof state !== 'undefined' ? state.currentDbPath : '')
+    || '';
+  if (typeof _dbPaneContextFromEvent === 'function') {
+    const ctx = _dbPaneContextFromEvent(targetEl, { dbPath });
+    if (ctx) return ctx;
+  }
+  if (typeof _dbFindPaneContextForPath === 'function' && dbPath) {
+    const ctx = _dbFindPaneContextForPath(dbPath);
+    if (ctx) return ctx;
+  }
+  return (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
 }
 
-function _upsertLocalPivotValue(entityPath, propName, val, newValue, extra) {
+function _dbPivotPathForContext(ctx, fallbackPath) {
+  return (ctx && ctx.dbPath) || fallbackPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '';
+}
+
+function _dbPivotDataForContext(ctx) {
+  return (ctx && ctx.pivotData) || (typeof state !== 'undefined' ? state.pivotData : null) || null;
+}
+
+function _dbScopeForPath(dbPath) {
+  if (!dbPath) return '';
+  if (typeof _dbViewConfigHistoryScope === 'function') return _dbViewConfigHistoryScope(dbPath);
+  return 'db:' + String(dbPath).replace(/\\/g, '/');
+}
+
+function _getPivotEntityData(entityPath, ctx) {
+  const entityName = _getPivotEntityName(entityPath);
+  const data = _dbPivotDataForContext(ctx);
+  return data?.entities?.[entityName] || null;
+}
+
+function _upsertLocalPivotValue(entityPath, propName, val, newValue, extra, ctx) {
   if (val) val.value = newValue;
-  const entData = _getPivotEntityData(entityPath);
+  const entData = _getPivotEntityData(entityPath, ctx);
   if (!entData) return val || null;
   if (!Array.isArray(entData[propName])) entData[propName] = [];
   const values = entData[propName];
@@ -139,9 +171,9 @@ function _getPivotRowCellByProp(targetEl, propName) {
   return idx >= 0 ? tr.children[idx + 1] || null : null;
 }
 
-function _getCascadeDependents(sourcePropName) {
-  if (!state.currentDbPath || !sourcePropName) return [];
-  const pts = getPropertyTypes(state.currentDbPath) || {};
+function _getCascadeDependents(sourcePropName, dbPath) {
+  if (!dbPath || !sourcePropName) return [];
+  const pts = getPropertyTypes(dbPath) || {};
   return Object.entries(pts)
     .filter(([propName, cfg]) => propName !== sourcePropName
       && (cfg?.type === 'relation' || cfg?.type === 'multi-relation')
@@ -163,6 +195,9 @@ function _snapshotPivotValues(values) {
     value: _dbValueToString(v?.value),
     status: v?.status || '採用',
     note: v?.note || '',
+    file: v?.file || '',
+    property: v?.property || '',
+    candidate_index: v?.candidate_index,
   }));
 }
 function _sortCascadeDeleteValues(values) {
@@ -208,34 +243,64 @@ async function _deleteCascadeValuesOrRollback(entityPath, propName, currentVals,
   }
 }
 
-async function _clearCascadeDependentValues(entityPath, sourcePropName, oldValue, newValue) {
-  if (!state.currentDbPath || oldValue === newValue) return [];
-  const entData = _getPivotEntityData(entityPath);
+async function _clearCascadeDependentValues(entityPath, sourcePropName, oldValue, newValue, options = {}) {
+  const dbPath = _dbPivotPathForContext(options.ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
+  if (!dbPath || oldValue === newValue) return [];
+  const entData = _getPivotEntityData(entityPath, options.ctx);
   if (!entData) return [];
   const nextSourceValues = _splitDbMultiValue(newValue);
   const clears = [];
-  for (const dep of _getCascadeDependents(sourcePropName)) {
+  for (const dep of _getCascadeDependents(sourcePropName, dbPath)) {
     const currentVals = [...(entData[dep.propName] || [])];
     if (currentVals.length === 0) continue;
     const deleteTargets = [];
+    const updateTargets = [];
     for (const depVal of currentVals) {
       const ids = _splitDbMultiValue(depVal?.value);
       if (!ids.length) continue;
-      let stillValid = false;
+      const validIds = [];
       for (const id of ids) {
-        if (await _validateCascadeValue(id, entityPath, dep.ptc, nextSourceValues)) {
-          stillValid = true;
-          break;
-        }
+        if (await _validateCascadeValue(id, entityPath, dep.ptc, nextSourceValues, { dbPath, ctx: options.ctx })) validIds.push(id);
       }
-      if (!stillValid) deleteTargets.push(depVal);
+      if (validIds.length === ids.length) continue;
+      if (validIds.length === 0) deleteTargets.push(depVal);
+      else updateTargets.push({ value: depVal, oldValue: _dbValueToString(depVal?.value), newValue: validIds.join(', ') });
     }
-    if (deleteTargets.length === 0) continue;
+    if (deleteTargets.length === 0 && updateTargets.length === 0) continue;
     const snapshot = _snapshotPivotValues(deleteTargets);
-    await _deleteCascadeValuesOrRollback(entityPath, dep.propName, deleteTargets, snapshot);
-    const removed = new Set(deleteTargets);
-    entData[dep.propName] = currentVals.filter(value => !removed.has(value));
-    clears.push({ propName: dep.propName, values: snapshot });
+    const updates = [];
+    let deleteSucceeded = false;
+    const appliedUpdates = [];
+    try {
+      if (deleteTargets.length) {
+        await _deleteCascadeValuesOrRollback(entityPath, dep.propName, deleteTargets, snapshot);
+        deleteSucceeded = true;
+      }
+      for (const target of updateTargets) {
+        await _apiPutValue(target.value, { new_value: target.newValue });
+        appliedUpdates.push(target);
+        target.value.value = target.newValue;
+        updates.push({
+          ref: target.value,
+          oldValue: target.oldValue,
+          newValue: target.newValue,
+        });
+      }
+    } catch (err) {
+      for (const target of appliedUpdates.reverse()) {
+        try {
+          await _apiPutValue(target.value, { new_value: target.oldValue });
+          target.value.value = target.oldValue;
+        } catch {}
+      }
+      if (deleteSucceeded) await _rollbackCascadeValues(entityPath, dep.propName, snapshot);
+      throw err;
+    }
+    if (deleteTargets.length) {
+      const removed = new Set(deleteTargets);
+      entData[dep.propName] = currentVals.filter(value => !removed.has(value));
+    }
+    clears.push({ propName: dep.propName, values: snapshot, updates });
   }
   return clears;
 }
@@ -244,6 +309,14 @@ async function _restoreCascadeDependentValues(entityPath, clears) {
   if (!entityPath || !Array.isArray(clears) || clears.length === 0) return;
   const errors = [];
   for (const clear of clears) {
+    for (const update of (clear.updates || [])) {
+      try {
+        await _apiPutValue(update.ref, { new_value: _dbValueToString(update.oldValue) });
+        if (update.ref) update.ref.value = _dbValueToString(update.oldValue);
+      } catch (err) {
+        errors.push(clear.propName + ': ' + (err?.message || String(err)));
+      }
+    }
     for (const value of (clear.values || [])) {
       try {
         await _apiPostValue(entityPath, clear.propName, _dbValueToString(value.value), value.status || '採用', value.note || '');
@@ -260,31 +333,38 @@ async function _redoCascadeDependentValues(entityPath, clears) {
   const entData = _getPivotEntityData(entityPath);
   if (!entData) return;
   for (const clear of clears) {
-    const currentVals = [...(entData[clear.propName] || [])];
-    if (currentVals.length === 0) {
-      entData[clear.propName] = [];
-      continue;
+    for (const update of (clear.updates || [])) {
+      await _apiPutValue(update.ref, { new_value: _dbValueToString(update.newValue) });
+      if (update.ref) update.ref.value = _dbValueToString(update.newValue);
     }
-    await _deleteCascadeValuesOrRollback(entityPath, clear.propName, currentVals, _snapshotPivotValues(currentVals));
-    entData[clear.propName] = [];
+    const currentVals = [...(entData[clear.propName] || [])];
+    const deleteValues = (clear.values || []);
+    if (!deleteValues.length) continue;
+    const deleteTargets = currentVals.filter(v => deleteValues.some(s => _dbValueToString(s.value) === _dbValueToString(v?.value)));
+    if (!deleteTargets.length) continue;
+    await _deleteCascadeValuesOrRollback(entityPath, clear.propName, deleteTargets, _snapshotPivotValues(deleteTargets));
+    const removed = new Set(deleteTargets);
+    entData[clear.propName] = currentVals.filter(value => !removed.has(value));
   }
 }
 
-function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc) {
+function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options = {}) {
+  const ctx = _dbPivotContextFromTarget(targetEl, { ...options, entityPath });
+  const dbPath = _dbPivotPathForContext(ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
   const td = targetEl?.closest?.('td') || (targetEl?.matches?.('td') ? targetEl : null);
   const container = td?.querySelector('.cell-values');
-  if (!td || !container || !state.currentDbPath) return false;
+  if (!td || !container || !dbPath) return false;
   const entityName = _getPivotEntityName(entityPath);
-  const entityData = _getPivotEntityData(entityPath) || {};
-  const thumbSize = getThumbnailSize(state.currentDbPath);
+  const entityData = _getPivotEntityData(entityPath, ctx) || {};
+  const thumbSize = getThumbnailSize(dbPath);
   let values = filterValues(entityData[propName] || []);
-  const advFilters = getAdvancedFilters(state.currentDbPath);
+  const advFilters = getAdvancedFilters(dbPath);
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   container.innerHTML = '';
   values.forEach(cellVal => {
     container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc));
   });
-  const statusOn = getStatusEnabled(state.currentDbPath);
+  const statusOn = getStatusEnabled(dbPath);
   if (statusOn || values.length === 0) {
     const addBtn = document.createElement('span');
     addBtn.className = 'cell-add-btn';
@@ -294,7 +374,7 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc) {
     container.appendChild(addBtn);
   }
   const cellValues = values.map(v => v.value).join(', ');
-  const cc = getCellColor(cellValues, propName, state.currentDbPath);
+  const cc = getCellColor(cellValues, propName, dbPath);
   if (cc) {
     td.style.background = cc.bg;
     td.style.color = cc.fg;
@@ -305,54 +385,67 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc) {
   return true;
 }
 
-function _shouldReloadPivotAfterRelationChange(propName, ptc, affectedProps) {
-  if (!state.currentDbPath) return true;
+function _shouldReloadPivotAfterRelationChange(propName, ptc, affectedProps, options = {}) {
+  const dbPath = _dbPivotPathForContext(options.ctx, options.dbPath);
+  if (!dbPath) return true;
   const affected = new Set([propName, ...(affectedProps || [])]);
-  const groupBy = getGroupBy(state.currentDbPath);
+  const groupBy = getGroupBy(dbPath);
   if (groupBy && affected.has(groupBy)) return true;
   if (ptc && ptc.pairWith && ptc.relationDb === '') return true;
-  const advFilters = getAdvancedFilters(state.currentDbPath) || [];
+  const sortCfg = typeof getDbSortConfig === 'function'
+    ? getDbSortConfig(dbPath)
+    : (typeof getDbViewConfig === 'function' && getDbViewConfig(dbPath))?.sortConfig;
+  if (sortCfg && affected.has(sortCfg.key)) return true;
+  const advFilters = getAdvancedFilters(dbPath) || [];
   return advFilters.some(f => f?.property === '*' || affected.has(f?.property));
 }
 
-async function _finalizeRelationCellUpdate(targetEl, entityPath, propName, ptc, affectedProps) {
-  if (!_shouldReloadPivotAfterRelationChange(propName, ptc, affectedProps)
-      && _refreshPivotRelationCell(targetEl, entityPath, propName, ptc)) {
+async function _finalizeRelationCellUpdate(targetEl, entityPath, propName, ptc, affectedProps, options = {}) {
+  const ctx = _dbPivotContextFromTarget(targetEl, { ...options, entityPath });
+  const dbPath = _dbPivotPathForContext(ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
+  if (!_shouldReloadPivotAfterRelationChange(propName, ptc, affectedProps, { dbPath, ctx })
+      && _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, { dbPath, ctx })) {
     const extraProps = affectedProps || [];
+    const propTypes = getPropertyTypes(dbPath) || {};
     extraProps.forEach(depProp => {
-      const depPtc = getPropertyTypes(state.currentDbPath)?.[depProp];
+      const depPtc = propTypes[depProp];
       const depTd = _getPivotRowCellByProp(targetEl, depProp);
-      if (depTd && depPtc) _refreshPivotRelationCell(depTd, entityPath, depProp, depPtc);
+      if (depTd && depPtc) _refreshPivotRelationCell(depTd, entityPath, depProp, depPtc, { dbPath, ctx });
     });
     const td = targetEl?.closest?.('td') || (targetEl?.matches?.('td') ? targetEl : null);
-    if (td) _refreshDerivedCellsInRow(td, entityPath);
+    if (td) _refreshDerivedCellsInRow(td, entityPath, { dbPath, ctx });
     if (td && typeof setActiveCell === 'function') setActiveCell(td);
     return;
   }
-  if (state.currentDbPath) await selectDatabase(state.currentDbPath);
+  if (dbPath) await selectDatabase(dbPath, ctx);
 }
 
-function _tryRefreshPivotCellLocal(td, entityPath, propName) {
-  if (!td || !state.currentDbPath) return false;
-  const ptc = getPropertyTypes(state.currentDbPath)?.[propName];
-  if (_shouldReloadPivotAfterRelationChange(propName, ptc, [])) return false;
+function _tryRefreshPivotCellLocal(td, entityPath, propName, options = {}) {
+  const ctx = _dbPivotContextFromTarget(td, { ...options, entityPath });
+  const dbPath = _dbPivotPathForContext(ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
+  if (!td || !dbPath) return false;
+  const ptc = getPropertyTypes(dbPath)?.[propName];
+  if (_shouldReloadPivotAfterRelationChange(propName, ptc, [], { dbPath, ctx })) return false;
   if (ptc && ['formula', 'rollup', 'chat', 'multi-source-relation', 'button'].includes(ptc.type)) return false;
   const sortCfg = typeof getDbSortConfig === 'function'
-    ? getDbSortConfig(state.currentDbPath)
-    : (typeof getDbViewConfig === 'function' && getDbViewConfig(state.currentDbPath))?.sortConfig;
+    ? getDbSortConfig(dbPath)
+    : (typeof getDbViewConfig === 'function' && getDbViewConfig(dbPath))?.sortConfig;
   if (sortCfg && sortCfg.key === propName) return false;
-  if (!_refreshPivotRelationCell(td, entityPath, propName, ptc)) return false;
-  _refreshDerivedCellsInRow(td, entityPath);
+  if (!_refreshPivotRelationCell(td, entityPath, propName, ptc, { dbPath, ctx })) return false;
+  _refreshDerivedCellsInRow(td, entityPath, { dbPath, ctx });
   return true;
 }
 
-function _refreshDerivedCellsInRow(editedTd, entityPath) {
-  if (!editedTd || !state.currentDbPath || !state.pivotData?.entities) return;
+function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
+  const ctx = _dbPivotContextFromTarget(editedTd, { ...options, entityPath });
+  const dbPath = _dbPivotPathForContext(ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
+  const pivotData = _dbPivotDataForContext(ctx);
+  if (!editedTd || !dbPath || !pivotData?.entities) return;
   const tr = editedTd.closest('tr');
   if (!tr) return;
-  const propTypes = getPropertyTypes(state.currentDbPath) || {};
+  const propTypes = getPropertyTypes(dbPath) || {};
   const entityName = _getPivotEntityName(entityPath);
-  const entityData = state.pivotData.entities[entityName];
+  const entityData = pivotData.entities[entityName];
   if (!entityData) return;
 
   entityData._modified = new Date().toISOString();
@@ -372,10 +465,10 @@ function _refreshDerivedCellsInRow(editedTd, entityPath) {
     const container = td.querySelector('.cell-values');
     if (!container) continue;
     if (isRollup && !rollupCacheCleared) {
-      if (typeof clearRollupCache === 'function') clearRollupCache(state.currentDbPath);
+      if (typeof clearRollupCache === 'function') clearRollupCache(dbPath);
       rollupCacheCleared = true;
     }
-    _renderDerivedCellContent(container, ptc, entityName, propName, entityData);
+    _renderDerivedCellContent(container, ptc, entityName, propName, entityData, { dbPath, ctx, propTypes, pivotData });
   }
 }
 
@@ -384,7 +477,10 @@ function _cssEscapeAttr(s) {
   return String(s).replace(/(["\\])/g, '\\$1');
 }
 
-function _renderDerivedCellContent(container, ptc, entityName, propName, entityData) {
+function _renderDerivedCellContent(container, ptc, entityName, propName, entityData, options = {}) {
+  const dbPath = options.dbPath || _dbPivotPathForContext(options.ctx, '');
+  const propTypes = options.propTypes || (dbPath ? getPropertyTypes(dbPath) : {}) || {};
+  const pivotData = options.pivotData || _dbPivotDataForContext(options.ctx);
   container.innerHTML = '';
   if (ptc.source) {
     const metaKey = '_' + ptc.source;
@@ -405,7 +501,7 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
   }
   if (ptc.type === 'formula' && ptc.formula) {
     const result = typeof formulaEvalForEntity === 'function'
-      ? formulaEvalForEntity(ptc.formula, entityData)
+      ? formulaEvalForEntity(ptc.formula, entityData, { propTypes, dbPath })
       : { value: '', error: 'formula engine unavailable' };
     const span = document.createElement('span');
     span.style.cssText = 'font-size:13px;color:var(--fg);';
@@ -417,7 +513,7 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
       const formulaValue = result.value === '' ? '' : String(result.value);
       span.textContent = formulaValue;
       if (typeof _cellUiApplyAutoLinks === 'function'
-          && _cellUiApplyAutoLinks(span, formulaValue, typeof _entityPath === 'function' ? _entityPath(state.currentDbPath, entityName) : '')) {
+          && _cellUiApplyAutoLinks(span, formulaValue, typeof _entityPath === 'function' && dbPath ? _entityPath(dbPath, entityName) : '')) {
         span.addEventListener('click', (e) => { if (typeof _cellUiHandleAutoLinkClick === 'function') _cellUiHandleAutoLinkClick(e); });
       }
     }
@@ -429,14 +525,13 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
     span.textContent = '...';
     container.appendChild(span);
-    const entitiesMap = state.pivotData?.entities || {};
-    const propTypes = getPropertyTypes(state.currentDbPath) || {};
-    calcRollupValue(entityName, entitiesMap, ptc, propTypes).then(val => {
+    const entitiesMap = pivotData?.entities || {};
+    calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath).then(val => {
       const displayValue = val === '-' ? '-' : String(val);
       span.textContent = displayValue;
       span.style.color = 'var(--fg)';
       if (typeof _cellUiApplyAutoLinks === 'function'
-          && _cellUiApplyAutoLinks(span, displayValue, typeof _entityPath === 'function' ? _entityPath(state.currentDbPath, entityName) : '')) {
+          && _cellUiApplyAutoLinks(span, displayValue, typeof _entityPath === 'function' && dbPath ? _entityPath(dbPath, entityName) : '')) {
         span.addEventListener('click', (e) => { if (typeof _cellUiHandleAutoLinkClick === 'function') _cellUiHandleAutoLinkClick(e); });
       }
     }).catch(() => {
@@ -456,33 +551,33 @@ function _removeLocalPivotValue(val, entityPath, propName) {
 }
 
 function _refreshAfterCellEdit(anchorEl, entityPath, propName) {
+  const ctx = _dbPivotContextFromTarget(anchorEl, { entityPath });
+  const dbPath = _dbPivotPathForContext(ctx, typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : '');
   if (state.view === 'entity' && state.currentEntityPath) {
     if (typeof selectEntity === 'function') selectEntity(state.currentEntityPath);
     return;
   }
-  const currentMode = state.currentDbPath && typeof getCurrentViewMode === 'function'
-    ? getCurrentViewMode(state.currentDbPath)
+  const currentMode = dbPath && typeof getCurrentViewMode === 'function'
+    ? getCurrentViewMode(dbPath)
     : state.view;
-  if ((state.view === 'timeline' || currentMode === 'timeline') && state.currentDbPath) {
-    const ctx = typeof _dbPaneContextFromEvent === 'function'
-      ? _dbPaneContextFromEvent(anchorEl, { dbPath: state.currentDbPath })
-      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  if ((state.view === 'timeline' || currentMode === 'timeline') && dbPath) {
     if (typeof renderTimeline === 'function') renderTimeline(ctx);
-    else selectDatabase(state.currentDbPath, undefined, { silent: true });
+    else selectDatabase(dbPath, ctx, { silent: true });
     return;
   }
-  if (state.view !== 'pivot' || !state.currentDbPath) return;
+  if (state.view !== 'pivot' || !dbPath) return;
   const td = anchorEl?.closest?.('td');
-  if (td && entityPath && _tryRefreshPivotCellLocal(td, entityPath, propName)) return;
-  selectDatabase(state.currentDbPath, undefined, { silent: true });
+  if (td && entityPath && _tryRefreshPivotCellLocal(td, entityPath, propName, { dbPath, ctx })) return;
+  selectDatabase(dbPath, ctx, { silent: true });
 }
 
-async function _validateCascadeValue(currentId, entityPath, ptc, parentValuesOverride) {
-  const relDb = (ptc.relationDb === '' ? state.currentDbPath : ptc.relationDb) || '';
+async function _validateCascadeValue(currentId, entityPath, ptc, parentValuesOverride, options = {}) {
+  const dbPath = _dbPivotPathForContext(options.ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
+  const relDb = (ptc.relationDb === '' ? dbPath : ptc.relationDb) || '';
   if (!currentId || !ptc.cascadeFrom || !relDb) return true;
   const parentValues = Array.isArray(parentValuesOverride)
     ? parentValuesOverride
-    : _getCurrentEntityValues(entityPath, ptc.cascadeFrom);
+    : _getCurrentEntityValues(entityPath, ptc.cascadeFrom, options.ctx);
   if (!parentValues.length) return !Array.isArray(parentValuesOverride);
   const map = await _getRelationMap(relDb);
   const entName = map.idToName[currentId] || currentId;
@@ -495,9 +590,10 @@ async function _validateCascadeValue(currentId, entityPath, ptc, parentValuesOve
   });
 }
 
-function _getCurrentEntityValues(entityPath, propName) {
-  if (!state.pivotData?.entities) return [];
-  const entData = _getPivotEntityData(entityPath);
+function _getCurrentEntityValues(entityPath, propName, ctx) {
+  const pivotData = _dbPivotDataForContext(ctx);
+  if (!pivotData?.entities) return [];
+  const entData = _getPivotEntityData(entityPath, ctx);
   if (!entData || !entData[propName]) return [];
   const vals = entData[propName];
   const adopted = vals.filter(v => v.status === '採用' || v.status === '掲載済み');

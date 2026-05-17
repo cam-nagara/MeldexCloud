@@ -1,5 +1,5 @@
 (function () {
-  const state = { status: 'new', items: [], busy: false, includeTasteFiltered: false };
+  const state = { status: 'new', items: [], busy: false, includeTasteFiltered: false, loadToken: 0, updatingIds: new Set() };
 
   function ideaEsc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -92,12 +92,17 @@
   }
 
   async function loadIdeas(root) {
+    const token = ++state.loadToken;
+    const status = state.status;
+    const includeTasteFiltered = state.includeTasteFiltered;
     try {
-      const payload = await ideaApi('/idea_inbox?status=' + encodeURIComponent(state.status) + (state.includeTasteFiltered ? '&include_taste_filtered=true' : ''));
+      const payload = await ideaApi('/idea_inbox?status=' + encodeURIComponent(status) + (includeTasteFiltered ? '&include_taste_filtered=true' : ''));
+      if (token !== state.loadToken) return;
       state.items = payload.items || [];
       renderList(root);
       setAlert(root, '');
     } catch (err) {
+      if (token !== state.loadToken) return;
       setAlert(root, '読み込みに失敗: ' + (err.message || err), true);
     }
   }
@@ -139,12 +144,15 @@
   }
 
   function renderCard(item) {
+    const itemId = Number(item.id);
+    const updating = state.updatingIds.has(itemId);
+    const disabledAttr = updating ? ' disabled aria-busy="true"' : '';
     const concepts = (item.concepts_used || []).slice(0, 8).map(id => `<span class="gb-pill">#${Number(id)}</span>`).join('');
     const violation = item.canon_violation ? '<span class="gb-pill" style="color:var(--danger);">canon警告</span>' : '';
     const taste = renderTastePills(item);
     const original = item.original_idea ? `<div class="gb-section-desc" style="margin-top:6px;">原案: ${ideaEsc(item.original_idea)}</div>` : '';
     return `
-      <article data-idea-id="${Number(item.id)}" style="border-bottom:1px solid var(--border);padding:12px 0;">
+      <article data-idea-id="${itemId}" style="border-bottom:1px solid var(--border);padding:12px 0;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <span class="gb-pill">${ideaEsc(item.status || 'new')}</span>
           <span class="gb-pill">novelty ${Number(item.novelty_score || 0).toFixed(2)}</span>
@@ -158,10 +166,10 @@
         ${item.reasoning ? `<div class="gb-section-desc" style="margin-top:6px;">${ideaEsc(item.reasoning)}</div>` : ''}
         ${renderTasteEvaluation(item)}
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
-          <button type="button" class="gb-btn gb-btn-sm" data-idea-set="adopted">${ideaIcon('check', 14)} 採用</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-set="later">あとで</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-set="reviewed">確認済み</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-idea-set="discarded">却下</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-idea-set="adopted"${disabledAttr}>${ideaIcon('check', 14)} 採用</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-set="later"${disabledAttr}>あとで</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-set="reviewed"${disabledAttr}>確認済み</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-idea-set="discarded"${disabledAttr}>却下</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-chat>${ideaIcon('messageSquare', 14)} このアイディアでチャット</button>
         </div>
       </article>
@@ -186,11 +194,23 @@
   }
 
   async function setIdeaStatus(root, id, status) {
-    await ideaApi('/idea_inbox/' + encodeURIComponent(id), {
-      method: 'PUT',
-      body: JSON.stringify({ status }),
-    });
-    await loadIdeas(root);
+    const itemId = Number(id);
+    if (!Number.isFinite(itemId) || state.updatingIds.has(itemId)) return;
+    state.updatingIds.add(itemId);
+    renderList(root);
+    setAlert(root, '状態を保存中...');
+    try {
+      await ideaApi('/idea_inbox/' + encodeURIComponent(itemId), {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
+      });
+      await loadIdeas(root);
+    } catch (err) {
+      setAlert(root, '状態変更に失敗: ' + (err.message || err), true);
+    } finally {
+      state.updatingIds.delete(itemId);
+      renderList(root);
+    }
   }
 
   function startIdeaChat(id) {

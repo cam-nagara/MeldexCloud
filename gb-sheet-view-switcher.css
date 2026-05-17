@@ -150,6 +150,27 @@
     display: none;
   }
 
+  .db-toolbar-view-switcher .view-tab.active,
+  .db-pane-view-switcher .view-tab.active {
+    display: inline-flex;
+    width: var(--ui-h-xs);
+    min-width: var(--ui-h-xs);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .db-toolbar-view-switcher .view-tab.active > span:first-child,
+  .db-pane-view-switcher .view-tab.active > span:first-child {
+    display: none;
+  }
+
+  .db-toolbar-view-switcher .view-tab.active .view-tab-more,
+  .db-pane-view-switcher .view-tab.active .view-tab-more {
+    display: inline-flex !important;
+    opacity: 1 !important;
+    margin-left: 0 !important;
+  }
+
   .db-toolbar-view-switcher .db-view-tabs,
   .db-pane-view-switcher .db-view-tabs {
     flex: 0 0 auto;

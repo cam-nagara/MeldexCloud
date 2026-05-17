@@ -134,29 +134,74 @@
     };
   }
 
+  function _computedStyleFor(el) {
+    try {
+      return el && typeof getComputedStyle === 'function' ? getComputedStyle(el) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function _rootTextColor() {
+    return _computedStyleFor(_savedRoot)?.color || 'var(--fg)';
+  }
+
+  function _rootFontSize() {
+    return _computedStyleFor(_savedRoot)?.fontSize || '';
+  }
+
+  function _rootFontFamily() {
+    const value = _computedStyleFor(_savedRoot)?.fontFamily || '';
+    return typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue(value) : value;
+  }
+
+  function _clearBackgroundColor() {
+    const candidates = typeof document === 'undefined'
+      ? [_savedRoot]
+      : [_savedRoot, document.body, document.documentElement];
+    for (const el of candidates) {
+      const bg = _computedStyleFor(el)?.backgroundColor || '';
+      if (!_isTransparentColor(bg)) return bg;
+    }
+    return 'var(--bg)';
+  }
+
   function _stylePatch(prop, value) {
-    if (prop === 'textColor') return { color: value || '' };
-    if (prop === 'bgColor') return { backgroundColor: value || '' };
-    if (prop === 'fontWeight') return { fontWeight: value === 'bold' ? 'bold' : '' };
-    if (prop === 'fontStyle') return { fontStyle: value === 'italic' ? 'italic' : '' };
-    if (prop === 'fontSize') return { fontSize: value ? value + 'px' : '' };
-    if (prop === 'fontFamily') return { fontFamily: value || '' };
-    if (prop === 'textStrokeColor') return { webkitTextStrokeColor: value || '', paintOrder: value ? 'stroke fill' : '' };
-    if (prop === 'textStrokeWidth') return { webkitTextStrokeWidth: value ? value + 'px' : '', paintOrder: value ? 'stroke fill' : '' };
-    if (prop === 'underline') return { textDecorationLine: value ? 'underline' : '' };
+    if (prop === 'textColor') return { color: value || _rootTextColor() };
+    if (prop === 'bgColor') return { backgroundColor: _isTransparentColor(value) ? _clearBackgroundColor() : value };
+    if (prop === 'fontWeight') return { fontWeight: value === 'bold' ? 'bold' : 'normal' };
+    if (prop === 'fontStyle') return { fontStyle: value === 'italic' ? 'italic' : 'normal' };
+    if (prop === 'fontSize') return { fontSize: value ? value + 'px' : _rootFontSize() };
+    if (prop === 'fontFamily') return { fontFamily: value || _rootFontFamily() };
+    if (prop === 'textStrokeColor') return { webkitTextStrokeColor: value || 'transparent', paintOrder: value ? 'stroke fill' : '' };
+    if (prop === 'textStrokeWidth') return { webkitTextStrokeWidth: value ? value + 'px' : '0px', paintOrder: value ? 'stroke fill' : '' };
+    if (prop === 'underline') return { textDecoration: value ? 'underline' : 'none', textDecorationLine: value ? 'underline' : 'none' };
     if (prop === 'accentColor') {
       return {
-        textDecorationColor: value || '',
-        borderLeftColor: value || '',
+        textDecorationColor: value || 'currentColor',
+        borderLeftColor: value || 'currentColor',
       };
     }
     if (prop === 'leftAccent') {
       return {
-        borderLeft: value ? '3px solid var(--accent)' : '',
-        paddingLeft: value ? '6px' : '',
+        borderLeft: value ? '3px solid var(--accent)' : '0 solid transparent',
+        paddingLeft: value ? '6px' : '0',
       };
     }
     return {};
+  }
+
+  function _clearStylePatch(styleProp) {
+    if (styleProp === 'backgroundColor') return _stylePatch('bgColor', '');
+    if (styleProp === 'color') return _stylePatch('textColor', '');
+    if (styleProp === 'fontWeight') return _stylePatch('fontWeight', '');
+    if (styleProp === 'fontStyle') return _stylePatch('fontStyle', '');
+    if (styleProp === 'fontSize') return _stylePatch('fontSize', '');
+    if (styleProp === 'fontFamily') return _stylePatch('fontFamily', '');
+    if (styleProp === 'webkitTextStrokeColor') return _stylePatch('textStrokeColor', '');
+    if (styleProp === 'webkitTextStrokeWidth') return _stylePatch('textStrokeWidth', '');
+    if (styleProp === 'textDecorationLine') return _stylePatch('underline', false);
+    return { [styleProp]: '' };
   }
 
   function _wrapSelectionWithStyle(patch) {
@@ -182,32 +227,7 @@
   }
 
   function _clearSelectionStyle(styleProp) {
-    if (!_restoreSelection()) return;
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || sel.isCollapsed || !_savedRoot) return;
-    const range = sel.getRangeAt(0);
-    const beforeHtml = _savedRoot.innerHTML;
-    const candidates = new Set();
-    const addStyledAncestor = (node) => {
-      let el = _nodeElement(node);
-      while (el && el !== _savedRoot) {
-        if (el.getAttribute?.('style')) candidates.add(el);
-        el = el.parentElement;
-      }
-    };
-    addStyledAncestor(range.startContainer);
-    addStyledAncestor(range.endContainer);
-    _savedRoot.querySelectorAll('[style]').forEach((el) => {
-      if (_rangeIntersectsNode(range, el)) candidates.add(el);
-    });
-    candidates.forEach((el) => {
-      if (!el.style?.[styleProp]) return;
-      el.style[styleProp] = '';
-      if (!String(el.getAttribute('style') || '').trim()) el.removeAttribute('style');
-    });
-    if (_savedRoot.innerHTML === beforeHtml) return;
-    if (sel.rangeCount) _savedRange = sel.getRangeAt(0).cloneRange();
-    _savedRoot.dispatchEvent(new Event('input', { bubbles: true }));
+    _wrapSelectionWithStyle(_clearStylePatch(styleProp));
   }
 
   function _openForSelection() {

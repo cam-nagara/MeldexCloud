@@ -4,6 +4,8 @@
   const STORAGE_KEY = 'gb:last-chat-session';
   let _suspendCount = 0;
   let _restorePending = false;
+  let _restoreGeneration = 0;
+  let _restoreApplying = false;
 
   function _load() {
     try {
@@ -37,6 +39,17 @@
     return (typeof _chatState !== 'undefined' && _chatState) ? String(_chatState.sourceFolder || '') : '';
   }
 
+  function _saveCurrentLlmRestore() {
+    const savedPath = _currentSavedPath();
+    if (!savedPath) return;
+    _save({
+      mode: 'llm',
+      savedPath,
+      targetPath: typeof _chatState !== 'undefined' ? (_chatState.targetPath || '') : '',
+      sourceFolder: _currentSourceFolder(),
+    });
+  }
+
   async function _withSuspendedRestoreAsync(fn) {
     _suspendCount++;
     try {
@@ -50,37 +63,102 @@
     return _suspendCount > 0 || _restorePending;
   }
 
+  function _restoreIsCurrent(token) {
+    return _restorePending && token === _restoreGeneration;
+  }
+
+  async function _runRestoreStep(token, fn) {
+    if (!_restoreIsCurrent(token) || typeof fn !== 'function') return false;
+    _restoreApplying = true;
+    let result;
+    try {
+      result = fn();
+    } finally {
+      _restoreApplying = false;
+    }
+    try {
+      await result;
+    } catch {
+      return false;
+    }
+    return _restoreIsCurrent(token);
+  }
+
+  function _restoreGuard() {
+    if (!_restorePending || !_restoreApplying) return null;
+    const token = _restoreGeneration;
+    return () => _restoreIsCurrent(token);
+  }
+
+  function _cancelRestoreForUserAction() {
+    if (!_restorePending || _restoreApplying) return;
+    _restoreGeneration++;
+    _restorePending = false;
+  }
+
+  function _runRestoreInternal(fn) {
+    const previous = _restoreApplying;
+    _restoreApplying = true;
+    try {
+      return typeof fn === 'function' ? fn() : undefined;
+    } finally {
+      _restoreApplying = previous;
+    }
+  }
+
+  function _sameRestorePath(a, b) {
+    const clean = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return !!clean(a) && clean(a) === clean(b);
+  }
+
+  function _savedPathWasRestored(savedPath) {
+    if (!savedPath || typeof _chatState === 'undefined' || !_chatState?.sessionId) return false;
+    return _sameRestorePath(_currentSavedPath(), savedPath);
+  }
+
   function restoreOnOpen() {
     if (isRestoreSuspended()) return false;
     const meta = _load();
     if (!meta?.mode) return false;
+    const token = ++_restoreGeneration;
     _restorePending = true;
     _suspendCount++;
     Promise.resolve().then(async () => {
       if (meta.mode === 'history') {
-        if (typeof switchChatMode === 'function') switchChatMode('history');
+        await _runRestoreStep(token, () => {
+          if (typeof switchChatMode === 'function') switchChatMode('history');
+        });
         return;
       }
       if (meta.mode === 'team') {
-        if (typeof _setChatSourceFolder === 'function') await _setChatSourceFolder(meta.sourceFolder || '', { skipSave: true });
-        if (typeof switchChatMode === 'function') switchChatMode('team');
-        if (typeof loadTeamRooms === 'function') await loadTeamRooms();
+        if (!await _runRestoreStep(token, async () => {
+          if (typeof _setChatSourceFolder === 'function') await _setChatSourceFolder(meta.sourceFolder || '', { skipSave: true });
+        })) return;
+        if (!await _runRestoreStep(token, () => {
+          if (typeof switchChatMode === 'function') switchChatMode('team');
+        })) return;
+        if (!await _runRestoreStep(token, async () => {
+          if (typeof loadTeamRooms === 'function') await loadTeamRooms();
+        })) return;
         if (meta.roomPath && Array.isArray(_teamRoomsCache) && _teamRoomsCache.some(room => room.path === meta.roomPath) && typeof selectTeamRoom === 'function') {
-          await selectTeamRoom(meta.roomPath);
+          await _runRestoreStep(token, () => selectTeamRoom(meta.roomPath));
         }
         return;
       }
-      if (typeof switchChatMode === 'function') switchChatMode('llm');
+      if (!await _runRestoreStep(token, () => {
+        if (typeof switchChatMode === 'function') switchChatMode('llm');
+      })) return;
       if (meta.savedPath && typeof openSavedChat === 'function') {
-        await openSavedChat(meta.savedPath, '', meta.sourceFolder || '');
-        return;
+        if (!await _runRestoreStep(token, () => openSavedChat(meta.savedPath, '', meta.sourceFolder || ''))) return;
+        if (_savedPathWasRestored(meta.savedPath)) return;
       }
       if (meta.targetPath && typeof openFileChat === 'function') {
-        await openFileChat(meta.targetPath);
+        await _runRestoreStep(token, () => openFileChat(meta.targetPath));
       }
-    }).finally(() => {
-      _restorePending = false;
+    }).catch(() => {}).finally(() => {
+      if (_restoreGeneration === token) _restorePending = false;
       _suspendCount = Math.max(0, _suspendCount - 1);
+      _restoreApplying = false;
     });
     return true;
   }
@@ -94,19 +172,16 @@
   }
 
   _patch('openSavedChat', (original) => async function(path) {
+    _cancelRestoreForUserAction();
     const result = await _withSuspendedRestoreAsync(() => original.apply(this, arguments));
     if (!isRestoreSuspended()) {
-      _save({
-        mode: 'llm',
-        savedPath: path || _currentSavedPath(),
-        targetPath: typeof _chatState !== 'undefined' ? (_chatState.targetPath || '') : '',
-        sourceFolder: _currentSourceFolder(),
-      });
+      _saveCurrentLlmRestore();
     }
     return result;
   });
 
   _patch('openFileChat', (original) => async function(targetPath) {
+    _cancelRestoreForUserAction();
     const result = await _withSuspendedRestoreAsync(() => original.apply(this, arguments));
     if (!isRestoreSuspended()) {
       _save({
@@ -121,28 +196,26 @@
 
   _patch('chatAutoSave', (original) => async function() {
     const result = await original.apply(this, arguments);
-    _save({
-      mode: 'llm',
-      savedPath: _currentSavedPath(),
-      targetPath: typeof _chatState !== 'undefined' ? (_chatState.targetPath || '') : '',
-      sourceFolder: _currentSourceFolder(),
-    });
+    if (result !== false) _saveCurrentLlmRestore();
     return result;
   });
 
   _patch('chatClear', (original) => function() {
+    _cancelRestoreForUserAction();
     const result = original.apply(this, arguments);
     _save({ mode: 'llm', savedPath: '', targetPath: '', sourceFolder: _currentSourceFolder() });
     return result;
   });
 
   _patch('selectTeamRoom', (original) => async function(roomPath) {
+    _cancelRestoreForUserAction();
     const result = await original.apply(this, arguments);
     if (!isRestoreSuspended()) _save({ mode: 'team', roomPath: roomPath || '', sourceFolder: _currentSourceFolder() });
     return result;
   });
 
   _patch('switchChatMode', (original) => function(mode) {
+    _cancelRestoreForUserAction();
     const result = original.apply(this, arguments);
     if (isRestoreSuspended()) return result;
     if (mode === 'history') {
@@ -163,5 +236,7 @@
   window.GBChatRestore = {
     restoreOnOpen,
     isRestoreSuspended,
+    restoreGuard: _restoreGuard,
+    runInternal: _runRestoreInternal,
   };
 })();

@@ -23,18 +23,135 @@
       return content.map(part => {
         if (!part || typeof part !== 'object') return '';
         if (part.type === 'text') return String(part.text || '');
-        const name = part.name || part.path || part.url || part.mimeType || part.type || 'attachment';
+        const name = _attachmentName(part);
         return `[${part.type === 'document' ? 'PDF' : '添付'}: ${name}]`;
       }).filter(Boolean).join('\n');
     }
     return String(content || '');
   }
 
+  function _dataUrlParts(value) {
+    const text = String(value || '');
+    const match = /^data:([^;,]+)(;base64)?,(.*)$/i.exec(text);
+    if (!match || !match[2]) return null;
+    return {
+      mimeType: match[1] || 'application/octet-stream',
+      data: match[3] || '',
+      dataUrl: text,
+    };
+  }
+
+  function _attachmentDataUrl(part) {
+    return String(part?.dataUrl || (String(part?.url || '').startsWith('data:') ? part.url : '') || '');
+  }
+
+  function _attachmentName(part) {
+    return part?.name || part?.path || part?.url || part?.mimeType || part?.mime || part?.type || 'attachment';
+  }
+
+  function _messageParts(content) {
+    if (typeof content === 'string') return [{ type: 'text', text: content }];
+    if (!Array.isArray(content)) return [{ type: 'text', text: String(content || '') }];
+    return content
+      .filter(part => part != null)
+      .map(part => (typeof part === 'object' ? { ...part } : { type: 'text', text: String(part || '') }));
+  }
+
   function _chatMessages(body) {
     return (Array.isArray(body?.messages) ? body.messages : [])
       .filter(message => message && (message.role === 'user' || message.role === 'assistant'))
-      .map(message => ({ role: message.role, text: _messageText(message.content) }))
-      .filter(message => message.text);
+      .map(message => ({ role: message.role, text: _messageText(message.content), parts: _messageParts(message.content) }))
+      .filter(message => message.text || message.parts.some(part => _attachmentDataUrl(part)));
+  }
+
+  function _anthropicContent(parts, fallbackText) {
+    const result = [];
+    (parts || []).forEach(part => {
+      if (!part || typeof part !== 'object') return;
+      if (part.type === 'text') {
+        const text = String(part.text || '');
+        if (text) result.push({ type: 'text', text });
+        return;
+      }
+      const data = _dataUrlParts(_attachmentDataUrl(part));
+      if (!data) {
+        result.push({ type: 'text', text: `[${part.type === 'document' ? 'PDF' : '添付'}: ${_attachmentName(part)}]` });
+        return;
+      }
+      if (part.type === 'document' || data.mimeType === 'application/pdf') {
+        result.push({ type: 'document', source: { type: 'base64', media_type: data.mimeType, data: data.data }, title: String(part.name || 'document') });
+        return;
+      }
+      if (String(data.mimeType || '').startsWith('image/')) {
+        result.push({ type: 'image', source: { type: 'base64', media_type: data.mimeType, data: data.data } });
+      }
+    });
+    if (!result.length && fallbackText) result.push({ type: 'text', text: fallbackText });
+    return result.length === 1 && result[0].type === 'text' ? result[0].text : result;
+  }
+
+  function _openAiChatContent(parts, fallbackText) {
+    const result = [];
+    (parts || []).forEach(part => {
+      if (!part || typeof part !== 'object') return;
+      if (part.type === 'text') {
+        const text = String(part.text || '');
+        if (text) result.push({ type: 'text', text });
+        return;
+      }
+      const data = _dataUrlParts(_attachmentDataUrl(part));
+      if (data && String(data.mimeType || '').startsWith('image/')) {
+        result.push({ type: 'image_url', image_url: { url: data.dataUrl } });
+        return;
+      }
+      result.push({ type: 'text', text: `[${part.type === 'document' ? 'PDF' : '添付'}: ${_attachmentName(part)}]` });
+    });
+    if (!result.length && fallbackText) result.push({ type: 'text', text: fallbackText });
+    return result.length === 1 && result[0].type === 'text' ? result[0].text : result;
+  }
+
+  function _openAiResponsesContent(parts, fallbackText) {
+    const result = [];
+    (parts || []).forEach(part => {
+      if (!part || typeof part !== 'object') return;
+      if (part.type === 'text') {
+        const text = String(part.text || '');
+        if (text) result.push({ type: 'input_text', text });
+        return;
+      }
+      const data = _dataUrlParts(_attachmentDataUrl(part));
+      if (data && String(data.mimeType || '').startsWith('image/')) {
+        result.push({ type: 'input_image', image_url: data.dataUrl });
+        return;
+      }
+      if (data && (part.type === 'document' || data.mimeType === 'application/pdf')) {
+        result.push({ type: 'input_file', filename: String(part.name || 'document.pdf'), file_data: data.dataUrl });
+        return;
+      }
+      result.push({ type: 'input_text', text: `[${part.type === 'document' ? 'PDF' : '添付'}: ${_attachmentName(part)}]` });
+    });
+    if (!result.length && fallbackText) result.push({ type: 'input_text', text: fallbackText });
+    return result;
+  }
+
+  function _geminiParts(parts, fallbackText) {
+    const result = [];
+    (parts || []).forEach(part => {
+      if (!part || typeof part !== 'object') return;
+      if (part.type === 'text') {
+        const text = String(part.text || '');
+        if (text) result.push({ text });
+        return;
+      }
+      const data = _dataUrlParts(_attachmentDataUrl(part));
+      if (data) {
+        result.push({ inlineData: { mimeType: data.mimeType, data: data.data } });
+        return;
+      }
+      result.push({ text: `[${part.type === 'document' ? 'PDF' : '添付'}: ${_attachmentName(part)}]` });
+    });
+    if (!result.length && fallbackText) result.push({ text: fallbackText });
+    return result;
   }
 
   function _generationNumber(body, key, fallback, min, max) {
@@ -51,6 +168,177 @@
       return !['', '0', 'false', 'no', 'off'].includes(value.trim().toLowerCase());
     }
     return !!value;
+  }
+
+  function _isAbortError(err) {
+    return err?.name === 'AbortError' || String(err?.message || err || '').toLowerCase().includes('abort');
+  }
+
+  const CLIENT_USAGE_LOG_KEY = 'meldex-cloud-chat-usage-log';
+  const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
+  const CLIENT_PRICE_PER_MILLION = {
+    gemini: {
+      default: { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
+      'gemini-3': { input: 2.00, output: 12.00, cache_read: 0.20, cache_write: 2.00 },
+      'gemini-2.5-pro': { input: 1.25, output: 10.00, cache_read: 0.31, cache_write: 1.25 },
+      'gemini-2.5-flash-lite': { input: 0.10, output: 0.40, cache_read: 0.01, cache_write: 0.10 },
+      'gemini-2.5-flash': { input: 0.30, output: 2.50, cache_read: 0.05, cache_write: 0.30 },
+    },
+    anthropic: {
+      default: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
+      'claude-haiku': { input: 1.00, output: 5.00, cache_read: 0.10, cache_write: 1.25 },
+      'claude-sonnet': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
+      'claude-opus': { input: 5.00, output: 25.00, cache_read: 0.50, cache_write: 6.25 },
+    },
+    openai: {
+      default: { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
+      'gpt-5.5': { input: 5.00, output: 30.00, cache_read: 0.50, cache_write: 5.00 },
+      'gpt-5.4-mini': { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
+      'gpt-5.4-nano': { input: 0.15, output: 0.90, cache_read: 0.03, cache_write: 0.15 },
+      'gpt-5.4': { input: 2.50, output: 15.00, cache_read: 0.25, cache_write: 2.50 },
+    },
+  };
+
+  function _priceRate(provider, model) {
+    const table = CLIENT_PRICE_PER_MILLION[_providerKey(provider)] || {};
+    const modelId = String(model || '').toLowerCase();
+    for (const [prefix, rate] of Object.entries(table)) {
+      if (prefix !== 'default' && modelId.startsWith(prefix)) return rate;
+    }
+    return table.default || { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+  }
+
+  function _usageTokens(usage) {
+    const promptDetails = usage?.prompt_tokens_details || usage?.input_tokens_details || {};
+    const cacheRead = Number(
+      usage?.cache_read_tokens
+      || usage?.cached_tokens
+      || promptDetails.cached_tokens
+      || usage?.cachedContentTokenCount
+      || 0
+    ) || 0;
+    return {
+      input: Number(usage?.input_tokens || usage?.prompt_tokens || usage?.promptTokenCount || 0) || 0,
+      output: Number(usage?.output_tokens || usage?.completion_tokens || usage?.candidatesTokenCount || 0) || 0,
+      cache_read: cacheRead,
+      cache_write: Number(usage?.cache_write_tokens || 0) || 0,
+    };
+  }
+
+  function _estimateCostUsd(provider, model, usage) {
+    const tokens = _usageTokens(usage || {});
+    const rate = _priceRate(provider, model);
+    return Math.round((
+      tokens.input * rate.input
+      + tokens.output * rate.output
+      + tokens.cache_read * rate.cache_read
+      + tokens.cache_write * rate.cache_write
+    ) / 1_000_000 * 100_000_000) / 100_000_000;
+  }
+
+  function _loadClientBudgetSettings() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(CLIENT_BUDGET_KEY) || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function _loadClientUsageLog() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(CLIENT_USAGE_LOG_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function _saveClientUsageLog(log) {
+    try {
+      localStorage.setItem(CLIENT_USAGE_LOG_KEY, JSON.stringify((log || []).slice(-2000)));
+    } catch {}
+  }
+
+  function _usageTotals(log, sessionId) {
+    const now = Date.now();
+    const dayStart = now - 24 * 60 * 60 * 1000;
+    const monthStart = now - 30 * 24 * 60 * 60 * 1000;
+    const empty = { cost_usd: 0, input_tokens: 0, output_tokens: 0 };
+    const sum = (items) => items.reduce((acc, item) => ({
+      cost_usd: acc.cost_usd + Number(item.estimated_cost_usd || 0),
+      input_tokens: acc.input_tokens + Number(item.input_tokens || 0),
+      output_tokens: acc.output_tokens + Number(item.output_tokens || 0),
+    }), { ...empty });
+    return {
+      day: sum(log.filter(item => Number(item.timestamp || 0) >= dayStart)),
+      month: sum(log.filter(item => Number(item.timestamp || 0) >= monthStart)),
+      session: sum(log.filter(item => sessionId && item.session_id === sessionId)),
+    };
+  }
+
+  function _estimatedInputTokens(body) {
+    const text = _chatMessages(body).map(message => message.text || '').join('\n');
+    return Math.max(1, Math.ceil(text.length / 4));
+  }
+
+  function _assertClientBudget(body, provider, model) {
+    const settings = _loadClientBudgetSettings();
+    const sessionId = String(body?.session_id || '');
+    const projectedUsage = {
+      input_tokens: _estimatedInputTokens(body),
+      output_tokens: Math.floor(_generationNumber(body, 'max_tokens', 8192, 1024, 32768)),
+    };
+    const projectedCost = _estimateCostUsd(provider, model, projectedUsage);
+    const totals = _usageTotals(_loadClientUsageLog(), sessionId);
+    const checks = [
+      ['daily', 'day', 'daily_budget_usd', 'daily_mode', '日次'],
+      ['monthly', 'month', 'monthly_budget_usd', 'monthly_mode', '月次'],
+      ['session', 'session', 'session_budget_usd', 'session_mode', 'セッション'],
+    ];
+    for (const [, totalKey, budgetKey, modeKey, label] of checks) {
+      const budget = Number(settings[budgetKey] || 0);
+      const mode = String(settings[modeKey] || 'hard');
+      if (!budget || mode === 'off') continue;
+      const next = Number(totals[totalKey]?.cost_usd || 0) + projectedCost;
+      if (next >= budget && mode === 'hard') {
+        const err = new Error(`${label}予算 $${budget.toFixed(2)} に達するため、LLM送信を停止しました`);
+        err.meldexCode = 'chat_budget_exceeded';
+        throw err;
+      }
+    }
+  }
+
+  function _recordClientUsage({ provider, model, usage, sessionId, source }) {
+    const tokens = _usageTokens(usage || {});
+    if (!tokens.input && !tokens.output && !tokens.cache_read && !tokens.cache_write) return null;
+    const record = {
+      timestamp: Date.now(),
+      provider: _providerKey(provider),
+      model: String(model || ''),
+      session_id: String(sessionId || ''),
+      source: String(source || 'cloud-client'),
+      input_tokens: tokens.input,
+      output_tokens: tokens.output,
+      cache_read_tokens: tokens.cache_read,
+      cache_write_tokens: tokens.cache_write,
+      estimated_cost_usd: _estimateCostUsd(provider, model, usage),
+    };
+    const log = _loadClientUsageLog();
+    log.push(record);
+    _saveClientUsageLog(log);
+    return record;
+  }
+
+  function clientBudgetStatus(sessionId = '') {
+    const settings = _loadClientBudgetSettings();
+    const totals = _usageTotals(_loadClientUsageLog(), String(sessionId || ''));
+    return { settings, totals, cloud: true };
+  }
+
+  function resetClientUsage() {
+    _saveClientUsageLog([]);
+    return { ok: true, cloud: true };
   }
 
   function _reasoningLevel(body) {
@@ -128,13 +416,19 @@
     const stream = new ReadableStream({
       async start(controller) {
         const send = payload => controller.enqueue(encoder.encode('data: ' + JSON.stringify(payload) + '\n\n'));
+        let errored = false;
         try {
           await start(send);
           send({ type: 'done' });
         } catch (err) {
+          if (_isAbortError(err)) {
+            errored = true;
+            controller.error(err);
+            return;
+          }
           send({ type: 'error', error: _friendlyProviderErrorMessage(err?.message || String(err)) });
         } finally {
-          controller.close();
+          if (!errored) controller.close();
         }
       },
     });
@@ -158,12 +452,43 @@
     return _friendlyProviderErrorMessage(text || `HTTP ${response.status}`);
   }
 
+  function _providerStreamError(data, eventType) {
+    const type = String(data?.type || eventType || '').toLowerCase();
+    const err = data?.error || data?.response?.error || data?.last_error || null;
+    const message = err?.message || data?.message || data?.detail || data?.reason || '';
+    if (type === 'error' || type.endsWith('.failed') || type.endsWith('.incomplete')) {
+      return _friendlyProviderErrorMessage(message || type || 'ストリームエラー');
+    }
+    if (err && (err.message || err.type || err.code)) {
+      return _friendlyProviderErrorMessage(err.message || err.type || err.code);
+    }
+    return '';
+  }
+
   async function _readSse(response, onData) {
     if (!response.ok) throw new Error(await _providerError(response));
     if (!response.body) throw new Error('ストリームを開始できませんでした');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let eventType = '';
+    let dataLines = [];
+    const dispatch = () => {
+      if (!dataLines.length) {
+        eventType = '';
+        return;
+      }
+      const dataText = dataLines.join('\n').trim();
+      const currentEvent = eventType;
+      eventType = '';
+      dataLines = [];
+      if (!dataText || dataText === '[DONE]') return;
+      let data = null;
+      try { data = JSON.parse(dataText); } catch { return; }
+      const errorMessage = _providerStreamError(data, currentEvent);
+      if (errorMessage) throw new Error(errorMessage);
+      onData(data);
+    };
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -172,12 +497,23 @@
       buffer = lines.pop() || '';
       for (const rawLine of lines) {
         const line = rawLine.trimEnd();
-        if (!line.startsWith('data:')) continue;
-        const dataText = line.slice(5).trim();
-        if (!dataText || dataText === '[DONE]') continue;
-        try { onData(JSON.parse(dataText)); } catch {}
+        if (!line) {
+          dispatch();
+          continue;
+        }
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
       }
     }
+    if (buffer.trim()) {
+      const line = buffer.trimEnd();
+      if (line.startsWith('event:')) eventType = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    dispatch();
   }
 
   function _defaultModel(provider, model) {
@@ -196,7 +532,7 @@
       system: String(body.system_prompt || ''),
       messages: _chatMessages(body).map(message => ({
         role: message.role === 'assistant' ? 'assistant' : 'user',
-        content: message.text,
+        content: _anthropicContent(message.parts, message.text),
       })),
       max_tokens: maxTokens,
       stream: true,
@@ -289,8 +625,38 @@
   function _openAiResponsesInput(body) {
     return _chatMessages(body).map(message => ({
       role: message.role === 'assistant' ? 'assistant' : 'user',
-      content: [{ type: 'input_text', text: message.text }],
+      content: _openAiResponsesContent(message.parts, message.text),
     }));
+  }
+
+  function _collectOpenAiAnnotations(data) {
+    const result = [];
+    const add = value => {
+      if (!value || typeof value !== 'object') return;
+      if (Array.isArray(value)) {
+        value.forEach(add);
+        return;
+      }
+      result.push(value);
+    };
+    add(data?.annotation);
+    add(data?.annotations);
+    add(data?.item?.annotations);
+    add(data?.output?.annotations);
+    (data?.item?.content || []).forEach(part => add(part?.annotations));
+    (data?.output?.content || []).forEach(part => add(part?.annotations));
+    (data?.response?.output || []).forEach(item => (item?.content || []).forEach(part => add(part?.annotations)));
+    return result;
+  }
+
+  function _sendOpenAiAnnotationCitations(data, send, seen) {
+    _collectOpenAiAnnotations(data).forEach(annotation => {
+      const citation = annotation.url_citation || annotation;
+      const url = citation.url || citation.uri || '';
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      send({ type: 'citation', citation: { url, title: citation.title || url, provider: 'openai' } });
+    });
   }
 
   async function _streamOpenAi(body, apiKey, send, signal) {
@@ -299,7 +665,7 @@
     const system = String(body.system_prompt || '').trim();
     if (system) messages.push({ role: 'system', content: system });
     _chatMessages(body).forEach(message => {
-      messages.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.text });
+      messages.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: _openAiChatContent(message.parts, message.text) });
     });
     const payload = {
       model,
@@ -328,17 +694,43 @@
         if (data.usage) send({ type: 'usage', usage: data.usage });
       });
     };
-    try {
-      await request();
-    } catch (err) {
-      if (payload.reasoning_effort) {
-        delete payload.reasoning_effort;
-        send({ type: 'internal_notice', content: 'このOpenAIモデルは思考設定に未対応のため、思考設定なしで続行します。' });
+    let lastError = null;
+    for (let retry = 0; retry < 6; retry += 1) {
+      try {
         await request();
         return;
+      } catch (err) {
+        lastError = err;
+        const text = String(err?.message || err).toLowerCase();
+        if (sawResponseEvent) throw err;
+        let changed = false;
+        if (payload.reasoning_effort && (text.includes('reasoning') || text.includes('effort'))) {
+          delete payload.reasoning_effort;
+          send({ type: 'internal_notice', content: 'このOpenAIモデルは思考設定に未対応のため、思考設定なしで続行します。' });
+          changed = true;
+        } else if (payload.max_tokens && text.includes('max_tokens')) {
+          payload.max_completion_tokens = payload.max_tokens;
+          delete payload.max_tokens;
+          send({ type: 'internal_notice', content: 'このOpenAIモデルのトークン上限指定に合わせて再送信します。' });
+          changed = true;
+        } else if (payload.max_completion_tokens && text.includes('max_completion_tokens')) {
+          delete payload.max_completion_tokens;
+          changed = true;
+        } else if (payload.stream_options && text.includes('stream_options')) {
+          delete payload.stream_options;
+          changed = true;
+        } else if (Object.prototype.hasOwnProperty.call(payload, 'temperature') && text.includes('temperature')) {
+          delete payload.temperature;
+          changed = true;
+        } else if (Object.prototype.hasOwnProperty.call(payload, 'top_p') && text.includes('top_p')) {
+          delete payload.top_p;
+          changed = true;
+        }
+        if (changed) continue;
+        throw err;
       }
-      throw err;
     }
+    if (lastError) throw lastError;
   }
 
   async function _streamOpenAiResponses(body, apiKey, send, signal) {
@@ -361,8 +753,10 @@
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') payload.reasoning = { effort: reasoningLevel === 'max' ? 'high' : 'medium' };
     let emittedCodeStart = false;
-    let sawEvent = false;
-    try {
+    const seenCitations = new Set();
+    let sawResponseEvent = false;
+    const request = async () => {
+      let sawEvent = false;
       const res = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: {
@@ -374,7 +768,9 @@
       });
       await _readSse(res, data => {
         sawEvent = true;
+        sawResponseEvent = true;
         const type = String(data?.type || '');
+        _sendOpenAiAnnotationCitations(data, send, seenCitations);
         if (type === 'response.output_text.delta' && data.delta) {
           send({ type: 'text_delta', content: String(data.delta) });
           return;
@@ -402,18 +798,54 @@
           if (usage) send({ type: 'usage', usage });
         }
       });
-    } catch (err) {
-      if (sawEvent) throw err;
-      send({ type: 'internal_notice', content: 'OpenAI Responses APIのネイティブ機能が利用できないため、通常チャットで続行します。' });
-      return _streamOpenAi({ ...body, allow_code_execution: false, allow_web_search: false }, apiKey, send, signal);
+      return sawEvent;
+    };
+    let lastError = null;
+    for (let retry = 0; retry < 6; retry += 1) {
+      try {
+        await request();
+        return;
+      } catch (err) {
+        lastError = err;
+        const text = String(err?.message || err).toLowerCase();
+        let changed = false;
+        if (payload.tools?.some(tool => tool.type === 'code_interpreter') && (text.includes('code_interpreter') || text.includes('code'))) {
+          payload.tools = payload.tools.filter(tool => tool.type !== 'code_interpreter');
+          if (!payload.tools.length) delete payload.tools;
+          send({ type: 'internal_notice', content: 'このOpenAIモデルはコード実行に未対応のため、コード実行なしで続行します。' });
+          changed = true;
+        } else if (payload.tools?.some(tool => tool.type === 'web_search_preview') && (text.includes('web_search') || text.includes('tool'))) {
+          payload.tools = payload.tools.filter(tool => tool.type !== 'web_search_preview');
+          if (!payload.tools.length) delete payload.tools;
+          send({ type: 'internal_notice', content: 'このOpenAIモデルはWeb検索に未対応のため、検索なしで続行します。' });
+          changed = true;
+        } else if (payload.reasoning && (text.includes('reasoning') || text.includes('effort'))) {
+          delete payload.reasoning;
+          send({ type: 'internal_notice', content: 'このOpenAIモデルは思考設定に未対応のため、思考設定なしで続行します。' });
+          changed = true;
+        } else if (Object.prototype.hasOwnProperty.call(payload, 'temperature') && text.includes('temperature')) {
+          delete payload.temperature;
+          changed = true;
+        } else if (Object.prototype.hasOwnProperty.call(payload, 'top_p') && text.includes('top_p')) {
+          delete payload.top_p;
+          changed = true;
+        } else if (payload.max_output_tokens && text.includes('max_output_tokens')) {
+          delete payload.max_output_tokens;
+          changed = true;
+        }
+        if (changed) continue;
+        send({ type: 'internal_notice', content: 'OpenAI Responses APIのネイティブ機能が利用できないため、通常チャットで続行します。' });
+        return _streamOpenAi({ ...body, allow_code_execution: false, allow_web_search: false }, apiKey, send, signal);
+      }
     }
+    if (lastError) throw lastError;
   }
 
   async function _streamGemini(body, apiKey, send, signal) {
     const model = _defaultModel('gemini', body.model);
     const contents = _chatMessages(body).map(message => ({
       role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.text }],
+      parts: _geminiParts(message.parts, message.text),
     }));
     const payload = {
       contents,
@@ -510,18 +942,46 @@
     }
     return _sseResponse(async send => {
       const requestBody = _prepareClientStreamBody(augmentedBody, send);
-      if (provider === 'anthropic') return _streamAnthropic(requestBody, apiKey, send, options.signal);
+      const model = _defaultModel(provider, requestBody.model);
+      _assertClientBudget(requestBody, provider, model);
+      let latestUsage = null;
+      const trackedSend = payload => {
+        if (payload?.type === 'usage' && payload.usage) latestUsage = payload.usage;
+        send(payload);
+      };
+      const recordUsage = () => {
+        const record = _recordClientUsage({
+          provider,
+          model,
+          usage: latestUsage,
+          sessionId: requestBody.session_id,
+          source: 'cloud-client',
+        });
+        if (record) trackedSend({ type: 'usage_recorded', usage: record });
+      };
+      if (provider === 'anthropic') {
+        await _streamAnthropic(requestBody, apiKey, trackedSend, options.signal);
+        recordUsage();
+        return;
+      }
       if (provider === 'openai') {
         if (_requestFlag(requestBody, 'allow_code_execution', false) || _requestFlag(requestBody, 'allow_web_search', true)) {
-          return _streamOpenAiResponses(requestBody, apiKey, send, options.signal);
+          await _streamOpenAiResponses(requestBody, apiKey, trackedSend, options.signal);
+          recordUsage();
+          return;
         }
-        return _streamOpenAi(requestBody, apiKey, send, options.signal);
+        await _streamOpenAi(requestBody, apiKey, trackedSend, options.signal);
+        recordUsage();
+        return;
       }
-      return _streamGemini(requestBody, apiKey, send, options.signal);
+      await _streamGemini(requestBody, apiKey, trackedSend, options.signal);
+      recordUsage();
     });
   }
 
   window.MeldexLlmClient = {
+    clientBudgetStatus,
+    resetClientUsage,
     streamChatAsResponse,
   };
 })();

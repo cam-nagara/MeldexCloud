@@ -28,7 +28,7 @@
     if (idx < 0) return;
 
     // ルビ対応: DOMを同期してからテキストを分割
-    this._syncRowFromDom(textEl);
+    this._syncRowFromDom(textEl, { skipUndo: true });
     const fullText = this.doc.rows[idx].text;
     const sel = window.getSelection();
     let beforeText = fullText, afterText = '';
@@ -57,7 +57,7 @@
     this._calcCache = null;
     // ルビ対応: 全体再描画で正しくDOMを構築
     this._render();
-    this._markDirty();
+    this._markDirty({ skipUndo: true });
     // 新しい行にフォーカス。E2E/高速操作では rAF だけだと次操作が先行するため即時にも反映する。
     const focusNewRow = () => {
       const newRowEl = this.host?.querySelector(`.sn2-row[data-row-id="${newRow.id}"]`);
@@ -89,14 +89,14 @@
     if (idx < 0 || prevIdx < 0) return;
 
     // ルビ対応: DOM同期してからテキスト結合
-    this._syncRowFromDom(prevText);
-    this._syncRowFromDom(textEl);
+    this._syncRowFromDom(prevText, { skipUndo: true });
+    this._syncRowFromDom(textEl, { skipUndo: true });
     const cursorPos = this.doc.rows[prevIdx].text.length;
     this.doc.rows[prevIdx].text += this.doc.rows[idx].text;
     this.doc.rows.splice(idx, 1);
     this._calcCache = null;
     this._render();
-    this._markDirty();
+    this._markDirty({ skipUndo: true });
     // 結合位置にカーソル
     const focusMergedRow = () => {
       const newPrevEl = this.host?.querySelector(`.sn2-row[data-row-id="${prevId}"]`);
@@ -189,14 +189,14 @@
     if (idx < 0 || nextIdx < 0) return;
 
     // ルビ対応: DOM同期してからテキスト結合
-    this._syncRowFromDom(textEl);
-    this._syncRowFromDom(nextText);
+    this._syncRowFromDom(textEl, { skipUndo: true });
+    this._syncRowFromDom(nextText, { skipUndo: true });
     const cursorPos = this.doc.rows[idx].text.length;
     this.doc.rows[idx].text += this.doc.rows[nextIdx].text;
     this.doc.rows.splice(nextIdx, 1);
     this._calcCache = null;
     this._render();
-    this._markDirty();
+    this._markDirty({ skipUndo: true });
     const focusMergedRow = () => {
       const newRowEl = this.host?.querySelector(`.sn2-row[data-row-id="${rowId}"]`);
       const newText = newRowEl?.querySelector('.sn2-text');
@@ -220,28 +220,32 @@
     const isVert = this.doc.editor?.viewMode === 'vertical';
     const clearCc = (el) => { delete el.dataset.ccBg; delete el.dataset.ccColor; delete el.dataset.ccWeight; delete el.dataset.ccSize; };
     const setCc = (el, gs) => { if (gs.bgColor) el.dataset.ccBg = gs.bgColor; if (gs.textColor) el.dataset.ccColor = gs.textColor; if (gs.fontWeight) el.dataset.ccWeight = gs.fontWeight; if (gs.fontSize) el.dataset.ccSize = gs.fontSize; };
-    for (let i = startIdx; i < rows.length && i < calc.length; i++) {
+    for (const rowEl of rows) {
+      const rowId = rowEl.dataset.rowId;
+      const docIdx = this.doc.rows.findIndex(r => r.id === rowId);
+      if (docIdx < 0 || docIdx < startIdx) continue;
+      const rowCalc = calc[docIdx];
+      if (!rowCalc) continue;
       // 大区切り（primary）
-      const gutter = rows[i].querySelector('.sn2-gutter:not(.sn2-gutter2)');
+      const gutter = rowEl.querySelector('.sn2-gutter:not(.sn2-gutter2)');
       if (gutter) {
-        gutter.textContent = this._formatGutterPrimary(calc[i]);
+        gutter.textContent = this._formatGutterPrimary(rowCalc);
         // 縦書き: 半角英数字を縦中横に再ラップ (textContent 設定で tcy span が消えるため)
         if (isVert) this._wrapTcy(gutter, 'sn2-tcy-wide');
         clearCc(gutter);
-        if (calc[i].showPage && cc.primaryStyle) setCc(gutter, cc.primaryStyle);
+        if (rowCalc.showPage && cc.primaryStyle) setCc(gutter, cc.primaryStyle);
       }
       // 小区切り（secondary）
-      const gutter2 = rows[i].querySelector('.sn2-gutter2');
+      const gutter2 = rowEl.querySelector('.sn2-gutter2');
       if (gutter2) {
-        gutter2.textContent = this._formatGutterSecondary(calc[i]);
+        gutter2.textContent = this._formatGutterSecondary(rowCalc);
         if (isVert) this._wrapTcy(gutter2, 'sn2-tcy-wide');
         clearCc(gutter2);
-        if (calc[i].showPanel && cc.secondaryStyle) setCc(gutter2, cc.secondaryStyle);
+        if (rowCalc.showPanel && cc.secondaryStyle) setCc(gutter2, cc.secondaryStyle);
       }
       // スタイル再適用
-      const rowId = rows[i].dataset.rowId;
-      const row = this.doc.rows.find(r => r.id === rowId);
-      if (row) this._applyRowStyle(rows[i], row.role);
+      const row = this.doc.rows[docIdx];
+      if (row) this._applyRowStyle(rowEl, row.role);
     }
   }
 
@@ -277,14 +281,14 @@
     // プレーンテキスト部分は `\` `{` `|` `}` をエスケープして保存する（復元時に逆変換される）。
     let text = '';
     const walk = (node) => {
-      if (node.nodeType === 3) { text += _sn2EscapeRubyText(node.textContent); return; }
+      if (node.nodeType === 3) { text += _sn2EscapeScriptNotePlainText(node.textContent); return; }
       if (node.nodeType === 1) {
         if (node.dataset?.manualLink && node.dataset?.path && typeof this._formatManualLinkMarkup === 'function') {
           text += this._formatManualLinkMarkup(node.textContent, node.dataset.path);
           return;
         }
         // 自動ルビ・自動リンクはテキストのみ出力（マークアップを保存しない）
-        if (node.dataset?.autoRuby || node.dataset?.autoLink) { text += _sn2EscapeRubyText(node.textContent); return; }
+        if (node.dataset?.autoRuby || node.dataset?.autoLink) { text += _sn2EscapeScriptNotePlainText(node.textContent); return; }
         if (node.dataset?.ruby) {
           text += `{${_sn2EscapeRubyText(node.textContent)}|${_sn2EscapeRubyText(node.dataset.ruby)}}`;
           return;
@@ -521,6 +525,9 @@
     const text = sel.toString().trim();
     if (!text) return;
     const range = sel.getRangeAt(0);
+    const textEl = range.startContainer.closest?.('.sn2-text') || range.startContainer.parentElement?.closest?.('.sn2-text');
+    if (!textEl || !this._rangeWithinElement(range, textEl)) return;
+    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup();
     // ルビ入力ポップアップ
     const popup = document.createElement('div');
     popup.className = 'sn2-header-popup';
@@ -542,11 +549,21 @@
     positionPopup(popup, rr);
     const input = popup.querySelector('#sn2-ruby-input');
     input.focus();
+    let closeHandler = null;
+    const closeRubyPopup = () => {
+      popup.remove();
+      if (closeHandler) document.removeEventListener('pointerdown', closeHandler);
+      if (this._rubyPopup === popup) {
+        this._rubyPopup = null;
+        this._closeRubyPopup = null;
+      }
+    };
+    this._rubyPopup = popup;
+    this._closeRubyPopup = closeRubyPopup;
     const apply = (ruby) => {
-      if (!ruby) { popup.remove(); return; }
+      if (!ruby) { closeRubyPopup(); return; }
       const addRule = popup.querySelector('#sn2-ruby-add-rule')?.checked;
       // テキスト内にルビマークアップを挿入: {漢字|ルビ}
-      const textEl = range.startContainer.closest?.('.sn2-text') || range.startContainer.parentElement?.closest?.('.sn2-text');
       if (textEl) {
         this._pushUndo('ルビ設定');
         // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
@@ -563,16 +580,16 @@
         newRange.collapse(true);
         sel.addRange(newRange);
         // DOMからrow.textに同期（ルビマークアップ {漢字|ルビ} をrow.textに保存）
-        this._syncRowFromDom(textEl);
+        this._syncRowFromDom(textEl, { skipUndo: true });
         // 自動ルビルールにも追加
         if (addRule) {
           if (!this.doc.rubyRules) this.doc.rubyRules = [];
           const exists = this.doc.rubyRules.some(r => r.text === text && r.ruby === ruby);
           if (!exists) this.doc.rubyRules.push({ text, ruby, auto: true });
         }
-        this._markDirty();
+        this._markDirty({ skipUndo: true });
       }
-      popup.remove();
+      closeRubyPopup();
     };
     popup.querySelector('#sn2-ruby-ok').addEventListener('click', () => apply(input.value.trim()));
     input.addEventListener('keydown', (ev) => {
@@ -584,7 +601,7 @@
       if (ev.key === 'Escape') {
         ev.preventDefault();
         ev.stopPropagation();
-        popup.remove();
+        closeRubyPopup();
       }
     });
     popup.querySelector('#sn2-ruby-auto').addEventListener('click', async () => {
@@ -596,7 +613,7 @@
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }
     });
-    const closeHandler = (ev) => { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('pointerdown', closeHandler); } };
+    closeHandler = (ev) => { if (!popup.contains(ev.target)) closeRubyPopup(); };
     setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
   }
 
@@ -604,13 +621,24 @@
 
   destroy() {
     this._closeRoleMenu();
+    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup();
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
     if (this._undoTimer) { clearTimeout(this._undoTimer); this._undoTimer = null; }
     if (this._textInputUndoTimer) { clearTimeout(this._textInputUndoTimer); this._textInputUndoTimer = null; }
+    if (typeof this._stopRowBulkBarGuard === 'function') this._stopRowBulkBarGuard();
     // エディタレジストリから除去
-    if (this._path && typeof _sn2Editors !== 'undefined') delete _sn2Editors[this._path];
+    if (typeof _sn2Editors !== 'undefined') {
+      const registeredPath = this._sn2RegisteredPath || this._path;
+      const registeredScopeId = this._sn2RegisteredScopeId || this._historyScopeId;
+      if (registeredPath && _sn2Editors[registeredPath] === this) delete _sn2Editors[registeredPath];
+      if (registeredScopeId && _sn2Editors[registeredScopeId] === this) delete _sn2Editors[registeredScopeId];
+    }
     if (this._caretSelChangeHandler) { document.removeEventListener('selectionchange', this._caretSelChangeHandler); this._caretSelChangeHandler = null; }
     if (this._copyHandler) { document.removeEventListener('copy', this._copyHandler); this._copyHandler = null; }
+    if (typeof this._dragSelectionDocCleanup === 'function') {
+      this._dragSelectionDocCleanup();
+      this._dragSelectionDocCleanup = null;
+    }
     // document.body上のフロートバー・一時UIを除去
     document.querySelectorAll('.sn2-row-bulk-bar, .gb-fmt-popup--bulk-edit, .sn2-drag-select-rect').forEach(el => el.remove());
     if (this.host) this.host.innerHTML = '';

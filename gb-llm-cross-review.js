@@ -84,12 +84,29 @@
   function _targetFromTab(pane, tab) {
     const path = _tabReviewPath(tab);
     if (!path || UTILITY_TAB_TYPES.has(tab?.type)) return null;
+    const activeFeature = _reviewFeatureForTarget(tab?.type, path);
     return {
       path,
       label: String(tab?.label || path || ''),
-      type: String(tab?.type || ''),
+      type: activeFeature,
+      rawType: String(tab?.type || ''),
       paneId: String(pane?.id || ''),
     };
+  }
+
+  function _reviewFeatureForTarget(type, path) {
+    const raw = String(type || '').trim().toLowerCase();
+    const lowerPath = String(path || '').trim().toLowerCase();
+    if (['note', 'page', 'editor', 'markdown'].includes(raw)) return 'note';
+    if (['sheet', 'database', 'db', 'pivot', 'gallery', 'kanban', 'timeline', 'table', 'form'].includes(raw)) return 'sheet';
+    if (['smart-sheet', 'smart-db', 'smartdb'].includes(raw)) return 'smart-sheet';
+    if (['board', 'canvas'].includes(raw)) return 'board';
+    if (['scriptnote', 'scenario'].includes(raw)) return 'scriptnote';
+    if (lowerPath.endsWith('.scriptnote.json')) return 'scriptnote';
+    if (lowerPath.endsWith('.smart-db.json')) return 'smart-sheet';
+    if (lowerPath.endsWith('.board.md')) return 'board';
+    if (lowerPath.endsWith('.md') || lowerPath.endsWith('.txt') || lowerPath.endsWith('.html')) return 'note';
+    return raw || 'unknown';
   }
 
   function _activeContentTargets() {
@@ -112,10 +129,13 @@
   }
 
   function _normalizeTargetInfo(raw) {
+    const path = String(raw?.path || '');
+    const rawType = String(raw?.rawType || raw?.type || raw?.active_feature || '');
     return {
-      path: String(raw?.path || ''),
+      path,
       label: String(raw?.label || raw?.path || ''),
-      type: String(raw?.type || raw?.active_feature || ''),
+      type: _reviewFeatureForTarget(rawType, path),
+      rawType,
       paneId: String(raw?.paneId || raw?.pane_id || ''),
     };
   }
@@ -153,7 +173,8 @@
     const label = String(target?.label || '').trim() || String(target?.path || '').split(/[\\/]/).pop() || '未選択';
     const path = String(target?.path || '').trim();
     const type = String(target?.type || '').trim();
-    const suffix = [type, path].filter(Boolean).join(' / ');
+    const rawType = String(target?.rawType || '').trim();
+    const suffix = [rawType && rawType !== type ? `${rawType} -> ${type}` : type, path].filter(Boolean).join(' / ');
     return suffix ? `${label} (${suffix})` : label;
   }
 
@@ -539,6 +560,7 @@
     resultPane.appendChild(_el('div', 'llm-review-meta', '実行するとここに指摘が表示されます。'));
     body.append(controls, resultPane);
     let currentRun = null;
+    let busy = false;
     const runBtn = _button('実行', 'gb-btn gb-btn-primary');
     const revisionBtn = _button('改稿案作成', 'gb-btn gb-btn-primary');
     const cancelBtn = _button('中止', 'gb-btn');
@@ -562,7 +584,20 @@
       if (updatedRun) currentRun = updatedRun;
       updateRevisionButton();
     };
+    const setBusy = value => {
+      busy = !!value;
+      targetSelect.disabled = busy || !targetCandidates.length;
+      presetSelect.disabled = busy;
+      priority.disabled = busy;
+      saveInput.disabled = busy;
+      executionProvider.disabled = busy;
+      reviewerBox.querySelectorAll('input,button,select,textarea').forEach(el => { el.disabled = busy; });
+      runBtn.disabled = busy || !target.path;
+      cancelBtn.disabled = !busy;
+      updateRevisionButton();
+    };
     const updateTargetSelection = () => {
+      if (busy) return;
       const index = Number(targetSelect.value);
       target = targetCandidates[index] || _normalizeTargetInfo({});
       if (!options.work_folder) workFolder = _workFolderValue(target.path);
@@ -570,7 +605,7 @@
       workFolderMeta.textContent = `作品フォルダ: ${workFolder || '未設定'}`;
       if (currentRun && currentRun.target_path !== target.path) currentRun = null;
       const hasTarget = !!target.path;
-      runBtn.disabled = !hasTarget;
+      runBtn.disabled = busy || !hasTarget;
       runBtn.title = hasTarget ? '' : 'レビューの対象ファイルを選択してください';
       if (!hasTarget) status.textContent = '対象ファイルが選択されていません';
       updateRevisionButton();
@@ -596,9 +631,8 @@
     cancelBtn.addEventListener('click', () => {
       if (_activeController) {
         _activeController.abort();
-        _activeController = null;
       }
-      status.textContent = '中止しました';
+      status.textContent = '中止処理中...';
       updateRevisionButton();
     });
 
@@ -610,9 +644,8 @@
         return;
       }
       status.textContent = '改稿案を作成し、本文へ反映中...';
-      runBtn.disabled = true;
-      cancelBtn.disabled = false;
       _activeController = new AbortController();
+      setBusy(true);
       updateRevisionButton();
       try {
         const result = await _api(`/llm-review/run/${encodeURIComponent(currentRun.run_id)}/revision-apply`, {
@@ -642,8 +675,7 @@
         status.textContent = err?.name === 'AbortError' ? '中止しました' : '本文反映に失敗しました: ' + (err?.message || err);
       } finally {
         _activeController = null;
-        runBtn.disabled = !target.path;
-        cancelBtn.disabled = true;
+        setBusy(false);
         updateRevisionButton();
       }
     });
@@ -662,10 +694,9 @@
         return;
       }
       status.textContent = 'レビューを実行中...';
-      runBtn.disabled = true;
-      cancelBtn.disabled = false;
       currentRun = null;
       _activeController = new AbortController();
+      setBusy(true);
       updateRevisionButton();
       try {
         resultPane.textContent = '';
@@ -676,7 +707,7 @@
           source_folder: sourceFolder,
           work_folder: workFolder,
           target_path: target.path,
-          active_feature: target.type,
+          active_feature: _reviewFeatureForTarget(target.type, target.path),
           preset_id: presetSelect.value,
           reviewer_ids: _selectedReviewerIds(reviewerBox),
           user_priority_instruction: priority.value || '',
@@ -695,8 +726,7 @@
         status.textContent = err?.name === 'AbortError' ? '中止しました' : 'レビューに失敗しました: ' + (err?.message || err);
       } finally {
         _activeController = null;
-        runBtn.disabled = false;
-        cancelBtn.disabled = true;
+        setBusy(false);
         updateRevisionButton();
       }
     });

@@ -10,13 +10,37 @@
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
   }
 
+  function tasteAuthToken() {
+    try {
+      if (typeof _authToken !== 'undefined' && _authToken) return _authToken;
+    } catch {}
+    try {
+      const storage = window?.['local' + 'Storage'];
+      return storage?.getItem?.('meldex-auth-token') || storage?.getItem?.('crossfolio-auth-token') || '';
+    } catch {
+      return '';
+    }
+  }
+
   async function tasteApi(path, opts = {}) {
-    if (typeof apiFetch === 'function') return apiFetch(path, opts);
     const headers = { ...(opts.headers || {}) };
     if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const token = tasteAuthToken();
+    if (token && !headers.Authorization) headers.Authorization = 'Bearer ' + token;
+    if (typeof apiFetch === 'function') return apiFetch(path, { ...opts, headers });
     const res = await fetch(API_BASE + path, { ...opts, headers });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(payload?.detail || payload?.error || res.statusText);
+    const text = await res.text();
+    let payload = {};
+    if (text) {
+      try { payload = JSON.parse(text); } catch { payload = { detail: text }; }
+    }
+    if (!res.ok) {
+      const detail = payload?.detail?.message || payload?.detail || payload?.error || res.statusText;
+      const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
+    }
     return payload;
   }
 
@@ -33,8 +57,7 @@
     const state = getState(container);
     if (state.roleLoaded) return state.role;
     try {
-      const res = await fetch(API_BASE + '/auth/me');
-      const me = res.ok ? await res.json() : {};
+      const me = await tasteApi('/auth/me');
       state.role = me?.role || 'viewer';
     } catch {
       state.role = 'viewer';
@@ -93,7 +116,10 @@
     `;
     if (!roleWasLoaded) {
       ensureRole(container).then(() => {
-        if (container.isConnected) renderShell(container);
+        if (container.isConnected) {
+          renderShell(container);
+          renderList(container);
+        }
       });
     }
     bindShell(container);

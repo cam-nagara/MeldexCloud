@@ -59,8 +59,9 @@
     const rootOf = node => {
       let cur = node;
       let guard = 0;
+      const guardLimit = Math.max(50, bd.nodes.length + 1);
       const seen = new Set();
-      while (cur?.parent && guard < 50) {
+      while (cur?.parent && guard < guardLimit) {
         if (seen.has(cur.id)) break;
         seen.add(cur.id);
         const parent = bd.nodes.find(v => v.id === cur.parent);
@@ -87,9 +88,31 @@
   }
 
   function normalizeConnectionArrow(conn) {
-    if (conn?.arrow === true) return 'end';
-    if (conn?.arrow === 'end' || conn?.arrow === 'start' || conn?.arrow === 'both') return conn.arrow;
+    const rawArrow = conn && Object.prototype.hasOwnProperty.call(conn, 'arrow')
+      ? conn.arrow
+      : (typeof global.bdGetConnectionStyle === 'function' ? global.bdGetConnectionStyle(conn)?.arrow : conn?.arrow);
+    if (rawArrow === true) return 'end';
+    if (rawArrow === 'end' || rawArrow === 'start' || rawArrow === 'both') return rawArrow;
     return '';
+  }
+
+  function defaultStructureArrow(structure) {
+    return structure === 'flowchart' ? 'end' : '';
+  }
+
+  function createStructureConnection(fromId, toId, structure) {
+    const arrow = defaultStructureArrow(structure);
+    if (typeof global.bdCreateConnectionWithStyle === 'function') {
+      return global.bdCreateConnectionWithStyle(fromId, toId, { arrow });
+    }
+    return {
+      id: typeof global.bdId === 'function' ? global.bdId() : '',
+      from: fromId || '',
+      to: toId || '',
+      label: '',
+      style: '',
+      arrow,
+    };
   }
 
   function pickFallbackLinkifyRoot(selectedIds) {
@@ -125,7 +148,6 @@
       return { assigned: 0, unreachable: 0, skippedContained: containedIds.size, skippedUser: false };
     }
     const hasExistingParent = [...eligibleIds].some(id => {
-      if (id === rootId) return false;
       const node = bd.nodes.find(v => v.id === id);
       return !!(node && node.parent);
     });
@@ -147,8 +169,10 @@
     }
 
     bdPushUndo();
-    const rootNode = bd.nodes.find(v => v.id === rootId);
-    if (rootNode) rootNode.parent = '';
+    eligibleIds.forEach(id => {
+      const node = bd.nodes.find(v => v.id === id);
+      if (node) node.parent = '';
+    });
     const visited = new Set([rootId]);
     const queue = [rootId];
     let assigned = 0;
@@ -178,9 +202,13 @@
       bd.connections.push(conn);
     });
     // ツリーに構造があれば整列 (ルートまたは中間カードいずれかに設定あり)
-    const hasAnyStructure = rootNode?.structure
-      || (Array.isArray(bd.nodes) && bd.nodes.some(n => n.structure && (bdRoot(n.id)?.id === rootId)));
-    if (hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
+    const hasAnyStructure = [...visited].some(id => {
+      const node = bd.nodes.find(v => v.id === id);
+      if (!node) return false;
+      if (node.structure) return true;
+      return typeof bdStructureOf === 'function' && !!bdStructureOf(id);
+    });
+    if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
     bdRender();
     bdDirty();
     if (assigned === 0) {
@@ -197,6 +225,8 @@
   global.bdGetThemeColorSet = getThemeColorSet;
   global.bdReadableTextColor = readableTextColor;
   global.bdBuildDefaultDepthStyles = buildDefaultDepthStyles;
+  global.bdDefaultStructureArrow = defaultStructureArrow;
+  global.bdCreateStructureConnection = createStructureConnection;
   global._bdParentChildGroups = parentChildGroups;
   global.bdLinkifySelectionToTree = linkifySelectionToTree;
 })(window);

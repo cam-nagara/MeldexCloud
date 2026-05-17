@@ -8,6 +8,12 @@ let _bdMinimapCacheDirty = true;
 
 function bdInvalidateMinimapCache() { _bdMinimapCacheDirty = true; }
 
+function bdShouldRenderMinimapInPreviewPane(pane) {
+  if (!pane || typeof state === 'undefined' || state.view !== 'board') return false;
+  const mode = String(pane.dataset?.previewMode || '');
+  return !mode || mode === 'board';
+}
+
 function bdUpdateMinimap() {
   if (_minimapRAF) return;
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdUpdateMinimap') : 0;
@@ -28,9 +34,69 @@ function _bdMinimapNodeRect(node) {
   return {
     x: pos.x,
     y: pos.y,
-    w: node?._rw || node?.w || 160,
-    h: node?._rh || node?.h || 40,
+    w: node?.w || node?._rw || 160,
+    h: node?.h || node?._rh || 40,
   };
+}
+
+function _bdMinimapRenderContext() {
+  return typeof bdCreateRenderContext === 'function' ? bdCreateRenderContext() : null;
+}
+
+function _bdMinimapNodeById(nodeId) {
+  return (bd.nodes || []).find(node => node?.id === nodeId) || null;
+}
+
+function _bdMinimapIsNodeVisible(node, renderContext) {
+  if (!node) return false;
+  if (node.contained) {
+    return typeof bdIsContainedNodeRenderable === 'function'
+      ? bdIsContainedNodeRenderable(node, renderContext)
+      : !(renderContext?.hiddenIds?.has(node.id));
+  }
+  if (typeof bdIsNodeRenderable === 'function') return bdIsNodeRenderable(node, renderContext);
+  if (renderContext?.hiddenIds?.has(node.id)) return false;
+  if (renderContext?.drillIds && !renderContext.drillIds.has(node.id)) return false;
+  if (bd?.statusFilter && node.status !== bd.statusFilter) return false;
+  return true;
+}
+
+function _bdMinimapConnectionEndpointPoint(conn, side, renderContext) {
+  const nodeId = side === 'from' ? conn?.from : conn?.to;
+  if (nodeId) {
+    const node = _bdMinimapNodeById(nodeId);
+    if (!_bdMinimapIsNodeVisible(node, renderContext)) return null;
+    const rect = _bdMinimapNodeRect(node);
+    return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+  }
+  const point = typeof bdNormalizeConnectionPoint === 'function'
+    ? bdNormalizeConnectionPoint(side === 'from' ? conn?.fromPoint : conn?.toPoint)
+    : null;
+  return point ? { x: point.x, y: point.y } : null;
+}
+
+function _bdMinimapIsConnectionVisible(conn, renderContext) {
+  if (!conn) return false;
+  if (bd?.displayFilters?.showConnections === false) return false;
+  return !!_bdMinimapConnectionEndpointPoint(conn, 'from', renderContext)
+    && !!_bdMinimapConnectionEndpointPoint(conn, 'to', renderContext);
+}
+
+function _bdMinimapVisibilityCacheKey() {
+  const drillRoot = (typeof _bdDrillRoot !== 'undefined' && _bdDrillRoot) ? _bdDrillRoot : '';
+  const normPoint = point => {
+    const normalized = typeof bdNormalizeConnectionPoint === 'function' ? bdNormalizeConnectionPoint(point) : null;
+    return normalized ? `${normalized.x},${normalized.y}` : '';
+  };
+  const nodeKey = (bd.nodes || []).map(node => [
+    node?.id, node?.x, node?.y, node?.w, node?.h, node?._rw, node?._rh,
+    node?.status, node?.collapsed, node?.contained, node?.parent, node?.cardStyle, node?.bgColor,
+  ].join(':')).join('|');
+  const connKey = (bd.connections || []).map(conn => [
+    conn?.id, conn?.from, conn?.to, normPoint(conn?.fromPoint),
+    normPoint(conn?.toPoint), conn?.hidden, conn?.color, conn?.width, conn?.styleRef,
+  ].join(':')).join('|');
+  return `${bd?.statusFilter || ''}|${drillRoot}|${JSON.stringify(bd?.displayFilters || {})}|${nodeKey}|${connKey}`;
 }
 
 function _bdMinimapNodeFillColor(node, statusDef) {
@@ -94,7 +160,7 @@ function _bdDrawMinimapViewport(ctx, canvasEl, scale, ox, oy, accentColor, zoom)
 
 function _bdDrawPreviewMinimap() {
   const pane = document.getElementById('gb-preview-pane');
-  if (!pane || state.view !== 'board') return;
+  if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
   if (!bd.nodes.length) {
     pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">カードがありません</div>';
     return;
@@ -151,6 +217,8 @@ function _bdDrawPreviewMinimap() {
   const W = rect.width, H = rect.height;
   const _cs = getComputedStyle(document.documentElement);
   const accentColor = _cs.getPropertyValue('--accent') || '#569cd6';
+  const bgFallback = _cs.getPropertyValue('--bg2') || '#1e1e1e';
+  const bgColor = _bdMinimapBackgroundColor(bgFallback);
   const bounds = _bdMinimapBounds();
   if (!bounds || bounds.w === 0 || bounds.h === 0) return;
   const scale = _bdMinimapScale(W, H, bounds);
@@ -160,7 +228,7 @@ function _bdDrawPreviewMinimap() {
   const oy = H / 2 - centerY * scale;
 
   // キャッシュキー: サイズ/bounds が変わったらキャッシュ無効化
-  const cacheKey = `${pixelW}x${pixelH}|${bounds.x0.toFixed(1)},${bounds.y0.toFixed(1)},${bounds.w.toFixed(1)},${bounds.h.toFixed(1)}`;
+  const cacheKey = `${pixelW}x${pixelH}|${bounds.x0.toFixed(1)},${bounds.y0.toFixed(1)},${bounds.w.toFixed(1)},${bounds.h.toFixed(1)}|${bgColor}|${_bdMinimapVisibilityCacheKey()}`;
   if (cacheKey !== _bdMinimapCacheKey) {
     _bdMinimapCacheKey = cacheKey;
     _bdMinimapCacheDirty = true;
@@ -170,8 +238,7 @@ function _bdDrawPreviewMinimap() {
     _bdMinimapCacheOffscreen = _bdMinimapCacheOffscreen || document.createElement('canvas');
     _bdMinimapCacheOffscreen.width = pixelW;
     _bdMinimapCacheOffscreen.height = pixelH;
-    const bgFallback = _cs.getPropertyValue('--bg2') || '#1e1e1e';
-    _bdRenderMinimapCache(_bdMinimapCacheOffscreen, W, H, bounds, scale, ox, oy, accentColor, bgFallback);
+    _bdRenderMinimapCache(_bdMinimapCacheOffscreen, W, H, bounds, scale, ox, oy, accentColor, bgColor);
     _bdMinimapCacheDirty = false;
   }
 
@@ -186,12 +253,13 @@ function _bdDrawPreviewMinimap() {
 // ノード/接続線の静的レイヤをオフスクリーンへ描画 (bd.nodes 変化時のみ呼ばれる)
 function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentColor, bgFallback) {
   const ctx = offscreen.getContext('2d');
+  const renderContext = _bdMinimapRenderContext();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(devicePixelRatio, devicePixelRatio);
-  ctx.fillStyle = _bdMinimapBackgroundColor(bgFallback);
+  ctx.fillStyle = bgFallback;
   ctx.fillRect(0, 0, W, H);
   bd.nodes.forEach(n => {
-    if (n.contained) return;
+    if (n.contained || !_bdMinimapIsNodeVisible(n, renderContext)) return;
     const rect = _bdMinimapNodeRect(n);
     const x = rect.x * scale + ox;
     const y = rect.y * scale + oy;
@@ -202,18 +270,22 @@ function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentCol
     ctx.globalAlpha = 1;
   });
   bd.connections.forEach(c => {
-    const fn = bd.nodes.find(n => n.id === c.from);
-    const tn = bd.nodes.find(n => n.id === c.to);
-    if (!fn || !tn) return;
-    const fr = _bdMinimapNodeRect(fn);
-    const tr = _bdMinimapNodeRect(tn);
+    if (!_bdMinimapIsConnectionVisible(c, renderContext)) return;
+    const fromPoint = _bdMinimapConnectionEndpointPoint(c, 'from', renderContext);
+    const toPoint = _bdMinimapConnectionEndpointPoint(c, 'to', renderContext);
+    if (!fromPoint || !toPoint) return;
     const style = (typeof bdGetConnectionStyle === 'function') ? bdGetConnectionStyle(c) : null;
     ctx.strokeStyle = c.color || style?.color || accentColor || '#888';
     ctx.lineWidth = Math.max(0.5, Math.min(2, (c.width || style?.width || 1) * 0.35));
+    ctx.globalAlpha = c.hidden ? 0.18 : 1;
+    if (c.hidden) ctx.setLineDash([3, 5]);
+    else ctx.setLineDash([]);
     ctx.beginPath();
-    ctx.moveTo((fr.x + fr.w / 2) * scale + ox, (fr.y + fr.h / 2) * scale + oy);
-    ctx.lineTo((tr.x + tr.w / 2) * scale + ox, (tr.y + tr.h / 2) * scale + oy);
+    ctx.moveTo(fromPoint.x * scale + ox, fromPoint.y * scale + oy);
+    ctx.lineTo(toPoint.x * scale + ox, toPoint.y * scale + oy);
     ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
   });
 }
 
@@ -228,11 +300,26 @@ function _bdMinimapScale(paneW, paneH, bounds) {
 function _bdMinimapBounds() {
   if (!bd.nodes.length) return null;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const renderContext = _bdMinimapRenderContext();
+  const includePoint = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  };
   bd.nodes.forEach(n => {
-    if (n.contained) return; // 相対座標なので bounds に含めない
-    x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
-    x1 = Math.max(x1, n.x + (n._rw || n.w || 160));
-    y1 = Math.max(y1, n.y + (n._rh || 40));
+    if (n.contained || !_bdMinimapIsNodeVisible(n, renderContext)) return;
+    const rect = _bdMinimapNodeRect(n);
+    includePoint(rect.x, rect.y);
+    includePoint(rect.x + rect.w, rect.y + rect.h);
+  });
+  bd.connections.forEach(conn => {
+    if (!_bdMinimapIsConnectionVisible(conn, renderContext)) return;
+    const fromPoint = _bdMinimapConnectionEndpointPoint(conn, 'from', renderContext);
+    const toPoint = _bdMinimapConnectionEndpointPoint(conn, 'to', renderContext);
+    if (fromPoint) includePoint(fromPoint.x, fromPoint.y);
+    if (toPoint) includePoint(toPoint.x, toPoint.y);
   });
   if (!isFinite(x0)) return null;
   const pad = 50;

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja" dir="ltr">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
@@ -41,7 +42,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
   flex:1 1 auto!important;
 }
 </style>
-<!-- Chrome/Edge app mode may use the first suitable favicon for the taskbar. Keep high-res PNGs first. -->
 <link rel="icon" href="Meldex_icon_512.png" type="image/png" sizes="512x512">
 <link rel="icon" href="Meldex_icon_256.png" type="image/png" sizes="256x256">
 <link rel="icon" href="Meldex_icon_128.png" type="image/png" sizes="128x128">
@@ -62,6 +62,37 @@ html[data-desktop-launch="1"] #gb-layout-root{
     var key = String(event && event.key || '').toLowerCase();
     return !!(event && !event.altKey && event.shiftKey && (event.ctrlKey || event.metaKey) && (key === 'r' || event.code === 'KeyR'));
   }
+  function meldexCurrentScopeUrl() {
+    try {
+      return new URL('./', window.location.href).href;
+    } catch (_) {
+      return window.location.origin + '/';
+    }
+  }
+  function shouldClearMeldexRegistration(registration) {
+    var scope = String(registration && registration.scope || '');
+    return !!scope && scope === meldexCurrentScopeUrl();
+  }
+  function shouldClearMeldexCache(cacheName) {
+    return /^meldex(?:-|$)/i.test(String(cacheName || ''));
+  }
+  function unregisterMeldexServiceWorkers() {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistrations) return Promise.resolve([]);
+    return navigator.serviceWorker.getRegistrations()
+      .then(function (registrations) {
+        return Promise.all(registrations
+          .filter(shouldClearMeldexRegistration)
+          .map(function (registration) { return registration.unregister(); }));
+      });
+  }
+  function clearMeldexCaches() {
+    if (!window.caches || !caches.keys) return Promise.resolve([]);
+    return caches.keys().then(function (keys) {
+      return Promise.all(keys
+        .filter(shouldClearMeldexCache)
+        .map(function (key) { return caches.delete(key); }));
+    });
+  }
   function performHardReload() {
     var reload = function () {
       try {
@@ -74,19 +105,10 @@ html[data-desktop-launch="1"] #gb-layout-root{
     };
     var tasks = [];
     try {
-      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-        tasks.push(navigator.serviceWorker.getRegistrations()
-          .then(function (registrations) {
-            return Promise.all(registrations.map(function (registration) { return registration.unregister(); }));
-          }));
-      }
+      tasks.push(unregisterMeldexServiceWorkers());
     } catch (_) {}
     try {
-      if (window.caches && caches.keys) {
-        tasks.push(caches.keys().then(function (keys) {
-          return Promise.all(keys.map(function (key) { return caches.delete(key); }));
-        }));
-      }
+      tasks.push(clearMeldexCaches());
     } catch (_) {}
     if (!tasks.length) {
       reload();
@@ -115,12 +137,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
     }
     if (!('serviceWorker' in navigator) || params.has('smoke')) return;
     if (disablePwa) {
-      navigator.serviceWorker.getRegistrations().then((registrations) => {
-        registrations.forEach((registration) => registration.unregister());
-      }).catch(() => {});
-      if (window.caches?.keys) {
-        caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))).catch(() => {});
-      }
+      unregisterMeldexServiceWorkers().catch(() => {});
+      clearMeldexCaches().catch(() => {});
       return;
     }
     navigator.serviceWorker.register('sw.js', { scope: './', updateViaCache: 'none' })
@@ -130,7 +148,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
 })();
 </script>
 <script>
-// favicon / taskbar icon cache bust for Chrome/Edge app mode.
 (function() {
   var stamp = Date.now();
   document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
@@ -139,10 +156,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
 })();
 </script>
 <script>
-// 単一タブポップアウト検出: パネルタブをウィンドウ外へ D&D した際、
-// ?single=1 付き URL で新規ウィンドウを開く仕組み（gb-layout.js 側）に対応。
-// このモードでは: サイドバー/ステータスバー等を隠し、
-//                localStorage のレイアウト状態を読み書きしない（元ウィンドウ汚染防止）。
 (function () {
   try {
     var sp = new URLSearchParams(location.search);
@@ -153,71 +166,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
     }
   } catch (e) {}
 })();
-</script>
-<script src="gb-split-loader.js"></script>
-<script src="gb-runtime-adapter.js"></script>
-<script src="gb-resource-url.js"></script>
-<script src="gb-cloud-runtime-config.js"></script>
-<script src="gb-config.js"></script>
-<script src="gb-i18n.js"></script>
-<script src="gb-online-status.js"></script>
-<script src="gb-dropbox-auth.js"></script>
-<script src="gb-source-folder-registry.js"></script>
-<script src="gb-dropbox-folder-picker.js"></script>
-<script src="gb-storage-adapter.js"></script>
-<script src="gb-storage-adapter-localfs.js"></script>
-<script src="gb-llm-keys-store.js"></script>
-<script src="gb-llm-client-stream.js"></script>
-<script src="gb-data-access.js"></script>
-<script src="gb-owner-key-store.js"></script>
-<script src="gb-owner-key-recovery.js"></script>
-<script src="gb-knowledge-signature.js"></script>
-<script src="gb-file-lock-store.js"></script>
-<script src="gb-knowledge-cloud-store.js"></script>
-<script src="gb-knowledge-cloud-extractor.js"></script>
-<script src="gb-knowledge-prompt-builder.js"></script>
-<script src="gb-knowledge-integrity-monitor.js"></script>
-<script src="gb-mutation-bus.js"></script>
-<script src="gb-owner-key-ui.js"></script>
-<script src="gb-data-access-dropbox-collab.js"></script>
-<script src="gb-data-access-dropbox-chat.js"></script>
-<script src="gb-data-access-dropbox-expanded.js"></script>
-<script src="gb-data-access-dropbox-fileops.js"></script>
-<script src="gb-cloud-fetch.js"></script>
-<script src="gb-cloud-file-url.js"></script>
-<script src="gb-cloud-sample-seed.js"></script>
-<script src="gb-sample-installer.js"></script>
-<script src="gb-cloud-bootstrap.js"></script>
-<script src="gb-cloud-mobile.js"></script>
-<script src="gb-cloud-conflict-resolver.js"></script>
-<script src="vendor/lucide-icons.js"></script>
-<script src="meldex-core.js"></script>
-<script src="gb-quick-memo-sync.js"></script>
-<script src="noto-emoji-data.js"></script>
-<script src="vendor/icon-annotations.js"></script>
-<script src="gb-icon-assets.js"></script>
-<script src="gb-dnd.js"></script>
-<script src="gb-path-relocate-client.js"></script>
-<script src="gb-link-modal.js"></script>
-<script src="gb-broadcast.js"></script>
-<script src="gb-ui.js"></script>
-<script src="gb-save-safety.js"></script>
-<script src="gb-draft-recovery.js"></script>
-<script src="gb-beta-release.js"></script>
-<script src="gb-beta-feedback.js"></script>
-<script src="gb-error-message-translator.js"></script>
-<script src="gb-log-export.js"></script>
-<script src="gb-update-checker.js"></script>
-<script src="gb-tooltip.js"></script>
-<script src="gb-accessibility.js"></script>
-<script src="gb-dropdown-dismiss.js"></script>
-<script src="gb-modal-shell.js"></script>
-<script src="gb-color-palette.js"></script>
-<script src="gb-theme-coloring-rule.js"></script>
-<script src="gb-theme-migration.js"></script>
-<script src="gb-theme-manager.js"></script>
-<script src="gb-format-popup.js"></script>
-<script src="gb-events.js"></script>
+</script><script src="gb-split-loader.js"></script><script src="gb-runtime-adapter.js"></script><script src="gb-resource-url.js"></script><script src="gb-cloud-runtime-config.js"></script><script src="gb-config.js"></script><script src="gb-i18n.js"></script><script src="gb-online-status.js"></script><script src="gb-dropbox-auth.js"></script><script src="gb-source-folder-registry.js"></script><script src="gb-dropbox-folder-picker.js"></script><script src="gb-storage-adapter.js"></script><script src="gb-storage-adapter-localfs.js"></script><script src="gb-llm-keys-store.js"></script><script src="gb-llm-client-stream.js"></script><script src="gb-data-access.js"></script><script src="gb-dropbox-profile-sync.js"></script><script src="gb-owner-key-store.js"></script><script src="gb-owner-key-recovery.js"></script><script src="gb-knowledge-signature.js"></script><script src="gb-file-lock-store.js"></script><script src="gb-knowledge-cloud-store.js"></script><script src="gb-knowledge-cloud-extractor.js"></script><script src="gb-knowledge-prompt-builder.js"></script><script src="gb-knowledge-integrity-monitor.js"></script><script src="gb-mutation-bus.js"></script><script src="gb-owner-key-ui.js"></script><script src="gb-data-access-dropbox-collab.js"></script><script src="gb-data-access-dropbox-chat.js"></script><script src="gb-data-access-dropbox-expanded.js"></script><script src="gb-data-access-dropbox-fileops.js"></script><script src="gb-cloud-fetch.js"></script><script src="gb-cloud-file-url.js"></script><script src="gb-cloud-sample-seed.js"></script><script src="gb-sample-installer.js"></script><script src="gb-cloud-bootstrap.js"></script><script src="gb-cloud-mobile.js"></script><script src="gb-cloud-conflict-resolver.js"></script><script src="vendor/lucide-icons.js"></script><script src="meldex-core.js"></script><script src="gb-quick-memo-sync.js"></script><script src="noto-emoji-data.js"></script><script src="vendor/icon-annotations.js"></script><script src="gb-icon-assets.js"></script><script src="gb-dnd.js"></script><script src="gb-path-relocate-client.js"></script><script src="gb-link-modal.js"></script><script src="gb-broadcast.js"></script><script src="gb-ui.js"></script><script src="gb-save-safety.js"></script><script src="gb-draft-recovery.js"></script><script src="gb-beta-release.js"></script><script src="gb-beta-feedback.js"></script><script src="gb-error-message-translator.js"></script><script src="gb-log-export.js"></script><script src="gb-update-checker.js"></script><script src="gb-tooltip.js"></script><script src="gb-accessibility.js"></script><script src="gb-dropdown-dismiss.js"></script><script src="gb-modal-shell.js"></script><script src="gb-color-palette.js"></script><script src="gb-theme-coloring-rule.js"></script><script src="gb-theme-migration.js"></script><script src="gb-theme-manager.js"></script><script src="gb-format-popup.js"></script><script src="gb-events.js"></script>
 <link rel="stylesheet" href="gb-fonts.css">
 <link rel="stylesheet" href="gb-icon-assets.css">
 <link rel="stylesheet" href="gb-theme.css">
@@ -243,8 +192,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <link rel="stylesheet" href="gb-detail-tab-dnd.css">
 </head>
 <body>
-
-<!-- 起動スプラッシュ -->
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:#1e1e1e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
   <img src="Meldex_icon_192.png" alt="" width="64" height="64" style="opacity:0.8;">
   <div style="color:#888;font-size:14px;font-family:system-ui,sans-serif;">Meldex を起動しています...</div>
@@ -253,14 +200,9 @@ html[data-desktop-launch="1"] #gb-layout-root{
   </div>
   <style>@keyframes gb-splash-bar{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}</style>
 </div>
-
-<!-- アクティビティバー（v5.0: 廃止、トップバーに統合） -->
 <div id="activity-bar" style="display:none !important;"></div>
-
-<!-- サイドバー（v5.0: フォルダツリータブに移行、初期非表示） -->
 <div id="sidebar-backdrop" class="sidebar-backdrop" style="display:none !important;" data-action="toggleSidebar()"></div>
 <div id="sidebar" style="display:none;">
-  <!-- 検索バー（常時表示） -->
   <div id="sidebar-search-bar" style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;">
     <input type="search" id="sidebar-search-input" placeholder="検索..." autocomplete="off" data-lpignore="true" data-form-type="other" readonly data-onfocus="this.removeAttribute('readonly')" style="flex:1;min-width:0;padding:4px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;outline:none;" data-onkeydown="if(event.key==='Escape'){this.value='';doTreeNameSearch();}" data-oninput="doTreeNameSearch()">
     <button id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
@@ -268,7 +210,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <button id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ表示切替" data-action="toggleGlobalFilterBar()"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-outliner-refresh" class="outliner-refresh-btn" data-e2e-id="outliner-refresh-button" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フォルダツリーを更新" aria-label="フォルダツリーを更新" data-action="refreshOutlinerFromButton(event)"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
   </div>
-  <!-- 検索パネル（ルートフォルダ全体検索） -->
   <div id="search-panel">
     <div class="sp-header">
       <div class="sp-input-row">
@@ -291,37 +232,31 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <div class="sp-results" id="sp-results" style="max-height:30vh;overflow-y:auto;"></div>
     <div class="sp-status" id="sp-status"></div>
   </div>
-  <!-- グローバルフィルタ（常時表示） -->
   <div id="global-filter-bar" style="border-bottom:1px solid var(--border);padding:4px 8px;flex-shrink:0;font-size:11px;">
     <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;" id="gf-chips"></div>
     <div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
       <label style="display:flex;align-items:center;gap:2px;cursor:pointer;color:var(--fg2);font-size:11px;"><input type="checkbox" id="gf-search-entities" data-onchange="setTreeSearchIncludeEntities(this.checked)"> エントリも検索</label>
     </div>
   </div>
-  <!-- スマートシート: v5.1で独立ツール化のため廃止 -->
   <div id="section-smart-db" style="display:none;"><div id="body-smart-db"></div></div>
-  <!-- ツリー全体スクロールコンテナ -->
   <div id="tree-scroll-container" style="flex:1;overflow-y:auto;min-height:0;overflow-anchor:none;">
-    <!-- 最近使った項目 -->
     <div id="section-recent" class="sidebar-section" style="border-bottom:1px solid var(--border);">
-      <div class="sidebar-section-header" data-sidebar-section="recent">
+      <div class="sidebar-section-header" data-sidebar-section="recent" data-e2e-id="sidebar-section-recent-header">
         <span class="sidebar-section-toggle expanded" id="toggle-recent"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>最近使った項目</span>
       </div>
       <div class="sidebar-section-body" id="body-recent"></div>
     </div>
-    <!-- お気に入り -->
     <div id="section-favorites" class="sidebar-section" style="border-bottom:1px solid var(--border);">
-      <div class="sidebar-section-header" data-sidebar-section="favorites">
+      <div class="sidebar-section-header" data-sidebar-section="favorites" data-e2e-id="sidebar-section-favorites-header">
         <span class="sidebar-section-toggle expanded" id="toggle-favorites"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>お気に入り</span>
       </div>
       <div class="sidebar-section-body" id="body-favorites">
       </div>
     </div>
-    <!-- ルートフォルダ -->
     <div id="section-roots" class="sidebar-section">
-      <div class="sidebar-section-header" data-sidebar-section="roots">
+      <div class="sidebar-section-header" data-sidebar-section="roots" data-e2e-id="sidebar-section-roots-header">
         <span class="sidebar-section-toggle expanded" id="toggle-roots"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>ソースフォルダ</span>
         <span style="margin-left:auto;display:flex;gap:2px;">
@@ -333,9 +268,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <div id="outliner-tree"></div>
       </div>
     </div>
-    <!-- ホームフォルダ -->
     <div id="section-home" class="sidebar-section" style="border-top:1px solid var(--border);">
-      <div class="sidebar-section-header" data-sidebar-section="home">
+      <div class="sidebar-section-header" data-sidebar-section="home" data-e2e-id="sidebar-section-home-header">
         <span class="sidebar-section-toggle expanded" id="toggle-home"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>ホームフォルダ</span>
         <span style="margin-left:auto;" class="sidebar-section-btn" data-action="_showHomeAddMenu(event)" title="追加"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span>
@@ -363,7 +297,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <span class="ico ico-settings" aria-hidden="true"></span>
     </button>
   </div>
-  <input type="file" id="xlsx-import-input" accept=".xlsx,.xls" style="display:none" data-onchange="handleXlsxImportToOutliner(event)">
+  <input type="file" id="xlsx-import-input" accept=".xlsx" style="display:none" data-onchange="handleXlsxImportToOutliner(event)">
 </div>
 <div id="sidebar-resize" style="display:none !important;" title="ドラッグでフォルダツリーの幅を調節"></div>
 <div id="left-chrome-floating" class="left-chrome-floating" aria-label="グローバル操作">
@@ -383,16 +317,9 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <span class="ico ico-settings" aria-hidden="true"></span>
   </button>
 </div>
-
-<!-- 中央エリア（タブバー＋ツールバー＋メインコンテンツ） -->
 <div id="center-area">
-
-<!-- 旧タブバー互換（非表示） -->
 <div id="tab-bar" style="display:none;"></div>
-
-<!-- アプリ固有ツールバー（v5.0: CSSで制御、.visibleクラスでDB/ノート時に表示） -->
 <div id="app-toolbar">
-  <!-- DB用ツール（統一デザイン v0.5.131） -->
   <div id="tb-db" class="gb-toolbar" style="display:none;">
     <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'database')"><span class="ico ico-menu"></span></button>
     <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('database', event)"><span class="ico ico-folderTree"></span></button>
@@ -416,7 +343,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <button class="tb-icon-btn" title="検索と置換" data-action="openCurrentToolbarSearchReplace('database')"><span class="ico ico-search"></span></button>
     <button class="tb-icon-btn" id="btn-db-detail" title="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-panelRight"></span></button>
   </div>
-  <!-- リッチテキストツールバー（自由記述エリア用、#entity-rt-toolbar にも複製される） -->
   <div id="rt-toolbar" class="toolbar-group gb-toolbar" style="display:none;">
     <button class="tb-icon-btn" title="太字 (Ctrl+B)" data-action="rtCmd('bold')" data-e2e-id="rt-template-bold"><span class="ico ico-bold"></span></button>
     <button class="tb-icon-btn" title="斜体 (Ctrl+I)" data-action="rtCmd('italic')" data-e2e-id="rt-template-italic"><span class="ico ico-italic"></span></button>
@@ -445,14 +371,10 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <button class="tb-icon-btn" title="水平線" data-action="rtCmd('insertHorizontalRule')" data-e2e-id="rt-template-horizontal-rule"><span class="ico ico-minus"></span></button>
   </div>
 </div>
-
-<!-- 旧toolbar互換（非表示、ID参照用） -->
 <div id="toolbar" style="display:none;">
   <span id="current-title"></span>
   <div id="tb-detail" style="display:none;"></div>
 </div>
-
-  <!-- ファイル内検索バー -->
   <div id="file-search-bar">
     <textarea id="fsb-query" placeholder="検索..." rows="1" style="width:160px;resize:none;"></textarea>
     <span class="fsb-count" id="fsb-count"></span>
@@ -463,15 +385,10 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <button title="全置換" data-action="doFileReplace(true)">全置換</button>
     <button title="検索を閉じる" data-action="closeFileSearch()">×</button>
   </div>
-
-  <!-- メインエリア -->
   <div id="main-area">
-    <!-- 中央行（左パネル+メインビュー+右パネル） -->
     <div id="main-center-row" style="display:flex;flex:1;min-height:0;overflow:hidden;">
       <div id="main-views" style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative;overflow:hidden;">
-    <!-- v5.0 ペインシステム: gb-layout-root がペインツリーを描画 -->
     <div id="gb-layout-root"></div>
-    <!-- ログイン画面（廃止: チーム方式に移行） -->
     <!-- 初期は display:none（showView('welcome') で明示的に表示）。以前は display:flex が
          初期値だったため、ペインシステムでボード等を復元するケースで showView が呼ばれず
          welcome-view が残留し「ボードの下に案内文が表示される」不具合になっていた。 -->
@@ -521,7 +438,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <div id="entity-freetext" contenteditable="true"></div>
     </div>
     <div id="page-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;position:relative;">
-      <!-- ノート専用ツールバー（統一デザイン v0.5.131） -->
       <div id="page-rt-toolbar" class="gb-toolbar">
         <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'page')"><span class="ico ico-menu"></span></button>
         <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
@@ -565,12 +481,10 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <svg id="ann-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;z-index:50;pointer-events:none;overflow:visible;"><rect width="100%" height="100%" fill="transparent"/><g id="ann-layer"></g></svg>
       <button id="btn-tb-annotation" class="annotation-fab" title="注釈 (Alt+A)" data-action="toggleAnnotationToolbar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg></button>
     </div>
-    <!-- メディアビュー -->
     <div id="media-view" style="display:none;flex-direction:column;flex:1;overflow:auto;align-items:center;justify-content:center;background:var(--preview-bg,var(--content-bg,var(--bg)));padding:16px;">
       <div id="media-title" style="font-size:16px;font-weight:bold;margin-bottom:12px;color:var(--fg);text-align:center;"></div>
       <div id="media-content" style="max-width:100%;max-height:calc(100vh - 120px);"></div>
     </div>
-    <!-- HTMLビュー -->
     <div id="html-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
       <div id="html-toolbar" class="gb-toolbar" style="display:none;">
         <button class="tb-icon-btn" title="戻る" data-action="htmlNavBack()"><span class="ico ico-arrowLeftS"></span></button>
@@ -581,7 +495,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
       </div>
       <iframe id="html-iframe" style="flex:1;border:none;background:#fff;" allowfullscreen></iframe>
     </div>
-    <!-- フォルダビュー -->
     <div id="csv-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
       <div id="csv-toolbar" class="gb-toolbar">
         <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'csv')"><span class="ico ico-menu"></span></button>
@@ -613,10 +526,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <button class="tb-icon-btn" title="検索と置換" data-action="openCurrentToolbarSearchReplace('folder')"><span class="ico ico-search"></span></button>
         <button class="tb-icon-btn" title="オプションを開く" data-action="showFolderPanelSettings()"><span class="ico ico-panelRight"></span></button>
       </div>
-      <!-- パネル（プレビュー/詳細 — JS applyFvPanelLayout()で制御） -->
       <div id="fv-panel-top" class="fv-side-panel" style="display:none;"></div>
       <div id="fv-resize-top" class="fv-resize-h" style="display:none;"></div>
-      <!-- 一括操作ポップアップ -->
       <div id="fv-bulk-bar" class="fv-bulk-bar" role="menu" aria-hidden="true">
         <span class="fv-bulk-count"></span>
         <button data-action="fvBulkSlideshow()">スライドショー</button>
@@ -625,7 +536,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <button data-action="fvBulkCopyPath()">パスをコピー</button>
         <button data-action="fvBulkDeselect()">選択解除</button>
       </div>
-      <!-- 中央行（左パネル・グリッド・右パネル） -->
       <div style="display:flex;flex:1;overflow:hidden;">
         <div id="fv-panel-left" class="fv-side-panel" style="display:none;"></div>
         <div id="fv-resize-left" class="fv-resize-v" style="display:none;"></div>
@@ -635,14 +545,11 @@ html[data-desktop-launch="1"] #gb-layout-root{
       </div>
       <div id="fv-resize-bottom" class="fv-resize-h" style="display:none;"></div>
       <div id="fv-panel-bottom" class="fv-side-panel" style="display:none;"></div>
-      <!-- 旧互換 (非表示、ID参照用) -->
       <div id="folder-preview" style="display:none;"></div>
     </div>
       </div><!-- /main-views -->
     </div><!-- /main-center-row -->
   </div><!-- /main-area -->
-
-  <!-- アノテーションフローティングツールバー -->
   <div id="ann-toolbar" class="floating-toolbar">
     <div class="ft-drag" title="ドラッグで移動"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>
     <button class="ann-tool active" data-tool="pen" title="ペン (筆圧)"><span class="ico ico-pencil"></span></button>
@@ -667,8 +574,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <button id="btn-overlay-toggle" title="オーバーレイ表示中" class="active" data-action="toggleOverlayVisibility()"><span class="ico ico-eye"></span></button>
     <button title="全削除" style="color:var(--red);" data-action="annClear()"><span class="ico ico-trash2"></span></button>
   </div>
-
-<!-- メディアフローティングコントロール（body直下） -->
+<!-- メディアビュー -->
+<!-- メディアフローティングコントロール -->
 <div id="media-float-controls">
   <button data-align="left" title="左寄せ"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="6" height="14" x="6" y="5" rx="2"/><rect width="6" height="10" x="16" y="7" rx="2"/><path d="M2 2v20"/></svg></button>
   <button data-align="center" title="中央" class="active"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="6" height="14" x="2" y="5" rx="2"/><rect width="6" height="10" x="16" y="7" rx="2"/><path d="M12 2v20"/></svg></button>
@@ -676,8 +583,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
   <button data-action="delete" title="削除" style="color:var(--red);"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
 </div>
 <div id="media-resize-handle" class="em-resize-handle"></div>
-
-<!-- ステータスバー -->
 <div id="status-bar" role="status" aria-live="polite" aria-atomic="true">
   <span id="sb-work">ソースフォルダ: -</span>
   <span class="sb-sep">|</span>
@@ -690,12 +595,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
   <span id="sb-warn" style="display:none;min-width:0;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg2);"></span>
   <span id="sb-shortcuts" style="color:var(--fg2);font-size:11px;white-space:nowrap;"></span>
 </div>
-
 </div><!-- /center-area -->
-
-<!-- 右パネルリサイズハンドル（body直下） -->
 <div id="right-resize-handle"></div>
-<!-- 右パネル（body直下、全高） -->
 <div id="right-panel">
   <div id="right-panel-tabs">
     <div class="rp-tab" data-rp-tab="detail" data-action="switchRightTab('detail')"><span class="ico ico-panelRight" style="width:14px;height:14px;"></span> 詳細</div>
@@ -704,11 +605,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <div class="rp-tab" data-rp-tab="annotation" data-action="switchRightTab('annotation')"><span class="ico ico-stickyNote" style="width:14px;height:14px;"></span> 注釈</div>
     <div class="rp-tab" data-rp-tab="history" data-action="switchRightTab('history')"><span class="ico ico-history" style="width:14px;height:14px;"></span> 履歴</div>
   </div>
-  <!-- カレンダータブ (Phase C: iframe廃止 → CalendarComponent直接マウント) -->
   <div id="rp-calendar" class="rp-content" style="flex:1;overflow:hidden;display:flex;"></div>
-  <!-- 詳細タブ（実体は gb-detail-panel.js の _detailTabShellHtml で注入される） -->
   <div id="rp-detail" class="rp-content"></div>
-  <!-- チャットタブ -->
   <div id="rp-chat" class="rp-content active">
     <div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0;">
       <div id="chat-tab-team" class="chat-mode-tab active" style="padding:6px 16px;cursor:pointer;font-size:13px;border-bottom:2px solid var(--accent);color:var(--accent);font-weight:bold;" data-action="switchChatMode('team')">チーム</div>
@@ -721,7 +619,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <span id="chat-source-badge" style="font-size:10px;padding:1px 6px;border-radius:3px;font-weight:bold;white-space:nowrap;"></span>
       <span id="chat-debug-available" style="display:none;font-size:10px;color:var(--accent2);padding:1px 6px;background:rgba(78,201,176,0.1);border:1px solid var(--accent2);border-radius:3px;white-space:nowrap;" title="このフォルダにdebug-report DBあり">デバッグ可</span>
     </div>
-    <!-- 履歴パネル -->
     <div id="chat-history-panel" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
       <div style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;">
         <button id="chat-history-view-saved" type="button" class="gb-btn gb-btn-xs gb-btn-primary" data-chat-history-view="saved" data-action="switchChatHistoryView('saved')">チャット履歴</button>
@@ -740,7 +637,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <button title="エクスポート" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showChatExportMenu(event)"><span class="ico ico-upload" style="width:12px;height:12px;"></span></button>
         <button title="検索" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="_chatSearchToggle()"><span class="ico ico-search" style="width:12px;height:12px;"></span></button>
       </div>
-      <!-- チャット検索バー -->
       <div id="chat-search-bar" style="display:none;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;align-items:center;">
         <input id="chat-search-input" type="text" placeholder="チャット検索..." style="flex:1;padding:3px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
         <select id="chat-search-scope" style="font-size:11px;padding:2px 4px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
@@ -750,7 +646,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <span id="chat-search-count" style="font-size:11px;color:var(--fg2);min-width:30px;"></span>
         <button title="検索を閉じる" data-action="_chatSearchClose()" style="padding:1px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-x" style="width:12px;height:12px;"></span></button>
       </div>
-      <!-- 全チャット検索結果 -->
       <div id="chat-search-results" style="display:none;flex:1;overflow-y:auto;padding:8px;"></div>
       <div id="chat-usage-banner" aria-live="polite" style="display:none;margin:6px 8px 0;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg2);font-size:11px;line-height:1.4;"></div>
       <div id="chat-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;"></div>
@@ -811,7 +706,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
       </div>
     </div>
   </div>
-  <!-- アノテーションタブ -->
   <div id="rp-annotation" class="rp-content">
     <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
       <span style="font-size:13px;font-weight:bold;flex:1;">注釈管理</span>
@@ -829,7 +723,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
     </div>
     <div id="rp-ann-list" style="flex:1;overflow-y:auto;padding:8px;"></div>
   </div>
-  <!-- ヒストリータブ -->
   <div id="rp-history" class="rp-content" style="flex:1;overflow-y:auto;">
     <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
       <span style="font-size:13px;font-weight:bold;flex:1;">操作履歴</span>
@@ -839,8 +732,6 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <div id="rp-history-list" style="padding:8px;font-size:12px;"></div>
   </div>
 </div><!-- /right-panel -->
-
-<!-- 右アクティビティバー（v5.0: 廃止） -->
 <div id="activity-bar-right" style="display:none !important;">
   <button id="rab-detail" title="オプションパネル" data-action="toggleOptionPanel()"><span class="ico ico-panelRight"></span></button>
   <div class="ab-sep"></div>
@@ -850,173 +741,9 @@ html[data-desktop-launch="1"] #gb-layout-root{
   <div class="ab-sep"></div>
   <button id="rab-history" title="履歴" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-
-<!-- v5.0 レイアウトシステム -->
-<script src="gb-layout.js"></script>
-<script src="gb-panelset.js"></script>
-<script src="gb-tabs.js"></script>
-<script src="gb-pane-default-layout.js"></script>
-<script src="gb-docking.js"></script>
-<script src="gb-dock-popup.js"></script>
-<script src="gb-component.js"></script>
-<script src="gb-tool-components.js"></script>
-<script src="gb-tool-timer.js"></script>
-<script src="gb-tool-timer-advanced.js"></script>
-<script src="gb-tool-calendar.js"></script>
-<script src="gb-tool-calendar-views.js"></script>
-<script src="gb-tool-calendar-clock-view.js"></script>
-<script src="gb-tool-calendar-sync.js"></script>
-<script src="gb-board-performance.js"></script>
-<script src="gb-board-llm-context.js"></script>
-<script src="gb-canvas-engine.js"></script>
-<script src="gb-canvas-minimap.js"></script>
-<script src="gb-canvas-features.js"></script>
-<script src="gb-board-find.js"></script>
-<script src="gb-canvas-interact.js"></script>
-<script src="gb-board-presets.js"></script>
-<script src="gb-board-links.js"></script>
-<script src="gb-board-bulk-import.js"></script>
-<script src="gb-board-ui.js"></script>
-<script src="gb-board-render-node.js"></script>
-<script src="gb-board-dirty.js"></script>
-<script src="gb-board-background.js"></script>
-<script src="gb-board-style-manager.js"></script>
-<script src="gb-tool-canvas.js"></script>
-<script src="gb-export-save.js"></script>
-<script src="gb-public-runtime.js"></script>
-<script src="gb-cloud-form-relay.js"></script>
-<script src="gb-scriptnote-rules.js"></script>
-<script src="gb-scriptnote-format.js"></script>
-<script src="gb-scriptnote-document.js"></script>
-<script src="gb-scriptnote-editor.js"></script>
-<script src="gb-scriptnote-history.js"></script>
-<script src="gb-scriptnote-interactions.js"></script>
-<script src="gb-scriptnote-selection.js"></script>
-<script src="gb-scriptnote-filter.js"></script>
-<script src="gb-scriptnote-status.js"></script>
-<script src="gb-scriptnote-search.js"></script>
-<script src="gb-scriptnote-clipstudio.js"></script>
-<script src="gb-scriptnote-detail.js"></script>
-<script src="gb-scriptnote-menu.js"></script>
-<script src="gb-scriptnote-ruby.js"></script>
-<script src="gb-scriptnote-rowset.js"></script>
-<script src="gb-scriptnote-columns.js"></script>
+<script src="gb-layout.js"></script><script src="gb-panelset.js"></script><script src="gb-tabs.js"></script><script src="gb-pane-default-layout.js"></script><script src="gb-docking.js"></script><script src="gb-dock-popup.js"></script><script src="gb-component.js"></script><script src="gb-tool-components.js"></script><script src="gb-tool-timer.js"></script><script src="gb-tool-timer-advanced.js"></script><script src="gb-tool-calendar.js"></script><script src="gb-tool-calendar-views.js"></script><script src="gb-tool-calendar-clock-view.js"></script><script src="gb-tool-calendar-sync.js"></script><script src="gb-board-performance.js"></script><script src="gb-board-llm-context.js"></script><script src="gb-canvas-engine.js"></script><script src="gb-canvas-minimap.js"></script><script src="gb-canvas-features.js"></script><script src="gb-board-find.js"></script><script src="gb-canvas-interact.js"></script><script src="gb-board-presets.js"></script><script src="gb-board-links.js"></script><script src="gb-board-bulk-import.js"></script><script src="gb-board-ui.js"></script><script src="gb-board-render-node.js"></script><script src="gb-board-dirty.js"></script><script src="gb-board-background.js"></script><script src="gb-board-style-manager.js"></script><script src="gb-tool-canvas.js"></script><script src="gb-export-save.js"></script><script src="gb-public-runtime.js"></script><script src="gb-cloud-form-relay.js"></script><script src="gb-scriptnote-rules.js"></script><script src="gb-scriptnote-format.js"></script><script src="gb-scriptnote-document.js"></script><script src="gb-scriptnote-editor.js"></script><script src="gb-scriptnote-history.js"></script><script src="gb-scriptnote-interactions.js"></script><script src="gb-scriptnote-selection.js"></script><script src="gb-scriptnote-filter.js"></script><script src="gb-scriptnote-status.js"></script><script src="gb-scriptnote-search.js"></script><script src="gb-scriptnote-clipstudio.js"></script><script src="gb-scriptnote-detail.js"></script><script src="gb-scriptnote-menu.js"></script><script src="gb-scriptnote-ruby.js"></script><script src="gb-scriptnote-rowset.js"></script><script src="gb-scriptnote-columns.js"></script>
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
-<script src="gb-tool-scriptnote.js"></script>
-
-<!-- モジュール読み込み（依存順序: core → history → settings → editor → annotations → detail-panel → right-panel → database → folder → outliner） -->
-<script src="gb-pane-context.js"></script>
-<script src="gb-history.js"></script>
-<script src="gb-llm-operation-bridge.js"></script>
-<script src="gb-status-policies-view.js"></script>
-<script src="gb-taste-principles-view.js"></script>
-<script src="gb-knowledge-view.js"></script>
-<script src="gb-knowledge-automation-settings.js"></script>
-<script src="gb-idea-inbox.js"></script>
-<script src="gb-settings.js"></script>
-<script src="gb-settings-mobile-access.js"></script>
-<script src="gb-help-menu.js"></script>
-<script src="gb-onboarding.js"></script>
-<script src="gb-mode-indicator.js"></script>
-<script src="gb-publish-settings.js"></script>
-<script src="gb-app-layout.js"></script>
-<script src="gb-current-reload.js"></script>
-<script src="gb-current-reveal.js"></script>
-<script src="gb-notion-sync.js"></script>
-<script src="gb-settings-x-bookmarks.js"></script>
-<script src="gb-external-import.js"></script>
-<script src="gb-autolink.js"></script>
-<script src="gb-editor.js"></script>
-<script src="gb-detail-property-layout-editor.js"></script>
-<script src="gb-editor-preview.js"></script>
-<script src="gb-note-enhance.js"></script>
-<script src="gb-note-theme-style.js"></script>
-<script src="gb-stamp.js"></script>
-<script src="gb-view-lock.js"></script>
-<script src="gb-annotation-tails.js"></script>
-<script src="gb-annotations.js"></script>
-<script src="gb-detail-tab-dnd.js"></script>
-<script src="gb-detail-panel.js"></script>
-<script src="gb-tool-calendar-options.js"></script>
-<script src="gb-tool-calendar-attendance.js"></script>
-<script src="gb-format-style-ui.js"></script>
-<script src="gb-text-selection-format.js"></script>
-<script src="gb-cloud-mobile-editbar.js"></script>
-<script src="gb-cloud-mobile-board-actions.js"></script>
-<script src="gb-cloud-mobile-side-drawer.js"></script>
-<script src="gb-tool-calendar-theme.js"></script>
-<script src="gb-datetime-utils.js"></script>
-<script src="gb-db-date.js"></script>
-<script src="gb-db-calendar-mapping.js"></script>
-<script src="gb-db-formula.js"></script>
-<script src="gb-db-core.js"></script>
-<script src="gb-db-props.js"></script>
-<script src="gb-db-advanced-filter.js"></script>
-<script src="gb-db-property-types.js"></script>
-<script src="gb-db-pivot-sync.js"></script>
-<script src="gb-db-conditional-color.js"></script>
-<script src="gb-db-inline-edit.js"></script>
-<script src="gb-db-cell-ui.js"></script>
-<script src="gb-db-value-editors.js"></script>
-<script src="gb-db-image-gallery.js"></script>
-<script src="gb-db-table.js"></script>
-<script src="gb-database.js"></script>
-<script src="gb-db-autofill.js"></script>
-<script src="gb-db-bulk-edit.js"></script>
-<script src="gb-db-relations.js"></script>
-<script src="gb-db-timeline.js"></script>
-<script src="gb-db-timeline-controls.js"></script>
-<script src="gb-db-timeline-header-dnd.js"></script>
-<script src="gb-db-timeline-auto-fit.js"></script>
-<script src="gb-db-view-form.js"></script>
-<script src="gb-db-views.js"></script>
-<script src="gb-db-templates.js"></script>
-<script src="gb-db-aggregate.js"></script>
-<script src="gb-db-chart.js"></script>
-<script src="gb-db-rollup.js"></script>
-<script src="gb-db-graph.js"></script>
-<script src="gb-db-validate.js"></script>
-<script src="gb-db-actions.js"></script>
-<script src="gb-db-smart-dashboard-view.js"></script>
-<script src="gb-db-search.js"></script>
-<script src="gb-chat-custom-instructions-sheet.js"></script>
-<script src="gb-compare.js"></script>
-<script src="gb-split.js"></script>
-<script src="gb-db-smart.js"></script>
-<script src="gb-db-smart-global.js"></script>
-<script src="gb-calendar.js"></script>
-<script src="gb-db-calendar-sync.js"></script>
-<script src="gb-backlinks.js"></script>
-<script src="gb-right-panel.js"></script>
-<script src="gb-chat-markdown.js"></script>
-<script src="gb-chat-theme-context.js"></script>
-<script src="gb-right-panel-chat.js"></script>
-<script src="gb-chat-formatting.js"></script>
-<script src="gb-chat-generation-settings.js"></script>
-<script src="gb-llm-cross-review.js"></script>
-<script src="gb-chat-input-resize.js"></script>
-<script src="gb-right-panel-chat-cli.js"></script>
-<script src="gb-chat-citations.js"></script>
-<script src="gb-chat-rules.js"></script>
-<script src="gb-chat-restore.js"></script>
-<script src="gb-comment-badges.js"></script>
-<script src="gb-folder.js"></script>
-<script src="gb-csv-viewer.js"></script>
-<script src="gb-shell-menu.js"></script>
-<script src="gb-outliner.js"></script>
-<script src="gb-outliner-search.js"></script>
-<script src="gb-duplicate.js"></script>
-<script src="gb-startup-tab-guard.js"></script>
-<script src="gb-pane-bridge.js"></script>
-<script src="gb-subpanel.js"></script>
-<script src="gb-app.js"></script>
-<script src="gb-export-html.js"></script>
-<script src="vendor/html2canvas.min.js"></script>
-<script src="gb-export-image.js"></script>
-<script src="gb-tool-menu.js"></script>
-<script src="gb-command-palette.js"></script>
-<script src="gb-shortcuts.js"></script>
-<script src="gb-smoke.js"></script>
+<script src="gb-tool-scriptnote.js"></script><script src="gb-pane-context.js"></script><script src="gb-history.js"></script><script src="gb-llm-operation-bridge.js"></script><script src="gb-status-policies-view.js"></script><script src="gb-taste-principles-view.js"></script><script src="gb-knowledge-view.js"></script><script src="gb-knowledge-automation-settings.js"></script><script src="gb-idea-inbox.js"></script><script src="gb-settings.js"></script><script src="gb-settings-mobile-access.js"></script><script src="gb-help-menu.js"></script><script src="gb-onboarding.js"></script><script src="gb-mode-indicator.js"></script><script src="gb-publish-settings.js"></script><script src="gb-app-layout.js"></script><script src="gb-current-reload.js"></script><script src="gb-current-reveal.js"></script><script src="gb-notion-sync.js"></script><script src="gb-settings-x-bookmarks.js"></script><script src="gb-external-import.js"></script><script src="gb-autolink.js"></script><script src="gb-editor.js"></script><script src="gb-detail-property-layout-editor.js"></script><script src="gb-editor-preview.js"></script><script src="gb-note-enhance.js"></script><script src="gb-note-theme-style.js"></script><script src="gb-stamp.js"></script><script src="gb-view-lock.js"></script><script src="gb-annotation-tails.js"></script><script src="gb-annotations.js"></script><script src="gb-detail-tab-dnd.js"></script><script src="gb-detail-panel.js"></script><script src="gb-tool-calendar-options.js"></script><script src="gb-tool-calendar-attendance.js"></script><script src="gb-production-management.js"></script><script src="gb-format-style-ui.js"></script><script src="gb-text-selection-format.js"></script><script src="gb-cloud-mobile-editbar.js"></script><script src="gb-cloud-mobile-board-actions.js"></script><script src="gb-cloud-mobile-side-drawer.js"></script><script src="gb-tool-calendar-theme.js"></script><script src="gb-datetime-utils.js"></script><script src="gb-db-date.js"></script><script src="gb-db-calendar-mapping.js"></script><script src="gb-db-formula.js"></script><script src="gb-db-core.js"></script><script src="gb-db-props.js"></script><script src="gb-db-advanced-filter.js"></script><script src="gb-db-property-types.js"></script><script src="gb-db-pivot-sync.js"></script><script src="gb-db-conditional-color.js"></script><script src="gb-db-inline-edit.js"></script><script src="gb-db-cell-ui.js"></script><script src="gb-db-value-editors.js"></script><script src="gb-db-image-gallery.js"></script><script src="gb-db-table.js"></script><script src="gb-database.js"></script><script src="gb-db-autofill.js"></script><script src="gb-db-bulk-edit.js"></script><script src="gb-db-relations.js"></script><script src="gb-db-timeline.js"></script><script src="gb-db-timeline-controls.js"></script><script src="gb-db-timeline-header-dnd.js"></script><script src="gb-db-timeline-auto-fit.js"></script><script src="gb-db-view-form.js"></script><script src="gb-db-views.js"></script><script src="gb-db-templates.js"></script><script src="gb-db-aggregate.js"></script><script src="gb-db-chart.js"></script><script src="gb-db-rollup.js"></script><script src="gb-db-graph.js"></script><script src="gb-db-validate.js"></script><script src="gb-db-actions.js"></script><script src="gb-db-smart-dashboard-view.js"></script><script src="gb-db-search.js"></script><script src="gb-chat-custom-instructions-sheet.js"></script><script src="gb-compare.js"></script><script src="gb-split.js"></script><script src="gb-db-smart.js"></script><script src="gb-db-smart-global.js"></script><script src="gb-calendar.js"></script><script src="gb-db-calendar-sync.js"></script><script src="gb-backlinks.js"></script><script src="gb-right-panel.js"></script><script src="gb-chat-markdown.js"></script><script src="gb-chat-theme-context.js"></script><script src="gb-right-panel-chat.js"></script><script src="gb-chat-formatting.js"></script><script src="gb-chat-generation-settings.js"></script><script src="gb-llm-cross-review.js"></script><script src="gb-chat-input-resize.js"></script><script src="gb-right-panel-chat-cli.js"></script><script src="gb-chat-citations.js"></script><script src="gb-chat-rules.js"></script><script src="gb-chat-restore.js"></script><script src="gb-comment-badges.js"></script><script src="gb-folder.js"></script><script src="gb-csv-viewer.js"></script><script src="gb-shell-menu.js"></script><script src="gb-outliner.js"></script><script src="gb-outliner-search.js"></script><script src="gb-duplicate.js"></script><script src="gb-startup-tab-guard.js"></script><script src="gb-pane-bridge.js"></script><script src="gb-subpanel.js"></script><script src="gb-app.js"></script><script src="gb-export-html.js"></script><script src="vendor/html2canvas.min.js"></script><script src="gb-export-image.js"></script><script src="gb-tool-menu.js"></script><script src="gb-command-palette.js"></script><script src="gb-shortcuts.js"></script><script src="gb-smoke.js"></script>
 <script>
 (async function () {
   window._meldexStartupRestoring = true;
@@ -1033,11 +760,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
       clearTimeout(bootWatchdog);
       return;
     }
-    // v5.0: ペインシステムを先に初期化（showView/addTab等をオーバーライド）
     GBPaneBridge.init();
-    // アイコンを確実に置換（ペインシステムのrender後のDOMに対応）
     if (typeof replaceIcons === 'function') replaceIcons();
-    // アプリ初期化（API接続、ビュー復元等）
     await init();
     if (window.GBSmoke?.enabled) window.GBSmoke.run();
   } catch (error) {

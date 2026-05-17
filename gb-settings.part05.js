@@ -298,6 +298,13 @@ function settingsThemeBoardSetBgScale(value) {
   _settingsThemeBoardSetVar('--bd-bg-image-scale', String(clamped));
 }
 
+function _settingsThemeIsImageFile(file) {
+  if (!file) return false;
+  const type = String(file.type || '').toLowerCase();
+  if (type.startsWith('image/')) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(String(file.name || ''));
+}
+
 function settingsThemeBoardChooseBgImage() {
   const panel = document.querySelector('[data-settings-theme-style-panel="ボード"]');
   if (panel && _settingsThemeBoardReadonlyCheck(panel)) return;
@@ -312,6 +319,11 @@ function settingsThemeBoardChooseBgImage() {
   input.addEventListener('change', async () => {
     const file = input.files && input.files[0];
     if (file) {
+      if (!_settingsThemeIsImageFile(file)) {
+        if (typeof showStatus === 'function') showStatus('画像ファイルを選択してください', true);
+        input.remove();
+        return;
+      }
       try {
         const reader = new FileReader();
         const dataUrl = await new Promise((resolve, reject) => {
@@ -445,6 +457,7 @@ function bindSettingsThemePanel(root) {
 }
 
 function settingsThemeApplyCommonFont(value, options = {}) {
+  if (value == null) return _settingsThemeCommonFontValue();
   const family = typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue(value) : String(value || '').trim();
   const current = _settingsThemeCommonFontValue();
   if (current === family) return family;
@@ -688,7 +701,12 @@ function _settingsThemeExportFilename(theme) {
 
 function _settingsThemeImportPayload(payload) {
   if (typeof MeldexThemeManager === 'undefined') return null;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  if (payload._type !== 'meldex-theme') return null;
   let imported = null;
+  const importThemes = Array.isArray(payload.customThemes) ? payload.customThemes : [payload.theme];
+  const validThemes = importThemes.filter(_settingsThemeLooksLikeTheme);
+  if (!validThemes.length || validThemes.length !== importThemes.length) return null;
   const withPayloadSettings = theme => {
     if (!theme || typeof theme !== 'object') return theme;
     const next = { ...theme, ui: { ...(theme.ui || {}) } };
@@ -700,16 +718,23 @@ function _settingsThemeImportPayload(payload) {
   if (Object.prototype.hasOwnProperty.call(payload || {}, 'useOsAccentColor') && typeof MeldexThemeManager.setUseOsAccentColor === 'function') {
     MeldexThemeManager.setUseOsAccentColor(!!payload.useOsAccentColor);
   }
-  if (Array.isArray(payload?.customThemes)) {
-    payload.customThemes.forEach(theme => { imported = MeldexThemeManager.importCustomTheme(withPayloadSettings(theme)); });
-  } else {
-    imported = MeldexThemeManager.importCustomTheme(withPayloadSettings(payload?.theme || payload));
-  }
+  validThemes.forEach(theme => { imported = MeldexThemeManager.importCustomTheme(withPayloadSettings(theme)); });
   if (imported) {
     MeldexThemeManager.applyDefaultTheme(imported.id, { silent: true, resetThemeColorSet: false });
     if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(false);
   }
   return imported;
+}
+
+function _settingsThemeLooksLikeTheme(theme) {
+  if (!theme || typeof theme !== 'object' || Array.isArray(theme)) return false;
+  const hasName = typeof theme.name === 'string' && theme.name.trim();
+  const hasId = typeof theme.id === 'string' && theme.id.trim();
+  const hasUi = theme.ui && typeof theme.ui === 'object' && !Array.isArray(theme.ui);
+  const hasCssVars = theme.cssVars && typeof theme.cssVars === 'object' && !Array.isArray(theme.cssVars);
+  const hasColorSet = Array.isArray(theme.themeColorSet);
+  const hasColorSlots = Array.isArray(theme.themeColorSlotSettings);
+  return !!((hasName || hasId) && (hasUi || hasCssVars || hasColorSet || hasColorSlots));
 }
 
 function settingsThemeImport() {

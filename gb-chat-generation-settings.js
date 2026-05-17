@@ -2,6 +2,12 @@
 
 let _chatGenerationSettingsMenu = null;
 
+const CHAT_GENERATION_NUMERIC_SETTINGS = {
+  'temperature': { key: 'chat-temperature', min: 0, max: 2, integer: false },
+  'max-tokens': { key: 'chat-max-tokens', min: 1024, max: 32768, integer: true },
+  'top-p': { key: 'chat-top-p', min: 0, max: 1, integer: false },
+};
+
 function _closeChatGenerationSettingsMenu() {
   if (!_chatGenerationSettingsMenu) return;
   if (typeof _chatGenerationSettingsMenu._cleanup === 'function') _chatGenerationSettingsMenu._cleanup();
@@ -14,6 +20,21 @@ function _chatGenerationSettingValue(key, fallback) {
   return value == null || value === '' ? fallback : value;
 }
 
+function _normalizeChatGenerationNumberValue(value, config) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const number = Number(raw);
+  if (!Number.isFinite(number)) return '';
+  const clamped = Math.max(config.min, Math.min(config.max, config.integer ? Math.floor(number) : number));
+  return config.integer ? String(clamped) : String(Math.round(clamped * 1000) / 1000);
+}
+
+function _chatGenerationStoredNumberValue(id) {
+  const config = CHAT_GENERATION_NUMERIC_SETTINGS[id];
+  if (!config) return '';
+  return _normalizeChatGenerationNumberValue(localStorage.getItem(config.key), config);
+}
+
 function _chatGenerationSettingsRow(label, controlHtml) {
   return `<label style="display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:var(--fg);">
     <span>${esc(label)}</span>
@@ -22,7 +43,7 @@ function _chatGenerationSettingsRow(label, controlHtml) {
 }
 
 function _repositionChatGenerationSettingsMenu(menu, anchor) {
-  if (!menu) return;
+  if (!menu || !menu.isConnected) return;
   menu.style.maxHeight = '';
   menu.style.maxWidth = '';
   menu.style.overflowX = '';
@@ -47,7 +68,7 @@ function _scheduleChatGenerationSettingsReposition(menu, anchor) {
   setTimeout(run, 80);
 }
 
-function _persistChatGenerationSettings(menu) {
+function _persistChatGenerationSettings(menu, options = {}) {
   const web = menu.querySelector('#chat-menu-allow-web-search');
   if (web) localStorage.setItem('chat-allow-web-search', web.checked ? '1' : '0');
   const compress = menu.querySelector('#chat-menu-auto-compress');
@@ -58,16 +79,18 @@ function _persistChatGenerationSettings(menu) {
   if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
   const preset = menu.querySelector('#chat-menu-param-preset');
   if (preset) localStorage.setItem('chat-param-preset', preset.value || 'standard');
-  [
-    ['temperature', 'chat-temperature'],
-    ['max-tokens', 'chat-max-tokens'],
-    ['top-p', 'chat-top-p'],
-  ].forEach(([id, key]) => {
+  Object.entries(CHAT_GENERATION_NUMERIC_SETTINGS).forEach(([id, config]) => {
     const input = menu.querySelector('#chat-menu-' + id);
     if (!input) return;
     const value = input.value.trim();
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
+    const normalized = _normalizeChatGenerationNumberValue(value, config);
+    if (normalized) {
+      localStorage.setItem(config.key, normalized);
+      if (options.normalizeNumbers && input.value !== normalized) input.value = normalized;
+    } else {
+      localStorage.removeItem(config.key);
+      if (options.normalizeNumbers && input.value) input.value = '';
+    }
   });
   if (typeof _chatSaveCurrentRoomModelSettings === 'function') _chatSaveCurrentRoomModelSettings();
 }
@@ -97,14 +120,14 @@ function showChatGenerationSettingsMenu(event) {
     <details data-chat-generation-details style="font-size:12px;color:var(--fg2);">
       <summary style="cursor:pointer;">詳細パラメータ</summary>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
-        ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(localStorage.getItem('chat-temperature') || '')}" placeholder="自動">`)}
-        ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(localStorage.getItem('chat-max-tokens') || '')}" placeholder="8192">`)}
-        ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(localStorage.getItem('chat-top-p') || '')}" placeholder="自動">`)}
+        ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('temperature'))}" placeholder="自動">`)}
+        ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('max-tokens'))}" placeholder="8192">`)}
+        ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('top-p'))}" placeholder="自動">`)}
       </div>
     </details>
   `;
   menu.addEventListener('change', () => {
-    _persistChatGenerationSettings(menu);
+    _persistChatGenerationSettings(menu, { normalizeNumbers: true });
     _scheduleChatGenerationSettingsReposition(menu, anchor);
   });
   menu.addEventListener('input', (e) => {
@@ -113,6 +136,7 @@ function showChatGenerationSettingsMenu(event) {
       _scheduleChatGenerationSettingsReposition(menu, anchor);
     }
   });
+  _chatGenerationSettingsMenu = menu;
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function' && anchor?.getBoundingClientRect) {
     _repositionChatGenerationSettingsMenu(menu, anchor);
@@ -124,19 +148,25 @@ function showChatGenerationSettingsMenu(event) {
   menu.querySelector('[data-chat-generation-details]')?.addEventListener('toggle', () => {
     _scheduleChatGenerationSettingsReposition(menu, anchor);
   });
-  _chatGenerationSettingsMenu = menu;
   const onOutside = (e) => {
     if (!menu.contains(e.target) && !anchor?.contains?.(e.target)) _closeChatGenerationSettingsMenu();
   };
   const onKey = (e) => { if (e.key === 'Escape') _closeChatGenerationSettingsMenu(); };
-  setTimeout(() => {
+  let listenersAttached = false;
+  const listenerTimer = setTimeout(() => {
+    if (_chatGenerationSettingsMenu !== menu || !menu.isConnected) return;
+    listenersAttached = true;
     document.addEventListener('mousedown', onOutside);
     document.addEventListener('keydown', onKey);
   }, 0);
   menu._cleanup = () => {
-    document.removeEventListener('mousedown', onOutside);
-    document.removeEventListener('keydown', onKey);
+    clearTimeout(listenerTimer);
+    if (listenersAttached) {
+      document.removeEventListener('mousedown', onOutside);
+      document.removeEventListener('keydown', onKey);
+    }
   };
 }
 
 window.showChatGenerationSettingsMenu = showChatGenerationSettingsMenu;
+window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;

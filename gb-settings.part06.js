@@ -227,6 +227,10 @@ function _discordBotSettingsPayload() {
   };
 }
 
+function _discordBotSettingsRendered(container) {
+  return !!container?.querySelector?.('#discord-bot-master-enabled');
+}
+
 function _discordBotPayloadIsMeaningful(bot) {
   const base = _discordBotDefaultBot();
   if (bot.bot_id || bot.token || bot.llm_api_key) return true;
@@ -244,6 +248,7 @@ function _discordBotPayloadIsMeaningful(bot) {
 async function saveDiscordBotSettingsFromSettingsDialog(options = {}) {
   const container = document.getElementById('discord-bot-settings-container');
   if (!container) return true;
+  if (!_discordBotSettingsRendered(container)) return true;
   try {
     const payload = _discordBotSettingsPayload();
     const result = await apiPost('/discord-bot/settings', payload);
@@ -287,12 +292,26 @@ async function _handleDiscordBotAction(btn) {
   if (!card) return;
   const action = btn.dataset.discordAction;
   const statusEl = document.getElementById('discord-bot-settings-status');
-  const payload = _discordBotPayloadFromCard(card);
+  let payload = _discordBotPayloadFromCard(card);
   try {
     if (action === 'delete') {
+      const message = payload.bot_id
+        ? 'このDiscord Bot設定を削除しますか？保存済みのBot Tokenも削除されます。'
+        : 'このDiscord Bot設定を削除しますか？';
+      const ok = typeof cfConfirm === 'function' ? await cfConfirm(message) : confirm(message);
+      if (!ok) return;
       if (payload.bot_id) await apiFetch('/discord-bot/bots/' + encodeURIComponent(payload.bot_id), { method: 'DELETE' });
       card.remove();
+      if (statusEl) statusEl.textContent = 'Discord Bot設定を削除しました';
       return;
+    }
+    if (action === 'start') {
+      const savedSettings = await saveDiscordBotSettingsFromSettingsDialog({ silent: true, skipRender: true });
+      if (!savedSettings) {
+        if (statusEl) statusEl.textContent = 'Discord Bot設定を保存できませんでした';
+        return;
+      }
+      payload = _discordBotPayloadFromCard(card);
     }
     if (action === 'start' || action === 'invite' || !payload.bot_id || payload.token || payload.llm_api_key) {
       const saved = await apiPost('/discord-bot/bots', payload);

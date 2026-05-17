@@ -22,13 +22,13 @@
   tfoot.appendChild(tr);
 }
 
-function calcColumnCount(propName, entitiesMap, entityNames, type, ptc) {
+function calcColumnCount(propName, entitiesMap, entityNames, type, ptc, propTypes) {
   if (type === 'none') return '';
   let count = 0, uniqueSet = new Set(), empty = 0, notEmpty = 0;
   entityNames.forEach(en => {
     // 数式プロパティの場合、計算結果で集計
     if (ptc && ptc.type === 'formula' && ptc.formula) {
-      const result = formulaEvalForEntity(ptc.formula, entitiesMap[en]);
+      const result = formulaEvalForEntity(ptc.formula, entitiesMap[en], { propTypes });
       const v = result.error ? '' : String(result.value);
       if (!v || v === '') empty++;
       else { notEmpty++; count++; uniqueSet.add(v); }
@@ -176,9 +176,10 @@ document.addEventListener('keydown', (e) => {
   if (isEditing) return;
   if (e.isComposing || e.keyCode === 229) return;
 
-  const table = _currentPivotTable();
+  let table = activeCell?.closest?.('table') || _currentPivotTable();
+  if (table && !table.isConnected) table = _currentPivotTable();
   if (!table) return;
-  const dataRows = _currentPivotRows();
+  let dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.group-header-row)'));
 
   if (!activeCell) {
     if (dataRows.length > 0 && dataRows[0].children.length > 1) {
@@ -189,7 +190,12 @@ document.addEventListener('keydown', (e) => {
 
   const tr = activeCell.parentElement;
   const rowIdx = dataRows.indexOf(tr);
-  if (rowIdx < 0) return;
+  if (rowIdx < 0) {
+    activeCell = null;
+    rangeAnchorCell = null;
+    if (dataRows.length > 0 && dataRows[0].children.length > 1) setActiveCell(dataRows[0].children[1]);
+    return;
+  }
   const cells = Array.from(tr.children);
   const colIdx = cells.indexOf(activeCell);
   const maxCol = cells.length - 2;
@@ -265,9 +271,13 @@ document.addEventListener('keydown', (e) => {
         const thAll = Array.from(table.querySelectorAll('thead th'));
         const entityName = dataRows[rowIdx]?.querySelector('.entity-name-label')?.textContent;
         const propName = thAll[colIdx]?.dataset?.prop;
-        if (entityName && propName && state.currentDbPath) {
+        const ctx = typeof _dbPaneContextFromEvent === 'function'
+          ? _dbPaneContextFromEvent(activeCell, { dbPath: state.currentDbPath })
+          : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+        const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
+        if (entityName && propName && dbPath) {
           e.preventDefault();
-          startCellInlineAdd(activeCell, _entityPath(state.currentDbPath, entityName), entityName, propName);
+          startCellInlineAdd(activeCell, _entityPath(dbPath, entityName), entityName, propName);
           setTimeout(() => {
             const inp = activeCell.querySelector('.cell-inline-input');
             if (inp) inp.value = e.key;
@@ -290,8 +300,12 @@ document.addEventListener('keydown', (e) => {
 
 // 新規エントリ追加（キーボード用）
 async function triggerNewEntity(table, dataRows, focusCol) {
-  const existing = state.pivotData ? Object.keys(state.pivotData.entities) : [];
-  const _db = state.currentDbPath;
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(table, { dbPath: state.currentDbPath })
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+  const existing = pivotData ? Object.keys(pivotData.entities || {}) : [];
+  const _db = (ctx && ctx.dbPath) || state.currentDbPath;
   if (!_db) return;
   try {
     const created = typeof _apiCreateEntityWithUniqueName === 'function'
@@ -304,20 +318,22 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       try { await _autoFillOnCreate(_db, createdPath, {}); } catch {}
     }
     historyPush('エントリ追加: ' + name,
-      async () => { await apiPost('/outliner/delete', { path: _entityPath(_db, name) }); await selectDatabase(_db); },
+      async () => { await apiPost('/outliner/delete', { path: _entityPath(_db, name) }); await selectDatabase(_db, ctx); },
       async () => {
         const redo = await apiPost('/entity/create', { parent_path: _db, name });
         const redoPath = (redo && (redo.path || redo.entry_path)) || `${_db}/${name}.md`;
         if (typeof _shouldRunFrontendAutoFillOnCreate !== 'function' || _shouldRunFrontendAutoFillOnCreate(redo)) {
           try { await _autoFillOnCreate(_db, redoPath, {}); } catch {}
         }
-        await selectDatabase(_db);
+        await selectDatabase(_db, ctx);
       },
-      _dbScope()
+      typeof _dbScopeForPath === 'function'
+        ? _dbScopeForPath(_db)
+        : (typeof _dbScope === 'function' ? _dbScope() : 'db:' + String(_db).replace(/\\/g, '/'))
     );
-    await selectDatabase(_db);
+    await selectDatabase(_db, ctx);
     // Step 2: チャンク分割中は新規行が遅れて DOM に出現する可能性があるため、待機
-    const _ctxNew = (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
+    const _ctxNew = ctx || ((typeof _currentPaneState === 'function') ? _currentPaneState() : null);
     _waitForEntityRow(_ctxNew, name, (newRow) => {
       const col = focusCol || 0;
       const td = newRow.children[col];
@@ -331,18 +347,24 @@ async function triggerNewEntity(table, dataRows, focusCol) {
 }
 
 // 新規プロパティ追加（キーボード用）
-function triggerNewProperty() {
-  const dbPath = state.currentDbPath;
+function triggerNewProperty(ctxOrDbPath) {
+  const ctx = (typeof ctxOrDbPath === 'object' && ctxOrDbPath)
+    ? ctxOrDbPath
+    : (typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(activeCell, { dbPath: typeof ctxOrDbPath === 'string' ? ctxOrDbPath : state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
+  const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
-  const order = getColOrder(dbPath) || [...(state.pivotData?.properties || [])];
+  const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+  const order = getColOrder(dbPath) || [...(pivotData?.properties || [])];
   let idx = 1, name = 'プロパティ';
   while (order.includes(name)) { idx++; name = 'プロパティ' + idx; }
   order.push(name);
   setColOrder(dbPath, order, { skipHistory: true });
   setPropertyType(dbPath, name, { type: 'text' });
-  renderPivot();
+  renderPivot(ctx);
   setTimeout(() => {
-    const _ctx2 = _currentPaneState();
+    const _ctx2 = ctx || _currentPaneState();
     const th = _paneEl(_ctx2, '#' + (_ctx2.tableId || 'pivot-table') + ` thead th[data-prop="${name}"]`);
     if (th) startHeaderInlineRename(th, name, dbPath);
   }, 30);
@@ -352,6 +374,11 @@ function triggerNewProperty() {
 function startColResize(e, th, colIndex, propName) {
   e.preventDefault();
   e.stopPropagation();
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(th, { dbPath: state.currentDbPath })
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
+  const table = th?.closest?.('table') || _currentPivotTable(ctx);
   const startX = e.clientX;
   const startW = th.offsetWidth;
 
@@ -362,15 +389,15 @@ function startColResize(e, th, colIndex, propName) {
     const w = Math.max(60, startW + e2.clientX - startX);
     th.style.width = w + 'px';
     th.style.minWidth = w + 'px';
-    setColWidth(colIndex, w);
+    setColWidth(colIndex, w, table);
   };
   const onUp = () => {
     handle.classList.remove('active');
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
     // 幅を永続化
-    if (propName && state.currentDbPath) {
-      setColWidthPersist(state.currentDbPath, propName, th.offsetWidth, {
+    if (propName && dbPath) {
+      setColWidthPersist(dbPath, propName, th.offsetWidth, {
         label: 'シート表示: 列幅',
         detail: propName,
       });
@@ -380,9 +407,9 @@ function startColResize(e, th, colIndex, propName) {
   document.addEventListener('pointerup', onUp);
 }
 
-function setColWidth(colIndex, width) {
+function setColWidth(colIndex, width, table) {
   // tbody内の同じ列のセルにも幅を反映
-  const table = _currentPivotTable();
+  table = table || _currentPivotTable();
   if (!table) return;
   table.querySelectorAll('tbody tr').forEach(tr => {
     const td = tr.children[colIndex];
@@ -390,8 +417,13 @@ function setColWidth(colIndex, width) {
   });
 }
 
-function _showBulkColumnWidthModal(propName) {
-  const dbPath = state.currentDbPath;
+function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
+  const ctx = (typeof ctxOrDbPath === 'object' && ctxOrDbPath)
+    ? ctxOrDbPath
+    : (typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(activeCell, { dbPath: typeof ctxOrDbPath === 'string' ? ctxOrDbPath : state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
+  const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
   let targets = _getSelectedColumns(dbPath);
   if (!targets.length || !targets.includes(propName)) {
@@ -433,7 +465,7 @@ function _showBulkColumnWidthModal(propName) {
       pushDbViewConfigHistory(dbPath, 'シート表示: 列幅', before, captureDbViewConfigHistory(dbPath), targets.join(' / '));
     }
     overlay.remove();
-    renderPivot();
+    renderPivot(ctx);
   });
   setTimeout(() => overlay.querySelector('#bulk-col-width-input')?.focus(), 30);
 }

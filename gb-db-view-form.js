@@ -26,7 +26,6 @@ function normalizeDbFormConfig(config, props, propTypes) {
   const src = config && typeof config === 'object' ? config : {};
   const allowed = new Set(allProps.filter(p => !DB_FORM_UNSUPPORTED_TYPES.has(propTypes?.[p]?.type)));
   const fields = Array.isArray(src.fields) ? src.fields.filter(p => allowed.has(p)) : base.fields;
-  allProps.forEach(p => { if (allowed.has(p) && !fields.includes(p)) fields.push(p); });
   return {
     ...base,
     ...src,
@@ -64,7 +63,10 @@ function saveActiveFormConfig(dbPath, formConfig) {
 }
 
 function _formContainer(ctx) {
-  return (typeof _paneEl === 'function' ? _paneEl(ctx, '.form-view') : null) || document.getElementById('form-view');
+  if (typeof _dbViewSurfaceEl === 'function') return _dbViewSurfaceEl(ctx, '.form-view', 'form-view');
+  return (ctx?.containerEl ? ctx.containerEl.querySelector('.form-view') : null)
+    || document.getElementById('form-view')
+    || document.querySelector('.form-view');
 }
 
 function renderDbFormView(ctx) {
@@ -72,6 +74,7 @@ function renderDbFormView(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const root = _formContainer(ctx);
   if (!root || !dbPath) return;
+  root.style.display = 'flex';
   const pivot = ctx.pivotData || state.pivotData || { properties: [] };
   const propTypes = getPropertyTypes(dbPath) || {};
   let cfg = getActiveFormConfig(dbPath, pivot.properties || [], propTypes);
@@ -97,7 +100,7 @@ function renderDbFormView(ctx) {
   root.appendChild(toolbar);
 
   if (cfg.mode === 'answer') {
-    root.appendChild(_buildFormAnswerPanel(dbPath, cfg, propTypes, false, { previewOnly: true }));
+    root.appendChild(_buildFormAnswerPanel(dbPath, cfg, propTypes, false, { previewOnly: !(cfg.customInstructionsRelay || cfg.betaFeedbackRelay) }));
     return;
   }
 
@@ -311,7 +314,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
   input.name = prop;
   input.dataset.formType = type;
   if (cfg.placeholders[prop]) input.placeholder = cfg.placeholders[prop];
-  if (cfg.required.includes(prop) && type !== 'checkbox') input.required = true;
+  if (cfg.required.includes(prop)) input.required = true;
   row.appendChild(input);
   return row;
 }
@@ -378,6 +381,11 @@ function _showBetaFeedbackThanksDialog(cfg) {
   }
 }
 
+function _customInstructionRelayErrorMessage(result) {
+  if (result?.error === 'source-folder-required') return 'ソースフォルダを選択してから反映してください';
+  return 'カスタムインストラクションに反映できませんでした';
+}
+
 async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) {
   const msg = form.querySelector('.gb-form-submit-message');
   try {
@@ -386,17 +394,28 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       fields['送信日'] = new Date().toISOString().slice(0, 10);
     }
     for (const prop of cfg.required || []) {
-      if (!String(fields[prop] || '').trim()) throw new Error(prop + ' は必須です');
+      const type = propTypes[prop]?.type || 'text';
+      if (type === 'checkbox') {
+        if (fields[prop] !== 'true') throw new Error(prop + ' は必須です');
+      } else if (!String(fields[prop] || '').trim()) {
+        throw new Error(prop + ' は必須です');
+      }
     }
     const nameProp = cfg.entityNameProp || '';
     const name = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP');
     if (options.previewOnly) {
       if (msg) msg.textContent = '回答プレビューです。実データは作成されません。';
-      return { previewOnly: true, fields, name };
+      const previewResult = { previewOnly: true };
+      return { ...previewResult, fields, name };
+    }
+    if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
+      const validation = await applyChatCustomInstructionsFromForm(fields, cfg, { validateOnly: true, silent: true });
+      if (validation?.ok === false) throw new Error(_customInstructionRelayErrorMessage(validation));
     }
     await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
-      try { await applyChatCustomInstructionsFromForm(fields, cfg); } catch (relayErr) { console.warn('カスタムインストラクション反映に失敗:', relayErr); }
+      const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
+      if (relay?.ok === false) throw new Error(_customInstructionRelayErrorMessage(relay));
     }
     if (window.MeldexBetaFeedback?.maybeSendFeedbackForm) {
       window.MeldexBetaFeedback.maybeSendFeedbackForm({ dbPath, formConfig: cfg, fields, name, source: 'local-form' }).catch(() => {});

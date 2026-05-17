@@ -3,21 +3,17 @@
  * OSシェル動詞の取得・キャッシュ・実行・カスタマイズ
  */
 
-const _shellVerbCache = {}; // extension -> [{name, raw}]
+const _shellVerbCache = {}; // path key -> [{name, raw}]
 const _HIDDEN_VERBS_KEY = 'gb:hidden-shell-verbs';
 
 // --- データ取得 ---
 
 async function fetchShellVerbs(path) {
-  // 拡張子ベースのキャッシュ（サーバーも同様にキャッシュ）
-  // パスの末尾からファイル名を取得し、最後の . 以降を拡張子とする
-  const name = path.replace(/[\\/]/g, '/').split('/').pop() || '';
-  const dotIdx = name.lastIndexOf('.');
-  const ext = (dotIdx > 0) ? name.substring(dotIdx).toLowerCase() : ('__noext__:' + path);
-  if (_shellVerbCache[ext]) return _shellVerbCache[ext];
+  const cacheKey = String(path || '').replace(/[\\/]+/g, '/').toLowerCase();
+  if (_shellVerbCache[cacheKey]) return _shellVerbCache[cacheKey];
   try {
     const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
-    if (verbs.length > 0) _shellVerbCache[ext] = verbs;
+    if (verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
     return verbs;
   } catch { return []; }
 }
@@ -217,11 +213,12 @@ function showShellVerbSettings() {
   document.body.appendChild(o);
 
   document.getElementById('btn-save-verb-settings').addEventListener('click', () => {
-    const newHidden = [];
+    const displayedNames = new Set(allVerbs.keys());
+    const newHidden = hidden.filter(name => !displayedNames.has(name));
     o.querySelectorAll('input[data-verb-name]').forEach(cb => {
       if (!cb.checked) newHidden.push(cb.dataset.verbName);
     });
-    setHiddenShellVerbs(newHidden);
+    setHiddenShellVerbs([...new Set(newHidden)]);
     o.remove();
     showStatus('メニュー設定を保存しました');
   });

@@ -253,6 +253,14 @@ function applyFileStyleToPanel(style, panelId) {
     : document.getElementById(panelId);
   if (!el) return;
   applyFileStyleToElement(style, el, panelId);
+  if (panelId === 'page-content') {
+    const titleEl = document.getElementById('page-title');
+    if (typeof applyPageTitleStyleToElement === 'function') {
+      applyPageTitleStyleToElement(style, titleEl);
+    } else if (titleEl && typeof applyFileStyleToElement === 'function') {
+      applyFileStyleToElement(style, titleEl, 'page-content');
+    }
+  }
   if (panelId === 'bd-canvas' && typeof bdApplyBoardFontVariables === 'function') {
     const world = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('world') : document.getElementById('bd-world');
     bdApplyBoardFontVariables(el, world);
@@ -284,6 +292,8 @@ function clearFileStyleForPanel(panelId) {
     if (el.dataset) delete el.dataset.fileStyleAppliedVars;
   }
   if (panelId === 'page-content') {
+    const titleEl = document.getElementById('page-title');
+    if (titleEl && typeof clearFileStyleFromElement === 'function') clearFileStyleFromElement(titleEl);
     const dp = document.getElementById('dp-editable');
     if (dp) clearFileStyleFromElement(dp);
   } else if (panelId === 'bd-canvas') {
@@ -509,12 +519,16 @@ function _showSlashMenu() {
   const range = sel.getRangeAt(0);
   const rect = range.getBoundingClientRect();
   const menu = document.getElementById('slash-menu') || _createSlashMenu();
-  { const z = _getZoom(); menu.style.top = (rect.bottom / z + 4) + 'px'; menu.style.left = (rect.left / z) + 'px'; }
-  menu.style.display = '';
-  clampPopupToViewport(menu);
   _slashMenuActive = true;
   _slashMenuSelection = 0;
   _renderSlashMenuItems('');
+  { const z = _getZoom(); menu.style.top = (rect.bottom / z + 4) + 'px'; menu.style.left = (rect.left / z) + 'px'; }
+  menu.style.display = '';
+  clampPopupToViewport(menu);
+  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
+  raf(() => {
+    if (_slashMenuActive && menu.style.display !== 'none') clampPopupToViewport(menu);
+  });
 }
 
 function _hideSlashMenu() {
@@ -541,7 +555,7 @@ function _executeSlashCommand(cmd) {
   const insertMap = {
     h1: '<h1>見出し</h1>', h2: '<h2>見出し</h2>', h3: '<h3>見出し</h3>',
     ul: '<ul><li>項目</li></ul>', ol: '<ol><li>項目</li></ol>',
-    check: '<ul><li><input type="checkbox"> 項目</li></ul>',
+    check: '<ul><li>[ ] 項目</li></ul>',
     hr: '<hr>', code: '<pre style="background:var(--bg3);padding:8px;border-radius:4px;overflow-x:auto;font-size:13px;"><code>コード</code></pre>',
     callout: '<div class="callout-block callout-info" contenteditable="false"><span class="callout-icon" data-icon="info" style="color:#569cd6;">' + (typeof lucide === 'function' ? lucide('info', 20) : 'ℹ') + '</span><div class="callout-body" contenteditable="true">テキスト</div></div>',
     table: '<table><tr><th>列1</th><th>列2</th></tr><tr><td>-</td><td>-</td></tr></table>',
@@ -920,6 +934,9 @@ if (_origOpenPage) {
     const _indentOn = _indentVal === null || _indentVal === '1';
     if (_indentOn) {
       if (pc) wrapHeadingSections(pc);
+    }
+    if (pc && typeof _schedulePageDisplayLayers === 'function') {
+      _schedulePageDisplayLayers(path, pc, pc.innerHTML, () => pc.dataset.path !== path);
     }
     const btn = document.getElementById('btn-heading-indent');
     if (btn) btn.classList.toggle('active', _indentOn);

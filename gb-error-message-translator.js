@@ -35,7 +35,7 @@
       action: '管理者に確認するか、別の保存先を選んでください。',
     },
     {
-      test: info => info.status === 413 || /too large|payload/i.test(info.raw),
+      test: info => info.status === 413 || /too large|payload too large|request entity too large|content length/i.test(info.raw),
       title: 'データが大きすぎます',
       message: '一度に処理する内容が大きすぎます。',
       action: '添付や選択範囲を減らしてから、もう一度試してください。',
@@ -69,7 +69,7 @@
   function _rawMessage(error) {
     if (error == null) return '';
     if (typeof error === 'string') return error;
-    return String(error.userMessage || error.message || error.detail || error.statusText || error);
+    return String(error.technical || error.raw || error.message || error.detail || error.statusText || error.userMessage || error);
   }
 
   function _status(error) {
@@ -97,11 +97,15 @@
       action: selected.action,
       technical: raw,
       status: info.status,
+      matched: !!rule,
     };
   }
 
   function toStatusText(error, context) {
     const info = translate(error, context);
+    if (!info.matched && info.message) {
+      return `${info.title}: ${info.message} ${info.action}`;
+    }
     return `${info.title}: ${info.action}`;
   }
 

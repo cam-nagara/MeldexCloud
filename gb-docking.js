@@ -33,6 +33,37 @@ const GBDocking = (() => {
     return typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId);
   }
 
+  function _showLayoutLockedStatus(message) {
+    if (typeof showStatus === 'function') showStatus(message || 'ロック中のパネルは移動できません', true);
+  }
+
+  function _findLayoutNode(nodeId) {
+    return (nodeId && typeof GBLayout?.findNode === 'function')
+      ? GBLayout.findNode(GBLayout.root, nodeId)?.node
+      : null;
+  }
+
+  function _layoutNodeHasLockedPane(nodeId) {
+    return _nodeHasLockedPane(_findLayoutNode(nodeId));
+  }
+
+  function _groupHasLockedPane(panelsetId, groupId) {
+    const panelset = _findLayoutNode(panelsetId);
+    if (!panelset || panelset.type !== 'panelset') return false;
+    const group = (panelset.groups || []).find(g => g && g.id === groupId);
+    return _nodeHasLockedPane(group?.root);
+  }
+
+  function _targetColumnIdForPane(paneId) {
+    return (typeof GBLayout?._findColumnAncestorId === 'function')
+      ? GBLayout._findColumnAncestorId(paneId)
+      : null;
+  }
+
+  function _parseDropJson(e, type) {
+    try { return JSON.parse(e.dataTransfer.getData(type) || '{}'); } catch { return {}; }
+  }
+
   // ドロップゾーン判定
   function getDropZone(paneEl, clientX, clientY) {
     const rect = paneEl.getBoundingClientRect();
@@ -107,6 +138,7 @@ const GBDocking = (() => {
     if (_indicator) _indicator.style.display = 'none';
     _currentZone = null;
     _currentTarget = null;
+    _rootZone = null;
   }
 
   function _toolTabLabel(toolType) {
@@ -332,6 +364,70 @@ const GBDocking = (() => {
       || document.querySelector(`[data-split-id="${id}"]`);
   }
 
+  function _openTypeForDroppedNode(type) {
+    return type === 'database' ? 'pivot' : (type || 'page');
+  }
+
+  function _droppedMeldexItems(e) {
+    const nodeData = e.ctrlKey ? e.dataTransfer.getData('application/x-meldex-node') : '';
+    if (!nodeData) return [];
+    try {
+      const parsed = JSON.parse(nodeData);
+      const rawItems = Array.isArray(parsed?.items) && parsed.items.length ? parsed.items : [parsed];
+      return rawItems.map(item => ({
+        name: String(item?.name || item?.path || 'ノート').trim() || 'ノート',
+        path: String(item?.path || '').trim(),
+        type: _openTypeForDroppedNode(item?.type || 'page'),
+      })).filter(item => item.path);
+    } catch {
+      return [];
+    }
+  }
+
+  function _tabForDroppedNode(item) {
+    return GBTabs.createTab(item.name, item.type, item.path);
+  }
+
+  function _openDroppedNodesAtRoot(zone, items) {
+    if (!Array.isArray(items) || !items.length) return false;
+    const tabs = items.map(_tabForDroppedNode);
+    const newPane = GBLayout.createPaneNode(null, tabs, 0);
+    if (!GBLayout.splitRoot(zone, newPane)) return false;
+    GBLayout.setActivePane(newPane.id, { sync: true });
+    const active = items[0];
+    if (active && typeof navOpen === 'function') navOpen({ type: active.type, label: active.name, path: active.path });
+    return true;
+  }
+
+  function _openDroppedNodesInPane(paneId, zone, items) {
+    if (!paneId || !Array.isArray(items) || !items.length) return false;
+    if (zone === 'center') {
+      let opened = false;
+      let lastOpened = null;
+      for (const item of items) {
+        if (GBTabs.addTab(paneId, item.name, item.type, item.path)) {
+          opened = true;
+          lastOpened = item;
+        }
+      }
+      if (opened && lastOpened && typeof navOpen === 'function') {
+        navOpen({ type: lastOpened.type, label: lastOpened.name, path: lastOpened.path });
+      }
+      return opened;
+    }
+    const tabs = items.map(_tabForDroppedNode);
+    const newPane = GBLayout.createPaneNode(null, tabs, 0);
+    const newPaneId = GBLayout.splitPane(paneId, null, zone, newPane);
+    if (!newPaneId) {
+      if (typeof showStatus === 'function') showStatus('分割上限に達しました', true);
+      return false;
+    }
+    GBLayout.setActivePane(newPaneId, { sync: true });
+    const active = items[0];
+    if (active && typeof navOpen === 'function') navOpen({ type: active.type, label: active.name, path: active.path });
+    return true;
+  }
+
   function _nodeHasLockedPane(node) {
     if (!node) return false;
     if (node.type === 'pane') return _isLockedPane(node.id);
@@ -378,7 +474,8 @@ const GBDocking = (() => {
         const isColumn = types.includes('application/x-gb-column');
         const isGroup = types.includes('application/x-gb-panelset-group');
         if (!isColumn && !isGroup) return;
-        if (_isLockedPane(paneId)) {
+        const targetColumnId = _targetColumnIdForPane(paneId) || paneId;
+        if (_columnHasLockedPane(targetColumnId)) {
           hideIndicator();
           return;
         }
@@ -412,7 +509,8 @@ const GBDocking = (() => {
         e.preventDefault();
         e.stopPropagation();
         hideIndicator();
-        if (_isLockedPane(paneId)) {
+        const targetColumnId = _targetColumnIdForPane(paneId) || paneId;
+        if (_columnHasLockedPane(targetColumnId)) {
           if (typeof showStatus === 'function') showStatus('ロック中のパネルには追加できません', true);
           return;
         }
@@ -420,8 +518,12 @@ const GBDocking = (() => {
           const z = getDropZone(paneEl, e.clientX, e.clientY);
           const isEdge = (z === 'left' || z === 'right');
           if (isGroup) {
-            const data = JSON.parse(e.dataTransfer.getData('application/x-gb-panelset-group') || '{}');
+            const data = _parseDropJson(e, 'application/x-gb-panelset-group');
             if (!data.groupId || !paneId) return;
+            if (_groupHasLockedPane(data.panelsetId, data.groupId)) {
+              _showLayoutLockedStatus('ロック中のパネルを含むグループは移動できません');
+              return;
+            }
             if (isEdge && typeof GBPanelSet?.insertGroupAsColumn === 'function') {
               GBPanelSet.insertGroupAsColumn(data.panelsetId, data.groupId, paneId, z);
             } else if (typeof GBPanelSet?.dropGroupOnPane === 'function') {
@@ -429,12 +531,13 @@ const GBDocking = (() => {
             }
             return;
           }
-          const data = JSON.parse(e.dataTransfer.getData('application/x-gb-column') || '{}');
+          const data = _parseDropJson(e, 'application/x-gb-column');
           if (!data.nodeId || !paneId) return;
-          const targetColumnId = typeof GBLayout?._findColumnAncestorId === 'function'
-            ? GBLayout._findColumnAncestorId(paneId)
-            : null;
-          const targetId = targetColumnId || paneId;
+          if (_layoutNodeHasLockedPane(data.nodeId)) {
+            _showLayoutLockedStatus('ロック中のパネルを含むカラムは移動できません');
+            return;
+          }
+          const targetId = targetColumnId;
           if (data.nodeId === targetId) return;
           if (isEdge && typeof GBLayout?.insertColumnAround === 'function') {
             GBLayout.insertColumnAround(data.nodeId, targetId, z);
@@ -501,15 +604,23 @@ const GBDocking = (() => {
         }
         try {
           if (isGroup) {
-            const data = JSON.parse(e.dataTransfer.getData('application/x-gb-panelset-group') || '{}');
+            const data = _parseDropJson(e, 'application/x-gb-panelset-group');
             if (!data.panelsetId || !data.groupId) return;
+            if (_groupHasLockedPane(data.panelsetId, data.groupId)) {
+              _showLayoutLockedStatus('ロック中のパネルを含むグループは移動できません');
+              return;
+            }
             if (typeof GBPanelSet?.insertGroupAsColumn === 'function') {
               GBPanelSet.insertGroupAsColumn(data.panelsetId, data.groupId, target.targetId, target.side);
             }
             return;
           }
-          const data = JSON.parse(e.dataTransfer.getData('application/x-gb-column') || '{}');
+          const data = _parseDropJson(e, 'application/x-gb-column');
           if (!data.nodeId || data.nodeId === target.targetId) return;
+          if (_layoutNodeHasLockedPane(data.nodeId)) {
+            _showLayoutLockedStatus('ロック中のパネルを含むカラムは移動できません');
+            return;
+          }
           if (typeof GBLayout?.insertColumnAround === 'function') {
             GBLayout.insertColumnAround(data.nodeId, target.targetId, target.side);
           }
@@ -634,17 +745,9 @@ const GBDocking = (() => {
           return;
         }
         // フォルダツリーノード Ctrl+ドロップ
-        const nodeData = e.ctrlKey ? e.dataTransfer.getData('application/x-meldex-node') : '';
-        if (nodeData) {
-          try {
-            const { name, path, type } = JSON.parse(nodeData);
-            const openType = type === 'database' ? 'pivot' : (type || 'page');
-            const tab = GBTabs.createTab(name, openType, path);
-            const newPane = GBLayout.createPaneNode(null, [tab], 0);
-            if (!GBLayout.splitRoot(rz, newPane)) return;
-            GBLayout.setActivePane(newPane.id, { sync: true });
-            if (typeof navOpen === 'function') navOpen({ type: openType, label: name, path });
-          } catch {}
+        const droppedItems = _droppedMeldexItems(e);
+        if (droppedItems.length) {
+          _openDroppedNodesAtRoot(rz, droppedItems);
         }
       }, true);
       layoutEl.addEventListener('dragleave', (e) => {
@@ -750,32 +853,9 @@ const GBDocking = (() => {
         }
 
         // フォルダツリーノードD&D（Ctrl+ドロップ時のみファイルを開く）
-        const nodeData = e.ctrlKey ? e.dataTransfer.getData('application/x-meldex-node') : '';
-        if (nodeData) {
-          try {
-            const { name, path, type } = JSON.parse(nodeData);
-            const openType = type === 'database' ? 'pivot' : (type || 'page');
-            let opened = false;
-            if (zone === 'center') {
-              opened = !!GBTabs.addTab(paneId, name, openType, path);
-            } else {
-              const tab = GBTabs.createTab(name, openType, path);
-              const newPane = GBLayout.createPaneNode(null, [tab], 0);
-              const newPaneId = GBLayout.splitPane(paneId, null, zone, newPane);
-              // 新ペインをアクティブにしてからファイルを開く
-              if (newPaneId) {
-                GBLayout.setActivePane(newPaneId, { sync: true });
-                opened = true;
-              } else {
-                if (typeof showStatus === 'function') showStatus('分割上限に達しました', true);
-                return;
-              }
-            }
-            // ファイルを開く（データ読み込み+ビュー表示）
-            if (opened && typeof navOpen === 'function') {
-              navOpen({ type: openType, label: name, path });
-            }
-          } catch {}
+        const droppedItems = _droppedMeldexItems(e);
+        if (droppedItems.length) {
+          _openDroppedNodesInPane(paneId, zone, droppedItems);
         }
       });
     });
@@ -806,5 +886,7 @@ const GBDocking = (() => {
     hideIndicator,
     getDropZone,
     showEdgeIndicator,
+    hasLockedPaneInNode: _layoutNodeHasLockedPane,
+    hasLockedPaneInGroup: _groupHasLockedPane,
   };
 })();

@@ -116,7 +116,7 @@ function _getDbSortConfigForView(dbPath) {
     || { key: 'name', dir: 'asc' };
 }
 
-function _applyDbSortConfigForView(dbPath, sortConfig, detail) {
+function _applyDbSortConfigForView(dbPath, sortConfig, detail, ctx) {
   if (typeof setDbSortConfig === 'function') {
     setDbSortConfig(dbPath, sortConfig, { detail });
   } else {
@@ -124,22 +124,24 @@ function _applyDbSortConfigForView(dbPath, sortConfig, detail) {
     c.sortConfig = { ...sortConfig };
     saveDbViewConfig(dbPath, c, { historyLabel: 'シート表示: 並び替え', historyDetail: detail || '' });
   }
-  renderPivot();
+  renderPivot(ctx);
 }
 
-function _makeDbGlobalSortMenuItems(dbPath) {
+function _makeDbGlobalSortMenuItems(dbPath, ctx) {
   const sc = _getDbSortConfigForView(dbPath);
+  const pivotData = ctx?.pivotData
+    || ((typeof _ptIsCurrentDbPath === 'function' && _ptIsCurrentDbPath(dbPath)) ? state.pivotData : null);
   const items = [
-    { label: (sc.key === 'name' && sc.dir === 'asc' ? radioMark(true) : '　') + '名前 昇順', action: () => _applyDbSortConfigForView(dbPath, { key: 'name', dir: 'asc' }, '名前 昇順') },
-    { label: (sc.key === 'name' && sc.dir === 'desc' ? radioMark(true) : '　') + '名前 降順', action: () => _applyDbSortConfigForView(dbPath, { key: 'name', dir: 'desc' }, '名前 降順') },
-    { label: (sc.key === 'manual' ? radioMark(true) : '　') + 'マニュアル', action: () => _applyDbSortConfigForView(dbPath, { key: 'manual', dir: 'asc' }, 'マニュアル') },
+    { label: (sc.key === 'name' && sc.dir === 'asc' ? radioMark(true) : '　') + '名前 昇順', action: () => _applyDbSortConfigForView(dbPath, { key: 'name', dir: 'asc' }, '名前 昇順', ctx) },
+    { label: (sc.key === 'name' && sc.dir === 'desc' ? radioMark(true) : '　') + '名前 降順', action: () => _applyDbSortConfigForView(dbPath, { key: 'name', dir: 'desc' }, '名前 降順', ctx) },
+    { label: (sc.key === 'manual' ? radioMark(true) : '　') + 'マニュアル', action: () => _applyDbSortConfigForView(dbPath, { key: 'manual', dir: 'asc' }, 'マニュアル', ctx) },
   ];
-  if (state.pivotData?.properties?.length) {
+  if (pivotData?.properties?.length) {
     items.push({ type: 'sep' });
-    state.pivotData.properties.forEach(p => {
-      items.push({ label: (sc.key === p ? radioMark(true) : '　') + p, action: () => {
+    pivotData.properties.forEach(p => {
+      items.push({ label: (sc.key === p ? radioMark(true) : '　') + esc(p), action: () => {
         const dir = sc.key === p && sc.dir === 'asc' ? 'desc' : 'asc';
-        _applyDbSortConfigForView(dbPath, { key: p, dir }, p + ' ' + (dir === 'asc' ? '昇順' : '降順'));
+        _applyDbSortConfigForView(dbPath, { key: p, dir }, p + ' ' + (dir === 'asc' ? '昇順' : '降順'), ctx);
       }});
     });
   }
@@ -149,11 +151,14 @@ function _makeDbGlobalSortMenuItems(dbPath) {
 function showDbSortMenu(e) {
   closeColHeaderMenu();
   closeAllDropdowns();
-  const dbPath = state.currentDbPath;
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: state.currentDbPath })
+    : null;
+  const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
-  _renderColMenuItems(menu, _makeDbGlobalSortMenuItems(dbPath));
+  _renderColMenuItems(menu, _makeDbGlobalSortMenuItems(dbPath, ctx));
   document.body.appendChild(menu);
   const rect = e?.currentTarget?.getBoundingClientRect?.() || e?.target?.getBoundingClientRect?.();
   if (rect) positionPopup(menu, { left: rect.left, right: rect.right, top: rect.bottom, bottom: rect.bottom });
@@ -170,7 +175,10 @@ function showDbSortMenu(e) {
 function showColHeaderMenu(e, propName, colIndex) {
   closeColHeaderMenu();
   closeAllDropdowns();
-  const dbPath = state.currentDbPath;
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: state.currentDbPath })
+    : null;
+  const dbPath = ctx?.dbPath || state.currentDbPath;
   const pinnedCols = getPinnedCols(dbPath);
   const groupBy = getGroupBy(dbPath);
 
@@ -186,7 +194,7 @@ function showColHeaderMenu(e, propName, colIndex) {
       const selected = _getSelectedColumns(dbPath).map(name => name === propName ? newName : name);
       _setSelectedColumns(dbPath, selected, newName);
     }
-    if (typeof renderPivot === 'function') renderPivot();
+    if (typeof renderPivot === 'function') renderPivot(ctx);
   }, { placeholder: '列名を変更...' });
 
   const currentPtc = getPropertyTypes(dbPath)[propName] || { type: 'text' };
@@ -206,8 +214,9 @@ function showColHeaderMenu(e, propName, colIndex) {
           let opts = undefined;
           if (ti.type === 'select' || ti.type === 'multi-select') {
             const existingValues = new Set();
-            if (state.pivotData) {
-              Object.values(state.pivotData.entities).forEach(ent => {
+            const pivotData = ctx?.pivotData || state.pivotData;
+            if (pivotData?.entities) {
+              Object.values(pivotData.entities).forEach(ent => {
                 (ent[propName] || []).forEach(v => existingValues.add(v.value));
               });
             }
@@ -221,52 +230,52 @@ function showColHeaderMenu(e, propName, colIndex) {
           if (currentType === 'image' && ti.type !== 'image') {
             Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).then(() => apiPost('/media/gc', {})).catch(() => {});
           }
-          renderPivot();
+          renderPivot(ctx);
         }
       }))
     },
     // プロパティ型の設定（relation先DB・数式・ボタン等の詳細設定）
-    { label: lucide('settings', 14) + ' プロパティ型の設定...', action: () => showPropertyTypeModal(propName) },
+    { label: lucide('settings', 14) + ' プロパティ型の設定...', action: () => showPropertyTypeModal(propName, dbPath, ctx) },
     { type: 'sep' },
     // 並び替え（この列を基準に）
     { type: 'submenu', label: lucide('arrowUpDown', 14) + ' 並び替え', children: (() => {
       const sc = _getDbSortConfigForView(dbPath);
       return [
-        { label: (sc.key === propName && sc.dir === 'asc' ? radioMark(true) : '　') + 'この列で昇順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'asc' }, propName + ' 昇順') },
-        { label: (sc.key === propName && sc.dir === 'desc' ? radioMark(true) : '　') + 'この列で降順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'desc' }, propName + ' 降順') },
+        { label: (sc.key === propName && sc.dir === 'asc' ? radioMark(true) : '　') + 'この列で昇順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'asc' }, propName + ' 昇順', ctx) },
+        { label: (sc.key === propName && sc.dir === 'desc' ? radioMark(true) : '　') + 'この列で降順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'desc' }, propName + ' 降順', ctx) },
       ];
     })() },
     { type: 'submenu', label: 'このプロパティでグループ化', children: [
-      { label: (groupBy === propName ? radioMark(true) : '　') + 'グループ化する', action: () => { setGroupBy(dbPath, propName); renderPivot(); }},
-      { label: (groupBy !== propName ? radioMark(true) : '　') + 'グループ化しない', action: () => { setGroupBy(dbPath, null); renderPivot(); }},
+      { label: (groupBy === propName ? radioMark(true) : '　') + 'グループ化する', action: () => { setGroupBy(dbPath, propName); renderPivot(ctx); }},
+      { label: (groupBy !== propName ? radioMark(true) : '　') + 'グループ化しない', action: () => { setGroupBy(dbPath, null); renderPivot(ctx); }},
     ]},
     { type: 'sep' },
     // 列操作サブメニュー
     { type: 'submenu', label: lucide('columns', 14) + ' 列操作',
       children: [
-        { label: '\u2190 左に列を挿入', action: () => insertPropertyInline(propName, 'left') },
-        { label: '\u2192 右に列を挿入', action: () => insertPropertyInline(propName, 'right') },
-        { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal(propName) },
+        { label: '\u2190 左に列を挿入', action: () => insertPropertyInline(propName, 'left', ctx || dbPath) },
+        { label: '\u2192 右に列を挿入', action: () => insertPropertyInline(propName, 'right', ctx || dbPath) },
+        { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal(propName, dbPath) },
         { type: 'submenu', label: '列を固定', children: [
           { label: (pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定する', action: () => {
             const pc = getPinnedCols(dbPath);
             if (!pc.includes(propName)) setPinnedCols(dbPath, [...pc, propName]);
-            renderPivot();
+            renderPivot(ctx);
           }},
           { label: (!pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定しない', action: () => {
             const pc = getPinnedCols(dbPath);
             if (pc.includes(propName)) setPinnedCols(dbPath, pc.filter(c => c !== propName));
-            renderPivot();
+            renderPivot(ctx);
           }},
         ]},
         { label: 'この列を非表示', action: () => {
           const hc = getHiddenCols(dbPath);
           if (!hc.includes(propName)) setHiddenCols(dbPath, [...hc, propName]);
-          renderPivot();
+          renderPivot(ctx);
         }},
       ]
     },
-    { label: '条件付きカラー...', action: () => showConditionalColorModal(propName) },
+    { label: '条件付きカラー...', action: () => showConditionalColorModal(propName, dbPath) },
   ];
 
   // 編集制限サブメニュー
@@ -283,7 +292,7 @@ function showColHeaderMenu(e, propName, colIndex) {
     label: lucide(curLock === 'locked' ? 'lock' : curLock === 'admin' ? 'shield' : 'lockOpen', 14) + ' 編集制限: ' + curLockLabel,
     children: lockLabels.map(l => ({
       label: (curLock === l.key ? radioMark(true) : '\u3000') + lucide(l.icon, 14) + ' ' + l.label,
-      action: () => { setColumnLock(dbPath, propName, l.key); renderPivot(); }
+      action: () => { setColumnLock(dbPath, propName, l.key); renderPivot(ctx); }
     }))
   });
 
@@ -292,7 +301,7 @@ function showColHeaderMenu(e, propName, colIndex) {
     const curAuto = currentPtc.autoFillOnStatus || '';
     items.push({ type: 'sep' });
     items.push({
-      label: lucide('clock', 14) + ' ステータス連動' + (curAuto ? ': ' + curAuto : ''),
+      label: lucide('clock', 14) + ' ステータス連動' + (curAuto ? ': ' + esc(curAuto) : ''),
       action: () => {
         _showAutoFillStatusInput(dbPath, propName, currentPtc, curAuto);
       }

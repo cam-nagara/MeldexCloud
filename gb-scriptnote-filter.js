@@ -29,7 +29,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     const hasAnyFilter = () => !!this._filterRoles
       || !!(this._hideRoles && this._hideRoles.size)
-      || !!(this._filterStatuses && this._filterStatuses.size)
+      || !!this._filterStatuses
       || !!(this._hideStatuses && this._hideStatuses.size);
 
     const updateFilterActive = () => {
@@ -37,7 +37,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
 
     const setPresetSelection = (value) => {
-      const filterPreset = this.host?.closest?.('[data-tool]')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
+      const filterPreset = this.host?.closest?.('.gb-scriptnote-root')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
       if (filterPreset) {
         if (value === '__custom__' && !filterPreset.querySelector('option[value="__custom__"]')) {
           const opt = document.createElement('option');

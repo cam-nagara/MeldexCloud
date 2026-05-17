@@ -1,0 +1,158 @@
+.gb-section-title {
+  font-family: var(--ui-header-font, var(--ui-font, inherit));
+  font-size: var(--ui-font-12);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-header-fg);
+  border-left: 2px solid var(--ui-accent);
+  padding-left: var(--ui-space-3);
+  margin-bottom: var(--ui-space-3);
+  line-height: 1.2;
+}
+.gb-section-desc {
+  font-family: var(--ui-muted-font, var(--ui-font, inherit));
+  /* --ui-muted-font-size が未設定なら従来どおり --ui-font-11。
+     テーマ側で --ui-muted-font-size を指定するとサブテキスト全体のサイズを上書きできる */
+  font-size: var(--ui-muted-font-size, var(--ui-font-11));
+  font-weight: var(--ui-muted-bold, var(--ui-weight-regular));
+  font-style: var(--ui-muted-italic, normal);
+  color: var(--ui-fg-muted);
+}
+/* セクション内インデント: タイトル以外は 1em インデント */
+.gb-section > *:not(.gb-section-title) {
+  margin-left: 1em;
+}
+
+/* 箱型 modifier (限定用途) */
+.gb-section--boxed {
+  padding: var(--ui-space-3);
+  background: var(--ui-bg-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  gap: var(--ui-space-2);
+}
+.gb-section--boxed > .gb-section-title {
+  border-left: none;
+  padding-left: 0;
+}
+.gb-section--boxed > *:not(.gb-section-title) {
+  margin-left: 1em;
+}
+
+/* 詳細パネル用密度調整 modifier (detail-panel-section-unification-plan.md) */
+.gb-section--detail {
+  margin-top: var(--ui-space-5);
+  gap: var(--ui-space-2);
+}
+.gb-section--detail:first-child { margin-top: 0; }
+.gb-section--detail > .gb-section-title { margin-bottom: var(--ui-space-2); }
+
+/* ============================================================
+   Phase 2: Field (4階層レイアウト)
+   ============================================================ */
+.gb-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+}
+.gb-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-2) 1em;  /* 縦 4px / 横 1em */
+  min-height: var(--ui-h-xs);
+}
+.gb-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  font-size: var(--ui-font-11);
+  color: var(--ui-fg-muted);
+  min-height: var(--ui-h-xs);
+}
+.gb-field-inline > .gb-label {
+  flex-shrink: 0;
+  font-size: var(--ui-font-11);
+  color: var(--ui-fg-muted);
+}
+.gb-label {
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+  margin-bottom: var(--ui-space-1);
+}
+
+/* 標準入力欄 */
+.gb-input,
+.gb-textarea {
+  display: block;
+  width: 100%;
+  height: var(--ui-h-md);
+  padding: 0 var(--ui-space-3);
+  font-size: var(--ui-font-13);
+  font-family: inherit;
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.12s;
+}
+.gb-textarea {
+  height: auto;
+  min-height: 72px;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  resize: vertical;
+  line-height: 1.4;
+}
+.gb-textarea-sm {
+  min-height: 54px;
+  font-size: var(--ui-font-11);
+}
+.gb-input:focus,
+.gb-textarea:focus { border-color: var(--ui-accent); }
+.gb-input-sm {
+  display: inline-block;
+  width: auto;
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-2);
+  font-size: var(--ui-font-11);
+  font-family: inherit;
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  outline: none;
+  box-sizing: border-box;
+}
+.gb-input-sm:focus { border-color: var(--ui-accent); }
+
+/* セレクト
+   注意: native <select> 要素なので display は inline-block。inline-flex は推奨外
+   (ブラウザによってはオプションリスト表示が不安定になる)。
+   align-items 等は native control なので効かない */
+.gb-select {
+  display: inline-block;
+  height: var(--ui-h-md);
+  padding: 0 var(--ui-space-8) 0 var(--ui-space-3);
+  font-size: var(--ui-font-13);
+  font-family: inherit;
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-control);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  cursor: pointer;
+  outline: none;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.gb-select:hover { background: var(--ui-bg-control-hover); }
+.gb-select:focus { border-color: var(--ui-accent); }
+.gb-select-sm {
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-7) 0 var(--ui-space-2);
+  font-size: var(--ui-font-11);
+  border-radius: var(--ui-radius-xs);
+}

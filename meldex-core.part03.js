@@ -4,7 +4,7 @@
       } else {
         el.setAttribute('stroke-width', isPen ? '3' : '12');
       }
-      el.setAttribute('stroke-opacity', type === 'marker' ? '0.5' : String(opacity));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
       el.setAttribute('stroke-linecap', 'round'); el.setAttribute('stroke-linejoin', 'round');
     }
     if (annId) el.dataset.annId = annId;
@@ -17,10 +17,11 @@
     return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
   }
   function _saApplyRect(el, data, color, opacity, preview) {
+    const normalizedOpacity = _saNormalizeOpacity(opacity, 1);
     el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
     el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
-    el.setAttribute('fill', color); el.setAttribute('fill-opacity', String((Number(opacity) || 1) * (preview ? 0.2 : 0.4)));
-    el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1'); el.setAttribute('stroke-opacity', String(Number(opacity) || 1));
+    el.setAttribute('fill', color); el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+    el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1'); el.setAttribute('stroke-opacity', String(normalizedOpacity));
     if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
     return el;
   }
@@ -31,37 +32,96 @@
     return el;
   }
 
+  function _saCurrentTargetPath() {
+    return typeof getTargetPath === 'function' ? String(getTargetPath() || '') : '';
+  }
+
+  function _saParseAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
+    const raw = item?.data;
+    if (raw == null || raw === '') return {};
+    if (typeof raw !== 'string') return raw || {};
+    try {
+      return JSON.parse(raw) || {};
+    } catch (error) {
+      _saReportSaveFailure(error, message);
+      return null;
+    }
+  }
+
+  function _syncStandaloneNoteInteractivity() {
+    container.querySelectorAll('.sa-note').forEach(n => {
+      n.style.pointerEvents = _ann.active ? 'auto' : 'none';
+    });
+  }
+
+  function _saNotePayload(data, textarea, note) {
+    const width = Math.max(
+      120,
+      Math.round(Math.max(note.offsetWidth || 0, (textarea.offsetWidth || 0) + 16, Number(data.width) || 180))
+    );
+    const height = Math.max(
+      60,
+      Math.round(Math.max(note.offsetHeight || 0, (textarea.offsetHeight || 0) + 16, Number(data.height) || 100))
+    );
+    return { ...data, text: textarea.value, width, height };
+  }
+
+  function _applyStandaloneNoteSize(note, textarea, data) {
+    const width = Math.max(120, Number(data.width) || 180);
+    const height = Math.max(60, Number(data.height) || 100);
+    note.style.width = width + 'px';
+    note.style.minHeight = height + 'px';
+    textarea.style.height = Math.max(40, height - 16) + 'px';
+  }
+
   svg.addEventListener('pointerdown', async (e) => {
     if (!_ann.active) return;
     const pt = _toCoords(e.clientX, e.clientY);
     if (_ann.tool === 'sticky') {
+      const targetPath = _saCurrentTargetPath();
+      if (!targetPath) {
+        _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+        return;
+      }
+      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '' };
       try {
-        const res = await apiPost('/annotations', { target_path: getTargetPath(), type: 'comment', shape: 'sticky', data: { x: pt.x, y: pt.y, width: 180, height: 100, text: '' }, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
-        _renderNote(res.id, { x: pt.x, y: pt.y, width: 180, height: 100, text: '' }, _ann.color);
-      } catch {}
+        const res = await apiPost('/annotations', { target_path: targetPath, type: 'comment', shape: 'sticky', data: noteData, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
+        if (_saCurrentTargetPath() !== targetPath) return;
+        _renderNote(res.id, noteData, _ann.color);
+      } catch (error) { _saReportSaveFailure(error, '付箋作成に失敗しました'); }
       return;
     }
     if (_ann.tool === 'eraser') {
       const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
       for (const el of els) {
         if (el.classList.contains('ann-preview')) continue;
-        const bbox = el.getBBox();
-        if (pt.x >= bbox.x - 10 && pt.x <= bbox.x + bbox.width + 10 && pt.y >= bbox.y - 10 && pt.y <= bbox.y + bbox.height + 10) {
-          if (el.dataset.annId) fetch(API_BASE + '/annotations/' + el.dataset.annId, { method: 'DELETE' }).catch(() => {});
-          el.remove(); break;
+        if (_saElementHit(el, pt.x, pt.y, 10)) {
+          try {
+            if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);
+            el.remove();
+          } catch (error) {
+            _saReportSaveFailure(error, '注釈を削除できませんでした');
+          }
+          break;
         }
       }
       for (const n of container.querySelectorAll('.sa-note')) {
         const r = n.getBoundingClientRect(); const cr = container.getBoundingClientRect();
         const nx = r.left - cr.left, ny = r.top - cr.top;
         if (pt.x >= nx - 5 && pt.x <= nx + r.width + 5 && pt.y >= ny - 5 && pt.y <= ny + r.height + 5) {
-          if (n.dataset.annId) fetch(API_BASE + '/annotations/' + n.dataset.annId, { method: 'DELETE' }).catch(() => {});
-          n.remove(); break;
+          await _saDeleteNoteElement(n);
+          break;
         }
       }
       return;
     }
+    const targetPath = _saCurrentTargetPath();
+    if (!targetPath) {
+      _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+      return;
+    }
     _ann.drawing = true;
+    _ann.targetPath = targetPath;
     _ann.path = [[pt.x, pt.y]]; _ann.pressures = [e.pressure || 0.5];
     svg.setPointerCapture(e.pointerId);
   });
@@ -82,7 +142,7 @@
     } else {
       preview.setAttribute('d', _pathD(_ann.path)); preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
       preview.setAttribute('stroke-width', _ann.tool === 'pen' ? '3' : '12');
-      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? '0.5' : String(_ann.opacity)); preview.setAttribute('stroke-linecap', 'round');
+      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_saNormalizeOpacity(_ann.opacity, 1) * 0.5) : String(_saNormalizeOpacity(_ann.opacity, 1))); preview.setAttribute('stroke-linecap', 'round');
     }
   });
 
@@ -90,15 +150,24 @@
     if (!_ann.drawing) return;
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
-    if (_ann.path.length < 2) return;
+    if (_ann.path.length < 2) {
+      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
+      return;
+    }
     const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
     const data = type === 'rect' ? _saRectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const targetPath = _ann.targetPath || _saCurrentTargetPath();
+    if (!targetPath || _saCurrentTargetPath() !== targetPath) {
+      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
+      return;
+    }
     try {
-      const res = await apiPost('/annotations', { target_path: getTargetPath(), type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
+      const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
+      if (_saCurrentTargetPath() !== targetPath) return;
       if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);
       else _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, res.id);
-    } catch {}
-    _ann.path = []; _ann.pressures = [];
+    } catch (error) { _saReportSaveFailure(error); }
+    finally { _ann.path = []; _ann.pressures = []; _ann.targetPath = ''; }
   });
 
   function _isStandaloneNoteAnnotation(item, data) {
@@ -119,36 +188,80 @@
     const textarea = document.createElement('textarea');
     textarea.value = data.text || '';
     textarea.style.cssText = 'width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
-    textarea.onblur = () => {
-      data.text = textarea.value;
-      fetch(API_BASE + '/annotations/' + annId, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: { ...data } }),
-      }).catch(() => {});
+    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
+    _applyStandaloneNoteSize(note, textarea, data);
+    textarea.onblur = async () => {
+      const previousData = { ...data };
+      const previousStyle = {
+        width: note.style.width,
+        minHeight: note.style.minHeight,
+        textareaHeight: textarea.style.height,
+      };
+      Object.assign(data, _saNotePayload(data, textarea, note));
+      try {
+        await _saUpdateAnnotation(annId, { data: { ...data } });
+      } catch (error) {
+        Object.keys(data).forEach(key => { delete data[key]; });
+        Object.assign(data, previousData);
+        note.style.width = previousStyle.width;
+        note.style.minHeight = previousStyle.minHeight;
+        textarea.style.height = previousStyle.textareaHeight;
+        textarea.value = previousData.text || '';
+        _saReportSaveFailure(error);
+      }
     };
     note.appendChild(textarea);
     let dx = 0, dy = 0;
     note.addEventListener('pointerdown', (e) => {
+      if (_ann.active && _ann.tool === 'eraser') {
+        e.preventDefault();
+        e.stopPropagation();
+        _saDeleteNoteElement(note);
+        return;
+      }
       if (e.target === textarea) return; e.preventDefault();
       const rect = note.getBoundingClientRect();
       dx = e.clientX - rect.left; dy = e.clientY - rect.top;
+      const previous = {
+        x: data.x || 0,
+        y: data.y || 0,
+        text: data.text || '',
+        width: data.width,
+        height: data.height,
+        left: note.style.left,
+        top: note.style.top,
+        noteWidth: note.style.width,
+        noteMinHeight: note.style.minHeight,
+        textareaHeight: textarea.style.height,
+      };
       const onMove = (e2) => {
         const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
         note.style.left = pt.x + 'px';
         note.style.top = pt.y + 'px';
       };
-      const onUp = () => {
+      const onUp = async () => {
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
-        data.x = parseFloat(note.style.left) || 0;
-        data.y = parseFloat(note.style.top) || 0;
-        data.text = textarea.value;
-        fetch(API_BASE + '/annotations/' + annId, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: { ...data } }),
-        }).catch(() => {});
+        Object.assign(data, _saNotePayload(data, textarea, note), {
+          x: parseFloat(note.style.left) || 0,
+          y: parseFloat(note.style.top) || 0,
+        });
+        try {
+          await _saUpdateAnnotation(annId, { data: { ...data } });
+        } catch (error) {
+          data.x = previous.x;
+          data.y = previous.y;
+          data.text = previous.text;
+          data.width = previous.width;
+          data.height = previous.height;
+          note.style.left = previous.left;
+          note.style.top = previous.top;
+          note.style.width = previous.noteWidth;
+          note.style.minHeight = previous.noteMinHeight;
+          textarea.style.height = previous.textareaHeight;
+          textarea.value = previous.text;
+          _saReportSaveFailure(error);
+        }
       };
       document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
     });
@@ -156,18 +269,26 @@
   }
 
   async function loadAnnotations(targetPath) {
+    const requestSeq = ++_loadAnnotationsSeq;
+    const requestedTarget = String(targetPath || '');
     layer.innerHTML = ''; container.querySelectorAll('.sa-note').forEach(n => n.remove());
-    if (!targetPath) return;
+    if (!requestedTarget) return;
     try {
-      const items = await apiFetch('/annotations?target=' + encodeURIComponent(targetPath));
+      const items = await apiFetch('/annotations?target=' + encodeURIComponent(requestedTarget));
+      const activeTarget = typeof getTargetPath === 'function' ? String(getTargetPath() || '') : requestedTarget;
+      if (requestSeq !== _loadAnnotationsSeq || activeTarget !== requestedTarget) return;
       items.forEach(item => {
-        const data = typeof item.data === 'string' ? JSON.parse(item.data) : item.data;
+        const data = _saParseAnnotationData(item);
+        if (!data) return;
         if (_isStandaloneNoteAnnotation(item, data)) _renderNote(item.id, data, item.color);
         else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') return;
         else if (item.type === 'rect' && data?.width != null && data?.height != null) _renderRect(data, item.color, item.opacity, item.id);
         else if (data.points) _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id);
       });
-    } catch {}
+      _syncStandaloneNoteInteractivity();
+    } catch (error) {
+      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, '注釈を読み込めませんでした');
+    }
   }
 
   function toggle(active) {
@@ -177,11 +298,16 @@
     svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
     svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
     hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
-    container.querySelectorAll('.sa-note').forEach(n => { n.style.pointerEvents = active ? 'auto' : 'none'; });
+    _syncStandaloneNoteInteractivity();
   }
   function setTool(tool) { _ann.tool = tool; if (_ann.active) svg.style.cursor = tool === 'eraser' ? 'not-allowed' : tool === 'sticky' ? 'cell' : 'crosshair'; }
   function setColor(c) { _ann.color = c; }
-  function setOpacity(o) { _ann.opacity = o; svg.style.opacity = o; container.querySelectorAll('.sa-note').forEach(n => { n.style.opacity = o; }); }
+  function setOpacity(o) {
+    const opacity = _saNormalizeOpacity(o, 1);
+    _ann.opacity = opacity;
+    svg.style.opacity = opacity;
+    container.querySelectorAll('.sa-note').forEach(n => { n.style.opacity = opacity; });
+  }
   function destroy() { svg.remove(); container.querySelectorAll('.sa-note').forEach(n => n.remove()); }
 
   return { svg, layer, ann: _ann, toggle, loadAnnotations, setTool, setColor, setOpacity, destroy };

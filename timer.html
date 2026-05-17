@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
 <meta charset="UTF-8">
 <title>Meldex タイマー</title>
-<script src="/meldex-core.js"></script>
+<script src="meldex-core.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -60,6 +61,7 @@ let timerInterval = null;
 let timerStarted = false;
 let timerStartMs = 0;
 let elapsedAtStart = 0;
+let alarmAudioContext = null;
 const canvas = document.getElementById('timer-canvas');
 const ctx = canvas.getContext('2d');
 
@@ -81,7 +83,8 @@ function drawTimer() {
   const w = window.innerWidth, h = window.innerHeight - 80;
   canvas.width = w; canvas.height = h;
   const remaining = getRemaining();
-  const progress = totalSeconds > 0 ? (countUp ? elapsed / totalSeconds : remaining / totalSeconds) : 0;
+  const rawProgress = totalSeconds > 0 ? (countUp ? elapsed / totalSeconds : remaining / totalSeconds) : 0;
+  const progress = Math.max(0, Math.min(1, rawProgress));
   const fg = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#d4d4d4';
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#569cd6';
   const bg3 = getComputedStyle(document.documentElement).getPropertyValue('--bg3').trim() || '#2d2d2d';
@@ -126,8 +129,56 @@ function drawTimer() {
   }
 }
 
+function getAlarmAudioContext() {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) return null;
+  if (!alarmAudioContext) alarmAudioContext = new AudioContextCtor();
+  return alarmAudioContext;
+}
+
+async function primeAlarmAudio() {
+  try {
+    const audioCtx = getAlarmAudioContext();
+    if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+  } catch {}
+}
+
+async function playAlarmSound() {
+  try {
+    const audioCtx = getAlarmAudioContext();
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const now = audioCtx.currentTime;
+    [0, 0.18, 0.36].forEach((offset) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now + offset);
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.14);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.16);
+    });
+  } catch {}
+}
+
+async function ensureTimerNotificationPermission() {
+  if (!('Notification' in window) || Notification.permission !== 'default') return;
+  try { await Notification.requestPermission(); } catch {}
+}
+
+function notifyTimerComplete() {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('タイマー完了', { body: formatTime(totalSeconds) + ' 経過' });
+  }
+}
+
 function startTimer() {
   if (timerRunning) return;
+  primeAlarmAudio();
+  ensureTimerNotificationPermission();
   const h = parseInt(document.getElementById('inp-h').value) || 0;
   const m = parseInt(document.getElementById('inp-m').value) || 0;
   const s = parseInt(document.getElementById('inp-s').value) || 0;
@@ -150,8 +201,8 @@ function startTimer() {
       clearInterval(timerInterval); timerRunning = false;
       timerStarted = false;
       // アラーム音
-      try { new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU').play().catch(()=>{}); } catch {}
-      if ('Notification' in window && Notification.permission === 'granted') new Notification('タイマー完了', { body: formatTime(totalSeconds) + ' 経過' });
+      playAlarmSound();
+      notifyTimerComplete();
       document.title = '⏰ タイマー完了';
       drawTimer();
       return;
