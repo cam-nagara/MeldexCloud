@@ -489,7 +489,7 @@ function _currentPivotTable(ctx) {
 
 function _currentPivotRows(ctx) {
   const table = _currentPivotTable(ctx);
-  return table ? Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)')) : [];
+  return table ? Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)')) : [];
 }
 
 function _getSelectedColumns(dbPath) {

@@ -552,8 +552,13 @@ async function teamSend() {
   if (!input) return;
   const roomPath = _teamCurrentRoom;
   const text = input.value.trim();
-  const atts = _teamPendingAttachments || [];
+  let atts = _teamPendingAttachments || [];
   if (!text && atts.length === 0) return;
+  if (atts.length > 0) {
+    const readyAttachments = await _teamWaitForPendingAttachmentUploads(atts);
+    if (!readyAttachments) return false;
+    atts = readyAttachments;
+  }
   const pendingBeforeSend = atts.slice();
   const sendBtn = _teamSendButton();
   const inputWasDisabled = !!input.disabled;
@@ -611,22 +616,38 @@ function teamAttachmentPick() {
 }
 window.teamAttachmentPick = teamAttachmentPick;
 
+function _teamIsImageAttachmentFile(file) {
+  return !!file && (
+    file.type?.startsWith('image/') ||
+    /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name || '')
+  );
+}
+
+function _teamAttachmentFileName(file) {
+  const raw = String(file?.name || '').trim();
+  if (raw) return raw;
+  const subtype = String(file?.type || '').split('/')[1] || 'png';
+  const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/gi, '') || 'png';
+  return 'clipboard-image.' + ext;
+}
+
 async function _teamUploadAttachment(file) {
   const roomPath = _teamCurrentRoom;
   if (!roomPath) {
     showStatus('ルームを選択してください', true);
-    return;
+    return false;
   }
-  if (!file || !file.type?.startsWith('image/')) {
+  if (!_teamIsImageAttachmentFile(file)) {
     showStatus('画像ファイルのみ添付できます', true);
-    return;
+    return false;
   }
   if (file.size > 32 * 1024 * 1024) {
     showStatus('添付ファイルは32MB以下にしてください', true);
-    return;
+    return false;
   }
   const gen = _teamSessionGen;
   const uploadDir = _teamChatUploadDir();
+  const fileName = _teamAttachmentFileName(file);
   try {
     const dataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
@@ -634,26 +655,116 @@ async function _teamUploadAttachment(file) {
       r.onerror = () => reject(r.error || new Error('read error'));
       r.readAsDataURL(file);
     });
-    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return;
-    // ルームフォルダ直下にアップロード（メンバー間で共有可能）
-    const res = await apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl, filename: file.name }),
-    });
-    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return;
-    _teamPendingAttachments.push({
-      name: file.name,
-      path: res.path || file.name,
+    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return false;
+    const att = {
+      name: fileName,
+      path: '',
       mime: file.type || 'image/png',
       dataUrl,
-      uploaded: true,
-    });
+      uploaded: false,
+      uploading: true,
+      uploadError: '',
+    };
+    _teamPendingAttachments.push(att);
     _renderTeamAttachments();
+    _teamStartAttachmentUpload(att, roomPath, uploadDir, gen);
+    return att;
   } catch (e) {
-    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return;
+    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return false;
     showStatus('画像のアップロードに失敗しました', true);
+    return false;
   }
+}
+
+function _teamStartAttachmentUpload(att, roomPath, uploadDir, gen) {
+  att.uploadPromise = apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: att.dataUrl, filename: att.name }),
+  }).then(res => {
+    const uploadedPath = res.path || att.name;
+    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom || att.canceled) {
+      if (uploadedPath && typeof _chatCleanupUploadedPath === 'function') _chatCleanupUploadedPath(uploadedPath);
+      return false;
+    }
+    att.path = uploadedPath;
+    att.uploaded = true;
+    att.uploading = false;
+    att.uploadError = '';
+    _renderTeamAttachments();
+    return true;
+  }).catch(error => {
+    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom || att.canceled) return false;
+    att.uploading = false;
+    att.uploadError = error?.message || 'upload failed';
+    _renderTeamAttachments();
+    if (typeof showStatus === 'function') showStatus('画像のアップロードに失敗しました', true);
+    return false;
+  });
+  return att.uploadPromise;
+}
+
+async function _teamWaitForPendingAttachmentUploads(attachments) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  const pending = list.filter(att => att?.uploading && att.uploadPromise);
+  if (pending.length && typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了を待っています...');
+  for (const att of pending) {
+    try { await att.uploadPromise; } catch {}
+  }
+  const failed = list.filter(att => att?.uploadError || att?.uploading || !String(att?.path || '').trim());
+  if (failed.length) {
+    if (typeof showStatus === 'function') showStatus('アップロード未完了の添付があります。削除して貼り直してください。', true);
+    _renderTeamAttachments();
+    return null;
+  }
+  return list;
+}
+
+function _teamClipboardAttachmentFiles(event) {
+  const files = [];
+  const seen = new Set();
+  const addFile = (file) => {
+    if (!file) return;
+    const key = [file.name || '', file.type || '', file.size || 0, file.lastModified || 0].join('\n');
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (_teamIsImageAttachmentFile(file)) files.push(file);
+  };
+  Array.from(event?.clipboardData?.files || []).forEach(addFile);
+  Array.from(event?.clipboardData?.items || []).forEach((item) => {
+    if (item?.kind !== 'file') return;
+    try { addFile(item.getAsFile()); } catch {}
+  });
+  return files;
+}
+
+async function _handleTeamClipboardAttachments(event, filesOverride) {
+  if (typeof _teamUploadAttachment !== 'function') return false;
+  const files = Array.isArray(filesOverride) ? filesOverride : _teamClipboardAttachmentFiles(event);
+  if (!files.length) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  let uploaded = 0;
+  for (const file of files) {
+    if (await _teamUploadAttachment(file)) uploaded += 1;
+  }
+  if (uploaded > 0 && typeof showStatus === 'function') {
+    showStatus(uploaded === 1 ? 'クリップボードから添付しました' : uploaded + '件を添付しました');
+  }
+  return uploaded > 0;
+}
+
+function _bindTeamClipboardPaste() {
+  const input = document.getElementById('team-input');
+  if (!input || input.dataset.teamClipboardPasteBound === '1') return;
+  input.dataset.teamClipboardPasteBound = '1';
+  input.addEventListener('paste', (event) => {
+    const files = _teamClipboardAttachmentFiles(event);
+    if (!files.length) return;
+    _handleTeamClipboardAttachments(event, files).catch(() => {
+      if (typeof showStatus === 'function') showStatus('添付ファイルのアップロードに失敗しました', true);
+    });
+  });
 }
 
 function _renderTeamAttachments() {
@@ -668,14 +779,16 @@ function _renderTeamAttachments() {
   bar.style.display = 'flex';
   list.forEach((att, idx) => {
     const chip = document.createElement('div');
-    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:3px;max-width:100%;';
+    const hasError = !!att.uploadError;
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;background:var(--bg);border:1px solid ' + (hasError ? 'var(--danger, #d9534f)' : 'var(--border)') + ';border-radius:3px;max-width:100%;';
     const img = document.createElement('img');
     img.src = att.dataUrl;
     img.alt = att.name;
     img.style.cssText = 'width:24px;height:24px;object-fit:cover;border-radius:2px;flex-shrink:0;';
     const label = document.createElement('span');
-    label.textContent = att.name;
-    label.title = att.name;
+    const suffix = att.uploading ? '（アップロード中）' : (hasError ? '（失敗）' : '');
+    label.textContent = att.name + suffix;
+    label.title = att.name + suffix;
     label.style.cssText = 'max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     const close = document.createElement('button');
     close.textContent = '×';
@@ -762,6 +875,7 @@ function _chatIsImeEnterEvent(event) {
 }
 
 _chatBindImeCompositionGuard('team-input');
+_bindTeamClipboardPaste();
 document.getElementById('team-input')?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     if (_chatIsImeEnterEvent(e)) return;

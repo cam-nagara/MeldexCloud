@@ -119,6 +119,7 @@ function buildToolMenuItems(toolType) {
       { label: 'シート横断検索', action: () => { if (typeof showDbSearchModal === 'function') showDbSearchModal(); }, disabled: !hasFile },
       { label: '整合性検証', action: () => { if (typeof onValidateClick === 'function') onValidateClick(); }, disabled: !hasFile },
       { label: '検証ルール管理', action: () => { if (typeof showValidationRulesModal === 'function') showValidationRulesModal(state.currentDbPath || currentPath); }, disabled: !hasFile },
+      { label: 'アーカイブ管理...', action: () => { if (typeof showSheetArchiveModal === 'function') showSheetArchiveModal(state.currentDbPath || currentPath); }, disabled: !hasFile },
       { separator: true },
       { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
     ],

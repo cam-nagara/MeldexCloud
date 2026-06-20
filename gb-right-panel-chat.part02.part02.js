@@ -775,6 +775,7 @@ function _chatCleanupUploadedPath(path) {
 
 function _chatCleanupUploadedAttachments(items) {
   (Array.isArray(items) ? items : [items]).forEach(item => {
+    if (item && typeof item === 'object') item.canceled = true;
     if (item?.uploaded && item.path) _chatCleanupUploadedPath(item.path);
   });
 }
@@ -865,17 +866,71 @@ function chatAttachmentPick() {
 }
 window.chatAttachmentPick = chatAttachmentPick;
 
+function _chatIsAttachmentFile(file) {
+  const name = String(file?.name || '');
+  const isPdf = file?.type === 'application/pdf' || /\.pdf$/i.test(name);
+  return !!file && (
+    file.type?.startsWith('image/') ||
+    /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(name) ||
+    isPdf
+  );
+}
+
+function _chatAttachmentFileName(file) {
+  const raw = String(file?.name || '').trim();
+  if (raw) return raw;
+  if (file?.type === 'application/pdf') return 'clipboard-file.pdf';
+  const subtype = String(file?.type || '').split('/')[1] || 'png';
+  const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/gi, '') || 'png';
+  return 'clipboard-image.' + ext;
+}
+
+function _chatAttachmentUploadDir() {
+  const chatPath = state.currentPagePath || state.currentEntityPath || '';
+  return chatPath ? chatPath.replace(/\/[^/]+$/, '') : '';
+}
+
+function _chatStartAttachmentUpload(att, gen) {
+  const uploadDir = _chatAttachmentUploadDir();
+  att.uploadPromise = apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: att.dataUrl, filename: att.name }),
+  }).then(res => {
+    const uploadedPath = res.path || att.name;
+    if (gen !== _chatSessionGen || att.canceled) {
+      if (uploadedPath) _chatCleanupUploadedPath(uploadedPath);
+      return false;
+    }
+    att.path = uploadedPath;
+    att.uploaded = true;
+    att.uploading = false;
+    att.uploadError = '';
+    _renderChatAttachments();
+    return true;
+  }).catch(error => {
+    if (gen !== _chatSessionGen || att.canceled) return false;
+    att.uploading = false;
+    att.uploadError = error?.message || 'upload failed';
+    _renderChatAttachments();
+    if (typeof showStatus === 'function') showStatus('添付ファイルのアップロードに失敗しました', true);
+    return false;
+  });
+  return att.uploadPromise;
+}
+
 async function _chatUploadAttachment(file) {
   const isPdf = file?.type === 'application/pdf' || /\.pdf$/i.test(file?.name || '');
-  if (!file || (!file.type?.startsWith('image/') && !isPdf)) {
+  if (!_chatIsAttachmentFile(file)) {
     if (typeof showStatus === 'function') showStatus('画像またはPDFファイルのみ添付できます', true);
-    return;
+    return false;
   }
   if (file.size > 32 * 1024 * 1024) {
     if (typeof showStatus === 'function') showStatus('添付ファイルは32MB以下にしてください', true);
-    return;
+    return false;
   }
   const gen = _chatSessionGen;
+  const fileName = _chatAttachmentFileName(file);
   try {
     const dataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
@@ -883,28 +938,45 @@ async function _chatUploadAttachment(file) {
       r.onerror = () => reject(r.error || new Error('read error'));
       r.readAsDataURL(file);
     });
-    const chatPath = state.currentPagePath || state.currentEntityPath || '';
-    const uploadDir = chatPath ? chatPath.replace(/\/[^/]+$/, '') : '';
-    const res = await apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl, filename: file.name }),
-    });
-    if (gen !== _chatSessionGen) return;
+    if (gen !== _chatSessionGen) return false;
     _chatState.pendingAttachments = _chatState.pendingAttachments || [];
-    _chatState.pendingAttachments.push({
-      name: file.name,
-      path: res.path || file.name,
+    const att = {
+      id: 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      name: fileName,
+      path: '',
       mime: isPdf ? 'application/pdf' : (file.type || 'image/png'),
       dataUrl,
-      uploaded: true,
-    });
+      uploaded: false,
+      uploading: true,
+      uploadError: '',
+    };
+    _chatState.pendingAttachments.push(att);
     _renderChatAttachments();
+    _chatStartAttachmentUpload(att, gen);
+    return att;
   } catch (e) {
-    if (gen !== _chatSessionGen) return;
+    if (gen !== _chatSessionGen) return false;
     if (typeof showStatus === 'function') showStatus('添付ファイルのアップロードに失敗しました', true);
+    return false;
   }
 }
+
+async function _chatWaitForPendingAttachmentUploads(attachments) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  const pending = list.filter(att => att?.uploading && att.uploadPromise);
+  if (pending.length && typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了を待っています...');
+  for (const att of pending) {
+    try { await att.uploadPromise; } catch {}
+  }
+  const failed = list.filter(att => att?.uploadError || att?.uploading || !String(att?.path || '').trim());
+  if (failed.length) {
+    if (typeof showStatus === 'function') showStatus('アップロード未完了の添付があります。削除して貼り直してください。', true);
+    _renderChatAttachments();
+    return null;
+  }
+  return list;
+}
+window._chatWaitForPendingAttachmentUploads = _chatWaitForPendingAttachmentUploads;
 
 function _renderChatAttachments() {
   const bar = document.getElementById('chat-attachments-bar');
@@ -918,7 +990,8 @@ function _renderChatAttachments() {
   bar.style.display = 'flex';
   list.forEach((att, idx) => {
     const chip = document.createElement('div');
-    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:3px;max-width:100%;';
+    const hasError = !!att.uploadError;
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;background:var(--bg);border:1px solid ' + (hasError ? 'var(--danger, #d9534f)' : 'var(--border)') + ';border-radius:3px;max-width:100%;';
     const isPdf = String(att.mime || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(att.name || att.path || '');
     const thumb = document.createElement(isPdf ? 'span' : 'img');
     if (isPdf) {
@@ -930,8 +1003,9 @@ function _renderChatAttachments() {
       thumb.style.cssText = 'width:24px;height:24px;object-fit:cover;border-radius:2px;flex-shrink:0;';
     }
     const label = document.createElement('span');
-    label.textContent = att.name;
-    label.title = att.name;
+    const suffix = att.uploading ? '（アップロード中）' : (hasError ? '（失敗）' : '');
+    label.textContent = att.name + suffix;
+    label.title = att.name + suffix;
     label.style.cssText = 'max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     const close = document.createElement('button');
     close.textContent = '×';

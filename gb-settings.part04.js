@@ -261,9 +261,13 @@ function _renderCliChatSettingsContainer(container, config) {
       <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-save">${_settingsCliIcon('save',14)} CLIチャット設定を保存</button>
     </div>
     <div id="settings-cli-chat-status" class="gb-section-desc" style="margin-top:6px;"></div>
+    <div id="settings-workspace-cli-relay-container"></div>
   `;
   container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document));
   container.querySelector('#settings-cli-chat-save')?.addEventListener('click', () => saveCliChatSettingsFromSettingsDialog(container.closest('.modal-overlay') || document));
+  if (typeof renderWorkspaceCliRelaySettingsForSettings === 'function') {
+    renderWorkspaceCliRelaySettingsForSettings(container.closest('.modal-overlay') || document);
+  }
   if (typeof replaceIcons === 'function') replaceIcons(container);
 }
 
@@ -304,6 +308,10 @@ async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
       status.style.color = 'var(--fg2)';
     }
     await apiPut('/cli-chat/config', body);
+    if (typeof saveWorkspaceCliRelaySettingsFromSettingsDialog === 'function') {
+      const relayOk = await saveWorkspaceCliRelaySettingsFromSettingsDialog(container.closest('.modal-overlay') || document, { silent: true, skipReload: true });
+      if (relayOk === false) return false;
+    }
     if (status) {
       status.textContent = '保存しました。未検出のままならMeldexを再起動してください。';
       status.style.color = 'var(--fg2)';
@@ -524,8 +532,8 @@ async function renderDatabaseMaintenanceSettings(root) {
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('clock',14)} 保持期間</div>
         <label class="gb-field-row"><span class="gb-label">操作履歴</span><input id="settings-db-audit-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.db_audit_log_ttl_days ?? 90)}"><span class="gb-section-desc">日（0で無期限）</span></label>
-        <label class="gb-field-row"><span class="gb-label">カレンダーログ</span><input id="settings-db-calendar-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.calendar_log_ttl_days ?? 365)}"><span class="gb-section-desc">日</span></label>
-        <label class="gb-field-row"><span class="gb-label">LLM利用ログ</span><input id="settings-db-chat-ttl" type="number" min="0" class="gb-input" style="width:90px;" value="${Number(settings.chat_usage_log_ttl_days ?? 365)}"><span class="gb-section-desc">日</span></label>
+        <div class="gb-field-row"><span class="gb-label">カレンダーログ</span><span class="gb-section-desc">削除しない</span></div>
+        <div class="gb-field-row"><span class="gb-label">LLM利用ログ</span><span class="gb-section-desc">削除しない</span></div>
         <button type="button" class="gb-btn gb-btn-sm" id="settings-db-ttl-save">保持期間を保存</button>
       </section>
       <section class="gb-section gb-section--boxed">
@@ -537,8 +545,8 @@ async function renderDatabaseMaintenanceSettings(root) {
     container.querySelector('#settings-db-ttl-save')?.addEventListener('click', async () => {
       await apiPut('/data-protection/settings', {
         db_audit_log_ttl_days: Number(container.querySelector('#settings-db-audit-ttl')?.value || 90),
-        calendar_log_ttl_days: Number(container.querySelector('#settings-db-calendar-ttl')?.value || 365),
-        chat_usage_log_ttl_days: Number(container.querySelector('#settings-db-chat-ttl')?.value || 365),
+        calendar_log_ttl_days: 0,
+        chat_usage_log_ttl_days: 0,
       });
       statusEl.textContent = '保持期間を保存しました';
     });

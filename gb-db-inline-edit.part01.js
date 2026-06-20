@@ -166,7 +166,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
   const _renCtx = _dbResolveEntityRenameContext(td, dbPath);
   const _renTblId = (_renCtx && _renCtx.tableId) || 'pivot-table';
   const table = _paneEl(_renCtx, '#' + _renTblId) || document.getElementById('pivot-table');
-  const dataRows = table ? Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)')) : [];
+  const dataRows = table ? Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)')) : [];
   const rowIdx = dataRows.indexOf(td.parentElement);
 
   nameSpan.style.display = 'none';

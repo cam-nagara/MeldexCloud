@@ -21,6 +21,10 @@
     return _runtime()?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
   }
 
+  function _isLocalConflictMonitorHost() {
+    return !_isDropboxMode() && _isLocalAppHost();
+  }
+
   function _phase1FeatureLabel(type) {
     return {
       cli: 'ローカルCLI',
@@ -184,12 +188,13 @@
   }
 
   async function _refreshCloudHealthOnce() {
-    if (!_isDropboxMode()) return;
-    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const dropboxMode = _isDropboxMode();
+    if (!dropboxMode && !_isLocalConflictMonitorHost()) return;
+    const provider = dropboxMode ? window.MeldexStorageAdapter?.getProvider?.() : null;
     let spaceUsage = null;
     let conflicts = null;
     try {
-      if (provider?.refreshSharedSpaceUsage) spaceUsage = await provider.refreshSharedSpaceUsage();
+      if (dropboxMode && provider?.refreshSharedSpaceUsage) spaceUsage = await provider.refreshSharedSpaceUsage();
     } catch (err) {
       _showBanner(`Dropbox 容量確認に失敗しました: ${err?.message || String(err)}`, 'warning', { kind: 'health-space-error' });
     }
@@ -680,6 +685,7 @@
     document.body.dataset.cloudMode = 'legacy';
     delete document.body.dataset.cloudReadonly;
     await window.MeldexStorageAdapter?.describeWorkspace?.().catch(() => null);
+    if (_isLocalConflictMonitorHost()) _startCloudHealthMonitor();
     return true;
   }
 

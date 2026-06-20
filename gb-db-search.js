@@ -140,21 +140,7 @@ function _dbFindCellForMatch(match) {
 function _dbFindEnsureMatchRendered(match) {
   const ctx = _dbFindState.ctx;
   if (!ctx || !match?.entityName || _dbFindCellForMatch(match)) return false;
-  const pivotData = _dbFindData(ctx, _dbFindState.dbPath);
-  const entityNames = Array.isArray(ctx._lastEntityNames) ? ctx._lastEntityNames : Object.keys(pivotData?.entities || {});
-  const rowIndex = entityNames.indexOf(match.entityName);
-  if (rowIndex < 0) return false;
-  const visibleProps = _dbFindVisibleProps(_dbFindState.dbPath, pivotData);
-  const currentLimit = typeof _dbEffectiveRenderRowLimit === 'function'
-    ? _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps)
-    : (Number.parseInt(ctx._dbRenderRowLimit, 10) || 0);
-  if (!currentLimit || rowIndex < currentLimit) return false;
-  if (typeof _dbSetRenderRowLimit === 'function') _dbSetRenderRowLimit(ctx, entityNames.length, rowIndex + 1);
-  else ctx._dbRenderRowLimit = Math.min(entityNames.length, rowIndex + 1);
-  if (typeof renderPivot === 'function') {
-    renderPivot(ctx);
-    return true;
-  }
+  if (typeof _dbRevealVirtualEntityRow === 'function' && _dbRevealVirtualEntityRow(ctx, match.entityName)) return true;
   return false;
 }
 

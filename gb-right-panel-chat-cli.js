@@ -13,6 +13,9 @@
     { key: 'claude_code', label: 'Claude Code', model: 'Claude Code', command: 'claude' },
     { key: 'gemini_cli', label: 'Gemini CLI', model: 'Gemini CLI', command: 'gemini' },
   ];
+  const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
+  const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
+  const CLI_CHAT_CONTINUE_MARKER = '[MELDEX_CONTINUE_NEEDED]';
   const CLI_CHAT_PROVIDER_KEYS = new Set(CLI_CHAT_PROVIDERS.map(provider => provider.key));
   let cliChatConfig = null;
   let originalChatSend = null;
@@ -490,6 +493,53 @@
     log.scrollTop = log.scrollHeight;
   }
 
+  function summarizeCliChatErrorDetail(textValue) {
+    let detail = String(textValue || '').replace(/\r\n/g, '\n').trim();
+    if (!detail) return '';
+    const promptMarkers = [
+      'MeldexチャットからCLIへ中継された依頼です。',
+      '\n--- user',
+      '\nuser:',
+    ];
+    for (const marker of promptMarkers) {
+      const index = detail.indexOf(marker);
+      if (index >= 0) detail = detail.slice(0, index).trim();
+    }
+    const lines = detail.split('\n').map(line => line.trimEnd()).filter(Boolean);
+    detail = lines.slice(-12).join('\n').trim();
+    if (detail.length > 1200) detail = detail.slice(0, 1200).trimEnd() + '\n...（CLIログを省略しました）';
+    return detail;
+  }
+
+  function cliChatContinuationCount(options = {}) {
+    const count = Number(options.cliContinuationCount || 0);
+    return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  }
+
+  function cliChatErrorAllowsContinuation(error) {
+    const message = String(error?.message || error || '');
+    return /タイムアウト|返答がなかった|応答がなかった|timed?\s*out|timeout/i.test(message);
+  }
+
+  function cliChatTextRequestsContinuation(textValue) {
+    return String(textValue || '').includes(CLI_CHAT_CONTINUE_MARKER);
+  }
+
+  function buildCliContinuationInstruction(reason, count) {
+    const attempt = Math.max(1, Number(count || 0));
+    const why = String(reason || '前回のCLI実行が完了前に終了しました').trim();
+    return [
+      '前回のCLI実行の続きです。',
+      '同じ依頼を完了するため、現在のデータを読み直して、未処理の作業だけを小さな範囲で続行してください。',
+      '既に完了済みの変更は繰り返さず、途中で止まっても再実行できるように進めてください。',
+      '今回だけで完了しない場合は、完了した範囲、残りの範囲、次に実行すべき内容を短く書き、末尾に ' + CLI_CHAT_CONTINUE_MARKER + ' を付けてください。',
+      'すべて完了した場合は、完了した内容と確認結果だけを返し、この継続マーカーは付けないでください。',
+      '',
+      '継続理由: ' + why,
+      '継続回数: ' + attempt + ' / ' + CLI_CHAT_AUTO_CONTINUE_MAX,
+    ].join('\n');
+  }
+
   function restoreActiveCliChatActivity() {
     try { activeCliChatStream?.restore?.(); } catch {}
   }
@@ -518,7 +568,7 @@
       ? (typeof _chatCloneMessages === 'function' ? _chatCloneMessages(options.deferredMessages) : JSON.parse(JSON.stringify(options.deferredMessages))).filter(message => message?.role === 'user')
       : [];
     const usingDeferredMessages = deferredMessages.length > 0;
-    const attachments = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
+    let attachments = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
     const textValue = usingDeferredMessages && typeof _chatQueuedMessagesText === 'function'
       ? _chatQueuedMessagesText(deferredMessages).trim()
       : input.value.trim();
@@ -538,6 +588,16 @@
       ? String(options.sourceFolder || '')
       : (requestWorkspaceId ? '' : (typeof _chatRequireSourceFolder === 'function' ? _chatRequireSourceFolder() : ''));
     if (!requestWorkspaceId && !requestSourceFolder) return false;
+    if (!usingDeferredMessages && attachments.length > 0) {
+      if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
+        const readyAttachments = await _chatWaitForPendingAttachmentUploads(attachments);
+        if (!readyAttachments) return false;
+        attachments = readyAttachments;
+      } else if (attachments.some(att => att?.uploading || att?.uploadError || !String(att?.path || '').trim())) {
+        if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);
+        return false;
+      }
+    }
 
     if (!usingDeferredMessages) {
       input.value = '';
@@ -632,10 +692,22 @@
     let stderrText = '';
     let lastStatusText = 'CLIを起動中...';
     let lastCliOutputAt = 0;
+    let lastCliTextAt = 0;
     const streamStartedAt = Date.now();
     let sendOk = false;
     let sawCliEvent = false;
     let cliCompleted = false;
+    let clientIdleAbortMessage = '';
+    let autoContinueRequest = null;
+    const continuationCount = cliChatContinuationCount(options);
+    const prepareAutoContinue = (reason) => {
+      if (options.disableAutoContinue || continuationCount >= CLI_CHAT_AUTO_CONTINUE_MAX) return false;
+      autoContinueRequest = {
+        count: continuationCount + 1,
+        reason: String(reason || '').trim(),
+      };
+      return true;
+    };
     const renderOptions = () => {
       if (!assistantTimestamp) assistantTimestamp = typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString();
       return {
@@ -680,7 +752,22 @@
         else liveContainer.scrollTop = liveContainer.scrollHeight;
       }
     };
+    const markCliOutput = (isText = false) => {
+      lastCliOutputAt = Date.now();
+      if (isText) lastCliTextAt = lastCliOutputAt;
+    };
+    const cliResponseIdleMs = () => Date.now() - (lastCliTextAt || streamStartedAt);
+    const maybeAbortIdleCliStream = () => {
+      if (!CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
+      if (clientIdleAbortMessage || !_chatState.streaming || _chatState.abortController !== streamController) return false;
+      if (cliResponseIdleMs() < CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
+      clientIdleAbortMessage = 'CLIから一定時間返答がないため、自動停止しました。必要なら内容を絞って再送信してください。';
+      refreshActivityStatus('CLI応答を自動停止中...');
+      try { streamController.abort(); } catch {}
+      return true;
+    };
     const activityTimer = setInterval(() => {
+      if (maybeAbortIdleCliStream()) return;
       if (!streamVisibleInCurrentChat()) return;
       if (fullText.trim()) ensureAssistantVisible(fullText);
       ensureActivityVisible();
@@ -763,7 +850,7 @@
           } else if (data.type === 'text_delta') {
             const chunk = data.content == null ? '' : String(data.content);
             if (!chunk) continue;
-            lastCliOutputAt = Date.now();
+            markCliOutput(true);
             refreshActivityStatus('CLIの出力を受信中...');
             fullText += chunk;
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
@@ -773,15 +860,15 @@
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
-            lastCliOutputAt = Date.now();
+            markCliOutput();
             refreshActivityStatus('CLIの進行ログを受信中...');
             if (streamVisibleInCurrentChat()) {
               appendCliChatLog(activity.log, chunk);
               ensureActivityVisible();
             }
           } else if (data.type === 'error') {
-            const detail = stderrText.trim();
-            throw new Error((data.error || 'CLIチャットでエラーが発生しました') + (detail ? '\n\n' + detail : ''));
+            const detail = summarizeCliChatErrorDetail(stderrText);
+            throw new Error((data.error || 'CLIチャットでエラーが発生しました') + (detail ? '\n\nCLIログ:\n' + detail : ''));
           } else if (data.type === 'done') {
             if (activity.status && streamVisibleInCurrentChat()) activity.status.textContent = 'CLIが完了しました';
           }
@@ -802,29 +889,59 @@
         const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
         streamMessages.push(assistantMessage);
         sendOk = true;
+        if (cliChatTextRequestsContinuation(fullText)) {
+          prepareAutoContinue('CLIが作業分割の継続を要求しました');
+        }
         saveStreamMessages().catch(() => {});
       }
     } catch (error) {
       activity.wrapper.remove();
       if (error?.name === 'AbortError') {
-        const abortedText = (fullText ? fullText.trimEnd() + '\n\n' : '') + '[中断されました]';
+        const abortedText = clientIdleAbortMessage
+          ? (fullText ? fullText.trimEnd() + '\n\n' : '') + clientIdleAbortMessage
+          : (fullText ? fullText.trimEnd() + '\n\n' : '') + '[中断されました]';
         if (!streamVisibleInCurrentChat()) assistantDiv = null;
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(abortedText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, []);
-        streamMessages.push({ role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider, model: streamModel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()), aborted: true });
+        streamMessages.push({
+          role: 'assistant',
+          content: abortedText,
+          msg_id: assistantMessageId,
+          provider,
+          model: streamModel,
+          timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
+          aborted: !clientIdleAbortMessage,
+          auto_stopped: !!clientIdleAbortMessage,
+        });
         sendOk = true;
         saveStreamMessages().catch(() => {});
-      } else if (streamVisibleInCurrentChat() && typeof chatAddSystem === 'function') {
-        chatAddSystem('CLIエラー: ' + (error?.message || error));
+      } else {
+        const label = cliChatMeta(provider)?.label || provider || 'CLI';
+        const recoverable = cliChatErrorAllowsContinuation(error);
+        const autoContinuing = recoverable && prepareAutoContinue(error?.message || error);
+        const errorText = autoContinuing
+          ? `${label} の実行が時間内に終わりませんでした。\n\n作業を分割して、自動で続きから実行します。`
+          : `${label} がエラーで終了しました。\n\n${error?.message || error}`;
+        if (!streamVisibleInCurrentChat()) assistantDiv = null;
+        if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(errorText, renderOptions());
+        else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, errorText, []);
+        else if (assistantDiv) assistantDiv.textContent = errorText;
+        streamMessages.push({
+          role: 'assistant',
+          content: errorText,
+          msg_id: assistantMessageId,
+          provider,
+          model: streamModel,
+          timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
+          error: !autoContinuing,
+          auto_continue: !!autoContinuing,
+        });
+        sendOk = true;
         try {
           await saveStreamMessages(true);
         } catch (saveError) {
           if (typeof showStatus === 'function') showStatus('CLI送信内容の保存に失敗: ' + (saveError?.message || saveError), true);
         }
-      } else {
-        try {
-          await saveStreamMessages(true);
-        } catch {}
       }
     } finally {
       clearInterval(activityTimer);
@@ -838,7 +955,28 @@
         cliChatSetSendButtonStreaming(false);
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
         if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
-        if (cliCompleted && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        if (autoContinueRequest) {
+          const continueMessage = {
+            role: 'user',
+            content: buildCliContinuationInstruction(autoContinueRequest.reason, autoContinueRequest.count),
+            timestamp: typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString(),
+          };
+          setTimeout(() => {
+            sendCliChat({
+              deferredMessages: [continueMessage],
+              streamMessages,
+              sessionId: streamSessionId,
+              sessionTitle: streamSessionTitle,
+              targetPath: streamTargetPath,
+              sourceFolder: streamSourceFolder,
+              workspaceId: streamWorkspaceId,
+              provider,
+              model: streamModel,
+              mode: streamMode,
+              cliContinuationCount: autoContinueRequest.count,
+            }).catch(() => {});
+          }, 0);
+        } else if (cliCompleted && typeof _chatSendQueuedMessagesAfterStream === 'function') {
           setTimeout(() => {
             _chatSendQueuedMessagesAfterStream({
               messages: streamMessages,

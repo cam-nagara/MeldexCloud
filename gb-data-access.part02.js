@@ -91,7 +91,7 @@
     if (pathname === '/os-accent-color' && method === 'GET') return { color: '#569cd6' };
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {
-      const result = await handler({ method, body, url, pathname });
+      const result = await handler({ method, body, url, pathname, headers: opts?.headers });
       if (result !== NOT_HANDLED) return result;
     }
     return NOT_HANDLED;

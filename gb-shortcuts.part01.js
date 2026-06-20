@@ -839,7 +839,7 @@ const _shortcutHandlers = {
     if (state.view !== 'pivot') return false;
     const table = activeCell?.closest?.('table') || document.getElementById('pivot-table');
     if (!table) return false;
-    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)'));
+    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)'));
     if (typeof triggerNewEntity === 'function') triggerNewEntity(table, dataRows);
   },
   'db.newProp': () => {
@@ -853,7 +853,7 @@ const _shortcutHandlers = {
     if (ae && ae.isConnected !== false && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
     const table = activeCell?.closest?.('table') || document.getElementById('pivot-table');
     if (!table) return false;
-    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)'));
+    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)'));
     const thAll = Array.from(table.querySelectorAll('thead th'));
     const tr = activeCell.parentElement;
     const colIdx = Array.from(tr.children).indexOf(activeCell);
@@ -901,7 +901,7 @@ const _shortcutHandlers = {
           valText.click();
           return;
         }
-        const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)'));
+        const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)'));
         const thAll = Array.from(table.querySelectorAll('thead th'));
         const rowIdx = dataRows.indexOf(tr);
         const entityName = dataRows[rowIdx]?.querySelector('.entity-name-label')?.textContent;

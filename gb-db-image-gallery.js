@@ -191,6 +191,9 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
     for (let i = 0; i < previewCount; i++) {
       const img = document.createElement('img');
       img.className = 'gb-image-thumb';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.fetchPriority = 'low';
       img.src = _imageSrc(items[i], true);
       img.alt = items[i].caption || items[i].filename || '';
       img.dataset.imageIndex = String(i);
@@ -270,6 +273,8 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       const card = document.createElement('div');
       card.className = 'gb-image-gallery-card';
       const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.decoding = 'async';
       img.src = _imageSrc(item, true);
       img.alt = item.filename || '';
       card.appendChild(img);

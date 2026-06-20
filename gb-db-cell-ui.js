@@ -429,9 +429,22 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(v)) {
     const img = document.createElement('img');
     img.className = 'cell-thumbnail' + (thumbSize === 'large' ? ' large' : '');
-    img.src = '/api/file-raw?path=' + encodeURIComponent(entityPath + '/' + v);
+    const imagePath = entityPath + '/' + v;
+    const rawSrc = '/api/file-raw?path=' + encodeURIComponent(imagePath);
+    const thumbPx = thumbSize === 'large' ? 320 : 160;
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.fetchPriority = 'low';
+    img.src = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
     img.alt = v;
-    img.onerror = () => { img.replaceWith(document.createTextNode(v)); };
+    img.onerror = () => {
+      if (img.dataset.rawFallback !== '1') {
+        img.dataset.rawFallback = '1';
+        img.src = rawSrc;
+        return;
+      }
+      img.replaceWith(document.createTextNode(v));
+    };
     img.addEventListener('click', (e) => { e.stopPropagation(); });
     row.appendChild(img);
     return row;

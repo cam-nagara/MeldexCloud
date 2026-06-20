@@ -274,7 +274,7 @@ function _scrollDbActiveCellIntoView(td) {
   const cellIndex = td.parentElement ? Array.from(td.parentElement.children).indexOf(td) : -1;
   const entityPinned = !!table && !table.classList.contains('entity-col-unpinned');
   const entityRect = entityPinned && cellIndex > 0
-    ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row) td.col-entity')?.getBoundingClientRect?.()
+    ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row) td.col-entity')?.getBoundingClientRect?.()
     : null;
   const pad = 4;
   const topLimit = scrollRect.top + headerHeight + pad;
@@ -308,16 +308,39 @@ function _clearDbCellRangeSelection(table) {
 
 function _dbCellCoords(table, td) {
   if (!table || !td) return null;
-  const rows = Array.from(table.querySelectorAll('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row)'));
   const tr = td.parentElement;
-  const row = rows.indexOf(tr);
+  let rows = Array.from(table.querySelectorAll('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row)'));
+  const virtualRows = typeof _dbVirtualStateForTable === 'function' ? _dbVirtualStateForTable(table) : null;
+  if (virtualRows) {
+    const rowByName = new Map(rows.map(rowEl => [rowEl.dataset.entityName || '', rowEl]));
+    rows = (virtualRows.entityNames || []).map(name => rowByName.get(name) || null);
+  }
+  const row = virtualRows && tr?.dataset?.entityName
+    ? virtualRows.entityNames.indexOf(tr.dataset.entityName)
+    : rows.indexOf(tr);
   const col = tr ? Array.from(tr.children).indexOf(td) : -1;
   if (row < 0 || col < 0) return null;
   return { row, col, rows };
 }
 
 function _dbCellAt(table, rowIdx, colIdx) {
-  const rows = Array.from(table.querySelectorAll('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row)'));
+  const rows = Array.from(table.querySelectorAll('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row)'));
+  const virtualRows = typeof _dbVirtualStateForTable === 'function' ? _dbVirtualStateForTable(table) : null;
+  if (virtualRows) {
+    const entityName = virtualRows.entityNames?.[rowIdx];
+    if (!entityName) return null;
+    const cssName = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(entityName)
+      : String(entityName).replace(/["\\]/g, '\\$&');
+    const row = table.querySelector(`tbody tr[data-entity-name="${cssName}"]`);
+    if (!row) {
+      if (typeof _dbRequestVirtualCellReveal === 'function') _dbRequestVirtualCellReveal(table, rowIdx, colIdx);
+      return null;
+    }
+    const maxCol = row.children.length - 2;
+    if (colIdx < 0 || colIdx > maxCol) return null;
+    return row.children[colIdx] || null;
+  }
   if (rowIdx < 0 || rowIdx >= rows.length) return null;
   const row = rows[rowIdx];
   if (!row) return null;
@@ -892,7 +915,7 @@ function _dbKeyboardActiveCell(table, eventTarget = null) {
 }
 
 function _dbVisibleDataRows(table) {
-  return Array.from(table?.querySelectorAll?.('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)') || [])
+  return Array.from(table?.querySelectorAll?.('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)') || [])
     .filter(row => {
       if (!row?.isConnected) return false;
       const style = typeof getComputedStyle === 'function' ? getComputedStyle(row) : null;

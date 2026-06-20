@@ -805,6 +805,9 @@ function renderPivot(ctx) {
   thead.appendChild(headerRow);
 
   // ボディ
+  if (typeof _dbDisposeVirtualRows === 'function') {
+    if (tblEl?._dbVirtualRows?.ctx && tblEl._dbVirtualRows.ctx !== ctx) _dbDisposeVirtualRows(tblEl._dbVirtualRows.ctx); _dbDisposeVirtualRows(ctx);
+  }
   tbody.innerHTML = '';
   // D-4-a: tbody click 委譲を登録 (べき等。再 render 時は ctx だけ更新)
   _installTbodyDelegation(tbody, ctx);
@@ -877,11 +880,8 @@ function renderPivot(ctx) {
   document.addEventListener('pointercancel', paneRoot._dragSelectPointerUp);
 
   // 常に末尾に「＋新規エントリ」行を表示（Notion風）
-  // チャンク分割中、エントリ行はこの行の前に insertBefore で挿入する。これで thead/tfoot/新規行の順序が常に確定する。
-  const renderMoreRow = isRenderLimited
-    ? _dbCreateRenderMoreRow(ctx, { visibleProps, totalRows: entityNames.length, shownRows: shownEntityCount, currentLimit: renderRowLimit })
-    : null;
-  if (renderMoreRow) tbody.appendChild(renderMoreRow);
+  // 大規模シートも初期状態から全件スクロール可能にし、実DOMは仮想スクロールで画面周辺だけ作る。
+  const renderMoreRow = null;
   const newEntryRow = renderNewEntryRow(ctx, { visibleProps, entitiesMap, dbPath, selectedCols, _tbl, _entityW });
   tbody.appendChild(newEntryRow);
   const newEntrySpacerRow = document.createElement('tr');
@@ -909,6 +909,10 @@ function renderPivot(ctx) {
   ctx._renderInProgress = true;
   ctx._renderTotalRows = rowTasks.length;
   ctx._renderDoneRows = 0;
+
+  const virtualRowsEnabled = typeof _dbShouldUseVirtualRows === 'function' && _dbShouldUseVirtualRows(ctx, rowTasks, { visibleProps, propTypes, thumbSize });
+  if (virtualRowsEnabled && typeof _dbRunVirtualRowRenderer === 'function'
+      && _dbRunVirtualRowRenderer(ctx, { rowTasks, tbody, renderToken, renderMoreRow, newEntryRow, visibleProps, groupByProp, entityRowOpts, propTypes, thumbSize, renderPerfStartedAt, dbPath, entityNames, renderRowLimit })) return;
 
   const CHUNK_SIZE = 100; // ベンチマーク用閾値 (100行/チャンク)
 

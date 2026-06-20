@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.6.122",
+    "semver": "0.6.129",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
@@ -13,26 +13,26 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.120"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.129"
   },
   "desktop": {
-    "currentVersion": "0.6.120",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.120/Meldex-v0.6.120.zip",
+    "currentVersion": "0.6.129",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.129/Meldex-v0.6.129.zip",
     "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
     "versions": [
       {
-        "version": "0.6.120",
-        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.120/Meldex-v0.6.120.zip",
-        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.120",
+        "version": "0.6.129",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.129/Meldex-v0.6.129.zip",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.129",
         "assetName": "Windows用ZIP",
-        "sha256": "801a9c22a4d6cc8900d784e7c77ce7774b423a167e75d3c918b87b0ee165eacb",
-        "publishedAt": "2026-06-20T06:43:14Z",
-        "notesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.120"
+        "sha256": "76617b23f4538548ff98791a896061ddc3fbbfc8c36872229dca780c944ed415",
+        "publishedAt": "2026-06-20T19:34:35Z",
+        "notesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.129"
       }
     ]
   },
   "samples": {
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.120/MeldexSamples.zip"
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.129/MeldexSamples.zip"
   },
   "dropbox": {
     "developerAppKey": "ovxy3vacegzu7nu"

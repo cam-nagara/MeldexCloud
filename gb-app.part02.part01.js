@@ -1085,7 +1085,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
   let url;
   try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
   const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
-  if (route === '/file-lock' || route.startsWith('/file-lock/')) return [];
+  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
   const body = _apiLockJsonBody(opts);
   const query = url.searchParams;
   const paths = [];
@@ -1095,6 +1095,11 @@ function _apiLockWriteCandidatePaths(path, opts) {
 
   if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
     addBoth('path');
+    addBody('entry_path');
+    addBody('folder_path');
+  } else if (route === '/upload-file') {
+    addBoth('path');
+    addBody('dir');
   } else if (route === '/outliner/add') {
     addBody('parent');
   } else if (route === '/outliner/delete') {
@@ -1102,6 +1107,9 @@ function _apiLockWriteCandidatePaths(path, opts) {
   } else if (route === '/outliner/duplicate') {
     const srcPath = String(body?.path || '').trim();
     if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
+  } else if (route === '/outliner/save-as') {
+    addBody('path');
+    addBody('dest_folder');
   } else if (route === '/outliner/delete-batch') {
     (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
   } else if (route === '/outliner/move') {
@@ -1121,8 +1129,18 @@ function _apiLockWriteCandidatePaths(path, opts) {
     if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
   } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
     addBody('target_path');
-  } else if (route === '/import-csv') {
+  } else if (route === '/entity/auto-name') {
+    addBody('db_path');
+    addBody('entry_path');
+    addBody('path');
+  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
+    addBody('folder_path');
+    addBody('file_path');
+  } else if (route === '/import-csv' || route === '/import-xlsx') {
     addBody('csv_path');
+    addBody('xlsx_path');
+    addBody('db_path');
+  } else if (route === '/public-form/submit') {
     addBody('db_path');
   } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
     addBoth('db_path');
@@ -1151,7 +1169,11 @@ function _apiLockBlockIfNeeded(path, opts) {
 const _origApiFetch = apiFetch;
 apiFetch = async function(path, opts) {
   opts = opts || {};
+  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
   _apiLockBlockIfNeeded(path, opts);
+  if (window.MeldexActiveLocks?.beforeApiFetch) {
+    opts = await window.MeldexActiveLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
+  }
   // _user パラメータを自動付与（監査ログ・modified_by 用）
   const user = getUsername();
   if (user && user !== 'anonymous') {

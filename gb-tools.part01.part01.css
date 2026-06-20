@@ -62,7 +62,7 @@
 }
 #pivot-table tbody tr.group-header-row,
 #pivot-table tbody tr.new-entity-row,
-#pivot-table tbody tr.db-render-more-row,
+#pivot-table tbody tr.db-virtual-spacer-row,
 #pivot-table tbody tr.new-entity-spacer-row {
   content-visibility: visible;
   contain-intrinsic-size: none;
@@ -159,6 +159,7 @@
 .pivot-table tbody tr { content-visibility: auto; contain-intrinsic-size: auto 36px; }
 .pivot-table tbody tr.group-header-row,
 .pivot-table tbody tr.new-entity-row,
+.pivot-table tbody tr.db-virtual-spacer-row,
 .pivot-table tbody tr.new-entity-spacer-row { content-visibility: visible; contain-intrinsic-size: none; }
 .pivot-table td.col-entity {
   position: sticky; left: 0; z-index: 5;
@@ -338,27 +339,13 @@ td:hover .cell-add-btn { display: inline-flex; }
   background: transparent !important;
   pointer-events: none;
 }
-#pivot-table .db-render-more-row td, .pivot-table .db-render-more-row td {
-  padding: 8px 10px;
-  color: var(--fg2);
-  background: var(--db-row-bg, var(--content-bg, var(--bg)));
-  border-top: 1px dashed var(--border);
+#pivot-table .db-virtual-spacer-row td, .pivot-table .db-virtual-spacer-row td {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  line-height: 0 !important;
+  pointer-events: none;
 }
-.db-render-more-row .db-render-more-status {
-  margin-right: 10px;
-  font-size: var(--ui-font-12, 12px);
-}
-.db-render-more-row .db-render-more-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 26px;
-  padding: 3px 10px;
-}
-.db-render-more-row .db-render-all-btn {
-  margin-left: 6px;
-}
-
 /* ビュータブ */
 .view-tab-add {
   color: var(--fg2); font-size: 14px; padding: 6px 10px; cursor: pointer;
@@ -461,6 +448,37 @@ td:hover .cell-add-btn { display: inline-flex; }
 /* フォルダビュー */
 #folder-view {
   font-family: var(--fv-font-family, var(--ui-font, inherit));
+}
+.folder-toolbar-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.folder-toolbar-file-actions .tb-icon-btn {
+  flex: 0 0 auto;
+}
+.folder-toolbar-file-actions .tb-icon-btn[disabled] {
+  color: var(--fg2);
+  cursor: default;
+  pointer-events: none;
+}
+.folder-toolbar-file-actions .folder-toolbar-danger:not(:disabled) {
+  color: var(--red);
+}
+.folder-toolbar-create-menu {
+  min-width: 170px;
+}
+.folder-toolbar-create-menu .folder-toolbar-create-menu-item {
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ui-fg-default, var(--fg));
+  text-align: left;
+  justify-content: flex-start;
+  font: inherit;
 }
 #folder-grid.grid-layout {
   display: grid; grid-template-columns: repeat(auto-fill, var(--fv-card-w, 120px)); gap: 3px;

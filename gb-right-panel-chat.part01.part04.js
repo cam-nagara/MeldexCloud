@@ -12,6 +12,10 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const attachments = Array.isArray(_chatState.pendingAttachments) ? _chatState.pendingAttachments.slice() : [];
   const text = String(input?.value || '').trim();
   if (!text && attachments.length === 0) return false;
+  if (attachments.some(att => att?.uploading || att?.uploadError || !String(att?.path || '').trim())) {
+    if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);
+    return false;
+  }
 
   const submitFingerprint = JSON.stringify({ text, attachments: attachments.map(att => att.path || att.name || '') });
   const now = Date.now();
@@ -237,7 +241,7 @@ async function chatSend(options = {}) {
     if (typeof showStatus === 'function') showStatus('チャット表示を準備中です', true);
     return false;
   }
-  const _pendingAtts = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
+  let _pendingAtts = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
   if (!usingDeferredMessages && !input) return false;
   const text = usingDeferredMessages ? _chatQueuedMessagesText(deferredMessages).trim() : input.value.trim();
   if (!usingDeferredMessages && !text && _pendingAtts.length === 0) {
@@ -267,6 +271,16 @@ async function chatSend(options = {}) {
     ? String(options.sourceFolder || '')
     : (requestWorkspaceId ? '' : _chatRequireSourceFolder());
   if (!requestWorkspaceId && !requestSourceFolder) return false;
+  if (!usingDeferredMessages && _pendingAtts.length > 0) {
+    if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
+      const readyAttachments = await _chatWaitForPendingAttachmentUploads(_pendingAtts);
+      if (!readyAttachments) return false;
+      _pendingAtts = readyAttachments;
+    } else if (_pendingAtts.some(att => att?.uploading || att?.uploadError || !String(att?.path || '').trim())) {
+      if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);
+      return false;
+    }
+  }
   if (!usingDeferredMessages) {
     if (typeof _chatWithDraftUploadCleanupPaused === 'function') {
       _chatWithDraftUploadCleanupPaused(() => {
