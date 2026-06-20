@@ -653,6 +653,18 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'messageSquare');
   }
 
+  if (!isMulti
+    && nodeData.path
+    && nodeData.type !== 'folder'
+    && !nodeData._isRoot
+    && typeof openNative === 'function'
+    && !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type))) {
+    addMenuItem('アプリで開く', () => {
+      closeTreeContextMenu();
+      openNative(nodeData.path);
+    }, null, 'externalLink');
+  }
+
   // --- 比較（ファイル全般） ---
   if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot && typeof showCompareModal === 'function') {
     addMenuItem('比較...', () => {

@@ -603,6 +603,29 @@ function _chatCostNumber(container, id, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function _chatCostFallbackStatus() {
+  return {
+    settings: { ...CHAT_COST_DEFAULTS, pricing_last_reviewed: '' },
+    totals: { day: { cost_usd: 0 }, month: { cost_usd: 0 } },
+  };
+}
+
+async function _chatCostLoadBudgetStatus(timeoutMs = 4500) {
+  if (typeof apiFetch !== 'function') return _chatCostFallbackStatus();
+  let timer = 0;
+  const timeout = new Promise((resolve) => {
+    timer = window.setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    const status = await Promise.race([apiFetch('/chat/budget'), timeout]);
+    return status && typeof status === 'object' ? status : _chatCostFallbackStatus();
+  } catch (_err) {
+    return _chatCostFallbackStatus();
+  } finally {
+    if (timer) window.clearTimeout(timer);
+  }
+}
+
 async function saveChatCostSettingsFromSettingsDialog(root, options = {}) {
   const container = _chatCostRoot(root);
   if (!container || !container.querySelector('#chat-budget-monthly')) return true;
@@ -639,7 +662,7 @@ async function renderChatCostSettings(root) {
   if (!container) return;
   container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('walletCards',14)} AI使用量</div><div class="gb-section-desc">読み込み中...</div></section>`;
   try {
-    const status = await apiFetch('/chat/budget');
+    const status = await _chatCostLoadBudgetStatus();
     const settings = status.settings || {};
     const totals = status.totals || {};
     const modeOptions = value => ['hard', 'warn', 'off'].map(mode => {

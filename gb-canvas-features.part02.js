@@ -445,7 +445,7 @@ let _bdDrillRoot = null;
 function bdDrillDown(nodeId) {
   _bdDrillRoot = nodeId;
   bdRender();
-  showStatus('ドリルダウン表示中（右クリック→「全体表示に戻る」で解除）');
+  showStatus('ドリルダウン表示中（カードまたはボードのメニューから「ドリルダウン解除」で戻れます）');
 }
 function bdDrillUp() {
   _bdDrillRoot = null;

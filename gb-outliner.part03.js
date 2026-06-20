@@ -305,7 +305,7 @@ function _outlinerKeyboardOpenNode(nodeEl) {
     return openSmartDbFile(item.name, item.path, opts);
   }
   if (!(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(type)) && typeof showStatus === 'function') {
-    showStatus((item.name || item.path) + ' — 右クリックメニューからアプリで開く');
+    showStatus((item.name || item.path) + ' — 「…」または長押しメニューからアプリで開く');
   }
   return false;
 }

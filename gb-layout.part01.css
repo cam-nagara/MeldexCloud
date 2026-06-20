@@ -174,6 +174,15 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 }
 .sidebar-section-body .fav-item svg { flex-shrink: 0; }
 .sidebar-section-body .fav-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
+.fav-more-btn {
+  margin-left: auto; flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 4px; background: transparent; color: inherit;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s, background 0.15s;
+}
+.fav-item:hover .fav-more-btn,
+.fav-item:focus-within .fav-more-btn { opacity: 0.9; }
+.fav-more-btn:hover { opacity: 1; background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
 .sidebar-item {
   padding: 4px 12px; cursor: pointer; font-size: 13px;
   color: var(--outliner-item-fg); background: var(--outliner-item-bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

@@ -897,6 +897,70 @@ function removeFavFolder(id) {
   }
 }
 
+function _showFavoriteItemMenu(event, node, isFavFolder) {
+  if (!node) return;
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu';
+  const closeMenu = () => menu.remove();
+  const addItem = (label, fn, icon, danger) => {
+    const item = document.createElement('div');
+    item.className = 'gb-context-menu-item';
+    if (danger) item.classList.add('danger');
+    if (icon && typeof lucide === 'function') {
+      item.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + esc(label);
+    } else {
+      item.textContent = label;
+    }
+    item.addEventListener('click', async () => {
+      closeMenu();
+      await fn();
+    });
+    menu.appendChild(item);
+  };
+  if (!isFavFolder) {
+    addItem('開く', () => _openStoredOutlinerItem(node, { fromExplorer: true }), 'folderOpen');
+    addItem('お気に入りを外す', () => removeFromFavorites(node.path), 'starOff');
+  } else {
+    addItem('フォルダを削除', async () => {
+      const ok = typeof cfConfirm === 'function'
+        ? await cfConfirm('「' + node.name + '」フォルダを削除しますか？（中身は失われます）')
+        : confirm('「' + node.name + '」フォルダを削除しますか？（中身は失われます）');
+      if (ok) removeFavFolder(node.path);
+    }, 'trash2', true);
+  }
+  document.body.appendChild(menu);
+  const z = parseFloat(document.documentElement.style.zoom) || 1;
+  const x = Number.isFinite(event?.clientX) ? event.clientX / z : 24;
+  const y = Number.isFinite(event?.clientY) ? event.clientY / z : 64;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function closer(e) {
+      if (!menu.contains(e.target)) {
+        closeMenu();
+        document.removeEventListener('pointerdown', closer);
+      }
+    });
+  }, 0);
+}
+
+function _createFavoriteMoreButton(node, isFavFolder) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'fav-more-btn';
+  button.title = 'メニュー';
+  button.setAttribute('aria-label', 'お気に入りメニューを開く');
+  button.draggable = false;
+  button.innerHTML = typeof lucide === 'function' ? lucide('ellipsis', 14) : '...';
+  button.addEventListener('click', (event) => _showFavoriteItemMenu(event, node, isFavFolder));
+  button.addEventListener('dragstart', (event) => event.preventDefault());
+  return button;
+}
+
 function renderFavorites() {
   const container = document.getElementById('body-favorites');
   if (!container) return;
@@ -935,10 +999,14 @@ function renderFavorites() {
       ico.style.cssText = 'display:inline;flex-shrink:0;';
       row.appendChild(ico);
       const lbl = document.createElement('span');
-      lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
+      lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0;';
       lbl.textContent = node.name;
       row.appendChild(lbl);
-      row.oncontextmenu = async (e) => { e.preventDefault(); if (await cfConfirm('「' + node.name + '」フォルダを削除しますか？（中身は失われます）')) removeFavFolder(node.path); };
+      row.appendChild(_createFavoriteMoreButton(node, true));
+      row.oncontextmenu = (e) => _showFavoriteItemMenu(e, node, true);
+      if (typeof addLongPressHandler === 'function') {
+        addLongPressHandler(row, (e) => _showFavoriteItemMenu(e, node, true));
+      }
       div.appendChild(row);
       div.appendChild(childDiv);
       (node.children || []).forEach(c => _renderFavNode(c, childDiv, depth + 1));
@@ -968,13 +1036,24 @@ function renderFavorites() {
       });
     } else {
       const iconName = _outlinerIconName(node.type, node.path, node.type === 'folder' && node.path === getWorkFolder());
-      row.innerHTML = lucide(iconName, 14) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(node.name) + '</span>';
+      const ico = document.createElement('span');
+      ico.innerHTML = lucide(iconName, 14);
+      ico.style.cssText = 'display:inline-flex;flex-shrink:0;';
+      row.appendChild(ico);
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0;';
+      lbl.textContent = node.name;
+      row.appendChild(lbl);
+      row.appendChild(_createFavoriteMoreButton(node, false));
       row.title = node.path;
       row.addEventListener('click', () => {
         const _expOpts = { fromExplorer: true };
         _openStoredOutlinerItem(node, _expOpts);
       });
-      row.oncontextmenu = (e) => { e.preventDefault(); removeFromFavorites(node.path); };
+      row.oncontextmenu = (e) => _showFavoriteItemMenu(e, node, false);
+      if (typeof addLongPressHandler === 'function') {
+        addLongPressHandler(row, (e) => _showFavoriteItemMenu(e, node, false));
+      }
       div.appendChild(row);
     }
 

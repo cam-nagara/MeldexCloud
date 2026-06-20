@@ -7,6 +7,8 @@
   const EDGE_SWIPE_ZONE = 28;
   const EDGE_SWIPE_MIN_X = 72;
   const EDGE_SWIPE_MAX_Y = 64;
+  const MOBILE_DISMISS_MIN_X = 78;
+  const MOBILE_DISMISS_MAX_Y = 72;
   const LOCAL_MOBILE_UI_STORAGE_KEY = 'meldex-local-mobile-ui';
   const media = window.matchMedia ? window.matchMedia(MOBILE_QUERY) : null;
   let _desktopToggleSidebar = null;
@@ -73,10 +75,57 @@
     return document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
   }
 
+  function _isSidebarDismissBlockedTarget(target) {
+    return !!target?.closest?.('button, a, input, select, textarea, [contenteditable="true"], [role="button"], [role="menu"], [role="dialog"], .tree-toggle, .tree-hover-btns, .tree-hover-btn');
+  }
+
   function _iconHtml(name, size, fallback) {
     return typeof lucide === 'function'
       ? lucide(name, size || 18)
       : `<span aria-hidden="true">${fallback || ''}</span>`;
+  }
+
+  function _ensureSidebarDismissHandle(sidebar) {
+    if (!sidebar || !shouldUseSidebarDrawer()) return null;
+    let handle = sidebar.querySelector('.cloud-mobile-left-drawer-handle');
+    if (!handle) {
+      handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'cloud-mobile-drawer-handle cloud-mobile-left-drawer-handle';
+      handle.title = 'フォルダツリーを左へ閉じる';
+      handle.setAttribute('aria-label', 'フォルダツリーを左へ閉じる');
+      handle.innerHTML = _iconHtml('chevronsLeft', 20, '‹');
+      handle.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSidebarDrawer();
+      });
+      sidebar.appendChild(handle);
+    }
+    return handle;
+  }
+
+  function _setSidebarDragOffset(sidebar, offsetX) {
+    if (!sidebar) return;
+    sidebar.style.setProperty('transition', 'none', 'important');
+    sidebar.style.setProperty('transform', `translateX(${Math.min(0, Math.round(offsetX))}px)`, 'important');
+  }
+
+  function _clearSidebarDragOffset(sidebar) {
+    if (!sidebar) return;
+    sidebar.style.removeProperty('transition');
+    sidebar.style.removeProperty('transform');
+  }
+
+  function _animateCloseSidebarDrawerFromGesture(sidebar) {
+    if (!sidebar) return closeSidebarDrawer();
+    sidebar.style.setProperty('transition', 'transform 0.16s ease', 'important');
+    sidebar.style.setProperty('transform', 'translateX(-105%)', 'important');
+    setTimeout(() => {
+      _clearSidebarDragOffset(sidebar);
+      closeSidebarDrawer();
+    }, 170);
+    return true;
   }
 
   function _openSidebarFromMobileControl(event) {
@@ -141,6 +190,7 @@
   function closeSidebarDrawer() {
     const { sidebar, backdrop } = _sidebarElements();
     if (!sidebar) return false;
+    _clearSidebarDragOffset(sidebar);
     sidebar.classList.remove('open', 'cloud-mobile-tree-screen-open');
     if (shouldUseSidebarDrawer()) sidebar.setAttribute('aria-hidden', 'true');
     else sidebar.removeAttribute('aria-hidden');
@@ -159,6 +209,7 @@
     if (!sidebar) return false;
     _ensureTreeScreenHeader();
     _dockSidebarForDrawer(sidebar);
+    _clearSidebarDragOffset(sidebar);
     sidebar.style.setProperty('display', 'flex', 'important');
     sidebar.setAttribute('aria-hidden', 'false');
     sidebar.classList.add('open', 'cloud-mobile-tree-screen-open');
@@ -265,6 +316,7 @@
       header.appendChild(actions);
     }
     _refreshTreeHeaderUserIcon(header);
+    _ensureSidebarDismissHandle(sidebar);
   }
 
   function _ensurePaneTreeBackButtons() {
@@ -351,6 +403,75 @@
       const shouldOpen = dx >= EDGE_SWIPE_MIN_X && Math.abs(dy) <= EDGE_SWIPE_MAX_Y;
       reset();
       if (shouldOpen) _openSidebarFromMobileControl(event);
+    }, { capture: true });
+
+    document.addEventListener('pointercancel', reset, { capture: true });
+  }
+
+  function _installSidebarDismissGesture() {
+    if (document.__MeldexCloudMobileSidebarDismissInstalled) return;
+    document.__MeldexCloudMobileSidebarDismissInstalled = true;
+    let drag = null;
+
+    const reset = () => {
+      if (drag?.active && drag.sidebar?.isConnected) _clearSidebarDragOffset(drag.sidebar);
+      drag = null;
+    };
+
+    document.addEventListener('pointerdown', (event) => {
+      if (!shouldUseSidebarDrawer()) return;
+      const sidebar = document.getElementById('sidebar');
+      if (!sidebar?.classList?.contains('cloud-mobile-tree-screen-open')) return;
+      const handle = event.target?.closest?.('.cloud-mobile-left-drawer-handle');
+      if (!handle) {
+        if (event.pointerType === 'mouse') return;
+        if (!sidebar.contains(event.target) || _isSidebarDismissBlockedTarget(event.target)) return;
+      }
+      drag = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastTime: performance.now(),
+        velocityX: 0,
+        active: false,
+        sidebar,
+      };
+      if (handle) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, { capture: true });
+
+    document.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      const now = performance.now();
+      const dt = Math.max(1, now - drag.lastTime);
+      drag.velocityX = (event.clientX - drag.lastX) / dt;
+      drag.lastX = event.clientX;
+      drag.lastTime = now;
+      if (!drag.active && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.2) drag.active = true;
+      if (!drag.active) return;
+      event.preventDefault();
+      event.stopPropagation();
+      _setSidebarDragOffset(drag.sidebar, Math.min(0, dx));
+    }, { capture: true });
+
+    document.addEventListener('pointerup', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const current = drag;
+      drag = null;
+      const dx = event.clientX - current.x;
+      const dy = event.clientY - current.y;
+      const draggedLeft = dx <= -MOBILE_DISMISS_MIN_X && Math.abs(dx) > Math.abs(dy) && Math.abs(dy) <= MOBILE_DISMISS_MAX_Y;
+      const flickedLeft = current.velocityX < -0.55 && dx < -32 && Math.abs(dx) > Math.abs(dy);
+      if (!current.active) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (draggedLeft || flickedLeft) _animateCloseSidebarDrawerFromGesture(current.sidebar);
+      else _clearSidebarDragOffset(current.sidebar);
     }, { capture: true });
 
     document.addEventListener('pointercancel', reset, { capture: true });
@@ -599,6 +720,7 @@
     _installTreeScreenAutoClose();
     _installPaneBackButtonObserver();
     _installEdgeSwipeBack();
+    _installSidebarDismissGesture();
     refreshCloudMobileViewport();
     window.addEventListener('resize', refreshCloudMobileViewport, { passive: true });
     window.addEventListener('orientationchange', refreshCloudMobileViewport, { passive: true });

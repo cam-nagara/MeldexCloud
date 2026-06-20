@@ -210,7 +210,7 @@
     if (!container) return;
 
     if (folders.length === 0) {
-      container.innerHTML = '<div style="padding:16px;color:var(--fg2);text-align:center;font-size:12px;border:1px dashed var(--border);border-radius:4px;">同期フォルダが設定されていません。<br>「フォルダを追加」またはツリーの右クリックメニューから追加できます。</div>';
+      container.innerHTML = '<div style="padding:16px;color:var(--fg2);text-align:center;font-size:12px;border:1px dashed var(--border);border-radius:4px;">同期フォルダが設定されていません。<br>「フォルダを追加」またはフォルダツリーのメニューから追加できます。</div>';
       return;
     }
 

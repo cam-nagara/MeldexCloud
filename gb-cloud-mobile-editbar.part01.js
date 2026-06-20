@@ -49,13 +49,14 @@
     { label: 'ビューワー', icon: 'monitor', action: () => _openPreviewPanel() },
     { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('toggleOptionPanel') },
     { label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
-    { label: '注釈', icon: 'messagesSquare', action: () => _callGlobal('openRightPanelTab', 'annotation') },
-    { label: 'ヒストリー', icon: 'history', action: () => _callGlobal('openRightPanelTab', 'history') },
+    { label: '注釈', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
+    { label: 'ヒストリー', icon: 'history', action: () => _openToolPanel('history') },
   ];
   const TOOL_ITEMS = [
     { label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
     { label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
     { label: '注釈ツール', icon: 'penLine', action: () => _callGlobal('toggleAnnotationToolbar') },
+    { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
     { label: '設定', icon: 'settings', action: () => _callGlobal('showSettingsModal') },
   ];
   const NEW_ITEMS = [
@@ -118,7 +119,7 @@
     { id: 'width-up', label: '太く', icon: 'plus', action: () => _stepAnnotationWidth(1) },
     { id: 'color', label: '色', icon: 'palette', action: () => _openAnnotationColor() },
     { id: 'visibility', label: '表示', icon: 'eye', action: () => _toggleAnnotationVisibility() },
-    { id: 'list', label: '一覧', icon: 'messagesSquare', action: () => _callGlobal('openRightPanelTab', 'annotation') },
+    { id: 'list', label: '一覧', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
     { id: 'close', label: '閉じる', icon: 'x', action: () => _closeAnnotationToolbar() },
   ];
 
@@ -234,6 +235,11 @@
     return false;
   }
 
+  function _openToolPanel(type) {
+    if (_openPaneTool(type)) return true;
+    return _callGlobal('openRightPanelTab', type);
+  }
+
   function _openPreviewPanel() {
     if (_openPaneTool('preview')) return true;
     if (typeof showStatus === 'function') showStatus('ビューワーを開けませんでした', true);
@@ -245,6 +251,15 @@
     if (typeof openVersionTab === 'function') return !!openVersionTab('', 'file');
     if (typeof addPanelMenuVersion === 'function') return !!addPanelMenuVersion();
     if (typeof showStatus === 'function') showStatus('バージョン管理を開けませんでした', true);
+    return false;
+  }
+
+  function _openHelpMenu() {
+    if (typeof showMeldexHelpMenu === 'function') {
+      showMeldexHelpMenu();
+      return true;
+    }
+    if (typeof showStatus === 'function') showStatus('ヘルプを開けませんでした', true);
     return false;
   }
 
@@ -270,6 +285,7 @@
         { label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
         { label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
         { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderPanelSettings') },
+        { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
         { label: '設定', icon: 'settings', action: () => _callGlobal('showSettingsModal') },
       ];
     }
@@ -410,7 +426,7 @@
   }
 
   function _openMobileChat() {
-    const opened = _callGlobal('openRightPanelTab', 'chat') || !!_callGlobal('addPanelMenuTool', 'chat');
+    const opened = _openToolPanel('chat');
     setTimeout(() => {
       const mode = localStorage.getItem('chat-mode') || 'team';
       if (typeof switchChatMode === 'function') switchChatMode(mode);
@@ -511,7 +527,7 @@
 
   function _boardOpenDetail() {
     if (window.MeldexCloudMobileBoardActions?.openStyle) return window.MeldexCloudMobileBoardActions.openStyle();
-    const opened = _callGlobal('openRightPanelTab', 'detail') || _callGlobal('toggleOptionPanel');
+    const opened = _openToolPanel('detail') || _callGlobal('toggleOptionPanel');
     setTimeout(() => {
       const hasLine = (() => {
         try {

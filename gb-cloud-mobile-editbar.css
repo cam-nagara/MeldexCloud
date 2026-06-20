@@ -281,8 +281,8 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-editbar-btn {
     flex: 0 0 auto;
-    min-width: 40px;
-    min-height: 40px;
+    min-width: 44px;
+    min-height: 44px;
     padding: 0 9px;
   }
 

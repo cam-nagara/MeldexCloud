@@ -196,7 +196,7 @@ function showShellVerbSettings() {
     verbs.forEach(v => { if (!allVerbs.has(v.name)) allVerbs.set(v.name, v.raw); });
   }
   if (allVerbs.size === 0) {
-    showStatus('まだシェルメニュー項目が読み込まれていません。ファイルを右クリックしてから再度お試しください。');
+    showStatus('まだシェルメニュー項目が読み込まれていません。ファイルメニューを開いてから再度お試しください。');
     return;
   }
 

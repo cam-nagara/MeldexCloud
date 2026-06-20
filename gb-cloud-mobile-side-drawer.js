@@ -6,14 +6,15 @@
   const DRAWER_ID = 'cloud-mobile-side-drawer';
   const TITLE_ID = 'cloud-mobile-side-drawer-title';
   const BODY_ID = 'cloud-mobile-side-drawer-body';
+  const DISMISS_MIN_X = 78;
+  const DISMISS_MAX_Y = 72;
   let _activeEditor = null;
   let _currentTarget = null;
   let _openingTarget = false;
   let _renderSeq = 0;
 
   function _isEnabled() {
-    return document.body?.dataset?.cloudMode === 'dropbox'
-      && document.body?.dataset?.cloudMobile === '1'
+    return document.body?.dataset?.cloudMobile === '1'
       && !window.MeldexCloudMobile?.isSingleWindow?.();
   }
 
@@ -21,6 +22,148 @@
     return typeof lucide === 'function'
       ? lucide(name, size || 18)
       : `<span aria-hidden="true">${fallback || ''}</span>`;
+  }
+
+  function _isDismissBlockedTarget(target) {
+    return !!target?.closest?.('button, a, input, select, textarea, iframe, video, [contenteditable="true"], [role="button"], [role="menu"]');
+  }
+
+  function _setDismissDrag(drawer, offsetX) {
+    if (!drawer) return;
+    drawer.style.setProperty('transition', 'none', 'important');
+    drawer.style.setProperty('transform', `translateX(${Math.max(0, Math.round(offsetX))}px)`, 'important');
+  }
+
+  function _clearDismissDrag(drawer) {
+    if (!drawer) return;
+    drawer.style.removeProperty('transition');
+    drawer.style.removeProperty('transform');
+  }
+
+  function _installDismissGesture(drawer) {
+    if (!drawer || drawer.__MeldexCloudMobileSideDismissInstalled) return;
+    drawer.__MeldexCloudMobileSideDismissInstalled = true;
+    let drag = null;
+
+    const reset = () => {
+      if (drag?.active && drag.drawer?.isConnected) _clearDismissDrag(drag.drawer);
+      drag = null;
+    };
+
+    document.addEventListener('pointerdown', (event) => {
+      if (!isOpen() || !drawer.classList.contains('open')) return;
+      const handle = event.target?.closest?.('.cloud-mobile-right-drawer-handle');
+      if (!handle) {
+        if (event.pointerType === 'mouse') return;
+        if (!drawer.contains(event.target) || _isDismissBlockedTarget(event.target)) return;
+      }
+      drag = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastTime: performance.now(),
+        velocityX: 0,
+        active: false,
+        drawer,
+      };
+      if (handle) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, { capture: true });
+
+    document.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      const now = performance.now();
+      const dt = Math.max(1, now - drag.lastTime);
+      drag.velocityX = (event.clientX - drag.lastX) / dt;
+      drag.lastX = event.clientX;
+      drag.lastTime = now;
+      if (!drag.active && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.2) drag.active = true;
+      if (!drag.active) return;
+      event.preventDefault();
+      event.stopPropagation();
+      _setDismissDrag(drag.drawer, Math.max(0, dx));
+    }, { capture: true });
+
+    document.addEventListener('pointerup', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const current = drag;
+      drag = null;
+      const dx = event.clientX - current.x;
+      const dy = event.clientY - current.y;
+      const draggedRight = dx >= DISMISS_MIN_X && Math.abs(dx) > Math.abs(dy) && Math.abs(dy) <= DISMISS_MAX_Y;
+      const flickedRight = current.velocityX > 0.55 && dx > 32 && Math.abs(dx) > Math.abs(dy);
+      if (!current.active) return;
+      event.preventDefault();
+      event.stopPropagation();
+      _clearDismissDrag(current.drawer);
+      if (draggedRight || flickedRight) close();
+    }, { capture: true });
+
+    document.addEventListener('pointercancel', reset, { capture: true });
+  }
+
+  function _installHandleDismissGesture(handle, drawer) {
+    if (!handle || !drawer || handle.__MeldexCloudMobileSideHandleDismissInstalled) return;
+    handle.__MeldexCloudMobileSideHandleDismissInstalled = true;
+    let drag = null;
+
+    const reset = () => {
+      if (drag?.active) _clearDismissDrag(drawer);
+      drag = null;
+    };
+
+    handle.addEventListener('pointerdown', (event) => {
+      if (!isOpen() || !drawer.classList.contains('open')) return;
+      drag = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastTime: performance.now(),
+        velocityX: 0,
+        active: false,
+      };
+      try { handle.setPointerCapture?.(event.pointerId); } catch {}
+      event.preventDefault();
+      event.stopPropagation();
+    });
+
+    handle.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      const now = performance.now();
+      const dt = Math.max(1, now - drag.lastTime);
+      drag.velocityX = (event.clientX - drag.lastX) / dt;
+      drag.lastX = event.clientX;
+      drag.lastTime = now;
+      if (!drag.active && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.2) drag.active = true;
+      if (!drag.active) return;
+      event.preventDefault();
+      event.stopPropagation();
+      _setDismissDrag(drawer, Math.max(0, dx));
+    });
+
+    handle.addEventListener('pointerup', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const current = drag;
+      drag = null;
+      const dx = event.clientX - current.x;
+      const dy = event.clientY - current.y;
+      const draggedRight = dx >= DISMISS_MIN_X && Math.abs(dx) > Math.abs(dy) && Math.abs(dy) <= DISMISS_MAX_Y;
+      const flickedRight = current.velocityX > 0.55 && dx > 32 && Math.abs(dx) > Math.abs(dy);
+      event.preventDefault();
+      event.stopPropagation();
+      _clearDismissDrag(drawer);
+      if ((current.active && draggedRight) || flickedRight) close();
+    });
+
+    handle.addEventListener('pointercancel', reset);
   }
 
   function _fileName(path) {
@@ -151,6 +294,7 @@
     const backdrop = document.getElementById(BACKDROP_ID);
     const drawer = document.getElementById(DRAWER_ID);
     backdrop?.classList?.remove('open');
+    _clearDismissDrag(drawer);
     drawer?.classList?.remove('open');
     drawer?.setAttribute('aria-hidden', 'true');
     if (document.body) delete document.body.dataset.cloudMobileSideDrawerOpen;
@@ -309,17 +453,23 @@
       drawer.setAttribute('aria-modal', 'false');
       drawer.setAttribute('aria-labelledby', TITLE_ID);
       drawer.innerHTML = `
+        <button type="button" class="cloud-mobile-drawer-handle cloud-mobile-right-drawer-handle" aria-label="詳細ドロワーを右へ閉じる" title="詳細ドロワーを右へ閉じる">${_iconHtml('chevronsRight', 20, '›')}</button>
         <div class="cloud-mobile-side-drawer-header">
           <strong id="${TITLE_ID}" class="cloud-mobile-side-drawer-title"></strong>
           <button type="button" class="cloud-mobile-side-drawer-open" aria-label="本画面で開いて編集" title="本画面で開いて編集">${_iconHtml('externalLink', 20, '↗')}</button>
           <button type="button" class="cloud-mobile-side-drawer-close" aria-label="閉じる" title="閉じる">${_iconHtml('x', 20, '×')}</button>
         </div>
         <div id="${BODY_ID}" class="cloud-mobile-side-drawer-body"></div>`;
+      drawer.querySelector('.cloud-mobile-right-drawer-handle')?.addEventListener('click', close);
       drawer.querySelector('.cloud-mobile-side-drawer-open')?.addEventListener('click', _openCurrentTargetForEdit);
       drawer.querySelector('.cloud-mobile-side-drawer-close')?.addEventListener('click', close);
       document.body.appendChild(drawer);
+      _installDismissGesture(drawer);
+      _installHandleDismissGesture(drawer.querySelector('.cloud-mobile-right-drawer-handle'), drawer);
       _syncOpenButton();
     }
+    _installDismissGesture(drawer);
+    _installHandleDismissGesture(drawer.querySelector('.cloud-mobile-right-drawer-handle'), drawer);
     return {
       backdrop,
       drawer,

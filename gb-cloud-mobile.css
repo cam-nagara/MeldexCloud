@@ -13,6 +13,10 @@
   display: none;
 }
 
+.cloud-mobile-drawer-handle {
+  display: none;
+}
+
 @media (min-width: 0px), (max-width: 1024px), (pointer: coarse) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] {
     min-height: var(--cloud-visual-vh, 100dvh);
@@ -150,6 +154,36 @@
     object-fit: cover;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-drawer-handle {
+    width: 28px;
+    height: 76px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    background: rgba(45, 45, 45, 0.94);
+    color: var(--fg, #d4d4d4);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-drawer-handle svg {
+    width: 18px;
+    height: 18px;
+    pointer-events: none;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-left-drawer-handle {
+    position: fixed;
+    top: 50%;
+    right: max(24px, env(safe-area-inset-right));
+    z-index: 6;
+    display: inline-flex;
+    transform: translateY(-50%);
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-tabs > .cloud-mobile-pane-tree-back {
     width: 40px;
     height: 40px;
@@ -198,6 +232,24 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tree-node-row {
     min-height: 44px;
     align-items: center;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tree-node-row .tree-hover-btns {
+    display: flex;
+    gap: 4px;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tree-node-row .tree-hover-btn {
+    width: 36px;
+    height: 36px;
+    touch-action: manipulation;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .fav-more-btn {
+    width: 36px;
+    height: 36px;
+    opacity: 1;
+    touch-action: manipulation;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-split-horizontal {
@@ -552,11 +604,12 @@
     top: var(--cloud-visual-offset-top, 0px);
     right: 0;
     bottom: auto;
-    width: min(72vw, 560px);
+    width: min(92vw, 560px);
     height: var(--cloud-visual-vh, 100dvh);
     z-index: 10100;
     flex-direction: column;
     min-width: 0;
+    overflow: visible;
     border-left: 1px solid var(--border, #333);
     background: var(--bg, #1f1f1f);
     color: var(--fg, #d4d4d4);
@@ -566,13 +619,23 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer.open {
-    transform: translateX(0);
+    transform: none;
+    will-change: auto;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .cloud-mobile-right-drawer-handle {
+    position: fixed;
+    top: 50%;
+    left: calc(100vw - min(92vw, 560px) + 8px);
+    z-index: 2;
+    display: inline-flex;
+    transform: translateY(-50%);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-header {
     box-sizing: border-box;
     min-height: calc(54px + var(--cloud-mobile-safe-top, 0px));
-    padding: calc(6px + var(--cloud-mobile-safe-top, 0px)) max(8px, env(safe-area-inset-right)) 6px 12px;
+    padding: calc(6px + var(--cloud-mobile-safe-top, 0px)) max(8px, env(safe-area-inset-right)) 6px 44px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 44px 44px;
     align-items: center;
@@ -725,7 +788,7 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer[role="dialog"] {
-    max-width: min(72vw, 560px) !important;
+    max-width: min(92vw, 560px) !important;
     max-height: var(--cloud-visual-vh, 100dvh) !important;
   }
 

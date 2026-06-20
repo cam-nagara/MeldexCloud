@@ -650,6 +650,20 @@
 .bd-style-list-actions > .gb-btn { width: 100%; justify-content: center; }
 @media (pointer: coarse) {
   .bd-toolbar-title { width: 100%; flex-basis: 100%; }
+  .bd-card-menu-btn {
+    top: 6px;
+    right: 6px;
+    width: 40px;
+    height: 40px;
+    opacity: 1;
+    font-size: 14px;
+    touch-action: manipulation;
+  }
+  .bd-conn-action-btn {
+    min-width: 44px;
+    height: 36px;
+    touch-action: manipulation;
+  }
 }
 @media (max-width: 900px) {
   .bd-style-manager { grid-template-columns: 1fr; }

@@ -19,22 +19,22 @@
   .row-drag-handle,
   .row-select-cb {
     opacity: 1;
-    min-width: 20px;
-    min-height: 28px;
-    width: 20px;
-    height: 28px;
+    min-width: 36px;
+    min-height: 36px;
+    width: 36px;
+    height: 36px;
     margin-right: 0;
   }
 
   .row-drag-handle {
-    min-width: 18px;
-    width: 18px;
+    min-width: 36px;
+    width: 36px;
   }
 
   .row-select-cb {
-    --gb-checkbox-size-override: 18px;
-    min-width: 20px;
-    width: 20px;
+    --gb-checkbox-size-override: 22px;
+    min-width: 36px;
+    width: 36px;
   }
 
   #pivot-table td.col-entity .entity-name-cell-main {
@@ -56,8 +56,8 @@
 
   .cell-add-btn {
     display: inline-flex;
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .cell-value-more,
@@ -65,8 +65,8 @@
   .view-tab-more {
     display: inline-flex !important;
     opacity: 1 !important;
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 44px;
+    min-height: 44px;
     align-items: center;
     justify-content: center;
   }

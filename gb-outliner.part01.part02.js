@@ -308,8 +308,8 @@
       openFolder(item.name, item.path, _expOpts);
       if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
     } else if (!NATIVE_TYPES.has(item.type)) {
-      // ネイティブアプリ専用ファイル（psd, clip, 3d等）: 右クリックで開く案内
-      showStatus(item.name + ' — 右クリックメニューからアプリで開く');
+      // ネイティブアプリ専用ファイル（psd, clip, 3d等）: メニューから開く案内
+      showStatus(item.name + ' — 「…」または長押しメニューからアプリで開く');
     }
 
     // open* 呼び出し後の念押し復元（ガードは pointerdown で既に張っている）

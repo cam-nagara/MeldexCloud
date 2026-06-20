@@ -600,7 +600,7 @@ function showCompareModal(preselectedPath) {
 
   const hint = document.createElement('div');
   hint.style.cssText = 'font-size:11px;color:var(--fg2);margin-bottom:12px;';
-  hint.textContent = 'フォルダツリーでファイルを右クリック→「比較...」からも開けます。非テキスト形式はメタデータと先頭バイトで比較します。';
+  hint.textContent = 'フォルダツリーのファイルメニューから「比較...」を選んでも開けます。非テキスト形式はメタデータと先頭バイトで比較します。';
   modal.appendChild(hint);
 
   // ボタン

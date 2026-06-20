@@ -409,7 +409,7 @@ function _showPaneEmpty(paneEl) {
     overlay = document.createElement('div');
     overlay.className = 'pane-empty-overlay';
     overlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--fg2);font-size:14px;background:var(--bg1);z-index:5;';
-    overlay.textContent = 'フォルダツリーからDBを選択、または右クリック→「別の作業領域で開く」';
+    overlay.textContent = 'フォルダツリーからシートを選択、またはファイルメニューから「別の作業領域で開く」';
     if (getComputedStyle(container).position === 'static') {
       container.style.position = 'relative';
     }
