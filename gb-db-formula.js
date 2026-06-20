@@ -32,8 +32,10 @@ function formulaTokenize(src) {
     // 数値
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(src[i+1]||''))) {
       const start = i;
-      let n = ''; while (i < src.length && /[0-9.]/.test(src[i])) { n += src[i]; i++; }
-      tokens.push({type:'num', value: parseFloat(n), pos:start, end:i}); continue;
+      const m = src.slice(i).match(/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i);
+      if (!m) throw Object.assign(new Error('Invalid number'), { formulaPos: start });
+      i += m[0].length;
+      tokens.push({type:'num', value: Number(m[0]), pos:start, end:i}); continue;
     }
     // 識別子・キーワード
     if (/[a-zA-Z_\u3000-\u9fff\uff00-\uffef]/.test(ch)) {
@@ -160,7 +162,12 @@ function formulaEval(ast, ctx) {
       if (ast.op === '||') { const lv = formulaEval(ast.left, ctx); return toBool(lv) ? lv : formulaEval(ast.right, ctx); }
       const lv = formulaEval(ast.left, ctx), rv = formulaEval(ast.right, ctx);
       switch (ast.op) {
-        case '+': return (typeof lv === 'string' || typeof rv === 'string') ? String(lv) + String(rv) : toNum(lv) + toNum(rv);
+        case '+': {
+          const ln = _formulaNumberOrNull(lv);
+          const rn = _formulaNumberOrNull(rv);
+          if (ln !== null && rn !== null) return ln + rn;
+          return (typeof lv === 'string' || typeof rv === 'string') ? String(lv) + String(rv) : toNum(lv) + toNum(rv);
+        }
         case '-': return toNum(lv) - toNum(rv);
         case '*': return toNum(lv) * toNum(rv);
         case '/': { const d = toNum(rv); return d === 0 ? 0 : toNum(lv) / d; }
@@ -168,8 +175,8 @@ function formulaEval(ast, ctx) {
         case '<': return _formulaCompare(lv, rv, '<');
         case '>=': return _formulaCompare(lv, rv, '>=');
         case '<=': return _formulaCompare(lv, rv, '<=');
-        case '==': return String(lv) === String(rv);
-        case '!=': return String(lv) !== String(rv);
+        case '==': return _formulaEquals(lv, rv);
+        case '!=': return !_formulaEquals(lv, rv);
       }
       return '';
     }
@@ -178,7 +185,30 @@ function formulaEval(ast, ctx) {
   }
 }
 
-function toNum(v) { if (typeof v === 'number') return isFinite(v) ? v : 0; if (typeof v === 'boolean') return v ? 1 : 0; const n = parseFloat(v); return isFinite(n) ? n : 0; }
+function _formulaNumberOrNull(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v !== 'string') return null;
+  const text = v.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toNum(v) {
+  const n = _formulaNumberOrNull(v);
+  return n === null ? 0 : n;
+}
+
+function _formulaEquals(lv, rv) {
+  const ld = _formulaDateMs(lv);
+  const rd = _formulaDateMs(rv);
+  if (ld !== null && rd !== null) return ld === rd;
+  const ln = _formulaNumberOrNull(lv);
+  const rn = _formulaNumberOrNull(rv);
+  if (ln !== null && rn !== null) return ln === rn;
+  return String(lv) === String(rv);
+}
 function toBool(v) {
   if (v === '' || v === 0 || v === false || v === null || v === undefined) return false;
   if (typeof v === 'string') {
@@ -352,7 +382,8 @@ function _formulaDateShift(value, amount, unitValue) {
   else shifted.setSeconds(shifted.getSeconds() + delta);
   const originalText = typeof value === 'string' ? value.trim() : '';
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(originalText);
-  return _formulaDateValueFromDate(shifted, !dateOnly);
+  const needsTime = ['hours', 'minutes', 'seconds'].includes(unit);
+  return _formulaDateValueFromDate(shifted, !dateOnly || needsTime);
 }
 
 function _formulaCompare(lv, rv, op) {

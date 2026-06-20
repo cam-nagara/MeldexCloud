@@ -442,8 +442,8 @@
         return { ok: true, node: { type: 'scriptnote', label: labelName, path: targetPath } };
       }
       if (type === 'board') {
-        const labelName = await _uniqueName(provider, parent, label, '.md');
-        const targetPath = _joinPath(parent, labelName + '.md');
+        const labelName = await _uniqueName(provider, parent, label, '.mel-board');
+        const targetPath = _joinPath(parent, labelName + '.mel-board');
         await provider.writeText(targetPath, `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`);
         return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
       }

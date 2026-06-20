@@ -14,6 +14,8 @@ function _normalizeDetailTab(tab) {
     'note-editor',
     'db-property-settings',
     'calendar-today',
+    'calendar-settings',
+    'calendar-production',
     'board-card',
     'board-line',
     'board-note',
@@ -28,6 +30,7 @@ function _normalizeDetailTab(tab) {
     'sn2-ruby',
     'sn2-rowset',
     'file-style',
+    'tag-management',
   ]);
   return validTabs.has(tab) ? tab : null;
 }
@@ -39,16 +42,17 @@ function _resolveDetailTabForType(type, defaultTab) {
   if (cur === 'file-style') return cur;
   const backlinksTypes = new Set(['page', 'database', 'board']);
   if (cur === 'backlinks' && backlinksTypes.has(type)) return cur;
-  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db']);
+  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'scriptnote']);
   if (cur === 'publish' && publishTypes.has(type)) return cur;
   const compatible = {
     page: ['note-editor', 'publish'],
-    folder: ['note-editor'],
+    folder: ['note-editor', 'tag-management'],
     database: ['db-property-settings', 'publish'],
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'],
-    calendar: ['calendar-today', 'publish'],
+    calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
     csv: ['publish'],
     'smart-db': ['publish'],
+    scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
   };
   const valid = compatible[type] || [];
   if (valid.includes(cur)) return cur;
@@ -61,15 +65,16 @@ function switchDetailTab(tab) {
   const bar = document.getElementById('detail-tab-bar');
   if (!bar) return;
   bar.querySelectorAll('.gb-inner-tab, .detail-tab').forEach(t => {
-    const active = t.dataset.detailTab === tab;
+    const active = !t.hidden && t.dataset.detailTab === tab;
     t.classList.toggle('gb-inner-tab-active', active);
     t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
     // 旧経路 (_applyScopedDetailTab) が付与したインライン style を除去
     t.style.borderBottomColor = '';
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish', 'tag-management'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -92,6 +97,13 @@ function switchDetailTab(tab) {
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
   }
+  if (tab === 'tag-management' && typeof renderTagManagementTab === 'function') {
+    const container = document.getElementById('detail-tab-tag-management');
+    if (container) renderTagManagementTab(container);
+  }
+  try {
+    document.dispatchEvent(new CustomEvent('meldex:detail-tab-switched', { detail: { tab } }));
+  } catch {}
 }
 
 // ==============================
@@ -112,6 +124,8 @@ function _detailTabShellHtml() {
       <div class="gb-inner-tab detail-tab detail-tab-note-editor" data-detail-tab="note-editor" hidden data-action="switchDetailTab('note-editor')">エディタ</div>
       <div class="gb-inner-tab detail-tab detail-tab-db-property-settings" data-detail-tab="db-property-settings" hidden data-action="switchDetailTab('db-property-settings')">プロパティ設定</div>
       <div class="gb-inner-tab detail-tab detail-tab-calendar" data-detail-tab="calendar-today" hidden data-action="switchDetailTab('calendar-today')">今日</div>
+      <div class="gb-inner-tab detail-tab detail-tab-calendar detail-tab-calendar-settings" data-detail-tab="calendar-settings" hidden data-action="switchDetailTab('calendar-settings')">スケジューラー設定</div>
+      <div class="gb-inner-tab detail-tab detail-tab-calendar detail-tab-calendar-production" data-detail-tab="calendar-production" hidden data-action="switchDetailTab('calendar-production')">制作管理</div>
       <div class="gb-inner-tab detail-tab detail-tab-board detail-tab-board-card" data-detail-tab="board-card" hidden data-action="switchDetailTab('board-card')">カード</div>
       <div class="gb-inner-tab detail-tab detail-tab-board detail-tab-board-line" data-detail-tab="board-line" hidden data-action="switchDetailTab('board-line')">ライン</div>
       <div class="gb-inner-tab detail-tab detail-tab-board-note" data-detail-tab="board-note" hidden data-action="switchDetailTab('board-note')">ノート</div>
@@ -121,11 +135,14 @@ function _detailTabShellHtml() {
       <div class="gb-inner-tab detail-tab detail-tab-board-style detail-tab-board-line-style" data-detail-tab="board-line-style" hidden data-action="switchDetailTab('board-line-style')">ラインスタイル</div>
       <div class="gb-inner-tab detail-tab detail-tab-board-style detail-tab-board-depth-style" data-detail-tab="board-depth-style" hidden data-action="switchDetailTab('board-depth-style')">階層別スタイル</div>
       <div class="gb-inner-tab detail-tab detail-tab-backlinks" data-detail-tab="backlinks" hidden data-action="switchDetailTab('backlinks')">バックリンク</div>
+      <div class="gb-inner-tab detail-tab detail-tab-tag-management" data-detail-tab="tag-management" hidden data-action="switchDetailTab('tag-management')">タグ管理</div>
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-sn2-main" class="gb-panel-body" hidden></div>
     <div id="detail-tab-calendar-today" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-calendar-settings" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-calendar-production" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-line" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card-style" class="gb-panel-body-scroll" hidden></div>
@@ -137,6 +154,7 @@ function _detailTabShellHtml() {
     <div id="detail-tab-file-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-backlinks" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-publish" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-tag-management" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-empty" class="gb-empty-placeholder">選択中の項目がありません</div>`;
 }
 
@@ -381,6 +399,16 @@ function clearBoardDetailTabs() {
   showBoardTabs(false);
 }
 
+// タグ管理タブ（エクスプローラー専用）の表示切替
+function showTagManagementTab(visible) {
+  const rpDetail = document.getElementById('rp-detail');
+  if (rpDetail) _ensureDetailTabShell(rpDetail);
+  document.querySelectorAll('.detail-tab-tag-management').forEach(t => { t.hidden = !visible; });
+  if (!visible && _currentDetailTab === 'tag-management') {
+    switchDetailTab(null);
+  }
+}
+
 // ファイルテーマ タブ（全エディタ共通）の表示切替
 function showFileStyleTab(visible) {
   const rpDetail = document.getElementById('rp-detail');
@@ -599,6 +627,129 @@ const _FS_FIELDS = {
   },
 };
 const _fsPendingThemeColorSets = {};
+let _fsStyleHistorySuppressed = 0;
+
+function _fsStyleSnapshot(style) {
+  if (!style || typeof style !== 'object' || Array.isArray(style)) return {};
+  const out = {};
+  Object.keys(style).sort().forEach((key) => {
+    const value = style[key];
+    if (value === undefined || value === null || value === '') return;
+    out[key] = value;
+  });
+  return JSON.parse(JSON.stringify(out));
+}
+
+function _fsStyleSnapshotsEqual(a, b) {
+  try { return JSON.stringify(_fsStyleSnapshot(a)) === JSON.stringify(_fsStyleSnapshot(b)); }
+  catch { return false; }
+}
+
+function _fsWithStyleHistorySuppressed(fn) {
+  _fsStyleHistorySuppressed += 1;
+  const release = () => {
+    _fsStyleHistorySuppressed = Math.max(0, _fsStyleHistorySuppressed - 1);
+  };
+  try {
+    const result = typeof fn === 'function' ? fn() : undefined;
+    if (result && typeof result.finally === 'function') return result.finally(release);
+    release();
+    return result;
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+function _fsStyleHistoryLabel(ctx, label) {
+  if (label) return label;
+  return ({
+    folder: 'フォルダ書式設定変更',
+    page: 'ノート書式設定変更',
+    db: 'シート書式設定変更',
+    board: 'ボード書式設定変更',
+    scriptnote: 'シナリオ書式設定変更',
+  })[ctx] || '書式設定変更';
+}
+
+function _fsStyleHistoryScope(ctx) {
+  const s = (typeof state !== 'undefined') ? state : null;
+  if (ctx === 'db' && typeof _dbViewConfigHistoryScope === 'function') {
+    return _dbViewConfigHistoryScope(s?.currentDbPath || '');
+  }
+  if (ctx === 'db') return s?.currentDbPath ? 'db:' + String(s.currentDbPath).replace(/\\/g, '/') : '';
+  if (ctx === 'page') {
+    const path = s?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
+    return path ? 'page:' + String(path).split('/').pop() : '';
+  }
+  if (ctx === 'folder') {
+    const path = (typeof _folderPath !== 'undefined' ? _folderPath : '') || '';
+    return path ? 'folder:' + String(path).replace(/\\/g, '/') : '';
+  }
+  return '';
+}
+
+function _fsMarkStyleVersionDirty(ctx) {
+  if (ctx === 'folder' || typeof markAutoVersionDirty !== 'function') return;
+  try { markAutoVersionDirty(); } catch {}
+}
+
+function _fsPersistStyleDirect(ctx, adapter, style, options = {}) {
+  if (adapter && typeof adapter.saveStyle === 'function') {
+    return adapter.saveStyle(style, options);
+  }
+  return _fsSaveStyleForContext(ctx, style);
+}
+
+function _fsRestoreStyleSnapshot(ctx, style) {
+  const result = _fsWithStyleHistorySuppressed(() => _fsPersistStyleDirect(ctx, _fsGetAdapter(ctx), _fsStyleSnapshot(style), { skipUndo: true }));
+  const refresh = () => {
+    if (ctx === 'board' && (!_fsStyleSnapshot(style) || Object.keys(_fsStyleSnapshot(style)).length === 0) && typeof _fsResetBoardRuntimeFileStyle === 'function') {
+      _fsResetBoardRuntimeFileStyle();
+    }
+    if (typeof _fsApplyCurrentStyleRuntime === 'function') _fsApplyCurrentStyleRuntime(ctx);
+    if (typeof renderFileStyleTab === 'function') renderFileStyleTab(ctx);
+  };
+  if (result && typeof result.then === 'function') return result.finally(refresh);
+  refresh();
+  return result;
+}
+
+function _fsPushStyleHistory(ctx, before, after, label, detail) {
+  if (_fsStyleHistorySuppressed || _fsStyleSnapshotsEqual(before, after)) return false;
+  if (ctx === 'scriptnote' || ctx === 'board') return false;
+  if (typeof historyPush !== 'function') return false;
+  historyPush(
+    _fsStyleHistoryLabel(ctx, label),
+    () => _fsRestoreStyleSnapshot(ctx, before),
+    () => _fsRestoreStyleSnapshot(ctx, after),
+    _fsStyleHistoryScope(ctx),
+    detail || ''
+  );
+  return true;
+}
+
+function _fsApplyStyleWithHistory(ctx, adapter, style, label, detail) {
+  const before = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+  const next = _fsStyleSnapshot(style);
+  if (_fsStyleSnapshotsEqual(before, next)) return null;
+  if (ctx === 'scriptnote') {
+    const ed = _getScriptNoteEditorForFileStyle?.();
+    if (typeof ed?._pushUndo === 'function') ed._pushUndo(_fsStyleHistoryLabel(ctx, label));
+  } else if (ctx === 'board' && typeof bdPushUndo === 'function') {
+    bdPushUndo();
+  }
+  const result = _fsWithStyleHistorySuppressed(() => _fsPersistStyleDirect(ctx, adapter, next, { skipUndo: true }));
+  const finish = () => {
+    if (ctx === 'board' && Object.keys(next).length === 0 && typeof _fsResetBoardRuntimeFileStyle === 'function') _fsResetBoardRuntimeFileStyle();
+    if (typeof _fsApplyCurrentStyleRuntime === 'function') _fsApplyCurrentStyleRuntime(ctx);
+    const after = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+    _fsPushStyleHistory(ctx, before, after, label, detail);
+    return after;
+  };
+  if (result && typeof result.then === 'function') return result.then(finish);
+  return finish();
+}
 
 function _fsFormatCss(field, raw) {
   if (raw === null || raw === undefined || raw === '') return '';
@@ -617,7 +768,7 @@ function _fsGetScriptnoteAdapter() {
   return {
     kind: 'scriptnote',
     get: (field) => ed.doc.editor?.[field.key],
-    saveStyle: (style) => {
+    saveStyle: (style, options = {}) => {
       if (!ed.doc.editor) ed.doc.editor = {};
       const next = _filterScriptnoteFileStyle(style || {});
       Object.keys(ed.doc.editor).forEach((key) => {
@@ -631,19 +782,20 @@ function _fsGetScriptnoteAdapter() {
         ed.doc.editor.wrapMode = true;
       }
       Object.entries(next).forEach(([key, value]) => { ed.doc.editor[key] = value; });
-      if (typeof ed._markDirty === 'function') ed._markDirty();
+      if (typeof ed._markDirty === 'function') ed._markDirty(options.skipUndo ? { skipUndo: true } : {});
       if (typeof ed._render === 'function') ed._render();
     },
     set: (field, val) => {
+      const pushedUndo = typeof ed._pushUndo === 'function';
+      if (pushedUndo) ed._pushUndo('スタイル設定変更');
       if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
-        _fsEnsureLocalCustomThemeBeforeFieldSet('scriptnote', field);
+        _fsEnsureLocalCustomThemeBeforeFieldSet('scriptnote', field, null, { skipHistory: true, skipUndo: pushedUndo });
       }
       if (!ed.doc.editor) ed.doc.editor = {};
-      if (typeof ed._pushUndo === 'function') ed._pushUndo('スタイル設定変更');
       if (field.key === 'wrapMode' && (val === null || val === undefined || val === '')) ed.doc.editor[field.key] = true;
       else if (val === null || val === undefined || val === '') delete ed.doc.editor[field.key];
       else ed.doc.editor[field.key] = val;
-      if (typeof ed._markDirty === 'function') ed._markDirty();
+      if (typeof ed._markDirty === 'function') ed._markDirty(pushedUndo ? { skipUndo: true } : {});
     },
     applyCss: (field, raw) => {
       if (field.applyCustom === 'wrapMode' || field.applyCustom === 'textSpacing') { if (typeof ed._render === 'function') ed._render(); return; }
@@ -661,6 +813,7 @@ function _fsGetScriptnoteAdapter() {
 }
 
 function _fsGetStyleForContext(ctx) {
+  const s = (typeof state !== 'undefined') ? state : null;
   if (ctx === 'scriptnote') {
     const ed = _getScriptNoteEditorForFileStyle?.();
     return ed ? _filterScriptnoteFileStyle(ed.doc.editor || {}) : {};
@@ -674,32 +827,39 @@ function _fsGetStyleForContext(ctx) {
     if (typeof bd !== 'undefined') return bd._fileStyle || bd._fileTheme || {};
     return {};
   }
-  if (ctx === 'db') return (state?.dbMetadata?.style || state?.dbMetadata?.theme || {});
+  if (ctx === 'db') return (s?.dbMetadata?.style || s?.dbMetadata?.theme || {});
   return typeof _getCurrentFileStyle === 'function' ? (_getCurrentFileStyle() || {}) : {};
 }
 
 function _fsSaveStyleForContext(ctx, style) {
   const saved = style && Object.keys(style).length ? style : null;
+  let result;
   if (ctx === 'folder' && typeof _saveFolderFileStyle === 'function') {
-    _saveFolderFileStyle(saved);
-    return;
+    result = _saveFolderFileStyle(saved);
+    return result;
   }
   if (ctx === 'page' && typeof _saveFileThemeToNoteFrontmatter === 'function') {
-    _saveFileThemeToNoteFrontmatter(saved);
-    return;
+    result = _saveFileThemeToNoteFrontmatter(saved);
+    _fsMarkStyleVersionDirty(ctx);
+    return result;
   }
   if (ctx === 'board' && typeof bd !== 'undefined') {
     bd._fileStyle = saved;
+    if (!saved && typeof _fsResetBoardRuntimeFileStyle === 'function') _fsResetBoardRuntimeFileStyle();
     bd.dirty = true;
-    if (typeof bdSave === 'function') bdSave();
-    return;
+    result = typeof bdSave === 'function' ? bdSave() : undefined;
+    _fsMarkStyleVersionDirty(ctx);
+    return result;
   }
   if (ctx === 'db') {
     if (typeof _syncDbMetadataFileStyle === 'function') _syncDbMetadataFileStyle(saved);
-    if (typeof _saveFileThemeToDbFolderNote === 'function') _saveFileThemeToDbFolderNote(saved);
-    return;
+    result = typeof _saveFileThemeToDbFolderNote === 'function' ? _saveFileThemeToDbFolderNote(saved) : undefined;
+    _fsMarkStyleVersionDirty(ctx);
+    return result;
   }
-  if (typeof _saveFileTheme === 'function') _saveFileTheme(saved);
+  result = typeof _saveFileTheme === 'function' ? _saveFileTheme(saved) : undefined;
+  _fsMarkStyleVersionDirty(ctx);
+  return result;
 }
 
 function _fsGetFrontmatterAdapter(ctx) {
@@ -715,14 +875,18 @@ function _fsGetFrontmatterAdapter(ctx) {
       return cur[field.key];
     },
     set: (field, val) => {
+      const before = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+      const boardUndoPushed = ctx === 'board' && typeof bdPushUndo === 'function' && !_fsStyleHistorySuppressed;
+      if (boardUndoPushed) bdPushUndo();
       if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
-        _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, field);
+        _fsEnsureLocalCustomThemeBeforeFieldSet(ctx, field, null, { skipHistory: true, skipUndo: true });
       }
       const cur = _fsGetStyleForContext(ctx);
       const next = { ...cur };
       if (val === null || val === undefined || val === '') delete next[field.key];
       else next[field.key] = val;
       _fsSaveStyleForContext(ctx, next);
+      _fsPushStyleHistory(ctx, before, _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
     },
     applyCss: (field, raw) => {
       const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'

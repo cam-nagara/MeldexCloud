@@ -49,8 +49,8 @@
 /* ==============================
    グループ化
    ============================== */
-function getGroupBy(dbPath) {
-  return getCurrentDbViewTypeSpecific(dbPath, 'pivot')?.groupBy || null;
+function getGroupBy(dbPath, ctx) {
+  return getCurrentDbViewTypeSpecific(dbPath, 'pivot', { ctx })?.groupBy || null;
 }
 
 function _renderDbViewTabMenuItems(container, itemList) {
@@ -124,28 +124,31 @@ function _dbValueMatchesAdvancedFilter(valueObj, filter) {
 
 function _dbValuesMatchAdvancedFilter(values, filter) {
   const list = Array.isArray(values) ? values : [];
-  if (!list.length) return filter.operator === 'empty' || filter.operator === 'not_contains';
+  if (!list.length) return ['empty', 'not_contains', 'not_equals'].includes(filter.operator);
   if (filter.operator === 'not_equals' || filter.operator === 'not_contains') {
     return list.every(v => _dbValueMatchesAdvancedFilter(v, filter));
   }
   return list.some(v => _dbValueMatchesAdvancedFilter(v, filter));
 }
 
-function _dbFilterValuesForCurrentView(values) {
+// 互換テスト用: function _dbFilterValuesForCurrentView(values)
+function _dbFilterValuesForCurrentView(values, filterMode) {
   const list = Array.isArray(values) ? values : [];
-  return typeof filterValues === 'function' ? filterValues(list) : list;
+  return typeof filterValues === 'function' ? filterValues(list, undefined, filterMode) : list;
 }
 
-function _dbEntityPassesAdvancedFilters(entityData, filters) {
+function _dbEntityPassesAdvancedFilters(entityData, filters, filterMode) {
   if (!Array.isArray(filters) || filters.length === 0) return true;
   return filters.every(filter => {
     if (filter.property === '*') {
       const allValues = Object.values(entityData || {})
-        .flatMap(vals => Array.isArray(vals) ? _dbFilterValuesForCurrentView(vals) : [])
+        // 互換テスト用: .flatMap(vals => Array.isArray(vals) ? _dbFilterValuesForCurrentView(vals) : [])
+        .flatMap(vals => Array.isArray(vals) ? _dbFilterValuesForCurrentView(vals, filterMode) : [])
         .filter(v => v && typeof v === 'object');
       return _dbValuesMatchAdvancedFilter(allValues, filter);
     }
-    const values = _dbFilterValuesForCurrentView(entityData?.[filter.property] || []);
+    // 互換テスト用: const values = _dbFilterValuesForCurrentView(entityData?.[filter.property] || []);
+    const values = _dbFilterValuesForCurrentView(entityData?.[filter.property] || [], filterMode);
     return _dbValuesMatchAdvancedFilter(values, filter);
   });
 }
@@ -272,18 +275,26 @@ function renderGallery(ctx) {
   if (!data || !data.entities) { container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--fg2);">データがありません</div>'; return; }
 
   const dbPath = ctx.dbPath || state.currentDbPath;
-  const hiddenCols = getHiddenCols(dbPath);
-  const advFilters = getAdvancedFilters(dbPath);
+  const hiddenCols = getHiddenCols(dbPath, { ctx });
+  const advFilters = getAdvancedFilters(dbPath, { ctx });
   const propTypes = getPropertyTypes(dbPath);
-  const colOrder = getColOrder(dbPath);
+  const colOrder = getColOrder(dbPath, { ctx });
   const entitiesMap = data.entities;
   const entityNames = Object.keys(entitiesMap)
-    .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters))
+    .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
     .sort();
-  if (entityNames.length === 0) { renderEmptyState(container, 'image', 'エントリがありません', '下部の入力欄から追加してください'); return; }
+  if (entityNames.length === 0) {
+    if (typeof _dbRenderEmptyStateWithCreate === 'function') {
+      _dbRenderEmptyStateWithCreate(container, 'image', 'エントリがありません', 'エントリを追加して開始してください', ctx);
+    } else {
+      renderEmptyState(container, 'image', 'エントリがありません', 'エントリを追加して開始してください');
+    }
+    return;
+  }
   // colOrder適用（renderPivotと同じ順序ロジック）
   let orderedProps = colOrder ? colOrder.filter(p => data.properties.includes(p)) : [...data.properties];
   data.properties.forEach(p => { if (!orderedProps.includes(p)) orderedProps.push(p); });
+  if (typeof filterDeletedDbProperties === 'function') orderedProps = filterDeletedDbProperties(dbPath, orderedProps);
   const visibleProps = orderedProps.filter(p => !hiddenCols.includes(p));
 
   const grid = document.createElement('div');
@@ -323,7 +334,7 @@ function renderGallery(ctx) {
 
     // 画像プロパティがあればサムネイル
     for (const propName of visibleProps) {
-      const vals = filterValues(entityData[propName] || []);
+      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
       for (const val of vals) {
         const imgSrc = _galleryImageSrcFromValue(val.value, dbPath, entityName);
         if (imgSrc) {
@@ -349,10 +360,10 @@ function renderGallery(ctx) {
       if (ptcG && ptcG.source) {
         const metaKey = '_' + ptcG.source;
         const mv = entityData[metaKey] || '';
-        if (ptcG.source === 'modified' && mv) displayVal = mv.replace('T', ' ').substring(0, 16);
+        if ((ptcG.source === 'created' || ptcG.source === 'modified') && mv) displayVal = mv.replace('T', ' ').substring(0, 16);
         else displayVal = mv || '';
       } else {
-        const vals = filterValues(entityData[propName] || []);
+        const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
         if (vals.length === 0) continue;
         displayVal = vals.map(v => v.value).join(', ');
       }
@@ -366,7 +377,8 @@ function renderGallery(ctx) {
       const valSpan = document.createElement('span');
       valSpan.className = 'gallery-card-prop-val';
       if (!ptcG?.source && typeof _dbRichAppendValuePreview === 'function') {
-        _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || []));
+        // 互換テスト用: _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || []));
+        _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || [], undefined, ctx?.filter));
       } else {
         valSpan.textContent = displayVal;
       }
@@ -396,7 +408,7 @@ function renderGallery(ctx) {
         link.textContent = (r.entity || '') + (r.role ? ' (' + r.role + ')' : '');
         link.dataset.dbPath = r.db_path || r.dbPath || r.database || dbPath;
         link.dataset.entityName = r.entity || '';
-        link.addEventListener('click', (e) => { e.stopPropagation(); navigateToEntity(r.entity, link.dataset.dbPath || dbPath); });
+        link.addEventListener('click', (e) => { e.stopPropagation(); navigateToEntity(r.entity, link.dataset.dbPath || dbPath, ctx); });
         relDiv.appendChild(link);
       });
       card.appendChild(relDiv);
@@ -413,8 +425,8 @@ function renderGallery(ctx) {
 /* ==============================
    カンバンビュー
    ============================== */
-function getKanbanGroupBy(dbPath) {
-  return getCurrentDbViewTypeSpecific(dbPath, 'kanban')?.groupBy || '_status';
+function getKanbanGroupBy(dbPath, ctx) {
+  return getCurrentDbViewTypeSpecific(dbPath, 'kanban', { ctx })?.groupBy || '_status';
 }
 function setKanbanGroupBy(dbPath, prop, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: カンバングループ', options.detail || prop || '', options, (v) => {
@@ -437,17 +449,25 @@ function renderKanban(ctx) {
 
   const dbPath = ctx.dbPath || state.currentDbPath;
   const entitiesMap = data.entities;
-  const advFilters = getAdvancedFilters(dbPath);
+  const advFilters = getAdvancedFilters(dbPath, { ctx });
   const entityNames = Object.keys(entitiesMap)
-    .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters))
+    .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
     .sort();
-  if (entityNames.length === 0) { renderEmptyState(container, 'columns', 'エントリがありません', '下部の入力欄から追加してください'); return; }
-  const hiddenCols = getHiddenCols(dbPath);
-  const colOrder = getColOrder(dbPath);
+  if (entityNames.length === 0) {
+    if (typeof _dbRenderEmptyStateWithCreate === 'function') {
+      _dbRenderEmptyStateWithCreate(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください', ctx);
+    } else {
+      renderEmptyState(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください');
+    }
+    return;
+  }
+  const hiddenCols = getHiddenCols(dbPath, { ctx });
+  const colOrder = getColOrder(dbPath, { ctx });
   let orderedProps = colOrder ? colOrder.filter(p => data.properties.includes(p)) : [...data.properties];
   data.properties.forEach(p => { if (!orderedProps.includes(p)) orderedProps.push(p); });
+  if (typeof filterDeletedDbProperties === 'function') orderedProps = filterDeletedDbProperties(dbPath, orderedProps);
   const visibleProps = orderedProps.filter(p => !hiddenCols.includes(p));
-  let groupByProp = getKanbanGroupBy(dbPath);
+  let groupByProp = getKanbanGroupBy(dbPath, ctx);
   if (groupByProp !== '_status' && !_isKanbanGroupableProperty(dbPath, groupByProp)) {
     groupByProp = '_status';
     setKanbanGroupBy(dbPath, groupByProp, { skipHistory: true });
@@ -471,7 +491,7 @@ function renderKanban(ctx) {
     // プロパティベースのカンバン
     entityNames.forEach(entityName => {
       const entityData = entitiesMap[entityName];
-      const vals = filterValues(entityData[groupByProp] || []);
+      const vals = filterValues(entityData[groupByProp] || [], undefined, ctx?.filter);
       const groupKey = vals.length > 0 ? vals[0].value : '(未設定)';
       if (!columns.has(groupKey)) columns.set(groupKey, []);
       columns.get(groupKey).push({ name: entityName, data: entityData, groupValue: groupKey });
@@ -500,7 +520,7 @@ function renderKanban(ctx) {
     if (groupByProp === p) opt.selected = true;
     sel.appendChild(opt);
   });
-  sel.onchange = () => { setKanbanGroupBy(dbPath, sel.value); renderKanban(ctx); };
+  sel.onchange = () => { setKanbanGroupBy(dbPath, sel.value, { ctx }); renderKanban(ctx); };
   header.appendChild(sel);
 
   // ボード描画
@@ -564,14 +584,14 @@ function renderKanban(ctx) {
             statusWriteOps.push(target);
             if (typeof _autoFillOnStatusChange === 'function') {
               const entityPath = _entityPath(dbPath, entityName);
-              const ops = await _autoFillOnStatusChange(entityPath, target.propName, colKey, dbPath);
+              const ops = await _autoFillOnStatusChange(entityPath, target.propName, colKey, dbPath, { ctx });
               if (Array.isArray(ops)) autoFillOps.push(...ops);
             }
           }
         } catch(err) {
           await _rollbackKanbanStatusMove(statusWriteOps, autoFillOps);
           showStatus('ステータス更新に失敗: ' + (err.message || err), true);
-          await selectDatabase(dbPath);
+          await selectDatabase(dbPath, ctx);
           return;
         }
         if (statusWriteOps.length > 0) {
@@ -579,14 +599,14 @@ function renderKanban(ctx) {
             async () => {
               if (typeof _undoAutoFillStatusOps === 'function') await _undoAutoFillStatusOps(autoFillOps);
               for (const s of [...statusWriteOps].reverse()) { try { await _apiPutValue(s.ref, { new_status: s.old }); } catch {} }
-              await selectDatabase(dbPath);
+              await selectDatabase(dbPath, ctx);
             },
             async () => {
               for (const s of statusWriteOps) { try { await _apiPutValue(s.ref, { new_status: colKey }); } catch {} }
               if (typeof _redoAutoFillStatusOps === 'function') await _redoAutoFillStatusOps(autoFillOps);
-              await selectDatabase(dbPath);
+              await selectDatabase(dbPath, ctx);
             },
-            _dbScope()
+            _dbScope(dbPath)
           );
         }
       } else {
@@ -599,19 +619,29 @@ function renderKanban(ctx) {
           const oldVal = target.value || '';
           try {
             if (colKey === '(未設定)') {
+              const ok = await (typeof cfConfirm === 'function'
+                ? cfConfirm(`「${entityName}」の「${groupByProp}」を未設定にします。\n\n現在の値は削除されますが、元に戻せるよう履歴へ記録します。続行しますか？`)
+                : Promise.resolve(window.confirm(`「${entityName}」の値を未設定にしますか？`)));
+              if (!ok) return;
               const oldStatus = target.status || '採用';
               const oldNote = target.note || '';
               const oldRichHtml = target.rich_html || '';
+              const oldRelations = Array.isArray(target.relations) ? JSON.parse(JSON.stringify(target.relations)) : [];
+              const oldPublishedIn = Array.isArray(target.published_in) ? JSON.parse(JSON.stringify(target.published_in)) : [];
               let currentRef = { file: target.file, property: target.property || groupByProp, candidate_index: target.candidate_index };
               await _apiPutValue(target, { _delete: true });
               historyPush('カンバン移動: ' + entityName,
                 async () => {
-                  const result = await _apiPostValue(_entityPath(dbPath, entityName), groupByProp, oldVal, oldStatus, oldNote, oldRichHtml);
+                  const result = await _apiPostValue(_entityPath(dbPath, entityName), groupByProp, oldVal, oldStatus, oldNote, oldRichHtml, {
+                    relations: oldRelations,
+                    published_in: oldPublishedIn,
+                    created: target.created || '',
+                  });
                   currentRef = { file: result?.path || result?.file || currentRef.file, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
-                  await selectDatabase(dbPath);
+                  await selectDatabase(dbPath, ctx);
                 },
-                async () => { await _apiPutValue(currentRef, { _delete: true }); await selectDatabase(dbPath); },
-                _dbScope()
+                async () => { await _apiPutValue(currentRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
+                _dbScope(dbPath)
               );
             } else {
               await _apiPutValue(target, { new_value: colKey });
@@ -619,7 +649,7 @@ function renderKanban(ctx) {
             }
           } catch(err) {
             showStatus('値の更新に失敗: ' + (err.message || err), true);
-            await selectDatabase(dbPath);
+            await selectDatabase(dbPath, ctx);
             return;
           }
         } else {
@@ -631,21 +661,21 @@ function renderKanban(ctx) {
               let createdRef = { file: result?.path || result?.file, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
               if (createdRef.file) {
                 historyPush('カンバン移動: ' + entityName,
-                  async () => { await _apiPutValue(createdRef, { _delete: true }); await selectDatabase(dbPath); },
+                  async () => { await _apiPutValue(createdRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
                   async () => {
                     const redo = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
                     createdRef = { file: redo?.path || redo?.file || createdRef.file, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
-                    await selectDatabase(dbPath);
+                    await selectDatabase(dbPath, ctx);
                   },
-                  _dbScope()
+                  _dbScope(dbPath)
                 );
               }
-            } catch(err) { showStatus('値の更新に失敗: ' + (err.message || err), true); await selectDatabase(dbPath); return; }
+            } catch(err) { showStatus('値の更新に失敗: ' + (err.message || err), true); await selectDatabase(dbPath, ctx); return; }
           }
         }
       }
       showStatus(entityName + ' → ' + colKey);
-      selectDatabase(dbPath);
+      selectDatabase(dbPath, ctx);
     });
 
     // カード描画
@@ -698,7 +728,7 @@ function renderKanban(ctx) {
       for (const propName of visibleProps) {
         if (shown >= 3) break;
         if (propName === groupByProp) continue; // グループ化プロパティは表示不要
-        const vals = filterValues(card.data[propName] || []);
+        const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
         if (vals.length === 0) continue;
         const propRow = document.createElement('div');
         propRow.className = 'kanban-card-prop';

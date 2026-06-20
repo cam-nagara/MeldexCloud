@@ -273,6 +273,75 @@
 /* Part 2-1: CSV セル選択状態 */
 .csv-cell-selected { outline: 2px solid var(--accent); }
 
+body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-view-switcher,
+body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-display-actions,
+body[data-csv-sheet-mode="1"] #tb-db #btn-filter,
+body[data-csv-sheet-mode="1"] #tb-db [data-action="showDbSortMenu(event)"],
+body[data-csv-sheet-mode="1"] #tb-db [data-action="publishCurrentDatabaseView()"],
+body[data-csv-sheet-mode="1"] #tb-db [data-action="openCurrentToolbarSearchReplace('database')"],
+body[data-csv-sheet-mode="1"] #tb-db .gb-toolbar-option-panel-btn {
+  display: none !important;
+}
+
+body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#pivot-table.csv-sheet-mode-table {
+  border-collapse: collapse;
+  table-layout: auto;
+  width: 100%;
+  font-size: 13px;
+}
+
+#pivot-table.csv-sheet-mode-table th,
+#pivot-table.csv-sheet-mode-table td {
+  border: 1px solid var(--border);
+  padding: 5px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+  max-width: 420px;
+  word-break: break-word;
+}
+
+#pivot-table.csv-sheet-mode-table th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--ui-header-bg, var(--bg3));
+  color: var(--ui-header-fg, var(--fg));
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#pivot-table.csv-sheet-mode-table .csv-row-num {
+  position: sticky;
+  left: 0;
+  z-index: 9;
+  width: 42px;
+  min-width: 42px;
+  max-width: 42px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+#pivot-table.csv-sheet-mode-table thead .csv-row-num {
+  z-index: 11;
+}
+
+#pivot-table.csv-sheet-mode-table td:hover {
+  background: var(--bg3);
+}
+
+#pivot-table.csv-sheet-mode-table .csv-empty-cell {
+  padding: 24px;
+  color: var(--fg2);
+  text-align: center;
+}
+
 /* === タッチフレンドリー: pointer:coarse === */
 @media (pointer: coarse) {
   /* Part 3-2: DB行選択チェックボックス */
@@ -354,12 +423,41 @@
 .entry-prop-card.layout-editing { border-color: var(--border); }
 .gb-prop-hide-btn { align-self: flex-start; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--fg2); cursor: pointer; }
 
-.gb-image-cell { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 3px; border: 1px dashed transparent; border-radius: 4px; cursor: pointer; }
-.gb-image-cell-empty { color: var(--fg2); border-color: var(--border); }
-.gb-image-thumb-stack { display: inline-flex; align-items: center; min-width: 64px; }
-.gb-image-thumb { width: 48px; height: 48px; object-fit: cover; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); margin-left: -10px; }
-.gb-image-thumb:first-child { margin-left: 0; }
-.gb-image-more { margin-left: 4px; padding: 1px 6px; border-radius: 10px; background: var(--bg4); color: var(--fg2); font-size: 11px; }
+.gb-image-cell {
+  min-height: 34px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.gb-image-cell-empty { color: var(--fg2); border-color: var(--border); align-items: center; white-space: nowrap; }
+.gb-image-thumb-stack {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  max-width: 100%;
+  gap: 4px;
+  overflow: hidden;
+}
+.gb-image-thumb {
+  flex: 0 0 var(--gb-image-cell-size, 96px);
+  width: var(--gb-image-cell-size, 96px);
+  height: var(--gb-image-cell-size, 96px);
+  max-width: 100%;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg3);
+}
+.gb-image-more { flex: 0 0 auto; margin-left: 2px; padding: 1px 6px; border-radius: 10px; background: var(--bg4); color: var(--fg2); font-size: 11px; }
 .gb-cell-dropzone-active { border-color: var(--accent) !important; outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); }
 .gb-image-gallery-modal { width: min(820px, 92vw); max-height: 86vh; }
 .gb-image-gallery-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

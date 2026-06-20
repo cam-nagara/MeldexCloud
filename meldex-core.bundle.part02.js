@@ -1,3 +1,4 @@
+      if (val) document.documentElement.style.setProperty(v, val);
     });
   } catch(e) { /* cross-origin or same window */ }
 }
@@ -897,4 +898,3 @@ function initIframeMarkup(scrollContainer) {
     if (_ann.tool === 'eraser') {
       const pt = _toLocalCoords(e.clientX, e.clientY);
       const x = pt.x;
-      const y = pt.y;

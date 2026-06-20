@@ -8,6 +8,15 @@
   "display": "standalone",
   "background_color": "#1e1e1e",
   "theme_color": "#1e1e1e",
+  "share_target": {
+    "action": "quick-memo.html",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
   "icons": [
     {
       "src": "Meldex_icon_192.png",

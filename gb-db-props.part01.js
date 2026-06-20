@@ -91,6 +91,7 @@ function _renderColMenuItems(container, itemList) {
       const wrapper = document.createElement('div');
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
+      if (item.e2eId) el.dataset.e2eId = item.e2eId;
       el.innerHTML = item.label + submenuArrow();
       const sub = document.createElement('div');
       sub.className = 'gb-context-menu gb-context-submenu';
@@ -104,21 +105,73 @@ function _renderColMenuItems(container, itemList) {
     }
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
+    if (item.e2eId) el.dataset.e2eId = item.e2eId;
     el.innerHTML = item.label;
+    if (item.disabled) {
+      el.classList.add('disabled');
+      el.setAttribute('aria-disabled', 'true');
+    }
     if (item.danger) el.classList.add('danger');
-    if (item.action) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); item.action(); });
+    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); item.action(); });
     container.appendChild(el);
   });
 }
 
-function _getDbSortConfigForView(dbPath) {
-  return (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath) : getDbViewConfig(dbPath).sortConfig)
+function _dbOrderedPropertyNamesForMenu(dbPath, ctx) {
+  const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null)
+    || ctx?.pivotData
+    || state.pivotData
+    || {};
+  const allProps = Array.isArray(pivotData.properties) ? pivotData.properties : [];
+  const propTypes = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath) || {}) : {};
+  const colOrder = typeof getColOrder === 'function' ? (getColOrder(dbPath, { ctx }) || []) : [];
+  const ordered = [];
+  const add = (name) => {
+    const prop = String(name || '').trim();
+    if (typeof isDbPropertyDeleted === 'function' && isDbPropertyDeleted(dbPath, prop)) return;
+    if (!prop || ordered.includes(prop)) return;
+    ordered.push(prop);
+  };
+  colOrder.forEach(add);
+  allProps.forEach(add);
+  Object.keys(propTypes).forEach(add);
+  return ordered;
+}
+
+function _makeHiddenColumnMenuItems(dbPath, ctx) {
+  const hiddenCols = typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, { ctx }) || []) : [];
+  const hiddenOrdered = _dbOrderedPropertyNamesForMenu(dbPath, ctx).filter(propName => hiddenCols.includes(propName));
+  hiddenCols.forEach(propName => { if (!hiddenOrdered.includes(propName)) hiddenOrdered.push(propName); });
+  if (!hiddenOrdered.length) return [{ label: '非表示の列はありません', disabled: true }];
+  const showOne = (propName) => {
+    const current = getHiddenCols(dbPath, { ctx }) || [];
+    setHiddenCols(dbPath, current.filter(name => name !== propName), { ctx, detail: propName });
+    if (typeof renderPivot === 'function') renderPivot(ctx);
+  };
+  return [
+    ...hiddenOrdered.map(propName => ({
+      label: lucide('eye', 14) + ' 表示: ' + esc(propName),
+      action: () => showOne(propName),
+    })),
+    { type: 'sep' },
+    {
+      label: lucide('eye', 14) + ' すべて表示',
+      action: () => {
+        setHiddenCols(dbPath, [], { ctx, detail: 'すべて表示' });
+        if (typeof renderPivot === 'function') renderPivot(ctx);
+      },
+    },
+  ];
+}
+
+function _getDbSortConfigForView(dbPath, ctx) {
+  return (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath, { ctx }) : getDbViewConfig(dbPath).sortConfig)
     || { key: 'name', dir: 'asc' };
 }
 
 function _applyDbSortConfigForView(dbPath, sortConfig, detail, ctx) {
   if (typeof setDbSortConfig === 'function') {
-    setDbSortConfig(dbPath, sortConfig, { detail });
+    setDbSortConfig(dbPath, sortConfig, { detail, ctx });
   } else {
     const c = getDbViewConfig(dbPath);
     c.sortConfig = { ...sortConfig };
@@ -128,7 +181,7 @@ function _applyDbSortConfigForView(dbPath, sortConfig, detail, ctx) {
 }
 
 function _makeDbGlobalSortMenuItems(dbPath, ctx) {
-  const sc = _getDbSortConfigForView(dbPath);
+  const sc = _getDbSortConfigForView(dbPath, ctx);
   const pivotData = ctx?.pivotData
     || ((typeof _ptIsCurrentDbPath === 'function' && _ptIsCurrentDbPath(dbPath)) ? state.pivotData : null);
   const items = [
@@ -179,8 +232,8 @@ function showColHeaderMenu(e, propName, colIndex) {
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: state.currentDbPath })
     : null;
   const dbPath = ctx?.dbPath || state.currentDbPath;
-  const pinnedCols = getPinnedCols(dbPath);
-  const groupBy = getGroupBy(dbPath);
+  const pinnedCols = getPinnedCols(dbPath, { ctx });
+  const groupBy = getGroupBy(dbPath, ctx);
 
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
@@ -209,8 +262,14 @@ function showColHeaderMenu(e, propName, colIndex) {
     { type: 'submenu', label: lucide(getPropertyTypeIcon(currentType) || PROP_TYPE_ICON[currentType] || 'alignLeft', 14) + ' プロパティ型の変更',
       children: typeItems.map(ti => ({
         label: (ti.type === currentUiType ? radioMark(true) : '\u3000') + lucide(ti.icon, 14) + ' ' + ti.label,
-        action: () => {
+        action: async () => {
           if (ti.type === currentUiType && currentType === currentUiType) return;
+          if (currentType === 'image' && ti.type !== 'image') {
+            const ok = await (typeof cfConfirm === 'function'
+              ? cfConfirm(`画像列「${propName}」を「${ti.label}」に変更します。\n\n画像ファイルは自動削除しませんが、この列では画像として表示されなくなります。\n\n続行しますか？`)
+              : Promise.resolve(window.confirm(`画像列「${propName}」を「${ti.label}」に変更しますか？`)));
+            if (!ok) return;
+          }
           let opts = undefined;
           if (ti.type === 'select' || ti.type === 'multi-select') {
             const existingValues = new Set();
@@ -228,7 +287,7 @@ function showColHeaderMenu(e, propName, colIndex) {
           if (ti.type === 'image') cfg.options = { max_count: null, accept: ['png','jpg','jpeg','gif','webp','svg'], thumbnail_size: 256 };
           const savePromise = setPropertyType(dbPath, propName, cfg);
           if (currentType === 'image' && ti.type !== 'image') {
-            Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).then(() => apiPost('/media/gc', {})).catch(() => {});
+            Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
           }
           renderPivot(ctx);
         }
@@ -239,15 +298,15 @@ function showColHeaderMenu(e, propName, colIndex) {
     { type: 'sep' },
     // 並び替え（この列を基準に）
     { type: 'submenu', label: lucide('arrowUpDown', 14) + ' 並び替え', children: (() => {
-      const sc = _getDbSortConfigForView(dbPath);
+      const sc = _getDbSortConfigForView(dbPath, ctx);
       return [
         { label: (sc.key === propName && sc.dir === 'asc' ? radioMark(true) : '　') + 'この列で昇順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'asc' }, propName + ' 昇順', ctx) },
         { label: (sc.key === propName && sc.dir === 'desc' ? radioMark(true) : '　') + 'この列で降順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'desc' }, propName + ' 降順', ctx) },
       ];
     })() },
     { type: 'submenu', label: 'このプロパティでグループ化', children: [
-      { label: (groupBy === propName ? radioMark(true) : '　') + 'グループ化する', action: () => { setGroupBy(dbPath, propName); renderPivot(ctx); }},
-      { label: (groupBy !== propName ? radioMark(true) : '　') + 'グループ化しない', action: () => { setGroupBy(dbPath, null); renderPivot(ctx); }},
+      { label: (groupBy === propName ? radioMark(true) : '　') + 'グループ化する', action: () => { setGroupBy(dbPath, propName, { ctx }); renderPivot(ctx); }},
+      { label: (groupBy !== propName ? radioMark(true) : '　') + 'グループ化しない', action: () => { setGroupBy(dbPath, null, { ctx }); renderPivot(ctx); }},
     ]},
     { type: 'sep' },
     // 列操作サブメニュー
@@ -256,26 +315,32 @@ function showColHeaderMenu(e, propName, colIndex) {
         { label: '\u2190 左に列を挿入', action: () => insertPropertyInline(propName, 'left', ctx || dbPath) },
         { label: '\u2192 右に列を挿入', action: () => insertPropertyInline(propName, 'right', ctx || dbPath) },
         { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal(propName, dbPath) },
+        { label: lucide('listChecks', 14) + ' 列の表示と順序...', action: () => showColumnDisplayOrderModal(ctx) },
         { type: 'submenu', label: '列を固定', children: [
           { label: (pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定する', action: () => {
-            const pc = getPinnedCols(dbPath);
-            if (!pc.includes(propName)) setPinnedCols(dbPath, [...pc, propName]);
+            const pc = getPinnedCols(dbPath, { ctx });
+            if (!pc.includes(propName)) setPinnedCols(dbPath, [...pc, propName], { ctx });
             renderPivot(ctx);
           }},
           { label: (!pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定しない', action: () => {
-            const pc = getPinnedCols(dbPath);
-            if (pc.includes(propName)) setPinnedCols(dbPath, pc.filter(c => c !== propName));
+            const pc = getPinnedCols(dbPath, { ctx });
+            if (pc.includes(propName)) setPinnedCols(dbPath, pc.filter(c => c !== propName), { ctx });
             renderPivot(ctx);
           }},
         ]},
         { label: 'この列を非表示', action: () => {
-          const hc = getHiddenCols(dbPath);
-          if (!hc.includes(propName)) setHiddenCols(dbPath, [...hc, propName]);
+          const hc = getHiddenCols(dbPath, { ctx });
+          if (!hc.includes(propName)) setHiddenCols(dbPath, [...hc, propName], { ctx });
           renderPivot(ctx);
         }},
+        {
+          type: 'submenu',
+          label: lucide('eye', 14) + ' 非表示列を表示',
+          children: _makeHiddenColumnMenuItems(dbPath, ctx),
+        },
       ]
     },
-    { label: '条件付きカラー...', action: () => showConditionalColorModal(propName, dbPath) },
+    { label: '条件付きカラー...', action: () => showConditionalColorModal(propName, dbPath, ctx) },
   ];
 
   // 編集制限サブメニュー

@@ -102,7 +102,7 @@ const MeldexAutoLink = (() => {
   }
 
   function _isCloudLinkDictUnavailable() {
-    return !!(window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox');
+    return false;
   }
 
   function _notifyDictChanged(scope) {

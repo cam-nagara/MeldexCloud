@@ -4,6 +4,7 @@
   const QUEUE_KEY = 'meldex:quick-memo:queue:v1';
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
   const CLIENT_ID_KEY = 'meldex:quick-memo:client-id:v1';
+  const TARGET_SHEET_KEY = 'meldex:quick-memo:target-sheet:v1';
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
   const els = {};
   const state = {
@@ -19,6 +20,7 @@
     recordChunks: [],
     saveTimer: 0,
     flushRequested: false,
+    share: null,
   };
 
   document.addEventListener('DOMContentLoaded', init);
@@ -26,6 +28,7 @@
   function init() {
     bindElements();
     restoreDraft();
+    applyIncomingShare();
     setupCanvas();
     bindEvents();
     registerServiceWorker();
@@ -36,8 +39,8 @@
 
   function bindElements() {
     [
-      'syncStatus', 'shortcutBtn', 'saveBtn', 'titleInput', 'tagsInput', 'editor',
-      'drawingCanvas', 'speechBtn', 'drawToggleBtn', 'colorInput', 'widthInput',
+      'syncStatus', 'shortcutBtn', 'autoTagBtn', 'newMemoBtn', 'saveBtn', 'titleInput', 'tagsInput', 'editor',
+      'targetSheetInput', 'drawingCanvas', 'speechBtn', 'drawToggleBtn', 'colorInput', 'widthInput',
       'markerBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
     ].forEach((id) => { els[id] = document.getElementById(id); });
   }
@@ -53,7 +56,11 @@
     ['input', 'keyup', 'paste'].forEach((eventName) => els.editor.addEventListener(eventName, scheduleSave));
     els.titleInput.addEventListener('input', scheduleSave);
     els.tagsInput.addEventListener('input', scheduleSave);
+    els.targetSheetInput.addEventListener('change', handleTargetSheetChange);
+    els.targetSheetInput.addEventListener('blur', handleTargetSheetChange);
     els.saveBtn.addEventListener('click', () => saveNow({ manual: true }));
+    els.autoTagBtn.addEventListener('click', () => saveNow({ manual: true, autoTag: true }));
+    els.newMemoBtn.addEventListener('click', startNewMemo);
     els.shortcutBtn.addEventListener('click', installShortcut);
     els.speechBtn.addEventListener('click', toggleSpeechInput);
     els.drawToggleBtn.addEventListener('click', toggleDrawMode);
@@ -81,12 +88,23 @@
     return id;
   }
 
+  function newMemoId(prefix = 'memo') {
+    const seed = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(16).slice(2);
+    return prefix + '_' + seed.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 48);
+  }
+
   function restoreDraft() {
     const draft = readJson(CURRENT_KEY, null);
+    els.targetSheetInput.value = draft?.target_sheet || localStorage.getItem(TARGET_SHEET_KEY) || '';
     if (!draft) return;
     els.titleInput.value = draft.title || '';
     els.tagsInput.value = Array.isArray(draft.tags) ? draft.tags.join(', ') : (draft.tags || '');
     els.editor.innerHTML = sanitizeHtml(draft.html || '');
+    state.share = {
+      source_url: draft.source_url || '',
+      share_title: draft.share_title || '',
+      source_label: draft.source_label || '',
+    };
     if (draft.drawing_png) {
       const img = new Image();
       img.onload = () => {
@@ -101,24 +119,155 @@
     }
   }
 
-  function collectMemo() {
+  function collectMemo(options = {}) {
     const now = new Date().toISOString();
     const draft = readJson(CURRENT_KEY, {});
-    const memoId = draft.memo_id || clientId();
+    const memoId = draft.memo_id || newMemoId();
     const drawing = state.hasDrawing ? els.drawingCanvas.toDataURL('image/png') : '';
-    return {
+    const memo = {
       memo_id: memoId,
-      client_id: memoId,
+      client_id: draft.client_id || clientId(),
       server_path: draft.server_path || '',
       title: els.titleInput.value.trim(),
       tags: parseTags(els.tagsInput.value),
       html: sanitizeHtml(els.editor.innerHTML),
       text: els.editor.innerText.trim(),
       drawing_png: drawing,
+      target_sheet: els.targetSheetInput.value.trim(),
+      source_url: state.share?.source_url || draft.source_url || '',
+      share_title: state.share?.share_title || draft.share_title || '',
+      source_label: state.share?.source_label || draft.source_label || '',
       created_at: draft.created_at || now,
       updated_at: now,
-      source: 'quick-memo',
+      source: (state.share?.source_url || state.share?.share_title || state.share?.source_label) ? 'mobile-share' : 'quick-memo',
     };
+    if (options.autoTag) memo.auto_tag = true;
+    return memo;
+  }
+
+  function handleTargetSheetChange() {
+    const target = els.targetSheetInput.value.trim();
+    try { localStorage.setItem(TARGET_SHEET_KEY, target); } catch {}
+    const draft = readJson(CURRENT_KEY, {});
+    if (draft && draft.target_sheet !== target) {
+      draft.target_sheet = target;
+      draft.server_path = '';
+      writeJson(CURRENT_KEY, draft);
+    }
+    scheduleSave();
+  }
+
+  function startNewMemo() {
+    const current = collectMemo();
+    if (draftHasContent(current)) enqueueMemo(current);
+    clearTimeout(state.saveTimer);
+    const target = els.targetSheetInput.value.trim();
+    state.share = null;
+    els.titleInput.value = '';
+    els.tagsInput.value = '';
+    els.editor.innerHTML = '';
+    resetDrawingCanvas();
+    writeJson(CURRENT_KEY, {
+      memo_id: newMemoId(),
+      client_id: clientId(),
+      target_sheet: target,
+      created_at: new Date().toISOString(),
+    });
+    state.dirty = false;
+    setStatus('新規メモ');
+    flushPendingQueue();
+    focusEditorSoon();
+  }
+
+  function resetDrawingCanvas() {
+    const canvas = els.drawingCanvas;
+    if (!canvas) return;
+    context().clearRect(0, 0, canvas.width, canvas.height);
+    state.hasDrawing = false;
+    state.drawing = false;
+    state.lastPoint = null;
+  }
+
+  function applyIncomingShare() {
+    const shared = incomingSharePayload();
+    if (!shared) return;
+    preserveCurrentDraftBeforeShare();
+    state.share = {
+      source_url: shared.url,
+      share_title: shared.title,
+      source_label: 'スマホ共有',
+    };
+    writeJson(CURRENT_KEY, {
+      memo_id: newMemoId('share'),
+      client_id: clientId(),
+      target_sheet: els.targetSheetInput.value.trim(),
+      created_at: new Date().toISOString(),
+      source_url: state.share.source_url,
+      share_title: state.share.share_title,
+      source_label: state.share.source_label,
+    });
+    els.titleInput.value = shared.title || titleFromUrl(shared.url) || '';
+    els.editor.innerHTML = sharedHtml(shared);
+    if (!els.tagsInput.value.trim()) els.tagsInput.value = '共有';
+    persistDraft(collectMemo());
+    scheduleSave();
+    clearIncomingShareQuery();
+  }
+
+  function incomingSharePayload() {
+    const params = new URLSearchParams(location.search || '');
+    const title = (params.get('title') || params.get('name') || '').trim();
+    const text = (params.get('text') || '').trim();
+    const rawUrl = (params.get('url') || params.get('u') || '').trim();
+    const url = normalizeSharedUrl(rawUrl || extractFirstUrl(text));
+    if (!title && !text && !url) return null;
+    return { title, text, url };
+  }
+
+  function preserveCurrentDraftBeforeShare() {
+    const draft = readJson(CURRENT_KEY, null);
+    if (!draft || !draftHasContent(draft)) return;
+    enqueueMemo({ ...draft, updated_at: new Date().toISOString() });
+  }
+
+  function draftHasContent(draft) {
+    return !!(
+      String(draft.title || '').trim()
+      || String(draft.text || '').trim()
+      || String(draft.html || '').replace(/<[^>]+>/g, '').trim()
+      || draft.drawing_png
+    );
+  }
+
+  function sharedHtml(shared) {
+    const parts = [];
+    if (shared.text) parts.push('<p>' + escHtml(shared.text).replace(/\n/g, '<br>') + '</p>');
+    if (shared.url) {
+      const safe = escAttr(shared.url);
+      parts.push('<p><a href="' + safe + '">' + escHtml(shared.url) + '</a></p>');
+    }
+    return sanitizeHtml(parts.join(''));
+  }
+
+  function normalizeSharedUrl(value) {
+    const text = String(value || '').trim();
+    return /^https?:\/\/[^\s<>]+$/i.test(text) ? text : '';
+  }
+
+  function extractFirstUrl(text) {
+    const match = String(text || '').match(/https?:\/\/[^\s<>]+/i);
+    return match ? match[0] : '';
+  }
+
+  function titleFromUrl(url) {
+    try { return new URL(url).hostname; } catch { return ''; }
+  }
+
+  function clearIncomingShareQuery() {
+    if (!history.replaceState) return;
+    try {
+      history.replaceState(null, document.title, location.pathname + location.hash);
+    } catch {}
   }
 
   function scheduleSave() {
@@ -131,7 +280,7 @@
   }
 
   async function saveNow(opts) {
-    const memo = collectMemo();
+    const memo = collectMemo({ autoTag: !!(opts && opts.autoTag) });
     const storedDraft = persistDraft(memo);
     const queued = enqueueMemo(memo);
     if (!storedDraft || !queued) {
@@ -185,6 +334,14 @@
         const current = readJson(CURRENT_KEY, {});
         if (current.memo_id === item.memo_id) {
           current.server_path = result.path || current.server_path || '';
+          current.target_sheet = result.target_sheet || current.target_sheet || item.target_sheet || '';
+          if (Array.isArray(result.tags)) {
+            current.tags = result.tags;
+            if (els.tagsInput && (item.auto_tag || document.activeElement !== els.tagsInput)) {
+              els.tagsInput.value = result.tags.join(', ');
+            }
+          }
+          delete current.auto_tag;
           writeJson(CURRENT_KEY, current);
         }
       } catch {
@@ -488,6 +645,20 @@
       });
     });
     return template.innerHTML;
+  }
+
+  function escHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[ch]);
+  }
+
+  function escAttr(value) {
+    return escHtml(value).replace(/`/g, '&#96;');
   }
 
   function readJson(key, fallback) {

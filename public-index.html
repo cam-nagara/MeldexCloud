@@ -1,7 +1,8 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" spellcheck="false">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
@@ -20,7 +21,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-      var fallbackVersion = 'v0.6.0 BETA';
+    var fallbackVersion = 'v0.6.120 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -664,7 +665,7 @@
           </div>
         </header>
         <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.6.0 BETA</span></li>
+            <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.6.120 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
@@ -680,11 +681,11 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.6.0 BETA / 最新</option>
+              <option value="0">v0.6.120 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.6.0 BETA</strong></span>
+              <span>選択中: <strong data-runtime-text="desktop-version">v0.6.120 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -727,6 +728,7 @@
         <ul class="notes">
           <li>デスクトップ版では、ホームフォルダの準備後に「サンプルファイルを追加しますか？」と表示されます。</li>
           <li>クラウド版では、Dropbox接続後に同じ確認が表示されます。</li>
+          <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
           <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
         </ul>
       </div>
@@ -910,7 +912,7 @@
           <article class="item available">
             <h3>クラウド版で対応</h3>
             <ul>
-              <li>フォルダ、ノート、シナリオ、ボード、シート、カレンダー</li>
+              <li>フォルダ、ノート、シナリオ、ボード、シート、スケジューラー</li>
               <li>スマートシート、クラウド版フルチャット</li>
               <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
               <li>フィードバック送信、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
@@ -930,6 +932,7 @@
             <ul>
               <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
               <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
+              <li>この配布ページやマニュアルは、LLMを利用して作成・更新している箇所があります。開発者がすべてのページと記述を個別に確認できていない場合があります。</li>
               <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
             </ul>
           </article>

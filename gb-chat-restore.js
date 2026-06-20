@@ -6,6 +6,7 @@
   let _restorePending = false;
   let _restoreGeneration = 0;
   let _restoreApplying = false;
+  let _restoreCalledOnce = false;
 
   function _load() {
     try {
@@ -117,6 +118,8 @@
   }
 
   function restoreOnOpen() {
+    if (_restoreCalledOnce) return false;
+    _restoreCalledOnce = true;
     if (isRestoreSuspended()) return false;
     const meta = _load();
     if (!meta?.mode) return false;

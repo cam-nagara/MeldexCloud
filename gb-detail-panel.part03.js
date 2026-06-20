@@ -443,7 +443,15 @@ async function openBoardNoteTab(label, path) {
   // 自動保存バインド
   body.oninput = () => { _boardNoteDirty = true; };
   if (body._boardNoteSaveTimer) clearInterval(body._boardNoteSaveTimer);
-  body._boardNoteSaveTimer = setInterval(() => _saveBoardNote(), 3000);
+  // body が DOM から外れたら interval を自己クリーンアップして孤児化を防ぐ
+  body._boardNoteSaveTimer = setInterval(() => {
+    if (!body.isConnected) {
+      clearInterval(body._boardNoteSaveTimer);
+      body._boardNoteSaveTimer = null;
+      return;
+    }
+    _saveBoardNote();
+  }, 3000);
 
   switchDetailTab('board-note');
 }

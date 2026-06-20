@@ -102,9 +102,9 @@
     if (['smart-sheet', 'smart-db', 'smartdb'].includes(raw)) return 'smart-sheet';
     if (['board', 'canvas'].includes(raw)) return 'board';
     if (['scriptnote', 'scenario'].includes(raw)) return 'scriptnote';
-    if (lowerPath.endsWith('.scriptnote.json')) return 'scriptnote';
-    if (lowerPath.endsWith('.smart-db.json')) return 'smart-sheet';
-    if (lowerPath.endsWith('.board.md')) return 'board';
+    if (lowerPath.endsWith('.mel-scenario') || lowerPath.endsWith('.scriptnote.json')) return 'scriptnote';
+    if (lowerPath.endsWith('.mel-sheet') || lowerPath.endsWith('.smart-db.json')) return 'smart-sheet';
+    if (lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.md')) return 'board';
     if (lowerPath.endsWith('.md') || lowerPath.endsWith('.txt') || lowerPath.endsWith('.html')) return 'note';
     return raw || 'unknown';
   }

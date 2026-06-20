@@ -223,15 +223,15 @@
       await openFolder(label, path, opts);
     } else if (type === 'database' && typeof selectDatabase === 'function') {
       await selectDatabase(path, null, opts);
-    } else if ((type === 'smart-db' || lower.endsWith('.smart-db.json')) && typeof openSmartDbFile === 'function') {
+    } else if ((type === 'smart-db' || lower.endsWith('.smart-db.json') || lower.endsWith('.mel-sheet')) && typeof openSmartDbFile === 'function') {
       await openSmartDbFile(label, path, opts);
     } else if ((type === 'calendar') && typeof openCalendarFile === 'function') {
       await openCalendarFile(label, path, opts);
     } else if ((type === 'chat') && typeof openSavedChat === 'function') {
       await openSavedChat(path);
-    } else if ((type === 'scriptnote' || type === 'scenario' || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) && typeof openScenarioInScriptNote === 'function') {
+    } else if ((type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) && typeof openScenarioInScriptNote === 'function') {
       openScenarioInScriptNote(path, label, opts);
-    } else if ((type === 'board' || lower.endsWith('.board.md')) && typeof openBoard === 'function') {
+    } else if ((type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) && typeof openBoard === 'function') {
       await openBoard(label, path, opts);
     } else if (ext === '.csv' && typeof openCsvFile === 'function') {
       await openCsvFile(label, path, opts);

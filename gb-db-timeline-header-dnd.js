@@ -36,11 +36,13 @@ function _moveTimelineOrderedValue(values, fromValue, toValue) {
 
 function _setTimelineRowOrder(dbPath, cfg, ordered, options = {}) {
   const base = dbPath && typeof getTimelineConfig === 'function' ? getTimelineConfig(dbPath) : (cfg || {});
-  const next = { ...base, rowOrder: ordered.map(value => _timelineColKey(value)) };
+  const baseForContext = options.ctx && dbPath && typeof getTimelineConfig === 'function' ? getTimelineConfig(dbPath, { ctx: options.ctx }) : base;
+  const next = { ...baseForContext, rowOrder: ordered.map(value => _timelineColKey(value)) };
   setTimelineConfig(dbPath, next, {
     label: options.label || 'シート表示: タイムラインヘッダー順',
     detail: options.detail || '',
     skipHistory: options.skipHistory === true,
+    ctx: options.ctx || null,
   });
 }
 
@@ -77,7 +79,7 @@ function _bindTimelineHeaderReorder(el, dbPath, cfg, rowArr, value, ctx) {
     try { fromValue = JSON.parse(payload)?.value ?? ''; } catch { fromValue = payload; }
     const ordered = _moveTimelineOrderedValue(rowArr, fromValue, value);
     if (!ordered) return;
-    _setTimelineRowOrder(dbPath, cfg, ordered, { detail: `${fromValue} → ${_timelineColKey(value)}` });
+    _setTimelineRowOrder(dbPath, cfg, ordered, { detail: `${fromValue} → ${_timelineColKey(value)}`, ctx });
     renderTimeline(ctx);
   });
 }

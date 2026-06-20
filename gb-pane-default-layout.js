@@ -5,6 +5,10 @@
   const DEFAULT_LEFT_DOCK_WIDTH_PX = 260;
   const DEFAULT_RIGHT_DOCK_WIDTH_PX = 360;
   const DEFAULT_MIN_WORK_WIDTH_PX = 400;
+  const UTILITY_PANE_TYPES = new Set([
+    'outliner', 'detail', 'preview', 'chat', 'timer',
+    'history', 'annotation', 'sticky', 'search', 'version',
+  ]);
 
   function _clampRatio(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -66,18 +70,18 @@
     return dock;
   }
 
-  function _rightDock(rightTopRoot, rightBottomRoot, options) {
-    const topGroup = _group(rightTopRoot);
-    const bottomGroup = _group(rightBottomRoot);
+  function _panelset(roots, activeIndex, options) {
+    const groups = (Array.isArray(roots) ? roots : []).filter(Boolean).map(root => _group(root));
+    const activeGroup = groups[Math.max(0, Math.min(groups.length - 1, activeIndex || 0))];
     const dock = (typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.createPanelSetNode === 'function')
-      ? GBPanelSet.createPanelSetNode([topGroup, bottomGroup], topGroup.id)
+      ? GBPanelSet.createPanelSetNode(groups, activeGroup?.id)
       : {
           type: 'panelset',
-          id: _fallbackId('panelset-default-right'),
-          groups: [topGroup, bottomGroup],
-          activeGroupId: topGroup.id,
+          id: _fallbackId('panelset-default-fixed'),
+          groups,
+          activeGroupId: activeGroup?.id || null,
         };
-    dock.collapsed = true;
+    dock.collapsed = !!options?.collapsed;
     if (Number.isFinite(options?.popupWidth) && options.popupWidth > 0) {
       dock.defaultPopupWidth = Math.round(options.popupWidth);
     }
@@ -92,29 +96,74 @@
     return GBLayout.createPaneNode(null, tabs, 0);
   }
 
+  function _activeTabType(pane) {
+    const tab = pane?.tabs?.[pane.activeTabIndex];
+    return tab?.type || '';
+  }
+
+  function _isContentPane(pane) {
+    const type = _activeTabType(pane);
+    return !type || !UTILITY_PANE_TYPES.has(type);
+  }
+
+  function resolveMainPaneId(options) {
+    if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function') return '';
+    const opts = options || {};
+    const root = opts.root || GBLayout.root;
+    const allPanes = GBLayout.getAllPanes(root) || [];
+    const visiblePanes = GBLayout.getAllPanes(root, { activeOnly: true }).filter((pane) => {
+      if (!pane?.id) return false;
+      return typeof GBLayout.isPaneVisible === 'function' ? GBLayout.isPaneVisible(pane.id) : true;
+    });
+    const isUsable = (pane) => pane?.id && (opts.allowLocked || !pane.locked);
+    const pick = (...candidates) => {
+      for (const pane of candidates) {
+        if (isUsable(pane)) return pane.id;
+      }
+      return '';
+    };
+    return pick(
+      visiblePanes.find(pane => pane.meldexRole === 'main' && _isContentPane(pane)),
+      visiblePanes.find(pane => pane.id === 'pane-main' && _isContentPane(pane)),
+      visiblePanes.find(_isContentPane),
+      allPanes.find(pane => pane.meldexRole === 'main' && _isContentPane(pane)),
+      allPanes.find(pane => pane.id === 'pane-main' && _isContentPane(pane)),
+      allPanes.find(_isContentPane),
+      opts.contentOnly ? null : visiblePanes[0],
+      opts.contentOnly ? null : allPanes[0],
+    );
+  }
+
   function build(options) {
     if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined') return null;
     const mainPane = options?.mainPane || GBLayout.createPaneNode('pane-main', [], -1);
     const ratios = _dockRatios();
 
+    mainPane.meldexRole = 'main';
     mainPane.tabs = [_tab('フォルダ', 'folder')];
     mainPane.activeTabIndex = 0;
 
-    const leftDock = _dock(_pane([_tab('フォルダツリー', 'outliner')]), { collapsed: true, popupWidth: ratios.leftWidth });
+    const leftPane = _pane([_tab('フォルダツリー', 'outliner')]);
+    leftPane.meldexRole = 'left-sidebar';
+    const leftDock = _dock(leftPane, { collapsed: false, popupWidth: ratios.leftWidth });
+    leftDock.meldexRole = 'left-sidebar';
 
-    const viewerPane = _pane([_tab('ビューワー', 'preview'), _tab('タイマー', 'timer')]);
-    const detailPane = _pane([_tab('オプション', 'detail'), _tab('バージョン管理', 'version')]);
-    const rightTopSplit = GBLayout.createSplitNode('vertical', 0.3, [viewerPane, detailPane]);
-
-    const rightBottomPane = _pane([
-      _tab('チャット', 'chat'),
-      _tab('カレンダー', 'calendar'),
-      _tab('ヒストリー', 'history'),
-      _tab('注釈', 'annotation'),
-    ]);
-    const rightDock = _rightDock(rightTopSplit, rightBottomPane, { popupWidth: ratios.rightWidth });
+    const rightPanes = [
+      _pane([_tab('ビューワー', 'preview')]),
+      _pane([_tab('オプション', 'detail')]),
+      _pane([_tab('バージョン管理', 'version')]),
+      _pane([_tab('チャット', 'chat')]),
+      _pane([_tab('タイマー', 'timer')]),
+      _pane([_tab('ヒストリー', 'history')]),
+      _pane([_tab('注釈', 'annotation')]),
+      _pane([_tab('検索', 'search')]),
+    ];
+    rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });
+    const rightDock = _panelset(rightPanes, 1, { collapsed: false, popupWidth: ratios.rightWidth });
+    rightDock.meldexRole = 'right-sidebar';
 
     const workDock = _dock(mainPane, { collapsed: false });
+    workDock.meldexRole = 'main';
     const contentSplit = GBLayout.createSplitNode('horizontal', ratios.workRatio, [workDock, rightDock]);
     const rootSplit = GBLayout.createSplitNode('horizontal', ratios.leftRatio, [leftDock, contentSplit]);
 
@@ -124,12 +173,13 @@
     }
     GBLayout.render();
     GBLayout.setActivePane(mainPane.id);
-    GBLayout.saveLayout();
+    if (!options?.skipSave) GBLayout.saveLayout();
     return { root: rootSplit, activePaneId: mainPane.id, ratios };
   }
 
   window.GBPaneDefaultLayout = {
     build,
+    resolveMainPaneId,
     constants: {
       DEFAULT_LEFT_DOCK_WIDTH_PX,
       DEFAULT_RIGHT_DOCK_WIDTH_PX,

@@ -45,8 +45,14 @@
     || hasOwn(n, 'progress')
     || (n.markers && Object.keys(n.markers).length)
     || cardOverrideMetaKeys.some(key => hasOwn(n, key))
+    || !!n.imageSourcePath
     || hasOwn(n, '_autoStyle')
     || hasOwn(n, '_followChildren')
+    || hasOwn(n, '_userBgColor')
+    || hasOwn(n, '_userFontSize')
+    || hasOwn(n, '_userFontBold')
+    || hasOwn(n, '_userW')
+    || hasOwn(n, '_userCardStyle')
     || n.collapsed
     || n.minimized);
   if (hasXmindMeta) {
@@ -75,8 +81,14 @@
       if (hasOwn(n, 'cloudSubBumpRatio')) parts.push('cloudSubBumpRatio: ' + (+n.cloudSubBumpRatio || 0));
       if (hasOwn(n, 'cloudSubWidthRatio')) parts.push('cloudSubWidthRatio: ' + (+n.cloudSubWidthRatio || 0));
       if (hasOwn(n, 'cloudSubHeightRatio')) parts.push('cloudSubHeightRatio: ' + (+n.cloudSubHeightRatio || 0));
+      if (hasOwn(n, 'imageSourcePath') && n.imageSourcePath) parts.push('imageSourcePath: ' + fmtJsonString(n.imageSourcePath));
       if (hasOwn(n, '_autoStyle')) parts.push('autoStyle: ' + (n._autoStyle ? 'true' : 'false'));
       if (hasOwn(n, '_followChildren')) parts.push('followChildren: ' + (n._followChildren ? 'true' : 'false'));
+      if (hasOwn(n, '_userBgColor')) parts.push('userBgColor: ' + (n._userBgColor ? 'true' : 'false'));
+      if (hasOwn(n, '_userFontSize')) parts.push('userFontSize: ' + (n._userFontSize ? 'true' : 'false'));
+      if (hasOwn(n, '_userFontBold')) parts.push('userFontBold: ' + (n._userFontBold ? 'true' : 'false'));
+      if (hasOwn(n, '_userW')) parts.push('userW: ' + (n._userW ? 'true' : 'false'));
+      if (hasOwn(n, '_userCardStyle')) parts.push('userCardStyle: ' + (n._userCardStyle ? 'true' : 'false'));
       if (n.collapsed) parts.push('collapsed: true');
       if (n.minimized) parts.push('minimized: true');
       if (parts.length) fm += `  n${i}: {${parts.join(', ')}}\n`;

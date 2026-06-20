@@ -420,7 +420,7 @@
 .tb-icon-btn[aria-pressed="true"] {
   background: var(--ui-bg-control-active);
   border-color: var(--ui-accent);
-  color: var(--ui-accent);
+  color: var(--ui-control-active-fg, var(--ui-selection-fg, var(--ui-fg-strong)));
 }
 .tb-icon-btn svg,
 .tb-icon-btn .ico {

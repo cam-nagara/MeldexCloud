@@ -89,62 +89,95 @@ function _renderDbLoadError(ctx, error) {
   });
 }
 
-function _dbViewFormConfigId(view) {
-  return view?.typeSpecific?.form?.formConfig?.id || view?.formConfig?.id || '';
+function _isBackendDbViewConfigObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function _hasBackendDbViewConfigData(value) {
+  return _isBackendDbViewConfigObject(value) && Object.keys(value).length > 0;
+}
+
+function _normalizeBackendDbViewConfig(dbPath, viewConfig) {
+  if (!_isBackendDbViewConfigObject(viewConfig)) return null;
+  const cloned = typeof _cloneDbViewObject === 'function'
+    ? _cloneDbViewObject(viewConfig)
+    : JSON.parse(JSON.stringify(viewConfig || {}));
+  if (typeof _migrateLegacyViewConfig === 'function') {
+    const migrated = _migrateLegacyViewConfig(dbPath, cloned);
+    return { cfg: migrated.cfg || cloned, changed: migrated.changed === true };
+  }
+  return { cfg: cloned, changed: false };
 }
 
 function _applyBackendDbViewConfig(dbPath, viewConfig) {
-  if (!viewConfig || !Array.isArray(viewConfig.savedViews) || !viewConfig.savedViews.length) return false;
+  const normalizedResult = _normalizeBackendDbViewConfig(dbPath, viewConfig);
+  if (!normalizedResult) return false;
+  if (typeof _hasPendingDbViewConfigBackendSave === 'function' && _hasPendingDbViewConfigBackendSave(dbPath)) return false;
+  const normalized = normalizedResult.cfg || {};
   const current = typeof getDbViewConfig === 'function' ? (getDbViewConfig(dbPath) || {}) : {};
-  const currentViews = Array.isArray(current.savedViews) ? current.savedViews.slice() : [];
   let changed = false;
-  const nextViews = currentViews.slice();
-  viewConfig.savedViews.forEach(serverView => {
-    if (!serverView || typeof serverView !== 'object') return;
-    const serverId = _dbViewFormConfigId(serverView);
-    const index = nextViews.findIndex(view => {
-      if (!view || view.viewMode !== serverView.viewMode) return false;
-      const viewId = _dbViewFormConfigId(view);
-      return (serverId && viewId === serverId) || (view.name || '') === (serverView.name || '');
-    });
-    if (index >= 0) {
-      const before = JSON.stringify(nextViews[index] || {});
-      nextViews[index] = { ...nextViews[index], ...serverView, typeSpecific: { ...(nextViews[index]?.typeSpecific || {}), ...(serverView.typeSpecific || {}) } };
-      changed = changed || before !== JSON.stringify(nextViews[index] || {});
-    } else {
-      nextViews.push(serverView);
-      changed = true;
-    }
-  });
-  if (!changed && currentViews.length === nextViews.length) return false;
-  const next = { ...current, savedViews: nextViews };
-  if (!Number.isInteger(current.currentViewIdx) && Number.isInteger(viewConfig.currentViewIdx)) {
-    next.currentViewIdx = Math.max(0, Math.min(viewConfig.currentViewIdx, nextViews.length - 1));
-  } else if (!Number.isInteger(next.currentViewIdx) || next.currentViewIdx < 0 || next.currentViewIdx >= nextViews.length) {
-    next.currentViewIdx = 0;
+  try { changed = JSON.stringify(current || {}) !== JSON.stringify(normalized || {}); } catch { changed = true; }
+  if (typeof saveDbViewConfig === 'function') {
+    saveDbViewConfig(dbPath, normalized, { skipHistory: true, skipBackend: true });
+  } else if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('dbViewConfig:' + (dbPath || ''), JSON.stringify(normalized));
   }
-  if (typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, next, { skipHistory: true });
-  else if (typeof localStorage !== 'undefined') localStorage.setItem('dbViewConfig:' + (dbPath || ''), JSON.stringify(next));
-  return true;
+  if (normalizedResult.changed && typeof _persistDbViewConfigToBackend === 'function') {
+    _persistDbViewConfigToBackend(dbPath, normalized);
+  }
+  return changed;
+}
+
+async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
+  if (!dbPath || typeof getDbViewConfig !== 'function' || typeof apiPut !== 'function') return null;
+  if (options.requireExistingLocalCache === true && options.hadLocalCache !== true) return null;
+  const localConfig = getDbViewConfig(dbPath) || {};
+  const payload = typeof _sanitizeDbViewConfigForBackend === 'function'
+    ? _sanitizeDbViewConfigForBackend(localConfig)
+    : localConfig;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length === 0) return null;
+  try {
+    await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload });
+    return payload;
+  } catch (error) {
+    console.warn('[Meldex] シート表示設定の移行に失敗しました', error);
+    return null;
+  }
 }
 
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
+  const dbPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+  const dbPerfTargetLabel = String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || '');
+  ctx = _resolveDatabasePaneContext(ctx);
+  const inFlightLoad = ctx?._selectDatabaseInFlight;
+  if (!openOpts.forceReload && inFlightLoad && inFlightLoad.dbPath === dbPath && inFlightLoad.promise) {
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('sheet.selectDatabase.coalesced', dbPerfStartedAt, {
+        targetLabel: dbPerfTargetLabel,
+        paneId: ctx?.paneId || '',
+      });
+    }
+    return inFlightLoad.promise;
+  }
+  let resolveInFlightLoad = null;
+  const inFlightPromise = new Promise(resolve => { resolveInFlightLoad = resolve; });
+  if (ctx) ctx._selectDatabaseInFlight = { dbPath, promise: inFlightPromise };
+  if (!openOpts.skipShowView && typeof deactivateCsvSheetMode === 'function') deactivateCsvSheetMode();
   const showOpenLoading = !openOpts.silent
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('シートを読み込み中...');
-  // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
-  if (state.currentDbPath !== dbPath) {
-    const _ctxClear = ctx || _currentPaneState();
-    if (_ctxClear && _ctxClear._selectedEntities) _ctxClear._selectedEntities.clear();
-    const paneIdClr = (_ctxClear && _ctxClear.paneId) || 'main';
-    const existingBar = document.body.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneIdClr}"]`) || document.getElementById('db-bulk-edit-bar');
-    if (existingBar) existingBar.remove();
-  }
+  let loadingShown = false;
   try {
-  ctx = _resolveDatabasePaneContext(ctx);
+    if (showOpenLoading) { showLoading('シートを読み込み中...'); loadingShown = true; }
+    // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
+    if (state.currentDbPath !== dbPath) {
+      const _ctxClear = ctx || _currentPaneState();
+      if (_ctxClear && _ctxClear._selectedEntities) _ctxClear._selectedEntities.clear();
+      const paneIdClr = (_ctxClear && _ctxClear.paneId) || 'main';
+      document.querySelectorAll(`.db-bulk-edit-bar[data-pane-id="${paneIdClr}"], .db-cell-bulk-bar[data-pane-id="${paneIdClr}"]`).forEach(existingBar => existingBar.remove());
+    }
   ctx.dbPath = dbPath;
   ctx.entityPath = null;
   // グローバルstate同期（非スコープ化コードの互換性）
@@ -152,11 +185,20 @@ async function selectDatabase(dbPath, ctx, opts) {
   state.currentSmartDb = null;
   state.smartDbData = null;
   state.currentEntityPath = null;
+  // スマートシートからの遷移時、smart-db-view の表示が残ると通常シートが見えなくなる。
+  // pane-bridge の DB_SUB_VIEWS 切替が走らないケースに備えて明示的に隠す。
+  const _smartDbViewEl = document.getElementById('smart-db-view');
+  if (_smartDbViewEl && _smartDbViewEl.style.display !== 'none') {
+    _smartDbViewEl.style.display = 'none';
+  }
   const dbLoadSeq = (ctx._dbLoadSeq || 0) + 1;
   ctx._dbLoadSeq = dbLoadSeq;
   const isStaleDbLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
     || ctx._dbLoadSeq !== dbLoadSeq
     || ctx.dbPath !== dbPath;
+  const hadLocalViewConfigBeforeOpen = typeof _hasLocalDbViewConfigCache === 'function'
+    ? _hasLocalDbViewConfigCache(dbPath)
+    : true;
   if (!openOpts.skipSaveLastView) saveLastView({type:'pivot', dbPath});
   if (!openOpts.skipNavPush) {
     const _navEntry = {type:'pivot', path: dbPath};
@@ -181,43 +223,46 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (toolbarCategoryEl) {
       toolbarCategoryEl.textContent = dbName;
       toolbarCategoryEl.title = 'ダブルクリックでシート名を変更';
-      if (!toolbarCategoryEl._dbRenameHandler) {
-        toolbarCategoryEl._dbRenameHandler = true;
-        toolbarCategoryEl.style.cursor = 'text';
-        toolbarCategoryEl.addEventListener('dblclick', () => {
-          const curName = toolbarCategoryEl.textContent;
-          const input = document.createElement('input');
-          input.type = 'text'; input.value = curName;
-          input.style.cssText = 'font-size:inherit;font-weight:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--blue,#4a90d9);border-radius:3px;padding:0 4px;outline:none;width:' + Math.max(120, toolbarCategoryEl.offsetWidth) + 'px;';
-          toolbarCategoryEl.textContent = '';
-          toolbarCategoryEl.appendChild(input);
-          input.focus(); input.select();
-          const commit = async () => {
-            const newName = input.value.trim() || curName;
-            toolbarCategoryEl.textContent = newName;
-            if (newName !== curName && state.currentDbPath) {
-              try {
-                const oldPath = state.currentDbPath;
-                const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database' });
-                const newPath = res?.new_path || oldPath.replace(/[^/]+$/, newName);
-                if (typeof renameAppPathReferences === 'function') {
-                  renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database' });
-                }
-                if (typeof refreshOutliner === 'function') refreshOutliner();
-                await selectDatabase(newPath, ctx, {
-                  silent: true,
-                  skipRecent: true,
-                  skipNavPush: true,
-                  skipSaveLastView: false,
-                });
-                showStatus('シート名を変更しました');
-              } catch (err) { toolbarCategoryEl.textContent = curName; showStatus('名前変更失敗: ' + err.message, true); }
-            }
-          };
-          input.addEventListener('blur', commit);
-          input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); if (e.key === 'Escape') { input.value = curName; input.blur(); } });
-        });
+      // 古いハンドラがある場合は除去してから貼り直す（新しい ctx をクロージャに反映するため）
+      if (toolbarCategoryEl._dbRenameHandler) {
+        toolbarCategoryEl.removeEventListener('dblclick', toolbarCategoryEl._dbRenameHandler);
       }
+      toolbarCategoryEl.style.cursor = 'text';
+      const renameHandler = () => {
+        const curName = toolbarCategoryEl.textContent;
+        const input = document.createElement('input');
+        input.type = 'text'; input.value = curName;
+        input.style.cssText = 'font-size:inherit;font-weight:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--blue,#4a90d9);border-radius:3px;padding:0 4px;outline:none;width:' + Math.max(120, toolbarCategoryEl.offsetWidth) + 'px;';
+        toolbarCategoryEl.textContent = '';
+        toolbarCategoryEl.appendChild(input);
+        input.focus(); input.select();
+        const commit = async () => {
+          const newName = input.value.trim() || curName;
+          toolbarCategoryEl.textContent = newName;
+          if (newName !== curName && state.currentDbPath) {
+            try {
+              const oldPath = state.currentDbPath;
+              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database' });
+              const newPath = res?.new_path || oldPath.replace(/[^/]+$/, newName);
+              if (typeof renameAppPathReferences === 'function') {
+                renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database' });
+              }
+              if (typeof refreshOutliner === 'function') refreshOutliner();
+              await selectDatabase(newPath, ctx, {
+                silent: true,
+                skipRecent: true,
+                skipNavPush: true,
+                skipSaveLastView: false,
+              });
+              showStatus('シート名を変更しました');
+            } catch (err) { toolbarCategoryEl.textContent = curName; showStatus('名前変更失敗: ' + err.message, true); }
+          }
+        };
+        input.addEventListener('blur', commit);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); if (e.key === 'Escape') { input.value = curName; input.blur(); } });
+      };
+      toolbarCategoryEl._dbRenameHandler = renameHandler;
+      toolbarCategoryEl.addEventListener('dblclick', renameHandler);
     }
     const currentTitleEl = document.getElementById('current-title');
     if (currentTitleEl) currentTitleEl.textContent = dbName;
@@ -232,7 +277,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       setCurrentViewIdx(dbPath, openOpts.restoreViewIdx, { skipHistory: true });
     }
   }
-  let dbViewMode = getCurrentViewMode(dbPath);
+  let dbViewMode = getCurrentViewMode(dbPath, { ctx });
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
 
@@ -241,13 +286,26 @@ async function selectDatabase(dbPath, ctx, opts) {
 
   // DBメタデータ（actions/backlinks/theme）を取得
   state.dbMetadata = null;
+  const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
     if (isStaleDbLoad()) return;
     state.dbMetadata = dbMetadata;
     ctx.dbMetadata = dbMetadata;
-    if (_applyBackendDbViewConfig(dbPath, state.dbMetadata?.view_config)) {
-      const latestMode = getCurrentViewMode(dbPath);
+    const backendViewConfig = state.dbMetadata?.view_config;
+    let backendViewConfigApplied = false;
+    if (_hasBackendDbViewConfigData(backendViewConfig)) {
+      backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig);
+    } else {
+      const migratedViewConfig = await _migrateDbViewConfigToBackend(dbPath, {
+        requireExistingLocalCache: true,
+        hadLocalCache: hadLocalViewConfigBeforeOpen,
+      });
+      if (isStaleDbLoad()) return;
+      if (migratedViewConfig && state.dbMetadata) state.dbMetadata.view_config = migratedViewConfig;
+    }
+    if (backendViewConfigApplied) {
+      const latestMode = getCurrentViewMode(dbPath, { ctx });
       if (latestMode && latestMode !== dbViewMode) {
         dbViewMode = latestMode;
         ctx.viewMode = dbViewMode;
@@ -259,10 +317,19 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (!openOpts.skipGlobalUi && _dbStyle && typeof applyFileStyleToPanel === 'function') {
       applyFileStyleToPanel(_dbStyle, 'db-view-container');
     }
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('sheet.metadata.total', metadataPerfStartedAt, {
+        targetLabel: dbPerfTargetLabel,
+        hasBackendViewConfig: !!_hasBackendDbViewConfigData(backendViewConfig),
+      });
+    }
   } catch {
     if (isStaleDbLoad()) return;
     state.dbMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
     ctx.dbMetadata = state.dbMetadata;
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('sheet.metadata.error', metadataPerfStartedAt, { targetLabel: dbPerfTargetLabel });
+    }
   }
 
   // localStorage → バックエンドへの自動マイグレーション（property_types）
@@ -275,20 +342,40 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
   }
 
+  const pivotPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
-    const filterParam = getFilterParam();
+    const activeViewForFilter = typeof getCurrentDbViewConfigEntry === 'function'
+      ? getCurrentDbViewConfigEntry(dbPath, { ctx })
+      : null;
+    ctx.filter = activeViewForFilter && Object.prototype.hasOwnProperty.call(activeViewForFilter, 'filter')
+      ? (activeViewForFilter.filter || 'disabled')
+      : (ctx.filter || state.filter || 'disabled');
+    state.filter = ctx.filter;
+    const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
     const pivotData = await apiFetch(url);
     if (isStaleDbLoad()) return;
     ctx.pivotData = pivotData;
     state.pivotData = ctx.pivotData; // グローバル同期
+    const entityCountForPerf = Object.keys(ctx.pivotData.entities || {}).length;
+    const propertyCountForPerf = Array.isArray(ctx.pivotData.properties) ? ctx.pivotData.properties.length : 0;
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('sheet.pivot.total', pivotPerfStartedAt, {
+        targetLabel: dbPerfTargetLabel,
+        entityCount: entityCountForPerf,
+        propertyCount: propertyCountForPerf,
+        backendPerf: ctx.pivotData?._backendPerf || null,
+      });
+    }
     if (typeof _preloadRelationMapsForDb === 'function') {
-      await _preloadRelationMapsForDb(dbPath, ctx.pivotData);
-      if (isStaleDbLoad()) return;
+      _preloadRelationMapsForDb(dbPath, ctx.pivotData).catch(() => {});
     }
     const latestDbViewMode = getCurrentViewMode(dbPath);
-    if (latestDbViewMode && latestDbViewMode !== dbViewMode) {
-      dbViewMode = latestDbViewMode;
+    const effectiveLatestDbViewMode = getCurrentViewMode(dbPath, { ctx }) || latestDbViewMode;
+    // 互換テスト用: if (latestDbViewMode && latestDbViewMode !== dbViewMode) {
+    if (effectiveLatestDbViewMode && effectiveLatestDbViewMode !== dbViewMode) {
+      // 互換テスト用: dbViewMode = latestDbViewMode;
+      dbViewMode = effectiveLatestDbViewMode;
       ctx.viewMode = dbViewMode;
       if (!openOpts.skipShowView) showView(dbViewMode, ctx);
     }
@@ -298,7 +385,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       ctx.viewMode = dbViewMode;
       const calendarCfg = getDbViewConfig(dbPath);
       const calendarView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
-        ? _getCurrentDbViewConfigEntryFromConfig(calendarCfg)
+        ? _getCurrentDbViewConfigEntryFromConfig(calendarCfg, { ctx })
         : null;
       if (calendarView && calendarView.viewMode !== 'calendar') {
         calendarView.viewMode = 'calendar';
@@ -313,6 +400,8 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     _renderDbViewTabsSafely(ctx);
     const hasDbViews = getSavedViews(dbPath).length > 0;
+    const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+    let renderedViewMode = dbViewMode;
     if (!hasDbViews && typeof renderDbNoViewsGuide === 'function') renderDbNoViewsGuide(ctx);
     else if (dbViewMode === 'gallery') renderGallery(ctx);
     else if (dbViewMode === 'kanban') renderKanban(ctx);
@@ -320,7 +409,15 @@ async function selectDatabase(dbPath, ctx, opts) {
     else if (dbViewMode === 'chart' && typeof renderChart === 'function') renderChart(ctx);
     else if (dbViewMode === 'graph' && typeof renderGraph === 'function') renderGraph(ctx);
     else if (dbViewMode === 'form' && typeof renderDbFormView === 'function') renderDbFormView(ctx);
-    else renderPivot(ctx);
+    else { renderedViewMode = 'pivot'; renderPivot(ctx); }
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('sheet.render.dispatch', renderPerfStartedAt, {
+        targetLabel: dbPerfTargetLabel,
+        viewMode: renderedViewMode,
+        entityCount: entityCountForPerf,
+        propertyCount: propertyCountForPerf,
+      });
+    }
     _restoreDbViewScrollState(ctx, dbViewMode, openOpts.restoreScrollState);
 
     const entityNames = Object.keys(ctx.pivotData.entities || {}).sort();
@@ -345,7 +442,23 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (!openOpts.skipGlobalUi) _syncDetailPanel(dbName, dbPath, 'database');
   // エンティティ追加/削除/リネーム後にリンク辞書を更新
   if (typeof MeldexAutoLink !== 'undefined') MeldexAutoLink.scheduleReload(3000);
-  } finally { if (showOpenLoading) hideLoading(); }
+  } finally {
+    if (typeof _logPerfEvent === 'function') {
+      const entityCount = Object.keys(ctx?.pivotData?.entities || {}).length;
+      const propertyCount = Array.isArray(ctx?.pivotData?.properties) ? ctx.pivotData.properties.length : 0;
+      _logPerfEvent('sheet.selectDatabase.total', dbPerfStartedAt, {
+        targetLabel: dbPerfTargetLabel,
+        viewMode: ctx?.viewMode || '',
+        entityCount,
+        propertyCount,
+      });
+    }
+    if (loadingShown) hideLoading();
+    if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
+      delete ctx._selectDatabaseInFlight;
+    }
+    if (typeof resolveInFlightLoad === 'function') resolveInFlightLoad();
+  }
 }
 
 async function selectEntity(entityPath, opts) {
@@ -395,17 +508,21 @@ async function selectEntity(entityPath, opts) {
    フィルタ
    ============================== */
 function setFilter(f, options = {}) {
-  state.filter = f || 'disabled';
-  if (state.currentDbPath && typeof _saveCurrentDbViewField === 'function') {
-    _saveCurrentDbViewField(state.currentDbPath, '', '', { skipHistory: true }, (v) => {
-      v.filter = state.filter;
+  const nextFilter = f || 'disabled';
+  const ctx = options.ctx || null;
+  const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
+  if (ctx) ctx.filter = nextFilter;
+  if (!ctx || dbPath === state.currentDbPath) state.filter = nextFilter;
+  if (dbPath && typeof _saveCurrentDbViewField === 'function') {
+    _saveCurrentDbViewField(dbPath, '', '', { skipHistory: true, ctx }, (v) => {
+      v.filter = nextFilter;
     });
   }
-  _updateFilterBadge();
-  if (!options.skipReload && state.currentDbPath) selectDatabase(state.currentDbPath);
+  _updateFilterBadge({ dbPath, filter: nextFilter, ctx });
+  if (!options.skipReload && dbPath) selectDatabase(dbPath, ctx || undefined);
 }
 
-function filterValues(values, status) {
+function filterValues(values, status, filterMode) {
   if (!values) return [];
   // 第2引数 status 指定時は、その特定ステータスのみを返す（候補値書き換え時のガードレール用途）
   // status 未指定時は state.filter (adopted/nobotsu/all) に従ってステータスフィルタを適用
@@ -413,9 +530,10 @@ function filterValues(values, status) {
     return values.filter(v => (v?.status || '採用') === status);
   }
   let result = values;
+  const mode = filterMode == null ? state.filter : filterMode;
   // ステータスフィルタのみ適用（高度フィルタはプロパティ名が必要なためapplyAdvancedFiltersで適用）
-  if (state.filter === 'adopted') result = result.filter(v => v.status === '採用' || v.status === '掲載済み');
-  else if (state.filter === 'nobotsu') result = result.filter(v => v.status !== 'ボツ');
+  if (mode === 'adopted') result = result.filter(v => v.status === '採用' || v.status === '掲載済み');
+  else if (mode === 'nobotsu') result = result.filter(v => v.status !== 'ボツ');
   return result;
 }
 
@@ -433,18 +551,20 @@ function getAdoptedValueForWrite(values) {
 }
 window.getAdoptedValueForWrite = getAdoptedValueForWrite;
 
-function getFilterParam() {
-  if (state.filter === 'adopted') return '採用,掲載済み';
-  if (state.filter === 'nobotsu') return '採用,掲載済み,案';
+function getFilterParam(filterMode) {
+  const mode = filterMode == null ? state.filter : filterMode;
+  if (mode === 'adopted') return '採用,掲載済み';
+  if (mode === 'nobotsu') return '採用,掲載済み,案';
   return '';
 }
 
-function _updateFilterBadge() {
+function _updateFilterBadge(options = {}) {
   const badge = document.getElementById('filter-badge');
   if (!badge) return;
-  const dbPath = state.currentDbPath;
-  const advCount = dbPath ? (getAdvancedFilters(dbPath) || []).length : 0;
-  const statusLabel = state.filter === 'adopted' ? '採用のみ' : state.filter === 'nobotsu' ? 'ボツ非表示' : state.filter === 'all' ? '全表示' : '';
+  const dbPath = options.dbPath || state.currentDbPath;
+  const filterMode = options.filter == null ? state.filter : options.filter;
+  const advCount = dbPath ? (getAdvancedFilters(dbPath, { ctx: options.ctx || null }) || []).length : 0;
+  const statusLabel = filterMode === 'adopted' ? '採用のみ' : filterMode === 'nobotsu' ? 'ボツ非表示' : filterMode === 'all' ? '全表示' : '';
   const labels = [];
   if (statusLabel) labels.push(statusLabel);
   if (advCount) labels.push(advCount + '件');
@@ -466,7 +586,7 @@ function clearPivot(ctx) {
   if (thead) thead.innerHTML = '';
   if (tbody) tbody.innerHTML = '';
   if (tfoot) tfoot.innerHTML = '';
-  const countEl = document.getElementById('sb-count');
+  const countEl = _paneEl(ctx, '#sb-count') || document.getElementById('sb-count');
   if (countEl) countEl.textContent = '0 件';
 }
 
@@ -486,17 +606,38 @@ function clearPivot(ctx) {
 // ヘッダーのインラインリネーム
 /* インライン編集・キーボードナビゲーション → gb-db-inline-edit.js に分離 */
 
-function _dbScope() {
-  if (!state.currentDbPath) return '';
+function _dbScope(dbPathOverride) {
+  const dbPath = dbPathOverride || state.currentDbPath;
+  if (!dbPath) return '';
   if (typeof _dbViewConfigHistoryScope === 'function') {
-    return _dbViewConfigHistoryScope(state.currentDbPath);
+    return _dbViewConfigHistoryScope(dbPath);
   }
-  return 'db:' + String(state.currentDbPath).replace(/\\/g, '/');
+  return 'db:' + String(dbPath).replace(/\\/g, '/');
 }
 
-function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml) {
-  const dbPath = state.currentDbPath;
-  const scope = _dbScope();
+function _dbResolveUndoDbPath(val, options = {}) {
+  if (options.dbPath) return options.dbPath;
+  const entityPath = options.entityPath
+    || (typeof _resolveEntityPathFromValObj === 'function' ? _resolveEntityPathFromValObj(val) : '')
+    || state.currentEntityPath
+    || '';
+  if (entityPath && typeof _dbPathFromEntityPath === 'function') {
+    const dbPath = _dbPathFromEntityPath(entityPath);
+    if (dbPath) return dbPath;
+  }
+  return state.currentDbPath || '';
+}
+
+function _dbResolveUndoCtx(dbPath, options = {}) {
+  if (options.ctx) return options.ctx;
+  if (dbPath && typeof _dbFindPaneContextForPath === 'function') return _dbFindPaneContextForPath(dbPath);
+  return undefined;
+}
+
+function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, options = {}) {
+  const dbPath = _dbResolveUndoDbPath(val, options);
+  const ctx = _dbResolveUndoCtx(dbPath, options);
+  const scope = _dbScope(dbPath);
   const undoUpdates = { new_value: oldValue };
   const redoUpdates = { new_value: newValue };
   if (oldRichHtml !== undefined || newRichHtml !== undefined) {
@@ -504,15 +645,16 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml) 
     redoUpdates.new_rich_html = newRichHtml || '';
   }
   historyPush(label,
-    async () => { await _apiPutValue(val, undoUpdates); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
-    async () => { await _apiPutValue(val, redoUpdates); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
+    async () => { await _apiPutValue(val, undoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
+    async () => { await _apiPutValue(val, redoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
     scope
   );
 }
 // ペアリレーション対応Undo（ペア側も自動で戻す）
-function _dbUndoPairValue(label, val, oldValue, newValue, pairDbPath, targetId, pairProp, sourceId, wasAdding, oldTargetId, entityPath, cascadeClears, bidirectionalCtx) {
-  const dbPath = state.currentDbPath;
-  const scope = _dbScope();
+function _dbUndoPairValue(label, val, oldValue, newValue, pairDbPath, targetId, pairProp, sourceId, wasAdding, oldTargetId, entityPath, cascadeClears, bidirectionalCtx, options = {}) {
+  const dbPath = _dbResolveUndoDbPath(val, { ...options, entityPath });
+  const ctx = _dbResolveUndoCtx(dbPath, options);
+  const scope = _dbScope(dbPath);
   historyPush(label,
     async () => {
       await _apiPutValue(val, { new_value: oldValue });
@@ -534,7 +676,7 @@ function _dbUndoPairValue(label, val, oldValue, newValue, pairDbPath, targetId, 
       if (entityPath && cascadeClears?.length && typeof _restoreCascadeDependentValues === 'function') {
         await _restoreCascadeDependentValues(entityPath, cascadeClears);
       }
-      if (dbPath) await selectDatabase(dbPath, undefined, { silent: true });
+      if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
     },
     async () => {
       await _apiPutValue(val, { new_value: newValue });
@@ -556,23 +698,24 @@ function _dbUndoPairValue(label, val, oldValue, newValue, pairDbPath, targetId, 
       if (entityPath && cascadeClears?.length && typeof _redoCascadeDependentValues === 'function') {
         await _redoCascadeDependentValues(entityPath, cascadeClears);
       }
-      if (dbPath) await selectDatabase(dbPath, undefined, { silent: true });
+      if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
     },
     scope
   );
 }
 
-function _dbUndoStatus(val, oldStatus, newStatus) {
-  const dbPath = state.currentDbPath;
-  const scope = _dbScope();
+function _dbUndoStatus(val, oldStatus, newStatus, options = {}) {
+  const dbPath = _dbResolveUndoDbPath(val, options);
+  const ctx = _dbResolveUndoCtx(dbPath, options);
+  const scope = _dbScope(dbPath);
   historyPush('ステータス: ' + oldStatus + ' → ' + newStatus,
-    async () => { await _apiPutValue(val, { new_status: oldStatus }); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
-    async () => { await _apiPutValue(val, { new_status: newStatus }); if (dbPath) await selectDatabase(dbPath, undefined, { silent: true }); },
+    async () => { await _apiPutValue(val, { new_status: oldStatus }); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
+    async () => { await _apiPutValue(val, { new_status: newStatus }); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
     scope
   );
 }
-function _dbUndoManualOrder(dbPath, movedNames, oldOrder, oldSortConfig, newOrder) {
-  const scope = _dbScope();
+function _dbUndoManualOrder(dbPath, movedNames, oldOrder, oldSortConfig, newOrder, ctx) {
+  const scope = _dbScope(dbPath);
   // movedNames は配列。後方互換のため文字列が来た場合は配列に正規化
   const names = Array.isArray(movedNames) ? movedNames : [movedNames];
   const firstName = names[0];
@@ -580,17 +723,17 @@ function _dbUndoManualOrder(dbPath, movedNames, oldOrder, oldSortConfig, newOrde
   const apply = (order, sortConfig) => {
     const c = getDbViewConfig(dbPath);
     const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
-      ? _getCurrentDbViewConfigEntryFromConfig(c)
+      ? _getCurrentDbViewConfigEntryFromConfig(c, { ctx })
       : null;
     const target = view || c;
     if (order) target.manualOrder = [...order]; else delete target.manualOrder;
     if (sortConfig === null) delete target.sortConfig;
     else target.sortConfig = { ...sortConfig };
     saveDbViewConfig(dbPath, c);
-    renderPivot();
+    renderPivot(ctx);
     setTimeout(() => restoreActiveCellByEntityName(firstName), 50);
     // 移動した全エントリの選択状態を復元（D&D 直前のチェック状態を再現）
-    _restoreSelectionByEntityNames(undefined, names);
+    _restoreSelectionByEntityNames(ctx, names);
   };
   const label = names.length > 1 ? `行移動: ${firstName} 他 ${names.length - 1} 件` : `行移動: ${firstName}`;
   historyPush(label,
@@ -613,20 +756,29 @@ function _dbRenameLocalRefs(dbPath, oldName, newName) {
   (c.savedViews || []).forEach(update);
   if (dirty) saveDbViewConfig(dbPath, c);
 }
-function _dbUndoRename(dbPath, oldName, newName) {
-  const scope = _dbScope();
+function _dbUndoRename(dbPath, oldName, newName, ctx) {
+  const scope = _dbScope(dbPath);
   // 即時: 直前の rename 成功に追従して manualOrder 等を更新
   _dbRenameLocalRefs(dbPath, oldName, newName);
+  if (typeof _dbNotifyCalendarEntryRenamed === 'function') {
+    _dbNotifyCalendarEntryRenamed(dbPath, _entityPath(dbPath, oldName), _entityPath(dbPath, newName), oldName, newName);
+  }
   historyPush('名前を変更: ' + oldName + ' → ' + newName,
     async () => {
       await apiPost('/entity/rename', { path: _entityPath(dbPath, newName), new_name: oldName });
       _dbRenameLocalRefs(dbPath, newName, oldName);
-      await selectDatabase(dbPath);
+      if (typeof _dbNotifyCalendarEntryRenamed === 'function') {
+        _dbNotifyCalendarEntryRenamed(dbPath, _entityPath(dbPath, newName), _entityPath(dbPath, oldName), newName, oldName);
+      }
+      await selectDatabase(dbPath, ctx, { silent: true });
     },
     async () => {
       await apiPost('/entity/rename', { path: _entityPath(dbPath, oldName), new_name: newName });
       _dbRenameLocalRefs(dbPath, oldName, newName);
-      await selectDatabase(dbPath);
+      if (typeof _dbNotifyCalendarEntryRenamed === 'function') {
+        _dbNotifyCalendarEntryRenamed(dbPath, _entityPath(dbPath, oldName), _entityPath(dbPath, newName), oldName, newName);
+      }
+      await selectDatabase(dbPath, ctx, { silent: true });
     },
     scope
   );
@@ -682,265 +834,6 @@ function _resolveAutoFillPlaceholder(raw) {
   }
 }
 
-// バージョン文字列を /api/version から事前取得してキャッシュ（$version 用）
-async function _fetchVersionCache() {
-  if (window.__meldexVersionCache) return window.__meldexVersionCache;
-  try {
-    const j = await apiFetch('/version');
-    window.__meldexVersionCache = j || { version: '', semver: '', commit: '', variant: 'dev' };
-    return window.__meldexVersionCache;
-  } catch {}
-  window.__meldexVersionCache = { version: '', semver: '', commit: '', variant: 'dev' };
-  return window.__meldexVersionCache;
-}
-
-/* ==============================
-   エントリ作成時 自動初期値充填（§12.1 Phase 0）
-   property_types.<prop>.autoFillOnCreate が定義されていれば、値を自動書き込み。
-   overrides に含まれるプロパティは R8 に従いスキップ（呼び出し側明示指定を尊重）。
-   ============================== */
-async function _autoFillOnCreate(dbPath, entityPath, overrides) {
-  if (!dbPath || !entityPath) return;
-  const ov = overrides || {};
-  const ptypes = getPropertyTypes(dbPath);
-  const needsVersion = Object.values(ptypes).some(p => p && p.autoFillOnCreate === '$version');
-  if (needsVersion) await _fetchVersionCache();
-  for (const [pName, ptc] of Object.entries(ptypes)) {
-    if (!ptc || !('autoFillOnCreate' in ptc)) continue;
-    if (Object.prototype.hasOwnProperty.call(ov, pName)) continue; // R8: 明示指定優先
-    const lockMsg = (typeof checkColumnEditable === 'function') ? checkColumnEditable(dbPath, pName) : '';
-    if (lockMsg) continue;
-    const resolved = _resolveAutoFillPlaceholder(ptc.autoFillOnCreate);
-    if (resolved === '' || resolved == null) continue;
-    const writeStatus = ptc.writeStatus || '案'; // X5: 既存実態に合わせた既定
-    try {
-      await _apiPostValue(entityPath, pName, resolved, writeStatus, '');
-    } catch { /* 失敗は黙殺: 他の autoFill に影響させない */ }
-  }
-}
-
-/* ==============================
-   ステータス連動 自動日時入力
-   ============================== */
-async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath) {
-  if (!dbPath) return;
-  const ptypes = getPropertyTypes(dbPath);
-  // $version を使う場合は事前取得（新形式 autoFillOnStatus: {status: "$version"} のみ該当）
-  const needsVersion = Object.values(ptypes).some(p => {
-    const a = p && p.autoFillOnStatus;
-    return a && typeof a === 'object' && a[newStatus] === '$version';
-  });
-  if (needsVersion) await _fetchVersionCache();
-  for (const [pName, ptc] of Object.entries(ptypes)) {
-    // 互換: 従来は autoFillOnStatus: "ステータス名" (date型のみ、値は現在日時) だったが、
-    // 新仕様では autoFillOnStatus: { "ステータス名": "$version" | "$now" | 静的値 } 形式も受容
-    let fillVal = null;
-    if (ptc.autoFillOnStatus === newStatus && ptc.type === 'date') {
-      // 旧形式: date型は現在日時で埋める
-      fillVal = '__legacy_date__';
-    } else if (ptc.autoFillOnStatus && typeof ptc.autoFillOnStatus === 'object' && newStatus in ptc.autoFillOnStatus) {
-      fillVal = _resolveAutoFillPlaceholder(ptc.autoFillOnStatus[newStatus]);
-    }
-    if (fillVal == null) continue;
-    if (fillVal === '__legacy_date__') {
-      // ロック列は自動入力をスキップ
-      const lockMsg = checkColumnEditable(dbPath, pName);
-      if (lockMsg) continue;
-      const now = typeof _dbDateCurrentValue === 'function'
-        ? _dbDateCurrentValue(ptc)
-        : new Date().toISOString().slice(0, 19);
-
-      // エントリパスを特定（旧形式: val.fileは候補値ファイルなので currentEntityPath を使う）
-      let ep = entityPath;
-      if (ep && !ep.endsWith('.md')) {
-        // 旧形式フォルダパスの場合はそのまま使う
-      } else if (ep && ep.endsWith('.md')) {
-        // 新形式の場合はそのまま（エントリ.md）
-        // ただし旧形式の候補値ファイル（例: ステータス_採用.md）の場合は currentEntityPath を使う
-        const parts = ep.replace(/\\/g, '/').split('/');
-        const fname = parts[parts.length - 1].replace(/\.md$/, '');
-        if (fname.includes('_') && state.currentEntityPath) {
-          ep = state.currentEntityPath;
-        }
-      }
-      if (!ep) continue;
-
-      // 既存値があるか確認
-      if (state.pivotData) {
-        // エントリ名: パスの末尾から取得
-        const epParts = ep.replace(/\\/g, '/').split('/');
-        const entName = epParts[epParts.length - 1].replace(/\.md$/, '');
-        const ent = state.pivotData.entities[entName];
-        if (ent) {
-          const existing = (ent[pName] || []).find(v => v.status === '採用' || v.status === '掲載済み');
-          if (existing) {
-            await _apiPutValue(existing, { new_value: now });
-            // Step 3 補正: ローカル pivotData の値も同期。
-            // 同期しないと partial update 経路で他セルが古い値のまま表示される
-            existing.value = now;
-          } else {
-            await _apiPostValue(ep, pName, now, '採用', '');
-          }
-          continue;
-        }
-      }
-      // pivotDataがない場合は新規追加
-      await _apiPostValue(ep, pName, now, '採用', '');
-    } else {
-      // 新形式: プレースホルダ評価済みの値を書き込む（型制約なし）
-      const lockMsg = checkColumnEditable(dbPath, pName);
-      if (lockMsg) continue;
-      let ep = entityPath;
-      if (ep && ep.endsWith('.md')) {
-        const parts = ep.replace(/\\/g, '/').split('/');
-        const fname = parts[parts.length - 1].replace(/\.md$/, '');
-        if (fname.includes('_') && state.currentEntityPath) ep = state.currentEntityPath;
-      }
-      if (!ep) continue;
-      const writeStatus = ptc.writeStatus || '採用';
-      if (state.pivotData) {
-        const epParts = ep.replace(/\\/g, '/').split('/');
-        const entName = epParts[epParts.length - 1].replace(/\.md$/, '');
-        const ent = state.pivotData.entities[entName];
-        if (ent) {
-          const existing = (ent[pName] || []).find(v => v.status === '採用' || v.status === '掲載済み');
-          if (existing) {
-            await _apiPutValue(existing, { new_value: fillVal });
-            existing.value = fillVal;
-          } else {
-            await _apiPostValue(ep, pName, fillVal, writeStatus, '');
-          }
-          continue;
-        }
-      }
-      await _apiPostValue(ep, pName, fillVal, writeStatus, '');
-    }
-  }
-}
-
-/* ==============================
-   変更ログモーダル（互換フォールバック）
-   ============================== */
-async function showDbAuditLogModal() {
-  if (typeof openCurrentVersionsTab === 'function') {
-    openCurrentVersionsTab();
-    return;
-  }
-  const dbPath = state.currentDbPath;
-  if (!dbPath) return;
-
-  const modal = document.createElement('div');
-  modal.className = 'modal-overlay';
-  modal.innerHTML = `
-    <div class="modal" style="width:750px;max-height:80vh;display:flex;flex-direction:column;">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);">
-        <div style="font-size:15px;font-weight:bold;">変更ログ</div>
-        <button data-action="this.closest('.modal-overlay').remove()" style="background:none;border:none;color:var(--fg2);font-size:18px;cursor:pointer;">✕</button>
-      </div>
-      <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;">
-        <input id="audit-filter-entity" type="text" placeholder="エントリで絞り込み" style="flex:1;padding:4px 8px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-        <input id="audit-filter-prop" type="text" placeholder="プロパティで絞り込み" style="flex:1;padding:4px 8px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-      </div>
-      <div id="audit-log-list" style="flex:1;overflow-y:auto;padding:8px 16px;font-size:12px;"></div>
-      <div id="audit-log-pager" style="padding:8px 16px;border-top:1px solid var(--border);display:flex;justify-content:center;gap:8px;font-size:12px;"></div>
-    </div>`;
-  document.body.appendChild(modal);
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
-
-  let _auditOffset = 0;
-  const _auditLimit = 100;
-
-  async function _loadAuditLogs() {
-    const entity = document.getElementById('audit-filter-entity').value.trim();
-    const prop = document.getElementById('audit-filter-prop').value.trim();
-    let url = '/db-audit-log?path=' + encodeURIComponent(dbPath)
-      + '&limit=' + _auditLimit + '&offset=' + _auditOffset;
-    if (entity) url += '&entity=' + encodeURIComponent(entity);
-    if (prop) url += '&prop=' + encodeURIComponent(prop);
-    try {
-      const data = await apiFetch(url);
-      _renderAuditLogList(data.logs, data.total);
-    } catch {
-      document.getElementById('audit-log-list').innerHTML =
-        '<div style="color:var(--fg2);padding:16px;text-align:center;">履歴の取得に失敗しました</div>';
-    }
-  }
-
-  function _renderAuditLogList(logs, total) {
-    const container = document.getElementById('audit-log-list');
-    if (!logs.length) {
-      container.innerHTML = '<div style="color:var(--fg2);padding:16px;text-align:center;">履歴がありません</div>';
-      document.getElementById('audit-log-pager').innerHTML = '';
-      return;
-    }
-
-    const actionLabels = {
-      'add_value': '値追加', 'update_value': '値変更', 'delete_value': '値削除',
-      'update_status': 'ステータス変更', 'create_entity': 'エントリ作成',
-      'rename_entity': '名前を変更', 'delete_entity': 'エントリ削除'
-    };
-
-    container.innerHTML = logs.map(log => {
-      const time = new Date(log.timestamp).toLocaleString('ja-JP');
-      const action = actionLabels[log.action] || log.action;
-      let detail = '';
-      if (log.action === 'update_value') {
-        detail = '\u201c' + (log.old_value || '').slice(0, 40) + '\u201d → \u201c' + (log.new_value || '').slice(0, 40) + '\u201d';
-      } else if (log.action === 'update_status') {
-        detail = (log.old_status || '') + ' → ' + (log.new_status || '');
-      } else if (log.action === 'add_value') {
-        detail = '\u201c' + (log.new_value || '').slice(0, 40) + '\u201d';
-      } else if (log.action === 'rename_entity') {
-        detail = '\u201c' + (log.old_value || '') + '\u201d → \u201c' + (log.new_value || '') + '\u201d';
-      }
-      return '<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:baseline;">'
-        + '<span style="color:var(--fg2);min-width:130px;flex-shrink:0;">' + esc(time) + '</span>'
-        + '<span style="color:var(--accent);min-width:60px;flex-shrink:0;">' + esc(log.user) + '</span>'
-        + '<span style="font-weight:bold;min-width:70px;flex-shrink:0;">' + esc(action) + '</span>'
-        + '<span style="color:var(--fg);">' + esc(log.entity_name)
-          + (log.property_name ? ' / ' + esc(log.property_name) : '') + '</span>'
-        + (detail ? '<span style="color:var(--fg2);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;">' + esc(detail) + '</span>' : '')
-        + '</div>';
-    }).join('');
-
-    // ページャー
-    const pager = document.getElementById('audit-log-pager');
-    const totalPages = Math.ceil(total / _auditLimit);
-    const currentPage = Math.floor(_auditOffset / _auditLimit) + 1;
-    if (totalPages <= 1) { pager.innerHTML = ''; return; }
-    pager.innerHTML = '';
-    if (currentPage > 1) {
-      const prev = document.createElement('button');
-      prev.textContent = '← 前';
-      prev.style.cssText = 'padding:2px 8px;font-size:12px;cursor:pointer;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;';
-      prev.addEventListener('click', () => { _auditOffset -= _auditLimit; _loadAuditLogs(); });
-      pager.appendChild(prev);
-    }
-    const info = document.createElement('span');
-    info.style.color = 'var(--fg2)';
-    info.textContent = currentPage + ' / ' + totalPages + ' (' + total + '件)';
-    pager.appendChild(info);
-    if (currentPage < totalPages) {
-      const next = document.createElement('button');
-      next.textContent = '次 →';
-      next.style.cssText = 'padding:2px 8px;font-size:12px;cursor:pointer;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;';
-      next.addEventListener('click', () => { _auditOffset += _auditLimit; _loadAuditLogs(); });
-      pager.appendChild(next);
-    }
-  }
-
-  // 絞り込みリスナー
-  let _filterTimer;
-  document.getElementById('audit-filter-entity').addEventListener('input', () => {
-    clearTimeout(_filterTimer);
-    _filterTimer = setTimeout(() => { _auditOffset = 0; _loadAuditLogs(); }, 300);
-  });
-  document.getElementById('audit-filter-prop').addEventListener('input', () => {
-    clearTimeout(_filterTimer);
-    _filterTimer = setTimeout(() => { _auditOffset = 0; _loadAuditLogs(); }, 300);
-  });
-
-  _loadAuditLogs();
-}
+/* シート自動入力・変更ログ → gb-db-autofill.js に分離 */
 
 /* 複数エントリの一括編集 → gb-db-bulk-edit.js に分離 */

@@ -31,6 +31,11 @@ function _queueAutoLinkTooltip(linkOrTarget) {
   const linkTarget = linkOrTarget?.path ? linkOrTarget : _resolveContextLinkTarget(linkOrTarget);
   const link = linkTarget?.element;
   if (!link || !linkTarget?.path) return;
+  if (linkTarget.localAnchor || linkTarget.linkType === 'note-anchor' || _noteAnchorIdFromHref(linkTarget.path)) {
+    clearTimeout(tooltipTimer);
+    removeTooltip();
+    return;
+  }
   if (_tooltipSuppressedLink && !_tooltipSuppressedLink.contains(link)) _clearAutoLinkTooltipSuppression();
   if (_isAutoLinkTooltipSuppressed(link)) return;
   if (link === _tooltipLink) return; // 同じリンク上なら何もしない
@@ -197,9 +202,11 @@ let _fileSearchIdx = -1;
 let _fileSearchLastQuery = '';
 let _fileSearchLastRoot = null;
 
-function openFileSearch() {
+function openFileSearch(mode = 'find') {
   const bar = document.getElementById('file-search-bar');
+  const replaceMode = String(mode || '').toLowerCase() === 'replace';
   bar.classList.add('open');
+  bar.classList.toggle('replace-open', replaceMode);
   const q = document.getElementById('fsb-query');
   const r = document.getElementById('fsb-replace');
   q.value = ''; r.value = '';

@@ -106,7 +106,7 @@ function _settingsThemeIsCustom(id) {
 }
 
 const SETTINGS_THEME_STYLE_TABS = [
-  '共通', 'フォルダ', 'ノート', 'シナリオ', 'シート', 'ボード', 'カレンダー',
+  '共通', 'フォルダ', 'ノート', 'シナリオ', 'シート', 'ボード', 'スケジューラー',
   '補助パネル',
 ];
 const SETTINGS_THEME_STYLE_AUTO_TARGETS = {
@@ -115,7 +115,7 @@ const SETTINGS_THEME_STYLE_AUTO_TARGETS = {
   'シナリオ': ['style-scriptnote', 'scriptnote-type-dialogue', 'scriptnote-type-action', 'scriptnote-type-heading', 'scriptnote-type-summary', 'scriptnote-type-break'],
   'シート': ['style-sheet'],
   'ボード': ['style-board'],
-  'カレンダー': ['style-calendar'],
+  'スケジューラー': ['style-calendar'],
   '補助パネル': ['style-outliner', 'folder-tree-folder', 'style-preview', 'style-detail', 'style-chat', 'style-timer', 'style-history', 'style-annotation', 'style-search', 'style-version'],
 };
 

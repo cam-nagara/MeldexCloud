@@ -130,7 +130,10 @@
       if (stat?.kind === 'directory') return 'folder';
       const normalized = _normalizeRelativePath(relativePath);
       const lower = normalized.toLowerCase();
-      if (lower.endsWith('.scriptnote.json')) return 'scriptnote';
+      if (lower.endsWith('.mel-board') || lower.endsWith('.board.md') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
+      if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+      if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
+      if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
       if (!lower.endsWith('.md')) return 'scenario';
       const typeInfo = await _fetchJson('/check-type', { query: { path: normalized }, allowStatus: [404] });
       return String(typeInfo?.type || '') === 'board' ? 'board' : 'page';

@@ -47,7 +47,7 @@
         { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote' },
         { label: 'シート', icon: 'database', type: 'database' },
         { label: 'ボード', icon: 'presentation', type: 'board' },
-        { label: 'カレンダー', icon: 'calendar', type: 'calendar' },
+        { label: 'スケジューラー', icon: 'calendar', type: 'calendar' },
         { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
       ],
     },
@@ -56,7 +56,7 @@
       items: [
         { label: 'フォルダツリー', icon: 'folderTree', type: 'outliner' },
         { label: 'ビューワー', icon: 'tvMinimal', type: 'preview' },
-        { label: 'オプション', icon: 'panelRight', type: 'detail' },
+        { label: 'オプション', icon: 'slidersHorizontal', type: 'detail' },
         { label: 'バージョン管理', icon: 'gitBranch', type: 'version' },
         { label: 'チャット', icon: 'messagesSquare', type: 'chat' },
         { label: 'タイマー', icon: 'timer', type: 'timer' },

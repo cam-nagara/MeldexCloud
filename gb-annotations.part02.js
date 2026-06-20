@@ -211,7 +211,24 @@ function _getAnnotationSelectionRange(editor) {
   const rects = Array.from(range.getClientRects()).filter(rect => rect.width || rect.height);
   const rect = rects[0] || range.getBoundingClientRect();
   if (!rect || (!rect.width && !rect.height)) return null;
-  return { range, rect };
+  const avoidRect = rects.length
+    ? rects.reduce((acc, r) => ({
+      left: Math.min(acc.left, r.left),
+      top: Math.min(acc.top, r.top),
+      right: Math.max(acc.right, r.right),
+      bottom: Math.max(acc.bottom, r.bottom),
+      width: Math.max(acc.right, r.right) - Math.min(acc.left, r.left),
+      height: Math.max(acc.bottom, r.bottom) - Math.min(acc.top, r.top),
+    }), {
+      left: rects[0].left,
+      top: rects[0].top,
+      right: rects[0].right,
+      bottom: rects[0].bottom,
+      width: rects[0].width,
+      height: rects[0].height,
+    })
+    : rect;
+  return { range, rect, avoidRect };
 }
 
 function _annotationSelectionElement(range) {
@@ -366,6 +383,7 @@ function _showAnnotationSelectionPopup(editor, scheduleSave) {
     className: 'gb-fmt-popup--annotation-note',
     fields: ['textColor', 'fontSize', 'fontFamily', 'bold', 'italic', 'bgColor', 'leftAccent', 'accentColor', 'strike', 'underline'],
     values,
+    avoidRect: selectionInfo.avoidRect,
     onChange(prop, value) {
       _applyAnnotationSelectionFormat(savedRange, prop, value);
       scheduleSave();
@@ -491,19 +509,22 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   note.className = 'ann-note ' + shape;
   note.dataset.annId = id;
   note._annData = data;
-  note.dataset.baseY = data.y; // スクロール同期用の基準Y
+  // 座標欠落時のフォールバック（NaNpx 防止）
+  const baseX = Number.isFinite(data.x) ? data.x : 0;
+  const baseY = Number.isFinite(data.y) ? data.y : 0;
+  note.dataset.baseY = baseY; // スクロール同期用の基準Y
   note.draggable = true;
   note.addEventListener('dragstart', (e) => {
     const text = data.text || '付箋注釈';
     e.dataTransfer.setData('text/plain', '[注釈: ' + text.substring(0, 30) + '](annotation:' + id + ')');
     e.dataTransfer.setData('application/x-annotation', JSON.stringify({ id, text, shape }));
   });
-  note.dataset.baseX = data.x;
+  note.dataset.baseX = baseX;
   // スクロール分を引いて画面上の位置を計算
   const scrollY = (_annScrollContainer && !_isIframeView(state.view)) ? _annScrollContainer.scrollTop : 0;
   const scrollX = (_annScrollContainer && !_isIframeView(state.view)) ? _annScrollContainer.scrollLeft : 0;
-  note.style.left = (data.x - scrollX) + 'px';
-  note.style.top = (data.y - scrollY) + 'px';
+  note.style.left = (baseX - scrollX) + 'px';
+  note.style.top = (baseY - scrollY) + 'px';
   note.style.width = (data.width || 180) + 'px';
   note.style.height = (data.height || 100) + 'px';
   _applyAnnotationNoteColor(note, color);
@@ -917,13 +938,17 @@ function jumpToAnnotation(targetPath) {
     const pair = targetPath.slice('compare:'.length).split('|');
     if (pair[0] && pair[1] && typeof openCompareView === 'function') openCompareView(pair[0], pair[1]).catch?.(() => {});
     else showStatus('比較ビューの注釈対象が見つかりません', true);
-  } else if (targetPath.endsWith('.smart-db.json')) {
-    const label = targetPath.split('/').pop().replace(/\.smart-db\.json$/i, '');
+  } else if (targetPath.endsWith('.mel-sheet') || targetPath.endsWith('.smart-db.json')) {
+    const label = targetPath.split('/').pop().replace(/\.mel-sheet$/i, '').replace(/\.smart-db\.json$/i, '');
     if (typeof openSmartDbFile === 'function') openSmartDbFile(label, targetPath);
     else selectDatabase(targetPath);
+  } else if (targetPath.endsWith('.mel-board') || targetPath.endsWith('.board.md')) {
+    const label = targetPath.split('/').pop().replace(/\.mel-board$/i, '').replace(/\.board\.md$/i, '');
+    if (typeof openBoard === 'function') openBoard(label, targetPath);
+    else openPage(label, targetPath);
   } else if (targetPath.includes('/設定/') || targetPath.includes('/DB')) {
     selectDatabase(targetPath);
-  } else if (targetPath.endsWith('.scriptnote.json') || targetPath.endsWith('.scenario.json')) {
+  } else if (targetPath.endsWith('.mel-scenario') || targetPath.endsWith('.scriptnote.json') || targetPath.endsWith('.scenario.json')) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(targetPath, targetPath.split('/').pop());
   } else {
     openPage(targetPath.split('/').pop(), targetPath);

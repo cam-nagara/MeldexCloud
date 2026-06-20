@@ -48,6 +48,18 @@ function _syncTeamRoomSelect(rooms) {
 
 async function loadTeamRooms() {
   const list = document.getElementById('team-room-list');
+  if (!_chatSourceFolderValue() && !_chatWorkspaceIdValue()) {
+    _teamRoomsCache = [];
+    _clearTeamRoomSelection();
+    if (typeof _restartTeamPolling === 'function') _restartTeamPolling();
+    _syncTeamRoomSelect([]);
+    _renderTeamRoomTitle(null);
+    if (list) {
+      list.style.display = 'none';
+      list.innerHTML = '';
+    }
+    return;
+  }
   try {
     let rooms = await apiFetch(_chatApiPath('/collab/rooms'));
     const me = getUsername();
@@ -183,6 +195,7 @@ function _beginTeamRoomTitleEdit(room) {
 
 async function _deleteTeamRoom(room) {
   if (!room?.path) return;
+  if (!_chatRequireSourceFolder()) return;
   const ok = await cfConfirm(`ルーム「${_roomDisplayName(room) || room.name || room.path}」を本当に削除しますか？\n\n全メッセージが失われます。`);
   if (!ok) return;
   try {
@@ -195,6 +208,10 @@ async function _deleteTeamRoom(room) {
 
 async function _renameTeamRoom(room, newName) {
   if (!room?.path || room.type === 'dm') return;
+  if (!_chatRequireSourceFolder()) {
+    _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || room);
+    return;
+  }
   const name = String(newName || '').trim();
   if (!name || name === room.name) {
     _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || room);
@@ -253,6 +270,7 @@ async function _doRenameTeamRoom(room) {
 }
 
 async function selectTeamRoom(roomPath) {
+  if (roomPath && !_chatRequireSourceFolder()) return;
   if (!roomPath) {
     _clearTeamRoomSelection();
     return;
@@ -283,11 +301,25 @@ async function selectTeamRoom(roomPath) {
 }
 
 async function showDirectMessageModal() {
+  if (!_chatRequireSourceFolder()) return;
   const me = getUsername();
   let users = [];
   const seen = new Set([me]);
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (workspaceId) {
+    try {
+      const payload = await apiFetch('/workspaces/' + encodeURIComponent(workspaceId) + '/members');
+      (payload?.members || []).forEach(member => {
+        const name = String(member?.name || '').trim();
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          users.push(name);
+        }
+      });
+    } catch {}
+  }
   try {
-    const team = await apiFetch('/team');
+    const team = workspaceId ? [] : await apiFetch('/team');
     if (Array.isArray(team)) {
       team.forEach(member => {
         if (member.name && !seen.has(member.name)) {
@@ -460,6 +492,7 @@ function _showChatMessageMenu(e, m) {
 async function loadTeamMessages() {
   const roomPath = _teamCurrentRoom;
   if (!roomPath) return;
+  if (!_chatSourceFolderValue() && !_chatWorkspaceIdValue()) return;
   const container = document.getElementById('team-messages');
   if (!container) return;
   const loadSerial = ++_teamMessagesLoadSerial;
@@ -485,7 +518,7 @@ async function pollTeamMessages() {
   // rp-chatがペインにマウントされているか（表示中か）を確認する。
   const rpChat = document.getElementById('rp-chat');
   const chatVisible = rpChat && rpChat.closest('.gb-pane-content') && rpChat.style.display !== 'none';
-  if (!_teamCurrentRoom || _chatMode !== 'team' || !chatVisible) { clearInterval(_teamPollTimer); _teamPollTimer = null; return; }
+  if ((!_chatSourceFolderValue() && !_chatWorkspaceIdValue()) || !_teamCurrentRoom || _chatMode !== 'team' || !chatVisible) { clearInterval(_teamPollTimer); _teamPollTimer = null; return; }
   if (_teamPollInFlight) return;
   const roomPath = _teamCurrentRoom;
   const since = _teamLastTimestamp;
@@ -512,6 +545,7 @@ async function pollTeamMessages() {
 }
 
 async function teamSend() {
+  if (!_chatRequireSourceFolder()) return;
   if (!_teamCurrentRoom) { showStatus('ルームを選択してください', true); return; }
   if (_teamSending) return;
   const input = document.getElementById('team-input');
@@ -764,6 +798,7 @@ document.getElementById('chat-input')?.addEventListener('input', function() { _a
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 
 async function showCreateRoomModal() {
+  if (!_chatRequireSourceFolder()) return;
   // ダイアログなしで即座に「無題」ルームを作成（連番を自動付与）
   try {
     const existing = await apiFetch(_chatApiPath('/collab/rooms')).catch(() => []);
@@ -904,7 +939,26 @@ function _chatSourceFolderValue() {
   return String(_chatState.sourceFolder || '');
 }
 
+function _chatWorkspaceIdValue() {
+  return String(_chatState.workspaceId || '');
+}
+
+function _chatRequireSourceFolder(message = '対象ワークスペースまたはフォルダを選択してください') {
+  const sourceFolder = _chatSourceFolderValue();
+  const workspaceId = _chatWorkspaceIdValue();
+  if (workspaceId) return workspaceId;
+  if (sourceFolder) return sourceFolder;
+  if (typeof showStatus === 'function') showStatus(message, true);
+  const select = document.getElementById('chat-source-folder');
+  if (select && !select.disabled) {
+    try { select.focus(); } catch {}
+  }
+  return '';
+}
+
 function _chatSourceQuery() {
+  const workspaceId = _chatWorkspaceIdValue();
+  if (workspaceId) return 'workspace_id=' + encodeURIComponent(workspaceId);
   const sourceFolder = _chatSourceFolderValue();
   return sourceFolder ? 'source_folder=' + encodeURIComponent(sourceFolder) : '';
 }
@@ -916,6 +970,11 @@ function _chatApiPath(path) {
 }
 
 function _chatPostPayload(body = {}) {
+  const workspaceId = _chatWorkspaceIdValue();
+  if (workspaceId) {
+    const hasWorkspace = Object.prototype.hasOwnProperty.call(body || {}, 'workspace_id');
+    return { ...body, workspace_id: hasWorkspace ? body.workspace_id : workspaceId };
+  }
   const hasSourceFolder = Object.prototype.hasOwnProperty.call(body || {}, 'source_folder');
   return { ...body, source_folder: hasSourceFolder ? body.source_folder : _chatSourceFolderValue() };
 }
@@ -938,6 +997,51 @@ async function _chatKnowledgeAutomationForSave() {
 async function _chatProviderHasConfiguredKey(provider) {
   const status = await _chatProviderReadyStatus(provider);
   return !!status.configured;
+}
+
+function _chatProviderStatusConfigured(status) {
+  return !!(status && (status.configured || status.ok));
+}
+
+function _chatProviderUnavailableSuffix(provider, status) {
+  if (_chatProviderStatusConfigured(status)) return '';
+  const message = String(status?.message || '');
+  if (_chatIsCliProvider(provider)) {
+    if (message.includes('コマンド')) return '（未検出）';
+    if (message.includes('無効')) return '（無効）';
+    if (message.includes('読み込め') || message.includes('確認')) return '（確認不可）';
+    return '（未設定）';
+  }
+  if (message.includes('確認')) return '（確認不可）';
+  return '（APIキー未設定）';
+}
+
+function _chatApplyProviderOptionStatus(option, status) {
+  if (!option) return;
+  const provider = _chatProviderKey(option.value);
+  if (!option.dataset.baseLabel) option.dataset.baseLabel = option.textContent.replace(/（(?:APIキー未設定|未設定|無効|未検出|確認不可)）$/, '');
+  const configured = _chatProviderStatusConfigured(status);
+  option.disabled = !configured;
+  option.setAttribute('aria-disabled', configured ? 'false' : 'true');
+  option.title = configured ? '' : (status?.message || '送信設定を確認してください。');
+  option.textContent = option.dataset.baseLabel + _chatProviderUnavailableSuffix(provider, status);
+}
+
+async function _chatRefreshProviderAvailability(seedStatuses = {}) {
+  const select = document.getElementById('chat-provider');
+  if (!select) return;
+  const refreshToken = Number(_chatState.providerAvailabilityRefreshToken || 0) + 1;
+  _chatState.providerAvailabilityRefreshToken = refreshToken;
+  const options = Array.from(select.options || []).filter(option => option.value);
+  const statuses = {};
+  await Promise.all(options.map(async option => {
+    const provider = _chatProviderKey(option.value);
+    statuses[provider] = seedStatuses[provider] || await _chatProviderReadyStatus(provider);
+  }));
+  if (refreshToken !== _chatState.providerAvailabilityRefreshToken) return;
+  options.forEach(option => _chatApplyProviderOptionStatus(option, statuses[_chatProviderKey(option.value)]));
+  const currentStatus = statuses[_chatProviderKey(select.value)];
+  select.title = _chatProviderStatusConfigured(currentStatus) ? '' : (currentStatus?.message || '送信設定を確認してください。');
 }
 
 async function _chatProviderReadyStatus(provider) {

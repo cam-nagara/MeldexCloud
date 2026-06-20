@@ -438,16 +438,28 @@
 
     // ファイルドロップ
     const files = e.dataTransfer.files;
-    if (!files.length || !bd.path) return;
+    if (!files.length) return;
     const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = ev => resolve(ev.target.result);
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(file);
     });
-    const boardDir = bd.path.substring(0, bd.path.lastIndexOf('/'));
+    const isImageFile = (file) => {
+      const name = String(file?.name || '').toLowerCase();
+      return String(file?.type || '').startsWith('image/')
+        || /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(name);
+    };
+    const gridOffsetFor = (index, imageOnly) => {
+      const cols = imageOnly ? 4 : 3;
+      const gapX = imageOnly ? 280 : 220;
+      const gapY = imageOnly ? 220 : 150;
+      return { x: (index % cols) * gapX, y: Math.floor(index / cols) * gapY };
+    };
+    const boardDir = bd.path ? bd.path.substring(0, bd.path.lastIndexOf('/')) : '';
     const dropBoardPath = bd.path;
     const dropOpenSeq = Number(bd._openSeq) || 0;
+    const imageDropMode = typeof bdGetImageDropMode === 'function' ? bdGetImageDropMode() : 'link';
     const dropStillTargetsCurrentBoard = () => (
       bd.path === dropBoardPath && (!dropOpenSeq || Number(bd._openSeq) === dropOpenSeq)
     );
@@ -457,28 +469,37 @@
       Promise.allSettled(uploadedPaths.map(path => apiPost('/outliner/delete', { path }, { silentError: true }))).catch(() => {});
     };
     const jobs = [];
-    let ox = 0;
-    for (const f of files) {
-      const offsetX = ox;
-      const isImage = f.type.startsWith('image/');
+    const droppedFiles = [...files];
+    const imageOnlyDrop = droppedFiles.every(isImageFile);
+    droppedFiles.forEach((f, index) => {
+      const offset = gridOffsetFor(index, imageOnlyDrop);
+      const isImage = isImageFile(f);
       jobs.push((async () => {
         try {
           const data = await readFileAsDataURL(f);
           if (!dropStillTargetsCurrentBoard()) return null;
-          const res = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({data, filename: f.name}),
-          });
-          if (!res.ok) return null;
-          return { name: f.name, path: res.path || '', isImage, offsetX };
+          if (isImage && imageDropMode === 'embed') {
+            return { name: f.name, path: '', isImage, dataUrl: data, offset, embedded: true };
+          }
+          try {
+            const res = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              silentError: isImage && !bd.path,
+              body: JSON.stringify({data, filename: f.name}),
+            });
+            if (res?.ok) return { name: f.name, path: res.path || '', isImage, dataUrl: '', offset };
+          } catch (uploadErr) {
+            if (!isImage) throw uploadErr;
+          }
+          if (isImage) return { name: f.name, path: '', isImage, dataUrl: data, offset, embedded: true, linkFallback: true };
+          return null;
         } catch (err) {
           showStatus('ファイルの保存に失敗しました', true);
           return null;
         }
       })());
-      ox += 220;
-    }
+    });
     Promise.all(jobs).then(results => {
       if (!dropStillTargetsCurrentBoard()) {
         cleanupAbandonedUploads(results);
@@ -486,17 +507,23 @@
         return;
       }
       const nodes = results.filter(Boolean).map(item => {
-        if (item.isImage && item.path) {
-          const imgUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(item.path);
-          const linkType = typeof _bdInferLinkType === 'function' ? _bdInferLinkType(item.path, 'image') : 'image';
+        const x = wx + (item.offset?.x || 0);
+        const y = wy + (item.offset?.y || 0);
+        if (item.isImage && (item.path || item.dataUrl)) {
+          const imgUrl = item.path ? API_BASE + '/file-raw?path=' + encodeURIComponent(item.path) : item.dataUrl;
+          const linkType = item.path && typeof _bdInferLinkType === 'function' ? _bdInferLinkType(item.path, 'image') : 'image';
+          const opts = { img: imgUrl, linkType, w: 250 };
+          if (item.path) opts.link = item.path;
+          if (item.path) opts.imageSourcePath = String(item.path).replace(/\\/g, '/');
+          else opts.text = item.name || '';
           return typeof bdCreateNodeWithStyle === 'function'
-            ? bdCreateNodeWithStyle('', wx + item.offsetX, wy, { img: imgUrl, link: item.path, linkType, w: 250 })
-            : bdNode('', wx + item.offsetX, wy, 250, 0, { img: imgUrl, link: item.path, linkType });
+            ? bdCreateNodeWithStyle(item.path ? '' : (item.name || ''), x, y, opts)
+            : bdNode(item.path ? '' : (item.name || ''), x, y, 250, 0, opts);
         }
         const linkType = typeof _bdInferLinkType === 'function' ? _bdInferLinkType(item.path || '', '') : '';
         return typeof bdCreateNodeWithStyle === 'function'
-          ? bdCreateNodeWithStyle(item.name, wx + item.offsetX, wy, { link: item.path || '', linkType, w: 200 })
-          : bdNode(item.name, wx + item.offsetX, wy, 200, 0, { link: item.path || '', linkType });
+          ? bdCreateNodeWithStyle(item.name, x, y, { link: item.path || '', linkType, w: 200 })
+          : bdNode(item.name, x, y, 200, 0, { link: item.path || '', linkType });
       });
       if (!nodes.length) {
         return;
@@ -504,6 +531,7 @@
       bdPushUndo();
       nodes.forEach(n => bd.nodes.push(n));
       const ids = nodes.map(n => n.id);
+      const activeId = ids.length === 1 ? ids[0] : null;
       if (typeof bdBeginFastBoardMutation === 'function') bdBeginFastBoardMutation();
       try {
         nodes.forEach(n => {
@@ -514,7 +542,26 @@
       } finally {
         if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
       }
+      bd.selected = new Set(ids);
+      bd._activeNode = activeId;
+      if (typeof bdClearConnectionSelection === 'function') bdClearConnectionSelection();
+      if (typeof bdApplySelectionDomClass === 'function') bdApplySelectionDomClass();
+      ids.forEach(id => {
+        if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
+      });
+      if (typeof bdSyncResizeHandleForNode !== 'function' && typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+      if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
       bdDirty();
+      if (typeof showStatus === 'function') {
+        const addedImages = nodes.filter(node => node.img).length;
+        const label = addedImages === nodes.length ? '画像' : 'ファイル';
+        const modeLabel = addedImages
+          ? (imageDropMode === 'embed' ? '（埋め込み）' : '（リンク）')
+          : '';
+        const hasFallback = results.filter(Boolean).some(item => item.linkFallback);
+        const fallbackLabel = hasFallback ? '（リンク保存できなかった画像は埋め込み）' : modeLabel;
+        showStatus(nodes.length > 1 ? `${nodes.length}件の${label}カードを追加しました${fallbackLabel}` : `${label}カードを追加しました${fallbackLabel}`);
+      }
     });
   }
 

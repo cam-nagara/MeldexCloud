@@ -32,7 +32,6 @@
   // アクティブペインのアクティブタブのtypeをstate.viewに同期する
   function _syncStateView() {
     let newView = null;
-    let activePaneOwnsView = false;
     const isPaneManagedType = (type) => !!(type && (LEGACY_CONTAINERS[type] || COMPONENT_TYPES.has(type)));
     const isWorkManagedType = (type) => isPaneManagedType(type) && !_isToolbarUtilityView(type);
     // まずアクティブペインのタブをチェック
@@ -43,7 +42,6 @@
         const activeTab = paneInfo.node.tabs?.[paneInfo.node.activeTabIndex];
         if (isWorkManagedType(activeTab?.type)) {
           newView = activeTab.type;
-          activePaneOwnsView = true;
         }
       }
     }
@@ -57,8 +55,8 @@
         if (isWorkManagedType(tab?.type)) { newView = tab.type; break; }
       }
     }
-    if (newView && (newView !== state.view || activePaneOwnsView)) {
-      state.view = newView;
+    if (newView) {
+      if (newView !== state.view) state.view = newView;
       _updateToolbars(newView);
     } else if (!newView) {
       _updateToolbars('');
@@ -139,11 +137,13 @@
     const scriptnoteVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-scriptnote');
     const boardVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-board, .detail-tab-board-note, .detail-tab-board-style');
     const publishVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-publish');
+    const tagManagementVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-tag-management');
     const publishAllowed = new Set(['page', 'calendar', 'csv', 'smart-db']).has(type) || _DETAIL_DB_VIEW_TYPES.has(type);
     if (type !== 'calendar' && calendarVisible) return true;
     if (type !== 'scriptnote' && scriptnoteVisible) return true;
     if (type !== 'board' && boardVisible) return true;
     if (!publishAllowed && publishVisible) return true;
+    if (type !== 'folder' && tagManagementVisible) return true;
     if (expectedCtx && activeDetailTab === 'file-style' && currentCtx !== expectedCtx) return true;
     if (expectedCtx && fileStyleVisible && currentCtx !== expectedCtx) return true;
     if (!expectedCtx && fileStyleVisible) return true;
@@ -159,7 +159,6 @@
     if (!tab) return true;
     if (_DETAIL_SYNC_SKIP_TYPES.has(tab.type)) return true;
     if (_DETAIL_SYNC_SKIP_COMPONENT_TYPES.has(tab.type)) return true;
-    if (tab.type === 'calendar' && !tab.path && !tab.state?.calendarFile) return true;
     return false;
   }
 
@@ -199,12 +198,13 @@
       if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
       if (typeof showFileStyleTab === 'function') showFileStyleTab(false);
       if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
+      if (typeof showTagManagementTab === 'function') showTagManagementTab(false);
       if (typeof hideBoardNoteTab === 'function') hideBoardNoteTab();
       if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
       if (typeof switchDetailTab === 'function') switchDetailTab(null);
       if (typeof _removeStaleDpEditables === 'function') _removeStaleDpEditables(detailPane);
       else detailPane.querySelectorAll('#dp-editable').forEach(n => n.remove());
-      ['#detail-tab-note-editor', '#detail-tab-db-property-settings', '#detail-tab-file-style', '#detail-tab-calendar-today', '#detail-tab-publish'].forEach(selector => {
+      ['#detail-tab-note-editor', '#detail-tab-db-property-settings', '#detail-tab-file-style', '#detail-tab-calendar-today', '#detail-tab-calendar-settings', '#detail-tab-calendar-production', '#detail-tab-publish', '#detail-tab-tag-management'].forEach(selector => {
         const el = detailPane.querySelector(selector);
         if (el) el.innerHTML = '';
       });
@@ -262,7 +262,20 @@
     } else if (_DETAIL_GLOBAL_TYPES.has(type)) {
       if (typeof _syncDetailPanel === 'function') _syncDetailPanel(label, path, type);
     } else if (_DETAIL_FILE_INFO_TYPES.has(type) && path && typeof _showFileInfoInDetailPanel === 'function') {
-      _clearDetailPaneShellAfterSave(() => _showFileInfoInDetailPanel(path));
+      // 保存失敗・拒否で clearNow が走らなかった場合でも file-info は必ず描画する
+      const cleared = _clearDetailPaneShellAfterSave(() => _showFileInfoInDetailPanel(path));
+      if (cleared === false) {
+        // save の Promise が解決して afterClear が走るのを待つ余地を与えてから、
+        // それでも描画されていない場合のみフォールバック描画する（二重 fetch 防止）
+        setTimeout(() => {
+          const detailPane = document.getElementById('rp-detail');
+          if (!detailPane) return;
+          // file-info が描画済みかどうかは hydrate ターゲット属性で判定
+          const already = detailPane.querySelector('[data-global-tags-target-path]');
+          if (already) return;
+          try { _showFileInfoInDetailPanel(path); } catch {}
+        }, 150);
+      }
     } else {
       // welcome / compare / search 等: 前のアプリ固有オプションを残さない
       _clearDetailPaneShell();

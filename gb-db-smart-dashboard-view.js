@@ -80,6 +80,7 @@ function normalizeSmartSheetAsDbLike(result) {
     entities,
     properties: Array.from(propSet),
     filter_properties: Array.isArray(result?.filter_properties) ? result.filter_properties : Array.from(propSet),
+    propertyTypes: result?.property_types || result?.propertyTypes || {},
     new_format: true,
     source_type: 'smart-sheet',
     total_dbs_scanned: result?.total_dbs_scanned || 0,
@@ -175,7 +176,11 @@ async function resolveWidgetData(source, opts) {
     const result = await (typeof loadGlobalIndexData === 'function' ? loadGlobalIndexData(loaded.def) : Promise.resolve({ files: [], total: 0 }));
     return { ok: true, data: normalizeGlobalIndexAsDbLike(_smartDbDashboardGlobalIndexResult(result, loaded.def)), source: normalized };
   }
-  const url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(loaded.def.filters || []));
+  const widgetSources = (typeof _smartDbEffectiveSources === 'function')
+    ? _smartDbEffectiveSources(loaded.def)
+    : (Array.isArray(loaded.def.sources) ? loaded.def.sources.filter(s => s && s.path) : []);
+  let url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(loaded.def.filters || []));
+  if (widgetSources.length) url += '&sources=' + encodeURIComponent(JSON.stringify(widgetSources));
   const result = await apiFetch(url);
   return { ok: true, data: normalizeSmartSheetAsDbLike(result), source: normalized };
 }
@@ -332,9 +337,11 @@ async function renderSmartDbStatWidget(widget, container, resolved) {
   const entityNames = Object.keys(data.entities || {});
   let value = entityNames.length;
   if (cfg.property) {
-    const propTypes = await _getSmartDbDashboardPropertyTypes(resolved.source);
+    const propTypes = await _getSmartDbDashboardPropertyTypes(resolved.source, data);
     const ptc = propTypes?.[cfg.property] || null;
-    value = calcAggregation(cfg.property, data.entities, entityNames, cfg.aggregation || 'count', ptc, propTypes);
+    value = typeof calcAggregationAsync === 'function'
+      ? await calcAggregationAsync(cfg.property, data.entities, entityNames, cfg.aggregation || 'count', ptc, propTypes, 'all', { dbPath: resolved.source.path, sourceDbPath: resolved.source.path })
+      : calcAggregation(cfg.property, data.entities, entityNames, cfg.aggregation || 'count', ptc, propTypes, 'all');
   }
   const numDiv = document.createElement('div');
   numDiv.className = 'smart-db-stat-value';
@@ -350,8 +357,8 @@ async function renderSmartDbProgressWidget(widget, container, resolved) {
   let done = 0;
   if (cfg.doneFilter?.property) {
     entityNames.forEach(en => {
-      const vals = filterValues(data.entities[en][cfg.doneFilter.property] || []);
-      if (vals.length > 0 && _smartDbDashboardValueText(vals[0].value) === _smartDbDashboardValueText(cfg.doneFilter.value)) done++;
+      const vals = filterValues(data.entities[en][cfg.doneFilter.property] || [], undefined, 'all');
+      if (vals.some(value => _smartDbDashboardValueText(value.value) === _smartDbDashboardValueText(cfg.doneFilter.value))) done++;
     });
   }
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -375,9 +382,11 @@ async function renderSmartDbChartWidget(widget, container, resolved) {
     yAggregation: cfg.yAggregation || 'count',
     yProperty: cfg.yProperty || null,
     palette: cfg.palette || 'default',
-    propertyTypes: await _getSmartDbDashboardPropertyTypes(resolved.source),
+    propertyTypes: await _getSmartDbDashboardPropertyTypes(resolved.source, resolved.data),
   };
-  const chartData = prepareChartData(resolved.data, chartConfig, resolved.source.path);
+  const chartData = typeof prepareChartDataAsync === 'function'
+    ? await prepareChartDataAsync(resolved.data, chartConfig, resolved.source.path, { filter: 'all' })
+    : prepareChartData(resolved.data, chartConfig, resolved.source.path, { filter: 'all' });
   const w = 320, h = 200;
   let svg;
   switch (chartConfig.chartType) {
@@ -419,7 +428,7 @@ async function renderSmartDbListWidget(widget, container, resolved) {
     displayProps.forEach(prop => {
       const td = document.createElement('td');
       td.className = 'smart-db-list-prop';
-      const vals = filterValues(data.entities[en][prop] || []);
+      const vals = filterValues(data.entities[en][prop] || [], undefined, 'all');
       const displayValue = vals.length > 0 ? _smartDbDashboardValueText(vals[0].value) : '';
       td.textContent = displayValue;
       if (typeof MeldexAutoLink !== 'undefined' && displayValue.length >= 2) {
@@ -448,17 +457,17 @@ async function renderSmartDbListWidget(widget, container, resolved) {
 }
 
 function _smartDbDashboardMatchesFilter(entity, filter) {
-  const vals = filterValues(entity?.[filter.property] || []);
+  const vals = filterValues(entity?.[filter.property] || [], undefined, 'all');
   if (vals.length === 0) return filter.operator === 'empty';
-  const v = _smartDbDashboardValueText(vals[0].value);
   const target = _smartDbDashboardValueText(filter.value);
+  const matches = vals.map(value => _smartDbDashboardValueText(value.value));
   switch (filter.operator) {
-    case 'equals': return v === target;
-    case 'not_equals': return v !== target;
-    case 'contains': return v && v.includes(target);
-    case 'not_contains': return !v || !v.includes(target);
-    case 'empty': return !v || v.trim() === '';
-    case 'not_empty': return v && v.trim() !== '';
+    case 'equals': return matches.some(v => v === target);
+    case 'not_equals': return matches.every(v => v !== target);
+    case 'contains': return matches.some(v => v && v.includes(target));
+    case 'not_contains': return matches.every(v => !v || !v.includes(target));
+    case 'empty': return matches.every(v => !v || v.trim() === '');
+    case 'not_empty': return matches.some(v => v && v.trim() !== '');
     default: return true;
   }
 }
@@ -493,15 +502,16 @@ function _smartDbDashboardValueText(value) {
   return String(value);
 }
 
-async function _getSmartDbDashboardPropertyTypes(source) {
+async function _getSmartDbDashboardPropertyTypes(source, data) {
+  const dataTypes = data?.propertyTypes || data?.property_types || {};
   const normalized = _normalizeSmartDbWidgetSource(source);
-  if (normalized.kind !== 'sheet' || !normalized.path) return {};
+  if (normalized.kind !== 'sheet' || !normalized.path) return dataTypes;
   if (_smartDbDashboardDbMetadataCache[normalized.path]) return _smartDbDashboardDbMetadataCache[normalized.path];
   try {
     const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(normalized.path));
     _smartDbDashboardDbMetadataCache[normalized.path] = meta?.property_types || meta?.propertyTypes || meta || {};
   } catch (e) {
-    _smartDbDashboardDbMetadataCache[normalized.path] = {};
+    _smartDbDashboardDbMetadataCache[normalized.path] = dataTypes;
   }
   return _smartDbDashboardDbMetadataCache[normalized.path];
 }

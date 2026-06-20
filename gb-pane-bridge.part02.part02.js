@@ -46,23 +46,34 @@
   function _updateToolbars(viewName) {
     const toolbarContext = _resolveToolbarContext(viewName);
     const toolbarViewName = toolbarContext.viewName;
-    const isDbView = TOOLBAR_DB_VIEW_TYPES.has(toolbarViewName);
+    // smart-db は smart-db-view 内に独自ツールバー（メニュー・表/ダッシュボード・再読み込み・フィルタ設定）を
+    // 持っており、通常シート用のアプリツールバー(#tb-db: フィルタ/並べ替え/公開等)は内容が合わないため出さない。
+    const isSmartDbToolbar = toolbarViewName === 'smart-db';
+    const isDbView = TOOLBAR_DB_VIEW_TYPES.has(toolbarViewName) && !isSmartDbToolbar;
+    const shouldUseVisibleDbFallback = !isDbView && (!toolbarViewName || _isToolbarUtilityView(toolbarViewName) || _isToolbarUtilityView(viewName));
+    const visibleDbToolbarContext = shouldUseVisibleDbFallback ? _findVisibleDbToolbarContext() : null;
+    const effectiveToolbarContext = visibleDbToolbarContext || toolbarContext;
+    const effectiveToolbarViewName = visibleDbToolbarContext?.viewName || toolbarViewName;
+    const effectiveIsDbView = isDbView || !!visibleDbToolbarContext;
     const showRt = (toolbarViewName === 'page');
     const showToolbar = isDbView || showRt;
+    const effectiveShowRt = (effectiveToolbarViewName === 'page');
+    const effectiveShowToolbar = effectiveIsDbView || effectiveShowRt || showToolbar;
 
-    const appTb = document.getElementById('app-toolbar');
-    const tbDb = document.getElementById('tb-db');
-    if (tbDb) tbDb.style.display = isDbView ? 'contents' : 'none';
-    const rtTb = document.getElementById('rt-toolbar');
+    const appTb = effectiveShowToolbar ? _ensureAppToolbarElement() : document.getElementById('app-toolbar');
+    const tbDb = appTb?.querySelector?.('#tb-db') || document.getElementById('tb-db');
+    if (tbDb) tbDb.style.display = effectiveIsDbView ? 'contents' : 'none';
+    const rtTb = appTb?.querySelector?.('#rt-toolbar') || document.getElementById('rt-toolbar');
     // page-view内に専用ツールバー(#page-rt-toolbar)があるので、app-toolbar内のrt-toolbarは常に非表示
     if (rtTb) rtTb.style.display = 'none';
-    if (appTb) appTb.classList.toggle('visible', isDbView);
+    if (appTb) appTb.classList.toggle('visible', effectiveIsDbView);
 
     // ツールバーをアクティブペインのcontentElの先頭に移動
-    if (appTb && showToolbar) {
+    if (appTb && effectiveShowToolbar) {
       const paneId = toolbarContext.paneId || _getFileOpenPane(GBLayout.activePane) || _getContentPane(GBLayout.activePane);
-      if (paneId) {
-        const paneInfo = GBLayout.paneMap[paneId];
+      const mountPaneId = effectiveToolbarContext.paneId || paneId;
+      if (mountPaneId) {
+        const paneInfo = GBLayout.paneMap[mountPaneId];
         if (paneInfo && paneInfo.contentEl && appTb.parentNode !== paneInfo.contentEl) {
           paneInfo.contentEl.insertBefore(appTb, paneInfo.contentEl.firstChild);
         }
@@ -72,7 +83,7 @@
     const entityRt = document.getElementById('entity-rt-toolbar');
     if (entityRt) {
       const entityFreeText = document.getElementById('entity-freetext');
-      const hasEntityNote = toolbarViewName === 'entity'
+      const hasEntityNote = effectiveToolbarViewName === 'entity'
         && entityFreeText?.dataset?.entityNoteCreated === '1'
         && entityFreeText.style.display !== 'none';
       entityRt.style.display = hasEntityNote ? 'flex' : 'none';
@@ -80,10 +91,10 @@
 
     const sc = document.getElementById('sb-shortcuts');
     if (sc) {
-      if (isDbView) sc.textContent = '';
-      else if (['entity', 'page'].includes(toolbarViewName)) {
+      if (effectiveIsDbView) sc.textContent = '';
+      else if (['entity', 'page'].includes(effectiveToolbarViewName)) {
         sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き';
-      } else if (toolbarViewName === 'scriptnote') {
+      } else if (effectiveToolbarViewName === 'scriptnote') {
         if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
         else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
       } else sc.textContent = '';
@@ -111,7 +122,7 @@
         const type = entry.type;
 
         // ナビ/補助ペインではなく、作業用ペインのアクティブタブを上書きする
-        const paneId = _getFileOpenPane(GBLayout.activePane);
+        const paneId = targetPaneId || _getFileOpenPane(GBLayout.activePane);
         if (paneId) {
           const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
           if (paneInfo) {
@@ -139,7 +150,7 @@
                 GBLayout.render();
                 GBLayout.saveLayout({ immediate: true });
               } else {
-                GBTabs.addTab(paneId, label, type, path);
+                GBTabs.addTab(paneId, label, type, path, null, { preferTargetPane: true });
                 tabAddedByManager = true;
               }
             } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
@@ -172,7 +183,7 @@
                 GBLayout.saveLayout({ immediate: true });
               }
             } else {
-              GBTabs.addTab(paneId, label, type, path);
+              GBTabs.addTab(paneId, label, type, path, null, { preferTargetPane: true });
               tabAddedByManager = true;
             }
             if (!tabAddedByManager) _focusFileOpenPane(paneId);
@@ -222,7 +233,7 @@
     window._openInNewTab = function(label, path, type) {
       type = typeof _normalizeOpenTypeForNav === 'function' ? _normalizeOpenTypeForNav(type) : (type || 'page');
       const paneId = _getFileOpenPane(GBLayout.activePane, { ensureWorkPane: true });
-      const tabId = paneId ? GBTabs.addTab(paneId, label, type, path) : null;
+      const tabId = paneId ? GBTabs.addTab(paneId, label, type, path, null, { preferTargetPane: true }) : null;
       if (tabId) {
         _beginBridgeUpdate();
         window._suppressAutoAppLayoutSwitch = true;
@@ -295,21 +306,23 @@
     };
 
     // ツールタブを空状態で開く（トップバーボタンから呼び出し）
-    window.openToolTab = function(toolType) {
+    window.openToolTab = function(toolType, options) {
+      const openOpts = options || {};
       const labels = {
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-        board: 'ボード', calendar: 'カレンダー', timer: 'タイマー',
+        board: 'ボード', calendar: 'スケジューラー', timer: 'タイマー',
         'smart-db': 'スマートシート',
         folder: 'フォルダ', outliner: 'フォルダツリー',
+        search: '検索',
       };
       const existingGlobal = (typeof GBTabs !== 'undefined' && typeof GBTabs.findPaneWithTab === 'function')
-        ? (GBTabs.findPaneWithTab(toolType, '') || _findToolPaneInAnyGroup(toolType))
+        ? (openOpts.preferTargetPane ? null : (GBTabs.findPaneWithTab(toolType, '') || _findToolPaneInAnyGroup(toolType)))
         : null;
       if (existingGlobal) {
         _activateToolPaneMatch(existingGlobal);
         return;
       }
-      const paneId = _getContentPane(GBLayout.activePane);
+      const paneId = openOpts.paneId || _getContentPane(GBLayout.activePane);
       if (!paneId) return;
       // アクティブパネル内に同じタイプのタブがあれば切り替え
       const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
@@ -320,23 +333,32 @@
           return;
         }
       }
-      const tabId = GBTabs.addTab(paneId, labels[toolType] || toolType, toolType, '');
+      const tabId = GBTabs.addTab(paneId, labels[toolType] || toolType, toolType, '', null, {
+        preferTargetPane: !!openOpts.preferTargetPane,
+      });
       if (tabId) _showEmptyToolView(toolType);
     };
 
     // パネルメニュー経由の「常に新規タブとして追加」動作（C案 — 他のパネルセットに同種のタブがあっても新規追加する）
     const _PANEL_MENU_LABELS = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'カレンダー', timer: 'タイマー',
+      board: 'ボード', calendar: 'スケジューラー', timer: 'タイマー',
       'smart-db': 'スマートシート',
       folder: 'フォルダ',
       outliner: 'フォルダツリー', preview: 'ビューワー', detail: 'オプション',
       chat: 'チャット', history: 'ヒストリー', annotation: '注釈',
     };
     const _PANEL_FILE_CREATE_TYPES = new Set(['page', 'scriptnote', 'database', 'board', 'smart-db']);
+    // API の type 値 → タブの type 値（同名なら省略）
+    // ここに無いタイプは toolType がそのままタブ type になる
     const _PANEL_FILE_OPEN_TYPES = {
       database: 'pivot',
     };
+    // _createPanelFileTab で受け付ける API type のホワイトリスト。
+    // ここに無い toolType を弾くことで、API が知らない type を投げて 200 で空 node が返るケースを防ぐ。
+    function _isPanelFileCreateType(toolType) {
+      return _PANEL_FILE_CREATE_TYPES.has(toolType);
+    }
     function _panelFileTabState(toolType, name, path) {
       const state = { label: name };
       if (toolType === 'scriptnote') state.scenarioPath = path;
@@ -386,6 +408,10 @@
       }, 0));
     }
     async function _createPanelFileTab(toolType, paneId) {
+      if (!_isPanelFileCreateType(toolType)) {
+        if (typeof showStatus === 'function') showStatus('未対応のファイル種別です: ' + toolType, true);
+        return null;
+      }
       let pendingTabId = null;
       try {
         const openType = _PANEL_FILE_OPEN_TYPES[toolType] || toolType;
@@ -407,7 +433,10 @@
         const state = _panelFileTabState(toolType, name, path);
         const tabId = pendingTabId || GBTabs.addTab(paneId, name, openType, path, state, { forceNewToolTab: true });
         if (pendingTabId && typeof GBTabs.updateTab === 'function') {
-          GBTabs.updateTab(paneId, pendingTabId, { label: name, type: openType, path, state }, { activate: true });
+          const updated = GBTabs.updateTab(paneId, pendingTabId, { label: name, type: openType, path, state }, { activate: true });
+          if (updated && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
+            GBPaneBridge.refreshPaneAfterTabSwitch(paneId);
+          }
         } else if (!pendingTabId && tabId && typeof GBLayout.setActivePane === 'function') {
           GBLayout.setActivePane(paneId);
         }
@@ -603,7 +632,7 @@
 
         const labels = {
           page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-          board: 'ボード', calendar: 'カレンダー', timer: 'タイマー', preview: 'ビューワー',
+          board: 'ボード', calendar: 'スケジューラー', timer: 'タイマー', preview: 'ビューワー',
           'smart-db': 'スマートシート',
           folder: 'フォルダ', chat: 'チャット', history: 'ヒストリー',
           annotation: '注釈', detail: 'オプション',

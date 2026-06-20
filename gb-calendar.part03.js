@@ -44,7 +44,7 @@
   // Google Pull/Push
   o.querySelector('#sync-gcal-pull').addEventListener('click', async () => {
     showStatus('Googleカレンダーから取得中...');
-    try { const res = await apiPost('/calendar-db/sync/google/pull', { db_path: dbPath }); showStatus(syncCountMessage('取得完了', res, [['新規', 'imported'], ['更新', 'updated']])); await selectDatabase(dbPath); } catch (err) { showStatus(syncErrorMessage('同期失敗', err), true); }
+    try { const res = await apiPost('/calendar-db/sync/google/pull', { db_path: dbPath }); showStatus(syncCountMessage('取得完了', res, [['新規', 'imported'], ['更新', 'updated']])); await _refreshCalendarDb(dbPath); } catch (err) { showStatus(syncErrorMessage('同期失敗', err), true); }
   });
   o.querySelector('#sync-gcal-push').addEventListener('click', async () => {
     showStatus('Googleカレンダーに送信中...');
@@ -61,7 +61,7 @@
         const res = await apiPost('/calendar-db/ical/import', { db_path: dbPath, ics: text });
         showStatus(syncCountMessage('iCalインポート完了', res, [['新規', 'imported'], ['更新', 'updated']]));
         o.remove();
-        await selectDatabase(dbPath);
+        await _refreshCalendarDb(dbPath);
       } catch (err) { showStatus(syncErrorMessage('インポート失敗', err), true); }
     };
     input.click();
@@ -120,11 +120,11 @@
   });
   o.querySelector('#sync-caldav-pull').addEventListener('click', async () => {
     showStatus('CalDAVから取得中...');
-    try { const res = await apiPost('/calendar-db/caldav/sync-from-ics', { db_path: dbPath }); showStatus(syncCountMessage('CalDAV取得完了', res, [['新規', 'imported'], ['更新', 'updated']])); o.remove(); await selectDatabase(dbPath); } catch (err) { showStatus(syncErrorMessage('CalDAV取得に失敗', err), true); }
+    try { const res = await apiPost('/calendar-db/caldav/sync-from-ics', { db_path: dbPath }); showStatus(syncCountMessage('CalDAV取得完了', res, [['新規', 'imported'], ['更新', 'updated']])); o.remove(); await _refreshCalendarDb(dbPath); } catch (err) { showStatus(syncErrorMessage('CalDAV取得に失敗', err), true); }
   });
 
   // SQLiteマイグレーション
   o.querySelector('#sync-migrate').addEventListener('click', async () => {
-    try { const res = await apiPost('/calendar-db/migrate-from-sqlite', { db_path: dbPath }); showStatus(`マイグレーション完了: ${res.migrated}件`); o.remove(); await selectDatabase(dbPath); } catch (err) { showStatus(syncErrorMessage('マイグレーションに失敗', err), true); }
+    try { const res = await apiPost('/calendar-db/migrate-from-sqlite', { db_path: dbPath }); showStatus(`マイグレーション完了: ${res.migrated}件`); o.remove(); await _refreshCalendarDb(dbPath); } catch (err) { showStatus(syncErrorMessage('マイグレーションに失敗', err), true); }
   });
 }

@@ -134,7 +134,7 @@ class ScriptNoteComponent extends ToolComponent {
   <button class="tb-icon-btn" data-sn-action="saveFilter" title="現在のフィルタを登録"><span class="ico ico-save"></span></button>
   <button class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
   <button class="tb-icon-btn" data-sn-action="search" title="テキスト列を検索・置換"><span class="ico ico-search"></span></button>
-  <button class="tb-icon-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く"><span class="ico ico-panelRight"></span></button>
+  <button class="tb-icon-btn gb-toolbar-option-panel-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
 </div>
 <div class="sn2-main" style="display:flex;flex:1;overflow:hidden;min-height:0;">
   <div id="scenario-note-surface" style="display:flex;flex:1;overflow:hidden;"></div>
@@ -312,9 +312,10 @@ class ScriptNoteComponent extends ToolComponent {
         return;
       }
       const el = document.createElement('div');
-      el.className = 'detail-tab detail-tab-scriptnote';
+      el.className = 'gb-inner-tab detail-tab detail-tab-scriptnote';
       el.dataset.detailTab = t.id;
-      el.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;color:var(--fg2);';
+      el.setAttribute('role', 'tab');
+      el.setAttribute('aria-selected', 'false');
       el.textContent = t.label;
       el.dataset.action = `switchDetailTab('${t.id}')`;
       el.addEventListener('click', () => {

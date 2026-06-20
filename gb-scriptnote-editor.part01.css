@@ -3,7 +3,8 @@
 /* === スクロール領域 === */
 .sn2-scroll {
   flex: 1;
-  overflow: auto; /* 両軸スクロール: 右ドラッグパン用 */
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0;
   background: var(--sn2-page-bg, var(--content-bg, var(--bg)));
   scrollbar-width: thin;
@@ -45,7 +46,8 @@
    横書き折り返しON: 右方向スクロール
    ============================ */
 .sn2-scroll.sn2-wrap {
-  overflow: auto; /* 両軸スクロール: 右ドラッグパン用 */
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .sn2-scroll.sn2-wrap .sn2-editor {
   display: flex;
@@ -77,13 +79,13 @@
    各行の中身は上から 番号→タイプ→テキスト（縦並び）
    ============================ */
 
-/* 縦書き折り返しOFF: 左方向+縦スクロール */
+/* 縦書き折り返しOFF: 左方向スクロール */
 .sn2-scroll.sn2-vertical:not(.sn2-wrap) {
   display: flex;
   flex-direction: row-reverse;
   align-items: flex-start;
   overflow-x: auto;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 .sn2-scroll.sn2-vertical:not(.sn2-wrap) > .sn2-header {
   position: sticky;
@@ -91,7 +93,8 @@
 }
 /* 縦書き折り返しON: 下方向スクロール */
 .sn2-scroll.sn2-vertical.sn2-wrap {
-  overflow: auto; /* 両軸スクロール: 右ドラッグパン用 */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* editor: 行を右→左に横並び（row-reverse） */
@@ -215,15 +218,16 @@
 
 /* 縦書き + 折り返しON: 段を縦並び */
 .sn2-scroll.sn2-vertical.sn2-wrap {
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 .sn2-scroll.sn2-vertical.sn2-wrap .sn2-editor {
   flex-direction: column;
-  /* ウィンドウ縮小時に行が flex-shrink で潰されないよう、min-width で下限
-     100% を保証しつつ、コンテンツがそれより大きければ max-content で伸ばす */
+  /* 縦書き折り返しは横スクロールを使わない。段の右端を表示幅の右端に
+     固定し、先頭ページが max-content の右外へ押し出されるのを防ぐ。 */
   min-width: 100%;
-  width: max-content;
+  width: 100%;
+  max-width: 100%;
   height: max-content;
   gap: var(--sn2-margin, 16px); /* 段の隙間 = 余白 */
   padding: 24px 0; /* 上下にスクロール余白 */
@@ -232,7 +236,9 @@
   flex-direction: row-reverse;
   height: auto;
   min-width: 100%;
-  width: max-content;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .sn2-scroll.sn2-vertical.sn2-wrap .sn2-column-group > .sn2-row {
   flex-shrink: 0;
@@ -471,13 +477,21 @@
 
 /* 見開き区切り線（outline行との競合を避けるため詳細度を上げたルールも追加） */
 .sn2-row[data-spread-border],
-.sn2-row[data-outline][data-spread-border] { border-bottom: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+.sn2-row[data-outline][data-spread-border] { border-top: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
 .sn2-scroll.sn2-vertical .sn2-row[data-spread-border],
-.sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] { border-bottom: none !important; border-left: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+.sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] { border-top: none !important; border-right: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
 
 .sn2-row:hover { background: var(--sn2-hover-bg, var(--bg2)); }
 .sn2-row.sn2-row-selected { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 35%, transparent); }
 .sn2-row.sn2-row-selected:hover { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 48%, transparent); }
+.sn2-row.sn2-row-selected::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 var(--sn2-selection-border-width, 2px) var(--sn2-selection-border-color, var(--sn2-caret-color, var(--accent, #4a90d9)));
+}
 /* 行選択中はテキストセルをネイティブ選択と同等の色で塗ってテキスト選択風に。
    background ではなく inset box-shadow を使うことでキャラスタイルの
    背景色を上書きせずにオーバーレイだけ乗せる */
@@ -575,7 +589,7 @@
   width: var(--sn2-col-_gutter, 40px);
   padding: 7px 4px 0;
   font-size: 10px;
-  font-family: monospace;
+  font-family: var(--sn2-base-text-font-family, var(--ui-font, inherit));
   color: var(--fg2);
   text-align: right;
   user-select: none;
@@ -883,11 +897,17 @@
 .sn2-row[data-kind="break"]:first-of-type {
   margin-top: 0;
 }
+.sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
+  margin-top: 0;
+}
 .sn2-scroll.sn2-vertical .sn2-row[data-kind="break"] {
   margin-top: 0;
   margin-right: 1.8em;
 }
 .sn2-scroll.sn2-vertical .sn2-row[data-kind="break"]:first-of-type {
+  margin-right: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
   margin-right: 0;
 }
 

@@ -200,7 +200,7 @@ function renderDbViewTabs(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const views = getSavedViews(dbPath);
-  const curIdx = getCurrentViewIdx(dbPath);
+  const curIdx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : getCurrentViewIdx(dbPath);
   const tabs = _paneEl(ctx, '.db-view-tabs') || document.getElementById('db-view-tabs');
   const select = _paneEl(ctx, '.db-view-select') || document.getElementById('db-view-select');
   _renderDbViewSelect(select, ctx, views, curIdx);
@@ -214,7 +214,7 @@ function renderDbViewTabs(ctx) {
   const actionHost = _prepareDbViewToolbarActions(tabs);
   const e2eScope = String(ctx?.paneId || ctx?.id || dbPath || 'main').replace(/[^\w-]/g, '_');
   const calendarInfo = typeof _getCalendarIntegrationInfo === 'function'
-    ? _getCalendarIntegrationInfo(dbPath, ctx.pivotData || state.pivotData)
+    ? _getCalendarIntegrationInfo(dbPath, ctx.pivotData || state.pivotData, ctx)
     : { kind: !!(ctx.pivotData?.calendar_db || state.dbMetadata?.calendar_mapping) ? 'calendar-db' : 'none' };
   const isCalendarCapable = calendarInfo.kind !== 'none';
 
@@ -428,29 +428,57 @@ async function _showDbConfigModal(dbPath, ctx) {
   const props = pivotData ? pivotData.properties : [];
   const propHints = props.map(p => `{${p}}`).join(', ');
 
+  const activeView = typeof getCurrentDbViewConfigEntry === 'function'
+    ? getCurrentDbViewConfigEntry(dbPath, { ctx: localCtx })
+    : null;
+  const showFooter = activeView ? activeView.showFooter === true : false;
+  const thumbnailSize = activeView?.thumbnailSize || 'small';
+  const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
+  const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
+
   const o = document.createElement('div');
   o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:450px;">
+  o.innerHTML = `<div class="modal db-config-modal">
     <h3>シート設定</h3>
-    <div class="field">
-      <label>エントリ名テンプレート</label>
-      <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
-      <div style="font-size:11px;color:var(--fg2);margin-top:4px;">
-        プロパティ名を <code>{プロパティ名}</code> で囲むと、採用値で自動置換されます。<br>
-        空の場合はエントリ名の自動生成を行いません。<br>
-        使用可能: ${esc(propHints) || '(プロパティなし)'}
+    <div class="modal-body db-config-modal-body">
+      <div class="field">
+        <label>エントリ名テンプレート</label>
+        <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
+        <div style="font-size:11px;color:var(--fg2);margin-top:4px;">
+          プロパティ名を <code>{プロパティ名}</code> で囲むと、採用値で自動置換されます。<br>
+          空の場合はエントリ名の自動生成を行いません。<br>
+          使用可能: ${esc(propHints) || '(プロパティなし)'}
+        </div>
       </div>
+      <div class="field" style="margin-top:8px;">
+        <label>ステータス一覧</label>
+        <div id="dbcfg-status-list" style="font-size:12px;"></div>
+        <button id="dbcfg-add-status" style="font-size:11px;margin-top:4px;padding:2px 8px;">+ ステータス追加</button>
+      </div>
+      <div class="field dbcfg-display-settings" style="margin-top:8px;">
+        <label>表示設定</label>
+        <div class="dbcfg-display-grid">
+          <label class="dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
+          <label class="dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> エントリ名列を固定</label>
+          <label class="dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox"${statusOn ? ' checked' : ''}> ステータス機能</label>
+          <label class="dbcfg-inline-field">サムネイル
+            <select id="dbcfg-thumbnail-size">
+              <option value="small"${thumbnailSize !== 'large' ? ' selected' : ''}>小</option>
+              <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
+            </select>
+          </label>
+        </div>
+        <div class="dbcfg-display-actions">
+          <button type="button" id="dbcfg-grid-border">枠線設定...</button>
+          <button type="button" id="dbcfg-conditional-color">条件付きカラー...</button>
+        </div>
+      </div>
+      <div class="field" style="margin-top:8px;">
+        <label>依存エントリ作成時のコピー対象</label>
+        <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
+      </div>
+      <div id="dbcfg-calendar-mapping-anchor"></div>
     </div>
-    <div class="field" style="margin-top:8px;">
-      <label>ステータス一覧</label>
-      <div id="dbcfg-status-list" style="font-size:12px;"></div>
-      <button id="dbcfg-add-status" style="font-size:11px;margin-top:4px;padding:2px 8px;">+ ステータス追加</button>
-    </div>
-    <div class="field" style="margin-top:8px;">
-      <label>依存エントリ作成時のコピー対象</label>
-      <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
-    </div>
-    <div id="dbcfg-calendar-mapping-anchor"></div>
     <div class="btn-row" style="justify-content:space-between;">
       <button id="dbcfg-template" style="font-size:12px;">テンプレートを適用...</button>
       <div style="display:flex;gap:8px;">
@@ -538,7 +566,7 @@ async function _showDbConfigModal(dbPath, ctx) {
 
   if (typeof _renderCalendarMappingConfigSection === 'function') {
     const currentCalendarMapping = dbMetadata?.calendar_mapping
-      || (typeof getCalendarMapping === 'function' ? getCalendarMapping(dbPath) : null);
+      || (typeof getCalendarMapping === 'function' ? getCalendarMapping(dbPath, { ctx: localCtx }) : null);
     _renderCalendarMappingConfigSection(
       o.querySelector('#dbcfg-calendar-mapping-anchor'),
       dbPath,
@@ -548,9 +576,24 @@ async function _showDbConfigModal(dbPath, ctx) {
     );
   }
 
+  o.querySelector('#dbcfg-grid-border')?.addEventListener('click', () => {
+    if (typeof showGridBorderModal === 'function') showGridBorderModal(localCtx);
+  });
+  o.querySelector('#dbcfg-conditional-color')?.addEventListener('click', () => {
+    if (typeof showConditionalColorPickerModal === 'function') showConditionalColorPickerModal(dbPath, localCtx);
+  });
+
   o.querySelector('#dbcfg-save').addEventListener('click', async () => {
     const c = _cloneDbViewObject(getDbViewConfig(dbPath));
     c.entryNameTemplate = o.querySelector('#dbcfg-name-template').value.trim();
+    const targetView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+      ? _getCurrentDbViewConfigEntryFromConfig(c, { ctx: localCtx })
+      : null;
+    const viewSettingsTarget = targetView || c;
+    viewSettingsTarget.showFooter = !!o.querySelector('#dbcfg-show-footer')?.checked;
+    viewSettingsTarget.entityColumnPinned = o.querySelector('#dbcfg-entity-pinned')?.checked !== false;
+    viewSettingsTarget.thumbnailSize = o.querySelector('#dbcfg-thumbnail-size')?.value || 'small';
+    c.statusEnabled = !!o.querySelector('#dbcfg-status-enabled')?.checked;
     // ステータス一覧の保存
     const statusList = [];
     statusDiv.querySelectorAll('div').forEach(row => {
@@ -621,7 +664,7 @@ function _generateEntryName(dbPath, entityName, ctx) {
     // 採用値を優先、なければ最初の値
     const adopted = vals.find(v => v.status === '採用') || vals.find(v => v.status === '掲載済み') || vals[0];
     const val = adopted ? adopted.value : '';
-    name = name.replace(ph, val);
+    name = name.split(ph).join(val);
   }
   return name.trim() || null;
 }
@@ -631,7 +674,7 @@ function _generateEntryName(dbPath, entityName, ctx) {
 function _makeDbViewStateFromCurrent(dbPath, viewMode, name, ctx) {
   const cfg = getDbViewConfig(dbPath);
   const activeView = typeof getCurrentDbViewConfigEntry === 'function'
-    ? getCurrentDbViewConfigEntry(dbPath)
+    ? getCurrentDbViewConfigEntry(dbPath, { ctx })
     : null;
   const paneData = ctx?.dbPath === dbPath ? ctx.pivotData : null;
   const viewState = {
@@ -655,7 +698,8 @@ function _makeDbViewStateFromCurrent(dbPath, viewMode, name, ctx) {
   };
   if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(viewState, cfg);
   if (viewMode === 'form') {
-    const props = paneData?.properties || state.pivotData?.properties || [];
+    const rawProps = paneData?.properties || state.pivotData?.properties || [];
+    const props = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, rawProps) : rawProps;
     const propTypes = getPropertyTypes(dbPath) || {};
     const formConfig = typeof makeDefaultFormViewConfig === 'function'
       ? makeDefaultFormViewConfig(props, propTypes)
@@ -686,7 +730,8 @@ function doSaveViewWithTypeDirect(viewMode, label, options = {}) {
 }
 
 function _initDbViewTypeSpecific(viewMode, dbPath, pivotData) {
-  const props = pivotData?.properties || state.pivotData?.properties || [];
+  const rawProps = pivotData?.properties || state.pivotData?.properties || [];
+  const props = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, rawProps) : rawProps;
   switch (viewMode) {
     case 'pivot':
       return { groupBy: null };
@@ -818,7 +863,7 @@ async function duplicateSavedView(idx, ctx) {
 async function duplicateCurrentDbView(viewMode, label, ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
-  const mode = viewMode || getCurrentViewMode(dbPath) || 'pivot';
+  const mode = viewMode || getCurrentViewMode(dbPath, { ctx }) || 'pivot';
   const sourceLabel = String(label || VIEW_TYPES.find(vt => vt.mode === mode)?.label || 'ビュー').trim() || 'ビュー';
   const views = getSavedViews(dbPath);
   const defaultName = _makeDuplicateSavedViewName(sourceLabel, views);
@@ -833,7 +878,7 @@ async function duplicateCurrentDbView(viewMode, label, ctx) {
   }
 
   const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-  const duplicate = _makeDbViewStateFromCurrent(dbPath, mode, name);
+  const duplicate = _makeDbViewStateFromCurrent(dbPath, mode, name, ctx);
   views.push(duplicate);
   setSavedViews(dbPath, views, { skipHistory: true });
   loadSavedView(views.length - 1, ctx, { skipHistory: true });
@@ -852,14 +897,16 @@ function loadSavedView(idx, ctx, options = {}) {
 
   const before = options.skipHistory ? null : (typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null);
   setCurrentViewIdx(dbPath, idx, { skipHistory: true });
+  ctx.currentViewIdx = idx;
   if (Object.prototype.hasOwnProperty.call(v, 'filter') && typeof setFilter === 'function') {
-    setFilter(v.filter || 'disabled', { skipReload: true });
+    setFilter(v.filter || 'disabled', { skipReload: true, dbPath, ctx });
   }
   if (!options.skipHistory && typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー適用', before, captureDbViewConfigHistory(dbPath), v.name || '');
   }
 
   const targetView = v.viewMode === 'calendar' ? 'timeline' : (v.viewMode || 'pivot');
+  ctx.viewMode = targetView;
   showView(targetView, ctx);
   if (typeof _renderDbViewTabsSafely === 'function') _renderDbViewTabsSafely(ctx);
   else renderDbViewTabs(ctx);
@@ -881,7 +928,7 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const viewsCount = getSavedViews(dbPath).length;
   const targetTab = e?.target?.closest?.('.view-tab');
   const calendarInfo = typeof _getCalendarIntegrationInfo === 'function'
-    ? _getCalendarIntegrationInfo(dbPath, ctx.pivotData || state.pivotData)
+    ? _getCalendarIntegrationInfo(dbPath, ctx.pivotData || state.pivotData, ctx)
     : { kind: !!(ctx.pivotData?.calendar_db || state.dbMetadata?.calendar_mapping) ? 'calendar-db' : 'none' };
   const isCalendarCapable = calendarInfo.kind !== 'none';
   const currentView = getSavedViews(dbPath)[idx];

@@ -59,6 +59,26 @@
     return rect && (rect.width || rect.height) ? rect : null;
   }
 
+  function _rangeAvoidRect(range) {
+    const rects = Array.from(range.getClientRects()).filter(r => r.width || r.height);
+    if (!rects.length) return _rangeRect(range);
+    return rects.reduce((acc, r) => ({
+      left: Math.min(acc.left, r.left),
+      top: Math.min(acc.top, r.top),
+      right: Math.max(acc.right, r.right),
+      bottom: Math.max(acc.bottom, r.bottom),
+      width: Math.max(acc.right, r.right) - Math.min(acc.left, r.left),
+      height: Math.max(acc.bottom, r.bottom) - Math.min(acc.top, r.top),
+    }), {
+      left: rects[0].left,
+      top: rects[0].top,
+      right: rects[0].right,
+      bottom: rects[0].bottom,
+      width: rects[0].width,
+      height: rects[0].height,
+    });
+  }
+
   function _restoreSelection() {
     if (!_savedRange || !_savedRoot?.isConnected) return false;
     const sel = window.getSelection();
@@ -191,6 +211,25 @@
     return {};
   }
 
+  function _captureUndoBeforeFormat(root) {
+    if (!root) return;
+    const scriptText = root.closest?.('.sn2-text[contenteditable="true"]');
+    if (scriptText && typeof getActiveScriptNoteComponent === 'function') {
+      const ed = getActiveScriptNoteComponent()?._editor;
+      if (typeof ed?._pushUndo === 'function') {
+        ed._pushUndo('書式設定変更');
+        return;
+      }
+    }
+    if (root.closest?.('.bd-node.bd-editing, .bd-conn-label[contenteditable="true"]') && typeof bdPushUndo === 'function') {
+      bdPushUndo();
+      return;
+    }
+    if (typeof _pushCustomUndo === 'function' && root.contentEditable === 'true') {
+      _pushCustomUndo(root);
+    }
+  }
+
   function _clearStylePatch(styleProp) {
     if (styleProp === 'backgroundColor') return _stylePatch('bgColor', '');
     if (styleProp === 'color') return _stylePatch('textColor', '');
@@ -211,6 +250,7 @@
     const range = sel.getRangeAt(0);
     const span = document.createElement('span');
     Object.assign(span.style, patch);
+    _captureUndoBeforeFormat(_savedRoot);
     try {
       range.surroundContents(span);
     } catch {
@@ -257,6 +297,7 @@
       values: _computedValues(range),
       className: POPUP_CLASS,
       closeOnOutside: true,
+      avoidRect: _rangeAvoidRect(range),
       onChange(prop, value) {
         const normalized = prop === 'bold' ? 'fontWeight'
           : prop === 'italic' ? 'fontStyle'

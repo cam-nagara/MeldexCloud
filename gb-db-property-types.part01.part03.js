@@ -22,7 +22,7 @@
           <option value="ignore" ${safe.onEntryDelete === 'ignore' ? 'selected' : ''}>何もしない</option>
         </select>
       </div>
-      <div class="field"><label>日付クリア時の挙動</label>
+      <div class="field"><label>日時クリア時の挙動</label>
         <select id="pt-calsync-on-date-cleared">
           <option value="deleteEvent" ${(safe.onDateCleared || 'deleteEvent') === 'deleteEvent' ? 'selected' : ''}>イベントを削除</option>
           <option value="ignore" ${safe.onDateCleared === 'ignore' ? 'selected' : ''}>何もしない</option>

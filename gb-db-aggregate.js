@@ -14,13 +14,13 @@ const AGGREGATION_TYPES = {
   percent_empty:     { label: '空%',        appliesTo: '*' },
   percent_not_empty: { label: '非空%',      appliesTo: '*' },
 
-  // number / formula 専用
-  sum:     { label: '合計',   appliesTo: ['number', 'formula'] },
-  average: { label: '平均',   appliesTo: ['number', 'formula'] },
-  min:     { label: '最小',   appliesTo: ['number', 'formula'] },
-  max:     { label: '最大',   appliesTo: ['number', 'formula'] },
-  median:  { label: '中央値', appliesTo: ['number', 'formula'] },
-  range:   { label: '範囲',   appliesTo: ['number', 'formula'] },
+  // number / formula / rollup 専用
+  sum:     { label: '合計',   appliesTo: ['number', 'formula', 'rollup'] },
+  average: { label: '平均',   appliesTo: ['number', 'formula', 'rollup'] },
+  min:     { label: '最小',   appliesTo: ['number', 'formula', 'rollup'] },
+  max:     { label: '最大',   appliesTo: ['number', 'formula', 'rollup'] },
+  median:  { label: '中央値', appliesTo: ['number', 'formula', 'rollup'] },
+  range:   { label: '範囲',   appliesTo: ['number', 'formula', 'rollup'] },
 
   // date 専用
   earliest:   { label: '最古', appliesTo: ['date'] },
@@ -51,19 +51,19 @@ function getAggregationTypesForProperty(propType) {
  * プロパティ型が未設定の場合、値から型を推定する
  * @returns {string} 推定された型 ('number','date','checkbox','text')
  */
-function inferPropertyType(propName, entitiesMap, entityNames) {
+function inferPropertyType(propName, entitiesMap, entityNames, filterMode) {
   let numCount = 0, dateCount = 0, boolCount = 0, total = 0;
   const sampleSize = Math.min(entityNames.length, 200);
   for (let i = 0; i < entityNames.length && total < sampleSize; i++) {
     const entity = entitiesMap[entityNames[i]];
     if (!entity) continue;
-    const vals = filterValues(entity[propName] || []);
+    const vals = filterValues(entity[propName] || [], undefined, filterMode);
     if (vals.length === 0) continue;
     const v = vals[0].value;
     total++;
-    if (_isCheckboxLikeValue(v)) { boolCount++; continue; }
     if (/^\d{4}-\d{2}-\d{2}/.test(v)) { dateCount++; continue; }
     if (_toStrictNumber(v) !== null) { numCount++; continue; }
+    if (_isCheckboxLikeValue(v)) { boolCount++; continue; }
   }
   if (total === 0) return 'text';
   if (boolCount / total > 0.8) return 'checkbox';
@@ -104,7 +104,7 @@ function _isCheckboxLikeValue(value) {
 /**
  * エントリ群から数値の配列を抽出する
  */
-function extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes) {
+function extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes, filterMode) {
   const nums = [];
   entityNames.forEach(en => {
     if (ptc && ptc.type === 'formula' && ptc.formula) {
@@ -115,7 +115,7 @@ function extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes
       }
     } else {
       if (!entitiesMap[en]) return;
-      const vals = filterValues(entitiesMap[en][propName] || []);
+      const vals = filterValues(entitiesMap[en][propName] || [], undefined, filterMode);
       vals.forEach(v => {
         const n = _toStrictNumber(v.value);
         if (n !== null) nums.push(n);
@@ -125,14 +125,67 @@ function extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes
   return nums;
 }
 
+function _isRollupAggregationProperty(ptc) {
+  return ptc && ptc.type === 'rollup';
+}
+
+function _aggregationValueIsPresent(value) {
+  if (value === undefined || value === null) return false;
+  const text = String(value).trim();
+  return text !== '' && text !== '-';
+}
+
+async function _extractRollupComputedValues(propName, entitiesMap, entityNames, ptc, propTypes, filterMode, sourceDbPath) {
+  if (!_isRollupAggregationProperty(ptc) || typeof calcRollupColumn !== 'function') return null;
+  const rollupValues = await calcRollupColumn(
+    entitiesMap,
+    entityNames,
+    ptc,
+    propTypes,
+    sourceDbPath || (typeof state !== 'undefined' ? state.currentDbPath : ''),
+    filterMode
+  );
+  return entityNames.map(name => rollupValues.has(name) ? rollupValues.get(name) : undefined);
+}
+
+function _calcComputedValueAggregation(values, type, ptc) {
+  if (type === 'none') return '';
+  const presentValues = values.filter(_aggregationValueIsPresent);
+  if (type === 'count') return presentValues.length;
+  if (type === 'unique') return new Set(presentValues.map(v => String(v))).size;
+  if (type === 'empty') return values.length - presentValues.length;
+  if (type === 'not_empty') return presentValues.length;
+  if (type === 'percent_empty' || type === 'percent_not_empty') {
+    const denom = values.length;
+    if (denom === 0) return '0%';
+    const emptyCount = values.length - presentValues.length;
+    if (type === 'percent_empty') return Math.round((emptyCount / denom) * 100) + '%';
+    return Math.round((presentValues.length / denom) * 100) + '%';
+  }
+  if (['sum', 'average', 'min', 'max', 'median', 'range'].includes(type)) {
+    const nums = presentValues.map(_toStrictNumber).filter(n => n !== null);
+    if (nums.length === 0) return '-';
+    return formatAggregationResult(_calcNumeric(nums, type), type, ptc);
+  }
+  if (['earliest', 'latest', 'date_range'].includes(type)) {
+    const dates = presentValues.map(value => {
+      const text = String(value || '').trim();
+      return (typeof parseLocalDate === 'function') ? parseLocalDate(text) : new Date(text);
+    }).filter(d => !isNaN(d.getTime()));
+    if (dates.length === 0) return '-';
+    return _calcDate(dates, type);
+  }
+  return '';
+}
+
 /**
  * エントリ群からDateの配列を抽出する
  */
-function extractDateValues(propName, entitiesMap, entityNames) {
+function extractDateValues(propName, entitiesMap, entityNames, filterMode) {
   const dates = [];
   entityNames.forEach(en => {
     if (!entitiesMap[en]) return;
-    const vals = filterValues(entitiesMap[en][propName] || []);
+    const vals = filterValues(entitiesMap[en][propName] || [], undefined, filterMode);
     vals.forEach(v => {
       const raw = String(v.value ?? '');
       const parts = raw.includes('|') ? raw.split('|') : [raw];
@@ -148,12 +201,12 @@ function extractDateValues(propName, entitiesMap, entityNames) {
 /**
  * エントリ群からチェックボックスの集計を返す
  */
-function extractCheckboxStats(propName, entitiesMap, entityNames) {
+function extractCheckboxStats(propName, entitiesMap, entityNames, filterMode) {
   // 値が存在するエントリのみ分母に含める（未入力はカウント外）
   let checked = 0, total = 0;
   entityNames.forEach(en => {
     if (!entitiesMap[en]) return;
-    const vals = filterValues(entitiesMap[en][propName] || []);
+    const vals = filterValues(entitiesMap[en][propName] || [], undefined, filterMode);
     if (vals.length === 0) return;
     total++;
     if (_isCheckedValue(vals[0].value)) checked++;
@@ -172,24 +225,24 @@ function extractCheckboxStats(propName, entitiesMap, entityNames) {
  * @param {object} ptc - プロパティ型設定 {type, formula, ...}
  * @returns {string|number} 集計結果
  */
-function calcAggregation(propName, entitiesMap, entityNames, type, ptc, propTypes) {
+function calcAggregation(propName, entitiesMap, entityNames, type, ptc, propTypes, filterMode) {
   if (type === 'none') return '';
 
   // 基本4種は既存のcalcColumnCountに委譲
   if (['count', 'unique', 'empty', 'not_empty'].includes(type)) {
-    return calcColumnCount(propName, entitiesMap, entityNames, type, ptc, propTypes);
+    return calcColumnCount(propName, entitiesMap, entityNames, type, ptc, propTypes, filterMode);
   }
 
   const total = entityNames.length;
   if (total === 0) return '';
 
   // 実際の型を取得（未設定なら推定）
-  const resolvedType = ptc?.type || inferPropertyType(propName, entitiesMap, entityNames);
+  const resolvedType = ptc?.type || inferPropertyType(propName, entitiesMap, entityNames, filterMode);
 
   // パーセント系
   if (type === 'percent_empty' || type === 'percent_not_empty') {
-    const emptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'empty', ptc, propTypes);
-    const notEmptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'not_empty', ptc, propTypes);
+    const emptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'empty', ptc, propTypes, filterMode);
+    const notEmptyCount = calcColumnCount(propName, entitiesMap, entityNames, 'not_empty', ptc, propTypes, filterMode);
     const denom = Number(emptyCount) + Number(notEmptyCount);
     if (denom === 0) return '0%';
     if (type === 'percent_empty') return Math.round((emptyCount / denom) * 100) + '%';
@@ -198,26 +251,43 @@ function calcAggregation(propName, entitiesMap, entityNames, type, ptc, propType
 
   // チェックボックスパーセント
   if (type === 'percent_checked') {
-    const stats = extractCheckboxStats(propName, entitiesMap, entityNames);
+    const stats = extractCheckboxStats(propName, entitiesMap, entityNames, filterMode);
     if (stats.total === 0) return '0%';
     return Math.round((stats.checked / stats.total) * 100) + '%';
   }
 
   // 数値系集計
   if (['sum', 'average', 'min', 'max', 'median', 'range'].includes(type)) {
-    const nums = extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes);
+    const nums = extractNumericValues(propName, entitiesMap, entityNames, ptc, propTypes, filterMode);
     if (nums.length === 0) return '-';
     return formatAggregationResult(_calcNumeric(nums, type), type, ptc);
   }
 
   // 日付系集計
   if (['earliest', 'latest', 'date_range'].includes(type)) {
-    const dates = extractDateValues(propName, entitiesMap, entityNames);
+    const dates = extractDateValues(propName, entitiesMap, entityNames, filterMode);
     if (dates.length === 0) return '-';
     return _calcDate(dates, type);
   }
 
   return '';
+}
+
+async function calcAggregationAsync(propName, entitiesMap, entityNames, type, ptc, propTypes, filterMode, options = {}) {
+  if (!_isRollupAggregationProperty(ptc)) {
+    return calcAggregation(propName, entitiesMap, entityNames, type, ptc, propTypes, filterMode);
+  }
+  const values = await _extractRollupComputedValues(
+    propName,
+    entitiesMap,
+    entityNames,
+    ptc,
+    propTypes,
+    filterMode,
+    options.sourceDbPath || options.dbPath
+  );
+  if (!values) return calcAggregation(propName, entitiesMap, entityNames, type, ptc, propTypes, filterMode);
+  return _calcComputedValueAggregation(values, type, ptc);
 }
 
 /**
@@ -255,8 +325,8 @@ function _calcDate(dates, type) {
   if (type === 'latest') return _formatDate(latest);
 
   // date_range: 期間を日数で表示
-  const diffMs = latest - earliest;
-  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+  const dayMs = 1000 * 60 * 60 * 24;
+  const diffDays = Math.round((_aggregateDateUtc(latest) - _aggregateDateUtc(earliest)) / dayMs);
   if (diffDays < 1) return '同日';
   const range = _calendarDateRangeParts(earliest, latest);
   if (range.years < 1) return diffDays + '日';

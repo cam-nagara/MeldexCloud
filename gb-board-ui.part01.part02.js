@@ -208,6 +208,50 @@ function bdRefreshBoardToolbar(root) {
   }
 }
 
+function bdOpenToolbarStylePicker(kind, btn) {
+  if (!btn) return;
+  const isLine = kind === 'line';
+  bdOpenStylePicker(isLine ? 'line' : 'card', btn, {
+    currentId: isLine ? bd.activeLineStyle : bd.activeCardStyle,
+    onPick(styleId) {
+      if (!isLine) {
+        if (typeof bdAreAllCardsSelected === 'function' && bdAreAllCardsSelected()) {
+          bdPushUndo();
+          _bdAssignCardStyleToNodes([...bd.selected], styleId);
+        } else {
+          bd.activeCardStyle = styleId || '';
+        }
+        return;
+      }
+      if (typeof bdAreAllLinesSelected === 'function' && bdAreAllLinesSelected()) {
+        bdPushUndo();
+        _bdAssignLineStyleToConnections(typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [], styleId);
+      } else {
+        bd.activeLineStyle = styleId || '';
+      }
+    },
+    onAfterPick() {
+      if (isLine) bdDrawConns();
+      else bdRender();
+      bdDirty();
+      if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+    },
+  });
+}
+
+function _bdBindToolbarStylePickerTriggers(root) {
+  root.querySelectorAll('[data-bd-action="pick-card-style"], [data-bd-action="pick-line-style"]').forEach(trigger => {
+    if (trigger.dataset.bdStylePickerDirect === '1') return;
+    trigger.dataset.bdStylePickerDirect = '1';
+    trigger.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      bdOpenToolbarStylePicker(trigger.dataset.bdAction === 'pick-line-style' ? 'line' : 'card', trigger);
+    }, true);
+  });
+}
+
 function bdSetTool(tool) {
   bdEnsureBoardUiState();
   bd.tool = bd.tool === tool ? 'select' : tool;
@@ -311,6 +355,7 @@ function _bdStartInlineBoardTitleEdit(titleEl) {
 function bdInitBoardShell(root) {
   if (!root || root.dataset.bdShellReady === '1') return;
   root.dataset.bdShellReady = '1';
+  _bdBindToolbarStylePickerTriggers(root);
   root.addEventListener('click', event => {
     const btn = event.target.closest('[data-bd-action],[data-bd-tool]');
     if (!btn || !root.contains(btn)) return;
@@ -361,43 +406,13 @@ function bdInitBoardShell(root) {
         bdOpenCardStyleManager();
         break;
       case 'pick-card-style':
-        bdOpenStylePicker('card', btn, {
-          currentId: bd.activeCardStyle,
-          onPick(styleId) {
-            if (typeof bdAreAllCardsSelected === 'function' && bdAreAllCardsSelected()) {
-              bdPushUndo();
-              _bdAssignCardStyleToNodes([...bd.selected], styleId);
-            } else {
-              bd.activeCardStyle = styleId || '';
-            }
-          },
-          onAfterPick() {
-            bdRender();
-            bdDirty();
-            if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-          },
-        });
+        bdOpenToolbarStylePicker('card', btn);
         break;
       case 'manage-line-styles':
         bdOpenLineStyleManager();
         break;
       case 'pick-line-style':
-        bdOpenStylePicker('line', btn, {
-          currentId: bd.activeLineStyle,
-          onPick(styleId) {
-            if (typeof bdAreAllLinesSelected === 'function' && bdAreAllLinesSelected()) {
-              bdPushUndo();
-              _bdAssignLineStyleToConnections(typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [], styleId);
-            } else {
-              bd.activeLineStyle = styleId || '';
-            }
-          },
-          onAfterPick() {
-            bdDrawConns();
-            bdDirty();
-            if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-          },
-        });
+        bdOpenToolbarStylePicker('line', btn);
         break;
       case 'find-replace':
         if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
@@ -407,6 +422,11 @@ function bdInitBoardShell(root) {
         else if (typeof bd !== 'undefined' && bd.path && typeof bdOpenBoard === 'function') bdOpenBoard(bd.label || '', bd.path);
         break;
       case 'detail':
+        if (window.MeldexBoardStandalone?.toggleOptionsPanel) {
+          window.MeldexBoardStandalone.toggleOptionsPanel();
+          if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+          break;
+        }
         try {
           const cfg = typeof _getDetailPanelCfg === 'function' ? _getDetailPanelCfg() : {};
           if (cfg.visible !== true) {
@@ -545,8 +565,13 @@ function _bdAssignCardStyleToNodes(nodeIds, styleId) {
   ids.forEach(nodeId => {
     const node = bd.nodes.find(item => item.id === nodeId);
     if (!node) return;
-    node.cardStyle = styleId || '';
-    bdClearCardStyleOverrides(node);
+    if (typeof bdSetNodeCardStyleRef === 'function') bdSetNodeCardStyleRef(node, styleId, { clearOverrides: true });
+    else {
+      node.cardStyle = styleId || '';
+      bdClearCardStyleOverrides(node);
+      if (styleId) node._userCardStyle = true;
+      else delete node._userCardStyle;
+    }
   });
   if (styleId) bd.activeCardStyle = styleId;
   return true;

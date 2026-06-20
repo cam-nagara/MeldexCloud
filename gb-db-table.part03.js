@@ -1,178 +1,3 @@
-function renderEntityRow(entityName, ctx, options) {
-  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned } = options;
-  const entityData = entitiesMap[entityName];
-  const tr = document.createElement('tr');
-  tr.dataset.entityName = entityName;
-  tr.setAttribute('role', 'row');
-  // エントリD&D並べ替え (draggable は維持。dragstart/dragend/dragover/dragleave/drop は tbody 委譲)
-  tr.draggable = true;
-
-  if (condFmt) {
-    const mainStatus = getEntityMainStatus(entityData);
-    if (mainStatus === '掲載済み') tr.className = 'row-status-published';
-    else if (mainStatus === '採用') tr.className = 'row-status-adopted';
-    else if (mainStatus === '案') tr.className = 'row-status-draft';
-    else if (mainStatus === 'ボツ') tr.className = 'row-status-rejected';
-  }
-
-  const tdName = document.createElement('td');
-  tdName.className = 'col-entity';
-  tdName.setAttribute('role', 'rowheader');
-  tdName.setAttribute('aria-label', `エントリ: ${entityName}`);
-  if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
-  tdName.style.width = _entityW + 'px';
-  tdName.style.minWidth = _entityW + 'px';
-
-  const nameMain = document.createElement('div');
-  nameMain.className = 'entity-name-cell-main';
-
-  // ＋ボタン (エントリ追加: クリック=下に追加 / Alt+クリック=上に追加)
-  const addRowBtn = document.createElement('span');
-  addRowBtn.className = 'row-add-btn';
-  addRowBtn.title = 'クリックで下にエントリを追加 / Alt+クリックで上に追加';
-  addRowBtn.innerHTML = lucide('plus', 12);
-  addRowBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const position = e.altKey ? 'above' : 'below';
-    _handleInsertRowRelative(ctx, entityName, position);
-  });
-  // ドラッグ起点にしないため preventDefault
-  addRowBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-  nameMain.appendChild(addRowBtn);
-
-  // 行ドラッグハンドル (tr.draggable は既に true。視覚的な掴み所として表示)
-  const dragHandle = document.createElement('span');
-  dragHandle.className = 'row-drag-handle';
-  dragHandle.title = 'ドラッグして並び替え';
-  dragHandle.innerHTML = lucide('gripVertical', 12);
-  nameMain.appendChild(dragHandle);
-
-  // 複数選択対応チェックボックス
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.className = 'row-select-cb';
-  cb.dataset.entityName = entityName;
-  cb.dataset.e2eId = `db-row-select-${entityName}`;
-  cb.setAttribute('aria-label', `エントリ選択: ${entityName}`);
-  // D-5: ctx の Set に含まれていれば checked 状態で生成 (render 跨ぎで選択維持)
-  const isSelected = ctx && ctx._selectedEntities && ctx._selectedEntities.has(entityName);
-  cb.checked = !!isSelected;
-  if (isSelected) tr.classList.add('row-selected');
-  // cb pointerdown / pointerover (pointerenter 代替) / change / click は tbody 委譲で処理
-  nameMain.appendChild(cb);
-
-  const nameSpan = document.createElement('span');
-  nameSpan.className = 'entity-name-label';
-  nameSpan.textContent = entityName;
-  nameSpan.style.paddingLeft = '4px';
-  nameSpan.draggable = true;
-  // nameSpan dragstart / dragend は tbody 委譲で処理
-  tdName.style.cursor = 'pointer';
-  // tdName click / dblclick は tbody 委譲で処理 (openEntityInSplit / startEntityInlineRename)
-  // 「...」ボタン。行自体が draggable なので、ボタン側でドラッグ起点を止める。
-  const moreBtn = document.createElement('span');
-  moreBtn.className = 'entity-row-more-btn';
-  moreBtn.title = 'メニュー';
-  moreBtn.draggable = false;
-  moreBtn.innerHTML = lucide('moreHorizontal', 12);
-  moreBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-  moreBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-  moreBtn.addEventListener('dragstart', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  moreBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (typeof showDbCardContextMenu === 'function') showDbCardContextMenu(e, dbPath, entityName);
-  });
-  nameMain.appendChild(nameSpan);
-  nameMain.appendChild(moreBtn);
-  tdName.appendChild(nameMain);
-
-  // tr contextmenu は tbody 委譲 (_handleTbodyContextmenu) で処理
-
-  // エントリ名の下にリレーションリンクを表示
-  const allRelations = [];
-  Object.values(entityData).forEach(vals => {
-    if (!Array.isArray(vals)) return;
-    vals.forEach(v => {
-      if (v.relations && v.relations.length > 0) v.relations.forEach(r => allRelations.push(r));
-    });
-  });
-  if (allRelations.length > 0) {
-    // リレーションリンクを追加（既存のcheckbox・nameSpanは保持）
-    tdName.style.whiteSpace = 'normal';
-
-    const relDiv = document.createElement('div');
-    relDiv.className = 'relation-links';
-    allRelations.slice(0, 3).forEach(r => {
-      const link = document.createElement('span');
-      link.className = 'relation-link';
-      link.textContent = r.entity || '';
-      link.title = r.role || '';
-      link.dataset.dbPath = r.db_path || r.dbPath || r.database || dbPath;
-      link.dataset.entityName = r.entity || '';
-      // click は tbody 委譲 (_handleRelationLinkClick) で処理
-      relDiv.appendChild(link);
-    });
-    if (allRelations.length > 3) {
-      const more = document.createElement('span');
-      more.style.cssText = 'font-size:11px;color:var(--fg2);';
-      more.textContent = '+' + (allRelations.length - 3);
-      relDiv.appendChild(more);
-    }
-    tdName.appendChild(relDiv);
-  }
-  tr.appendChild(tdName);
-
-  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pLeftOffset: entityColumnPinned ? _entityW : 0 };
-  visibleProps.forEach(propName => {
-    tr.appendChild(renderEntityCell(entityName, propName, ctx, cellOpts));
-  });
-
-  // ＋プロパティ列の空セル
-  const tdAddCol = document.createElement('td');
-  tdAddCol.className = 'col-add-prop-cell';
-  tdAddCol.setAttribute('role', 'cell');
-  tr.appendChild(tdAddCol);
-
-  return tr;
-}
-
-function renderNewEntryRow(ctx, options) {
-  const { visibleProps, entitiesMap, dbPath, selectedCols, _tbl, _entityW } = options;
-  const newTr = document.createElement('tr');
-  newTr.className = 'new-entity-row';
-  newTr.setAttribute('role', 'row');
-
-  const tdName = document.createElement('td');
-  tdName.className = 'col-entity';
-  tdName.setAttribute('role', 'cell');
-  tdName.setAttribute('aria-label', '新規エントリを追加');
-  if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
-  tdName.style.cssText = 'cursor:pointer;color:var(--fg2);width:' + _entityW + 'px;min-width:' + _entityW + 'px;';
-  tdName.innerHTML = `<span class="ico" style="margin-right:4px;">${lucide('plus',14)}</span><span>新規</span>`;
-  // click は tbody 委譲 (_handleNewEntryClick) で処理
-  newTr.appendChild(tdName);
-
-  visibleProps.forEach(propName => {
-    const td = document.createElement('td');
-    td.setAttribute('role', 'cell');
-    td.setAttribute('aria-label', `新規 / ${propName}`);
-    if ((selectedCols || []).includes(propName)) td.classList.add('col-selected');
-    newTr.appendChild(td);
-  });
-  // ＋プロパティ列の空セル
-  const tdAddCol2 = document.createElement('td');
-  tdAddCol2.className = 'col-add-prop-cell';
-  tdAddCol2.setAttribute('role', 'cell');
-  newTr.appendChild(tdAddCol2);
-
-  return newTr;
-}
-
 function _applySelectedColumnClasses(ctx, dbPath) {
   const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(ctx) : document.getElementById('pivot-table');
   if (!table) return;
@@ -200,6 +25,16 @@ function _setupDbColumnHeaderA11y(th, label) {
   th.setAttribute('aria-label', label || th.textContent?.trim() || '列');
 }
 
+function _dbEntityColumnDisplayLabel(dbPath) {
+  const path = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+  return path.endsWith('制作管理/シート/タスクリスト') ? 'タスク名' : 'エントリ名';
+}
+
+function _dbDefaultEntityColumnWidth(dbPath) {
+  const path = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+  return path.endsWith('制作管理/シート/タスクリスト') ? 260 : 120;
+}
+
 function _dbE2eToken(value) {
   return String(value == null ? '' : value)
     .trim()
@@ -214,12 +49,12 @@ function _dbE2eId(ctx, kind, ...parts) {
   return `db-${tableId}-${kind}${suffix ? '-' + suffix : ''}`;
 }
 
-function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath) {
+function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, ctx) {
   if (!handle || !th) return;
   handle.tabIndex = 0;
   handle.setAttribute('role', 'separator');
   handle.setAttribute('aria-orientation', 'vertical');
-  handle.setAttribute('aria-label', `${propName === '__entity__' ? 'エントリ名' : propName} 列幅を調整`);
+  handle.setAttribute('aria-label', `${propName === '__entity__' ? _dbEntityColumnDisplayLabel(dbPath) : propName} 列幅を調整`);
   const applyWidth = (width) => {
     const nextWidth = Math.max(60, Math.round(width));
     th.style.width = nextWidth + 'px';
@@ -227,6 +62,7 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath) 
     handle.setAttribute('aria-valuenow', String(nextWidth));
     const table = th.closest('table');
     if (table) {
+
       table.querySelectorAll('tbody tr, tfoot tr').forEach(tr => {
         const cell = tr.children[colIndex];
         if (cell) {
@@ -239,6 +75,7 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath) 
     }
     if (dbPath && propName && typeof setColWidthPersist === 'function') {
       setColWidthPersist(dbPath, propName, nextWidth, {
+        ctx,
         label: 'シート表示: 列幅',
         detail: propName,
       });
@@ -421,7 +258,7 @@ function _dbEstimateWrapLines(text, widthChars) {
   }, 0);
 }
 
-function _dbTextForProp(entityName, propName, data, propTypes, advFilters, dbPath) {
+function _dbTextForProp(entityName, propName, data, propTypes, advFilters, dbPath, filterMode) {
   const entityData = data?.entities?.[entityName] || {};
   const ptc = propTypes?.[propName];
   if (ptc?.source) {
@@ -435,7 +272,7 @@ function _dbTextForProp(entityName, propName, data, propTypes, advFilters, dbPat
   let values = Object.prototype.hasOwnProperty.call(entityData, propName) && Array.isArray(entityData[propName])
     ? entityData[propName]
     : [];
-  if (typeof filterValues === 'function') values = filterValues(values);
+  if (typeof filterValues === 'function') values = filterValues(values, undefined, filterMode);
   if (advFilters?.length && typeof applyAdvancedFilters === 'function') {
     values = applyAdvancedFilters(values, propName, advFilters);
   }
@@ -475,6 +312,15 @@ function _dbEntityWidthPxFromChars(chars) {
   return Math.max(120, Math.min(640, _dbWidthPxFromChars(chars) + DB_ENTITY_AUTO_WIDTH_CHROME_PX));
 }
 
+function _dbAutoImageColumnWidth(propName, ptc) {
+  const imageCellHeight = ptc?.options?.cell_height ?? ptc?.options?.cell_thumbnail_size;
+  const cellSize = typeof _imagePropCellSize === 'function'
+    ? _imagePropCellSize(ptc)
+    : _dbClampInt(imageCellHeight, 32, 320, 96);
+  const labelWidth = _dbWidthPxFromChars(Math.min(16, Math.max(4, [...String(propName || '')].length)));
+  return Math.max(96, Math.min(260, Math.max(labelWidth, cellSize + 52)));
+}
+
 function autoFitCurrentSheetColumns(event) {
   const ctx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(event, { dbPath: state.currentDbPath })
@@ -484,7 +330,7 @@ function autoFitCurrentSheetColumns(event) {
   if (!dbPath || !data?.entities) return;
   const viewMode = typeof _dbCurrentViewModeForContext === 'function'
     ? _dbCurrentViewModeForContext(ctx, dbPath)
-    : (typeof getCurrentViewMode === 'function' ? getCurrentViewMode(dbPath) : 'pivot');
+    : (typeof getCurrentViewMode === 'function' ? getCurrentViewMode(dbPath, { ctx }) : 'pivot');
   if (viewMode === 'timeline' && typeof autoFitTimelineColumns === 'function') {
     autoFitTimelineColumns(ctx, dbPath);
     return;
@@ -495,14 +341,15 @@ function autoFitCurrentSheetColumns(event) {
   }
   const cfg = getDbViewConfig(dbPath);
   const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-  const hiddenCols = getHiddenCols(dbPath);
+  const hiddenCols = getHiddenCols(dbPath, { ctx });
   const propTypes = getPropertyTypes(dbPath);
-  const advFilters = getAdvancedFilters(dbPath);
-  const colOrder = getColOrder(dbPath);
+  const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const colOrder = getColOrder(dbPath, { ctx });
   let props = colOrder ? [...colOrder] : [...(data.properties || [])];
   props = [...new Set(props)];
   (data.properties || []).forEach(p => { if (!props.includes(p)) props.push(p); });
   Object.keys(propTypes || {}).forEach(p => { if (!props.includes(p)) props.push(p); });
+  if (typeof filterDeletedDbProperties === 'function') props = filterDeletedDbProperties(dbPath, props);
   const visibleProps = props.filter(p => !hiddenCols.includes(p));
   const entityNames = Object.keys(data.entities || {});
   const currentView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
@@ -514,7 +361,12 @@ function autoFitCurrentSheetColumns(event) {
   const entityChars = _dbAutoWidthCharsForEntryNames(entityNames);
   widthTarget.colWidths.__entity__ = _dbEntityWidthPxFromChars(entityChars);
   visibleProps.forEach(propName => {
-    const texts = entityNames.map(name => _dbTextForProp(name, propName, data, propTypes, advFilters, dbPath));
+    const ptc = propTypes?.[propName] || {};
+    if (ptc?.type === 'image') {
+      widthTarget.colWidths[propName] = _dbAutoImageColumnWidth(propName, ptc);
+      return;
+    }
+    const texts = entityNames.map(name => _dbTextForProp(name, propName, data, propTypes, advFilters, dbPath, ctx?.filter));
     widthTarget.colWidths[propName] = _dbWidthPxFromChars(_dbAutoWidthCharsForTexts(texts, propName));
   });
   cfg.cellWrapLines = _dbClampInt(cfg.cellWrapLines, 1, 10, 10);
@@ -527,18 +379,20 @@ function autoFitCurrentSheetColumns(event) {
 }
 
 function renderPivot(ctx) {
+  const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || _currentPaneState());
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
 
   const dbPath = ctx.dbPath || state.currentDbPath;
-  const hiddenCols = getHiddenCols(dbPath);
-  const pinnedCols = getPinnedCols(dbPath);
-  const colOrder = getColOrder(dbPath);
-  const condFmt = getConditionalFormat(dbPath);
-  const thumbSize = getThumbnailSize(dbPath);
-  const savedWidths = getColWidths(dbPath);
-  const advFilters = getAdvancedFilters(dbPath);
+  const filterMode = ctx.filter ?? state.filter ?? 'disabled';
+  const hiddenCols = getHiddenCols(dbPath, { ctx });
+  const pinnedCols = getPinnedCols(dbPath, { ctx });
+  const colOrder = getColOrder(dbPath, { ctx });
+  const condFmt = getConditionalFormat(dbPath, { ctx });
+  const thumbSize = getThumbnailSize(dbPath, { ctx });
+  const savedWidths = getColWidths(dbPath, { ctx });
+  const advFilters = getAdvancedFilters(dbPath, { ctx });
   const propTypes = getPropertyTypes(dbPath);
   const groupByProp = getGroupBy(dbPath);
 
@@ -553,13 +407,16 @@ function renderPivot(ctx) {
   if (propTypes) {
     Object.keys(propTypes).forEach(p => { if (!props.includes(p)) props.push(p); });
   }
+  if (typeof filterDeletedDbProperties === 'function') props = filterDeletedDbProperties(dbPath, props);
   const visibleProps = props.filter(p => !hiddenCols.includes(p));
 
   const entitiesMap = data.entities;
   // エントリのソート（ソート設定に基づく）
-  const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath) : getDbViewConfig(dbPath).sortConfig)
+  // 互換テスト用: const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath) : getDbViewConfig(dbPath).sortConfig)
+  const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath, { ctx }) : getDbViewConfig(dbPath).sortConfig)
     || { key: 'name', dir: 'asc' };
-  const manualOrder = typeof getDbManualOrder === 'function' ? getDbManualOrder(dbPath) : getDbViewConfig(dbPath).manualOrder;
+  // 互換テスト用: const manualOrder = typeof getDbManualOrder === 'function' ? getDbManualOrder(dbPath) : getDbViewConfig(dbPath).manualOrder;
+  const manualOrder = typeof getDbManualOrder === 'function' ? getDbManualOrder(dbPath, { ctx }) : getDbViewConfig(dbPath).manualOrder;
   let entityNames = Object.keys(entitiesMap);
   if (sortCfg.key === 'manual' && manualOrder) {
     const order = manualOrder;
@@ -584,7 +441,7 @@ function renderPivot(ctx) {
     };
     const _sortValue = (entityName) => {
       if (sortPtc.source || sortPtc.type === 'formula') {
-        return _dbTextForProp(entityName, sortCfg.key, data, propTypes, advFilters, dbPath);
+        return _dbTextForProp(entityName, sortCfg.key, data, propTypes, advFilters, dbPath, filterMode);
       }
       const entityData = entitiesMap[entityName] || {};
       const rawValues = Object.prototype.hasOwnProperty.call(entityData, sortCfg.key) && Array.isArray(entityData[sortCfg.key])
@@ -622,6 +479,9 @@ function renderPivot(ctx) {
   }
   // Step 2: チャンク分割中の D&D で manualOrder 初期化に使う (DOM 未完成時のフォールバック)
   ctx._lastEntityNames = entityNames;
+  const renderRowLimit = _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps);
+  const isRenderLimited = renderRowLimit > 0 && renderRowLimit < entityNames.length;
+  const shownEntityCount = isRenderLimited ? renderRowLimit : entityNames.length;
   const selectedCols = _getSelectedColumns(dbPath);
 
   // エントリ0件でもテーブルを描画（＋新規エントリ行を表示するため）
@@ -641,7 +501,7 @@ function renderPivot(ctx) {
   const gridH = gridCfg.gridH || { width: '1px', color: '' };
   const gridV = gridCfg.gridV || { width: '1px', color: '' };
   const entityColumnPinned = typeof getEntityColumnPinned === 'function'
-    ? getEntityColumnPinned(dbPath)
+    ? getEntityColumnPinned(dbPath, { ctx })
     : gridCfg.entityColumnPinned !== false;
   const tblEl = _paneEl(ctx, _tbl());
   if (tblEl) {
@@ -670,24 +530,25 @@ function renderPivot(ctx) {
   const th0 = document.createElement('th');
   th0.className = 'col-entity-header';
   th0.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'entity');
-  _setupDbColumnHeaderA11y(th0, 'エントリ名');
+  const entityColumnLabel = _dbEntityColumnDisplayLabel(dbPath);
+  _setupDbColumnHeaderA11y(th0, entityColumnLabel);
   if (selectedCols.includes('__entity__')) th0.classList.add('col-selected');
   th0.style.position = entityColumnPinned ? 'sticky' : 'relative';
   th0.style.left = entityColumnPinned ? '0px' : '';
   th0.style.zIndex = entityColumnPinned ? '11' : '';
   // エントリ名列の幅（永続化）
-  const _entityW = (savedWidths['__entity__'] || 120);
+  const _entityW = (savedWidths['__entity__'] || _dbDefaultEntityColumnWidth(dbPath));
   th0.style.width = _entityW + 'px';
   th0.style.minWidth = _entityW + 'px';
   const th0Label = document.createElement('span');
   th0Label.className = 'th-label';
-  th0Label.textContent = 'エントリ名';
+  th0Label.textContent = entityColumnLabel;
   th0.appendChild(th0Label);
   const th0MoreBtn = document.createElement('span');
   th0MoreBtn.className = 'th-more-btn entity-th-more-btn';
   th0MoreBtn.innerHTML = lucide('moreHorizontal', 14);
   th0MoreBtn.title = '列メニュー';
-  th0MoreBtn.setAttribute('aria-label', 'エントリ名列メニュー');
+  th0MoreBtn.setAttribute('aria-label', entityColumnLabel + '列メニュー');
   th0MoreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
   th0MoreBtn.addEventListener('mouseenter', () => { th0MoreBtn.style.background = 'var(--bg4)'; });
   th0MoreBtn.addEventListener('mouseleave', () => { th0MoreBtn.style.background = 'var(--bg2)'; });
@@ -713,7 +574,7 @@ function renderPivot(ctx) {
   const th0Handle = document.createElement('div');
   th0Handle.className = 'col-resize-handle';
   th0Handle.dataset.e2eId = _dbE2eId(ctx, 'column-resize', 'entity');
-  _setupDbColumnResizeHandleA11y(th0Handle, th0, 0, '__entity__', dbPath);
+  _setupDbColumnResizeHandleA11y(th0Handle, th0, 0, '__entity__', dbPath, ctx);
   th0Handle.addEventListener('pointerdown', (e) => startColResize(e, th0, 0, '__entity__'));
   th0Handle.addEventListener('click', (e) => { e.stopPropagation(); });
   th0Handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
@@ -734,9 +595,9 @@ function renderPivot(ctx) {
     // エントリ名列の直後に移動 = visible 列の先頭。hidden 列は末尾保持
     const arr = visibleProps.filter(n => n !== fromName);
     arr.unshift(fromName);
-    const oldOrder = getColOrder(dbPath) || [];
+    const oldOrder = getColOrder(dbPath, { ctx }) || [];
     const hiddenInOrder = oldOrder.filter(n => hiddenCols.includes(n) && !arr.includes(n));
-    setColOrder(dbPath, [...arr, ...hiddenInOrder]);
+    setColOrder(dbPath, [...arr, ...hiddenInOrder], { ctx });
     renderPivot(ctx);
   });
   headerRow.appendChild(th0);
@@ -811,7 +672,7 @@ function renderPivot(ctx) {
     const handle = document.createElement('div');
     handle.className = 'col-resize-handle';
     handle.dataset.e2eId = _dbE2eId(ctx, 'column-resize', p);
-    _setupDbColumnResizeHandleA11y(handle, th, i + 1, p, dbPath);
+    _setupDbColumnResizeHandleA11y(handle, th, i + 1, p, dbPath, ctx);
     handle.addEventListener('pointerdown', (e) => startColResize(e, th, i + 1, p));
     handle.addEventListener('click', (e) => { e.stopPropagation(); });
     handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
@@ -849,10 +710,10 @@ function renderPivot(ctx) {
       const insertIdx = idx >= 0 ? idx + (isLeft ? 0 : 1) : arr.length;
       arr.splice(insertIdx, 0, fromName);
       // hidden 列は元の colOrder の順序のまま末尾に保持
-      const oldOrder = getColOrder(dbPath) || [];
+      const oldOrder = getColOrder(dbPath, { ctx }) || [];
       const hiddenInOrder = oldOrder.filter(n => hiddenCols.includes(n) && !arr.includes(n));
       const newOrder = [...arr, ...hiddenInOrder];
-      setColOrder(dbPath, newOrder);
+      setColOrder(dbPath, newOrder, { ctx });
       renderPivot(ctx);
     });
 
@@ -921,22 +782,212 @@ function renderPivot(ctx) {
   thAdd.title = 'プロパティを追加';
   thAdd.innerHTML = lucide('plus', 16);
   thAdd.addEventListener('click', () => {
-    const order = getColOrder(dbPath) || [...props];
+    const order = getColOrder(dbPath, { ctx }) || [...props];
     const existingNames = new Set([
       ...order,
       ...props,
-      ...(data.properties || []),
+      ...(typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, data.properties || []) : (data.properties || [])),
       ...Object.keys(propTypes || {}),
     ]);
     let idx = 1, name = 'プロパティ';
     while (existingNames.has(name)) { idx++; name = 'プロパティ' + idx; }
     order.push(name);
-    setColOrder(dbPath, order, { skipHistory: true });
+    setColOrder(dbPath, order, { skipHistory: true, ctx });
     setPropertyType(dbPath, name, { type: 'text' });
     renderPivot(ctx);
-    // 追加直後にヘッダーをインラインリネームモードにする
-    setTimeout(() => {
-      const newTh = _paneEl(ctx, _tbl(`thead th[data-prop="${name}"]`));
-      if (newTh) startHeaderInlineRename(newTh, name, dbPath);
-    }, 30);
   });
+
+  thAdd.onmouseenter = () => { if (!thAdd.querySelector('input')) thAdd.style.color = 'var(--accent)'; };
+  thAdd.onmouseleave = () => { if (!thAdd.querySelector('input')) thAdd.style.color = 'var(--fg2)'; };
+  headerRow.appendChild(thAdd);
+
+  thead.innerHTML = '';
+  thead.appendChild(headerRow);
+
+  // ボディ
+  tbody.innerHTML = '';
+  // D-4-a: tbody click 委譲を登録 (べき等。再 render 時は ctx だけ更新)
+  _installTbodyDelegation(tbody, ctx);
+
+  // グループ化処理
+  let groupedEntities;
+  if (groupByProp && visibleProps.includes(groupByProp)) {
+    groupedEntities = new Map();
+    const groupPtc = propTypes[groupByProp];
+    entityNames.forEach(en => {
+      let groupKey;
+      if (groupPtc && groupPtc.type === 'formula' && groupPtc.formula) {
+        const result = formulaEvalForEntity(groupPtc.formula, entitiesMap[en], { propTypes, dbPath });
+        groupKey = result.error ? '#ERROR' : (result.value === '' ? '(未設定)' : String(result.value));
+      } else {
+        const entityData = entitiesMap[en] || {};
+        const rawVals = Object.prototype.hasOwnProperty.call(entityData, groupByProp) && Array.isArray(entityData[groupByProp])
+          ? entityData[groupByProp]
+          : [];
+        const vals = filterValues(rawVals, undefined, filterMode);
+        const firstValue = vals.length > 0 ? vals[0].value : '';
+        groupKey = firstValue === '' || firstValue == null ? '(未設定)' : String(firstValue);
+      }
+      if (!groupedEntities.has(groupKey)) groupedEntities.set(groupKey, []);
+      groupedEntities.get(groupKey).push(en);
+    });
+  } else {
+    groupedEntities = new Map([['', entityNames]]);
+  }
+
+  // 折りたたみ状態
+  if (!window._groupCollapsed) window._groupCollapsed = {};
+
+  const entityRowOpts = {
+    visibleProps, propTypes, entitiesMap, entityNames,
+    dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols,
+    selectedCols, _entityW, _tbl, _tblId, entityColumnPinned,
+  };
+
+  // 行生成タスクをフラット化 (グループヘッダー + エントリ行を順序通りに並べる)
+  // チャンク分割レンダリングで使用 (Step2)
+  const rowTasks = [];
+  let pushedEntityRows = 0;
+  groupedEntities.forEach((names, groupKey) => {
+    if (isRenderLimited && pushedEntityRows >= renderRowLimit) return;
+    if (groupKey !== '') {
+      rowTasks.push({ kind: 'group', groupKey, names });
+      if (_isGroupCollapsed(ctx, groupKey)) return;
+    }
+    for (const entityName of names) {
+      if (isRenderLimited && pushedEntityRows >= renderRowLimit) break;
+      rowTasks.push({ kind: 'entity', entityName });
+      pushedEntityRows++;
+    }
+  });
+
+  const paneRoot = _paneEl(ctx, _tbl()) || document;
+  if (ctx?._dragSelectPointerUp) {
+    document.removeEventListener('pointerup', ctx._dragSelectPointerUp);
+    document.removeEventListener('pointercancel', ctx._dragSelectPointerUp);
+  }
+  if (paneRoot._dragSelectPointerUp) document.removeEventListener('pointerup', paneRoot._dragSelectPointerUp);
+  if (paneRoot._dragSelectPointerUp) document.removeEventListener('pointercancel', paneRoot._dragSelectPointerUp);
+  paneRoot._dragSelectPointerUp = () => {
+    paneRoot._dragSelectState = null;
+    if (ctx) ctx._dragSelectState = null;
+  };
+  if (ctx) ctx._dragSelectPointerUp = paneRoot._dragSelectPointerUp;
+  document.addEventListener('pointerup', paneRoot._dragSelectPointerUp);
+  document.addEventListener('pointercancel', paneRoot._dragSelectPointerUp);
+
+  // 常に末尾に「＋新規エントリ」行を表示（Notion風）
+  // チャンク分割中、エントリ行はこの行の前に insertBefore で挿入する。これで thead/tfoot/新規行の順序が常に確定する。
+  const renderMoreRow = isRenderLimited
+    ? _dbCreateRenderMoreRow(ctx, { visibleProps, totalRows: entityNames.length, shownRows: shownEntityCount, currentLimit: renderRowLimit })
+    : null;
+  if (renderMoreRow) tbody.appendChild(renderMoreRow);
+  const newEntryRow = renderNewEntryRow(ctx, { visibleProps, entitiesMap, dbPath, selectedCols, _tbl, _entityW });
+  tbody.appendChild(newEntryRow);
+  const newEntrySpacerRow = document.createElement('tr');
+  newEntrySpacerRow.className = 'new-entity-spacer-row';
+  newEntrySpacerRow.setAttribute('aria-hidden', 'true');
+  newEntrySpacerRow.setAttribute('role', 'presentation');
+  const newEntrySpacerCell = document.createElement('td');
+  newEntrySpacerCell.colSpan = visibleProps.length + 2;
+  newEntrySpacerRow.appendChild(newEntrySpacerCell);
+  tbody.appendChild(newEntrySpacerRow);
+
+  // フッター集計行 (entityNames は確定済みなので即時計算)
+  renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx);
+
+  const countEl = _paneEl(ctx, '#sb-count') || document.getElementById('sb-count');
+  if (countEl) countEl.textContent = isRenderLimited
+    ? entityNames.length + ' 件 (' + shownEntityCount + '件表示)'
+    : entityNames.length + ' 件';
+
+  // ----- Step 2: チャンク分割レンダリング -----
+  // 中断トークン: ctx._renderToken に Symbol を割り振る。
+  // 後続の renderPivot 呼び出し / destroyPaneContext 等で _renderToken が変わると進行中チャンクは破棄される。
+  const renderToken = Symbol('renderPivot');
+  ctx._renderToken = renderToken;
+  ctx._renderInProgress = true;
+  ctx._renderTotalRows = rowTasks.length;
+  ctx._renderDoneRows = 0;
+
+  const CHUNK_SIZE = 100; // ベンチマーク用閾値 (100行/チャンク)
+
+  // チャンクを 1 つ生成して tbody に挿入する
+  // 最初のチャンクは同期、残りは requestIdleCallback で。
+  const _renderChunk = (startIdx) => {
+    // 中断チェック: トークンが書き換わっていれば破棄
+    if (ctx._renderToken !== renderToken) return;
+    const endIdx = Math.min(startIdx + CHUNK_SIZE, rowTasks.length);
+    // DocumentFragment でまとめて挿入 (reflow 削減)
+    const frag = document.createDocumentFragment();
+    for (let i = startIdx; i < endIdx; i++) {
+      const task = rowTasks[i];
+      if (task.kind === 'group') {
+        frag.appendChild(renderGroupHeaderRow(task.groupKey, task.names, visibleProps, groupByProp, ctx));
+      } else {
+        frag.appendChild(renderEntityRow(task.entityName, ctx, entityRowOpts));
+      }
+    }
+    // 中断チェック (ループ中に破棄された可能性)
+    if (ctx._renderToken !== renderToken) return;
+    // 新規エントリ行の前に挿入 → 常に末尾に新規エントリ行を維持
+    tbody.insertBefore(frag, renderMoreRow || newEntryRow);
+    ctx._renderDoneRows = endIdx;
+    if (endIdx < rowTasks.length) {
+      // 残りを idle callback で処理
+      const scheduleNextChunk = (cb) => {
+        if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(cb, { timeout: 120 });
+        else setTimeout(cb, 0);
+      };
+      scheduleNextChunk(() => _renderChunk(endIdx));
+    } else {
+      ctx._renderInProgress = false;
+      // Phase 2e-ii-b: 全チャンク完了後にセルコメントバッジを描画
+      _refreshSheetBadges(ctx);
+      if (typeof _appendBacklinkSummaryColumns === 'function') _appendBacklinkSummaryColumns(ctx);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('sheet.renderPivot.complete', renderPerfStartedAt, {
+          targetLabel: String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || ''),
+          entityCount: entityNames.length,
+          propertyCount: visibleProps.length,
+          rowTaskCount: rowTasks.length,
+          renderRowLimit,
+          renderedRows: ctx._renderDoneRows,
+        });
+      }
+    }
+  };
+
+  // 最初の CHUNK_SIZE 行は同期で生成 → 即座に表示
+  if (rowTasks.length > 0) {
+    _renderChunk(0);
+  } else {
+    ctx._renderInProgress = false;
+    _refreshSheetBadges(ctx);
+    if (typeof _appendBacklinkSummaryColumns === 'function') _appendBacklinkSummaryColumns(ctx);
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('sheet.renderPivot.complete', renderPerfStartedAt, {
+        targetLabel: String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || ''),
+        entityCount: entityNames.length,
+        propertyCount: visibleProps.length,
+        rowTaskCount: rowTasks.length,
+        renderRowLimit,
+        renderedRows: 0,
+      });
+    }
+  }
+}
+
+function _refreshSheetBadges(ctx) {
+  if (typeof CommentBadges === 'undefined') return;
+  try {
+    const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+    const tableId = (ctx && ctx.tableId) || 'pivot-table';
+    const tbl = _paneEl(ctx, '#' + tableId) || document.querySelector('#pivot-table') || document.querySelector('table.pivot-table');
+    if (tbl && dbPath) {
+      tbl.dataset.dbPath = dbPath;
+      tbl.dataset.path = dbPath;
+    }
+    if (dbPath && tbl) CommentBadges.refreshSheet(dbPath, tbl);
+  } catch {}
+}

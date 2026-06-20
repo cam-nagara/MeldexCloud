@@ -1,10 +1,24 @@
   return notice;
 }
 
+function _isWorkspaceOutlinerRoot(root) {
+  return !!root && (root.kind === 'workspace' || !!root.workspaceId);
+}
+
+// ワークスペース由来ルートの控え（ソースフォルダ追加時の重複案内に使う）
+let _settingsWorkspaceOutlinerRoots = [];
+
+function _splitOutlinerRootsForSettings(roots) {
+  const list = Array.isArray(roots) ? roots : [];
+  _settingsWorkspaceOutlinerRoots = list.filter(_isWorkspaceOutlinerRoot);
+  return list.filter(root => !_isWorkspaceOutlinerRoot(root));
+}
+
 async function loadOutlinerRootsForSettings() {
   try {
     const roots = await apiFetch('/outliner-roots');
-    _outlinerRoots = Array.isArray(roots) ? roots : [];
+    // ワークスペース由来のルートは設定のワークスペースタブで管理するため、ソースフォルダ一覧には含めない
+    _outlinerRoots = _splitOutlinerRootsForSettings(roots);
     window._settingsOutlinerRootsLoadFailed = false;
   } catch (e) {
     window._settingsOutlinerRootsLoadFailed = true;
@@ -199,7 +213,7 @@ async function _addOutlinerRootEntry(path, name, extra) {
   if (!inSettingsDialog) {
     try {
       const roots = await apiFetch('/outliner-roots');
-      _outlinerRoots = Array.isArray(roots) ? roots : [];
+      _outlinerRoots = _splitOutlinerRootsForSettings(roots);
     } catch {
       showStatus('既存のソースフォルダ一覧を読み込めませんでした', true);
       return;
@@ -207,6 +221,10 @@ async function _addOutlinerRootEntry(path, name, extra) {
   }
   if (_outlinerRoots.some(r => r.path === path)) {
     showStatus('既に登録されているフォルダです');
+    return;
+  }
+  if ((_settingsWorkspaceOutlinerRoots || []).some(r => r.path === path)) {
+    showStatus('このフォルダはワークスペースとして登録済みです。フォルダツリーのワークスペースセクションに表示されます');
     return;
   }
   _outlinerRoots.push({ ...(extra || {}), path, name, visible: true });
@@ -263,6 +281,7 @@ function _normalizeOutlinerRootSettings(root) {
 function _normalizeOutlinerRootsSettingsSnapshot(snapshot) {
   return {
     roots: (Array.isArray(snapshot?.roots) ? snapshot.roots : [])
+      .filter(root => !_isWorkspaceOutlinerRoot(root))
       .map(_normalizeOutlinerRootSettings)
       .filter(Boolean),
     vaultPath: String(snapshot?.vaultPath || ''),

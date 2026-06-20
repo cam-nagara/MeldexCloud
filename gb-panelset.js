@@ -9,6 +9,13 @@
   let _groupIdCounter = 0;
   let _panelsetIdCounter = 0;
 
+  function _isFreeLayoutUiEnabled() {
+    if (typeof GBLayout === 'undefined') return true;
+    return typeof GBLayout.isFreeLayoutUiEnabled === 'function'
+      ? !!GBLayout.isFreeLayoutUiEnabled()
+      : true;
+  }
+
   function _nextPanelsetId() {
     _panelsetIdCounter += 1;
     return 'panelset-' + Date.now().toString(36) + '-' + _panelsetIdCounter;
@@ -73,8 +80,12 @@
     btn.dataset.groupId = group.id;
     btn.dataset.panelsetId = panelsetNode.id;
     btn.dataset.e2eId = `panelset-${panelsetNode.id}-group-${group.id}`;
-    btn.draggable = true;
+    btn.draggable = _isFreeLayoutUiEnabled();
     btn.addEventListener('dragstart', (e) => {
+      if (!_isFreeLayoutUiEnabled()) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.setData('application/x-gb-panelset-group', JSON.stringify({
         panelsetId: panelsetNode.id, groupId: group.id,
       }));
@@ -93,6 +104,7 @@
     // 別グループの上にドラッグ → 挿入位置インジケータ
     // 注: stopPropagation は呼ばない（親タブバーの dragover にも届かせてカラム間判定を有効化）
     btn.addEventListener('dragover', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       if (!e.dataTransfer.types.includes('application/x-gb-panelset-group')) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
@@ -105,6 +117,7 @@
       btn.classList.remove('gb-panelset-drop-before', 'gb-panelset-drop-after');
     });
     btn.addEventListener('drop', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       if (!e.dataTransfer.types.includes('application/x-gb-panelset-group')) return;
       // 親タブバーが side='left'/'right' を設定している場合はそちらに委ねる
       const parentBar = btn.closest('.gb-panelset-tabbar');
@@ -130,7 +143,7 @@
       } catch {}
     });
     const types = collectGroupTabTypes(group.root);
-    btn.title = (types.join(' / ') || '(空)') + '\nAlt+ドラッグ: 別カラムに移動';
+    btn.title = (types.join(' / ') || '(空)') + (_isFreeLayoutUiEnabled() ? '\nAlt+ドラッグ: 別カラムに移動' : '');
     const iconBox = document.createElement('span');
     iconBox.className = 'gb-panelset-icon-box';
     types.forEach((type) => {
@@ -156,6 +169,7 @@
     });
     // 中クリックでそのグループを閉じる（タブ閉じの慣例に合わせる）
     btn.addEventListener('mousedown', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       if (e.button === 1) {
         e.preventDefault();
         e.stopPropagation();
@@ -164,11 +178,16 @@
     });
     // 右クリックメニュー: 閉じる（将来: 複製・リネーム等の拡張余地）＋ 長押しで同メニュー
     btn.addEventListener('contextmenu', (e) => {
+      if (!_isFreeLayoutUiEnabled()) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       _showGroupContextMenu(e, panelsetNode, group);
     });
-    if (typeof addLongPressHandler === 'function') {
+    if (_isFreeLayoutUiEnabled() && typeof addLongPressHandler === 'function') {
       addLongPressHandler(btn, (e) => _showGroupContextMenu(e, panelsetNode, group));
     }
     return btn;
@@ -266,6 +285,7 @@
       return 'center';
     }
     bar.addEventListener('dragover', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       const types = e.dataTransfer.types;
       const isGroup = types.includes('application/x-gb-panelset-group');
       const isColumn = types.includes('application/x-gb-column');
@@ -296,6 +316,7 @@
       }
     });
     bar.addEventListener('drop', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       const types = e.dataTransfer.types;
       const isGroup = types.includes('application/x-gb-panelset-group');
       const isColumn = types.includes('application/x-gb-column');
@@ -599,7 +620,7 @@
     // 補助パネル
     outliner: 'folderTree',
     preview: 'tvMinimal',
-    detail: 'panelRight',
+    detail: 'slidersHorizontal',
     version: 'gitBranch',
     chat: 'messagesSquare',
     timer: 'timer',
@@ -611,6 +632,10 @@
   function _dockTabTypeIcon(type, size) {
     const name = _TAB_TYPE_ICON_MAP[type] || 'square';
     return (typeof lucide === 'function') ? lucide(name, size) : '';
+  }
+  function _railIcon(iconName, size) {
+    if (_TAB_TYPE_ICON_MAP[iconName]) return _dockTabTypeIcon(iconName, size);
+    return (typeof lucide === 'function') ? lucide(iconName || 'square', size) : '';
   }
   function _collectPanesInGroup(root) {
     const out = [];
@@ -625,9 +650,254 @@
     return out;
   }
 
+  function _fixedDockSide(panelsetNode) {
+    if (panelsetNode?.meldexRole === 'left-sidebar') return 'left';
+    if (panelsetNode?.meldexRole === 'right-sidebar') return 'right';
+    return '';
+  }
+
+  function _setPanelsetCollapsed(panelsetNode, collapsed, options) {
+    if (!panelsetNode) return false;
+    if (typeof GBLayout?.setNodeCollapsed === 'function') {
+      return !!GBLayout.setNodeCollapsed(panelsetNode.id, collapsed, options || {});
+    }
+    panelsetNode.collapsed = !!collapsed;
+    if (typeof GBLayout?.render === 'function') GBLayout.render();
+    if (!options?.skipSave && typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+    return true;
+  }
+
+  function _appendRailSeparator(dockBar) {
+    const sep = document.createElement('div');
+    sep.className = 'gb-dock-rail-separator';
+    dockBar.appendChild(sep);
+  }
+
+  function _railButton(className, iconName, title, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = className || 'gb-dock-icon';
+    btn.title = title || '';
+    btn.setAttribute('aria-label', title || '');
+    btn.innerHTML = _railIcon(iconName, 20);
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof onClick === 'function') onClick(e, btn);
+    });
+    return btn;
+  }
+
+  function _toggleRailTitle(side, collapsed) {
+    if (side === 'left') return collapsed ? 'フォルダツリーを開く' : 'フォルダツリーを閉じる';
+    return collapsed ? '右サイドバーを開く' : '右サイドバーを閉じる';
+  }
+
+  function _renderRailToggle(panelsetNode, side) {
+    const iconName = side === 'left' ? 'panelLeft' : 'panelRight';
+    const btn = _railButton(
+      'gb-dock-icon gb-dock-rail-toggle',
+      iconName,
+      _toggleRailTitle(side, !!panelsetNode.collapsed),
+      () => {
+        const activePaneId = side === 'left' ? _mainPaneIdForRailApp() : '';
+        _setPanelsetCollapsed(panelsetNode, !panelsetNode.collapsed, {
+          activePaneId,
+          skipActivePaneCallback: true,
+        });
+      }
+    );
+    btn.dataset.e2eId = side === 'left' ? 'fixed-left-rail-toggle' : 'fixed-right-rail-toggle';
+    return btn;
+  }
+
+  const _LEFT_APP_ITEMS = Object.freeze([
+    { type: 'folder', label: 'フォルダ', icon: 'folder' },
+    { type: 'page', label: 'ノート', icon: 'page', standalone: 'note-standalone.html' },
+    { type: 'scriptnote', label: 'シナリオ', icon: 'scriptnote', standalone: 'scenario-standalone.html' },
+    { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
+    { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
+    { type: 'calendar', label: 'スケジューラー', icon: 'calendar' },
+    { type: 'smart-db', label: 'スマートシート', icon: 'smart-db' },
+  ]);
+
+  function _mainPaneIdForRailApp() {
+    if (typeof GBPaneDefaultLayout !== 'undefined' && typeof GBPaneDefaultLayout.resolveMainPaneId === 'function') {
+      const mainPaneId = GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true });
+      if (mainPaneId) return mainPaneId;
+    }
+    return (typeof GBLayout !== 'undefined' ? GBLayout.activePane : '') || '';
+  }
+
+  function _openRailAppInMain(type) {
+    const mainPaneId = _mainPaneIdForRailApp();
+    if (mainPaneId && typeof GBLayout?.setActivePane === 'function') {
+      GBLayout.setActivePane(mainPaneId, { skipCallback: true });
+    }
+    if (typeof window.openToolTab === 'function') {
+      window.openToolTab(type, { paneId: mainPaneId, preferTargetPane: true });
+      return;
+    }
+    if (typeof window.addPanelMenuTool === 'function') {
+      window.addPanelMenuTool(type, { paneId: mainPaneId });
+    }
+  }
+
+  function _openStandaloneUrl(url) {
+    if (!url) return;
+    if (typeof _open_app_window_js === 'function') {
+      _open_app_window_js(url);
+      return;
+    }
+    window.open(url, '_blank', 'width=1000,height=720,menubar=no,toolbar=no,location=no');
+  }
+
+  function _showRailAppMenu(e, item) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelectorAll('.gb-context-menu, .ab-dropdown.gb-rail-app-menu').forEach(menu => menu.remove());
+    const menu = document.createElement('div');
+    menu.className = 'ab-dropdown gb-rail-app-menu';
+    menu.style.cssText = 'position:fixed;z-index:10060;min-width:190px;';
+    const addItem = (actionId, label, icon, fn, disabled) => {
+      const row = document.createElement('div');
+      row.className = 'ab-dropdown-item';
+      row.dataset.e2eId = `fixed-left-rail-app-menu-${item.type}-${actionId}`;
+      row.setAttribute('role', 'menuitem');
+      if (disabled) {
+        row.style.opacity = '0.5';
+        row.style.cursor = 'default';
+        row.setAttribute('aria-disabled', 'true');
+      }
+      const iconEl = document.createElement('span');
+      iconEl.className = 'gb-rail-app-menu-icon';
+      iconEl.innerHTML = _railIcon(icon, 16);
+      const labelEl = document.createElement('span');
+      labelEl.className = 'gb-rail-app-menu-label';
+      labelEl.textContent = label;
+      row.appendChild(iconEl);
+      row.appendChild(labelEl);
+      if (!disabled) {
+        row.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          menu.remove();
+          fn();
+        });
+      }
+      menu.appendChild(row);
+    };
+    addItem('open-main', 'メインパネルで開く', item.icon, () => _openRailAppInMain(item.type));
+    addItem('open-standalone', '単独アプリとして起動', 'externalLink', () => _openStandaloneUrl(item.standalone), !item.standalone);
+    document.body.appendChild(menu);
+    const anchor = e.currentTarget || e.target;
+    const closeMenu = (restoreFocus) => {
+      menu.remove();
+      document.removeEventListener('pointerdown', closeOnPointerDown, true);
+      document.removeEventListener('keydown', closeOnKeyDown, true);
+      if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchor);
+    };
+    const closeOnPointerDown = (ev) => {
+      if (!menu.contains(ev.target)) closeMenu(false);
+    };
+    const closeOnKeyDown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeMenu(true);
+    };
+    if (anchor && typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    setTimeout(() => {
+      document.addEventListener('pointerdown', closeOnPointerDown, true);
+      document.addEventListener('keydown', closeOnKeyDown, true);
+    }, 0);
+  }
+
+  function _rightRailStandaloneUrl(tab) {
+    const type = tab?.type || '';
+    if (type === 'timer') return 'timer-standalone.html';
+    if (type === 'preview') return 'viewer.html';
+    return '';
+  }
+
+  function _showRightRailToolMenu(e, activateFn, tab) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelectorAll('.gb-context-menu, .ab-dropdown.gb-rail-app-menu').forEach(menu => menu.remove());
+    const menu = document.createElement('div');
+    menu.className = 'ab-dropdown gb-rail-app-menu';
+    menu.style.cssText = 'position:fixed;z-index:10060;min-width:190px;';
+    const addItem = (actionId, label, icon, fn, disabled) => {
+      const row = document.createElement('div');
+      row.className = 'ab-dropdown-item';
+      row.dataset.e2eId = `fixed-right-rail-tool-menu-${tab?.type || 'tool'}-${actionId}`;
+      row.setAttribute('role', 'menuitem');
+      if (disabled) {
+        row.style.opacity = '0.5';
+        row.style.cursor = 'default';
+        row.setAttribute('aria-disabled', 'true');
+      }
+      const iconEl = document.createElement('span');
+      iconEl.className = 'gb-rail-app-menu-icon';
+      iconEl.innerHTML = _railIcon(icon, 16);
+      const labelEl = document.createElement('span');
+      labelEl.className = 'gb-rail-app-menu-label';
+      labelEl.textContent = label;
+      row.appendChild(iconEl);
+      row.appendChild(labelEl);
+      if (!disabled) {
+        row.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          menu.remove();
+          fn();
+        });
+      }
+      menu.appendChild(row);
+    };
+    const standaloneUrl = _rightRailStandaloneUrl(tab);
+    addItem('open-sidebar', '右サイドバーで開く', tab?.type || 'panelRight', activateFn);
+    addItem('open-standalone', '単独アプリとして起動', 'externalLink', () => _openStandaloneUrl(standaloneUrl), !standaloneUrl);
+    document.body.appendChild(menu);
+    const anchor = e.currentTarget || e.target;
+    if (anchor && typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    setTimeout(() => {
+      const close = (ev) => {
+        if (!menu.contains(ev.target)) {
+          menu.remove();
+          document.removeEventListener('pointerdown', close, true);
+        }
+      };
+      document.addEventListener('pointerdown', close, true);
+    }, 0);
+  }
+
+  function _appendLeftRailApps(dockBar) {
+    _appendRailSeparator(dockBar);
+    _LEFT_APP_ITEMS.forEach((item) => {
+      const btn = _railButton('gb-dock-icon gb-dock-rail-app', item.icon, `${item.label}をメインパネルで開く`, () => {
+        _openRailAppInMain(item.type);
+      });
+      btn.dataset.e2eId = `fixed-left-rail-app-${item.type}`;
+      btn.setAttribute('aria-haspopup', 'menu');
+      btn.addEventListener('contextmenu', (e) => _showRailAppMenu(e, item));
+      if (typeof addLongPressHandler === 'function') {
+        addLongPressHandler(btn, (e) => _showRailAppMenu(e, item));
+      }
+      dockBar.appendChild(btn);
+    });
+  }
+
   function renderDock(panelsetNode, depth) {
     const col = document.createElement('div');
     col.className = 'gb-column gb-dock';
+    const fixedSide = _fixedDockSide(panelsetNode);
+    if (fixedSide) {
+      col.classList.add('gb-dock-fixed', 'gb-dock-fixed-' + fixedSide);
+      col.dataset.fixedDockSide = fixedSide;
+    }
     if (panelsetNode.collapsed) col.classList.add('gb-dock-collapsed');
     col.dataset.columnNodeId = panelsetNode.id || '';
     col.dataset.panelsetId = panelsetNode.id || '';
@@ -642,7 +912,7 @@
     // groups が 1 件だけなら、それが pane の複数タブでも split でも通常カラムとして扱い、
     // ドックバーは描画しない。ドックバーは複数カラム/group を重ねた panelset のための UI。
     const _groups = Array.isArray(panelsetNode.groups) ? panelsetNode.groups : [];
-    const _isSingleGroupExpanded = _groups.length === 1 && !panelsetNode.collapsed;
+    const _isSingleGroupExpanded = _groups.length === 1 && !panelsetNode.collapsed && !fixedSide;
 
     if (_isSingleGroupExpanded) {
       const body = document.createElement('div');
@@ -663,31 +933,43 @@
     // ==== ドックバー（右32px 常設） ====
     const dockBar = document.createElement('div');
     dockBar.className = 'gb-dock-bar';
+    if (fixedSide) dockBar.classList.add('gb-dock-bar-fixed', 'gb-dock-bar-' + fixedSide);
     dockBar.dataset.panelsetId = panelsetNode.id || '';
 
-    // ドラッグハンドル
-    const dragHandle = document.createElement('span');
-    dragHandle.className = 'gb-dock-bar-handle';
-    dragHandle.draggable = true;
-    dragHandle.title = 'ドラッグ: ドック移動';
-    dragHandle.innerHTML = (typeof lucide === 'function') ? lucide('gripHorizontal', 14) : '::';
-    dragHandle.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
-    dragHandle.addEventListener('dragstart', (e) => {
-      e.stopPropagation();
-      try {
-        e.dataTransfer.setData('application/x-gb-column', JSON.stringify({ nodeId: panelsetNode.id }));
-        e.dataTransfer.effectAllowed = 'move';
-      } catch {}
-    });
-    dragHandle.addEventListener('dragend', () => {
-      if (typeof GBDocking !== 'undefined' && typeof GBDocking.hideIndicator === 'function') {
-        GBDocking.hideIndicator();
-      }
-    });
-    dockBar.appendChild(dragHandle);
+    if (fixedSide) {
+      dockBar.appendChild(_renderRailToggle(panelsetNode, fixedSide));
+      if (fixedSide === 'left') _appendLeftRailApps(dockBar);
+      else _appendRailSeparator(dockBar);
+    } else {
+      // ドラッグハンドル
+      const dragHandle = document.createElement('span');
+      dragHandle.className = 'gb-dock-bar-handle';
+      dragHandle.draggable = _isFreeLayoutUiEnabled();
+      dragHandle.title = 'ドラッグ: ドック移動';
+      dragHandle.innerHTML = (typeof lucide === 'function') ? lucide('gripHorizontal', 14) : '::';
+      dragHandle.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+      dragHandle.addEventListener('dragstart', (e) => {
+        if (!_isFreeLayoutUiEnabled()) {
+          e.preventDefault();
+          return;
+        }
+        e.stopPropagation();
+        try {
+          e.dataTransfer.setData('application/x-gb-column', JSON.stringify({ nodeId: panelsetNode.id }));
+          e.dataTransfer.effectAllowed = 'move';
+        } catch {}
+      });
+      dragHandle.addEventListener('dragend', () => {
+        if (typeof GBDocking !== 'undefined' && typeof GBDocking.hideIndicator === 'function') {
+          GBDocking.hideIndicator();
+        }
+      });
+      if (_isFreeLayoutUiEnabled()) dockBar.appendChild(dragHandle);
+    }
 
     // Phase 4: ドックバー本体にドロップで groups 末尾に挿入
     dockBar.addEventListener('dragover', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       const types = e.dataTransfer?.types;
       const isGroup = types?.includes?.('application/x-gb-panelset-group');
       if (!isGroup) return;
@@ -697,6 +979,7 @@
       e.dataTransfer.dropEffect = 'move';
     });
     dockBar.addEventListener('drop', (e) => {
+      if (!_isFreeLayoutUiEnabled()) return;
       const types = e.dataTransfer?.types;
       const isGroup = types?.includes?.('application/x-gb-panelset-group');
       if (!isGroup) return;
@@ -724,14 +1007,16 @@
 
     // ==== 各 group 分の見出し + パネルアイコン ====
     let _totalIconCount = 0;
-    groups.forEach((g) => {
+    if (fixedSide === 'left') {
+      // 左レールはフォルダツリー開閉とメインアプリ起動だけに限定する。
+    } else groups.forEach((g) => {
       if (!g?.root) return;
       const isActiveGroup = g.id === panelsetNode.activeGroupId;
 
       // 各 group の間には視覚的な区切りとして空のスペーサーのみ置く。
       // 以前は clickable なドックタブ見出しだったが、タブアイコンクリックで
       // switchGroup されるためボタンとしては不要（スペーサーだけ残す）。
-      if (multiGroup) {
+      if (multiGroup && !fixedSide) {
         const spacer = document.createElement('div');
         spacer.className = 'gb-dock-tab-spacer';
         dockBar.appendChild(spacer);
@@ -744,7 +1029,7 @@
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'gb-dock-icon';
-          const isActiveTab = (pane.activeTabIndex === tabIdx) && isActiveGroup && !panelsetNode.collapsed;
+          const isActiveTab = (pane.activeTabIndex === tabIdx) && isActiveGroup && (fixedSide || !panelsetNode.collapsed);
           if (isActiveTab) btn.classList.add('active');
           btn.dataset.paneId = pane.id;
           btn.dataset.tabId = tab.id || '';
@@ -755,11 +1040,25 @@
           btn.innerHTML = _dockTabTypeIcon(tab.type, 18);
           const preserveWorkActive = typeof GBLayout?.isPassivePaneType === 'function'
             && GBLayout.isPassivePaneType(tab.type, tab, pane);
+          const activateFixedTab = () => {
+            panelsetNode.activeGroupId = g.id;
+            pane.activeTabIndex = tabIdx;
+            if (panelsetNode.collapsed) {
+              _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
+            } else {
+              if (typeof GBLayout?.render === 'function') GBLayout.render();
+              if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+            }
+          };
           // Phase 5: D4 仕様 (click/dblclick 分岐)
           //   折りたたみ時: click=ポップアップ / dblclick=展開+アクティブ化
           //   展開時:       click=アクティブ化 / dblclick=折りたたみ
           btn.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (fixedSide) {
+              activateFixedTab();
+              return;
+            }
             if (panelsetNode.collapsed) {
               // R7: 単体パネルのみポップアップ（ドック全体ではなく、対応タブをアクティブにしてポップアップ）
               if (typeof GBDockPopup?.open === 'function') {
@@ -781,6 +1080,10 @@
             }
           });
           btn.addEventListener('dblclick', (e) => {
+            if (!_isFreeLayoutUiEnabled()) {
+              e.stopPropagation();
+              return;
+            }
             e.stopPropagation();
             if (typeof GBDockPopup?.close === 'function') GBDockPopup.close();
             if (panelsetNode.collapsed) {
@@ -802,6 +1105,13 @@
               if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
             }
           });
+          if (fixedSide === 'right') {
+            btn.setAttribute('aria-haspopup', 'menu');
+            btn.addEventListener('contextmenu', (e) => _showRightRailToolMenu(e, activateFixedTab, tab));
+            if (typeof addLongPressHandler === 'function') {
+              addLongPressHandler(btn, (e) => _showRightRailToolMenu(e, activateFixedTab, tab));
+            }
+          }
           dockBar.appendChild(btn);
           _totalIconCount += 1;
         });
@@ -820,12 +1130,13 @@
     if (active?.root && typeof GBLayout?.renderNode === 'function') {
       body.appendChild(GBLayout.renderNode(active.root, depth));
     }
+    if (fixedSide === 'left') col.appendChild(dockBar);
     col.appendChild(body);
     // ドックバーは右側に配置（body を先に、dockBar を後に追加）。
     // ただしアイコンが 1 件も無い場合（例: group.root が全てネスト panelset で
     // そちらが自前のドックバーを持つケース）は外側ドックバーを描画しない。
     // これを描画すると空の 32px バーが並び「ドックバーが二列」に見えてしまう。
-    if (_totalIconCount > 0) {
+    if (fixedSide === 'right' || (!fixedSide && _totalIconCount > 0)) {
       col.appendChild(dockBar);
     }
     return col;

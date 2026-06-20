@@ -1,6 +1,7 @@
 /* シート pivot 同期・relation キャッシュ helper — gb-db-props.js から分離 */
 
 const _relationCache = {};
+const _relationMapPromises = {};
 
 function _buildRelationMapEntry(data) {
   const entities = data?.entities || {};
@@ -21,6 +22,18 @@ function _setRelationMapCache(relationDbPath, data) {
   return entry;
 }
 
+function _getCachedRelationMap(relationDbPath) {
+  const cached = relationDbPath ? _relationCache[relationDbPath] : null;
+  return cached && cached.idToName && cached.nameToId ? cached : null;
+}
+
+function _refreshRelationMapSoon(relationDbPath) {
+  if (!relationDbPath || _relationMapPromises[relationDbPath]) return;
+  setTimeout(() => {
+    try { _getRelationMap(relationDbPath); } catch {}
+  }, 0);
+}
+
 async function _getRelationMap(relationDbPath) {
   const now = Date.now();
   const cached = _relationCache[relationDbPath];
@@ -29,12 +42,18 @@ async function _getRelationMap(relationDbPath) {
   } else if (cached && now - cached.timestamp < 30000) {
     return cached;
   }
-  try {
-    const data = await apiFetch('/pivot?path=' + encodeURIComponent(relationDbPath));
-    return _setRelationMapCache(relationDbPath, data) || _buildRelationMapEntry({});
-  } catch {
-    return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
-  }
+  if (_relationMapPromises[relationDbPath]) return _relationMapPromises[relationDbPath];
+  _relationMapPromises[relationDbPath] = (async () => {
+    try {
+      const data = await apiFetch('/pivot?path=' + encodeURIComponent(relationDbPath));
+      return _setRelationMapCache(relationDbPath, data) || _buildRelationMapEntry({});
+    } catch {
+      return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
+    } finally {
+      delete _relationMapPromises[relationDbPath];
+    }
+  })();
+  return _relationMapPromises[relationDbPath];
 }
 
 function _getRelationDisplayInfo(idOrName, relationDbPath) {
@@ -72,7 +91,9 @@ async function _preloadRelationMapsForDb(dbPath, pivotData) {
   Object.values(propTypes || {}).forEach(ptc => {
     if (!ptc) return;
     if (ptc.type === 'relation' || ptc.type === 'multi-relation') {
-      const relDb = (ptc.relationDb === '' ? dbPath : ptc.relationDb) || '';
+      const relDb = typeof _dbResolveRelationDbPath === 'function'
+        ? _dbResolveRelationDbPath(dbPath, ptc)
+        : ((ptc.relationDb === '' ? dbPath : ptc.relationDb) || '');
       if (relDb && relDb !== dbPath) targets.add(relDb);
     } else if (ptc.type === 'multi-source-relation') {
       (ptc.sources || []).forEach(src => {
@@ -356,25 +377,34 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   if (!td || !container || !dbPath) return false;
   const entityName = _getPivotEntityName(entityPath);
   const entityData = _getPivotEntityData(entityPath, ctx) || {};
-  const thumbSize = getThumbnailSize(dbPath);
-  let values = filterValues(entityData[propName] || []);
-  const advFilters = getAdvancedFilters(dbPath);
+  const thumbSize = getThumbnailSize(dbPath, { ctx });
+  let values = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+  const advFilters = getAdvancedFilters(dbPath, { ctx });
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   container.innerHTML = '';
   values.forEach(cellVal => {
-    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc));
+    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
   });
   const statusOn = getStatusEnabled(dbPath);
-  if (statusOn || values.length === 0) {
+  const hasVisibleValue = values.some(v => String(v?.value || '').trim() !== '');
+  if (statusOn || values.length === 0 || (ptc?.type === 'select' && !hasVisibleValue)) {
     const addBtn = document.createElement('span');
     addBtn.className = 'cell-add-btn';
     addBtn.innerHTML = lucide('plus', 14);
-    addBtn.title = '候補値を追加';
-    addBtn.addEventListener('click', () => startCellInlineAdd(td, entityPath, entityName, propName));
+    addBtn.title = ptc?.type === 'select' ? '値を選択' : '候補値を追加';
+    addBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    addBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startCellInlineAdd(td, entityPath, entityName, propName);
+    });
     container.appendChild(addBtn);
   }
   const cellValues = values.map(v => v.value).join(', ');
-  const cc = getCellColor(cellValues, propName, dbPath);
+  const cc = getCellColor(cellValues, propName, dbPath, ctx);
   if (cc) {
     td.style.background = cc.bg;
     td.style.color = cc.fg;
@@ -389,14 +419,14 @@ function _shouldReloadPivotAfterRelationChange(propName, ptc, affectedProps, opt
   const dbPath = _dbPivotPathForContext(options.ctx, options.dbPath);
   if (!dbPath) return true;
   const affected = new Set([propName, ...(affectedProps || [])]);
-  const groupBy = getGroupBy(dbPath);
+  const groupBy = getGroupBy(dbPath, options.ctx || null);
   if (groupBy && affected.has(groupBy)) return true;
   if (ptc && ptc.pairWith && ptc.relationDb === '') return true;
   const sortCfg = typeof getDbSortConfig === 'function'
-    ? getDbSortConfig(dbPath)
+    ? getDbSortConfig(dbPath, { ctx: options.ctx || null })
     : (typeof getDbViewConfig === 'function' && getDbViewConfig(dbPath))?.sortConfig;
   if (sortCfg && affected.has(sortCfg.key)) return true;
-  const advFilters = getAdvancedFilters(dbPath) || [];
+  const advFilters = getAdvancedFilters(dbPath, { ctx: options.ctx || null }) || [];
   return advFilters.some(f => f?.property === '*' || affected.has(f?.property));
 }
 
@@ -428,7 +458,7 @@ function _tryRefreshPivotCellLocal(td, entityPath, propName, options = {}) {
   if (_shouldReloadPivotAfterRelationChange(propName, ptc, [], { dbPath, ctx })) return false;
   if (ptc && ['formula', 'rollup', 'chat', 'multi-source-relation', 'button'].includes(ptc.type)) return false;
   const sortCfg = typeof getDbSortConfig === 'function'
-    ? getDbSortConfig(dbPath)
+    ? getDbSortConfig(dbPath, { ctx })
     : (typeof getDbViewConfig === 'function' && getDbViewConfig(dbPath))?.sortConfig;
   if (sortCfg && sortCfg.key === propName) return false;
   if (!_refreshPivotRelationCell(td, entityPath, propName, ptc, { dbPath, ctx })) return false;
@@ -487,7 +517,7 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
     const metaVal = entityData[metaKey] || '';
     const span = document.createElement('span');
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
-    if (ptc.source === 'modified' && metaVal) {
+    if ((ptc.source === 'created' || ptc.source === 'modified') && metaVal) {
       span.textContent = typeof _formatDateDisplay === 'function'
         ? _formatDateDisplay(metaVal, ptc)
         : metaVal.replace('T', ' ').substring(0, 16);
@@ -526,7 +556,7 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
     span.textContent = '...';
     container.appendChild(span);
     const entitiesMap = pivotData?.entities || {};
-    calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath).then(val => {
+    calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath, options.ctx?.filter).then(val => {
       const displayValue = val === '-' ? '-' : String(val);
       span.textContent = displayValue;
       span.style.color = 'var(--fg)';
@@ -541,31 +571,38 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
   }
 }
 
-function _removeLocalPivotValue(val, entityPath, propName) {
-  if (!val || !state.pivotData?.entities) return;
+function _removeLocalPivotValue(val, entityPath, propName, options = {}) {
+  if (!val) return;
+  const dbPath = options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : '');
+  const ctx = options.ctx || (dbPath && typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
   const entName = entityPath.replace(/\.md$/, '').split('/').pop();
-  const entData = state.pivotData.entities[entName];
-  if (!entData || !Array.isArray(entData[propName])) return;
-  const idx = entData[propName].indexOf(val);
-  if (idx >= 0) entData[propName].splice(idx, 1);
+  const targets = [];
+  if (ctx?.pivotData?.entities) targets.push(ctx.pivotData);
+  if (state.pivotData?.entities && (!dbPath || state.currentDbPath === dbPath)) targets.push(state.pivotData);
+  targets.forEach(pivotData => {
+    const entData = pivotData.entities?.[entName];
+    if (!entData || !Array.isArray(entData[propName])) return;
+    const idx = entData[propName].indexOf(val);
+    if (idx >= 0) entData[propName].splice(idx, 1);
+  });
 }
 
 function _refreshAfterCellEdit(anchorEl, entityPath, propName) {
   const ctx = _dbPivotContextFromTarget(anchorEl, { entityPath });
   const dbPath = _dbPivotPathForContext(ctx, typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : '');
-  if (state.view === 'entity' && state.currentEntityPath) {
+  if (!dbPath && state.view === 'entity' && state.currentEntityPath) {
     if (typeof selectEntity === 'function') selectEntity(state.currentEntityPath);
     return;
   }
   const currentMode = dbPath && typeof getCurrentViewMode === 'function'
-    ? getCurrentViewMode(dbPath)
+    ? (ctx?.viewMode || getCurrentViewMode(dbPath, { ctx }))
     : state.view;
-  if ((state.view === 'timeline' || currentMode === 'timeline') && dbPath) {
+  if ((currentMode === 'timeline' || currentMode === 'calendar' || currentMode === 'tasks' || currentMode === 'shifts') && dbPath) {
     if (typeof renderTimeline === 'function') renderTimeline(ctx);
     else selectDatabase(dbPath, ctx, { silent: true });
     return;
   }
-  if (state.view !== 'pivot' || !dbPath) return;
+  if (currentMode !== 'pivot' || !dbPath) return;
   const td = anchorEl?.closest?.('td');
   if (td && entityPath && _tryRefreshPivotCellLocal(td, entityPath, propName, { dbPath, ctx })) return;
   selectDatabase(dbPath, ctx, { silent: true });
@@ -573,7 +610,9 @@ function _refreshAfterCellEdit(anchorEl, entityPath, propName) {
 
 async function _validateCascadeValue(currentId, entityPath, ptc, parentValuesOverride, options = {}) {
   const dbPath = _dbPivotPathForContext(options.ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
-  const relDb = (ptc.relationDb === '' ? dbPath : ptc.relationDb) || '';
+  const relDb = typeof _dbResolveRelationDbPath === 'function'
+    ? _dbResolveRelationDbPath(dbPath, ptc)
+    : ((ptc.relationDb === '' ? dbPath : ptc.relationDb) || '');
   if (!currentId || !ptc.cascadeFrom || !relDb) return true;
   const parentValues = Array.isArray(parentValuesOverride)
     ? parentValuesOverride

@@ -431,15 +431,23 @@ async function showFileStylePresetApplyDialog() {
   const p = presets.find(x => x.name === picked);
   if (!p) { showStatus('プリセット「' + picked + '」が見つかりません', true); return; }
   const style = p.style || p.theme || {};
+  const applyWithHistory = async (nextStyle) => {
+    if (ctx && typeof _fsApplyStyleWithHistory === 'function') {
+      const adapter = typeof _fsGetAdapter === 'function' ? _fsGetAdapter(ctx) : null;
+      await _fsApplyStyleWithHistory(ctx, adapter, nextStyle, 'プリセット適用', picked);
+      return true;
+    }
+    return false;
+  };
   if (Object.keys(style).length === 0) {
-    if (typeof _saveFileTheme === 'function') _saveFileTheme(null);
-    if (ctx !== 'scriptnote') {
+    if (!await applyWithHistory(null) && typeof _saveFileTheme === 'function') _saveFileTheme(null);
+    if (ctx !== 'scriptnote' && typeof _fsApplyStyleWithHistory !== 'function') {
       const panelId = _getActivePanelId();
       if (panelId) clearFileStyleForPanel(panelId);
     }
   } else {
-    if (typeof _saveFileTheme === 'function') _saveFileTheme(style);
-    if (ctx !== 'scriptnote') {
+    if (!await applyWithHistory(style) && typeof _saveFileTheme === 'function') _saveFileTheme(style);
+    if (ctx !== 'scriptnote' && typeof _fsApplyStyleWithHistory !== 'function') {
       const panelId = _getActivePanelId();
       if (panelId) applyFileStyleToPanel(style, panelId);
     }
@@ -453,10 +461,15 @@ function setDefaultFileStyle() {
   showStatus('現在のスタイルを既定に設定しました');
 }
 
-function resetCurrentFileStyle() {
+async function resetCurrentFileStyle() {
   const ctx = _getCurrentFileStyleContext();
-  if (typeof _saveFileTheme === 'function') _saveFileTheme(null);
-  if (ctx !== 'scriptnote') {
+  if (ctx && typeof _fsApplyStyleWithHistory === 'function') {
+    const adapter = typeof _fsGetAdapter === 'function' ? _fsGetAdapter(ctx) : null;
+    await _fsApplyStyleWithHistory(ctx, adapter, null, 'スタイルリセット');
+  } else if (typeof _saveFileTheme === 'function') {
+    _saveFileTheme(null);
+  }
+  if (ctx !== 'scriptnote' && typeof _fsApplyStyleWithHistory !== 'function') {
     const panelId = _getActivePanelId();
     if (panelId) clearFileStyleForPanel(panelId);
   }

@@ -6,15 +6,15 @@
   if (typeof window === 'undefined') return;
 
   const CALENDAR_STYLE_KEY = 'gb:calendar-panel-style';
-  const CALENDAR_THEME_TAB = 'カレンダー';
+  const CALENDAR_THEME_TAB = 'スケジューラー';
   const CALENDAR_CTX = 'calendar';
 
   const CALENDAR_STYLE_ROWS = [
-    { label: '全体', fg: '--cal-fg', bg: '--cal-bg', text: 'カレンダー', font: '--cal-font-family' },
+    { label: '全体', fg: '--cal-fg', bg: '--cal-bg', text: 'スケジューラー', font: '--cal-font-family' },
     { label: 'ツールバー', fg: '--cal-toolbar-fg', bg: '--cal-toolbar-bg', text: 'ツールバー' },
     { label: 'サイドバー', fg: '--cal-sidebar-fg', bg: '--cal-sidebar-bg', text: 'サイドバー' },
-    { label: 'コンテンツ', fg: '--cal-fg', text: 'カレンダー面' },
-    { label: '右パネル', fg: '--cal-panel-fg', bg: '--cal-panel-bg', text: 'オプション' },
+    { label: 'コンテンツ', fg: '--cal-fg', text: 'スケジューラー面' },
+    { label: '右サイドバー', fg: '--cal-panel-fg', bg: '--cal-panel-bg', text: 'オプション' },
     { label: '見出し', fg: '--cal-header-fg', bg: '--cal-header-bg', text: '曜日見出し' },
     { label: '土曜', fg: '--cal-saturday-fg', text: '土' },
     { label: '日曜', fg: '--cal-sunday-fg', text: '日' },
@@ -24,15 +24,17 @@
     { label: '時刻', fg: '--cal-time-fg', text: '13:00' },
     { label: '罫線', line: '--cal-grid-line', text: '━━' },
     { label: 'イベント', fg: '--cal-event-fg', bg: '--cal-event-bg', line: '--cal-event-border', text: 'イベント' },
+    { label: '勤務シフト', fg: '--cal-event-fg', bg: '--cal-shift-work-bg', text: '勤務' },
+    { label: '休憩シフト', fg: '--cal-event-fg', bg: '--cal-shift-break-bg', text: '休憩' },
     { label: 'イベント配置', numbers: [{ label: '右余白', key: '--cal-event-create-gap', min: 0, max: 80, step: 1, unit: 'px', fallback: 18 }], text: '18px' },
     { label: '現在時刻バー', fg: '--cal-now-line-color', text: '━━' },
     { label: '入力欄', fg: '--cal-input-fg', bg: '--cal-input-bg', text: '入力欄' },
     { label: '操作ボタン', fg: '--cal-control-fg', bg: '--cal-control-bg', line: '--cal-control-border', text: 'ボタン' },
     { label: '補助表示', fg: '--cal-muted-fg', bg: '--cal-avatar-bg', text: '補助表示' },
     { label: 'アクセント', fg: '--cal-accent-fg', bg: '--cal-accent', text: '選択' },
-    { label: 'タスク列', bg: '--cal-task-column-bg', text: '列' },
-    { label: 'タスク見出し', fg: '--cal-task-fg', bg: '--cal-task-header-bg', text: '見出し' },
-    { label: 'タスク', fg: '--cal-task-fg', bg: '--cal-task-bg', line: '--cal-task-border', text: 'タスク' },
+    { label: 'ToDo列', bg: '--cal-task-column-bg', text: '列' },
+    { label: 'ToDo見出し', fg: '--cal-task-fg', bg: '--cal-task-header-bg', text: '見出し' },
+    { label: 'ToDo', fg: '--cal-task-fg', bg: '--cal-task-bg', line: '--cal-task-border', text: 'ToDo' },
     { label: '優先度: 緊急', bg: '--cal-task-priority-urgent-bg', text: '緊急' },
     { label: '優先度: 高', bg: '--cal-task-priority-high-bg', text: '高' },
     { label: '優先度: 中', bg: '--cal-task-priority-medium-bg', text: '中' },
@@ -65,12 +67,14 @@
       { key: '--cal-event-bg', label: 'イベント背景', type: 'color' },
       { key: '--cal-event-fg', label: 'イベント文字', type: 'color' },
       { key: '--cal-event-border', label: 'イベント枠線', type: 'color' },
+      { key: '--cal-shift-work-bg', label: '勤務シフト背景', type: 'color' },
+      { key: '--cal-shift-break-bg', label: '休憩シフト背景', type: 'color' },
       { key: '--cal-event-create-gap', label: 'イベント右余白', type: 'pxtext' },
-      { key: '--cal-task-column-bg', label: 'タスク列背景', type: 'color' },
-      { key: '--cal-task-header-bg', label: 'タスク見出し背景', type: 'color' },
-      { key: '--cal-task-bg', label: 'タスク背景', type: 'color' },
-      { key: '--cal-task-fg', label: 'タスク文字', type: 'color' },
-      { key: '--cal-task-border', label: 'タスク枠線', type: 'color' },
+      { key: '--cal-task-column-bg', label: 'ToDo列背景', type: 'color' },
+      { key: '--cal-task-header-bg', label: 'ToDo見出し背景', type: 'color' },
+      { key: '--cal-task-bg', label: 'ToDo背景', type: 'color' },
+      { key: '--cal-task-fg', label: 'ToDo文字', type: 'color' },
+      { key: '--cal-task-border', label: 'ToDo枠線', type: 'color' },
       { key: '--cal-task-priority-urgent-bg', label: '優先度: 緊急 背景', type: 'color' },
       { key: '--cal-task-priority-high-bg', label: '優先度: 高 背景', type: 'color' },
       { key: '--cal-task-priority-medium-bg', label: '優先度: 中 背景', type: 'color' },
@@ -197,6 +201,8 @@
     fallback('--cal-event-bg', ['--ui-accent', '--accent'], '#2563eb');
     fallback('--cal-event-fg', ['--ui-fg-strong', '--fg'], '#ffffff');
     fallback('--cal-event-border', ['--border'], 'rgba(0,0,0,0.25)');
+    fallback('--cal-shift-work-bg', ['--orange'], '#d19a66');
+    fallback('--cal-shift-break-bg', ['--blue'], '#6a9ad1');
     fallback('--cal-event-create-gap', [], '18px');
     fallback('--cal-task-column-bg', ['--bg2'], '#252525');
     fallback('--cal-task-header-bg', ['--bg3', '--bg2'], '#2d2d2d');
@@ -248,6 +254,21 @@
     return vars;
   }
 
+  function _calLocalCustomStyleFromThemeId(id) {
+    const sourceId = String(id || '');
+    if (!sourceId || _calIsLocalCustomThemeId(sourceId) || typeof MeldexThemeManager === 'undefined' || typeof MeldexThemeManager.getThemeById !== 'function') return null;
+    const themeDef = MeldexThemeManager.getThemeById(sourceId);
+    const vars = {
+      ..._calDerivedThemeVars(themeDef?.ui?.cssVars || {}),
+      ..._calPaletteVars(themeDef),
+      __themeId: typeof _FILE_STYLE_LOCAL_CUSTOM_THEME_ID !== 'undefined' ? _FILE_STYLE_LOCAL_CUSTOM_THEME_ID : '__fileCustomTheme',
+      __themeName: String(themeDef?.name || 'カスタムテーマ'),
+      __themeSourceId: sourceId,
+    };
+    ['--cal-content-bg', '--cal-scroll-thumb', '--cal-scroll-thumb-hover'].forEach(key => { delete vars[key]; });
+    return vars;
+  }
+
   function _calAppliedVars(style) {
     const saved = style || _calReadStyle();
     const vars = { ..._calThemeVars(saved), ...saved };
@@ -257,7 +278,9 @@
     const out = {};
     Object.entries(vars).forEach(([key, value]) => {
       if (key === '__themeId') return;
-      if (!String(key).startsWith('--cal-') && !String(key).startsWith('--theme-palette-') && key !== '--theme-os-accent' && key !== '--theme-os-accent-text') return;
+      // --theme-palette-* を body に適用するとアプリ全体のパレット参照（タブ色分け等）を
+      // スケジューラー側の設定で覆い隠してしまうため、body 適用対象から除外する（保存は維持）
+      if (!String(key).startsWith('--cal-') && key !== '--theme-os-accent' && key !== '--theme-os-accent-text') return;
       if (key === '--cal-content-bg' || key === '--cal-scroll-thumb' || key === '--cal-scroll-thumb-hover') return;
       if (value !== null && value !== undefined && value !== '') out[key] = value;
     });
@@ -396,7 +419,7 @@
               { label: 'ツールバー', fields: pick(['--cal-toolbar-fg', '--cal-toolbar-bg']) },
               { label: 'サイドバー', fields: pick(['--cal-sidebar-fg', '--cal-sidebar-bg']) },
               { label: 'コンテンツ', fields: pick(['--cal-fg']) },
-              { label: '右パネル', fields: pick(['--cal-panel-fg', '--cal-panel-bg']) },
+              { label: '右サイドバー', fields: pick(['--cal-panel-fg', '--cal-panel-bg']) },
               { label: '見出し', fields: pick(['--cal-header-fg', '--cal-header-bg']) },
               { label: '土日文字', fields: pick(['--cal-saturday-fg', '--cal-sunday-fg']) },
               { label: 'セル', fields: pick(['--cal-cell-bg']) },
@@ -405,15 +428,16 @@
               { label: '時刻', fields: pick(['--cal-time-fg']) },
               { label: '罫線', fields: pick(['--cal-grid-line']) },
               { label: 'イベント', fields: pick(['--cal-event-fg', '--cal-event-bg', '--cal-event-border']) },
+              { label: 'シフト', fields: pick(['--cal-shift-work-bg', '--cal-shift-break-bg']) },
               { label: 'イベント配置', fields: pick(['--cal-event-create-gap']) },
               { label: '現在時刻バー', fields: pick(['--cal-now-line-color']) },
               { label: '入力欄', fields: pick(['--cal-input-fg', '--cal-input-bg']) },
               { label: '操作ボタン', fields: pick(['--cal-control-fg', '--cal-control-bg', '--cal-control-border']) },
               { label: '補助表示', fields: pick(['--cal-muted-fg', '--cal-avatar-bg']) },
               { label: 'アクセント', fields: pick(['--cal-accent', '--cal-accent-fg']) },
-              { label: 'タスク列', fields: pick(['--cal-task-column-bg', '--cal-task-header-bg']) },
-              { label: 'タスク', fields: pick(['--cal-task-fg', '--cal-task-bg', '--cal-task-border']) },
-              { label: 'タスク優先度', fields: pick(['--cal-task-priority-urgent-bg', '--cal-task-priority-high-bg', '--cal-task-priority-medium-bg']) },
+              { label: 'ToDo列', fields: pick(['--cal-task-column-bg', '--cal-task-header-bg']) },
+              { label: 'ToDo', fields: pick(['--cal-task-fg', '--cal-task-bg', '--cal-task-border']) },
+              { label: 'ToDo優先度', fields: pick(['--cal-task-priority-urgent-bg', '--cal-task-priority-high-bg', '--cal-task-priority-medium-bg']) },
               { label: '打刻', fields: pick(['--cal-clock-fg', '--cal-clock-bg']) },
               { label: 'ミニカレンダー選択', fields: pick(['--cal-mini-selected-fg', '--cal-mini-selected-bg']) },
             ],
@@ -430,8 +454,34 @@
         const el = document.getElementById('detail-tab-file-style');
         el?.setAttribute('data-calendar-style', '1');
         const desc = el?.querySelector?.('.gb-section-desc');
-        if (desc) desc.textContent = '対象: カレンダー';
+        if (desc) desc.textContent = '対象: スケジューラー';
         applyCalendarPanelStyle();
+      };
+    }
+
+    if (typeof fileThemeSelect === 'function') {
+      const original = fileThemeSelect;
+      fileThemeSelect = function(ctx, id) {
+        if (ctx !== CALENDAR_CTX) {
+          original(ctx, id);
+          return;
+        }
+        const adapter = typeof _fsGetAdapter === 'function' ? _fsGetAdapter(CALENDAR_CTX) : _calGetAdapter();
+        if (!adapter) return;
+        const nextId = String(id || '');
+        if (!nextId) {
+          if (typeof _fsPersistStyleViaAdapter === 'function') _fsPersistStyleViaAdapter(CALENDAR_CTX, adapter, null, { label: 'テーマ解除' });
+          else adapter.saveStyle?.(null);
+          applyCalendarPanelStyle();
+          _calRenderFileStyleTab();
+          return;
+        }
+        const nextStyle = _calLocalCustomStyleFromThemeId(nextId);
+        if (!nextStyle) return;
+        if (typeof _fsPersistStyleViaAdapter === 'function') _fsPersistStyleViaAdapter(CALENDAR_CTX, adapter, nextStyle, { label: 'テーマ変更' });
+        else adapter.saveStyle?.(nextStyle);
+        applyCalendarPanelStyle();
+        _calRenderFileStyleTab();
       };
     }
 
@@ -477,7 +527,7 @@
       _calRenderFileStyleTab();
       if (typeof switchDetailTab === 'function') {
         const active = detailEl.querySelector('.detail-tab.gb-inner-tab-active')?.dataset?.detailTab || '';
-        if (!['calendar-today', 'file-style'].includes(active)) switchDetailTab('file-style');
+        if (!['calendar-today', 'calendar-settings', 'calendar-production', 'file-style'].includes(active)) switchDetailTab('file-style');
       }
     };
 

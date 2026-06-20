@@ -62,7 +62,7 @@ function _bdOpenExternalActionUrl(path) {
   return false;
 }
 
-const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board']);
+const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
 const _bdResolvedLinkTypeCache = new Map();
 const _bdPreviewSummaryCache = new Map();
 let _bdLinkOpenSeq = 0;
@@ -200,9 +200,11 @@ function _bdInferLinkType(path, explicitType) {
   const lower = String(path || '').trim().toLowerCase();
   if (_bdIsExternalUrl(lower)) return 'html';
   const ext = _bdLinkExt(lower);
-  if (lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
-  if (lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || ext === 'board') return 'board';
-  if (lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
+  if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json') || ext === 'board') return 'board';
+  if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+  if (ext === 'md' || ext === 'txt') return 'page';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
@@ -220,6 +222,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (_bdIsExternalUrl(nextPath)) return { type: 'html', label: nextLabel, path: nextPath, urlExternal: true };
   if (explicitType === 'scriptnote') return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (explicitType === 'board') return { type: 'board', label: nextLabel, path: nextPath };
+  if (explicitType === 'timer') return { type: 'timer', label: nextLabel, path: nextPath };
   if (explicitType === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (explicitType === 'html') return { type: 'html', label: nextLabel, path: nextPath };
   if (explicitType === 'entity') return { type: 'entity', label: nextLabel, path: nextPath };
@@ -235,12 +238,14 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (explicitType === 'media') {
     return { type: 'media', mediaType: _bdLinkMediaType(ext) || 'file', label: nextLabel, path: nextPath };
   }
-  if (lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return { type: 'scriptnote', label: nextLabel, path: nextPath };
-  if (lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return { type: 'board', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return { type: 'scriptnote', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return { type: 'board', label: nextLabel, path: nextPath };
   if (ext === 'board') return { type: 'board', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return { type: 'smart-db', label: nextLabel, path: nextPath };
+  if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return { type: 'timer', label: nextLabel, path: nextPath };
   if (ext === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (ext === 'html' || ext === 'htm') return { type: 'html', label: nextLabel, path: nextPath };
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
+  if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(ext)) return { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
   if (ext === 'pdf') return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
@@ -335,6 +340,15 @@ async function bdSyncLinkedSelectionToPane(path, label, linkType) {
 
 async function bdOpenLinkedPath(path, label, options) {
   const opts = options || {};
+  const standaloneType = _bdResolveOpenType(_bdInferLinkType(path, opts.linkType));
+  const standaloneOpenable = _bdIsExternalUrl(path) || ['page', 'scriptnote', 'smart-db', 'board', 'timer'].includes(standaloneType);
+  if (standaloneOpenable
+    && typeof window !== 'undefined'
+    && window.MeldexBoardStandalone
+    && typeof window.MeldexBoardStandalone.openLinkedPathExternally === 'function') {
+    const launched = await window.MeldexBoardStandalone.openLinkedPathExternally(path, label, { ...opts, linkType: standaloneType });
+    if (launched) return;
+  }
   const seq = ++_bdLinkOpenSeq;
   const entry = await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (seq !== _bdLinkOpenSeq) return;
@@ -350,6 +364,90 @@ async function bdOpenLinkedPathInCurrentPane(path, label, linkType) {
     return;
   }
   if (typeof openLink === 'function') openLink(path, label);
+}
+
+function _bdCollectPanesFromRoot(root, out) {
+  if (!root) return;
+  if (root.type === 'pane') {
+    out.push(root);
+    return;
+  }
+  if (Array.isArray(root.children)) root.children.forEach(child => _bdCollectPanesFromRoot(child, out));
+  if (Array.isArray(root.groups)) root.groups.forEach(group => _bdCollectPanesFromRoot(group?.root, out));
+}
+
+function _bdFindRightSidebarPaneByTabType(tabType) {
+  if (!tabType || typeof GBLayout === 'undefined' || !GBLayout.root) return null;
+  let found = null;
+  function walk(node) {
+    if (!node || found) return;
+    if (node.type === 'panelset' && node.meldexRole === 'right-sidebar' && Array.isArray(node.groups)) {
+      for (const group of node.groups) {
+        const panes = [];
+        _bdCollectPanesFromRoot(group?.root, panes);
+        for (const pane of panes) {
+          const tabIdx = (pane.tabs || []).findIndex(tab => tab.type === tabType);
+          if (tabIdx >= 0) {
+            found = { panelset: node, group, pane, tab: pane.tabs[tabIdx], tabIdx };
+            return;
+          }
+        }
+      }
+    }
+    if (Array.isArray(node.children)) node.children.forEach(walk);
+    if (Array.isArray(node.groups)) node.groups.forEach(group => walk(group?.root));
+  }
+  walk(GBLayout.root);
+  return found;
+}
+
+function _bdRevealRightSidebarTool(tabType) {
+  const match = _bdFindRightSidebarPaneByTabType(tabType);
+  if (!match) {
+    if (typeof toggleRightPanelTab === 'function') {
+      toggleRightPanelTab(tabType);
+      return _bdFindRightSidebarPaneByTabType(tabType)?.pane?.id || '';
+    }
+    return '';
+  }
+  match.panelset.activeGroupId = match.group.id;
+  match.pane.activeTabIndex = match.tabIdx;
+  if (match.panelset.collapsed && typeof GBLayout?.setNodeCollapsed === 'function') {
+    GBLayout.setNodeCollapsed(match.panelset.id, false, {
+      skipActivePaneCallback: true,
+    });
+  }
+  if (typeof GBTabs !== 'undefined' && typeof GBTabs.activateTab === 'function') {
+    GBTabs.activateTab(match.pane.id, match.tab.id, { preserveActivePane: true });
+  } else {
+    if (typeof GBLayout?.render === 'function') GBLayout.render();
+    if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
+  }
+  return match.pane.id || '';
+}
+
+function _bdMainPaneIdForLinkedOpen() {
+  if (typeof GBPaneDefaultLayout !== 'undefined' && typeof GBPaneDefaultLayout.resolveMainPaneId === 'function') {
+    const paneId = GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true });
+    if (paneId) return paneId;
+  }
+  return (typeof GBLayout !== 'undefined' ? GBLayout.activePane : '') || '';
+}
+
+async function openLinkedPathInMainPane(path, label, options) {
+  const opts = options || {};
+  if (!path) return false;
+  const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
+  if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
+  const paneId = _bdMainPaneIdForLinkedOpen();
+  if (!paneId) {
+    if (typeof navOpen === 'function') {
+      navOpen(entry);
+      return true;
+    }
+    return false;
+  }
+  return _bdActivateNavEntryInPane(paneId, entry, { forceTargetPane: true, preserveActivePane: false });
 }
 
 async function openLinkedPathInSubPanel(path, label, options) {
@@ -374,11 +472,123 @@ async function openLinkedPathInSubPanel(path, label, options) {
 }
 
 async function openLinkedPathInRightPane(path, label, options) {
-  return openLinkedPathInSubPanel(path, label, options);
+  const opts = options || {};
+  const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
+  if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
+  _bdRevealRightSidebarTool('preview');
+  const pane = document.getElementById('gb-preview-pane');
+  if (pane && typeof bdRenderLinkedPreview === 'function') {
+    await bdRenderLinkedPreview(entry.path || path || '', pane, opts.linkType || entry.mediaType || entry.type || '');
+    return true;
+  }
+  return openLinkedPathInSubPanel(path, label, { ...opts, entry });
 }
 
 function _bdOpenEntryInSubPanel(label, path, type) {
   openLinkedPathInSubPanel(path, label, { linkType: type });
+}
+
+function _bdStandaloneViewerUrl(entry) {
+  const path = entry?.path || '';
+  const mediaType = entry?.mediaType || _bdLinkMediaType(_bdLinkExt(path));
+  if (entry?.type === 'media' || mediaType) {
+    if (mediaType === 'pdf' || _bdLinkExt(path) === 'pdf') return 'viewer.html?pdf=' + encodeURIComponent(path);
+    if (mediaType === 'image') return 'viewer.html?file=' + encodeURIComponent(path);
+  }
+  if (entry?.type === 'html' && entry?.urlExternal) return path;
+  return '';
+}
+
+function _bdStandaloneUrlForEntry(entry) {
+  if (!entry?.path) return '';
+  const viewerUrl = _bdStandaloneViewerUrl(entry);
+  if (viewerUrl) return viewerUrl;
+  if (entry.type === 'page') return 'note-standalone.html?open=' + encodeURIComponent(entry.path);
+  if (entry.type === 'scriptnote') return 'scenario-standalone.html?open=' + encodeURIComponent(entry.path);
+  if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db'].includes(entry.type)) {
+    return 'sheet-standalone.html?open=' + encodeURIComponent(entry.path);
+  }
+  if (entry.type === 'board') return 'board-standalone.html?open=' + encodeURIComponent(entry.path);
+  if (entry.type === 'timer') return 'timer-standalone.html?open=' + encodeURIComponent(entry.path);
+  return '';
+}
+
+function _bdOpenStandaloneUrl(url) {
+  if (!url) return false;
+  if (typeof _open_app_window_js === 'function') {
+    _open_app_window_js(url);
+    return true;
+  }
+  window.open(url, '_blank', 'width=1100,height=780,menubar=no,toolbar=no,location=no');
+  return true;
+}
+
+async function openLinkedPathStandalone(path, label, options) {
+  const opts = options || {};
+  const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
+  const url = _bdStandaloneUrlForEntry(entry);
+  if (!url) {
+    if (typeof showStatus === 'function') showStatus('この種類は単独アプリで開けません', true);
+    return false;
+  }
+  return _bdOpenStandaloneUrl(url);
+}
+
+function canOpenLinkedPathStandalone(path, linkType) {
+  const entry = _bdResolveLinkedEntry(path, path, _bdInferLinkType(path, linkType));
+  return !!_bdStandaloneUrlForEntry(entry);
+}
+
+function showLinkedOpenTargetMenu(e, path, label, options) {
+  const opts = options || {};
+  const targetPath = String(path || '').trim();
+  if (!targetPath) return false;
+  e?.preventDefault?.();
+  e?.stopPropagation?.();
+  document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu';
+  const closeMenu = () => menu.remove();
+  const addItem = (labelText, icon, action, disabled) => {
+    const item = document.createElement('div');
+    item.className = 'gb-context-menu-item' + (disabled ? ' disabled' : '');
+    if (disabled) {
+      item.style.opacity = '0.5';
+      item.style.cursor = 'default';
+      item.setAttribute('aria-disabled', 'true');
+    }
+    item.innerHTML = (typeof lucide === 'function' ? lucide(icon, 14) : '') + ' ' + labelText;
+    if (!disabled) {
+      item.addEventListener('click', () => {
+        closeMenu();
+        action();
+      });
+    }
+    menu.appendChild(item);
+  };
+  addItem('サブパネルで開く', 'layers-2', () => openLinkedPathInSubPanel(targetPath, label, opts));
+  addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
+  addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightPane(targetPath, label, opts));
+  addItem('単独アプリで開く', 'externalLink', () => openLinkedPathStandalone(targetPath, label, opts), !canOpenLinkedPathStandalone(targetPath, opts.linkType));
+  document.body.appendChild(menu);
+  if (e?.currentTarget && typeof positionPopup === 'function') {
+    positionPopup(menu, e.currentTarget.getBoundingClientRect());
+  } else {
+    const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+    menu.style.left = ((e?.clientX || 0) / z) + 'px';
+    menu.style.top = ((e?.clientY || 0) / z) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+  setTimeout(() => {
+    const closer = (ev) => {
+      if (!menu.contains(ev.target)) {
+        menu.remove();
+        document.removeEventListener('pointerdown', closer, true);
+      }
+    };
+    document.addEventListener('pointerdown', closer, true);
+  }, 0);
+  return true;
 }
 
 async function bdCreateLinkedFileCardAt(x, y, type) {
@@ -397,8 +607,9 @@ async function bdCreateLinkedFileCardAt(x, y, type) {
     const label = nodeData.name || nodeData.label || '無題';
     const path = nodeData.path || '';
     if (!path) throw new Error('path missing');
-    const node = bdAddLinkCardAt(x, y, path, label, { w: 200, linkType: type });
-    _bdOpenEntryInSubPanel(label, path, type);
+    const linkType = nodeData.type || type;
+    const node = bdAddLinkCardAt(x, y, path, label, { w: 200, linkType });
+    _bdOpenEntryInSubPanel(label, path, linkType);
     return node;
   } catch (error) {
     const detail = error?.message ? ': ' + error.message : '';
@@ -415,6 +626,7 @@ function _bdFileIcon(ext, path, linkType) {
   if (_bdIsExternalUrl(path)) return 'globe';
   if (explicitType === 'scriptnote') return byType('scriptnote', 'bookOpenText');
   if (explicitType === 'board') return byType('board', 'presentation');
+  if (explicitType === 'timer') return byType('timer', 'timer');
   if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return byType('database', 'db');
   if (explicitType === 'smart-db') return byType('smart-db', 'databaseSearch');
   if (explicitType === 'csv') return 'table';
@@ -422,16 +634,21 @@ function _bdFileIcon(ext, path, linkType) {
   if (explicitType === 'folder') return byType('folder', 'folder');
   if (explicitType === 'calendar') return byType('calendar', 'calendar');
   // 複合拡張子（アプリ種別）を優先判定
-  if (name.endsWith('.scriptnote.json')) return byType('scriptnote', 'bookOpenText');
-  if (name.endsWith('.board.json') || name.endsWith('.canvas.json')) return byType('board', 'presentation');
-  if (name.endsWith('.smart-db.json')) return byType('smart-db', 'databaseSearch');
+  if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return byType('scriptnote', 'bookOpenText');
+  if (name.endsWith('.mel-board') || name.endsWith('.board.json') || name.endsWith('.canvas.json')) return byType('board', 'presentation');
+  if (name.endsWith('.mel-sheet') || name.endsWith('.smart-db.json')) return byType('smart-db', 'databaseSearch');
+  if (name.endsWith('.mel-timer') || name.endsWith('.timer.json')) return byType('timer', 'timer');
   const nextExt = String(ext || '').toLowerCase();
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(nextExt)) return 'image';
+  if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(nextExt)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(nextExt)) return 'clapperboard';
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(nextExt)) return 'audioLines';
   if (nextExt === 'md') return byType('page', 'fileText');
   if (nextExt === 'csv') return 'table';
   if (nextExt === 'board') return byType('board', 'presentation');
+  if (nextExt === 'mel-board') return byType('board', 'presentation');
+  if (nextExt === 'mel-sheet') return byType('smart-db', 'databaseSearch');
+  if (nextExt === 'mel-scenario') return byType('scriptnote', 'bookOpenText');
+  if (nextExt === 'mel-timer') return byType('timer', 'timer');
   if (nextExt === 'json') return 'fileText';
   if (nextExt === 'pdf') return 'fileText';
   return 'file';
@@ -443,7 +660,7 @@ function _bdLinkExt(path) {
 }
 
 function _bdLinkMediaType(ext) {
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return 'image';
+  if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(ext)) return 'video';
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return 'audio';
   if (ext === 'pdf') return 'pdf';

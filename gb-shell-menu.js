@@ -53,6 +53,18 @@ function toggleHiddenShellVerb(name) {
 async function appendShellVerbsToMenu(menu, path) {
   if (!path) return;
 
+  function reclampMenu() {
+    if (!document.body.contains(menu)) return;
+    if (typeof clampPopupToViewport === 'function') {
+      clampPopupToViewport(menu);
+      return;
+    }
+    const rect = menu.getBoundingClientRect();
+    const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
+    if (rect.bottom > window.innerHeight) menu.style.top = Math.max(4, (window.innerHeight - rect.height - 4) / z) + 'px';
+    if (rect.right > window.innerWidth) menu.style.left = Math.max(4, (window.innerWidth - rect.width - 4) / z) + 'px';
+  }
+
   // プレースホルダー表示
   const placeholder = document.createElement('div');
   placeholder.style.cssText = 'padding:4px 12px;color:var(--fg2);font-size:11px;font-style:italic;';
@@ -62,6 +74,7 @@ async function appendShellVerbsToMenu(menu, path) {
   sep.className = 'cm-sep';
   menu.appendChild(sep);
   menu.appendChild(placeholder);
+  reclampMenu();
 
   const verbs = await fetchShellVerbs(path);
   // メニューがまだDOMにあるか確認
@@ -136,11 +149,7 @@ async function appendShellVerbsToMenu(menu, path) {
   shellWrap.appendChild(shellPanel);
   menu.appendChild(shellWrap);
 
-  // メニュー位置再調整
-  const rect = menu.getBoundingClientRect();
-  { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
-  if (rect.bottom > window.innerHeight) menu.style.top = Math.max(4, (window.innerHeight - rect.height - 4) / z) + 'px';
-  if (rect.right > window.innerWidth) menu.style.left = Math.max(4, (window.innerWidth - rect.width - 4) / z) + 'px'; }
+  reclampMenu();
 }
 
 // --- 右クリックで非表示 ---

@@ -153,6 +153,7 @@
         refresh: async () => {
           if (typeof loadOutliner === 'function') await loadOutliner();
           if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
         },
       });
       _removeOutlinerNodesForPaths(result.deletedPaths);
@@ -169,7 +170,7 @@
   }
 
   // --- スプリットビュー ---
-  if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function') {
+  if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function' && _isOutlinerFreeLayoutUiEnabled()) {
     addSep();
     if (isSplitActive()) {
       addMenuItem('別の作業領域で開く', () => { closeTreeContextMenu(); openDbInOtherPane(nodeData.path); }, null, 'columns');
@@ -345,9 +346,14 @@ async function addItemAt(parentPath, type) {
     // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
     if (!res.node.name) res.node.name = res.node.label;
 
-    const insertTarget = target.deferTreeInsert
+    let insertTarget = target.deferTreeInsert
       ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true })
       : target;
+    // API待機中にワークスペースセクション等が再描画され、挿入先コンテナが
+    // DOMから切断されていた場合は挿入先を再解決する
+    if (!insertTarget.deferTreeInsert && !insertTarget.container?.isConnected) {
+      insertTarget = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
+    }
     const newNode = insertTarget.deferTreeInsert ? null : createTreeNodeFromBrowse(res.node);
 
     if (!insertTarget.deferTreeInsert && newNode) {

@@ -150,19 +150,27 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     if (!bar) {
       bar = document.createElement('div');
-      bar.className = 'sn2-row-bulk-bar';
-      document.body.appendChild(bar);
+      bar.className = 'sn2-row-bulk-bar gb-selection-float-bar';
+      (this.host || document.body).appendChild(bar);
       this._rowBulkBar = bar;
     }
-    const hostRect = this.host?.getBoundingClientRect();
-    const zoom = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
-    const left = hostRect ? (hostRect.left / zoom) : 0;
-    const top = hostRect ? (hostRect.top / zoom) : 0;
-    const offset = 8 / zoom;
-    bar.style.cssText = `position:fixed;top:${top + offset}px;left:${left + offset}px;z-index:1000;background:var(--ui-popup-bg, var(--bg3));border:1px solid var(--border);border-left:3px solid var(--accent, #4a90d9);border-radius:6px;padding:6px 12px;display:flex;align-items:center;gap:6px;font-size:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);width:fit-content;`;
+    if (window.GBSelectionFloatMenu) {
+      window.GBSelectionFloatMenu.bindDrag(bar, { host: this.host || document.body });
+      window.GBSelectionFloatMenu.resetPosition(bar, { host: this.host || document.body, anchor: this.host, zIndex: '1000' });
+    } else {
+      const hostRect = this.host?.getBoundingClientRect();
+      const zoom = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
+      const left = hostRect ? (hostRect.left / zoom) : 0;
+      const top = hostRect ? (hostRect.top / zoom) : 0;
+      const offset = 8 / zoom;
+      bar.style.cssText = `position:fixed;top:${top + offset}px;left:${left + offset}px;z-index:1000;background:var(--ui-popup-bg, var(--bg3));border:1px solid var(--border);border-left:3px solid var(--accent, #4a90d9);border-radius:6px;padding:6px 12px;display:flex;align-items:center;gap:6px;font-size:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);width:fit-content;`;
+    }
     bar.innerHTML = '';
+    if (window.GBSelectionFloatMenu) {
+      bar.appendChild(window.GBSelectionFloatMenu.createDragHandle());
+    }
     const label = document.createElement('span');
-    label.style.cssText = 'color:var(--fg2);';
+    label.className = 'gb-selection-float-count';
     label.textContent = `${count}行選択中`;
     bar.appendChild(label);
     const mkBtn = (id, text, title, onClick) => {
@@ -172,9 +180,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       button.title = title;
       button.dataset.e2eId = id;
       button.setAttribute('aria-label', title);
-      button.style.cssText = 'font-size:11px;padding:2px 6px;background:var(--bg4);color:var(--fg);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
+      button.className = 'gb-selection-float-button';
       button.addEventListener('click', () => {
         if (!this._guardRowBulkAction()) return;
+        window.GBSelectionFloatMenu?.pulseButton?.(button);
         onClick();
       });
       return button;

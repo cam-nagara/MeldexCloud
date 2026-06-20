@@ -351,6 +351,86 @@ function createMarkupToolbar(markup, parentEl) {
 // === ポップアップ位置制御（共通ヘルパー） ===
 // pywebview/WebView2環境ではwindow.innerWidth/Heightが不正確な場合があるため
 // document.documentElement.clientWidth/Heightを使用する
+function _popupCssRect(rect, z) {
+  if (!rect) return null;
+  const left = Number(rect.left);
+  const right = Number(rect.right);
+  const top = Number(rect.top);
+  const bottom = Number(rect.bottom);
+  if (![left, right, top, bottom].every(Number.isFinite)) return null;
+  return { left: left / z, right: right / z, top: top / z, bottom: bottom / z };
+}
+
+function _popupClampValue(value, min, max) {
+  if (max < min) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function _popupRectsOverlap(a, b, gap = 0) {
+  if (!a || !b) return false;
+  return !(
+    a.right <= b.left - gap
+    || a.left >= b.right + gap
+    || a.bottom <= b.top - gap
+    || a.top >= b.bottom + gap
+  );
+}
+
+function _popupCandidateRect(left, top, width, height) {
+  return { left, top, right: left + width, bottom: top + height };
+}
+
+function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid) {
+  if (!avoid) return { left: baseLeft, top: baseTop };
+  const maxLeft = vw - pw - gap;
+  const maxTop = vh - ph - gap;
+  const xNearAnchor = _popupClampValue(baseLeft, gap, maxLeft);
+  const yNearAnchor = _popupClampValue(baseTop, gap, maxTop);
+  const candidates = [
+    { left: xNearAnchor, top: avoid.bottom + gap, side: 'below', space: vh - avoid.bottom - gap },
+    { left: xNearAnchor, top: avoid.top - ph - gap, side: 'above', space: avoid.top - gap },
+    { left: avoid.right + gap, top: yNearAnchor, side: 'right', space: vw - avoid.right - gap },
+    { left: avoid.left - pw - gap, top: yNearAnchor, side: 'left', space: avoid.left - gap },
+  ];
+
+  for (const candidate of candidates) {
+    const left = _popupClampValue(candidate.left, gap, maxLeft);
+    const top = _popupClampValue(candidate.top, gap, maxTop);
+    const rect = _popupCandidateRect(left, top, pw, ph);
+    const fitsViewport = left >= gap && top >= gap && rect.right <= vw - gap && rect.bottom <= vh - gap;
+    if (fitsViewport && !_popupRectsOverlap(rect, avoid, 0)) return { left, top };
+  }
+
+  const vertical = candidates
+    .filter(c => c.side === 'below' || c.side === 'above')
+    .filter(c => c.space >= 72)
+    .sort((a, b) => b.space - a.space)[0];
+  if (vertical) {
+    const left = _popupClampValue(vertical.left, gap, maxLeft);
+    const top = vertical.side === 'above'
+      ? Math.max(gap, avoid.top - Math.min(ph, vertical.space) - gap)
+      : avoid.bottom + gap;
+    return { left, top, maxHeight: Math.max(72, vertical.space) };
+  }
+
+  const horizontal = candidates
+    .filter(c => c.side === 'right' || c.side === 'left')
+    .filter(c => c.space >= 72)
+    .sort((a, b) => b.space - a.space)[0];
+  if (horizontal) {
+    const left = horizontal.side === 'left'
+      ? Math.max(gap, avoid.left - Math.min(pw, horizontal.space) - gap)
+      : avoid.right + gap;
+    const top = _popupClampValue(horizontal.top, gap, maxTop);
+    return { left, top, maxWidth: Math.max(72, horizontal.space) };
+  }
+
+  return {
+    left: _popupClampValue(baseLeft, gap, maxLeft),
+    top: _popupClampValue(baseTop, gap, maxTop),
+  };
+}
+
 function positionPopup(popup, anchorRect, options = {}) {
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;
@@ -358,11 +438,14 @@ function positionPopup(popup, anchorRect, options = {}) {
   const gap = options.gap ?? 4;
   const preferDirection = options.prefer || 'below'; // 'below' | 'right'
   // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
-  const ar = {
-    left: anchorRect.left / z, right: anchorRect.right / z,
-    top: anchorRect.top / z, bottom: anchorRect.bottom / z,
-  };
+  const ar = _popupCssRect(anchorRect, z);
+  const avoid = _popupCssRect(options.avoidRect, z);
+  if (!ar) return;
   // 非表示でDOMに追加して測定
+  popup.style.maxHeight = '';
+  popup.style.maxWidth = '';
+  popup.style.overflowY = '';
+  popup.style.overflowX = '';
   popup.style.visibility = 'hidden';
   if (!popup.parentNode) document.body.appendChild(popup);
   const pw = popup.offsetWidth;
@@ -399,6 +482,19 @@ function positionPopup(popup, anchorRect, options = {}) {
   }
   // 上端チェック
   if (top < gap) top = gap;
+  if (avoid) {
+    const fitted = _fitPopupAroundAvoidRect(left, top, pw, ph, vw, vh, gap, avoid);
+    left = fitted.left;
+    top = fitted.top;
+    if (fitted.maxHeight != null) {
+      popup.style.maxHeight = fitted.maxHeight + 'px';
+      popup.style.overflowY = 'auto';
+    }
+    if (fitted.maxWidth != null) {
+      popup.style.maxWidth = fitted.maxWidth + 'px';
+      popup.style.overflowX = 'auto';
+    }
+  }
   popup.style.left = left + 'px';
   popup.style.top = top + 'px';
   popup.style.visibility = 'visible';
@@ -532,3 +628,37 @@ if (typeof window !== 'undefined') {
     initIframeMarkup, initStandaloneMarkup, createMarkupToolbar,
   };
 }
+
+function enableCheckboxDragToggle(container, scopeSelector) {
+  if (!container || container._cbDragToggleInstalled) return;
+  container._cbDragToggleInstalled = true;
+  container.addEventListener('pointerdown', (e) => {
+    const cb = e.target.closest('input[type="checkbox"]');
+    if (!cb || cb.disabled) return;
+    if (scopeSelector && !cb.closest(scopeSelector)) return;
+    const newState = !cb.checked;
+    cb.checked = newState;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+    container._cbDragState = { checked: newState };
+    e.preventDefault();
+    const onUp = () => {
+      delete container._cbDragState;
+      document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', onUp, true);
+    };
+    document.addEventListener('pointerup', onUp, true);
+    document.addEventListener('pointercancel', onUp, true);
+  });
+  container.addEventListener('pointerover', (e) => {
+    if (!container._cbDragState) return;
+    const cb = e.target.closest('input[type="checkbox"]');
+    if (!cb || cb.disabled) return;
+    if (scopeSelector && !cb.closest(scopeSelector)) return;
+    if (cb.checked === container._cbDragState.checked) return;
+    cb.checked = container._cbDragState.checked;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+document.addEventListener('DOMContentLoaded', () => {
+  enableCheckboxDragToggle(document.body, '.modal-overlay');
+}, { once: true });

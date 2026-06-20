@@ -16,26 +16,31 @@ function _renderPreviewContent(item) {
   const frag = document.createDocumentFragment();
   // 画像・PDF → viewer.htmlをiframeで埋め込み
   const isPdf = item.name && item.name.toLowerCase().endsWith('.pdf');
-  if (item.type === 'image' || isPdf) {
+  if (item.type === 'image' && item.external_reference) {
+    const img = document.createElement('img');
+    img.className = 'fp-img';
+    img.src = _folderItemRawUrl(item);
+    frag.appendChild(img);
+  } else if (item.type === 'image' || isPdf) {
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'width:100%;height:100%;min-height:300px;border:none;border-radius:4px;';
     if (isPdf) {
       iframe.src = '/viewer?pdf=' + encodeURIComponent(item.path) + '&embed=1';
     } else {
-      iframe.src = '/viewer?file=' + encodeURIComponent(item.path) + '&embed=1';
+      iframe.src = _folderItemViewerUrl(item, true);
     }
     frag.appendChild(iframe);
   } else if (item.type === 'audio') {
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.style.cssText = 'width:100%;margin-bottom:8px;';
-    audio.src = '/api/file-raw?path=' + encodeURIComponent(item.path);
+    audio.src = _folderItemRawUrl(item);
     frag.appendChild(audio);
   } else if (item.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;
     video.style.cssText = 'width:100%;max-height:100%;margin-bottom:8px;border-radius:4px;object-fit:contain;';
-    video.src = '/api/file-raw?path=' + encodeURIComponent(item.path);
+    video.src = _folderItemRawUrl(item);
     frag.appendChild(video);
   } else if (['3d','psd','clip','document'].includes(item.type)) {
     const img = document.createElement('img');
@@ -74,6 +79,7 @@ function _renderDetailContent(item) {
     ['タイプ', FILE_TYPE_LABELS[item.type] || item.ext || 'unknown'],
     ['パス', item.path],
   ];
+  if (item.external_reference && item.external_path) rows.push(['参照元', item.external_path]);
   if (item.size != null) rows.push(['サイズ', formatFileSize(item.size)]);
   if (item.modified) rows.push(['更新日時', item.modified.substring(0, 19).replace('T', ' ')]);
   if (item.type === 'image') rows.push(['解像度', '']); // onloadで更新
@@ -122,6 +128,12 @@ function _renderDetailContent(item) {
   }
   frag.appendChild(actions);
 
+  if (item.path && typeof renderGlobalTagTargetEditor === 'function') {
+    const tagBox = document.createElement('div');
+    renderGlobalTagTargetEditor(tagBox, item.path, { compact: true, boxed: false });
+    frag.appendChild(tagBox);
+  }
+
   // 所属フォルダ
   if (item.path) {
     const sec = document.createElement('div');
@@ -148,10 +160,10 @@ function showFolderPreview(item) {
     // 白フラッシュ防止: 同種のコンテンツならsrc更新のみ
     const isPdf = item.name && item.name.toLowerCase().endsWith('.pdf');
     const existingIframe = previewPane.querySelector('iframe');
-    if ((item.type === 'image' || isPdf) && existingIframe) {
+    if ((item.type === 'image' || isPdf) && existingIframe && !item.external_reference) {
       const newSrc = isPdf
         ? '/viewer?pdf=' + encodeURIComponent(item.path) + '&embed=1'
-        : '/viewer?file=' + encodeURIComponent(item.path) + '&embed=1';
+        : _folderItemViewerUrl(item, true);
       existingIframe.src = newSrc;
     } else {
       previewPane.innerHTML = '';
@@ -159,18 +171,24 @@ function showFolderPreview(item) {
     }
   }
 
-  // v5.0: 詳細タブに詳細表示
+  // オプションパネル: ファイル選択時はエディタタブに統一表示（_showFileInfoInDetailPanel 経由）。
+  // ビューワーiframe のメッセージ経由でも同じ関数が呼ばれるため、二重描画/フラッシュを防止する。
+  // フォルダ選択時はビューワーiframe を経由しないので、従来の簡易表示を維持する。
   const detailPane = document.getElementById('rp-detail');
   if (detailPane && detailPane.closest('.gb-pane-content')) {
-    detailPane.innerHTML = '';
-    const header = document.createElement('div');
-    header.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--border);font-size:14px;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-    header.textContent = item.name;
-    detailPane.appendChild(header);
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:12px;overflow-y:auto;flex:1;';
-    body.appendChild(_renderDetailContent(item));
-    detailPane.appendChild(body);
+    if (item.type !== 'folder' && item.path && typeof _showFileInfoInDetailPanel === 'function') {
+      _showFileInfoInDetailPanel(item.path);
+    } else {
+      detailPane.innerHTML = '';
+      const header = document.createElement('div');
+      header.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--border);font-size:14px;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      header.textContent = item.name;
+      detailPane.appendChild(header);
+      const body = document.createElement('div');
+      body.style.cssText = 'padding:12px;overflow-y:auto;flex:1;';
+      body.appendChild(_renderDetailContent(item));
+      detailPane.appendChild(body);
+    }
   }
 }
 
@@ -346,6 +364,7 @@ async function addFolderLinkWithHistory(filePath, folderPath, options = {}) {
   const fileId = res?.file_id || options.fileId || '';
   const resolvedFolderPath = res?.folder_path || folderPath || '';
   const resolvedFolderId = res?.folder_id || folderId || '';
+  if (typeof _folderInvalidateMembershipsForPath === 'function') _folderInvalidateMembershipsForPath(filePath);
   if (res?.created !== false) {
     _pushFolderLinkHistory(
       '所属フォルダリンク: 登録',
@@ -368,6 +387,7 @@ async function removeFolderLinkWithHistory(filePath, fileId, folderPath, options
   if (folderId) payload.folder_id = folderId;
   else payload.folder_path = folderPath;
   const res = await apiPost('/folder-links/remove', payload);
+  if (typeof _folderInvalidateMembershipsForPath === 'function') _folderInvalidateMembershipsForPath(filePath);
   if (res?.removed !== false) {
     _pushFolderLinkHistory(
       '所属フォルダリンク: 解除',
@@ -386,6 +406,7 @@ async function removeFolderLinkWithHistory(filePath, fileId, folderPath, options
 async function loadFileFolderTags(filePath, container) {
   try {
     const folders = await apiFetch('/file-folders?path=' + encodeURIComponent(filePath));
+    if (typeof _folderStoreMembershipsForPath === 'function') _folderStoreMembershipsForPath(filePath, folders);
     container.innerHTML = '';
     folders.forEach(f => {
       const tag = document.createElement('span');
@@ -447,8 +468,21 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
 
 async function _loadFolderLinkTree(container) {
   try {
-    const roots = await apiFetch('/outliner-roots');
+    const roots = window.GBFolderPicker?.loadRoots
+      ? await window.GBFolderPicker.loadRoots()
+      : await apiFetch('/outliner-roots');
     container.innerHTML = '';
+    if (window.GBFolderPicker?.loadRoots) {
+      roots.forEach(root => {
+        const rootEl = _createLinkTreeNode(root.name, root.path, root.rootPath || root.path, true, {
+          sourceId: root.sourceId || '',
+          rootKind: root.kind || root.rootKind || '',
+          workspaceId: root.workspaceId || '',
+        });
+        container.appendChild(rootEl);
+      });
+      return;
+    }
     // ホームフォルダを先頭に追加（ルートに含まれていない場合）
     if (_homeFolderPath) {
       const rootPaths = roots.filter(r => r.visible).map(r => r.path);
@@ -467,7 +501,7 @@ async function _loadFolderLinkTree(container) {
   }
 }
 
-function _createLinkTreeNode(name, path, rootPath, isRoot) {
+function _createLinkTreeNode(name, path, rootPath, isRoot, options = {}) {
   const div = document.createElement('div');
   div.style.marginLeft = isRoot ? '0' : '16px';
 
@@ -514,14 +548,15 @@ function _createLinkTreeNode(name, path, rootPath, isRoot) {
         childrenDiv.dataset.loaded = 'true';
         childrenDiv.innerHTML = '<div style="color:var(--fg2);padding:2px 16px;font-size:11px;">...</div>';
         try {
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(rootPath));
+          const sourceParam = options.sourceId ? '&sourceId=' + encodeURIComponent(options.sourceId) : '';
+          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(rootPath) + '&folders_only=1&sort=name&order=asc' + sourceParam);
           childrenDiv.innerHTML = '';
           const folders = items.filter(it => it.type === 'folder');
           if (folders.length === 0) {
             childrenDiv.innerHTML = '<div style="color:var(--fg2);padding:2px 16px;font-size:11px;">（フォルダなし）</div>';
           } else {
             folders.forEach(f => {
-              childrenDiv.appendChild(_createLinkTreeNode(f.name, f.path, rootPath, false));
+              childrenDiv.appendChild(_createLinkTreeNode(f.name, f.path, rootPath, false, options));
             });
           }
         } catch(err) {
@@ -568,7 +603,7 @@ function _getViewerParam(params, key) {
 function _inferViewerFileTypeFromPath(path) {
   const ext = String(path || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase();
   if (!ext || ext === String(path || '').toLowerCase()) return '';
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico'].includes(ext)) return 'image';
+  if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico', 'tif', 'tiff', 'heic', 'heif', 'psd', 'psb'].includes(ext)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return 'video';
   if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio';
   if (ext === 'pdf') return 'pdf';
@@ -592,13 +627,34 @@ function _inferViewerFileType(url) {
   const params = new URLSearchParams(query);
   if (_getViewerParam(params, 'folder')) return 'folder';
   if (_getViewerParam(params, 'pdf')) return 'pdf';
-  const filePath = _getViewerParam(params, 'file') || _firstViewerFilesPath(_getViewerParam(params, 'files'));
+  const filePath = _getViewerParam(params, 'file')
+    || _firstViewerFilesPath(_getViewerParam(params, 'files'))
+    || _getViewerParam(params, 'path')
+    || String(url || '').split('?')[0];
   return _inferViewerFileTypeFromPath(filePath);
+}
+
+function _viewerPrimaryPathFromUrl(url) {
+  const query = String(url || '').includes('?') ? String(url || '').substring(String(url || '').indexOf('?') + 1) : '';
+  if (!query) return '';
+  const params = new URLSearchParams(query);
+  return _getViewerParam(params, 'file')
+    || _getViewerParam(params, 'pdf')
+    || _getViewerParam(params, 'folder')
+    || _firstViewerFilesPath(_getViewerParam(params, 'files'))
+    || '';
+}
+
+function _syncViewerInitialPathToOutliner(url, openOpts) {
+  if (openOpts?.skipHighlight || typeof highlightOutlinerNode !== 'function') return;
+  const filePath = _viewerPrimaryPathFromUrl(url);
+  if (filePath) highlightOutlinerNode(filePath);
 }
 
 function openViewer(url, opts) {
   const openOpts = opts || {};
   if (!openOpts.skipShowView) showView('html');
+  _syncViewerInitialPathToOutliner(url, openOpts);
   const iframe = document.getElementById('html-iframe');
   const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(url) || url;
   if (iframe) {
@@ -608,19 +664,15 @@ function openViewer(url, opts) {
     if (typeof trackIframeLoading === 'function') {
       const inferredType = _inferViewerFileType(url);
       const loadingLabel = inferredType === 'pdf' ? 'PDFを読み込み中...' : 'ビューアを読み込み中...';
-      trackIframeLoading(preparedIframe || iframe, loadingLabel, openOpts);
+      if (!(inferredType === 'image' && !openOpts.forceViewerLoading)) {
+        trackIframeLoading(preparedIframe || iframe, loadingLabel, openOpts);
+      }
     }
     if (preparedIframe) preparedIframe.src = resolvedUrl;
   }
   // ビューワー表示時に詳細パネルにファイル情報を表示
   if (!openOpts.skipGlobalUi) {
-    const query = url.includes('?') ? url.substring(url.indexOf('?') + 1) : '';
-    const params = new URLSearchParams(query);
-    const filePath = _getViewerParam(params, 'file')
-      || _getViewerParam(params, 'pdf')
-      || _getViewerParam(params, 'folder')
-      || _firstViewerFilesPath(_getViewerParam(params, 'files'))
-      || '';
+    const filePath = _viewerPrimaryPathFromUrl(url);
     if (filePath && typeof _showFileInfoInDetailPanel === 'function') {
       _showFileInfoInDetailPanel(filePath);
     }
@@ -769,9 +821,13 @@ function showFolderDisplaySettings() {
   searchRow.appendChild(searchInput);
   menu.appendChild(searchRow);
 
-  const choices = typeof _folderFilterChoices === 'function' ? _folderFilterChoices() : { types: [], exts: [] };
+  const membershipsPromise = typeof _folderEnsureMemberships === 'function' ? _folderEnsureMemberships(_folderItems) : Promise.resolve(false);
+  const choices = typeof _folderFilterChoices === 'function' ? _folderFilterChoices() : { types: [], exts: [], folders: [] };
   const selectedTypes = new Set(typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterTypes) : []);
   const selectedExts = new Set((typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterExts) : []).map(ext => String(ext).toLowerCase()));
+  const selectedFolders = new Set(typeof _folderFilterFolderKeys === 'function'
+    ? _folderFilterFolderKeys(cfg)
+    : ((typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterFolders) : []).map(folder => String(folder).replace(/\\/g, '/').replace(/\/+$/, ''))));
 
   _fdSection(menu, '種類');
   const typeBox = document.createElement('div');
@@ -808,6 +864,26 @@ function showFolderDisplaySettings() {
     });
   }
   menu.appendChild(extBox);
+
+  _fdSection(menu, '所属フォルダ');
+  const folderBox = document.createElement('div');
+  folderBox.style.maxHeight = '150px';
+  folderBox.style.overflowY = 'auto';
+  if (!choices.folders || choices.folders.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:5px 14px;color:var(--fg2);font-size:12px;';
+    empty.textContent = (typeof _folderMembershipsAreLoading === 'function' && _folderMembershipsAreLoading(_folderItems))
+      ? '所属フォルダを読み込み中...'
+      : '複数の所属フォルダはありません';
+    folderBox.appendChild(empty);
+  } else {
+    choices.folders.forEach(([folder, label]) => {
+      folderBox.appendChild(_fdCheckboxRow(label, selectedFolders.has(folder), (enabled) => {
+        _fdSetArrayFilter(cfg, 'filterFolders', folder, enabled);
+      }, { dataset: { folderFilterFolder: folder } }));
+    });
+  }
+  menu.appendChild(folderBox);
 
   _fdSection(menu, '更新期間');
   const periodRow = document.createElement('div');
@@ -887,6 +963,17 @@ function showFolderDisplaySettings() {
   // 画面外補正
   clampPopupToViewport(menu);
   searchInput.focus({ preventScroll: true });
+  if (membershipsPromise && typeof membershipsPromise.then === 'function') {
+    membershipsPromise.then((changed) => {
+      if (!changed) return;
+      const latestCfg = getFolderDisplayConfig();
+      if (typeof _folderHasActiveFolderFilter === 'function' && _folderHasActiveFolderFilter(latestCfg)) renderFolderGrid();
+      if (document.body.contains(menu)) {
+        menu.remove();
+        showFolderDisplaySettings();
+      }
+    }).catch(() => {});
+  }
 
   setTimeout(() => {
     const closer = (ev) => {

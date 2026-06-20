@@ -194,6 +194,7 @@ function bdApplyThemeColorsToDepthStyles(options = {}) {
 //   なら触らない。既存のカード個別設定を保持する
 function _bdApplyDepthCardFieldsToNode(node, depthStyle) {
   if (!node || !depthStyle) return;
+  if (node._userCardStyle) return;
   const guardKey = (field) => '_user' + field.charAt(0).toUpperCase() + field.slice(1);
   _BD_DEPTH_CARD_FIELDS.forEach(field => {
     const guarded = field === 'width' ? node._userW : node[guardKey(field)];

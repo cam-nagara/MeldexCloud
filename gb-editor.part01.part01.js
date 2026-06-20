@@ -281,7 +281,7 @@ function _noteMarkdownFrontmatterType(text) {
 }
 
 function _notePathLooksLikeBoard(path) {
-  return /\.board\.md$/i.test(String(path || ''));
+  return /\.(?:mel-board|board\.md)$/i.test(String(path || ''));
 }
 
 function _noteMarkdownIsBoard(text) {
@@ -316,11 +316,12 @@ async function openPage(label, path, opts) {
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('ノートを読み込み中...');
+  let loadingShown = false;
   let preloadedFileData = null;
   try {
+    if (showOpenLoading) { showLoading('ノートを読み込み中...'); loadingShown = true; }
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
-      if (showOpenLoading) hideLoading();
+      if (loadingShown) { hideLoading(); loadingShown = false; }
       await openBoard(label, path, openOpts);
       return;
     }
@@ -328,7 +329,7 @@ async function openPage(label, path, opts) {
       try {
         preloadedFileData = await apiFetch('/file?path=' + encodeURIComponent(path));
         if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
-          if (showOpenLoading) hideLoading();
+          if (loadingShown) { hideLoading(); loadingShown = false; }
           await openBoard(label, path, openOpts);
           return;
         }
@@ -365,8 +366,10 @@ async function openPage(label, path, opts) {
   // フォルダツリーで対応するノードをハイライト
   if (!openOpts.skipHighlight) highlightOutlinerNode(path);
 
+  let _openPageFileData = null;
   try {
     const data = preloadedFileData || await apiFetch('/file?path=' + encodeURIComponent(path));
+    _openPageFileData = data;
     if (isStalePageLoad()) return;
     const raw = data.content || '';
     // フロントマターを保存（保存時にプリペンドするため）
@@ -492,8 +495,9 @@ async function openPage(label, path, opts) {
           }
         });
     }, 2000);
-    // 目次更新
-    if (document.getElementById('note-toc').style.display !== 'none') updateNoteToc();
+    // 目次更新（#note-toc 不在で TypeError にしない）
+    const tocEl = document.getElementById('note-toc');
+    if (tocEl && tocEl.style.display !== 'none') updateNoteToc();
   };
 
   // 目次を更新（フロントマター優先、なければlocalStorage設定）
@@ -513,12 +517,12 @@ async function openPage(label, path, opts) {
   syncNoteTocLayout();
   if (_toc && _toc.style.display !== 'none') updateNoteToc();
 
-  // ビューワーペインにプレビュー表示
-  if (!openOpts.skipGlobalUi) _updateLinkedPreview(path);
-  // 詳細パネルにファイル情報を表示
-  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
-  if (!openOpts.skipGlobalUi) _syncDetailPanel(label, path, 'page');
-  } finally { if (showOpenLoading) hideLoading(); }
+  // ビューワーペインにプレビュー表示（読み込み済みデータを渡して再取得を回避）
+  if (!openOpts.skipGlobalUi) _updateLinkedPreview(path, _openPageFileData);
+  // 詳細パネルにファイル情報を表示（メタ情報を渡して /file-meta 呼び出しを回避）
+  const _fileMeta = _openPageFileData?.modified ? { created: _openPageFileData.created, modified: _openPageFileData.modified, size: _openPageFileData.size } : undefined;
+  if (!openOpts.skipGlobalUi) _syncDetailPanel(label, path, 'page', { fileMeta: _fileMeta });
+  } finally { if (loadingShown) hideLoading(); }
 }
 
 // ノート縦書き/横書き切替

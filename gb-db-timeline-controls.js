@@ -8,8 +8,8 @@ function _timelineColorKey(kind, value) {
   return prefix + ':' + raw;
 }
 
-function _getTimelineAxisColorMap(dbPath) {
-  const colors = typeof getConditionalColors === 'function' ? getConditionalColors(dbPath) : {};
+function _getTimelineAxisColorMap(dbPath, ctx = null) {
+  const colors = typeof getConditionalColors === 'function' ? getConditionalColors(dbPath, { ctx }) : {};
   const map = colors?.[TL_AXIS_CONDITIONAL_COLOR_KEY];
   return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
 }
@@ -25,8 +25,8 @@ function _getTimelineAxisColorFromMap(map, value, kind = 'axis') {
   return { bg, fg: String(raw.fg || '#ffffff').trim() || '#ffffff' };
 }
 
-function _saveTimelineAxisColorMap(dbPath, nextMap, detail) {
-  const colors = { ...(typeof getConditionalColors === 'function' ? getConditionalColors(dbPath) : {}) };
+function _saveTimelineAxisColorMap(dbPath, nextMap, detail, ctx = null) {
+  const colors = { ...(typeof getConditionalColors === 'function' ? getConditionalColors(dbPath, { ctx }) : {}) };
   const clean = {};
   Object.entries(nextMap || {}).forEach(([key, value]) => {
     const bg = String(value?.bg || '').trim();
@@ -39,30 +39,31 @@ function _saveTimelineAxisColorMap(dbPath, nextMap, detail) {
     setConditionalColors(dbPath, colors, {
       label: 'シート表示: 条件付きカラー',
       detail: detail || 'タイムライン',
+      ctx,
     });
   }
 }
 
 function _setTimelineHeaderColor(dbPath, kind, value, color, ctx) {
-  const next = { ..._getTimelineAxisColorMap(dbPath) };
+  const next = { ..._getTimelineAxisColorMap(dbPath, ctx) };
   next[_timelineColorKey(kind, value)] = color;
-  _saveTimelineAxisColorMap(dbPath, next, `タイムライン: ${value}`);
+  _saveTimelineAxisColorMap(dbPath, next, `タイムライン: ${value}`, ctx);
   if (typeof renderTimeline === 'function') renderTimeline(ctx);
 }
 
 function _clearTimelineHeaderColor(dbPath, kind, value, ctx) {
-  const next = { ..._getTimelineAxisColorMap(dbPath) };
+  const next = { ..._getTimelineAxisColorMap(dbPath, ctx) };
   delete next[_timelineColorKey(kind, value)];
   if (kind === 'axis') {
     const legacyKey = typeof _timelineColKey === 'function' ? _timelineColKey(value) : String(value ?? '');
     delete next[legacyKey];
   }
-  _saveTimelineAxisColorMap(dbPath, next, `タイムライン解除: ${value}`);
+  _saveTimelineAxisColorMap(dbPath, next, `タイムライン解除: ${value}`, ctx);
   if (typeof renderTimeline === 'function') renderTimeline(ctx);
 }
 
 function _clearAllTimelineHeaderColors(dbPath, ctx) {
-  _saveTimelineAxisColorMap(dbPath, {}, 'タイムライン全解除');
+  _saveTimelineAxisColorMap(dbPath, {}, 'タイムライン全解除', ctx);
   if (typeof renderTimeline === 'function') renderTimeline(ctx);
 }
 
@@ -109,6 +110,7 @@ function _setTimelineTimeOrder(dbPath, cfg, ordered, options = {}) {
     label: options.label || 'シート表示: タイムライン時間順',
     detail: options.detail || '',
     skipHistory: options.skipHistory === true,
+    ctx: options.ctx || null,
   });
 }
 
@@ -116,9 +118,9 @@ function _sortTimelineValues(dbPath, cfg, values, kind, dir, ctx) {
   const ordered = values.slice().sort(_compareTimelineGroupValues);
   if (dir === 'desc') ordered.reverse();
   const detail = dir === 'desc' ? '降順' : '昇順';
-  if (kind === 'time') _setTimelineTimeOrder(dbPath, cfg, ordered, { detail });
-  else if (typeof _setTimelineRowOrder === 'function') _setTimelineRowOrder(dbPath, cfg, ordered, { detail });
-  else setTimelineConfig(dbPath, { ...cfg, rowOrder: ordered.map(value => _timelineColKey(value)) }, { label: 'シート表示: タイムラインヘッダー順', detail });
+  if (kind === 'time') _setTimelineTimeOrder(dbPath, cfg, ordered, { detail, ctx });
+  else if (typeof _setTimelineRowOrder === 'function') _setTimelineRowOrder(dbPath, cfg, ordered, { detail, ctx });
+  else setTimelineConfig(dbPath, { ...cfg, rowOrder: ordered.map(value => _timelineColKey(value)) }, { label: 'シート表示: タイムラインヘッダー順', detail, ctx });
   if (typeof renderTimeline === 'function') renderTimeline(ctx);
 }
 
@@ -129,6 +131,7 @@ function _resetTimelineOrder(dbPath, cfg, kind, ctx) {
   setTimelineConfig(dbPath, next, {
     label: kind === 'time' ? 'シート表示: タイムライン時間順' : 'シート表示: タイムラインヘッダー順',
     detail: 'リセット',
+    ctx,
   });
   if (typeof renderTimeline === 'function') renderTimeline(ctx);
 }
@@ -140,7 +143,7 @@ function _timelineWidthTarget(options) {
 
 async function _promptTimelineColumnWidth(dbPath, options) {
   const target = _timelineWidthTarget(options);
-  const cfg = getTimelineConfig(dbPath);
+  const cfg = getTimelineConfig(dbPath, { ctx: options.ctx || null });
   const current = target === '__rowHeader' ? _timelineCornerWidth(cfg) : _timelineColWidth(cfg, target);
   const raw = typeof cfPrompt === 'function'
     ? await cfPrompt('列幅(px)', String(current), { okLabel: '適用' })
@@ -152,18 +155,19 @@ async function _promptTimelineColumnWidth(dbPath, options) {
     return;
   }
   const minWidth = target === '__rowHeader' ? 80 : 60;
-  _setTimelineColWidth(dbPath, cfg, target, Math.max(minWidth, Math.min(640, width)), { detail: String(target || '') });
+  _setTimelineColWidth(dbPath, cfg, target, Math.max(minWidth, Math.min(640, width)), { detail: String(target || ''), ctx: options.ctx || null });
   if (typeof renderTimeline === 'function') renderTimeline(options.ctx);
 }
 
 function _resetTimelineColumnWidth(dbPath, options) {
   const target = _timelineWidthTarget(options);
-  const cfg = getTimelineConfig(dbPath);
+  const cfg = getTimelineConfig(dbPath, { ctx: options.ctx || null });
   const next = { ...cfg, colWidths: { ...(cfg.colWidths || {}) } };
   delete next.colWidths[_timelineColKey(target)];
   setTimelineConfig(dbPath, next, {
     label: 'シート表示: タイムライン列幅',
     detail: 'リセット: ' + String(target || ''),
+    ctx: options.ctx || null,
   });
   if (typeof renderTimeline === 'function') renderTimeline(options.ctx);
 }
@@ -217,14 +221,14 @@ function _applyTimelineVisibleColor(el, axisColors, axisValue, timeValue) {
 }
 
 function _timelineHeaderMenuItems(dbPath, options) {
-  const cfg = getTimelineConfig(dbPath);
+  const cfg = getTimelineConfig(dbPath, { ctx: options.ctx || null });
   const kind = options.kind === 'time' ? 'time' : (options.kind === 'axis' ? 'axis' : '');
   const values = kind === 'time' ? (options.timeValues || []) : (options.axisValues || []);
   const icon = (name) => typeof lucide === 'function' ? lucide(name, 14) + ' ' : '';
   const items = [];
 
   if (kind) {
-    const currentColor = _getTimelineAxisColorFromMap(_getTimelineAxisColorMap(dbPath), options.value, kind);
+    const currentColor = _getTimelineAxisColorFromMap(_getTimelineAxisColorMap(dbPath, options.ctx || null), options.value, kind);
     items.push({
       label: icon('palette') + (kind === 'time' ? 'この時間を色付け...' : 'この列/行を色付け...'),
       action: () => _showTimelineHeaderColorModal(dbPath, kind, options.value, currentColor, options.ctx),
@@ -261,7 +265,7 @@ function _timelineHeaderMenuItems(dbPath, options) {
     ],
   });
 
-  if (Object.keys(_getTimelineAxisColorMap(dbPath)).length) {
+  if (Object.keys(_getTimelineAxisColorMap(dbPath, options.ctx || null)).length) {
     items.push({ type: 'sep' });
     items.push({
       label: icon('eraser') + 'タイムライン色を全解除',

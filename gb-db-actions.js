@@ -109,6 +109,31 @@ async function _getDbActionMetadata(dbPath) {
   }
 }
 
+async function _refreshDbActionPanels(dbPath, preferredCtx = null) {
+  if (!dbPath || typeof selectDatabase !== 'function') return;
+  const targets = [];
+  const add = (ctx) => {
+    if (!ctx || targets.includes(ctx)) return;
+    if (!ctx.dbPath || ctx.dbPath === dbPath) targets.push(ctx);
+  };
+  add(preferredCtx);
+  if (typeof getAllPanes === 'function') {
+    try {
+      Object.values(getAllPanes() || {}).forEach(ctx => {
+        if (ctx?.dbPath === dbPath) add(ctx);
+      });
+    } catch {}
+  }
+  if (state.currentDbPath === dbPath) add(typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  if (!targets.length && state.currentDbPath === dbPath) {
+    await selectDatabase(dbPath, undefined, { silent: true });
+    return;
+  }
+  for (const ctx of targets) {
+    await selectDatabase(dbPath, ctx, { silent: true });
+  }
+}
+
 // === エントリ詳細にアクションボタンを表示 ===
 async function _renderEntityActions(data, entityPath) {
   const container = document.getElementById('entity-freetext');
@@ -259,10 +284,7 @@ async function _executeDbAction(action, data, entityPath, inputValues) {
     }
 
     showStatus((action.label || 'アクション') + ' 完了: ' + newEntryName);
-    // ターゲットDBが現在のDBなら再読み込み
-    if (targetDb === (state.currentDbPath || '')) {
-      selectDatabase(targetDb);
-    }
+    await _refreshDbActionPanels(targetDb);
   } catch (e) {
     if (newEntityPath) {
       try { await apiPost('/outliner/delete', { path: newEntityPath }); } catch {}
@@ -334,13 +356,13 @@ async function _renderEntityBacklinks(data, entityPath) {
 
 // === ピボットにバックリンク集約列を追加 ===
 async function _appendBacklinkSummaryColumns(ctx) {
-  const meta = state.dbMetadata;
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  const meta = ctx?.dbMetadata || await _getDbActionMetadata(dbPath);
   if (!meta || !meta.backlinks) return;
 
   const backlinkDefs = meta.backlinks.filter(bl => bl.summary_property);
   if (backlinkDefs.length === 0) return;
 
-  const dbPath = ctx.dbPath || state.currentDbPath || '';
   const table = _paneEl(ctx, '#pivot-table') || document.getElementById('pivot-table');
   if (!table) return;
   const renderToken = ctx?._renderToken;

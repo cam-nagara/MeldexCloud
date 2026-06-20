@@ -91,6 +91,7 @@ html[data-single-window="1"] #app-toolbar.visible {
   font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
 }
 .gb-toolbar { font-family: var(--ui-toolbar-font, var(--ui-font, inherit)); }
+html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none !important; }
 #app-toolbar.visible { display: flex; }
 /* v0.5.131: ツールバー統一の .tb-* クラスが付いたボタンは個別スタイルを持つので除外 */
 #app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn),
@@ -113,7 +114,7 @@ html[data-single-window="1"] #app-toolbar.visible {
    ============================== */
 /* サイドバー（body直下、画面全高） */
 #sidebar {
-  width: 260px; flex-shrink: 0; background: var(--outliner-bg);
+  width: 260px; flex: 0 0 auto; background: var(--outliner-bg);
   color: var(--outliner-fg);
   display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto;
   border-right: 1px solid var(--outliner-border);
@@ -237,6 +238,27 @@ html[data-single-window="1"] #app-toolbar.visible {
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
+}
+#chat-messages,
+#team-messages {
+  min-width: 0;
+  overflow-x: hidden;
+}
+#chat-messages .chat-message-row,
+#team-messages .chat-message-row {
+  min-width: 0;
+  max-width: min(85%, 100%);
+  box-sizing: border-box;
+}
+#chat-messages .chat-message-bubble,
+#team-messages .chat-message-bubble,
+#chat-messages .chat-message-text,
+#team-messages .chat-message-text {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 #chat-messages .chat-message-header,
 #team-messages .chat-message-header,
@@ -395,12 +417,15 @@ html[data-single-window="1"] #app-toolbar.visible {
   padding: 10px 12px;
   position: relative;
   max-width: 100%;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #111;
   border: 1px solid var(--border);
   border-radius: 6px;
   line-height: 1.45;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .chat-markdown pre code {
   display: block;
@@ -408,7 +433,9 @@ html[data-single-window="1"] #app-toolbar.visible {
   padding-right: 34px;
   background: transparent;
   border: 0;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: #e6e6e6;
 }
 .chat-code-copy-btn {
@@ -543,8 +570,8 @@ html[data-single-window="1"] #app-toolbar.visible {
   box-sizing: border-box;
 }
 .chat-rich-input:focus {
-  border-color: var(--chat-accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--chat-accent) 65%, transparent);
+  border-color: var(--chat-border);
+  box-shadow: none;
 }
 .chat-rich-input:not([data-has-content="1"])::before {
   content: attr(data-placeholder);
@@ -638,6 +665,11 @@ body.chat-composer-resizing {
 #team-send-btn {
   background: var(--chat-active-bg) !important;
   color: var(--chat-active-fg) !important;
+  min-width: 52px !important;
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  flex-shrink: 0 !important;
+  text-align: center !important;
 }
 #rp-annotation,
 .gb-tool-annotation {

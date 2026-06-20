@@ -121,10 +121,10 @@ const PANEL_MENU_SECTIONS = [
     items: [
       { label: 'フォルダツリー', icon: 'folderTree', type: 'outliner', open: (paneId) => _openPanelMenuItem('outliner', paneId) },
       { label: 'ビューワー', icon: 'tvMinimal', type: 'preview', open: (paneId) => _openPanelMenuItem('preview', paneId) },
-      { label: 'オプション', icon: 'panelRight', type: 'detail', open: (paneId) => _openPanelMenuItem('detail', paneId) },
+      { label: 'オプション', icon: 'slidersHorizontal', type: 'detail', open: (paneId) => _openPanelMenuItem('detail', paneId) },
       { label: 'バージョン管理', icon: 'gitBranch', type: 'version', open: (paneId) => _openPanelMenuItem('version', paneId) },
       { label: 'チャット', icon: 'messagesSquare', type: 'chat', open: (paneId) => _openPanelMenuItem('chat', paneId) },
-      { label: 'カレンダー', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
+      { label: 'スケジューラー', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
       { label: 'タイマー', icon: 'timer', type: 'timer', open: (paneId) => _openPanelMenuItem('timer', paneId) },
       { label: 'ヒストリー', icon: 'history', type: 'history', open: (paneId) => _openPanelMenuItem('history', paneId) },
       { label: '注釈', icon: 'stickyNote', type: 'annotation', open: (paneId) => _openPanelMenuItem('annotation', paneId) },
@@ -274,7 +274,7 @@ function applyTreeNameSearch() {
   const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
     ? _getTreeSearchIncludeEntities()
     : localStorage.getItem('tree-search-include-entities') === 'true';
-  const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node');
+  const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
 
   if (!q) {
     // 検索クリア: グローバルフィルタのみ適用状態に戻す
@@ -384,7 +384,7 @@ function openVaultSearchReplacePanel(scopePath) {
 function openCurrentToolbarSearchReplace(tool) {
   const normalized = String(tool || '').toLowerCase();
   if (normalized === 'page' || normalized === 'note') {
-    if (typeof openFileSearch === 'function') openFileSearch();
+    if (typeof openFileSearch === 'function') openFileSearch('replace');
     return;
   }
   if (normalized === 'board') {
@@ -392,7 +392,7 @@ function openCurrentToolbarSearchReplace(tool) {
     return;
   }
   if (normalized === 'database' || normalized === 'db' || normalized === 'sheet') {
-    if (typeof showDbSearchModal === 'function') showDbSearchModal({ scope: 'current' });
+    if (typeof openDbFindReplace === 'function') openDbFindReplace('replace');
     return;
   }
   if (normalized === 'folder') {
@@ -400,7 +400,7 @@ function openCurrentToolbarSearchReplace(tool) {
     openVaultSearchReplacePanel(folderPath);
     return;
   }
-  if (typeof openFileSearch === 'function') openFileSearch();
+  if (typeof openFileSearch === 'function') openFileSearch('replace');
 }
 
 function _selectedSearchFolderPath() {
@@ -513,8 +513,13 @@ function highlightMatch(text, query, caseSensitive, useRegex) {
 
 function _searchResultLabel(path) {
   return String(path || '').split('/').pop()
+    .replace(/\.mel-sheet$/i, '')
+    .replace(/\.mel-board$/i, '')
+    .replace(/\.mel-scenario$/i, '')
+    .replace(/\.mel-timer$/i, '')
     .replace(/\.smart-db\.json$/i, '')
     .replace(/\.scriptnote\.json$/i, '')
+    .replace(/\.timer\.json$/i, '')
     .replace(/\.scenario\.json$/i, '')
     .replace(/\.board\.md$/i, '')
     .replace(/\.\w+$/, '');
@@ -522,10 +527,11 @@ function _searchResultLabel(path) {
 
 function _searchResultKind(path, type) {
   const lower = String(path || '').toLowerCase();
-  if (type === 'smart-db' || lower.endsWith('.smart-db.json')) return 'smart-db';
-  if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
+  if (type === 'smart-db' || lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
+  if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
   if (type === 'csv' || lower.endsWith('.csv')) return 'csv';
-  if (type === 'board' || lower.endsWith('.board.md')) return 'board';
+  if (type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
   if (type === 'database') return 'database';
   return type || 'page';
 }
@@ -534,7 +540,12 @@ function openSearchResult(path, type) {
   const _expOpts = { fromExplorer: true };
   const kind = _searchResultKind(path, type);
   const label = _searchResultLabel(path);
-  if (kind === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, label, _expOpts); }
+  if (kind === 'folder' && typeof openFolder === 'function') openFolder(label, path, _expOpts);
+  else if (kind === 'image' || kind === 'video' || kind === 'audio') {
+    if (typeof openMedia === 'function') openMedia(label, path, kind, _expOpts);
+  }
+  else if (kind === 'document' && String(path || '').toLowerCase().endsWith('.pdf')) openViewer('/viewer?pdf=' + encodeURIComponent(path));
+  else if (kind === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, label, _expOpts); }
   else if (kind === 'board') openBoard(label, path, _expOpts);
   else if (kind === 'csv' && typeof openCsvFile === 'function') openCsvFile(label, path, _expOpts);
   else if (kind === 'smart-db' && typeof openSmartDbFile === 'function') openSmartDbFile(label, path, _expOpts);

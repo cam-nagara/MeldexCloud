@@ -1,13 +1,12 @@
   if (!sendBtn || _chatState.streaming) return;
   const status = await _chatProviderReadyStatus(provider);
   if (refreshToken !== _chatState.apiKeyRefreshToken || provider !== _chatProviderKey(_chatState.provider)) return;
-  if (_chatIsCliProvider(provider)) {
-    sendBtn.disabled = false;
-    sendBtn.title = status.configured ? '送信 (Enter)' : (status.message || 'CLIチャット設定を確認してください。');
-    return;
+  const configured = typeof _chatProviderStatusConfigured === 'function' ? _chatProviderStatusConfigured(status) : !!status.configured;
+  sendBtn.disabled = !configured;
+  sendBtn.title = configured ? '送信 (Enter)' : (status.message || '送信設定を確認してください。');
+  if (typeof _chatRefreshProviderAvailability === 'function') {
+    _chatRefreshProviderAvailability({ [provider]: status }).catch(() => {});
   }
-  sendBtn.disabled = !status.configured;
-  sendBtn.title = status.configured ? '送信 (Enter)' : (status.message || '送信設定を確認してください。');
 }
 
 function _chatSafeUserSegment() {
@@ -73,6 +72,7 @@ function _chatResetCurrentSession(options = {}) {
   _chatState.messages = [];
   _chatState.sessionId = '';
   _chatState.targetPath = options.keepTargetPath ? (_chatState.targetPath || '') : '';
+  _chatState.lastImplicitTargetPath = options.keepTargetPath ? (_chatState.lastImplicitTargetPath || '') : '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: options.cleanupUploads !== false });
   } else {
@@ -96,39 +96,60 @@ function _chatAddSourceOption(options, seen, option) {
 
 function _chatFindSourceOption(value, options) {
   const raw = String(value || '');
-  if (!raw) return (options || []).find(item => !item.value) || null;
+  if (!raw) return null;
+  if (raw.startsWith('workspace:')) return (options || []).find(item => String(item.value || '') === raw) || null;
   const normalized = _chatNormalizePath(raw);
   return (options || []).find(item => _chatNormalizePath(item.value) === normalized) || null;
 }
 
+function _chatWorkspaceOptionValue(workspaceId) {
+  return workspaceId ? 'workspace:' + String(workspaceId) : '';
+}
+
+function _chatTargetSelectorValue() {
+  return _chatState.workspaceId ? _chatWorkspaceOptionValue(_chatState.workspaceId) : _chatSourceFolderValue();
+}
+
 function _chatSourceOptions() {
-  const options = [{ value: '', label: '個人Vault（既定）', kind: 'personal', path: _chatVaultInfo.path || '' }];
+  const options = [];
   const seen = new Set();
-  const vaultPath = String(_chatVaultInfo.path || '');
-  if (vaultPath) {
+  (_chatWorkspacesCache || []).forEach(workspace => {
+    if (!workspace || !workspace.id) return;
     _chatAddSourceOption(options, seen, {
-      value: vaultPath,
-      label: 'ソース: ' + (_chatVaultInfo.name || vaultPath.split(/[\\/]/).pop() || vaultPath),
-      kind: 'vault',
-      path: vaultPath,
-    });
-  }
-  (_chatVaultsCache || []).forEach(vault => {
-    if (!vault || !vault.path) return;
-    _chatAddSourceOption(options, seen, {
-      value: vault.path,
-      label: 'ソース: ' + (vault.name || vault.path.split(/[\\/]/).pop() || vault.path),
-      kind: 'vault',
-      path: vault.path,
+      value: _chatWorkspaceOptionValue(workspace.id),
+      label: 'ワークスペース: ' + (workspace.name || 'ワークスペース'),
+      kind: 'workspace',
+      workspaceId: workspace.id,
+      path: workspace.folder || '',
     });
   });
+  const homePath = String(_chatVaultInfo?.path || (_chatVaultsCache || [])[0]?.path || '').trim();
+  if (homePath) {
+    _chatAddSourceOption(options, seen, {
+      value: homePath,
+      label: 'ホームフォルダ',
+      kind: 'home',
+      path: homePath,
+    });
+  }
   (_chatSourceFoldersCache || []).forEach(root => {
     if (!root || !root.path) return;
+    // ワークスペース由来のルートは「ワークスペース: ○○」の選択肢が別途あるため、ソースとして重複表示しない
+    if (root.kind === 'workspace' || root.workspaceId) return;
     _chatAddSourceOption(options, seen, {
       value: root.path,
       label: 'ソース: ' + (root.name || root.path.split(/[\\/]/).pop() || root.path),
       kind: 'source',
       path: root.path,
+    });
+  });
+  (_chatVaultsCache || []).forEach(vault => {
+    if (!vault || !vault.path) return;
+    _chatAddSourceOption(options, seen, {
+      value: vault.path,
+      label: 'ソース: ' + (vault.name || vault.path.split(/[\\/]/).pop() || vault.path),
+      kind: 'source',
+      path: vault.path,
     });
   });
   return options;
@@ -137,17 +158,17 @@ function _chatSourceOptions() {
 function _syncChatSourceFolderUi() {
   const select = document.getElementById('chat-source-folder');
   const badge = document.getElementById('chat-source-badge');
+  const selected = _chatFindSourceOption(_chatTargetSelectorValue(), _chatSourceOptions());
+  const hasSource = !!(_chatWorkspaceIdValue() || _chatSourceFolderValue());
   if (select) {
-    select.value = _chatSourceFolderValue();
-    select.disabled = !!_chatState.streaming;
+    select.value = _chatTargetSelectorValue();
+    select.disabled = !!_chatState.streaming || !_chatSourceOptions().length;
   }
-  const selected = _chatFindSourceOption(_chatSourceFolderValue(), _chatSourceOptions());
-  const shared = !!_chatSourceFolderValue();
   if (badge) {
-    badge.textContent = shared ? (selected?.kind === 'vault' ? 'ソース' : '共有') : '個人';
-    badge.style.color = shared ? 'var(--green, #4ec9b0)' : 'var(--fg2)';
-    badge.style.background = shared ? 'rgba(78,201,176,0.12)' : 'var(--bg2)';
-    badge.style.border = '1px solid ' + (shared ? 'var(--green, #4ec9b0)' : 'var(--border)');
+    badge.textContent = hasSource && selected ? '対象' : '未選択';
+    badge.style.color = hasSource && selected ? 'var(--green, #4ec9b0)' : 'var(--fg2)';
+    badge.style.background = hasSource && selected ? 'rgba(78,201,176,0.12)' : 'var(--bg2)';
+    badge.style.border = '1px solid ' + (hasSource && selected ? 'var(--green, #4ec9b0)' : 'var(--border)');
   }
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
 }
@@ -183,8 +204,18 @@ async function _initChatSourceFolderSelector() {
     _chatVaultsCache = [];
   }
   try { _chatSourceFoldersCache = await apiFetch('/outliner-roots'); } catch { _chatSourceFoldersCache = []; }
+  try {
+    const workspacesPayload = await apiFetch('/workspaces');
+    _chatWorkspacesCache = Array.isArray(workspacesPayload?.workspaces) ? workspacesPayload.workspaces : [];
+  } catch {
+    _chatWorkspacesCache = [];
+  }
+  if (window.MeldexWorkspaces?.getActiveId && !_chatState.workspaceId) {
+    _chatState.workspaceId = window.MeldexWorkspaces.getActiveId() || '';
+  }
   let options = _chatSourceOptions();
-  let selected = _chatFindSourceOption(_chatState.sourceFolder, options);
+  let selected = _chatFindSourceOption(_chatTargetSelectorValue(), options);
+  if (!selected && !_chatState.sourceFolder && !_chatState.workspaceId) selected = options.find(item => item.kind === 'home') || options.find(item => item.kind === 'workspace') || null;
   if (!selected && _chatState.sourceFolder) {
     const preserved = String(_chatState.sourceFolder || '');
     options = options.concat([{
@@ -196,13 +227,28 @@ async function _initChatSourceFolderSelector() {
     }]);
     selected = _chatFindSourceOption(preserved, options);
   }
-  select.innerHTML = options.map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
+  const placeholder = options.length
+    ? '<option value="" disabled>対象を選択</option>'
+    : '<option value="" disabled>対象がありません</option>';
+  select.innerHTML = placeholder + options.map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
   if (selected) {
-    _chatState.sourceFolder = selected.value;
-    localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, selected.value);
+    if (selected.kind === 'workspace') {
+      _chatState.workspaceId = selected.workspaceId || '';
+      _chatState.sourceFolder = '';
+      localStorage.setItem(_CHAT_WORKSPACE_STORAGE_KEY, _chatState.workspaceId);
+      localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
+      window.MeldexWorkspaces?.setActiveId?.(_chatState.workspaceId, { reason: 'chat-init' });
+    } else {
+      _chatState.workspaceId = '';
+      _chatState.sourceFolder = selected.value;
+      localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
+      localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, selected.value);
+    }
   } else {
+    _chatState.workspaceId = '';
     _chatState.sourceFolder = '';
-    localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, '');
+    localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
+    localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
   }
   _syncChatSourceFolderUi();
   _refreshChatDebugAvailability();
@@ -211,28 +257,32 @@ async function _initChatSourceFolderSelector() {
 function _detectSourceFolderFromPath(targetPath) {
   const raw = _chatNormalizePath(targetPath);
   if (!raw) return '';
-  const vaultPath = _chatNormalizePath(_chatVaultInfo.path);
-  if (vaultPath && (raw === vaultPath || raw.startsWith(vaultPath + '/'))) return _chatVaultInfo.path || '';
   let best = '';
-  (_chatSourceFoldersCache || []).forEach(root => {
-    const rootPath = _chatNormalizePath(root?.path);
+  let bestLength = 0;
+  _chatSourceOptions().forEach(option => {
+    const rootPath = _chatNormalizePath(option?.path || option?.value);
     if (!rootPath) return;
     if (raw === rootPath || raw.startsWith(rootPath + '/')) {
-      if (rootPath.length > _chatNormalizePath(best).length) best = root.path;
+      if (rootPath.length > bestLength) {
+        best = option.kind === 'workspace' ? option.value : (option.path || option.value);
+        bestLength = rootPath.length;
+      }
     }
   });
   return best;
 }
 
 async function _setChatSourceFolder(sourceFolder, options = {}) {
-  const next = String(sourceFolder || '');
-  if (next === _chatSourceFolderValue() && !options.force) {
+  const rawNext = String(sourceFolder || '');
+  const nextWorkspaceId = rawNext.startsWith('workspace:') ? rawNext.slice('workspace:'.length) : '';
+  const next = nextWorkspaceId ? '' : rawNext;
+  if (next === _chatSourceFolderValue() && nextWorkspaceId === _chatWorkspaceIdValue() && !options.force) {
     _syncChatSourceFolderUi();
     return true;
   }
   if (_chatState.streaming) {
     _syncChatSourceFolderUi();
-    if (typeof showStatus === 'function') showStatus('応答生成中は対象ソースフォルダを切り替えられません', true);
+    if (typeof showStatus === 'function') showStatus('応答生成中は対象を切り替えられません', true);
     return false;
   }
   if (!options.skipSave && _chatState.messages.length > 0) {
@@ -245,8 +295,17 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
       return false;
     }
   }
+  _chatState.workspaceId = nextWorkspaceId;
   _chatState.sourceFolder = next;
-  localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, next);
+  if (nextWorkspaceId) {
+    localStorage.setItem(_CHAT_WORKSPACE_STORAGE_KEY, nextWorkspaceId);
+    localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
+    window.MeldexWorkspaces?.setActiveId?.(nextWorkspaceId, { reason: 'chat' });
+  } else {
+    localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
+    if (next) localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, next);
+    else localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
+  }
   _chatResetCurrentSession();
   _teamCurrentRoom = '';
   _teamLastTimestamp = '';
@@ -323,6 +382,7 @@ function _chatRenderStoredMessages() {
     chatAddMessage(message.role || 'assistant', message.content, _chatMessageRenderOptions(message, index));
   });
   _chatRenderQueuedMessageBubbles();
+  window.GBChatCliRestoreActivity?.();
 }
 
 function _chatApplyCompression(data, options = {}) {
@@ -349,7 +409,8 @@ function _chatApplyCompression(data, options = {}) {
 }
 
 function _chatHistoryScope() {
-  const key = (_chatSourceFolderValue() || 'personal') + ':' + (_chatState.sessionId || _chatState.targetPath || 'llm');
+  const storageScope = _chatWorkspaceIdValue() ? ('workspace:' + _chatWorkspaceIdValue()) : (_chatSourceFolderValue() || 'personal');
+  const key = storageScope + ':' + (_chatState.sessionId || _chatState.targetPath || 'llm');
   return 'chat:' + key;
 }
 
@@ -357,7 +418,8 @@ function _chatSessionScopeSnapshot() {
   return {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
-    targetPath: String(_chatState.targetPath || ''),
+    targetPath: String(_chatState.targetPath || _chatState.lastImplicitTargetPath || ''),
+    workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),
   };
@@ -367,6 +429,7 @@ function _chatSessionScopeMatches(scope) {
   if (!scope) return true;
   const current = _chatSessionScopeSnapshot();
   if (String(scope.mode || '') !== String(current.mode || '')) return false;
+  if (String(scope.workspaceId || '') !== String(current.workspaceId || '')) return false;
   if (String(scope.sourceFolder || '') !== String(current.sourceFolder || '')) return false;
   if (String(scope.targetPath || '') !== String(current.targetPath || '')) return false;
   const scopeSession = String(scope.sessionId || '');
@@ -544,12 +607,17 @@ function chatEditUserMessage(index) {
   const bubble = wrapper?.querySelector('.chat-message-bubble');
   if (!bubble || bubble.querySelector('textarea')) return;
   const original = _chatContentToText(_chatState.messages[idx]?.content || '');
+  const bubbleWidth = Math.ceil(bubble.getBoundingClientRect?.().width || 0);
+  if (bubbleWidth > 0) bubble.style.width = bubbleWidth + 'px';
+  bubble.style.maxWidth = '100%';
+  bubble.style.boxSizing = 'border-box';
+  bubble.style.whiteSpace = 'normal';
   const textarea = document.createElement('textarea');
   textarea.value = original;
   textarea.rows = Math.min(10, Math.max(3, original.split('\n').length + 1));
-  textarea.style.cssText = 'width:100%;min-width:220px;background:rgba(255,255,255,0.08);color:inherit;border:1px solid rgba(255,255,255,0.35);border-radius:6px;padding:6px;font:inherit;resize:vertical;';
+  textarea.style.cssText = 'display:block;width:100%;min-width:0;box-sizing:border-box;background:rgba(255,255,255,0.08);color:inherit;border:1px solid rgba(255,255,255,0.35);border-radius:6px;padding:6px;font:inherit;resize:vertical;';
   const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:6px;';
+  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap;';
   const cancel = document.createElement('button');
   cancel.type = 'button';
   cancel.textContent = 'キャンセル';
@@ -589,6 +657,7 @@ function chatAddMessage(role, content, options = {}) {
   if (!container) return null;
   container.querySelectorAll('.chat-empty-placeholder').forEach(el => el.remove());
   const isUser = role === 'user';
+  const shouldScrollAfterAppend = _chatShouldStickToBottom(container, options?.forceScroll === true || (isUser && options?.forceScroll !== false));
   const isQueued = !!options?.queued_for_next_response;
   const plainContent = _chatContentToText(content);
   const provider = options?.provider || _chatState.provider;
@@ -754,14 +823,12 @@ function chatAddMessage(role, content, options = {}) {
   }
   if (!isUser && options?.tool_audit_warning) _chatRenderToolAuditWarning(div, options.tool_audit_warning);
   if (!isUser && options?.thinking) _chatRenderThinking(div, options.thinking);
-  if (!isUser && options?.usage) _chatRenderUsage(div, options.usage, provider, model);
   if (!isUser && options?.compressed_summary) {
     div.style.border = '1px dashed var(--border)';
     div.title = `圧縮済み会話の要約（元発言 ${Number(options.original_message_count || 0)} 件）`;
   }
   if (!isUser && options?.code_exec_blocks?.length) chatRenderCodeExecBlocks(div, options.code_exec_blocks);
-  container.scrollTop = container.scrollHeight;
-  _chatRenderSessionUsageSummary();
+  _chatScrollToBottomIf(container, shouldScrollAfterAppend);
   return div;
 }
 
@@ -785,8 +852,9 @@ function chatAddToolUse(name, result, parent = null) {
     : 'align-self:flex-start;background:var(--bg2);border:1px solid var(--border);padding:6px 10px;border-radius:6px;max-width:80%;font-size:11px;color:var(--fg2);';
   const icon = /^(web_search|google_search)$/i.test(String(name || '')) ? 'globe' : 'settings';
   div.innerHTML = `${lucide(icon, 12)} <b>${esc(name)}</b><div class="tool-result-text" style="margin-top:4px;max-height:60px;overflow:hidden;text-overflow:ellipsis;">${esc(result?.substring(0, 200) || '')}</div>`;
+  const shouldScrollAfterAppend = !parent && _chatShouldStickToBottom(container);
   container.appendChild(div);
-  if (!parent) container.scrollTop = container.scrollHeight;
+  if (!parent) _chatScrollToBottomIf(container, shouldScrollAfterAppend);
   return div;
 }
 

@@ -115,7 +115,7 @@ function buildToolMenuItems(toolType) {
       { label: '開く...', action: () => showScriptNoteOpenModal() },
     ],
     database: [
-      { label: 'プロパティ管理', action: () => { if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
+      { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
       { label: 'シート横断検索', action: () => { if (typeof showDbSearchModal === 'function') showDbSearchModal(); }, disabled: !hasFile },
       { label: '整合性検証', action: () => { if (typeof onValidateClick === 'function') onValidateClick(); }, disabled: !hasFile },
       { label: '検証ルール管理', action: () => { if (typeof showValidationRulesModal === 'function') showValidationRulesModal(state.currentDbPath || currentPath); }, disabled: !hasFile },
@@ -150,9 +150,7 @@ function buildToolMenuItems(toolType) {
     calendar: [
       { label: '新規イベント', action: () => _openCalendarEventFromMenu() },
       { separator: true },
-      { label: '制作管理を始める', action: () => { if (typeof openProductionManagementStart === 'function') openProductionManagementStart(); } },
-      { label: 'ページ単位またはコマ単位の作業を作成...', action: () => { if (typeof openProductionTaskCreate === 'function') openProductionTaskCreate(); } },
-      { label: '担当者と時間を割り当て', action: () => { if (typeof runProductionAssignment === 'function') runProductionAssignment(); } },
+      { label: '制作管理パネル...', action: () => { if (typeof openProductionManagementPanel === 'function') openProductionManagementPanel(); } },
       { separator: true },
       { label: '同期設定...', action: () => _openCalendarSyncFromMenu() },
       { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
@@ -308,6 +306,18 @@ async function _showSaveAsModal(srcPath) {
 
   // フォルダツリー表示/非表示
   folderDisplay.addEventListener('click', async () => {
+    if (window.GBFolderPicker?.pickFolder) {
+      const selected = await window.GBFolderPicker.pickFolder({
+        title: '保存先フォルダを選択',
+        initialPath: selectedFolder,
+      });
+      if (selected?.path !== undefined) {
+        selectedFolder = selected.path;
+        folderLabel.textContent = selected.label || selected.name || selected.path || '(ルート)';
+        folderTree.style.display = 'none';
+      }
+      return;
+    }
     if (folderTree.style.display === 'none') {
       folderTree.style.display = '';
       await _loadSaveAsFolderTree(folderTree, selectedFolder, (path, label) => {

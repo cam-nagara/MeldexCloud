@@ -200,7 +200,7 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay) {
 function _typeLabel(type) {
   const labels = {
     text: 'テキスト', number: '数値', select: 'セレクト', 'multi-select': 'マルチセレクト',
-    checkbox: 'チェックボックス', date: '日付', url: 'URL', relation: 'リレーション',
+    checkbox: 'チェックボックス', date: '日時', url: 'URL', relation: 'リレーション',
     'multi-relation': 'マルチリレーション', formula: '数式',
   };
   return labels[type] || type;

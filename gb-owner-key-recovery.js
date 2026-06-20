@@ -71,17 +71,38 @@
     return { checked };
   }
 
+  async function _deriveVerifiedPassphrase(passphrase) {
+    const store = window.MeldexOwnerKeyStore;
+    const attempts = [];
+    const currentRaw = await store?.deriveRawFromPassphrase?.(passphrase);
+    if (currentRaw) attempts.push({ raw: currentRaw, label: '現在の保存先' });
+    const legacySalt = store?.LEGACY_KDF_SALT || '';
+    if (legacySalt) {
+      const legacyRaw = await store?.deriveRawFromPassphrase?.(passphrase, legacySalt).catch(() => '');
+      if (legacyRaw && legacyRaw !== currentRaw) attempts.push({ raw: legacyRaw, label: '旧形式', legacy: true });
+    }
+    let lastError = null;
+    for (const attempt of attempts) {
+      try {
+        const verification = await _verifyCandidateRawKey(attempt.raw);
+        return { ...attempt, verification };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError || new Error('管理者鍵を復旧できませんでした');
+  }
+
   async function _setFromPassphrase(root) {
     if (!_isOwner()) return _status(root, '管理者のみ実行できます。', true);
     const pass = root.querySelector('[data-owner-key-recovery-passphrase]')?.value || '';
     if (!pass) return _status(root, 'パスフレーズを入力してください。', true);
     try {
-      const raw = await window.MeldexOwnerKeyStore?.deriveRawFromPassphrase?.(pass);
-      if (!raw) throw new Error('管理者鍵を復旧できませんでした');
-      await _verifyCandidateRawKey(raw);
-      await window.MeldexOwnerKeyStore?.setRawKey?.(raw);
+      const candidate = await _deriveVerifiedPassphrase(pass);
+      await window.MeldexOwnerKeyStore?.setRawKey?.(candidate.raw);
       const result = await _resignAll();
-      _status(root, `管理者鍵を復旧しました。再署名: ${(result?.signed || []).length}件`);
+      const suffix = candidate.legacy ? '旧形式のパスフレーズから復旧し、現在の暗号化形式で保存しました。' : '管理者鍵を復旧しました。';
+      _status(root, `${suffix}再署名: ${(result?.signed || []).length}件`);
     } catch (err) {
       _status(root, err?.message || String(err), true);
     }
@@ -119,6 +140,10 @@
         '管理者鍵:',
         raw,
         '',
+        '保存方式:',
+        'この端末では、管理者鍵は保存先ごとのsaltを使って暗号化され、ブラウザのIndexedDBに保存されます。',
+        '復旧用パスフレーズは現在の保存先で同じ管理者鍵を再導出するためのものです。',
+        '',
         '復旧手順:',
         '1. Meldexの設定から「管理者鍵 / 改竄検知」を開く',
         '2. 「復旧UI」でパスフレーズまたは管理者鍵を入力する',
@@ -149,7 +174,7 @@
         <div class="gb-section-desc">${_esc(reason || '署名検証に必要な管理者鍵がこの端末にありません。')}</div>
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">パスフレーズから復旧</div>
-          <div class="gb-section-desc">管理者が決めた${_esc(minLength)}文字以上のパスフレーズから同じ鍵を再生成します。</div>
+          <div class="gb-section-desc">管理者が決めた${_esc(minLength)}文字以上のパスフレーズから、現在の保存先用の管理者鍵を再生成します。</div>
           <label class="gb-field-row">
             <span class="gb-label" style="min-width:130px;">パスフレーズ</span>
             <input type="password" class="gb-input" data-owner-key-recovery-passphrase ${disabled} style="flex:1;" autocomplete="new-password">

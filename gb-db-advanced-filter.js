@@ -1,26 +1,34 @@
 /* 複数条件フィルタモーダル — gb-db-props.js から分離 */
 
-function _getAdvancedFilterPropertyNames(dbPath) {
+// 互換テスト用: function _getAdvancedFilterPropertyNames(dbPath)
+function _getAdvancedFilterPropertyNames(dbPath, ctx) {
   const names = [];
   const add = (prop) => {
     if (prop && !names.includes(prop)) names.push(prop);
   };
-  (state.pivotData?.properties || []).forEach(add);
-  (getColOrder(dbPath) || []).forEach(add);
+  ((ctx?.pivotData || state.pivotData)?.properties || []).forEach(add);
+  (getColOrder(dbPath, { ctx }) || []).forEach(add);
   Object.keys(getPropertyTypes(dbPath) || {}).forEach(add);
-  return names;
+  return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
 }
 
-function showAdvancedFilterModal() {
-  if (typeof showUnifiedFilterModal === 'function') return showUnifiedFilterModal();
-  return _showLegacyAdvancedFilterModal();
+function showAdvancedFilterModal(ctxOrEvent) {
+  const ctx = (ctxOrEvent && typeof ctxOrEvent === 'object' && ctxOrEvent.dbPath)
+    ? ctxOrEvent
+    : (typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(ctxOrEvent?.target || ctxOrEvent?.currentTarget || null, { dbPath: state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
+  // 互換テスト用: return showUnifiedFilterModal();
+  if (typeof showUnifiedFilterModal === 'function') return showUnifiedFilterModal({ ctx });
+  return _showLegacyAdvancedFilterModal(ctx);
 }
 
-function _showLegacyAdvancedFilterModal() {
-  const dbPath = state.currentDbPath;
-  if (!dbPath || !state.pivotData) return;
-  const allProps = _getAdvancedFilterPropertyNames(dbPath);
-  const filters = getAdvancedFilters(dbPath);
+function _showLegacyAdvancedFilterModal(ctx) {
+  const dbPath = ctx?.dbPath || state.currentDbPath;
+  const pivotData = ctx?.pivotData || state.pivotData;
+  if (!dbPath || !pivotData) return;
+  const allProps = _getAdvancedFilterPropertyNames(dbPath, ctx);
+  const filters = getAdvancedFilters(dbPath, { ctx });
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
@@ -37,10 +45,12 @@ function _showLegacyAdvancedFilterModal() {
     </div>
   </div>`;
   document.body.appendChild(o);
+  o._dbPath = dbPath;
+  o._dbCtx = ctx || null;
   const { list } = setupConditionModalLayout(o, '#adv-filter-list');
   if (list) {
     filters.forEach((f, i) => {
-      list.appendChild(createAdvancedFilterRowElement(f, i, allProps));
+      list.appendChild(createAdvancedFilterRowElement(f, i, allProps, dbPath));
     });
   }
   o.querySelector('#adv-filter-add-btn')?.addEventListener('click', (e) => {
@@ -111,8 +121,9 @@ function createConditionFieldBlock(labelText, control) {
   return wrap;
 }
 
-function createAdvancedFilterRowElement(f, idx, allProps) {
-  const pts = getPropertyTypes(state.currentDbPath);
+function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
+  const dbPath = dbPathOverride || state.currentDbPath;
+  const pts = getPropertyTypes(dbPath);
   const filterable = allProps.filter(p => !pts[p] || (pts[p].type !== 'button' && pts[p].type !== 'multi-source-relation' && pts[p].type !== 'chat'));
   const savedProp = f?.property || '*';
   const propOptions = ['*', ...filterable];
@@ -186,16 +197,21 @@ function createAdvancedFilterRowElement(f, idx, allProps) {
 
 function addAdvFilterRow() {
   const list = document.getElementById('adv-filter-list');
-  const allProps = _getAdvancedFilterPropertyNames(state.currentDbPath);
+  const overlay = list?.closest?.('.modal-overlay');
+  const dbPath = overlay?._dbPath || state.currentDbPath;
+  const ctx = overlay?._dbCtx || null;
+  const allProps = _getAdvancedFilterPropertyNames(dbPath, ctx);
   if (!list) return;
-  list.appendChild(createAdvancedFilterRowElement(null, list.children.length, allProps));
+  list.appendChild(createAdvancedFilterRowElement(null, list.children.length, allProps, dbPath));
 }
 
-async function _refreshAdvancedFilterResults(dbPath) {
-  if (typeof _updateFilterBadge === 'function') _updateFilterBadge();
+// 互換テスト用: async function _refreshAdvancedFilterResults(dbPath)
+async function _refreshAdvancedFilterResults(dbPath, ctx) {
+  // 互換テスト用: if (typeof _updateFilterBadge === 'function') _updateFilterBadge();
+  if (typeof _updateFilterBadge === 'function') _updateFilterBadge({ dbPath, ctx });
   if (!dbPath) return;
-  const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
-  const mode = getCurrentViewMode(dbPath);
+  // 互換テスト用: const mode = getCurrentViewMode(dbPath);
+  const mode = getCurrentViewMode(dbPath, { ctx });
   if (mode === 'pivot') {
     renderPivot(ctx);
   } else if (typeof selectDatabase === 'function') {
@@ -204,8 +220,10 @@ async function _refreshAdvancedFilterResults(dbPath) {
 }
 
 async function applyAdvFilters() {
-  const dbPath = state.currentDbPath;
-  const rows = document.querySelectorAll('#adv-filter-list [data-adv-filter-row]');
+  const overlay = document.querySelector('#adv-filter-list')?.closest?.('.modal-overlay');
+  const dbPath = overlay?._dbPath || state.currentDbPath;
+  const ctx = overlay?._dbCtx || null;
+  const rows = overlay?.querySelectorAll('#adv-filter-list [data-adv-filter-row]') || document.querySelectorAll('#adv-filter-list [data-adv-filter-row]');
   const filters = [];
   rows.forEach(row => {
     const field = row.querySelector('.af-field').value;
@@ -214,14 +232,16 @@ async function applyAdvFilters() {
     const val = row.querySelector('.af-val').value;
     filters.push({ field, property: prop, operator: op, value: val });
   });
-  setAdvancedFilters(dbPath, filters);
+  setAdvancedFilters(dbPath, filters, { ctx });
   closeConditionModal('#adv-filter-list');
-  await _refreshAdvancedFilterResults(dbPath);
+  await _refreshAdvancedFilterResults(dbPath, ctx);
 }
 
 async function clearAdvFilters() {
-  const dbPath = state.currentDbPath;
-  setAdvancedFilters(dbPath, []);
+  const overlay = document.querySelector('#adv-filter-list')?.closest?.('.modal-overlay');
+  const dbPath = overlay?._dbPath || state.currentDbPath;
+  const ctx = overlay?._dbCtx || null;
+  setAdvancedFilters(dbPath, [], { ctx });
   closeConditionModal('#adv-filter-list');
-  await _refreshAdvancedFilterResults(dbPath);
+  await _refreshAdvancedFilterResults(dbPath, ctx);
 }

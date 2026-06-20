@@ -16,7 +16,11 @@ class CalendarComponent extends ToolComponent {
     this._shifts = [];
     this._undoStack = [];
     this._redoStack = [];
+    this._undoLoadWindow = null;
     this._startDay = parseInt(localStorage.getItem('gb-cal-start-day') || '0');
+    this._multiDayCount = this._normalizeMultiDayCount(localStorage.getItem('gb:cal-multi-day-count') || '3');
+    this._selectedMiniDates = new Set();
+    this._lastMiniDateStr = '';
     const sidebarMode = localStorage.getItem('gb:cal-sidebar-mode') || '';
     this._sidebarMode = sidebarMode || (localStorage.getItem('gb:cal-sidebar-only') === 'true' ? 'only' : 'all');
     this._sidebarOnly = this._sidebarMode === 'only';
@@ -46,7 +50,7 @@ class CalendarComponent extends ToolComponent {
   create() {
     this.el = document.createElement('div');
     this.el.className = 'gb-cal-root';
-    this.el.innerHTML = CalendarComponent._buildHTML(this._startDay);
+    this.el.innerHTML = CalendarComponent._buildHTML(this._startDay, this._multiDayCount);
     // DOM refs
     this._contentEl = this.el.querySelector('.gb-cal-content');
     this._titleEl = this.el.querySelector('.gb-cal-title');
@@ -63,16 +67,17 @@ class CalendarComponent extends ToolComponent {
     this._bindSidebarResize();
     this._initClockPanel();
     if (typeof this._applySidebarMode === 'function') this._applySidebarMode();
+    this._syncMultiDayControls();
     return this.el;
   }
 
-  static _buildHTML(startDay) {
+  static _buildHTML(startDay, multiDayCount) {
     void startDay;
     return `<div class="gb-cal-status"></div>
 <div class="gb-toolbar gb-toolbar-cal">
   <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
   <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
-  <button class="tb-icon-btn" data-cal-action="toggleSidebar" title="カレンダーサイドバー"><span class="ico ico-panelLeft"></span></button>
+  <button class="tb-icon-btn" data-cal-action="toggleSidebar" title="スケジューラーサイドバー"><span class="ico ico-panelLeft"></span></button>
   <div class="sep"></div>
   <button class="tb-icon-btn" data-cal-action="today" title="今日に戻る">${lucide('calendar', 16)}</button>
   <button class="tb-icon-btn" data-cal-action="prev" title="前へ">${lucide('chevronLeft', 16)}</button>
@@ -82,19 +87,22 @@ class CalendarComponent extends ToolComponent {
   <select class="tb-select gb-cal-view-select" title="表示" data-cal-setting="view">
     <option value="month">月</option>
     <option value="week">週</option>
+    <option value="multi">複数日</option>
     <option value="day">日</option>
-    <option value="tasks">タスク</option>
+    <option value="tasks">ToDoリスト</option>
     <option value="shifts">シフト</option>
     <option value="clock12">アナログ時計（12時間）</option>
     <option value="clock24">アナログ時計（24時間）</option>
   </select>
+  <input class="tb-input gb-cal-multi-day-count" type="number" min="2" max="14" step="1" value="${multiDayCount || 3}" title="表示日数" data-cal-setting="multi-day-count" style="width:48px;" hidden>
   <div class="tb-spacer"></div>
+  <button class="tb-icon-btn" data-cal-action="openProductionTaskList" title="タスクリストシートを開く">${lucide('listTodo', 16)}</button>
   <button class="tb-icon-btn" data-cal-action="template" title="テンプレート">${lucide('layoutTemplate', 16)}</button>
   <button class="tb-icon-btn" data-cal-action="timer" title="タイマー">${lucide('timer', 16)}</button>
   <div class="sep"></div>
   <button class="tb-icon-btn" data-cal-action="reload" title="再読み込み"><span class="ico ico-refreshCw"></span></button>
   <button class="tb-icon-btn" data-cal-action="sync" title="同期"><span class="ico ico-refreshCw"></span></button>
-  <button class="tb-icon-btn" data-cal-action="settings" title="設定">${lucide('settings', 16)}</button>
+  <button class="tb-icon-btn gb-toolbar-option-panel-btn" data-cal-action="detail" title="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
 </div>
 <div class="gb-cal-main">
   <div class="gb-cal-sidebar">
@@ -120,10 +128,10 @@ class CalendarComponent extends ToolComponent {
       </div>
       <div class="gb-cal-mini-grid"></div>
     </div>
-    <div><div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><span style="font-size:13px;font-weight:bold;flex:1;">今日のタスク</span><button data-cal-action="addTodayTask" class="gb-cal-sidebar-add-task" title="タスク追加">+</button></div><div class="gb-cal-today-tasks" style="font-size:12px;"></div></div>
+    <div><div class="gb-cal-sidebar-title-row"><span>今日のToDo</span><button data-cal-action="addTodayTask" class="gb-cal-sidebar-add-task" title="ToDo追加">+</button></div><div class="gb-cal-today-tasks" style="font-size:12px;"></div></div>
     <div style="margin-top:12px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-        <span style="font-size:13px;font-weight:bold;">カレンダー</span>
+      <div class="gb-cal-sidebar-title-row">
+        <span>カレンダー</span>
         <button data-cal-action="createCalendar" class="gb-cal-sidebar-add-task gb-cal-sidebar-add-calendar" title="新規カレンダー">+</button>
       </div>
       <div class="gb-cal-list" style="font-size:12px;"></div>
@@ -148,11 +156,41 @@ class CalendarComponent extends ToolComponent {
     if (sel) sel.addEventListener('change', () => { this._startDay = parseInt(sel.value); localStorage.setItem('gb-cal-start-day', this._startDay); this._render(); this._renderMiniCal(); });
     const viewSel = this.el.querySelector('.gb-cal-view-select');
     if (viewSel) viewSel.addEventListener('change', () => this.setView(viewSel.value));
+    const multiDayCount = this.el.querySelector('.gb-cal-multi-day-count');
+    if (multiDayCount) {
+      multiDayCount.addEventListener('change', () => {
+        this._multiDayCount = this._normalizeMultiDayCount(multiDayCount.value);
+        localStorage.setItem('gb:cal-multi-day-count', String(this._multiDayCount));
+        this._selectedMiniDates.clear();
+        this._lastMiniDateStr = '';
+        if (this._view !== 'multi') this.setView('multi');
+        else { this._syncMultiDayControls(); this._render(); this._renderMiniCal(); }
+      });
+    }
+  }
+
+  _openDetailPanel() {
+    const panel = document.getElementById('right-panel');
+    const activeTab = document.querySelector('.rp-tab.active')?.dataset.rpTab;
+    const detailOpen = !!(panel?.classList.contains('open') && activeTab === 'detail');
+    if (!detailOpen) {
+      if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
+      else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
+    }
+    if (typeof this._syncDetailPanel === 'function') this._syncDetailPanel();
   }
 
   _handleAction(action, anchor) {
     switch (action) {
-      case 'today': this._date = new Date(); this._loadEvents().then(() => this._render()); this._renderMiniCal(); break;
+      case 'today':
+        this._date = new Date();
+        // ミニカレンダーの複数選択が残っていると表示が変わらないため、今日基準へ戻す
+        this._selectedMiniDates?.clear?.();
+        this._lastMiniDateStr = '';
+        if (typeof this._persistViewToTabState === 'function') this._persistViewToTabState();
+        this._loadEvents().then(() => this._render());
+        this._renderMiniCal();
+        break;
       case 'prev': this._goNav(-1); break;
       case 'next': this._goNav(1); break;
       case 'template': this._showScheduleTemplateModal(); break;
@@ -161,10 +199,14 @@ class CalendarComponent extends ToolComponent {
         if (typeof openTimerPanel === 'function') openTimerPanel();
         else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
         break;
+      case 'openProductionTaskList':
+        if (typeof window.openProductionTaskListSheet === 'function') window.openProductionTaskListSheet();
+        else if (typeof showStatus === 'function') showStatus('タスクリストシートを開けませんでした', true);
+        break;
       case 'sync': this._showSyncModal(); break;
       case 'toggleSidebar': this._toggleSidebar(); break;
       case 'sidebarOnly': if (typeof this._setSidebarOnly === 'function') this._setSidebarOnly(!this._sidebarOnly); break;
-      case 'settings': if (typeof this._showCalendarSettingsPanel === 'function') this._showCalendarSettingsPanel(); break;
+      case 'detail': this._openDetailPanel(); break;
       case 'addTodayTask':
         if (typeof this._createTaskQuick === 'function') this._createTaskQuick({ status: 'todo', due_date: this._localDateStr() });
         else this._showTaskModal(null, 'todo');
@@ -181,6 +223,12 @@ class CalendarComponent extends ToolComponent {
   _goNav(dir) {
     if (this._view === 'month') this._addMonths(dir);
     else if (this._view === 'week') this._date.setDate(this._date.getDate() + dir * 7);
+    else if (this._view === 'multi') {
+      const selected = this._selectedMiniDateList();
+      if (selected.length > 1) this._shiftSelectedMiniDates(dir * selected.length);
+      else this._date.setDate(this._date.getDate() + dir * this._multiDayCount);
+    }
+    else if (this._view === 'shifts') this._addMonths(dir); // シフト表は月単位の表のため月送り
     else this._date.setDate(this._date.getDate() + dir);
     this._loadEvents().then(() => this._render());
     this._renderMiniCal();
@@ -205,7 +253,7 @@ class CalendarComponent extends ToolComponent {
 
   deactivate() {
     super.deactivate();
-    if (this._alarmInterval) { clearInterval(this._alarmInterval); this._alarmInterval = null; }
+    // アラーム監視はタブ非表示中も継続する（停止すると裏で作業中に通知を取り逃すため、解除は destroy 時のみ）
     if (typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
   }
 
@@ -242,14 +290,33 @@ class CalendarComponent extends ToolComponent {
   }
 
   handleKeyDown(e) {
+    // テキスト入力中はカレンダーのアンドゥで横取りせず、入力欄のネイティブUndoに任せる
+    const target = e.target;
+    if (target instanceof Element && (target.closest('input, textarea, select') || target.isContentEditable)) return false;
     if (e.ctrlKey && e.key === 'z' && !e.shiftKey) { e.preventDefault(); this._undo(); return true; }
     if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) { e.preventDefault(); this._redo(); return true; }
     return false;
   }
 
   // === 状態永続化 ===
-  getState() { return { view: this._view, calendarPath: this.state.calendarPath || '' }; }
-  restoreState(s) { super.restoreState(s); if (s) { this._view = s.view || 'month'; this.state.calendarPath = s.calendarPath || ''; } }
+  getState() {
+    return {
+      view: this._view,
+      calendarPath: this.state.calendarPath || '',
+      multiDayCount: this._multiDayCount,
+      selectedMiniDates: this._selectedMiniDateList(),
+    };
+  }
+  restoreState(s) {
+    super.restoreState(s);
+    if (s) {
+      this._view = s.view || 'month';
+      this.state.calendarPath = s.calendarPath || '';
+      this._multiDayCount = this._normalizeMultiDayCount(s.multiDayCount || this._multiDayCount);
+      this._selectedMiniDates = new Set(Array.isArray(s.selectedMiniDates) ? s.selectedMiniDates.filter(v => /^\d{4}-\d{2}-\d{2}$/.test(String(v))) : []);
+      this._lastMiniDateStr = this._selectedMiniDateList()[0] || '';
+    }
+  }
 
   // === 公開API (postMessage置換) ===
   pushUndo(label) { this._pushUndo(label); }
@@ -262,6 +329,10 @@ class CalendarComponent extends ToolComponent {
 
   // === ユーティリティ ===
   _getUser() { try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; } catch { return 'anonymous'; } }
+  _normalizeMultiDayCount(value) {
+    const n = parseInt(value, 10);
+    return Math.max(2, Math.min(14, Number.isFinite(n) ? n : 3));
+  }
   _addMonths(delta) {
     const d = this._date;
     const originalDay = d.getDate();
@@ -286,6 +357,44 @@ class CalendarComponent extends ToolComponent {
     const calendars = this._calendars || [];
     const visible = calendars.filter(c => this._visibleCalIds?.has(c.id));
     return visible[0] || calendars[0] || null;
+  }
+  _selectedMiniDateList() {
+    return [...(this._selectedMiniDates || new Set())].filter(v => /^\d{4}-\d{2}-\d{2}$/.test(String(v))).sort();
+  }
+  _multiDayDateStrs() {
+    const selected = this._selectedMiniDateList();
+    if (selected.length > 1) return selected;
+    const out = [];
+    const start = new Date(this._date);
+    for (let i = 0; i < this._multiDayCount; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      out.push(this._localDateStr(d));
+    }
+    return out;
+  }
+  _shiftSelectedMiniDates(days) {
+    const shifted = this._selectedMiniDateList().map(dateStr => {
+      const d = this._parseLocalDate(dateStr);
+      d.setDate(d.getDate() + days);
+      return this._localDateStr(d);
+    });
+    this._selectedMiniDates = new Set(shifted);
+    if (shifted[0]) this._date = this._parseLocalDate(shifted[0]);
+    this._lastMiniDateStr = shifted[0] || '';
+  }
+  _syncMultiDayControls() {
+    const input = this.el?.querySelector?.('.gb-cal-multi-day-count');
+    if (!input) return;
+    input.hidden = this._view !== 'multi';
+    input.value = String(this._selectedMiniDateList().length > 1 ? this._selectedMiniDateList().length : this._multiDayCount);
+  }
+  _multiDayTitle() {
+    const dates = this._multiDayDateStrs();
+    if (!dates.length) return '複数日';
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    return first === last ? first : `${first} – ${last}（${dates.length}日）`;
   }
 
   _selectedCalendar() {
@@ -342,12 +451,29 @@ class CalendarComponent extends ToolComponent {
     const y = this._date.getFullYear(), m = this._date.getMonth();
     const start = new Date(y, m - 1, 1).toISOString();
     const end = new Date(y, m + 2, 0).toISOString();
+    this._guardUndoLoadWindow(start + '|' + end, start, end);
+    const seq = (this._loadEventsSeq = (this._loadEventsSeq || 0) + 1);
     try {
-      this._events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
+      const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
+      if (seq !== this._loadEventsSeq) return; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
+      this._events = events;
     } catch {
+      if (seq !== this._loadEventsSeq) return;
       if (!Array.isArray(this._events)) this._events = [];
       this._showStatus('予定の読み込みに失敗', true);
     }
+  }
+
+  // 読み込み窓（表示期間）が変わったらアンドゥ履歴を破棄する。
+  // 窓違いのスナップショット復元は、現在の窓にだけ存在する予定を巻き添え削除するため
+  _guardUndoLoadWindow(windowKey, start, end) {
+    if (this._undoWindowKey && this._undoWindowKey !== windowKey && (this._undoStack.length || this._redoStack.length)) {
+      this._undoStack.length = 0;
+      this._redoStack.length = 0;
+      this._notifyParentHistory();
+    }
+    this._undoWindowKey = windowKey;
+    this._undoLoadWindow = { key: windowKey, start, end };
   }
 
   async _loadTasks() {
@@ -355,7 +481,7 @@ class CalendarComponent extends ToolComponent {
       this._tasks = await apiFetch('/cal/tasks?user=' + encodeURIComponent(this._getUser()));
     } catch {
       if (!Array.isArray(this._tasks)) this._tasks = [];
-      this._showStatus('タスクの読み込みに失敗', true);
+      this._showStatus('ToDoリストの読み込みに失敗', true);
     }
   }
 
@@ -374,7 +500,10 @@ class CalendarComponent extends ToolComponent {
 
   // === Undo/Redo ===
   _eventIsUndoable(ev) {
-    return ev && !ev._recurrence_instance;
+    // 自動生成イベント（シフト・実績・制作タスク由来）は元データ側が正本のため undo 対象にしない
+    // （対象にすると undo がミラーだけを通常イベントとして再作成し、実データと乖離した幽霊行が残る）
+    return ev && !ev._recurrence_instance
+      && !['shift', 'shift-break', 'attendance', 'production-task'].includes(String(ev.calendar_source || ''));
   }
 
   _snapshotEventsForUndo() {
@@ -390,25 +519,51 @@ class CalendarComponent extends ToolComponent {
     return JSON.parse(JSON.stringify(this._tasks || []));
   }
 
+  _snapshotEventWindowForUndo() {
+    return this._undoLoadWindow ? { ...this._undoLoadWindow } : null;
+  }
+
+  _eventIntersectsUndoWindow(ev, windowInfo) {
+    if (!windowInfo?.start || !windowInfo?.end) return true;
+    const windowStart = Date.parse(windowInfo.start);
+    const windowEnd = Date.parse(windowInfo.end);
+    if (!Number.isFinite(windowStart) || !Number.isFinite(windowEnd)) return true;
+    const eventStart = Date.parse(ev?.start || ev?.end || '');
+    const eventEnd = Date.parse(ev?.end || ev?.start || '');
+    if (!Number.isFinite(eventStart) || !Number.isFinite(eventEnd)) return true;
+    return eventEnd >= windowStart && eventStart <= windowEnd;
+  }
+
   _pushUndo(label) {
-    this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo() });
+    this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
     if (this._undoStack.length > this._UNDO_MAX) this._undoStack.shift();
     this._redoStack.length = 0;
     this._notifyParentHistory();
   }
 
   async _undo() {
-    if (!this._undoStack.length) return;
-    this._redoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo() });
-    await this._restoreSnapshot(this._undoStack.pop());
-    this._notifyParentHistory();
+    // 復元はサーバーへの逐次API呼び出しを伴う長い処理のため、完了まで再入を受け付けない
+    if (!this._undoStack.length || this._undoBusy) return;
+    this._undoBusy = true;
+    try {
+      this._redoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
+      await this._restoreSnapshot(this._undoStack.pop());
+      this._notifyParentHistory();
+    } finally {
+      this._undoBusy = false;
+    }
   }
 
   async _redo() {
-    if (!this._redoStack.length) return;
-    this._undoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo() });
-    await this._restoreSnapshot(this._redoStack.pop());
-    this._notifyParentHistory();
+    if (!this._redoStack.length || this._undoBusy) return;
+    this._undoBusy = true;
+    try {
+      this._undoStack.push({ label: '(現在)', events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
+      await this._restoreSnapshot(this._redoStack.pop());
+      this._notifyParentHistory();
+    } finally {
+      this._undoBusy = false;
+    }
   }
 
   async _restoreSnapshot(snap) {
@@ -417,7 +572,11 @@ class CalendarComponent extends ToolComponent {
       const curEvents = (this._events || []).filter(ev => this._eventIsUndoable(ev));
       const snapEvIds = new Set(snapEvents.map(e => e.id));
       const curEvIds = new Set(curEvents.map(e => e.id));
-      for (const ev of curEvents) { if (!snapEvIds.has(ev.id)) await apiFetch('/cal/events/' + ev.id, { method: 'DELETE' }).catch(() => {}); }
+      for (const ev of curEvents) {
+        if (!snapEvIds.has(ev.id) && this._eventIntersectsUndoWindow(ev, snap.eventWindow)) {
+          await apiFetch('/cal/events/' + ev.id, { method: 'DELETE' }).catch(() => {});
+        }
+      }
       for (const ev of snapEvents) {
         const { id, ...data } = ev; data.user = data.user || this._getUser();
         if (curEvIds.has(id)) {
@@ -456,6 +615,7 @@ class CalendarComponent extends ToolComponent {
     if (btn) btn.classList.add('active');
     const sel = this.el.querySelector('.gb-cal-view-select');
     if (sel && sel.value !== v) sel.value = v;
+    this._syncMultiDayControls();
     this._render();
   }
 
@@ -467,6 +627,8 @@ class CalendarComponent extends ToolComponent {
       if (!tab) return;
       if (!tab.state) tab.state = {};
       tab.state.view = view;
+      tab.state.multiDayCount = this._multiDayCount;
+      tab.state.selectedMiniDates = this._selectedMiniDateList();
     } catch {}
   }
 
@@ -477,15 +639,18 @@ class CalendarComponent extends ToolComponent {
     this._titleEl.textContent =
       this._view === 'day' ? `${y}年${m+1}月${d}日` :
       this._view === 'week' ? `${y}年${m+1}月 第${Math.ceil(d/7)}週` :
-      this._view === 'tasks' ? 'タスクボード' :
+      this._view === 'multi' ? this._multiDayTitle() :
+      this._view === 'tasks' ? 'ToDoリスト' :
       this._view === 'shifts' ? `${y}年${m+1}月 シフト表` :
       `${y}年${m+1}月`;
+    this._syncMultiDayControls();
     if (this._view === 'month') this._renderMonth();
     else if (this._view === 'week') this._renderWeek();
+    else if (this._view === 'multi') this._renderMultiDays();
     else if (this._view === 'day') this._renderDay();
     else if (this._view === 'tasks') this._renderTaskBoard();
     else if (this._view === 'shifts') this._renderShiftView(renderSeq);
-    if (!['week', 'day'].includes(this._view) && typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
+    if (!['week', 'multi', 'day'].includes(this._view) && typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
     // Audit-P1 H-6 (残作業): カレンダーイベント要素にコメントバッジを描画
     if (this._contentEl && typeof CommentBadges !== 'undefined' && typeof CommentBadges.refreshCalendar === 'function') {
       try { CommentBadges.refreshCalendar(this._contentEl); } catch (_) {}
@@ -496,4 +661,4 @@ class CalendarComponent extends ToolComponent {
 }
 
 // コンポーネントレジストリ更新
-registerToolComponent('calendar', { cls: CalendarComponent, icon: 'calendar', label: 'カレンダー', multi: true, requiresViewLock: true });
+registerToolComponent('calendar', { cls: CalendarComponent, icon: 'calendar', label: 'スケジューラー', multi: true, requiresViewLock: true });

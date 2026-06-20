@@ -77,13 +77,13 @@ function _navPushWithViewState(ctx, entityName) {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const cfg = getDbViewConfig(dbPath);
-  const viewMode = getCurrentViewMode(dbPath);
+  const viewMode = getCurrentViewMode(dbPath, { ctx });
   const container = _getDbViewScrollContainer(ctx, viewMode);
   _forcedNavPush({
     type: 'pivot',
     path: dbPath,
     label: dbPath.split('/').pop() || dbPath,
-    viewIdx: cfg.currentViewIdx,
+    viewIdx: Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx,
     scrollState: {
       scrollLeft: container?.scrollLeft || 0,
       scrollTop: container?.scrollTop || 0,

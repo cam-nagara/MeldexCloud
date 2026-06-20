@@ -219,7 +219,8 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     }
     const addBtn = document.createElement('span');
     addBtn.className = 'cell-add-btn';
-    addBtn.innerHTML = '+ 候補値';
+    addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
+    addBtn.title = '候補値を追加';
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
@@ -804,6 +805,8 @@ document.addEventListener('click', (e) => {
 
 // エントリ用リッチテキストツールバーを初期化（メインと同じボタン構成）
 function _shouldAllowToolbarMouseDefault(target) {
+  const editable = target?.closest?.('[contenteditable="true"], [contenteditable="plaintext-only"], [contenteditable]:not([contenteditable="false"]), [role="textbox"]');
+  if (editable) return true;
   const tag = target?.tagName;
   if (tag === 'SELECT' || tag === 'OPTION') return true;
   if (tag === 'INPUT') {
@@ -861,9 +864,9 @@ let linkDict = typeof MeldexAutoLink !== 'undefined' ? MeldexAutoLink.getDict() 
 const WORK_FOLDER_KEY = 'outliner-work-folder';
 const WORK_FOLDER_ID_KEY = 'outliner-work-folder-id';
 function getWorkFolder() {
-  // file_id から最新パスを解決
+  // file_id から最新パスを解決（gb-app.js より先に呼ばれる可能性があるためガード）
   const fid = localStorage.getItem(WORK_FOLDER_ID_KEY);
-  if (fid) {
+  if (fid && typeof _fileIdToPath === 'function') {
     const resolved = _fileIdToPath(fid);
     if (resolved) return resolved;
   }
@@ -872,7 +875,7 @@ function getWorkFolder() {
 function setWorkFolder(path) {
   if (path) {
     localStorage.setItem(WORK_FOLDER_KEY, path);
-    const fid = _pathToFileId(path);
+    const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
     if (fid) localStorage.setItem(WORK_FOLDER_ID_KEY, fid);
   } else {
     localStorage.removeItem(WORK_FOLDER_KEY);

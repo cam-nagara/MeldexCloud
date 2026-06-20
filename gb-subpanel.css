@@ -180,6 +180,48 @@
   font-size: 12px;
 }
 
+.gb-subpanel-webclip-html {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 420px;
+}
+
+.gb-subpanel-webclip-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 28px;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.gb-subpanel-webclip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-subpanel-webclip-open {
+  flex: 0 0 auto;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.gb-subpanel-webclip-open:hover {
+  text-decoration: underline;
+}
+
+.gb-subpanel-webclip-frame {
+  width: 100%;
+  min-height: 520px;
+  height: min(72vh, 820px);
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
 .gb-subpanel.is-minimized {
   height: 34px !important;
   min-height: 34px;

@@ -21,7 +21,6 @@
     '/outliner',
     '/property-layout-templates',
     '/quick-memo',
-    '/trash',
     '/upload-file',
     '/upload-image',
     '/value',

@@ -99,7 +99,7 @@ function _renderWeek(container, dbPath, events) {
         });
         cell.addEventListener('pointerdown',e=>{if(e.button!==0||e.target.closest('.cal-day-event, .cal-cell-quick-add'))return;e.preventDefault();dragState={startDate:cell.dataset.date,startHour:hour,pv:null,moved:false};document.body.style.userSelect='none';const pv=document.createElement('div');pv.className='cal-day-event cal-drag-preview';pv.style.cssText=`position:absolute;left:0;right:0;top:0;height:${_HOUR_PX}px;background:var(--accent);opacity:0.6;pointer-events:none;z-index:5;`;pv.textContent=`${hour}:00–${hour+1}:00`;cell.appendChild(pv);dragState.pv=pv;});
         cell.addEventListener('pointermove',()=>{if(!dragState||cell.dataset.date!==dragState.startDate)return;const minH=Math.min(dragState.startHour,hour),maxH=Math.max(dragState.startHour,hour)+1;if(hour!==dragState.startHour)dragState.moved=true;if(dragState.pv)dragState.pv.remove();const anchor=grid.querySelector(`.cal-week-cell[data-date="${dragState.startDate}"][data-hour="${minH}"]`);if(anchor){const pv=document.createElement('div');pv.className='cal-day-event cal-drag-preview';pv.style.cssText=`position:absolute;left:0;right:0;top:0;height:${(maxH-minH)*_HOUR_PX}px;background:var(--accent);opacity:0.6;pointer-events:none;z-index:5;`;pv.textContent=`${minH}:00–${maxH}:00`;anchor.appendChild(pv);dragState.pv=pv;}});
-        cell.addEventListener('pointerup',async()=>{if(!dragState)return;const current=dragState;if(current.pv)current.pv.remove();dragState=null;document.body.style.userSelect='';if(!current.moved)return;const endH=hour+1;const minH=Math.min(current.startHour,endH-1),maxH=Math.max(current.startHour+1,endH);const ds=current.startDate;const s=new Date(ds+'T'+_p2(minH)+':00'),e=new Date(ds+'T'+_p2(maxH)+':00');await _quickCreateCalendarEvent(dbPath,{start:s,end:e,allDay:false});});
+        cell.addEventListener('pointerup',async()=>{if(!dragState)return;const current=dragState;if(current.pv)current.pv.remove();dragState=null;document.body.style.userSelect='';if(!current.moved)return;const endH=hour+1;const minH=Math.min(current.startHour,endH-1),maxH=Math.max(current.startHour+1,endH);const ds=current.startDate;const s=new Date(ds+'T'+_p2(minH)+':00:00'),e=new Date(ds+'T'+_p2(maxH)+':00:00');await _quickCreateCalendarEvent(dbPath,{start:s,end:e,allDay:false});});
       }
       if (canEditDates) {
         cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
@@ -152,7 +152,13 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
       start:_toCalendarApiValue(newStart, false),
       end:_toCalendarApiValue(newEnd, false)
     });
-    await selectDatabase(dbPath);
+    await _calendarNotifyEventSaved(ev, {
+      ...ev,
+      start: _toCalendarApiValue(newStart, false),
+      end: _toCalendarApiValue(newEnd, false),
+      allDay: false,
+    });
+    await _refreshCalendarDb(dbPath);
   };
   // リサイズハンドル（下）
   const resBot=document.createElement('div');resBot.style.cssText='position:absolute;bottom:0;left:0;right:0;height:6px;cursor:ns-resize;';

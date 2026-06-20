@@ -47,7 +47,7 @@
   const PANEL_ITEMS = [
     { label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
     { label: 'ビューワー', icon: 'monitor', action: () => _openPreviewPanel() },
-    { label: 'オプション', icon: 'panelRight', action: () => _callGlobal('toggleOptionPanel') },
+    { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('toggleOptionPanel') },
     { label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
     { label: '注釈', icon: 'messagesSquare', action: () => _callGlobal('openRightPanelTab', 'annotation') },
     { label: 'ヒストリー', icon: 'history', action: () => _callGlobal('openRightPanelTab', 'history') },
@@ -269,7 +269,7 @@
         { label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
         { label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
         { label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
-        { label: 'オプション', icon: 'panelRight', action: () => _callGlobal('showFolderPanelSettings') },
+        { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderPanelSettings') },
         { label: '設定', icon: 'settings', action: () => _callGlobal('showSettingsModal') },
       ];
     }

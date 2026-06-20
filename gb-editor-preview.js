@@ -24,7 +24,7 @@ function _formatFileSize(bytes) {
 
 let _linkedPreviewSeq = 0;
 
-function _updateLinkedPreview(filePath) {
+function _updateLinkedPreview(filePath, preloadedData) {
   const seq = ++_linkedPreviewSeq;
   const pane = document.getElementById('gb-preview-pane');
   if (!pane || !pane.closest('.gb-pane-content')) return;
@@ -36,7 +36,8 @@ function _updateLinkedPreview(filePath) {
     pane.innerHTML = `<img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" alt="preview">
       <div style="margin-top:8px;font-size:12px;color:var(--fg2);word-break:break-all;">${esc(fileName)}</div>`;
   } else {
-    fetch(API_BASE + '/file?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : Promise.reject()).then(data => {
+    const dataPromise = preloadedData ? Promise.resolve(preloadedData) : fetch(API_BASE + '/file?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : Promise.reject());
+    dataPromise.then(data => {
       if (seq !== _linkedPreviewSeq) return;
       const text = data.content || '';
       if (ext === 'json' && text.startsWith('{')) {

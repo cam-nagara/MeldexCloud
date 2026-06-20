@@ -4,7 +4,7 @@
 (function() {
   'use strict';
 
-  const HEADER_LINE = '## ユーザー定義ルール（ソースフォルダSkillsの次に優先）';
+  const HEADER_LINE = '## ユーザー定義ルール（ソースフォルダ用の指示の次に優先）';
   const stateByContainer = new WeakMap();
 
   function crEsc(value) {

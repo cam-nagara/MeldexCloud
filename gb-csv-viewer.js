@@ -13,6 +13,7 @@ let _csvSaveVersion = 0;
 let _csvSaveInFlight = null;
 let _csvSaveQueued = false;
 let _csvLastSavedEtag = '';
+let _csvSheetModeActive = false;
 
 function _csvHistoryScope() {
   return _csvPath ? 'csv:' + _csvPath : '';
@@ -75,6 +76,135 @@ function _csvHandleAutoLinkClick(e) {
   return true;
 }
 
+function _csvDisplayLabel(label, path) {
+  return String(label || path || '').split(/[\\/]/).pop() || 'CSV';
+}
+
+function _csvCanUseSheetSurface() {
+  const table = typeof document !== 'undefined' ? document.getElementById('pivot-table') : null;
+  return typeof document !== 'undefined'
+    && !!table
+    && typeof table.appendChild === 'function'
+    && typeof table.setAttribute === 'function'
+    && typeof showView === 'function';
+}
+
+function _csvIcon(name, fallback) {
+  if (typeof lucide === 'function') return lucide(name, 16);
+  return fallback || '';
+}
+
+function _csvToolbarButton(title, iconName, fallback, handler, e2eId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'tb-icon-btn csv-sheet-action-btn';
+  button.title = title;
+  button.setAttribute('aria-label', title);
+  if (e2eId) button.dataset.e2eId = e2eId;
+  button.innerHTML = _csvIcon(iconName, fallback);
+  button.addEventListener('click', handler);
+  return button;
+}
+
+function _csvToolbarTextButton(label, handler, e2eId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'tb-text-btn csv-sheet-action-btn';
+  if (e2eId) button.dataset.e2eId = e2eId;
+  button.textContent = label;
+  button.addEventListener('click', handler);
+  return button;
+}
+
+function _csvClearSheetToolbar() {
+  const actions = document.querySelector('#tb-db .db-toolbar-actions-right');
+  if (actions?.dataset?.csvSheetMode === '1') {
+    actions.textContent = '';
+    delete actions.dataset.csvSheetMode;
+  }
+}
+
+function deactivateCsvSheetMode() {
+  _csvSheetModeActive = false;
+  if (document.body?.dataset) delete document.body.dataset.csvSheetMode;
+  _csvClearSheetToolbar();
+  const table = document.getElementById('pivot-table');
+  if (table?.classList?.contains('csv-sheet-mode-table')) {
+    table.classList.remove('csv-sheet-mode-table');
+    table.classList.add('pivot-table');
+    table.removeAttribute('data-csv-path');
+    table.removeAttribute('aria-label');
+    table.style.removeProperty('min-width');
+  }
+}
+
+function _csvSyncSheetToolbar(label, path, openOpts) {
+  if (document.body?.dataset) document.body.dataset.csvSheetMode = '1';
+  const displayLabel = _csvDisplayLabel(label, path);
+  const toolbarCategoryEl = document.getElementById('toolbar-category');
+  if (toolbarCategoryEl && !openOpts?.skipGlobalUi) {
+    if (toolbarCategoryEl._dbRenameHandler) {
+      toolbarCategoryEl.removeEventListener('dblclick', toolbarCategoryEl._dbRenameHandler);
+      toolbarCategoryEl._dbRenameHandler = null;
+    }
+    toolbarCategoryEl.textContent = displayLabel;
+    toolbarCategoryEl.title = 'CSVファイル';
+    toolbarCategoryEl.style.cursor = '';
+  }
+  const currentTitleEl = document.getElementById('current-title');
+  if (currentTitleEl && !openOpts?.skipGlobalUi) currentTitleEl.textContent = displayLabel;
+  const actions = document.querySelector('#tb-db .db-toolbar-actions-right');
+  if (!actions) return;
+  actions.dataset.csvSheetMode = '1';
+  actions.textContent = '';
+  actions.appendChild(_csvToolbarButton('行を追加', 'listPlus', '+', addCsvRow, 'csv-sheet-add-row'));
+  actions.appendChild(_csvToolbarButton('列を追加', 'columns3', '+', addCsvColumn, 'csv-sheet-add-column'));
+  actions.appendChild(_csvToolbarTextButton('シートに変換', convertCsvToDb, 'csv-sheet-convert-to-sheet'));
+}
+
+function _csvPrepareVisibleSurface(label, path, openOpts) {
+  if (openOpts.skipShowView) return;
+  if (_csvCanUseSheetSurface()) {
+    _csvSheetModeActive = true;
+    showView('pivot');
+    if (!openOpts.skipStateView) state.view = 'csv';
+    _csvSyncSheetToolbar(label, path, openOpts);
+    return;
+  }
+  _csvSheetModeActive = false;
+  showView('csv');
+}
+
+function _csvRefreshAnnotationTarget() {
+  if (typeof ann === 'undefined') return;
+  const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : _csvPath;
+  if (newTarget !== ann.targetPath) {
+    ann.targetPath = newTarget;
+    if (typeof loadAnnotations === 'function') loadAnnotations();
+  }
+  if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll('csv');
+}
+
+function _csvRenderMessage(message) {
+  if (_csvSheetModeActive && _csvCanUseSheetSurface()) {
+    const table = document.getElementById('pivot-table');
+    table.className = 'pivot-table csv-sheet-mode-table';
+    table.innerHTML = '';
+    const tbody = document.createElement('tbody');
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.className = 'csv-empty-cell';
+    td.colSpan = 999;
+    td.textContent = message;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    table.appendChild(tbody);
+    return;
+  }
+  const container = document.getElementById('csv-table-container');
+  if (container) container.innerHTML = '<div style="padding:16px;color:var(--fg2);">' + message + '</div>';
+}
+
 // === CSVファイルを開く ===
 async function openCsvFile(label, path, opts) {
   const openOpts = opts || {};
@@ -97,7 +227,7 @@ async function openCsvFile(label, path, opts) {
     clearTimeout(_csvAutoSaveTimer);
 
   if (!openOpts.skipStateView) state.view = 'csv';
-  if (!openOpts.skipShowView) showView('csv');
+  _csvPrepareVisibleSurface(label, path, openOpts);
   const csvTitleEl = document.getElementById('csv-title');
   if (csvTitleEl) csvTitleEl.textContent = label;
   const currentTitleEl = document.getElementById('current-title');
@@ -126,6 +256,7 @@ async function openCsvFile(label, path, opts) {
     _csvLastSavedEtag = data.etag || '';
     _csvNormalizeTableShape();
     renderCsvTable();
+    _csvRefreshAnnotationTarget();
     if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
     if (!openOpts.skipGlobalUi) showStatus('CSV: ' + label);
   } catch {
@@ -136,10 +267,7 @@ async function openCsvFile(label, path, opts) {
     _csvDirty = false;
     _csvSaveQueued = false;
     _csvLastSavedEtag = '';
-    const container = document.getElementById('csv-table-container');
-    if (container) {
-      container.innerHTML = '<div style="padding:16px;color:var(--fg2);">CSVを読み込めませんでした</div>';
-    }
+    _csvRenderMessage('CSVを読み込めませんでした');
     if (!openOpts.skipGlobalUi) showStatus('CSVを読み込めませんでした', true);
     return false;
   } finally {
@@ -206,75 +334,113 @@ function _csvNormalizeTableShape() {
 }
 
 // === テーブルレンダリング ===
-function renderCsvTable() {
-  const container = document.getElementById('csv-table-container');
-  if (_csvData.length === 0) {
-    container.innerHTML = '<div style="padding:16px;color:var(--fg2);">空のCSVファイルです</div>';
-    return;
-  }
-  const table = document.createElement('table');
-  table.id = 'csv-table';
-  table.className = 'csv-table';
+function _csvClearSelection() {
+  document.querySelectorAll('.csv-cell-selected').forEach(el => el.classList.remove('csv-cell-selected'));
+}
 
-  // ヘッダー行
+function _csvAppendHeaderCell(headerRow, headerText, ci) {
+  const th = document.createElement('th');
+  _csvSetDecoratedText(th, headerText);
+  th.dataset.col = ci;
+  th.dataset.csvCol = ci;
+  th.addEventListener('click', (e) => {
+    if (_csvHandleAutoLinkClick(e)) return;
+    if (th.querySelector('input')) return;
+    if (th.classList.contains('csv-cell-selected')) {
+      startCsvHeaderEdit(th, ci);
+      return;
+    }
+    _csvClearSelection();
+    th.classList.add('csv-cell-selected');
+  });
+  th.addEventListener('dblclick', () => startCsvHeaderEdit(th, ci));
+  headerRow.appendChild(th);
+}
+
+function _csvAppendDataCell(tr, row, ri, ci) {
+  const td = document.createElement('td');
+  _csvSetDecoratedText(td, row[ci] ?? '');
+  td.dataset.row = ri;
+  td.dataset.col = ci;
+  td.dataset.csvRow = ri;
+  td.dataset.csvCol = ci;
+  td.addEventListener('click', (e) => {
+    if (_csvHandleAutoLinkClick(e)) return;
+    if (td.querySelector('input, textarea')) return;
+    if (td.classList.contains('csv-cell-selected')) {
+      startCsvCellEdit(td, ri, ci);
+      return;
+    }
+    _csvClearSelection();
+    td.classList.add('csv-cell-selected');
+  });
+  td.addEventListener('dblclick', () => startCsvCellEdit(td, ri, ci));
+  tr.appendChild(td);
+}
+
+function _csvBuildTable(table) {
+  table.innerHTML = '';
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
   const thNum = document.createElement('th');
   thNum.className = 'csv-row-num';
   thNum.textContent = '#';
   headerRow.appendChild(thNum);
-  _csvHeaders.forEach((h, ci) => {
-    const th = document.createElement('th');
-    _csvSetDecoratedText(th, h);
-    th.dataset.col = ci;
-    th.addEventListener('click', (e) => {
-      if (_csvHandleAutoLinkClick(e)) return;
-      if (th.querySelector('input')) return;
-      if (th.classList.contains('csv-cell-selected')) {
-        startCsvHeaderEdit(th, ci);
-        return;
-      }
-      document.querySelectorAll('.csv-cell-selected').forEach(el => el.classList.remove('csv-cell-selected'));
-      th.classList.add('csv-cell-selected');
-    });
-    th.addEventListener('dblclick', () => startCsvHeaderEdit(th, ci));
-    headerRow.appendChild(th);
-  });
+  _csvHeaders.forEach((h, ci) => _csvAppendHeaderCell(headerRow, h, ci));
   thead.appendChild(headerRow);
   table.appendChild(thead);
 
-  // データ行
   const tbody = document.createElement('tbody');
   for (let ri = 1; ri < _csvData.length; ri++) {
     const tr = document.createElement('tr');
+    tr.dataset.csvRow = ri;
     const tdNum = document.createElement('td');
     tdNum.className = 'csv-row-num';
     tdNum.textContent = ri;
     tr.appendChild(tdNum);
     const row = _csvData[ri];
     for (let ci = 0; ci < _csvHeaders.length; ci++) {
-      const td = document.createElement('td');
-      _csvSetDecoratedText(td, row[ci] ?? '');
-      td.dataset.row = ri;
-      td.dataset.col = ci;
-      td.addEventListener('click', (e) => {
-        if (_csvHandleAutoLinkClick(e)) return;
-        if (td.querySelector('input, textarea')) return;
-        if (td.classList.contains('csv-cell-selected')) {
-          startCsvCellEdit(td, ri, ci);
-          return;
-        }
-        document.querySelectorAll('.csv-cell-selected').forEach(el => el.classList.remove('csv-cell-selected'));
-        td.classList.add('csv-cell-selected');
-      });
-      td.addEventListener('dblclick', () => startCsvCellEdit(td, ri, ci));
-      tr.appendChild(td);
+      _csvAppendDataCell(tr, row, ri, ci);
     }
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
+}
+
+function _csvRenderSheetTable() {
+  const table = document.getElementById('pivot-table');
+  if (!_csvCanUseSheetSurface()) return false;
+  if (_csvData.length === 0) {
+    _csvRenderMessage('空のCSVファイルです');
+    return true;
+  }
+  table.className = 'pivot-table csv-sheet-mode-table';
+  table.dataset.csvPath = _csvPath || '';
+  table.setAttribute('role', 'table');
+  table.setAttribute('aria-label', 'CSV');
+  table.style.minWidth = Math.max(520, (_csvHeaders.length + 1) * 120) + 'px';
+  _csvBuildTable(table);
+  return true;
+}
+
+function _csvRenderLegacyTable() {
+  const container = document.getElementById('csv-table-container');
+  if (!container) return;
+  if (_csvData.length === 0) {
+    _csvRenderMessage('空のCSVファイルです');
+    return;
+  }
+  const table = document.createElement('table');
+  table.id = 'csv-table';
+  table.className = 'csv-table';
+  _csvBuildTable(table);
   container.innerHTML = '';
   container.appendChild(table);
+}
+
+function renderCsvTable() {
+  if (_csvSheetModeActive && _csvRenderSheetTable()) return;
+  _csvRenderLegacyTable();
 }
 
 function _csvUniqueHeader(base) {
@@ -399,7 +565,10 @@ function commitCsvHeaderEdit(th, newValue, ci) {
 function moveCsvFocus(ri, ci, direction) {
   const nextCi = ci + direction;
   if (nextCi >= 0 && nextCi < _csvHeaders.length) {
-    const td = document.querySelector('#csv-table td[data-row="' + ri + '"][data-col="' + nextCi + '"]');
+    const td = document.querySelector(
+      '#csv-table td[data-row="' + ri + '"][data-col="' + nextCi + '"], ' +
+      '#pivot-table.csv-sheet-mode-table td[data-row="' + ri + '"][data-col="' + nextCi + '"]'
+    );
     if (td) startCsvCellEdit(td, ri, nextCi);
   }
 }
@@ -412,7 +581,7 @@ function scheduleCsvAutoSave() {
 
 function _csvCommitActiveEditor() {
   if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return false;
-  const editor = document.querySelector('#csv-table .csv-cell-input');
+  const editor = document.querySelector('#csv-table .csv-cell-input, #pivot-table.csv-sheet-mode-table .csv-cell-input');
   if (!editor) return false;
   const host = editor.closest?.('td,th');
   if (!host) return false;
@@ -585,6 +754,8 @@ document.getElementById('csv-add-row')?.addEventListener('click', addCsvRow);
 document.getElementById('csv-add-col')?.addEventListener('click', addCsvColumn);
 document.getElementById('csv-to-db')?.addEventListener('click', convertCsvToDb);
 if (typeof window !== 'undefined') {
+  window.deactivateCsvSheetMode = deactivateCsvSheetMode;
+  window.isCsvSheetModeActive = () => _csvSheetModeActive;
   window.addEventListener('beforeunload', flushCsvBeforeUnload);
   window.addEventListener('pagehide', () => flushCsvBeforeUnload());
 }

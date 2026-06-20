@@ -122,9 +122,21 @@ button.is-active {
   color: var(--qm-muted);
 }
 
+.qm-auto-tag {
+  white-space: nowrap;
+}
+
+.qm-icon {
+  min-width: 34px;
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: 18px;
+  line-height: 1;
+}
+
 .qm-meta {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
   gap: 8px;
   padding: 8px;
 }
@@ -275,6 +287,13 @@ button.is-active {
 
   .qm-ghost {
     display: none;
+  }
+
+  .qm-ghost.qm-auto-tag {
+    display: inline-flex;
+    align-items: center;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   .qm-surface {

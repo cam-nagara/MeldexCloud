@@ -45,7 +45,7 @@ class TimerComponent extends ToolComponent {
               <option value="bar">バー</option>
             </select>
           </label>
-          <button class="tb-icon-btn gb-timer-settings-btn" data-timer-action="openSettings" type="button" aria-label="タイマー設定" title="カレンダー連動、アラーム、保存済みタイマー、実行リストを設定します">${this._icon('settings', 14)}</button>
+          <button class="tb-icon-btn gb-timer-settings-btn" data-timer-action="openSettings" type="button" aria-label="タイマー設定" title="カレンダー連動、アラーム、保存済みタイマーを設定します">${this._icon('settings', 14)}</button>
         </div>
         <div class="gb-timer-toolbar-row gb-timer-toolbar-row--controls">
           <button class="gb-btn gb-btn-sm" data-timer-action="start" type="button" title="設定した時間でタイマーを開始します">${this._icon('play', 14)} <span>開始</span></button>

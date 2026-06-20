@@ -131,12 +131,66 @@
     _writeStorage(SETTINGS_PATH_KEY, _normalizeVaultPath(path) || DEFAULT_SETTINGS_PATH);
   }
 
+  function _normalizeRedirectUri(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      return _stripOauthQuery(new URL(raw, window.location.href).toString());
+    } catch {
+      return '';
+    }
+  }
+
+  function _redirectUriCandidates() {
+    const config = window.MeldexCloudRuntimeConfig || {};
+    return [
+      window.location.href,
+      config.cloudPublicUrl,
+      config.cloudBackupUrl,
+    ].map(_normalizeRedirectUri).filter(Boolean);
+  }
+
+  function _isLocalRedirectUri(uri) {
+    try {
+      const url = new URL(uri);
+      const host = url.hostname.toLowerCase();
+      if (url.protocol !== 'http:') return false;
+      if (host !== 'localhost' && host !== '127.0.0.1') return false;
+      return url.port === '8080' || url.port === '8001';
+    } catch {
+      return false;
+    }
+  }
+
+  function _redirectUriAllowed(value) {
+    const normalized = _normalizeRedirectUri(value);
+    if (!normalized) return false;
+    if (_isLocalRedirectUri(normalized)) return true;
+    return _redirectUriCandidates().includes(normalized);
+  }
+
   function getRedirectOverride() {
-    return _readStorage(REDIRECT_OVERRIDE_KEY, '').trim();
+    const stored = _readStorage(REDIRECT_OVERRIDE_KEY, '').trim();
+    if (!stored) return '';
+    const normalized = _normalizeRedirectUri(stored);
+    if (normalized && _redirectUriAllowed(normalized)) return normalized;
+    try {
+      _writeStorage(REDIRECT_OVERRIDE_KEY, '');
+    } catch {}
+    return '';
   }
 
   function setRedirectOverride(value) {
-    _writeStorage(REDIRECT_OVERRIDE_KEY, String(value || '').trim());
+    const raw = String(value || '').trim();
+    if (!raw) {
+      _writeStorage(REDIRECT_OVERRIDE_KEY, '');
+      return;
+    }
+    const normalized = _normalizeRedirectUri(raw);
+    if (!normalized || !_redirectUriAllowed(normalized)) {
+      throw new Error('redirect URI 上書きは、現在のCloud URL、予備URL、または許可されたlocalhost URLだけを指定できます');
+    }
+    _writeStorage(REDIRECT_OVERRIDE_KEY, normalized);
   }
 
   function getDefaultAppKey() {
@@ -172,7 +226,7 @@
   }
 
   function buildRedirectUri() {
-    const override = getRedirectOverride();
+    const override = getAppMode() === 'custom' ? getRedirectOverride() : '';
     if (override) return override;
     return _stripOauthQuery(window.location.href);
   }
@@ -716,6 +770,7 @@
     setSettingsPath,
     getRedirectOverride,
     setRedirectOverride,
+    isRedirectUriAllowed: _redirectUriAllowed,
     getScopes,
     buildRedirectUri,
     beginAuth,

@@ -158,7 +158,7 @@
     const owner = _isOwner();
     section.innerHTML = `
       <div class="gb-section-title">${typeof lucide === 'function' ? lucide('keyRound', 14) : ''} 管理者鍵 / 改竄検知</div>
-      <div class="gb-section-desc">ナレッジ、編集ロック、監査対象JSONのHMAC署名に使う鍵です。鍵はこの端末だけに保存され、Dropboxには保存されません。</div>
+      <div class="gb-section-desc">ナレッジ、編集ロック、監査対象JSONのHMAC署名に使う鍵です。鍵はこの端末のブラウザ内に暗号化して保存され、Dropboxには保存されません。</div>
       <label class="gb-field-row">
         <span class="gb-label" style="min-width:140px;">パスフレーズ</span>
         <input type="password" class="gb-input" data-setting="owner-key-passphrase" data-owner-key-passphrase ${owner ? '' : 'disabled'} style="flex:1;" placeholder="${_esc(window.MeldexOwnerKeyStore?.PASSPHRASE_MIN_LENGTH || 12)}文字以上">

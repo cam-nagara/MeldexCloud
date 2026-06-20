@@ -34,7 +34,27 @@ function normalizeSmartDbDefinition(def) {
   next.name = next.name || '無題';
   next.sourceType = next.sourceType === 'all-files' ? 'all-files' : 'db-entities';
   if (!Array.isArray(next.filters)) next.filters = [];
+  if (!Array.isArray(next.sources)) next.sources = [];
   return _ensureSmartDbViews(next);
+}
+
+// スマートシートファイルが置かれたフォルダのソースフォルダ相対パス
+function _smartDbDefaultParentFolder(def) {
+  const filePath = String(def?._filePath || '').replace(/\\/g, '/');
+  if (!filePath) return '';
+  const slash = filePath.lastIndexOf('/');
+  if (slash < 0) return '';
+  return filePath.slice(0, slash);
+}
+
+// 実行時に使う sources（ユーザー設定 or 既定: ファイルの親フォルダ＋サブフォルダ）
+function _smartDbEffectiveSources(def) {
+  if (!def) return [];
+  const explicit = Array.isArray(def.sources) ? def.sources.filter(s => s && s.path) : [];
+  if (explicit.length) return explicit;
+  const parent = _smartDbDefaultParentFolder(def);
+  if (parent) return [{ kind: 'folder', path: parent }];
+  return [];
 }
 
 function _serializeSmartDbDefinition(def) {
@@ -131,6 +151,7 @@ async function saveSmartDbDef(def, opts) {
     if (!saveOpts.skipFileSave) {
       await apiFetch('/file?path=' + encodeURIComponent(def._filePath), {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: JSON.stringify(_serializeSmartDbDefinition(def), null, 2) })
       });
     }
@@ -309,13 +330,14 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('スマートシートを読み込み中...');
+  let loadingShown = false;
   const recentPath = def._filePath || ('smart-db:' + smartDbId);
   const requestSeq = ++_smartDbRequestSeq;
   const isStaleSmartDbLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
     || requestSeq !== _smartDbRequestSeq
     || state.currentSmartDb?.id !== def.id;
   try {
+    if (showOpenLoading) { showLoading('スマートシートを読み込み中...'); loadingShown = true; }
     if (!openOpts.skipStateView) state.view = 'smart-db';
     state.currentSmartDb = def;
     state.currentDbPath = null;
@@ -339,7 +361,9 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
     }
     if (!openOpts.skipGlobalUi) showStatus('スキャン中...');
     if (def.sourceType === 'all-files') {
-      const data = await (typeof loadGlobalIndexData === 'function' ? loadGlobalIndexData(def) : Promise.resolve({ files: [], total: 0 }));
+      const data = await (typeof loadGlobalIndexData === 'function'
+        ? loadGlobalIndexData(def, { refresh: openOpts.forceRefresh === true })
+        : Promise.resolve({ files: [], total: 0 }));
       if (isStaleSmartDbLoad()) return;
       state.smartDbData = data;
       if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
@@ -351,7 +375,9 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
       if (!openOpts.skipGlobalUi) showStatus((data.files || []).length + ' / ' + (data.total || 0) + ' 件');
       return;
     }
-    const url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(def.filters));
+    const effectiveSources = _smartDbEffectiveSources(def);
+    let url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(def.filters));
+    if (effectiveSources.length) url += '&sources=' + encodeURIComponent(JSON.stringify(effectiveSources));
     const data = await apiFetch(url);
     if (isStaleSmartDbLoad()) return;
     state.smartDbData = data;
@@ -376,7 +402,7 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
     }
     if (!openOpts.skipGlobalUi) showStatus('スマートシート読み込み失敗', true);
   } finally {
-    if (showOpenLoading) hideLoading();
+    if (loadingShown) hideLoading();
   }
 }
 
@@ -592,11 +618,31 @@ function showSmartDbFilterModal(smartDbId) {
       <button data-action="this.closest('.sdf-row').remove()" data-e2e-id="smart-filter-${i}-remove" aria-label="スマートシート条件${i + 1}を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
     </div>`;
   });
+  // 既存 sources を「フォルダ」「その他（後方互換: sheet 等）」に分離
+  // フォルダのみを UI で編集対象とし、その他は保存時にそのまま保持する。
+  const allExplicit = Array.isArray(def.sources) ? def.sources.filter(s => s && s.path) : [];
+  const folderExplicit = allExplicit.filter(s => (s.kind || 'folder') === 'folder');
+  const otherExplicit = allExplicit.filter(s => (s.kind || 'folder') !== 'folder');
+  let sourcesNote;
+  if (folderExplicit.length) {
+    sourcesNote = '対象フォルダ（サブフォルダ含む）';
+  } else if (otherExplicit.length) {
+    sourcesNote = '対象フォルダ（サブフォルダ含む） — 未設定。後方互換の個別シート指定 ' + otherExplicit.length + ' 件が有効（編集はファイル直接編集が必要）';
+  } else {
+    sourcesNote = '対象フォルダ（サブフォルダ含む） — 未設定のため、このスマートシートが置かれたフォルダを既定で使用';
+  }
+  let sourcesHtml = '';
+  folderExplicit.forEach((s, i) => {
+    sourcesHtml += _smartDbSourceRowHtml(s.path, i);
+  });
   o.innerHTML = `<div class="modal cond-modal" style="min-width:500px;">
     <h3>スマートシート フィルタ設定</h3>
     <div class="modal-body cond-modal-body">
       <div class="field"><label>名前</label><input id="sdf-name" type="text" value="${esc(def.name)}" data-e2e-id="smart-filter-name"></div>
-      <div style="margin:0;font-size:12px;color:var(--fg2);">フィルタ条件（AND: すべて一致）</div>
+      <div style="margin:0;font-size:12px;color:var(--fg2);">${esc(sourcesNote)}</div>
+      <div id="sdf-sources" class="cond-list">${sourcesHtml}</div>
+      <button class="cond-add-btn" id="sdf-add-source-btn" data-e2e-id="smart-filter-add-source" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ フォルダを追加</button>
+      <div style="margin:8px 0 0;font-size:12px;color:var(--fg2);">フィルタ条件（AND: すべて一致）</div>
       <div id="sdf-filters" class="cond-list">${filtersHtml}</div>
       <button class="cond-add-btn" data-action="document.getElementById('sdf-filters').insertAdjacentHTML('beforeend', _smartDbFilterRowHtml())" data-e2e-id="smart-filter-add-row" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ 条件追加</button>
     </div>
@@ -609,6 +655,190 @@ function showSmartDbFilterModal(smartDbId) {
   if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(o, '#sdf-filters');
   // smartDbId に特殊文字が含まれる場合 esc() は JS 文字列を保護できないため直接バインド
   document.getElementById('sdf-save-btn').addEventListener('click', () => _saveSmartDbFilters(smartDbId));
+  document.getElementById('sdf-add-source-btn').addEventListener('click', () => {
+    _openSmartDbFolderPicker(def, (folderPath) => {
+      if (!folderPath) return;
+      const host = document.getElementById('sdf-sources');
+      if (host) host.insertAdjacentHTML('beforeend', _smartDbSourceRowHtml(folderPath));
+    });
+  });
+}
+
+function _smartDbSourceRowHtml(path, idx) {
+  const safeIdx = (idx != null) ? String(idx) : ('new-' + Date.now().toString(36));
+  return `<div class="sdf-src-row" data-src-idx="${esc(safeIdx)}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
+    <input type="text" value="${esc(path || '')}" placeholder="フォルダパス" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="path" aria-label="対象フォルダ ${esc(safeIdx)}">
+    <button type="button" data-action="this.closest('.sdf-src-row').remove()" aria-label="対象フォルダ ${esc(safeIdx)} を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+  </div>`;
+}
+
+// 対象フォルダ選択モーダル（フォルダツリーからピックする）
+async function _openSmartDbFolderPicker(def, callback) {
+  if (window.GBFolderPicker?.pickFolder) {
+    const selected = await window.GBFolderPicker.pickFolder({
+      title: '対象フォルダを選択',
+      initialPath: '',
+    });
+    if (selected?.path && callback) {
+      callback(window.GBFolderPicker.toSourceRelativePath?.(selected) || selected.path);
+    }
+    return;
+  }
+  let roots = [];
+  try { roots = await apiFetch('/outliner-roots'); }
+  catch { showStatus('ソースフォルダ一覧の取得に失敗しました', true); return; }
+  const visibleRoots = (Array.isArray(roots) ? roots : []).filter(r => r && r.visible !== false && r.path);
+  if (!visibleRoots.length) { showStatus('ソースフォルダが設定されていません', true); return; }
+
+  // ソースフォルダ絶対パスの map（フロントは絶対パス→相対化）
+  const rootMap = visibleRoots.map(r => ({
+    name: r.name || (String(r.path).split(/[\\/]/).pop() || ''),
+    abs: String(r.path || '').replace(/\\/g, '/').replace(/\/+$/, ''),
+  }));
+
+  const o = document.createElement('div');
+  o.className = 'modal-overlay';
+  o.innerHTML = `<div class="modal" style="min-width:520px;max-width:80vw;">
+    <h3>対象フォルダを選択</h3>
+    <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">フォルダをクリックすると、そのフォルダ＋サブフォルダがスマートシートの対象になります。</div>
+    <div id="sdf-folder-tree" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px;background:var(--bg);"></div>
+    <div class="btn-row" style="margin-top:12px;">
+      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
+    </div>
+  </div>`;
+  document.body.appendChild(o);
+
+  const tree = o.querySelector('#sdf-folder-tree');
+  const fragment = document.createDocumentFragment();
+  rootMap.forEach(r => fragment.appendChild(_buildSmartDbFolderRoot(r, (relPath) => {
+    if (callback) callback(relPath);
+    o.remove();
+  })));
+  tree.appendChild(fragment);
+}
+
+// 絶対パスから「ソースフォルダ名/サブパス」形式のソース相対パスを組み立てる
+function _smartDbToSourceRelPath(rootInfo, absPath) {
+  const abs = String(absPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!rootInfo || !rootInfo.abs) return abs;
+  const rootAbs = rootInfo.abs;
+  if (abs === rootAbs) return rootInfo.name;
+  if (abs.startsWith(rootAbs + '/')) return rootInfo.name + '/' + abs.slice(rootAbs.length + 1);
+  // 想定外: API 戻り値が相対 / 別ボリュームの場合は素直にそのまま返す
+  return abs;
+}
+
+function _buildSmartDbFolderRoot(rootInfo, onPick) {
+  const node = document.createElement('div');
+  node.className = 'sdf-tree-node';
+  node.style.cssText = 'font-size:13px;';
+  const labelRow = _smartDbPickerRow();
+  const toggle = labelRow.querySelector('[data-role="toggle"]');
+  const labelEl = labelRow.querySelector('[data-role="label"]');
+  labelEl.textContent = rootInfo.name + ' (ソースフォルダ全体)';
+  node.appendChild(labelRow);
+
+  const childrenHost = document.createElement('div');
+  childrenHost.style.cssText = 'margin-left:14px;display:none;';
+  node.appendChild(childrenHost);
+
+  _wireSmartDbFolderExpand(toggle, childrenHost, async () => {
+    const items = await apiFetch('/browse?path=' + encodeURIComponent(rootInfo.abs) + '&detail=false');
+    const subs = (Array.isArray(items) ? items : []).filter(it => it && it.type === 'folder' && it.name);
+    subs.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
+    return subs.map(sub => _buildSmartDbFolderChild(rootInfo, rootInfo.abs + '/' + sub.name, sub.name, onPick));
+  }, '(サブフォルダなし)');
+
+  labelRow.addEventListener('click', (e) => {
+    if (e.target === toggle) return;
+    if (onPick) onPick(rootInfo.name);
+  });
+  return node;
+}
+
+function _buildSmartDbFolderChild(rootInfo, absPath, name, onPick) {
+  const abs = String(absPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const sourceRelPath = _smartDbToSourceRelPath(rootInfo, abs);
+
+  const node = document.createElement('div');
+  const labelRow = _smartDbPickerRow();
+  const toggle = labelRow.querySelector('[data-role="toggle"]');
+  const labelEl = labelRow.querySelector('[data-role="label"]');
+  labelEl.textContent = name;
+  node.appendChild(labelRow);
+
+  const childrenHost = document.createElement('div');
+  childrenHost.style.cssText = 'margin-left:14px;display:none;';
+  node.appendChild(childrenHost);
+
+  _wireSmartDbFolderExpand(toggle, childrenHost, async () => {
+    const items = await apiFetch('/browse?path=' + encodeURIComponent(abs) + '&detail=false');
+    const subs = (Array.isArray(items) ? items : []).filter(it => it && it.type === 'folder' && it.name);
+    subs.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
+    return subs.map(sub => _buildSmartDbFolderChild(rootInfo, abs + '/' + sub.name, sub.name, onPick));
+  }, null);
+
+  labelRow.addEventListener('click', (e) => {
+    if (e.target === toggle) return;
+    if (onPick) onPick(sourceRelPath);
+  });
+  return node;
+}
+
+function _smartDbPickerRow() {
+  const labelRow = document.createElement('div');
+  labelRow.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 4px;cursor:pointer;border-radius:3px;';
+  labelRow.addEventListener('mouseenter', () => { labelRow.style.background = 'var(--bg3)'; });
+  labelRow.addEventListener('mouseleave', () => { labelRow.style.background = ''; });
+  const toggle = document.createElement('span');
+  toggle.dataset.role = 'toggle';
+  toggle.style.cssText = 'display:inline-block;width:14px;text-align:center;color:var(--fg2);';
+  toggle.textContent = '▶';
+  const labelEl = document.createElement('span');
+  labelEl.dataset.role = 'label';
+  labelEl.style.cssText = 'flex:1;';
+  labelRow.appendChild(toggle);
+  labelRow.appendChild(labelEl);
+  return labelRow;
+}
+
+function _wireSmartDbFolderExpand(toggle, childrenHost, fetchChildren, emptyHint) {
+  let expanded = false;
+  let loaded = false;
+  const expand = async () => {
+    if (!loaded) {
+      loaded = true;
+      try {
+        const children = await fetchChildren();
+        if (!children.length) {
+          if (emptyHint) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'font-size:11px;color:var(--fg2);padding:2px 0;';
+            empty.textContent = emptyHint;
+            childrenHost.appendChild(empty);
+          } else {
+            toggle.style.visibility = 'hidden';
+          }
+        } else {
+          children.forEach(el => childrenHost.appendChild(el));
+        }
+      } catch {
+        const errEl = document.createElement('div');
+        errEl.style.cssText = 'font-size:11px;color:var(--red);padding:2px 0;';
+        errEl.textContent = '(読み込み失敗)';
+        childrenHost.appendChild(errEl);
+      }
+    }
+    expanded = true;
+    childrenHost.style.display = '';
+    toggle.textContent = '▼';
+  };
+  const collapse = () => {
+    expanded = false;
+    childrenHost.style.display = 'none';
+    toggle.textContent = '▶';
+  };
+  toggle.addEventListener('click', (e) => { e.stopPropagation(); if (expanded) collapse(); else expand(); });
 }
 
 function _smartDbFilterRowHtml(prop='', field='value', op='contains', val='') {
@@ -644,9 +874,21 @@ async function _saveSmartDbFilters(smartDbId) {
     if (prop) filters.push({ property: prop, field, operator, value });
   });
   const def = _findSmartDbDefinition(smartDbId);
+  // 対象フォルダ（sources）— 空の行は無視、kind は folder 固定（サブフォルダ含む）
+  // 既存の非フォルダ source（kind: "sheet" 等）は後方互換のため保持する。
+  const srcRows = document.querySelectorAll('#sdf-sources .sdf-src-row');
+  const folderSources = [];
+  srcRows.forEach(r => {
+    const p = (r.querySelector('[data-field="path"]')?.value || '').trim();
+    if (p) folderSources.push({ kind: 'folder', path: p });
+  });
+  const preservedSources = Array.isArray(def?.sources)
+    ? def.sources.filter(s => s && s.path && (s.kind || 'folder') !== 'folder')
+    : [];
+  const sources = preservedSources.concat(folderSources);
   if (def) {
     const before = _captureSmartDbHistorySnapshot(def);
-    const nextDef = normalizeSmartDbDefinition(JSON.parse(JSON.stringify({ ...def, name, filters })));
+    const nextDef = normalizeSmartDbDefinition(JSON.parse(JSON.stringify({ ...def, name, filters, sources })));
     if (def._filePath) nextDef._filePath = def._filePath;
     if (def._fileId) nextDef._fileId = def._fileId;
     try { await saveSmartDbDef(nextDef); }

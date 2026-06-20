@@ -77,7 +77,7 @@ const GBSubPanel = (() => {
       outliner: 'フォルダツリー',
       detail: 'オプション',
       preview: 'ビューワー',
-      calendar: 'カレンダー',
+      calendar: 'スケジューラー',
       timer: 'タイマー',
       chat: 'チャット',
       annotation: '注釈',
@@ -343,6 +343,32 @@ const GBSubPanel = (() => {
     return data?.entity || _basename(path).replace(/\.md$/, '') || 'エントリ';
   }
 
+  function _firstPropertyValue(data, propName) {
+    const values = data?.properties?.[propName];
+    if (!Array.isArray(values)) return '';
+    for (const item of values) {
+      const value = String(item?.value ?? '').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
+  function _htmlSnapshotPathFromEntity(data) {
+    const htmlPath = _firstPropertyValue(data, 'HTML');
+    if (!htmlPath || !/\.html?(?:$|[?#])/i.test(htmlPath)) return '';
+    return htmlPath.replace(/\\/g, '/');
+  }
+
+  function _fileRawUrl(path) {
+    const value = String(path || '').trim();
+    if (!value) return '';
+    if (/^(?:https?:|data:|blob:|\/api\/)/i.test(value)) return value;
+    if (window.MeldexResourceUrl && typeof window.MeldexResourceUrl.fileRaw === 'function') {
+      return window.MeldexResourceUrl.fileRaw(value);
+    }
+    return '/api/file-raw?path=' + encodeURIComponent(value);
+  }
+
   function _appendEntityParentLink(root, entityPath) {
     const parentDb = _entityParentDir(entityPath);
     const parent = document.createElement('div');
@@ -363,8 +389,40 @@ const GBSubPanel = (() => {
   }
 
   function _renderEntityNote(noteEl, data, entityPath) {
+    const htmlPath = _htmlSnapshotPathFromEntity(data);
     const raw = String(data?.page_content || '');
     noteEl.innerHTML = '';
+    if (htmlPath) {
+      const preview = document.createElement('div');
+      preview.className = 'gb-subpanel-webclip-html';
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'gb-subpanel-webclip-toolbar';
+
+      const label = document.createElement('div');
+      label.className = 'gb-subpanel-webclip-label';
+      label.textContent = 'HTMLスナップショット';
+      toolbar.appendChild(label);
+
+      const openLink = document.createElement('a');
+      openLink.className = 'gb-subpanel-webclip-open';
+      openLink.href = _fileRawUrl(htmlPath);
+      openLink.target = '_blank';
+      openLink.rel = 'noopener noreferrer';
+      openLink.textContent = '別画面で開く';
+      toolbar.appendChild(openLink);
+
+      const frame = document.createElement('iframe');
+      frame.className = 'gb-subpanel-webclip-frame';
+      frame.title = '保存したHTML';
+      frame.src = _fileRawUrl(htmlPath);
+      frame.setAttribute('sandbox', 'allow-same-origin allow-forms allow-popups');
+
+      preview.appendChild(toolbar);
+      preview.appendChild(frame);
+      noteEl.appendChild(preview);
+      return;
+    }
     if (!raw.trim()) {
       const empty = document.createElement('div');
       empty.className = 'gb-subpanel-empty-note';

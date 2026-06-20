@@ -230,6 +230,13 @@ function bdScheduleFontStyleMapUpdate() {
 
 function _bdApplyStyleFieldChange(kind, style, field, value) {
   if (!style) return;
+  const markNodeOverride = () => {
+    if (typeof bd === 'undefined' || !Array.isArray(bd.nodes) || !bd.nodes.includes(style)) return;
+    if (field === 'width') style._userW = true;
+    else if (field === 'bgColor') style._userBgColor = true;
+    else if (field === 'fontSize') style._userFontSize = true;
+    else if (field === 'fontBold') style._userFontBold = true;
+  };
   if (field === 'fontFamily') {
     style.fontFamily = _bdNormalizeFontFamily(value);
     return;
@@ -241,6 +248,7 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
       else if (field === 'fontSize') style[field] = Math.max(8, num);
       else if (field === 'textStrokeWidth') style[field] = Math.max(0, Math.min(12, num));
       else style[field] = Math.max(0, num);
+      markNodeOverride();
       return;
     }
     if (['cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth'].includes(field)) {
@@ -268,9 +276,11 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
       // チェックで override が永続化されない (保存/再読込で消える)。'rect' をそのまま
       // 格納し、レンダリング側は「どの if 分岐にもマッチしない」デフォルト = rect 扱いする。
       style[field] = value;
+      markNodeOverride();
       return;
     }
     style[field] = value;
+    markNodeOverride();
     return;
   }
   if (field === 'width') {
@@ -542,8 +552,12 @@ function _bdEnsureNodeCardCustomStyle(node) {
   const idx = bd.cardStyles.findIndex(s => s.id === customId);
   if (idx >= 0) bd.cardStyles.splice(idx, 1, next);
   else bd.cardStyles.push(next);
-  if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(node);
-  node.cardStyle = customId;
+  if (typeof bdSetNodeCardStyleRef === 'function') bdSetNodeCardStyleRef(node, customId, { clearOverrides: true });
+  else {
+    if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(node);
+    node.cardStyle = customId;
+    node._userCardStyle = true;
+  }
   return next;
 }
 
@@ -649,8 +663,12 @@ async function _bdSaveNodeCardStyleAsNew(node) {
   // 保存時点の値を「ユーザー定義デフォルト」として記録（リセットで戻る先）
   next._default = _bdCloneStyleForDefault(next);
   bd.cardStyles.push(next);
-  node.cardStyle = next.id;
-  if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(node);
+  if (typeof bdSetNodeCardStyleRef === 'function') bdSetNodeCardStyleRef(node, next.id, { clearOverrides: true });
+  else {
+    node.cardStyle = next.id;
+    if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(node);
+    node._userCardStyle = true;
+  }
   bdDirty();
   bdRender();
   bdRefreshBoardToolbar();

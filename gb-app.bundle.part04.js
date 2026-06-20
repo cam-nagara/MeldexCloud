@@ -1,3 +1,353 @@
+  try {
+    const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+    const [vault, roots, homeRes] = await Promise.all([
+      _withStartupTimeout('vault', apiFetch('/vault'), 5000, { path: '', name: '' }),
+      _withStartupTimeout('outliner-roots', apiFetch('/outliner-roots').catch(() => []), 5000, []),
+      _withStartupTimeout('home-folder', apiFetch('/home-folder').catch(() => ({ exists: false })), 5000, { exists: false }),
+    ]);
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.initial-fetches', initialFetchStartedAt, {
+        rootsCount: Array.isArray(roots) ? roots.length : 0,
+        hasHome: !!homeRes?.exists,
+      });
+    }
+    state.vaultPath = vault.path;
+    try {
+      if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
+    } catch (e) {}
+
+    const hasRoots = roots.length > 0 && roots.some(r => r.visible);
+    const hasHome = homeRes.exists;
+    const onboardingShown = !!window.MeldexOnboarding?.handleStartupState?.({
+      vaultPath: vault.path || '',
+      hasRoots,
+      hasHome,
+      homePath: homeRes?.path || '',
+    });
+    if (hasHome && !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+      window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({
+        trigger: 'desktop-home-ready',
+        homePath: homeRes?.path || '',
+      });
+    }
+    if (!vault.path && !hasRoots && !hasHome) {
+      // ソースフォルダもルートもホームもない場合はウェルカム画面
+      // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
+      showView('welcome');
+    }
+
+    document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
+    document.getElementById('current-title').textContent = '';
+
+    // file_id マイグレーションは初回のみだが、起動表示を止めないよう背景化する。
+    const rawMigrationPromise = _migratePathsToFileIds();
+    const migrationPromise = _withStartupTimeout('file-id-migration', rawMigrationPromise, 5000, null);
+
+    // 廃止された非表示機能の localStorage を一度だけ除去
+    if (!localStorage.getItem('_folder-hidden-removed')) {
+      localStorage.removeItem('folder-files-hidden');
+      localStorage.setItem('_folder-hidden-removed', '1');
+    }
+    if (typeof removeLegacyDashboardStorageOnce === 'function') removeLegacyDashboardStorageOnce();
+
+    // フォルダツリーとビュー復元を並行実行
+    const outlinerStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+    const outlinerPromise = Promise.resolve(loadOutliner()).finally(() => {
+      if (typeof _logPerfEvent === 'function') _logPerfEvent('startup.loadOutliner.promise', outlinerStartedAt);
+    });
+    const linkDictPromise = loadLinkDict();
+
+    // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
+    let restored = onboardingShown;
+    const restoredByPaneLayout = _paneLayoutRestoredFromStorage();
+    const urlParams = new URLSearchParams(window.location.search);
+    const openType = urlParams.get('open');
+    const openPath = urlParams.get('path');
+    const openLabel = urlParams.get('label') || (openPath ? openPath.split('/').pop() : '');
+    const isUrlOpen = !!(openType && openPath);
+    if (isUrlOpen && _isCloudPhase1UnsupportedOpenType(openType)) {
+      _showCloudPhase1UnsupportedOpen(openType);
+      restored = true;
+    } else if (isUrlOpen) {
+      const _urlOpenOpts = { skipAutoAppLayout: true, skipSaveLastView: true };
+      // URLパラメータ経由の場合、lastViewを上書きしないフラグを設定
+      const previousSkipLastView = window._skipLastViewSave;
+      window._skipLastViewSave = true;
+      try {
+        if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
+        else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
+        else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
+          const mt = urlParams.get('mediaType') || (openType === 'media' ? 'image' : openType);
+          openMedia(openLabel, openPath, mt, _urlOpenOpts);
+          restored = true;
+        }
+        else if (openType === 'document') {
+          if (typeof openViewer === 'function') {
+            const viewerUrl = /\.pdf(?:[?#]|$)/i.test(openPath)
+              ? '/viewer?pdf=' + encodeURIComponent(openPath)
+              : '/viewer?file=' + encodeURIComponent(openPath);
+            openViewer(viewerUrl, _urlOpenOpts);
+            restored = true;
+          }
+        }
+        else if (openType === 'html') { openHtmlFile(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'csv') { if (typeof openCsvFile === 'function') { openCsvFile(openLabel, openPath, _urlOpenOpts); restored = true; } }
+        else if (openType === 'folder') { openFolder(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'calendar') { await openCalendarFile(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'chat') {
+          if (typeof openSavedChat === 'function') {
+            await openSavedChat(openPath);
+            restored = true;
+          }
+        }
+        else if (openType === 'scriptnote' || openType === 'scenario') {
+          if (typeof openScenarioInScriptNote === 'function') {
+            openScenarioInScriptNote(openPath, openLabel, _urlOpenOpts);
+            restored = true;
+          }
+        }
+        else if (openType === 'smart-db') {
+          if (typeof openSmartDbFile === 'function') {
+            openSmartDbFile(openLabel, openPath, _urlOpenOpts);
+            restored = true;
+          }
+        }
+      } finally {
+        window._skipLastViewSave = previousSkipLastView;
+      }
+    }
+
+    // v5.0 ペイン配置が復元済みなら、旧 lastView 復元でアクティブペインを上書きしない。
+    if (!restored && restoredByPaneLayout) restored = true;
+
+    // 前回のビューを即座に復元（URLパラメータがなかった場合）
+    if (!restored) {
+      const restoreStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+      try {
+        let last = _readLastViewFromStorage();
+        if (last && _isCloudPhase1UnsupportedOpenType(last.type)) {
+          localStorage.removeItem('lastView');
+          _showCloudPhase1UnsupportedOpen(last.type);
+          last = null;
+        }
+        const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
+        if (last) {
+          if (last.type === 'pivot' && last.dbPath) { await selectDatabase(last.dbPath, null, _expOpts); restored = true; }
+          else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
+          else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
+          else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
+          else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
+          else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
+          else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'smart-db' && last.path && last.path.startsWith('file:') === false && typeof openSmartDbFile === 'function') { openSmartDbFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'smart-db' && last.smartDbId) { selectSmartDb(last.smartDbId, null, _expOpts); restored = true; }
+        }
+      } catch (e) {}
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.restore-last-view', restoreStartedAt, { restored });
+      }
+    } // if (!restored) from URL params
+
+    // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
+    // マニュアルのクイックスタートをノートとして開く（ファイルが存在する場合のみ）
+    if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
+      const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
+      try {
+        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
+        if (_check && typeof _check.content === 'string') {
+          const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
+          openPage('クイックスタート', _qsPath, _qsOpts);
+          localStorage.setItem('meldex-quickstart-shown', '1');
+          restored = true;
+        }
+      } catch (e) {}
+    }
+
+    if (!restored && !_isDesktopStartupLaunch()) {
+      const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
+      if (startupFolder?.path) {
+        const _startupOpts = { fromExplorer: true, skipAutoAppLayout: true };
+        await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
+        restored = true;
+      }
+    }
+
+    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
+    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
+    if (!restored) {
+      const _paneHasTabs = _paneLayoutHasAnyTabs();
+      if (!_paneHasTabs) showView('welcome');
+    }
+
+    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
+    _scheduleStartupDatabaseViewTabsRepair();
+    _hideStartupSplash();
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.visible', initStartedAt, { restored });
+    }
+    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
+      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
+        _refreshDbViewConfigAfterHistory(state.currentDbPath);
+      }
+    });
+    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
+      initGlobalFilterBar();
+      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
+        _highlightLastOutlinerNodeAfterStartup();
+        showStatus('準備完了');
+      });
+    });
+  } catch (e) {
+    showStatus('ソースフォルダ情報の取得に失敗しました', true);
+  }
+  _hideStartupSplash();
+}
+/* ==============================
+   表示切替
+   ============================== */
+function showView(viewName, ctx) {
+  const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
+  const isDbViewName = (name) => ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
+  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
+  if (ctx && ctx.containerEl) {
+    const isDbView = isDbViewName(viewName);
+    const c = ctx.containerEl;
+    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
+    if (hasPaneViewSurfaces) {
+      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
+      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
+      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+      _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
+      ctx.viewMode = viewName;
+      return;
+    }
+  }
+  // ビュー切替前にボードの未保存を即時保存
+  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
+    if (typeof bdSave === 'function') bdSave();
+  }
+  // ボードから離れたらノートタブを非表示
+  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
+    hideBoardNoteTab();
+  }
+  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
+  if (viewName !== 'folder') {
+    const fvBar = document.getElementById('fv-bulk-bar');
+    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
+  }
+  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
+    clearBoardDetailTabs();
+  }
+  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
+  const isDbView = isDbViewName(viewName);
+  const _setDisplay = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = value;
+  };
+  _setDisplay('login-view', 'none');
+  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
+  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
+  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+  _setDisplay('smart-db-view', resolvedViewName === 'smart-db' ? 'flex' : 'none');
+  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
+  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
+  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
+  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
+  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
+  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
+  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
+  // app-toolbarの表示切替
+  const appTb = document.getElementById('app-toolbar');
+  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // ページビュー: app-toolbarにリッチテキストツールバー表示
+  const showRtInAppbar = (resolvedViewName === 'page');
+  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
+  const hasAppTb = isDbView || showRtInAppbar;
+  if (appTb) appTb.classList.toggle('visible', hasAppTb);
+  // エントリビュー: エントリ内ツールバー
+  const entityRt = document.getElementById('entity-rt-toolbar');
+  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
+  // ステータスバーのショートカットヘルプ
+  const sc = document.getElementById('sb-shortcuts');
+  if (isDbView) {
+    sc.textContent = '';
+  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
+    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
+  } else if (resolvedViewName === 'scriptnote') {
+    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
+    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+  } else {
+    sc.textContent = '';
+  }
+
+  state.view = viewName;
+
+  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
+  if (typeof ann !== 'undefined') {
+    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
+    if (newTarget !== ann.targetPath) {
+      ann.targetPath = newTarget;
+      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
+      // スタンドアロン側の loadAnnotations を呼ぶと同じ注釈が二重に描画される
+      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
+        && _usesEmbeddedAnnotationSurface(viewName);
+      if (embedded) {
+        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
+        const layer = document.getElementById('ann-layer');
+        if (layer) layer.innerHTML = '';
+        if (typeof _forEachStandaloneAnnotationNote === 'function') {
+          _forEachStandaloneAnnotationNote(el => el.remove());
+        }
+      } else if (typeof loadAnnotations === 'function') {
+        loadAnnotations();
+      }
+    }
+    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
+  }
+}
+// スクリーンショットメニュー
+function showScreenshotMenu(e) {
+  const existing = document.querySelector('.ab-dropdown.ss-menu');
+  if (existing) { existing.remove(); return; }
+  const menu = document.createElement('div');
+  menu.className = 'ab-dropdown ss-menu';
+  function addItem(label, fn) { const item = document.createElement('div'); item.className = 'ab-dropdown-item'; item.textContent = label; item.addEventListener('click', () => { menu.remove(); fn(); }); menu.appendChild(item); }
+  function addSep() { const s = document.createElement('div'); s.className = 'ab-dropdown-sep'; menu.appendChild(s); }
+  addItem('全画面キャプチャ', () => captureScreenshot('full'));
+  addItem('範囲選択キャプチャ', () => captureScreenshot('region'));
+  addSep();
+  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'));
+  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'));
+  addSep();
+  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
+  document.body.appendChild(menu);
+  const btn = e.target.closest('button') || e.target;
+  const rect = btn.getBoundingClientRect();
+  { const z = _getZoom(); menu.style.left = (rect.right / z + 4) + 'px'; menu.style.top = (rect.top / z) + 'px'; }
+  requestAnimationFrame(() => { const z = _getZoom(); const mr = menu.getBoundingClientRect(); if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px'; if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px'; });
+  setTimeout(() => { document.addEventListener('pointerdown', function closer(ev) { if (!menu.contains(ev.target) && !btn.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } }); }, 0);
+}
+
+function _screenshotModeIsRegion(mode) {
+  return String(mode || '').includes('region');
+}
 
 async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
   if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
@@ -548,353 +898,3 @@ function _appShouldHandleStandaloneCalendarDrop() {
     if (!cfData) return;
     e.preventDefault();
     try {
-      const { name, path, type } = JSON.parse(cfData);
-      const navType = typeof _normalizeOpenTypeForNav === 'function'
-        ? _normalizeOpenTypeForNav(type)
-        : (type === 'database' ? 'pivot' : type === 'board' ? 'board' : (type || 'page'));
-      navOpen({ type: navType, label: name, path });
-    } catch {}
-  });
-}
-
-// Phase D: HTMLビューワー(viewer.html)のiframe通信のみ残存
-// canvas/calendarのpostMessageはPhase Cで直接関数呼び出しに変換済み
-function _isTrustedEmbeddedMessage(e) {
-  const iframe = (typeof _getActiveIframe === 'function') ? _getActiveIframe() : document.getElementById('html-iframe');
-  if (!e || !iframe?.contentWindow || e.source !== iframe.contentWindow) return false;
-  if (e.origin === window.location.origin) return true;
-  const iframeSrc = iframe.getAttribute('src') || iframe.src || '';
-  return e.origin === 'null' && _gbIsTrustedInternalViewerUrl(iframeSrc);
-}
-
-window.addEventListener('message', (e) => {
-  if (!_isTrustedEmbeddedMessage(e)) return;
-  const msg = e.data;
-  if (!msg || !msg.type) return;
-  const reloadEmbeddedAnnotations = () => {
-    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
-    if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
-      _loadAnnotationsToIframe();
-    }
-  };
-  // HTMLビューワーiframeからのステータス通知
-  if (msg.type === 'board-status') { showStatus(msg.message, msg.isError); }
-  // ヒストリー更新通知
-  if (msg.type === 'history-update') { renderHistoryList(); }
-  // HTMLビューワーiframe内メモからの保存依頼
-  if (msg.type === 'ann-save-stroke') {
-    apiPost('/annotations', {
-      target_path: msg.targetPath || ann.targetPath, type: msg.annType,
-      data: msg.data, color: msg.color, opacity: msg.opacity, user: getUsername(),
-    }).then(res => {
-      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
-      }
-      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-saved', annId: res.id, annClientId: msg.annClientId });
-    }).catch((err) => {
-      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-        _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });
-      }
-      if (typeof showStatus === 'function') showStatus('注釈の保存に失敗しました: ' + (err?.message || err || ''), true);
-    });
-  }
-  if (msg.type === 'ann-delete') {
-    if (msg.annId) {
-      (async () => {
-        const before = typeof _fetchAnnotationHistoryRow === 'function'
-          ? await _fetchAnnotationHistoryRow(msg.annId).catch(() => null)
-          : null;
-        await apiDelete('/annotations/' + encodeURIComponent(msg.annId));
-        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, msg.annId);
-        reloadEmbeddedAnnotations();
-      })().catch(() => {});
-    }
-  }
-  if (msg.type === 'ann-delete-note') {
-    if (msg.annId && msg.data) {
-      if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, { data: msg.data }, '注釈: 削除', msg.annId)
-          .then(reloadEmbeddedAnnotations)
-          .catch(() => {});
-      } else {
-        apiPut('/annotations/' + encodeURIComponent(msg.annId), { data: msg.data }).then(reloadEmbeddedAnnotations).catch(() => {});
-      }
-    }
-  }
-  if (msg.type === 'ann-update-note') {
-    if (msg.annId && (msg.data || msg.color)) {
-      const body = msg.color ? { color: msg.color } : { data: msg.data };
-      const label = msg.color ? '注釈: 色変更' : '注釈: 付箋更新';
-      if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, body, label, msg.annId).catch(() => {});
-      } else {
-        apiPut('/annotations/' + encodeURIComponent(msg.annId), body).catch(() => {});
-      }
-    }
-  }
-  if (msg.type === 'ann-create-note') {
-    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
-    const embedded = typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView);
-    if (!embedded && !msg.targetPath && typeof createNote === 'function') {
-      const prevColor = ann.color;
-      const prevOpacity = ann.opacity;
-      if (msg.color) ann.color = msg.color;
-      ann.opacity = 1;
-      Promise.resolve(createNote(msg.x, msg.y, 'sticky')).finally(() => {
-        ann.color = prevColor;
-        ann.opacity = prevOpacity;
-      });
-      return;
-    }
-    const annClientId = msg.annClientId || ('pending-note-' + Date.now().toString(36));
-    const noteData = { x: msg.x, y: msg.y, width: 180, height: 100, text: '', html: '', user: getUsername() };
-    if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-      _dispatchEmbeddedAnnotationMessage({
-        type: 'ann-add-note',
-        item: {
-          id: annClientId,
-          type: 'comment',
-          shape: 'sticky',
-          data: noteData,
-          color: msg.color || ann.color,
-          opacity: 1,
-          user: getUsername(),
-          created: new Date().toISOString(),
-        },
-      });
-    }
-    apiPost('/annotations', {
-      target_path: msg.targetPath || ann.targetPath,
-      type: 'comment', shape: 'sticky',
-      data: noteData, color: msg.color || ann.color, opacity: 1, user: getUsername(),
-    }).then(res => {
-      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
-      }
-      if (embedded) reloadEmbeddedAnnotations();
-      else renderNote(res.id, 'sticky', noteData, msg.color || ann.color, 1, getUsername(), res.created);
-    }).catch(() => {
-      if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-        _dispatchEmbeddedAnnotationMessage({ type: 'ann-remove-note', annId: annClientId });
-      }
-    });
-  }
-});
-
-// Phase C: bdToMd/bdSave等のスタブは廃止 → gb-canvas-engine.js + gb-canvas-features.js に実装済み
-
-function bdOpenBgPalette(event) {
-  if (typeof openColorPalette !== 'function') return;
-  const swatch = document.getElementById('bd-bg-swatch');
-  const canvas = document.getElementById('bd-canvas');
-  if (!swatch || !canvas) return;
-  openColorPalette(swatch, (typeof bd !== 'undefined' && bd._bgColor) || '', function(v) {
-    canvas.style.background = v;
-    setColorSwatchValue(swatch, v);
-    if (typeof bd !== 'undefined') bd._bgColor = v || '';
-    if (typeof bdMarkExtrasDirty === 'function') {
-      bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-palette');
-      if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-    }
-  });
-}
-
-async function openBoard(label, path, opts) {
-  const openOpts = opts || {};
-  const showOpenLoading = !openOpts.silent
-    && !openOpts.skipGlobalUi
-    && typeof showLoading === 'function'
-    && typeof hideLoading === 'function';
-  const prevView = state.view;
-  const prevBoardPath = state.currentBoardPath;
-  const currentTitleEl = document.getElementById('current-title');
-  const prevTitle = currentTitleEl ? currentTitleEl.textContent : '';
-  const restorePreviousView = () => {
-    state.currentBoardPath = prevBoardPath || null;
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = prevTitle;
-    if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
-    else if (!openOpts.skipStateView) state.view = prevView || '';
-  };
-  if (showOpenLoading) showLoading('ボードを読み込み中...');
-  try {
-    if (!openOpts.skipStateView) state.view = 'board';
-    state.currentBoardPath = path;
-    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
-    if (!openOpts.skipShowView) showView('board');
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-    const opened = typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true;
-    if (opened === false) {
-      restorePreviousView();
-      return false;
-    }
-    if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
-    if (!openOpts.skipNavPush) {
-      const _navEntry = {type:'board', label, path};
-      navPush(_navEntry);
-    }
-    if (!openOpts.skipRecent) addRecent(label, path, 'board');
-    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-    return true;
-  } catch (err) {
-    restorePreviousView();
-    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
-    return false;
-  } finally { if (showOpenLoading) hideLoading(); }
-}
-
-function openMedia(label, path, type, opts) {
-  const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('media');
-  else if (!openOpts.skipStateView) state.view = 'media';
-  const mediaTitleEl = document.getElementById('media-title');
-  if (mediaTitleEl) mediaTitleEl.textContent = label;
-  const currentTitleEl = document.getElementById('current-title');
-  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-  if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
-  if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'media', label, path, mediaType: type};
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(label, path, 'media');
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  // 詳細パネルにファイル情報を表示
-  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
-  // ビューワーペインを更新
-  state.currentPagePath = path;
-  const container = document.getElementById('media-content');
-  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
-  if (type === 'image') {
-    openViewer('/viewer?file=' + encodeURIComponent(path), openOpts);
-    return;
-  } else if (type === 'pdf') {
-    openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
-    return;
-  } else if (!container) {
-    return;
-  } else if (type === 'video') {
-    container.innerHTML = '<video src="' + esc(url) + '" controls style="max-width:100%;max-height:80vh;border-radius:4px;">動画を再生できません</video>';
-  } else if (type === 'audio') {
-    container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
-  } else {
-    container.innerHTML = '<div class="gb-empty-state"><div class="gb-empty-message">このメディア形式は表示できません</div><div class="gb-empty-hint">' + esc(label || path || '') + '</div></div>';
-    if (!openOpts.skipGlobalUi) showStatus('このメディア形式は表示できません: ' + (label || type || path), true);
-    return;
-  }
-  if (!openOpts.skipGlobalUi) showStatus(type + ': ' + label);
-}
-
-function openCalendarFile(label, path, opts) {
-  // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
-  const cfg = getDbViewConfig(path);
-  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
-    ? _getCurrentDbViewConfigEntryFromConfig(cfg)
-    : null;
-  if (view) {
-    if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(view, cfg);
-    view.viewMode = 'timeline';
-    cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
-    saveDbViewConfig(path, cfg, { skipHistory: true });
-  }
-  return selectDatabase(path, null, opts);
-}
-
-const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';
-const _GB_EXTERNAL_HTML_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
-const _GB_TRUSTED_VIEWER_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
-
-function _gbIsTrustedInternalViewerUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return false;
-  try {
-    const parsed = new URL(text, window.location.origin);
-    return parsed.origin === window.location.origin && parsed.pathname.replace(/\/+$/, '') === '/viewer';
-  } catch {
-    return false;
-  }
-}
-
-function _gbHtmlIframeSandboxForUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return _GB_UNTRUSTED_IFRAME_SANDBOX;
-  try {
-    const parsed = new URL(text, window.location.origin);
-    if (_gbIsTrustedInternalViewerUrl(parsed.href)) {
-      return _GB_TRUSTED_VIEWER_IFRAME_SANDBOX;
-    }
-    if (['http:', 'https:'].includes(parsed.protocol) && parsed.origin !== window.location.origin) {
-      return _GB_EXTERNAL_HTML_IFRAME_SANDBOX;
-    }
-  } catch {}
-  return _GB_UNTRUSTED_IFRAME_SANDBOX;
-}
-
-function _gbPrepareUntrustedIframe(iframe, rawUrl) {
-  if (!iframe) return null;
-  iframe.setAttribute('sandbox', _gbHtmlIframeSandboxForUrl(rawUrl || iframe.getAttribute('src') || iframe.src || ''));
-  iframe.setAttribute('referrerpolicy', 'no-referrer');
-  return iframe;
-}
-
-function _gbNormalizeHtmlViewerUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return '';
-  try {
-    const parsed = new URL(text, window.location.origin);
-    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
-    return parsed.href;
-  } catch {
-    return '';
-  }
-}
-
-function _gbSetHtmlViewerSrc(rawUrl) {
-  const url = _gbNormalizeHtmlViewerUrl(rawUrl);
-  if (!url) {
-    if (typeof showStatus === 'function') showStatus('HTMLビューワーで開けないURLです', true);
-    return false;
-  }
-  const iframe = _gbPrepareUntrustedIframe(document.getElementById('html-iframe'), url);
-  if (iframe) iframe.src = url;
-  const urlBar = document.getElementById('html-url-bar');
-  if (urlBar) urlBar.value = url;
-  return true;
-}
-
-_gbPrepareUntrustedIframe(document.getElementById('html-iframe'));
-
-function openHtmlFile(label, path, opts) {
-  const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('html');
-  else if (!openOpts.skipStateView) state.view = 'html';
-  state.currentPagePath = path;
-  const currentTitleEl = document.getElementById('current-title');
-  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-  if (!openOpts.skipSaveLastView) saveLastView({type:'html', label, path});
-  if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'html', label, path};
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(label, path, 'html');
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
-  if (typeof trackIframeLoading === 'function') {
-    trackIframeLoading(document.getElementById('html-iframe'), 'HTMLを読み込み中...', openOpts);
-  }
-  _gbSetHtmlViewerSrc(url);
-  if (!openOpts.skipGlobalUi) showStatus('HTML: ' + label);
-}
-/* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
-function getUsername() {
-  try { const cfg = JSON.parse(localStorage.getItem('meldex-user') || '{}'); return cfg.name || 'anonymous'; } catch { return 'anonymous'; }
-}
-
-// ビュー切り替え時のアノテーション再読み込みは showView 本体 (720-731行) で処理済み
-
-// replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
-
-const _GB_RESIZABLE_MODAL_SELECTOR = '.modal, .gb-modal, .link-modal, .gb-cal-modal';
-const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
-
-function _gbClampModalValue(value, min, max) {
-  if (max < min) return min;

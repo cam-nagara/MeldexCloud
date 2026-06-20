@@ -124,10 +124,29 @@
       warn.setAttribute('role', 'alert');
       warn.setAttribute('aria-live', 'assertive');
     }
-    document.querySelectorAll('#chat-usage-banner, #export-to-db-status, #fsb-count').forEach(el => {
+    document.querySelectorAll('#export-to-db-status, #fsb-count').forEach(el => {
       el.setAttribute('aria-live', 'polite');
       el.setAttribute('aria-atomic', 'true');
     });
+  }
+
+  const SPELLCHECK_SELECTOR = 'input, textarea, [contenteditable], [role="textbox"]';
+
+  function _disableSpellcheckOn(el) {
+    if (!el || el.nodeType !== 1) return;
+    if (!el.matches?.(SPELLCHECK_SELECTOR)) return;
+    el.setAttribute('spellcheck', 'false');
+    if ('spellcheck' in el) {
+      try { el.spellcheck = false; } catch {}
+    }
+  }
+
+  function disableSpellcheck(root) {
+    const scope = root || document;
+    ROOT.setAttribute('spellcheck', 'false');
+    if (document.body) document.body.setAttribute('spellcheck', 'false');
+    _disableSpellcheckOn(scope);
+    scope.querySelectorAll?.(SPELLCHECK_SELECTOR).forEach(_disableSpellcheckOn);
   }
 
   function _browserSupport() {
@@ -168,6 +187,7 @@
 
   function refresh(root) {
     applyPreferences();
+    disableSpellcheck(root || document);
     ensureLiveRegions();
     ensureControlLabels(root || document);
     showBrowserWarningIfNeeded();
@@ -177,7 +197,10 @@
     const observer = new MutationObserver(records => {
       for (const record of records) {
         record.addedNodes?.forEach(node => {
-          if (node.nodeType === 1) ensureControlLabels(node);
+          if (node.nodeType === 1) {
+            disableSpellcheck(node);
+            ensureControlLabels(node);
+          }
         });
       }
     });

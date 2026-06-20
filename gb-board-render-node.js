@@ -208,18 +208,24 @@ function bdRenderNode(node, options = {}) {
 }
 
 function bdApplyNodeBaseStyles(div, node, nodeStyle, showStatus) {
+  const isImageNode = !!node?.img;
   div.style.left = node.x + 'px';
   div.style.top = node.y + 'px';
   if (node.w) div.style.width = node.w + 'px';
   if (node.h) div.style.minHeight = node.h + 'px';
-  if (nodeStyle.bgColor) div.style.background = nodeStyle.bgColor;
+  if (isImageNode) {
+    div.style.background = 'transparent';
+    div.style.borderColor = 'transparent';
+    div.style.borderWidth = '0px';
+    div.style.borderStyle = 'solid';
+  } else if (nodeStyle.bgColor) div.style.background = nodeStyle.bgColor;
   if (nodeStyle.textColor) div.style.color = nodeStyle.textColor;
-  if (nodeStyle.borderColor || nodeStyle.borderWidth) {
+  if (!isImageNode && (nodeStyle.borderColor || nodeStyle.borderWidth)) {
     div.style.borderColor = nodeStyle.borderColor || 'transparent';
     div.style.borderWidth = (nodeStyle.borderWidth || 0) + 'px';
     div.style.borderStyle = 'solid';
   }
-  if (nodeStyle.borderRadius != null) div.style.borderRadius = nodeStyle.borderRadius + 'px';
+  if (!isImageNode && nodeStyle.borderRadius != null) div.style.borderRadius = nodeStyle.borderRadius + 'px';
   const transforms = [];
   if (node.flipH) transforms.push('scaleX(-1)');
   if (node.flipV) transforms.push('scaleY(-1)');
@@ -601,12 +607,51 @@ function bdAppendCardMenuButton(div, node) {
   div.appendChild(menuBtn);
 }
 
+function bdMissingImagePath(node) {
+  if (typeof bdImageMissingPathLabel === 'function') return bdImageMissingPathLabel(node);
+  return String(node?.link || node?.imageSourcePath || '').replace(/\\/g, '/');
+}
+
+function bdAppendMissingImagePlaceholder(div, node) {
+  div.querySelectorAll?.('.bd-missing-image').forEach(el => el.remove());
+  const box = document.createElement('div');
+  box.className = 'bd-missing-image';
+  const title = document.createElement('div');
+  title.className = 'bd-missing-image-title';
+  title.textContent = '画像ファイルが見つかりません';
+  box.appendChild(title);
+  const path = bdMissingImagePath(node);
+  if (path) {
+    const pathEl = document.createElement('div');
+    pathEl.className = 'bd-missing-image-path';
+    pathEl.textContent = path;
+    box.appendChild(pathEl);
+  }
+  if (typeof bdRelocateImageNode === 'function') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'bd-missing-image-action';
+    button.textContent = '画像を再指定';
+    button.addEventListener('click', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      bdRelocateImageNode(node.id);
+    });
+    box.appendChild(button);
+  }
+  div.appendChild(box);
+}
+
 function bdAppendNodeImage(div, node) {
   if (!node.img) return;
   const img = document.createElement('img');
   img.className = 'bd-img';
   img.draggable = false;
   img.onload = () => {
+    div.classList.remove('bd-image-missing');
+    div.querySelectorAll?.('.bd-missing-image').forEach(el => el.remove());
+    node._imageLoadError = false;
+    delete node._imageLoadErrorAt;
     node._imgNaturalW = img.naturalWidth || 0;
     node._imgNaturalH = img.naturalHeight || 0;
     if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
@@ -614,7 +659,15 @@ function bdAppendNodeImage(div, node) {
     else if (typeof bdSyncSelectionRectForNode === 'function') bdSyncSelectionRectForNode(node.id);
     if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [node.id], reason: 'image-load' });
   };
-  img.onerror = () => { img.style.display = 'none'; };
+  img.onerror = () => {
+    img.style.display = 'none';
+    div.classList.add('bd-image-missing');
+    node._imageLoadError = true;
+    node._imageLoadErrorAt = Date.now();
+    bdAppendMissingImagePlaceholder(div, node);
+    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
+    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id);
+  };
   div.appendChild(img);
   img.src = node.img;
 }

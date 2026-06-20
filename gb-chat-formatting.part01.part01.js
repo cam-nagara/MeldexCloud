@@ -67,8 +67,9 @@
   }
 
   function _eventRect(event) {
-    const x = Number(event?.clientX || 0);
-    const y = Number(event?.clientY || 0);
+    const x = Number(event?.clientX);
+    const y = Number(event?.clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     return { left: x, top: y, right: x, bottom: y, width: 0, height: 0 };
   }
 
@@ -78,6 +79,26 @@
     const rect = range?.getBoundingClientRect?.();
     if (rect && (rect.width || rect.height)) return rect;
     return fallbackEl?.getBoundingClientRect?.() || null;
+  }
+
+  function _selectionAvoidRect(range, fallbackEl) {
+    const rects = range ? Array.from(range.getClientRects()).filter(r => r.width || r.height) : [];
+    if (!rects.length) return _selectionRect(range, fallbackEl);
+    return rects.reduce((acc, r) => ({
+      left: Math.min(acc.left, r.left),
+      top: Math.min(acc.top, r.top),
+      right: Math.max(acc.right, r.right),
+      bottom: Math.max(acc.bottom, r.bottom),
+      width: Math.max(acc.right, r.right) - Math.min(acc.left, r.left),
+      height: Math.max(acc.bottom, r.bottom) - Math.min(acc.top, r.top),
+    }), {
+      left: rects[0].left,
+      top: rects[0].top,
+      right: rects[0].right,
+      bottom: rects[0].bottom,
+      width: rects[0].width,
+      height: rects[0].height,
+    });
   }
 
   function _computedValues(el) {
@@ -753,7 +774,7 @@
     return group;
   }
 
-  function _openPopup(target, rect, valueElement) {
+  function _openPopup(target, rect, valueElement, avoidRect) {
     if (Date.now() < _suppressUntil) return;
     if (typeof openFormatPopup !== 'function' || !rect) return;
     _activeTarget = target;
@@ -767,6 +788,7 @@
       className: POPUP_CLASS,
       closeOnOutside: true,
       closeButton: false,
+      avoidRect: avoidRect || rect,
       extraRow3: [_makeHeadingControl(_headingLevelAt(source, target.start))],
       onChange: _applyFormat,
     });
@@ -824,7 +846,7 @@
     return { kind: 'copy', text, bubble, range };
   }
 
-  function _openCopyPopup(target, rect) {
+  function _openCopyPopup(target, rect, avoidRect) {
     if (Date.now() < _suppressUntil || !target?.text || !rect) return;
     _closePopup();
     _activeTarget = { kind: 'copy', text: target.text };
@@ -851,7 +873,7 @@
     popup.appendChild(row);
     document.body.appendChild(popup);
     const anchor = { getBoundingClientRect: () => rect };
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect());
+    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect(), { avoidRect: avoidRect || rect });
     setTimeout(() => {
       const closeHandler = (event) => {
         if (!popup.contains(event.target)) {

@@ -26,7 +26,8 @@
   }
 
   if (!blankTarget && item.path) {
-    addItem('所属フォルダを設定...', () => {
+    const linkLabel = item.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
+    addItem(linkLabel, () => {
       if (typeof showAddFolderLinkModal === 'function') showAddFolderLinkModal(item.path, null);
     }, null, 'link2');
   }
@@ -156,7 +157,7 @@
     }, 'red', 'trash2');
   }
 
-  if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function') {
+  if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
     addSep();
     if (isSplitActive()) {
       addItem('別の作業領域で開く', () => {
@@ -179,6 +180,338 @@
     };
     document.addEventListener('pointerdown', closer);
   }, 0);
+}
+
+const FOLDER_LIST_SORT_STORAGE_KEY = 'folder-list-sort';
+const FOLDER_LIST_COLUMNS_STORAGE_KEY = 'folder-list-columns';
+const FOLDER_LIST_COLUMN_WIDTHS_STORAGE_KEY = 'folder-list-column-widths';
+const FOLDER_LIST_SORT_COLUMNS = [
+  { key: 'name', label: '名前', width: 'minmax(220px, 2fr)', minWidth: 160, defaultOrder: 'asc' },
+  { key: 'type', label: '種類', width: 'minmax(150px, 190px)', minWidth: 96, defaultOrder: 'asc' },
+  { key: 'created', label: '作成日時', width: 'minmax(132px, 150px)', minWidth: 112, defaultOrder: 'desc' },
+  { key: 'modified', label: '更新日時', width: 'minmax(132px, 150px)', minWidth: 112, defaultOrder: 'desc' },
+  { key: 'createdBy', label: '作成者', width: 'minmax(96px, 128px)', minWidth: 80, defaultOrder: 'asc' },
+  { key: 'modifiedBy', label: '更新者', width: 'minmax(96px, 128px)', minWidth: 80, defaultOrder: 'asc' },
+  { key: 'size', label: 'サイズ', width: 'minmax(74px, 92px)', minWidth: 68, defaultOrder: 'desc' },
+];
+const FOLDER_LIST_COLLATOR = new Intl.Collator('ja', { numeric: true, sensitivity: 'base', ignorePunctuation: true });
+let _folderListSuppressClickUntil = 0;
+let _folderListResizeState = null;
+
+function _folderReadListSort() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDER_LIST_SORT_STORAGE_KEY) || '{}');
+    const key = FOLDER_LIST_SORT_COLUMNS.some(col => col.key === parsed.key) ? parsed.key : 'name';
+    const order = parsed.order === 'desc' ? 'desc' : 'asc';
+    return { key, order };
+  } catch {
+    return { key: 'name', order: 'asc' };
+  }
+}
+
+function _folderWriteListSort(sort) {
+  try { localStorage.setItem(FOLDER_LIST_SORT_STORAGE_KEY, JSON.stringify(sort)); } catch {}
+}
+
+function _folderToggleListSort(key) {
+  const current = _folderReadListSort();
+  const column = FOLDER_LIST_SORT_COLUMNS.find(col => col.key === key);
+  const order = current.key === key
+    ? (current.order === 'asc' ? 'desc' : 'asc')
+    : (column?.defaultOrder || 'asc');
+  _folderWriteListSort({ key, order });
+  const selectedPaths = _folderSelectedItems.map(item => item?.path).filter(Boolean);
+  renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+}
+
+function _folderListDateValue(item, key) {
+  const raw = key === 'created'
+    ? (item?.created || item?.created_at || item?.modified || item?.mtime || '')
+    : (item?.modified || item?.mtime || item?.created || item?.created_at || '');
+  const time = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function _folderListDateText(item, key) {
+  const raw = key === 'created'
+    ? (item?.created || item?.created_at || item?.modified || item?.mtime || '')
+    : (item?.modified || item?.mtime || item?.created || item?.created_at || '');
+  return raw ? String(raw).substring(0, 16).replace('T', ' ') : '';
+}
+
+function _folderListTypeText(item) {
+  return item?.os_type || item?.osType || item?.type_label || item?.typeLabel || FILE_TYPE_LABELS?.[item?.type] || item?.ext || '';
+}
+
+function _folderListNameSortText(item) {
+  const raw = String(item?.name || '').toLowerCase();
+  const stripped = raw.replace(/^[\s\[\]\(\)【】「」『』"'`_.,;:!！?？#＃*＊+＋\-－=＝~〜・･■□◆◇●○]+/, '');
+  return stripped || raw;
+}
+
+function _folderListUserText(item, key) {
+  const candidates = key === 'createdBy'
+    ? [item?.created_by, item?.createdBy, item?.creator, item?.author, item?.owner, item?.user]
+    : [item?.modified_by, item?.modifiedBy, item?.updated_by, item?.updatedBy, item?.updater, item?.editor, item?.user];
+  return String(candidates.find(value => String(value || '').trim()) || '').trim();
+}
+
+function _folderListSortValue(item, key) {
+  if (key === 'type') return _folderListTypeText(item).toLowerCase();
+  if (key === 'created' || key === 'modified') return _folderListDateValue(item, key);
+  if (key === 'createdBy' || key === 'modifiedBy') return _folderListUserText(item, key).toLowerCase();
+  if (key === 'size') return Number.isFinite(Number(item?.size)) ? Number(item.size) : -1;
+  return _folderListNameSortText(item);
+}
+
+function _folderCompareListItems(a, b, key, order) {
+  const folderDiff = (a?.type === 'folder' ? 0 : 1) - (b?.type === 'folder' ? 0 : 1);
+  if (folderDiff !== 0) return folderDiff;
+  const av = _folderListSortValue(a, key);
+  const bv = _folderListSortValue(b, key);
+  let diff = 0;
+  if (typeof av === 'number' || typeof bv === 'number') diff = Number(av || 0) - Number(bv || 0);
+  else diff = FOLDER_LIST_COLLATOR.compare(String(av || ''), String(bv || ''));
+  if (diff === 0 && key !== 'name') diff = FOLDER_LIST_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''));
+  if (diff === 0) diff = FOLDER_LIST_COLLATOR.compare(String(a?.path || ''), String(b?.path || ''));
+  return order === 'desc' ? -diff : diff;
+}
+
+function _folderSortVisibleItems(items) {
+  if (_folderLayout !== 'list') return items;
+  const sort = _folderReadListSort();
+  return [...items].sort((a, b) => _folderCompareListItems(a, b, sort.key, sort.order));
+}
+
+function _folderMetaSpan(className, text) {
+  const span = document.createElement('span');
+  span.className = className;
+  span.textContent = text || '';
+  return span;
+}
+
+function _folderListColumnValue(item, key) {
+  if (key === 'name') return item?.name || '';
+  if (key === 'type') return _folderListTypeText(item);
+  if (key === 'created' || key === 'modified') return _folderListDateText(item, key);
+  if (key === 'createdBy' || key === 'modifiedBy') return _folderListUserText(item, key);
+  if (key === 'size') return item?.size != null ? formatFileSize(item.size) : '';
+  return '';
+}
+
+function _folderReadListColumns() {
+  const defaults = FOLDER_LIST_SORT_COLUMNS.map(column => column.key);
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDER_LIST_COLUMNS_STORAGE_KEY) || '[]');
+    const keys = Array.isArray(parsed) ? parsed.filter(key => defaults.includes(key)) : [];
+    return [...keys, ...defaults.filter(key => !keys.includes(key))];
+  } catch {
+    return defaults;
+  }
+}
+
+function _folderListColumns() {
+  const defs = new Map(FOLDER_LIST_SORT_COLUMNS.map(column => [column.key, column]));
+  return _folderReadListColumns().map(key => defs.get(key)).filter(Boolean);
+}
+
+function _folderWriteListColumns(keys) {
+  try { localStorage.setItem(FOLDER_LIST_COLUMNS_STORAGE_KEY, JSON.stringify(keys)); } catch {}
+}
+
+function _folderReadListColumnWidths() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDER_LIST_COLUMN_WIDTHS_STORAGE_KEY) || '{}');
+    const widths = {};
+    FOLDER_LIST_SORT_COLUMNS.forEach(column => {
+      const value = Number(parsed?.[column.key]);
+      if (Number.isFinite(value) && value > 0) widths[column.key] = Math.max(column.minWidth || 48, Math.min(1200, Math.round(value)));
+    });
+    return widths;
+  } catch {
+    return {};
+  }
+}
+
+function _folderWriteListColumnWidths(widths) {
+  try { localStorage.setItem(FOLDER_LIST_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(widths || {})); } catch {}
+}
+
+function _folderListColumnTrack(column) {
+  const width = _folderReadListColumnWidths()[column.key];
+  return Number.isFinite(width) ? Math.max(column.minWidth || 48, width) + 'px' : column.width;
+}
+
+function _folderApplyListColumnTemplate(container) {
+  if (container) container.style.setProperty('--fv-list-grid-columns', '36px ' + _folderListColumns().map(_folderListColumnTrack).join(' '));
+}
+
+function _folderSetListColumnWidth(container, column, width) {
+  if (!column) return;
+  const widths = _folderReadListColumnWidths();
+  widths[column.key] = Math.max(column.minWidth || 48, Math.min(1200, Math.round(Number(width) || 0)));
+  _folderWriteListColumnWidths(widths);
+  _folderApplyListColumnTemplate(container || document.getElementById('folder-grid'));
+}
+
+function _folderMoveListColumn(sourceKey, targetKey) {
+  if (!sourceKey || !targetKey || sourceKey === targetKey) return;
+  const keys = _folderReadListColumns();
+  const from = keys.indexOf(sourceKey);
+  const to = keys.indexOf(targetKey);
+  if (from < 0 || to < 0) return;
+  keys.splice(from, 1);
+  keys.splice(to, 0, sourceKey);
+  _folderWriteListColumns(keys);
+  const selectedPaths = _folderSelectedItems.map(item => item?.path).filter(Boolean);
+  renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+}
+
+function _folderConfigureListLayout(container, isListLayout) {
+  if (!container) return;
+  if (!isListLayout) {
+    container.style.removeProperty('--fv-list-grid-columns');
+    return;
+  }
+  _folderApplyListColumnTemplate(container);
+}
+
+function _folderBeginListColumnResize(event, column, button, container) {
+  if (event.button != null && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const handle = event.currentTarget;
+  const startWidth = button.getBoundingClientRect().width || column.minWidth || 80;
+  _folderListResizeState = { pointerId: event.pointerId, startX: event.clientX, startWidth };
+  _folderListSuppressClickUntil = Date.now() + 500;
+  button.draggable = false;
+  button.classList.add('is-resizing');
+  handle.classList.add('is-active');
+  try { handle.setPointerCapture(event.pointerId); } catch {}
+  const finish = (finishEvent) => {
+    if (finishEvent.pointerId !== _folderListResizeState?.pointerId) return;
+    finishEvent.preventDefault();
+    finishEvent.stopPropagation();
+    _folderListResizeState = null;
+    _folderListSuppressClickUntil = Date.now() + 500;
+    button.draggable = true;
+    button.classList.remove('is-resizing');
+    handle.classList.remove('is-active');
+    handle.removeEventListener('pointermove', move);
+    try { handle.releasePointerCapture(finishEvent.pointerId); } catch {}
+  };
+  const move = (moveEvent) => {
+    if (moveEvent.pointerId !== _folderListResizeState?.pointerId) return;
+    moveEvent.preventDefault();
+    moveEvent.stopPropagation();
+    const nextWidth = _folderListResizeState.startWidth + (moveEvent.clientX - _folderListResizeState.startX);
+    _folderSetListColumnWidth(container, column, nextWidth);
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', finish, { once: true });
+  handle.addEventListener('pointercancel', finish, { once: true });
+}
+
+function _folderAppendListCells(el, item) {
+  _folderListColumns().forEach((column, index) => {
+    const gridColumn = String(index + 2);
+    if (column.key === 'name') {
+      const name = document.createElement('div');
+      name.className = 'fv-name fv-list-cell fv-list-name';
+      name.style.gridColumn = gridColumn;
+      name.style.gridRow = '1';
+      name.textContent = item.name;
+      name.title = item.name;
+      name.dataset.gbTooltip = item.name;
+      el.appendChild(name);
+      return;
+    }
+    const cell = _folderMetaSpan('fv-list-cell fv-list-' + column.key, _folderListColumnValue(item, column.key));
+    cell.style.gridColumn = gridColumn;
+    cell.style.gridRow = '1';
+    el.appendChild(cell);
+  });
+}
+
+function _folderRenderListHeader(container) {
+  const sort = _folderReadListSort();
+  let draggingKey = '';
+  const stopHeaderEvent = (event) => event.stopPropagation();
+  const header = document.createElement('div');
+  header.className = 'fv-list-header';
+  header.setAttribute('role', 'row');
+  header.addEventListener('pointerdown', stopHeaderEvent);
+  header.addEventListener('mousedown', stopHeaderEvent);
+  header.addEventListener('click', stopHeaderEvent);
+  header.addEventListener('dblclick', stopHeaderEvent);
+  const iconHead = Object.assign(document.createElement('span'), { className: 'fv-list-icon-head' });
+  iconHead.style.gridColumn = '1';
+  iconHead.style.gridRow = '1';
+  header.appendChild(iconHead);
+  _folderListColumns().forEach((column, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'fv-list-header-cell fv-list-header-' + column.key;
+    button.style.gridColumn = String(index + 2);
+    button.style.gridRow = '1';
+    button.draggable = true;
+    button.dataset.folderListSort = column.key;
+    button.dataset.folderListColumn = column.key;
+    button.setAttribute('role', 'columnheader');
+    button.setAttribute('aria-sort', sort.key === column.key ? (sort.order === 'asc' ? 'ascending' : 'descending') : 'none');
+    const label = Object.assign(document.createElement('span'), { className: 'fv-list-header-label', textContent: column.label });
+    button.appendChild(label);
+    if (sort.key === column.key) button.appendChild(Object.assign(document.createElement('span'), { className: 'fv-list-sort-mark', textContent: sort.order === 'asc' ? '▲' : '▼' }));
+    const resizer = Object.assign(document.createElement('span'), { className: 'fv-list-col-resizer', title: '列幅を調整' });
+    resizer.setAttribute('aria-hidden', 'true');
+    resizer.addEventListener('pointerdown', (event) => _folderBeginListColumnResize(event, column, button, container));
+    resizer.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); });
+    button.appendChild(resizer);
+    button.addEventListener('pointerdown', stopHeaderEvent);
+    button.addEventListener('mousedown', stopHeaderEvent);
+    button.addEventListener('dragstart', (event) => {
+      if (_folderListResizeState || event.target?.closest?.('.fv-list-col-resizer')) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      event.stopPropagation();
+      draggingKey = column.key;
+      button.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', column.key);
+    });
+    button.addEventListener('dragover', (event) => {
+      if (!draggingKey || draggingKey === column.key) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'move';
+      button.classList.add('is-drop-target');
+    });
+    button.addEventListener('dragleave', () => button.classList.remove('is-drop-target'));
+    button.addEventListener('drop', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.classList.remove('is-drop-target');
+      const sourceKey = event.dataTransfer.getData('text/plain') || draggingKey;
+      _folderListSuppressClickUntil = Date.now() + 350;
+      _folderMoveListColumn(sourceKey, column.key);
+    });
+    button.addEventListener('dragend', (event) => {
+      event.stopPropagation();
+      draggingKey = '';
+      button.classList.remove('is-dragging');
+      header.querySelectorAll('.is-drop-target').forEach(el => el.classList.remove('is-drop-target'));
+    });
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (Date.now() < _folderListSuppressClickUntil) return;
+      _folderToggleListSort(column.key);
+    });
+    header.appendChild(button);
+  });
+  container.appendChild(header);
 }
 
 function _folderBoardPathForName(dir, boardName) {
@@ -205,7 +538,7 @@ async function openImageInCanvas(item) {
   try {
     const itemName = item?.name || item?.path?.split(/[\\/]/).pop() || 'image';
     const { boardName, boardPath } = await _findAvailableFolderBoardPath(dir, itemName.replace(/\.[^.]+$/, '') + '_canvas');
-    const imgUrl = '/api/file-raw?path=' + encodeURIComponent(item.path);
+    const imgUrl = _folderItemRawUrl(item);
     const content = '---\ntype: board\npositions:\n  n0: {x: 100, y: 100}\nsizes:\n  n0: {w: 400, h: 0}\n---\n# [img]' + imgUrl + '\n';
     await apiPut('/file?path=' + encodeURIComponent(boardPath), { content });
     openBoard(boardName, boardPath, { fromExplorer: true });
@@ -230,7 +563,7 @@ async function openImagesInCanvas(items) {
     items.forEach((it, i) => { fm += `  n${i}: {w: 280, h: 0}\n`; });
     fm += '---\n';
     items.forEach((it, i) => {
-      const imgUrl = '/api/file-raw?path=' + encodeURIComponent(it.path);
+      const imgUrl = _folderItemRawUrl(it);
       fm += `# [img]${imgUrl}\n${it.name}\n`;
     });
 
@@ -250,10 +583,42 @@ function _syncFolderCheckboxes() {
   });
 }
 
-function _folderBulkAnchorRect() {
+function _normalizeFolderSelectionForVisibleItems() {
+  const grid = document.getElementById('folder-grid');
+  if (!grid) {
+    _folderSelectedItems = [];
+    _folderSelected = null;
+    return 0;
+  }
+  const visibleItems = _folderVisibleItems.length ? _folderVisibleItems : _getFolderFilteredItems();
+  const byPath = new Map((visibleItems || [])
+    .filter(item => item?.path)
+    .map(item => [String(item.path), item]));
+  const selectedPaths = [];
+  grid.querySelectorAll('.fv-item.selected').forEach(el => {
+    const path = String(el.dataset.path || '');
+    if (!path || !byPath.has(path)) {
+      el.classList.remove('selected');
+      const chk = el.querySelector('.fv-check');
+      if (chk) chk.checked = false;
+      return;
+    }
+    selectedPaths.push(path);
+  });
+  _folderSelectedItems = selectedPaths.map(path => byPath.get(path)).filter(Boolean);
+  _folderSelected = _folderSelectedItems[_folderSelectedItems.length - 1] || null;
+  return _folderSelectedItems.length;
+}
+
+function _folderBulkAnchorElement() {
   const selectedEls = Array.from(document.querySelectorAll('#folder-grid .fv-item.selected'));
-  const lastSelected = selectedEls[selectedEls.length - 1] || null;
-  const anchor = lastSelected || document.getElementById('folder-display-filter-btn') || document.getElementById('folder-grid');
+  return selectedEls[selectedEls.length - 1]
+    || document.getElementById('folder-display-filter-btn')
+    || document.getElementById('folder-grid');
+}
+
+function _folderBulkAnchorRect() {
+  const anchor = _folderBulkAnchorElement();
   return anchor?.getBoundingClientRect?.() || { left: 16, right: 16, top: 48, bottom: 48 };
 }
 
@@ -262,14 +627,31 @@ function _positionFolderBulkPopup() {
   if (!bar || !bar.classList.contains('visible')) return;
   bar.style.maxHeight = '';
   bar.style.overflowY = '';
-  if (typeof positionPopup === 'function') {
+  const host = document.body;
+  if (window.GBSelectionFloatMenu) {
+    window.GBSelectionFloatMenu.bindDrag(bar, { host });
+    window.GBSelectionFloatMenu.resetPosition(bar, { host, anchor: _folderBulkAnchorElement() });
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(bar);
+  } else if (typeof positionPopup === 'function') {
     positionPopup(bar, _folderBulkAnchorRect(), { prefer: 'below', gap: 6 });
-  } else if (typeof clampPopupToViewport === 'function') {
-    const rect = _folderBulkAnchorRect();
-    const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-    bar.style.left = (rect.left / z) + 'px';
-    bar.style.top = (rect.bottom / z + 6) + 'px';
-    clampPopupToViewport(bar);
+  }
+}
+
+function _ensureFolderBulkBarChrome(bar) {
+  if (!bar) return;
+  bar.classList.add('gb-selection-float-bar');
+  if (window.GBSelectionFloatMenu) {
+    const host = document.body;
+    if (!bar.querySelector('.gb-selection-float-drag')) {
+      bar.insertBefore(window.GBSelectionFloatMenu.createDragHandle(), bar.firstChild);
+    }
+    window.GBSelectionFloatMenu.bindDrag(bar, { host });
+    bar.querySelectorAll('button:not(.gb-selection-float-drag)').forEach(button => {
+      if (button.dataset.selectionFloatActionBound === '1') return;
+      button.dataset.selectionFloatActionBound = '1';
+      button.classList.add('gb-selection-float-button');
+      button.addEventListener('click', () => window.GBSelectionFloatMenu.pulseButton(button), true);
+    });
   }
 }
 
@@ -301,15 +683,19 @@ function _setFolderBulkPopupTracking(enabled) {
 function _updateFolderBulkBar() {
   const bar = document.getElementById('fv-bulk-bar');
   if (!bar) return;
-  if (_folderSelectedItems.length > 0) {
+  _ensureFolderBulkBarChrome(bar);
+  const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
+  if (selectedCount > 0) {
     bar.classList.add('visible');
+    bar.hidden = false;
     bar.setAttribute('aria-hidden', 'false');
     const cnt = bar.querySelector('.fv-bulk-count');
-    if (cnt) cnt.textContent = _folderSelectedItems.length + ' 件選択中';
+    if (cnt) cnt.textContent = selectedCount + ' 件選択中';
     _positionFolderBulkPopup();
     _setFolderBulkPopupTracking(true);
   } else {
     bar.classList.remove('visible');
+    bar.hidden = true;
     bar.setAttribute('aria-hidden', 'true');
     bar.style.left = '';
     bar.style.top = '';
@@ -382,6 +768,14 @@ function _folderKeyboardEventFromTextEditor(event) {
   );
 }
 
+function _folderKeyboardEventFromOutliner(event) {
+  const target = event?.target instanceof Element ? event.target : null;
+  const active = document.activeElement instanceof Element ? document.activeElement : null;
+  if (target?.closest?.('#outliner-tree, #body-home, #tree-scroll-container')) return true;
+  if (active?.closest?.('#outliner-tree, #body-home, #tree-scroll-container')) return true;
+  return Number(window._outlinerKeyboardNavigationActiveUntil || 0) > Date.now();
+}
+
 // フォルダビュー: 空域クリックで選択解除
 document.getElementById('folder-grid').addEventListener('click', function(e) {
   // ラッソドラッグ直後の合成 click はスキップ（せっかく選択したものを解除させない）
@@ -402,6 +796,7 @@ document.addEventListener('keydown', function(e) {
   if (e.defaultPrevented) return;
   if (state.view !== 'folder') return;
   if (_folderKeyboardEventFromTextEditor(e)) return;
+  if (_folderKeyboardEventFromOutliner(e)) return;
 
   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
@@ -512,6 +907,9 @@ document.getElementById('folder-grid').addEventListener('wheel', function(e) {
 }, {passive: false});
 
 function openFolderItem(item) {
+  _folderSelectedItems = [];
+  _folderSelected = null;
+  _updateFolderBulkBar();
   const _expOpts = { fromExplorer: true };
   if (item.type === 'folder') { openFolder(item.name, item.path, _expOpts); }
   else if (item.type === 'database') { selectDatabase(item.path, null, _expOpts); }

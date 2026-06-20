@@ -369,6 +369,16 @@ async function promptSaveCurrentScriptNoteAs() {
     };
     // フォルダツリー展開
     folderDisplay.addEventListener('click', async () => {
+      if (window.GBFolderPicker?.pickFolder) {
+        const selected = await window.GBFolderPicker.pickFolder({
+          title: '保存先フォルダを選択',
+          initialPath: selectedFolder,
+        });
+        if (selected?.path !== undefined) {
+          selectFolder(selected.path, selected.label || selected.name || selected.path || '(ルート)');
+        }
+        return;
+      }
       if (folderTree.style.display !== 'none') { folderTree.style.display = 'none'; return; }
       folderTree.style.display = 'block';
       folderTree.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:12px;">読み込み中...</div>';

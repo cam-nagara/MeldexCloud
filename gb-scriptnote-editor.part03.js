@@ -689,7 +689,10 @@
       else if (pdragLastClientX > rect.right - edge) sx = speedFor(pdragLastClientX - (rect.right - edge));
       if (pdragLastClientY < rect.top + edge) sy = -speedFor(rect.top + edge - pdragLastClientY);
       else if (pdragLastClientY > rect.bottom - edge) sy = speedFor(pdragLastClientY - (rect.bottom - edge));
-      if (isVertMode || (isWrap && !isVertMode)) {
+      if (isVertMode && isWrap) {
+        if (sc.scrollLeft !== 0) sc.scrollLeft = 0;
+        if (sy !== 0) sc.scrollBy({ top: sy });
+      } else if (isVertMode || (isWrap && !isVertMode)) {
         if (sx !== 0) sc.scrollBy({ left: sx });
         else if (sy !== 0) sc.scrollBy({ top: sy });
       } else {

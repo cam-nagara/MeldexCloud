@@ -231,8 +231,11 @@
   function _legacyRenameExt(name) {
     const safeName = String(name || '');
     const lower = safeName.toLowerCase();
+    if (lower.endsWith('.mel-scenario')) return '.mel-scenario';
+    if (lower.endsWith('.mel-timer')) return '.mel-timer';
     if (lower.endsWith('.scriptnote.json')) return '.scriptnote.json';
     if (lower.endsWith('.smart-db.json')) return '.smart-db.json';
+    if (lower.endsWith('.timer.json')) return '.timer.json';
     const firstDot = safeName.indexOf('.');
     if (firstDot <= 0) return '';
     return safeName.includes('.', firstDot + 1) ? safeName.slice(firstDot) : safeName.slice(safeName.lastIndexOf('.'));
@@ -483,6 +486,26 @@
       return this.writeJson('_meldex/vault.json', metadata || {});
     }
 
+    async assertOwnerWrite(relativePath) {
+      const state = _runtime()?.getWorkspaceState?.() || {};
+      if (state.access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
+        throw new Error('閲覧専用モードのため書き込めません');
+      }
+      const account = await _auth().getCurrentAccount(false).catch(() => null);
+      const metadata = await this.readVaultMetadata();
+      const ownerId = String(metadata?.ownerId || metadata?.owner_id || '').trim();
+      const currentId = _accountId(account);
+      if (!ownerId || !currentId || ownerId !== currentId) {
+        throw new Error('管理者のみ書き込める共有データです');
+      }
+      return {
+        ok: true,
+        ownerId,
+        currentAccountId: currentId,
+        path: _normalizeRelativePath(relativePath),
+      };
+    }
+
     async ensureVaultMetadataOwner(metadata, account) {
       const current = metadata && typeof metadata === 'object' ? { ...metadata } : {};
       const accountId = _accountId(account);
@@ -543,6 +566,7 @@
           ..._spaceUsageSnapshot(rawUsage, account, vaultMeta),
           isOwner: true,
         };
+        await this.assertOwnerWrite('_meldex/space-usage.json');
         await this.writeJson('_meldex/space-usage.json', snapshot);
         return snapshot;
       } catch (err) {

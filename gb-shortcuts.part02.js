@@ -59,10 +59,13 @@
       ? bdGetSelectedConnectionIds()
       : (bd.selectedConnId ? [bd.selectedConnId] : []);
     const selectedNodeIds = new Set(bd.selected || []);
-    const hasUncopiedLine = selectedConnIds.some((connId) => {
-      const conn = Array.isArray(bd.connections) ? bd.connections.find(c => c.id === connId) : null;
-      return !conn || !selectedNodeIds.has(conn.from) || !selectedNodeIds.has(conn.to);
-    });
+    // bd.connections 未定義時は接続選択の検証をスキップ（false 警告防止）
+    const hasUncopiedLine = selectedConnIds.length > 0 && Array.isArray(bd.connections)
+      ? selectedConnIds.some((connId) => {
+          const conn = bd.connections.find(c => c.id === connId);
+          return !conn || !selectedNodeIds.has(conn.from) || !selectedNodeIds.has(conn.to);
+        })
+      : false;
     if (hasUncopiedLine) {
       if (typeof showStatus === 'function') showStatus('ラインは切り取りできません。削除する場合はDeleteを使ってください', true);
       return;
@@ -294,7 +297,7 @@ const GB_TOOLTIPS = {
   'btn-heading-indent': { label: 'インデント', desc: '見出しインデント表示の切替' },
   'btn-version':        { label: 'バージョン管理', desc: 'バージョン管理パネルを開く' },
   'rab-detail':         { label: 'オプション', desc: 'オプションパネルを開く' },
-  'rab-calendar':       { label: 'カレンダー', desc: 'カレンダーパネルを開く' },
+  'rab-calendar':       { label: 'スケジューラー', desc: 'スケジューラーパネルを開く' },
   'rab-chat':           { label: 'チャット', desc: 'チャットパネルを開く' },
   'rab-annotation':     { label: '注釈', desc: '注釈パネルを開く' },
   'rab-history':        { label: '履歴', desc: '操作履歴パネルを開く' },
@@ -352,7 +355,7 @@ const GB_SHORTCUT_SCOPE_LABELS = {
   scenario: 'シナリオ',
   database: 'シート',
   board: 'ボード',
-  calendar: 'カレンダー',
+  calendar: 'スケジューラー',
   csv: 'CSV',
   folder: 'フォルダ',
   panelset: 'パネルセット',

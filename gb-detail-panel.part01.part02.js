@@ -162,7 +162,8 @@
     const txt = document.createElement('span');
     // rowLabel と重複するプレフィックスがあれば短縮。他タブの toggle 類と同じ扱い
     txt.textContent = _fsShortLabel(field, rowLabel);
-    wrap.append(input, txt);
+    wrap.append(input);
+    if (txt.textContent) wrap.appendChild(txt);
     return wrap;
   }
   if (field.type === 'toggle') {
@@ -176,6 +177,26 @@
       adapter.applyCss(field, nextValue);
       if (typeof _fsNotifyFieldChanged === 'function') _fsNotifyFieldChanged(btn, field, adapter, nextValue);
     };
+    if (typeof field.on === 'boolean' && typeof field.off === 'boolean') {
+      const wrap = document.createElement('label');
+      wrap.className = 'bd-detail-check';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = isOn;
+      input.title = field.label;
+      _fsSetControlE2e(input, field, rowLabel, 'toggle-checkbox');
+      input.addEventListener('change', () => {
+        const nextValue = input.checked ? field.on : field.off;
+        adapter.set(field, nextValue);
+        adapter.applyCss(field, nextValue);
+        if (typeof _fsNotifyFieldChanged === 'function') _fsNotifyFieldChanged(input, field, adapter, nextValue);
+      });
+      const txt = document.createElement('span');
+      txt.textContent = _fsShortLabel(field, rowLabel);
+      wrap.append(input);
+      if (txt.textContent) wrap.appendChild(txt);
+      return wrap;
+    }
     if (field.on === 'bold' || field.on === 'italic') {
       const btn = document.createElement('button');
       btn.type = 'button';

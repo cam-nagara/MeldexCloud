@@ -7,7 +7,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     { type: 'select', label: 'セレクト', icon: 'tag' },
     { type: 'multi-select', label: 'マルチセレクト', icon: 'tags' },
     { type: 'checkbox', label: 'チェックボックス', icon: 'checkSquare' },
-    { type: 'date', label: '日付', icon: 'calendar' },
+    { type: 'date', label: '日時', icon: 'calendar' },
     { type: 'url', label: 'URL', icon: 'globe' },
     { type: 'image', label: '画像', icon: 'image' },
     { type: 'relation', label: 'リレーション（単一）', icon: 'link2' },

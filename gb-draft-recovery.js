@@ -227,15 +227,15 @@
           <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(_fileLabel(item.path))}</div>
           <div style="font-size:12px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(item.path)} / ${esc(item.savedAt || '')}</div>
         </div>
-        <button data-draft-action="overwrite" data-draft-index="${index}">上書き保存</button>
-        <button data-draft-action="save-as" data-draft-index="${index}">別名保存</button>
-        <button data-draft-action="discard" data-draft-index="${index}">破棄</button>
+        <button data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
+        <button data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
+        <button data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard">破棄</button>
       </div>`).join('');
     overlay.innerHTML = `<div class="modal" style="width:560px;max-width:calc(100vw - 32px);">
       <h3>未保存の編集があります</h3>
       <div class="gb-section-desc">前回終了時に保存前だった編集を復元できます。</div>
       <div style="max-height:360px;overflow:auto;">${rows}</div>
-      <div class="btn-row" style="margin-top:12px;"><button data-draft-action="discard-all">すべて破棄</button><span style="flex:1;"></span><button data-draft-action="close">閉じる</button></div>
+      <div class="btn-row" style="margin-top:12px;"><button data-draft-action="discard-all" data-e2e-id="draft-recovery-discard-all">すべて破棄</button><span style="flex:1;"></span><button data-draft-action="close" data-e2e-id="draft-recovery-close">閉じる</button></div>
     </div>`;
     overlay.addEventListener('click', async (event) => {
       const action = event.target?.dataset?.draftAction;

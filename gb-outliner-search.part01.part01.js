@@ -5,13 +5,21 @@
    ============================== */
 // 既知タイプのラベル辞書（表示順序も兼ねる）
 const GF_TYPE_LABELS = {
-  page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー', database: 'シート', 'smart-db': 'スマートシート',
+  page: 'ノート', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー', database: 'シート', 'smart-db': 'スマートシート',
   image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
   psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3Dモデル',
   document: '文書', archive: 'アーカイブ', app: 'アプリ', chat: 'チャット', unknown: 'その他',
 };
 // 既知タイプの表示順序
-const GF_TYPE_ORDER = ['page','scriptnote','scenario','board','calendar','database','smart-db','chat','image','video','audio','html','csv','psd','clip','3d','document','archive','app','unknown'];
+const GF_TYPE_ORDER = ['page','scriptnote','board','calendar','database','smart-db','chat','image','video','audio','html','csv','psd','clip','3d','document','archive','app','unknown'];
+const GF_HIDDEN_TYPE_ALIASES = {
+  scenario: 'scriptnote',
+};
+
+function _globalFilterVisibleType(type) {
+  const normalized = String(type || '');
+  return GF_HIDDEN_TYPE_ALIASES[normalized] || normalized;
+}
 
 function _outlinerReadStorageJson(key, fallback) {
   try {
@@ -40,10 +48,13 @@ function _outlinerParseJson(raw, fallback) {
 
 function _normalizeGlobalFilter(raw) {
   const data = raw && typeof raw === 'object' ? raw : {};
+  const types = Array.isArray(data.types)
+    ? [...new Set(data.types.map(_globalFilterVisibleType).filter(Boolean))]
+    : [];
   return {
     enabled: !!data.enabled,
     allTypes: !!data.allTypes,
-    types: Array.isArray(data.types) ? [...new Set(data.types)] : [],
+    types,
     modifiedDays: Number.isFinite(Number(data.modifiedDays)) ? Math.max(0, parseInt(data.modifiedDays, 10) || 0) : 0,
   };
 }
@@ -208,8 +219,34 @@ function _showDatabaseByGlobalFilter() { return !_isGlobalFilterEnabled() || _ha
 function _showEntityByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilter.types.includes('entity') || _globalFilterHasType('database'); }
 function _showRegularNodeByGlobalFilter(item) { return !_isGlobalFilterEnabled() || matchesGlobalFilter(item); }
 
+function _outlinerNormalizeComparePath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function _outlinerNodeIsCurrentOrSelected(node, data) {
+  const row = node?.querySelector?.(':scope > .tree-node-row');
+  if (row?.classList?.contains('active') || row?.classList?.contains('selected')) return true;
+  let currentPath = '';
+  try { currentPath = typeof _folderPath !== 'undefined' ? _folderPath : ''; } catch {}
+  const current = _outlinerNormalizeComparePath(currentPath);
+  const target = _outlinerNormalizeComparePath(data?.path);
+  return !!current && !!target && current === target;
+}
+
+function _outlinerContainerNodeMatchesFilter(data) {
+  if (!data) return false;
+  if (data._isRoot) return true;
+  if (data.type === 'database') return _showDatabaseByGlobalFilter() && matchesGlobalFilter(data);
+  if (data.type === 'folder') {
+    return _hasAllGlobalTypesSelected()
+      || _globalFilterHasType('folder')
+      || matchesGlobalFilter(data);
+  }
+  return false;
+}
+
 function _snapshotBaseTreeVisibility() {
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node').forEach(node => {
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
     node.dataset.baseVisible = node.style.display === 'none' ? '0' : '1';
   });
 }
@@ -279,7 +316,8 @@ const _knownFileTypes = new Set();
 function registerFileTypes(items) {
   if (!items) return;
   items.forEach(it => {
-    if (it && it.type && it.type !== 'folder' && it.type !== 'entity') _knownFileTypes.add(it.type);
+    const type = _globalFilterVisibleType(it?.type);
+    if (type && type !== 'folder' && type !== 'entity') _knownFileTypes.add(type);
   });
 }
 
@@ -289,11 +327,15 @@ function renderGlobalFilterUI() {
 
   // キャッシュ + DOM + フォルダビューから収集
   const presentTypes = new Set(_knownFileTypes);
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node').forEach(node => {
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
     const d = node._nodeData;
-    if (d && d.type && d.type !== 'folder' && d.type !== 'entity' && !d._isRoot) presentTypes.add(d.type);
+    const type = _globalFilterVisibleType(d?.type);
+    if (d && type && type !== 'folder' && type !== 'entity' && !d._isRoot) presentTypes.add(type);
   });
-  if (_folderItems) _folderItems.forEach(it => { if (it.type && it.type !== 'folder') presentTypes.add(it.type); });
+  if (_folderItems) _folderItems.forEach(it => {
+    const type = _globalFilterVisibleType(it?.type);
+    if (type && type !== 'folder') presentTypes.add(type);
+  });
 
   const sortedTypes = [...presentTypes].sort((a, b) => {
     const ia = GF_TYPE_ORDER.indexOf(a), ib = GF_TYPE_ORDER.indexOf(b);
@@ -329,6 +371,8 @@ function renderGlobalFilterUI() {
   container.appendChild(sep);
 
   const dateSelect = document.createElement('select');
+  dateSelect.id = 'gf-modified-days';
+  dateSelect.dataset.e2eId = 'global-filter-modified-days';
   dateSelect.style.cssText = 'font-size:11px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:1px 4px;';
   [
     { v: 0, l: '更新日時: 指定なし' },
@@ -397,7 +441,7 @@ function saveGlobalFilter() {
 // 起動時のフィルタ初期化は initApp 内の outlinerPromise 完了後に実行される
 
 function applyGlobalFilter() {
-  const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node');
+  const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
 
   if (!_isGlobalFilterEnabled()) {
     allNodes.forEach(node => {
@@ -440,7 +484,7 @@ function applyGlobalFilter() {
 
 function _hideEmptyFilteredFolders() {
   if (!_isGlobalFilterEnabled() || (!_hasAllGlobalTypesSelected() && _globalFilter.types.length === 0)) return;
-  const allNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')].reverse();
+  const allNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')].reverse();
   allNodes.forEach(node => {
     const data = node._nodeData;
     if (!data) return;
@@ -449,6 +493,10 @@ function _hideEmptyFilteredFolders() {
     if (!childrenDiv) return;
     const hasVisibleChild = [...childrenDiv.querySelectorAll(':scope > .tree-node')].some(c => c.style.display !== 'none');
     if (childrenDiv.dataset.loaded === 'false') return;
+    if (!hasVisibleChild && (_outlinerNodeIsCurrentOrSelected(node, data) || _outlinerContainerNodeMatchesFilter(data))) {
+      node.style.display = '';
+      return;
+    }
     node.style.display = hasVisibleChild ? '' : 'none';
   });
 }
@@ -626,12 +674,13 @@ function _showHomeAddMenu(e) {
 
 // セクション状態復元
 function restoreSidebarSections() {
-  for (const name of ['recent', 'favorites', 'home', 'smart-db', 'roots']) {
+  for (const name of ['recent', 'favorites', 'workspaces', 'home', 'smart-db', 'roots']) {
     const state = localStorage.getItem('sidebar-section-' + name);
     const body = document.getElementById('body-' + name);
     const toggle = document.getElementById('toggle-' + name);
     if (!body) continue;
-    if (state === 'expanded' || (state === null && (name === 'roots' || name === 'home'))) {
+    const hasStoredFavorites = name === 'favorites' && typeof getFavorites === 'function' && getFavorites().length > 0;
+    if (state === 'expanded' || (state === null && (name === 'workspaces' || name === 'roots' || name === 'home' || hasStoredFavorites))) {
       body.classList.remove('collapsed');
       if (toggle) toggle.classList.add('expanded');
       _setSidebarSectionExpandedState(name, true);
@@ -666,9 +715,10 @@ function _outlinerMediaTypeFromPath(path, type) {
 function _outlinerStoredItemType(item) {
   const type = String(item?.type || '');
   const lower = String(item?.path || '').toLowerCase();
-  if (type === 'smart-db' || lower.endsWith('.smart-db.json')) return 'smart-db';
-  if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
-  if (type === 'board' || lower.endsWith('.board.md')) return 'board';
+  if (type === 'smart-db' || lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+  if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
+  if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+  if (type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
   if (type === 'csv' || lower.endsWith('.csv')) return 'csv';
   if (type === 'html' || lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
   if (type === 'media') return _outlinerMediaTypeFromPath(lower, type);

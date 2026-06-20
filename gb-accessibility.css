@@ -9,7 +9,7 @@
   --a11y-warning-border: #f59f00;
 }
 
-:focus-visible {
+:focus-visible:not(input):not(textarea):not(select):not([contenteditable="true"]):not(.chat-rich-input):not(.gb-input):not(.gb-input-sm):not(.gb-textarea):not(.tb-input) {
   outline: 2px solid var(--a11y-focus-ring) !important;
   outline-offset: 2px !important;
   box-shadow: 0 0 0 3px var(--a11y-focus-shadow) !important;

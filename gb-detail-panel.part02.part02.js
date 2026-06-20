@@ -7,8 +7,8 @@ function showCalendarDetailTabs(visible) {
   document.querySelectorAll('.detail-tab-calendar').forEach(t => {
     t.hidden = !visible;
   });
-  // 非表示化時に現在のタブがcalendar-todayならコンテナも隠すためnullに切り替え
-  if (!visible && _currentDetailTab === 'calendar-today') {
+  // 非表示化時に現在のタブがスケジューラー系ならコンテナも隠すためnullに切り替え
+  if (!visible && ['calendar-today', 'calendar-settings', 'calendar-production'].includes(_currentDetailTab)) {
     switchDetailTab(null);
   }
 }
@@ -55,7 +55,7 @@ async function _dpSavePendingBeforeDetailSwitch() {
   return _dpSavePending();
 }
 
-async function _syncDetailPanel(label, path, type) {
+async function _syncDetailPanel(label, path, type, opts) {
   if (type === 'entity') {
     if (!await _dpSavePendingBeforeDetailSwitch()) return false;
     if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.clearDetailPaneShell === 'function') {
@@ -89,6 +89,8 @@ async function _syncDetailPanel(label, path, type) {
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
+  // タグ管理タブはエクスプローラー（folder-view）アクティブ時のみ表示
+  if (typeof showTagManagementTab === 'function') showTagManagementTab(type === 'folder');
   // ファイルテーマタブは編集可能な主要タイプで共通表示
   const styleTypes = new Set(['folder', 'page', 'database', 'board', 'scriptnote']);
   if (typeof showFileStyleTab === 'function') {
@@ -105,14 +107,16 @@ async function _syncDetailPanel(label, path, type) {
   }
   if (type === 'page') {
     // 詳細パネルにはファイル情報を表示（ノート内容はメインペインで表示済み）
-    if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
+    if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path, opts?.fileMeta);
     else openInSplitView(label, path);
   } else if (type === 'folder') {
     // フォルダ選択時は詳細パネルにフォルダ情報を表示
     await showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
       <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
       <div>パス: ${esc(path)}</div>
+      <div data-global-tags-target-path="${esc(path)}"></div>
     </div>`);
+    if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
     await _showDatabaseInfoInDetailPanel(label, path);
   }

@@ -435,7 +435,7 @@
       window.location.href = url;
       return;
     }
-    const popup = window.open(url, 'meldex-dropbox-oauth', 'width=540,height=760');
+    const popup = window.open(url, '_blank', 'width=540,height=760,noopener,noreferrer');
     if (popup) {
       try {
         popup.opener = null;
@@ -510,7 +510,7 @@
             <input id="cloud-custom-app-key" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
             <label style="display:block;font-size:12px;color:#969696;margin:12px 0 4px;">redirect URI 上書き（任意）</label>
             <input id="cloud-redirect-override" type="text" value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。Dropbox App Consoleには、メインURL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> をredirect URIとして登録してください。</div>
+            <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。上書きできるのは現在のCloud URL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> だけです。Dropbox App Consoleにも同じURLをredirect URIとして登録してください。</div>
             <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
           </div>
         </section>

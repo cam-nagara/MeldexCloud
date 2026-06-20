@@ -22,9 +22,10 @@
     const path = String(item?.source_path || '').replace(/\\/g, '/');
     if (_folderNoteDbPath(path)) return 'pivot';
     const lower = path.toLowerCase();
-    if (lower.endsWith('.scriptnote.json')) return 'scriptnote';
-    if (lower.endsWith('.smart-db.json')) return 'smart-db';
-    if (lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
+    if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
+    if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+    if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
+    if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return 'board';
     const ext = (path.split('.').pop() || '').toLowerCase();
     if (ext === 'board') return 'board';
     if (ext === 'csv') return 'csv';

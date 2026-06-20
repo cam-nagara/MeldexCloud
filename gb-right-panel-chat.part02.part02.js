@@ -213,6 +213,10 @@ function chatSave(event) {
 async function renderChatHistory() {
   const listEl = document.getElementById('chat-history-list');
   if (!listEl) return;
+  if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
+    listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">対象ワークスペースまたはフォルダを選択してください</div>';
+    return;
+  }
   listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">読み込み中...</div>';
   try {
     const items = await apiFetch(_chatApiPath('/chat/list'));
@@ -364,6 +368,11 @@ function _chatSearch() {
     const results = document.getElementById('chat-search-results');
     if (!results) return;
     results.style.display = 'block';
+    if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
+      results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">対象ワークスペースまたはフォルダを選択してください</div>';
+      if (countEl) countEl.textContent = '0件';
+      return;
+    }
     results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">検索中...</div>';
     apiFetch(_chatApiPath('/chat/search?q=' + encodeURIComponent(q))).then(data => {
       if (searchSerial !== _chatSearchSerial) return;
@@ -692,6 +701,14 @@ async function showChatHistoryDropdown(event) {
   };
 
   try {
+    if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
+      popup.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:8px;color:var(--fg2);text-align:center;';
+      empty.textContent = '対象ワークスペースまたはフォルダを選択してください';
+      popup.appendChild(empty);
+      return;
+    }
     const items = await apiFetch(_chatApiPath('/chat/list'));
     popup.innerHTML = '';
     if (!items || items.length === 0) {

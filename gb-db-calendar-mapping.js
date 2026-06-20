@@ -1,6 +1,6 @@
 /**
  * gb-db-calendar-mapping.js
- * 任意DBの日付プロパティをカレンダー表示へマッピングし、日時変更を書き戻す
+ * 任意DBの日時プロパティをカレンダー表示へマッピングし、日時変更を書き戻す
  */
 
 function _normalizeCalendarMapping(mapping) {
@@ -18,27 +18,32 @@ function _normalizeCalendarMapping(mapping) {
   return norm.startProp ? norm : null;
 }
 
-function getCalendarMapping(dbPath) {
+function getCalendarMapping(dbPath, options = {}) {
+  const ctx = options.ctx || null;
+  if (ctx?.dbPath === dbPath && ctx.dbMetadata && Object.prototype.hasOwnProperty.call(ctx.dbMetadata, 'calendar_mapping')) {
+    const metadataMapping = _normalizeCalendarMapping(ctx.dbMetadata?.calendar_mapping);
+    if (metadataMapping) return metadataMapping;
+  }
   if (state.currentDbPath === dbPath && state.dbMetadata && Object.prototype.hasOwnProperty.call(state.dbMetadata, 'calendar_mapping')) {
     const metadataMapping = _normalizeCalendarMapping(state.dbMetadata?.calendar_mapping);
     if (metadataMapping) return metadataMapping;
   }
-  const local = _normalizeCalendarMapping(getCurrentDbViewTypeSpecific(dbPath, 'calendar')?.mapping);
+  const local = _normalizeCalendarMapping(getCurrentDbViewTypeSpecific(dbPath, 'calendar', { ctx })?.mapping);
   return local || null;
 }
 
-function _dbHasCalendarMapping(dbPath, pivotData) {
-  const mapping = getCalendarMapping(dbPath);
+function _dbHasCalendarMapping(dbPath, pivotData, ctx) {
+  const mapping = getCalendarMapping(dbPath, { ctx });
   if (!mapping?.startProp) return false;
   const props = pivotData?.properties || state.pivotData?.properties || [];
   return props.includes(mapping.startProp);
 }
 
-function _getCalendarIntegrationInfo(dbPath, pivotData) {
+function _getCalendarIntegrationInfo(dbPath, pivotData, ctx) {
   const data = pivotData || state.pivotData;
-  const mapping = getCalendarMapping(dbPath);
+  const mapping = getCalendarMapping(dbPath, { ctx });
   const isCalendarSource = !!data?.calendar_db;
-  const hasMapping = !isCalendarSource && _dbHasCalendarMapping(dbPath, data);
+  const hasMapping = !isCalendarSource && _dbHasCalendarMapping(dbPath, data, ctx);
   return {
     kind: isCalendarSource ? 'calendar-db' : hasMapping ? 'mapped-db' : 'none',
     isMappedDb: hasMapping,
@@ -50,8 +55,8 @@ function _getCalendarIntegrationInfo(dbPath, pivotData) {
   };
 }
 
-function _canRenderCalendarFromDb(dbPath, pivotData) {
-  const info = _getCalendarIntegrationInfo(dbPath, pivotData);
+function _canRenderCalendarFromDb(dbPath, pivotData, ctx) {
+  const info = _getCalendarIntegrationInfo(dbPath, pivotData, ctx);
   return info.kind !== 'none';
 }
 
@@ -68,21 +73,21 @@ function _normalizeCalendarModeForDb(dbPath, mode, pivotData) {
   return allowed.has(mode) ? mode : 'month';
 }
 
-function _calendarPropValue(props, propName) {
-  const ref = _calendarPropRef(props, propName);
+function _calendarPropValue(props, propName, filterMode) {
+  const ref = _calendarPropRef(props, propName, filterMode);
   return ref ? (ref.value || '') : '';
 }
 
-function _calendarPropRef(props, propName) {
+function _calendarPropRef(props, propName, filterMode) {
   if (!propName) return null;
-  const vals = typeof filterValues === 'function' ? filterValues(props[propName] || []) : (props[propName] || []);
+  const vals = typeof filterValues === 'function' ? filterValues(props[propName] || [], undefined, filterMode) : (props[propName] || []);
   if (!vals.length) return null;
   if (typeof getAdoptedValueForWrite === 'function') return getAdoptedValueForWrite(vals) || vals[0];
   return vals.find(v => v && (v.status === '採用' || v.status === '掲載済み')) || vals[0];
 }
 
-function _collectMappedCalendarEvents(dbPath, data) {
-  const info = _getCalendarIntegrationInfo(dbPath, data);
+function _collectMappedCalendarEvents(dbPath, data, ctx) {
+  const info = _getCalendarIntegrationInfo(dbPath, data, ctx);
   const mapping = info.mapping;
   if (!mapping) return [];
   const propTypes = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
@@ -90,7 +95,8 @@ function _collectMappedCalendarEvents(dbPath, data) {
   const events = [];
 
   for (const [entityName, props] of Object.entries(data.entities || {})) {
-    const startRaw = _calendarPropValue(props, mapping.startProp);
+    const filterMode = ctx?.filter;
+    const startRaw = _calendarPropValue(props, mapping.startProp, filterMode);
     if (!startRaw) continue;
     const startParsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(startRaw) : null;
     const startToken = startParsed?.start || startRaw;
@@ -100,7 +106,7 @@ function _collectMappedCalendarEvents(dbPath, data) {
 
     let endToken = '';
     if (mapping.endProp) {
-      const endRaw = _calendarPropValue(props, mapping.endProp);
+      const endRaw = _calendarPropValue(props, mapping.endProp, filterMode);
       if (mapping.endProp === mapping.startProp && startParsed?.range) {
         endToken = startParsed.end || '';
       } else if (typeof _dbDateGetComparableValue === 'function') {
@@ -119,14 +125,14 @@ function _collectMappedCalendarEvents(dbPath, data) {
     const hasTime = !!startPtc.withTime
       || (typeof _dbDateHasTimeToken === 'function' && (_dbDateHasTimeToken(startToken) || _dbDateHasTimeToken(endToken)));
     const supportsEnd = !!(mapping.endProp || startPtc.range || startParsed?.range);
-    const title = _calendarPropValue(props, mapping.titleProp) || entityName;
-    const color = _calendarPropValue(props, mapping.colorProp) || '#569cd6';
-    const description = _calendarPropValue(props, mapping.descriptionProp) || '';
-    const location = _calendarPropValue(props, mapping.locationProp) || '';
-    const url = _calendarPropValue(props, mapping.urlProp) || '';
-    const calendarId = _calendarPropValue(props, mapping.calendarIdProp) || 'default';
+    const title = _calendarPropValue(props, mapping.titleProp, filterMode) || entityName;
+    const color = _calendarPropValue(props, mapping.colorProp, filterMode) || '#569cd6';
+    const description = _calendarPropValue(props, mapping.descriptionProp, filterMode) || '';
+    const location = _calendarPropValue(props, mapping.locationProp, filterMode) || '';
+    const url = _calendarPropValue(props, mapping.urlProp, filterMode) || '';
+    const calendarId = _calendarPropValue(props, mapping.calendarIdProp, filterMode) || 'default';
     const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
-    const startRef = _calendarPropRef(props, mapping.startProp);
+    const startRef = _calendarPropRef(props, mapping.startProp, filterMode);
 
     events.push({
       name: title,
@@ -145,6 +151,7 @@ function _collectMappedCalendarEvents(dbPath, data) {
       recurrence: '',
       _mapped: true,
       _mappedDbPath: dbPath,
+      _mappedCtx: ctx || null,
       _mappedPivotData: data,
       _mappedMapping: mapping,
       _mappedEntityData: props,
@@ -155,33 +162,36 @@ function _collectMappedCalendarEvents(dbPath, data) {
   return events;
 }
 
-function _collectCalendarEventsForDb(dbPath, data) {
-  const info = _getCalendarIntegrationInfo(dbPath, data);
+function _collectCalendarEventsForDb(dbPath, data, ctx) {
+  const info = _getCalendarIntegrationInfo(dbPath, data, ctx);
   if (info.kind === 'calendar-db') return typeof _collectCalendarEvents === 'function' ? _collectCalendarEvents(data, dbPath) : [];
-  if (info.kind === 'mapped-db') return _collectMappedCalendarEvents(dbPath, data);
+  if (info.kind === 'mapped-db') return _collectMappedCalendarEvents(dbPath, data, ctx);
   return [];
 }
 
 function _getMappedCalendarUpdateContext(dbPath, ev) {
   if (!ev?._mapped) return null;
   const sourceDbPath = ev._mappedDbPath || dbPath;
+  const paneCtx = ev._mappedCtx || null;
   const pivotData = ev._mappedPivotData
+    || (paneCtx?.dbPath === sourceDbPath ? paneCtx.pivotData : null)
     || (state.currentDbPath === sourceDbPath ? state.pivotData : null)
     || null;
   const info = ev._mappedMapping
     ? { kind: 'mapped-db', isMappedDb: true, canEditDates: true, mapping: ev._mappedMapping }
-    : _getCalendarIntegrationInfo(sourceDbPath, pivotData);
+    : _getCalendarIntegrationInfo(sourceDbPath, pivotData, paneCtx);
   const mapping = info.mapping;
   const entityData = ev._mappedEntityData || pivotData?.entities?.[ev.entityName];
   if (!mapping || !entityData) return null;
+  const filterMode = paneCtx?.filter;
   const propTypes = typeof getPropertyTypes === 'function' ? getPropertyTypes(sourceDbPath) : {};
   const startPtc = propTypes[mapping.startProp] || {};
-  const startVal = _calendarPropRef(entityData, mapping.startProp);
+  const startVal = _calendarPropRef(entityData, mapping.startProp, filterMode);
   if (!startVal) return null;
   const startRaw = startVal.value || '';
   const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(startRaw) : null;
   const inlineRange = mapping.endProp === mapping.startProp || (!mapping.endProp && (startPtc.range || parsed?.range));
-  const endVal = mapping.endProp && mapping.endProp !== mapping.startProp ? _calendarPropRef(entityData, mapping.endProp) : null;
+  const endVal = mapping.endProp && mapping.endProp !== mapping.startProp ? _calendarPropRef(entityData, mapping.endProp, filterMode) : null;
   const endPtc = mapping.endProp && mapping.endProp !== mapping.startProp ? (propTypes[mapping.endProp] || {}) : startPtc;
   return {
     info,
@@ -211,12 +221,13 @@ function _mappedCalendarDateValue(date, ptc, oldRaw) {
 
 function _calendarMappingHistoryScope(dbPath) {
   if (typeof _dbViewConfigHistoryScope === 'function') return _dbViewConfigHistoryScope(dbPath);
-  return typeof _dbScope === 'function' ? _dbScope() : ('db:' + String(dbPath || '').split('/').pop());
+  return typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
 }
 
 async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options = {}) {
   const ctx = _getMappedCalendarUpdateContext(dbPath, ev);
   if (!ctx) throw new Error('マッピング元の日時プロパティを解決できません');
+  const reloadCtx = options.ctx || ev?._mappedCtx || null;
   const startValue = _mappedCalendarDateValue(startDate, ctx.startPtc, ctx.startRaw);
   const clearEndIfMissing = !!options.clearEndIfMissing;
   const preserveEmptyEnd = !!options.preserveMissingEndIfZeroDuration
@@ -283,17 +294,17 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
             await _apiPutValue(createdEndRef, { _delete: true });
           }
         }
-        await selectDatabase(dbPathForHistory);
+        await selectDatabase(dbPathForHistory, reloadCtx);
       },
       async () => {
         await applyValues(newStartRaw, endValue, 'redo');
-        await selectDatabase(dbPathForHistory);
+        await selectDatabase(dbPathForHistory, reloadCtx);
       },
       _calendarMappingHistoryScope(dbPathForHistory)
     );
   }
 
-  if (!options.skipReload) await selectDatabase(dbPath);
+  if (!options.skipReload) await selectDatabase(dbPath, reloadCtx);
   return { startRaw: newStartRaw, endRaw: endValue };
 }
 
@@ -414,7 +425,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
       ${rowSelect('dbcfg-calmap-url', 'URLプロパティ', textLikeProps, current?.urlProp || '')}
       ${rowSelect('dbcfg-calmap-calid', 'カレンダー分類プロパティ', textLikeProps, current?.calendarIdProp || '')}
       <div style="font-size:11px;color:var(--fg2);margin-top:6px;">
-        開始プロパティが期間付き日付なら、終了プロパティを空にしても終了日時を拾います。
+        開始プロパティが期間付き日時なら、終了プロパティを空にしても終了日時を拾います。
       </div>
     </div>
   `;
@@ -422,7 +433,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   if (dateProps.length === 0) {
     const note = document.createElement('div');
     note.style.cssText = 'font-size:11px;color:var(--red);margin-top:6px;';
-    note.textContent = '日付プロパティがないため、カレンダー連携は設定できません。';
+    note.textContent = '日時プロパティがないため、カレンダー連携は設定できません。';
     wrap.appendChild(note);
   }
 

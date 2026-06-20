@@ -41,7 +41,7 @@ function clearRollupCache(dbPath) {
 /**
  * エントリのリレーション値を解決し、参照先エントリ名の配列を返す
  */
-function resolveRelationNames(entityName, entitiesMap, relationPropName, propTypes, sourceDbPath) {
+function resolveRelationNames(entityName, entitiesMap, relationPropName, propTypes, sourceDbPath, filterMode) {
   const ptc = propTypes?.[relationPropName];
   if (!ptc || (ptc.type !== 'relation' && ptc.type !== 'multi-relation')) return { names: [], targetDbPath: null };
 
@@ -52,7 +52,7 @@ function resolveRelationNames(entityName, entitiesMap, relationPropName, propTyp
   if (!targetDbPath) return { names: [], targetDbPath: null };
 
   const rawVals = entitiesMap[entityName]?.[relationPropName] || [];
-  const vals = filterValues(rawVals);
+  const vals = filterValues(rawVals, undefined, filterMode);
   const names = [];
   vals.forEach(v => {
     if (!v.value) return;
@@ -84,9 +84,9 @@ function _rollupResolveEntityNames(names, targetData) {
 /**
  * 1エントリのロールアップ値を計算する
  */
-async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes, sourceDbPath) {
+async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes, sourceDbPath, filterMode) {
   const { relationProp, targetProp, aggregation } = rollupConfig;
-  const { names, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath);
+  const { names, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
   if (names.length === 0 || !targetDbPath) return aggregation === 'count' ? 0 : '-';
 
   const targetData = await fetchRelatedDbData(targetDbPath);
@@ -113,21 +113,21 @@ async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes,
   const targetPropTypes = getPropertyTypes(targetDbPath);
   const targetPtc = targetPropTypes?.[targetProp] || null;
 
-  return calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes);
+  return calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes, filterMode);
 }
 
 /**
  * DB全体のロールアップ値を一括計算（バッチ最適化）
  * @returns {Promise<Map<string, string|number>>} entityName → 集計値
  */
-async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes, sourceDbPath) {
+async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes, sourceDbPath, filterMode) {
   const { relationProp, targetProp, aggregation } = rollupConfig;
   const results = new Map();
 
   // 参照先DBを1回だけ取得
   const sampleEntity = entityNames[0];
   if (!sampleEntity) return results;
-  const { targetDbPath } = resolveRelationNames(sampleEntity, entitiesMap, relationProp, propTypes, sourceDbPath);
+  const { targetDbPath } = resolveRelationNames(sampleEntity, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
   if (!targetDbPath) {
     entityNames.forEach(en => results.set(en, '-'));
     return results;
@@ -143,7 +143,7 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
   const targetPtc = targetPropTypes?.[targetProp] || null;
 
   entityNames.forEach(en => {
-    const { names } = resolveRelationNames(en, entitiesMap, relationProp, propTypes, sourceDbPath);
+    const { names } = resolveRelationNames(en, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
     if (names.length === 0) {
       results.set(en, aggregation === 'count' ? 0 : '-');
       return;
@@ -169,7 +169,7 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
       return;
     }
 
-    const val = calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes);
+    const val = calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes, filterMode);
     results.set(en, val);
   });
 

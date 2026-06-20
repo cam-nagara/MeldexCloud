@@ -45,9 +45,8 @@ function createPaneContext(paneId) {
 
 /** ペインコンテキストを破棄 (D-5: 一括編集バーの clean up を含む) */
 function destroyPaneContext(paneId) {
-  // 当該ペインに紐付いた db-bulk-edit-bar を document.body から除去
-  const bar = document.body.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
-  if (bar) bar.remove();
+  // 当該ペインに紐付いた選択フロートメニューを除去
+  document.querySelectorAll(`.db-bulk-edit-bar[data-pane-id="${paneId}"], .db-cell-bulk-bar[data-pane-id="${paneId}"], [data-selection-float-pane-id="${paneId}"]`).forEach(bar => bar.remove());
   // Step 2: チャンク分割レンダリング中なら中断トークンを無効化
   const ctx = _panes[paneId];
   if (ctx) {
@@ -75,6 +74,177 @@ function _paneElById(ctx, id) {
   if (ctx && ctx.containerEl) return ctx.containerEl.querySelector('#' + id);
   return document.getElementById(id);
 }
+
+const GBSelectionFloatMenu = (() => {
+  const DRAG_HANDLE_CLASS = 'gb-selection-float-drag';
+
+  function hostFor(anchor, fallback) {
+    if (fallback && fallback !== document) return fallback;
+    const el = anchor && typeof anchor.closest === 'function' ? anchor : null;
+    return el?.closest?.('.gb-pane-content,.pane-content,#folder-view,.gb-tool-calendar,.sn2-host,#pivot-view,#main-views')
+      || document.getElementById('main-views')
+      || document.body;
+  }
+
+  function prepareHost(host) {
+    if (!host || host === document.body) return document.body;
+    host.classList?.add('gb-selection-float-host');
+    const computed = window.getComputedStyle ? window.getComputedStyle(host) : null;
+    if (computed && computed.position === 'static') {
+      host.dataset.selectionFloatPosition = 'relative';
+      host.style.position = 'relative';
+    }
+    return host;
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function resetPosition(bar, options = {}) {
+    if (!bar) return;
+    if (bar.dataset.selectionFloatDragged === '1' && !options.force) return;
+    const host = prepareHost(options.host || hostFor(options.anchor, options.fallback));
+    const fixed = host === document.body;
+    bar.classList.add('gb-selection-float-bar');
+    bar.classList.toggle('is-fixed', fixed);
+    bar.style.position = fixed ? 'fixed' : 'absolute';
+    bar.style.left = '50%';
+    bar.style.top = '';
+    bar.style.right = '';
+    bar.style.bottom = fixed ? 'max(24px, env(safe-area-inset-bottom))' : '12px';
+    bar.style.transform = 'translateX(-50%)';
+    bar.style.maxWidth = fixed ? 'calc(100vw - 16px)' : 'calc(100% - 16px)';
+    bar.style.zIndex = options.zIndex || '';
+    if (bar.parentElement !== host) host.appendChild(bar);
+  }
+
+  function createDragHandle(label = 'ドラッグで移動') {
+    const handle = document.createElement('button');
+    handle.type = 'button';
+    handle.className = DRAG_HANDLE_CLASS;
+    handle.dataset.e2eId = 'selection-float-drag';
+    handle.title = label;
+    handle.setAttribute('aria-label', label);
+    handle.textContent = '⋮⋮';
+    return handle;
+  }
+
+  function ensureDragHandle(bar, label) {
+    let handle = bar?.querySelector?.('.' + DRAG_HANDLE_CLASS);
+    if (!handle && bar) {
+      handle = createDragHandle(label);
+      bar.insertBefore(handle, bar.firstChild);
+    }
+    return handle;
+  }
+
+  function bindDrag(bar, options = {}) {
+    if (!bar || bar.dataset.selectionFloatDragBound === '1') return;
+    bar.dataset.selectionFloatDragBound = '1';
+    bar.addEventListener('pointerdown', event => event.stopPropagation());
+    bar.addEventListener('click', event => event.stopPropagation());
+    bar.addEventListener('click', event => {
+      const btn = event.target?.closest?.('button');
+      if (btn && !btn.classList.contains(DRAG_HANDLE_CLASS)) pulseButton(btn);
+    }, true);
+    bar.addEventListener('pointerdown', event => {
+      const handle = event.target?.closest?.('.' + DRAG_HANDLE_CLASS);
+      if (!handle) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const host = prepareHost(options.host || bar.parentElement || document.body);
+      const fixed = host === document.body;
+      const hostRect = fixed
+        ? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
+        : host.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startLeft = barRect.left - hostRect.left;
+      const startTop = barRect.top - hostRect.top;
+      bar.classList.add('is-dragging');
+      bar.style.position = fixed ? 'fixed' : 'absolute';
+      bar.style.bottom = 'auto';
+      bar.style.transform = 'none';
+      try { handle.setPointerCapture?.(event.pointerId); } catch {}
+
+      const move = ev => {
+        const nextLeft = clamp(startLeft + ev.clientX - startX, 6, Math.max(6, hostRect.width - barRect.width - 6));
+        const nextTop = clamp(startTop + ev.clientY - startY, 6, Math.max(6, hostRect.height - barRect.height - 6));
+        bar.style.left = fixed ? `${nextLeft}px` : `${nextLeft}px`;
+        bar.style.top = fixed ? `${nextTop}px` : `${nextTop}px`;
+        bar.dataset.selectionFloatDragged = '1';
+      };
+      const done = ev => {
+        bar.classList.remove('is-dragging');
+        try { handle.releasePointerCapture?.(ev.pointerId); } catch {}
+        document.removeEventListener('pointermove', move, true);
+        document.removeEventListener('pointerup', done, true);
+        document.removeEventListener('pointercancel', done, true);
+      };
+      document.addEventListener('pointermove', move, true);
+      document.addEventListener('pointerup', done, true);
+      document.addEventListener('pointercancel', done, true);
+    }, true);
+  }
+
+  function pulseButton(button) {
+    if (!button || button.disabled) return;
+    button.classList.add('is-pressed');
+    button.dataset.pressed = '1';
+    clearTimeout(button._selectionFloatPressedTimer);
+    button._selectionFloatPressedTimer = setTimeout(() => {
+      button.classList.remove('is-pressed');
+      delete button.dataset.pressed;
+    }, 220);
+  }
+
+  function bindActionButton(button, action) {
+    if (!button) return button;
+    button.classList.add('gb-selection-float-button');
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) return;
+      pulseButton(button);
+      let result;
+      try {
+        result = action?.(event);
+      } catch (error) {
+        button.removeAttribute('aria-busy');
+        throw error;
+      }
+      if (result && typeof result.then === 'function') {
+        button.setAttribute('aria-busy', 'true');
+        result.finally(() => button.removeAttribute('aria-busy'));
+      }
+    });
+    return button;
+  }
+
+  function button(label, options = {}) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = label;
+    if (options.e2eId) btn.dataset.e2eId = options.e2eId;
+    if (options.title) btn.title = options.title;
+    if (options.danger) btn.classList.add('danger');
+    if (options.muted) btn.classList.add('muted');
+    return bindActionButton(btn, options.onClick);
+  }
+
+  return {
+    bindDrag,
+    bindActionButton,
+    button,
+    createDragHandle,
+    ensureDragHandle,
+    hostFor,
+    resetPosition,
+    pulseButton,
+  };
+})();
 
 /**
  * 互換レイヤー: グローバルstateへのプロキシ
@@ -178,4 +348,5 @@ function _currentPaneState() {
 
 if (typeof window !== 'undefined') {
   window.GBPaneState = GBPaneState;
+  window.GBSelectionFloatMenu = GBSelectionFloatMenu;
 }

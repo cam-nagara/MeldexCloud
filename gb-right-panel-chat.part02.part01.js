@@ -8,6 +8,7 @@
         session_title: streamSessionTitle,
         target_path: streamTargetPath,
         source_folder: streamSourceFolder,
+        workspace_id: streamWorkspaceId,
         work_folder: streamWorkFolder,
         active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
         user: typeof getUsername === 'function' ? getUsername() : '',
@@ -89,9 +90,6 @@
             scrollStreamContainer();
           } else if (data.type === 'usage') {
             responseUsage = data.usage || null;
-            if (assistantDiv) _chatRenderUsage(assistantDiv, responseUsage, streamProvider, streamModel);
-          } else if (data.type === 'usage_recorded') {
-            if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
           } else if (data.type === 'budget_warning' || data.type === 'large_context_warning') {
             if (streamVisibleInCurrentChat()) chatAddSystem(data.message || 'LLM費用に関する警告があります');
           } else if (data.type === 'internal_notice') {
@@ -162,7 +160,6 @@
         if (auditWarning) renderOptions.tool_audit_warning = auditWarning;
         assistantDiv = addAssistantToVisibleStream(fullText || '[コード実行結果]', renderOptions);
       }
-      if (assistantDiv && responseUsage) _chatRenderUsage(assistantDiv, responseUsage, streamProvider, streamModel);
       const assistantMessage = { role: 'assistant', content: fullText || '[コード実行結果]', msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp() };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
@@ -176,10 +173,10 @@
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
         sourceFolder: streamSourceFolder,
+        workspaceId: streamWorkspaceId,
         provider: streamProvider,
         model: streamModel,
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
-      if (streamVisibleInCurrentChat()) _chatRenderSessionUsageSummary();
     }
   } catch (e) {
     if (!isCurrentStream()) return false;
@@ -192,7 +189,6 @@
       }
       if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, responseCitations);
       else if (assistantDiv) assistantDiv.textContent = abortedText;
-      if (assistantDiv && responseUsage) _chatRenderUsage(assistantDiv, responseUsage, streamProvider, streamModel);
       const assistantMessage = { role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp(), aborted: true };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
@@ -205,10 +201,10 @@
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
         sourceFolder: streamSourceFolder,
+        workspaceId: streamWorkspaceId,
         provider: streamProvider,
         model: streamModel,
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
-      if (streamVisibleInCurrentChat()) _chatRenderSessionUsageSummary();
     } else if (streamVisibleInCurrentChat()) {
       chatAddSystem('エラー: ' + (e?.message || e));
     }
@@ -218,6 +214,7 @@
       _chatState.streaming = false;
       _chatState.abortController = null;
       _chatState.streamingProvider = '';
+      _chatState.streamingTargetPath = '';
       _syncChatSourceFolderUi();
       if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
       const liveSendBtn = document.getElementById('chat-send-btn') || sendBtn;
@@ -236,6 +233,7 @@
             sessionTitle: streamSessionTitle,
             targetPath: streamTargetPath,
             sourceFolder: streamSourceFolder,
+            workspaceId: streamWorkspaceId,
             provider: streamProvider,
             model: streamModel,
             mode: Object.prototype.hasOwnProperty.call(options || {}, 'mode')
@@ -310,7 +308,7 @@ Meldexのチャットでは、次の層を矛盾なく扱ってください。
 2. **ユーザー定義ルール**: ルールボタンで管理される個人ルール。Skillsと矛盾しない範囲で尊重する。
 3. **ナレッジ層**: 過去チャットから抽出された fact / decision / preference / correction / team_consensus。関連項目は自動注入され、追加で search_knowledge(query) でも探せる。ただし自動注入ナレッジは参考情報であり、存在確認・場所確認・作成更新完了の証拠にはしない。
 4. **ステータス別ポリシー**: 掲載済み・確定など canonical 扱いの項目は変更不可。内部確定は矛盾させない。調整可能項目はユーザー指示があれば提案・変更できる。
-5. **ファイル検索層**: read_project_overview を最初に呼び、search(query) は既定で作品フォルダ内を検索する。作品外の確認が必要な場合だけ scope: source / roots / all を明示し、必要に応じて read_file / read_database / read_*_context で原文または構造化contextを読む。
+5. **ファイル検索層**: read_project_overview を最初に呼び、search(query) は既定で現在の対象フォルダ内を検索する。対象外の確認が必要な場合だけ scope: source / roots / all を明示し、必要に応じて read_file / read_database / read_*_context で原文または構造化contextを読む。
 6. **現在のコンテキスト**: ユーザーが開いているファイル、添付、直近メッセージ。上位ルールや canonical と矛盾する場合は、矛盾を報告する。
 
 ナレッジ層の項目を修正する場合、ユーザーが明確に訂正・固定・解除を求めたときだけ update_knowledge を使ってください。canonical や保護された項目は勝手に上書きしないでください。
@@ -342,8 +340,8 @@ Meldexのチャットでは、次の層を矛盾なく扱ってください。
 **新形式の構造**:
 \`\`\`
 シートフォルダ/
-  シートフォルダ.md          ← type: settings-db
-  エントリ名.md              ← type: settings-entry、properties内に値を保持
+  シートフォルダ.md          ← type: settings-db（新規シートはエントリ実体をSQLiteに保存）
+  エントリ名.md              ← エントリ操作用の論理パス（物理ファイルとは限らない）
 \`\`\`
 - set_property_type で列/型/リレーションを設定 → create_entity でエントリ作成 → add_value でプロパティ値を追加
 - 新形式シートで add_value を使うときは、create_entity の戻り値 path（例: \`キャラ表/主人公.md\`）を folder_path に使う。シートフォルダだけを folder_path に渡さない。エントリ名指定で更新する場合は db_path + entity を使う
@@ -354,20 +352,32 @@ Meldexのチャットでは、次の層を矛盾なく扱ってください。
 - タイムラインは独立ファイルではなく、date型プロパティを持つ通常シートのビュー。開始日/終了日/状態などを set_property_type で整え、必要に応じてUI操作でビュー設定する
 - キャラクター表を作る場合は、年齢・誕生日・身長・体格・カップサイズ・体重・B/W/Hなど、テンプレートの数式/プロパティを欠落させない
 
-### 3. ボード (.board.md)
+### 3. ボード (.mel-board / 既存 .board.md)
 マインドマップ・構想図・ストーリーボード・組織図・フローチャート・年表・関係図など、**カードとラインで視覚化**する情報に使用。
-**形式（Markdownフロントマター）**:
-\`\`\`
+新規作成では .mel-board を優先する。既存 .board.md は互換形式として読み書きできる。
+**形式（Markdownフロントマター + 見出しカード）**:
+\`\`\`markdown
 ---
 type: board
-nodes:
-  - {id: "n1", text: "主人公", x: 100, y: 100, w: 120, h: 60, color: "#569cd6"}
-  - {id: "n2", text: "ライバル", x: 300, y: 100, w: 120, h: 60, color: "#f48771"}
+ids:
+  "主人公": "n1"
+  "ライバル": "n2"
+positions:
+  "主人公": {x: 100, y: 100}
+  "ライバル": {x: 300, y: 100}
+sizes:
+  "主人公": {w: 160, h: 72}
+  "ライバル": {w: 160, h: 72}
 connections:
-  - {from: "n1", to: "n2", label: "対立", arrow: "end"}
+  - {from: "主人公", to: "ライバル", label: "対立", arrow: "end"}
 ---
+# 主人公
+目標と悩み
+
+# ライバル
+対立軸
 \`\`\`
-- ノードidは安定した値にし、connections.from/to はノードidを参照する。リンクカードやスタイル情報を追加する場合もフロントマター構造を壊さない
+- cards を nodes 配列だけに詰め込まない。positions / ids / sizes と本文の見出しカードを合わせて作る。リンクカードやスタイル情報を追加する場合も、既存ファイルの構造を読んでから壊さず更新する
 
 ### 4. スマートシート (.smart-db.json)
 複数シートの横断ビュー・絞り込み・ダッシュボードに使用。実データ本体ではなく、参照元とビュー設定を持つJSON。
@@ -397,7 +407,7 @@ read_databaseで取得可能（calendar_db: trueフラグあり）。
 - **create_sheet(path, title)**: シート本体を作成する。キャラ表、用語集、一覧表などのシート作成依頼では、最初にこれを使う
 - **create_entity(parent_path, name)**: シートにエントリを作成。戻り値 path を add_value の folder_path に使う
 - **set_property_type(db_path, property, type, ...)**: シートのプロパティ型・選択肢・リレーション・数式・ロールアップを設定
-- **add_value(folder_path, property, value, status)**: エントリにプロパティ値を追加。新形式ではエントリファイル path または db_path + entity を指定
+- **add_value(folder_path, property, value, status)**: エントリにプロパティ値を追加。新形式では create_entity の戻り値 path または db_path + entity を指定
 - **configure_form_view(db_path, fields, required, ...)**: ブラウザ側のフォームビュー項目・必須・ラベル・説明を設定
 - **configure_public_form(db_path, enabled, ...)**: 公開フォーム送信設定を保存
 - **search(query)**: 全文検索
@@ -503,15 +513,17 @@ read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
   if (state.currentPagePath) prompt += `\n現在開いているページ: ${state.currentPagePath}\n`;
   if (state.currentDbPath) prompt += `現在開いているシート: ${state.currentDbPath}\n`;
   if (state.currentBoardPath) prompt += `現在開いているボード: ${state.currentBoardPath}\n`;
+  const currentTarget = typeof _chatCurrentOpenTarget === 'function' ? _chatCurrentOpenTarget() : { path: '' };
+  if (currentTarget.path && currentTarget.path !== promptTargetPath) prompt += `現在開いている対象: ${currentTarget.path}\n`;
 
   if (window.GBMeldexLlmOperations?.promptSummary) {
     const uiSummary = window.GBMeldexLlmOperations.promptSummary();
     if (uiSummary) prompt += '\n' + uiSummary + '\n';
   }
 
-  // ファイル紐づきチャットの場合、対象ファイル情報を強調
+  // 対象がある場合、ファイル/フォルダ情報を強調
   if (promptTargetPath) {
-    prompt += `\n## このチャットの対象ファイル\nパス: ${promptTargetPath}\nこのチャットはこのファイルに関する会話です。ファイルの内容を参照する場合はread_fileツールを使ってください。\n`;
+    prompt += `\n## このチャットの現在の対象\nパス: ${promptTargetPath}\nこのチャットはこのファイルまたはフォルダに関する会話です。内容を参照する場合、ファイルならread_file、フォルダならbrowse/search/read_project_overviewを使ってください。\n`;
   }
 
   return prompt;
@@ -519,10 +531,12 @@ read_databaseで \`Meldex-QA/テスト実績/\` を読み、以下を提供:
 
 async function _chatSwitchSourceFolderForOpen(sourceFolder, options = {}) {
   const next = String(sourceFolder || '');
-  if (next === _chatSourceFolderValue() && !options.force) return true;
+  const current = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : _chatSourceFolderValue();
+  if (next === current && !options.force) return true;
   const switched = await _setChatSourceFolder(next, options);
-  if (switched && next === _chatSourceFolderValue()) return true;
-  if (typeof showStatus === 'function') showStatus('対象ソースフォルダを切り替えられませんでした', true);
+  const updated = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : _chatSourceFolderValue();
+  if (switched && next === updated) return true;
+  if (typeof showStatus === 'function') showStatus('対象を切り替えられませんでした', true);
   return false;
 }
 
@@ -540,6 +554,10 @@ async function openFileChat(targetPath) {
   await _initChatSourceFolderSelector();
   if (!restoreStillCurrent()) return false;
   const detectedSourceFolder = _detectSourceFolderFromPath(targetPath);
+  if (!detectedSourceFolder) {
+    if (typeof showStatus === 'function') showStatus('対象ファイルのソースフォルダを確認できませんでした', true);
+    return false;
+  }
   if (detectedSourceFolder !== _chatSourceFolderValue()) {
     const switched = await _chatSwitchSourceFolderForOpen(detectedSourceFolder);
     if (!switched) return false;
@@ -578,6 +596,7 @@ async function openFileChat(targetPath) {
         _chatState.messages = _ensureChatMessageIds(data.messages);
         _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
         _chatState.targetPath = targetPath;
+        _chatState.lastImplicitTargetPath = '';
         _setChatSessionTitle(data.frontmatter?.title || item.title || '');
         if (data.frontmatter?.provider) {
           _chatState.provider = data.frontmatter.provider;
@@ -615,6 +634,7 @@ async function openFileChat(targetPath) {
             _chatState.messages = _ensureChatMessageIds(data.messages);
             _chatState.sessionId = item.name.replace('.md', '');
             _chatState.targetPath = targetPath;
+            _chatState.lastImplicitTargetPath = '';
             _setChatSessionTitle(data.frontmatter?.title || '');
             if (data.frontmatter.provider) {
               _chatState.provider = data.frontmatter.provider;
@@ -643,6 +663,7 @@ async function openFileChat(targetPath) {
     _chatState.messages = [];
     _chatState.sessionId = '';
     _chatState.targetPath = targetPath;
+    _chatState.lastImplicitTargetPath = '';
     _setChatSessionTitle('');
     const container = _chatLiveMessagesContainer();
     if (container) {
@@ -676,6 +697,7 @@ function _createFileChat(targetPath) {
   _chatState.messages = [];
   _chatState.sessionId = '';
   _chatState.targetPath = targetPath;
+  _chatState.lastImplicitTargetPath = '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
   } else {
@@ -740,18 +762,21 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     anchor = anchor || String(path).slice(hashIndex + 1);
     path = String(path).slice(0, hashIndex);
   }
-  if (sourceFolder !== undefined && sourceFolder !== _chatSourceFolderValue()) {
-    const switched = await _chatSwitchSourceFolderForOpen(sourceFolder, { skipSave: true });
+  const explicitSourceFolder = String(sourceFolder || '');
+  if (sourceFolder !== undefined && explicitSourceFolder && explicitSourceFolder !== _chatSourceFolderValue()) {
+    const switched = await _chatSwitchSourceFolderForOpen(explicitSourceFolder, { skipSave: true });
     if (!switched) return false;
     if (!restoreStillCurrent()) return false;
   } else {
     const detectedSourceFolder = _detectSourceFolderFromPath(path);
-    if (detectedSourceFolder && detectedSourceFolder !== _chatSourceFolderValue()) {
+    const currentTarget = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : _chatSourceFolderValue();
+    if (detectedSourceFolder && detectedSourceFolder !== currentTarget) {
       const switched = await _chatSwitchSourceFolderForOpen(detectedSourceFolder, { skipSave: true });
       if (!switched) return false;
       if (!restoreStillCurrent()) return false;
     }
   }
+  if (!_chatRequireSourceFolder()) return false;
   openRightPanelTab('chat');
   if (restoreGuard && typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.runInternal === 'function') {
     GBChatRestore.runInternal(() => switchChatMode('llm'));
@@ -779,6 +804,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     const user = (typeof getUsername === 'function') ? getUsername() : '';
     let url = (typeof API_BASE !== 'undefined' ? API_BASE : '/api') + '/chat/load?path=' + encodeURIComponent(path);
     const sourceFolderParam = _chatSourceFolderValue();
+    const workspaceIdParam = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+    if (workspaceIdParam) url += '&workspace_id=' + encodeURIComponent(workspaceIdParam);
     if (sourceFolderParam) url += '&source_folder=' + encodeURIComponent(sourceFolderParam);
     if (user && user !== 'anonymous') url += '&_user=' + encodeURIComponent(user);
     const res = await fetch(url);
@@ -799,6 +826,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     _chatState.messages = [];
     _chatState.sessionId = '';
     _chatState.targetPath = '';
+    _chatState.lastImplicitTargetPath = '';
     _setChatSessionTitle('');
     const container = _chatLiveMessagesContainer();
     if (container) container.innerHTML = '';
@@ -840,6 +868,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   const fname = path.split('/').pop().replace('.md', '');
   _chatState.sessionId = fname;
   _chatState.targetPath = data.frontmatter?.targetPath || '';
+  _chatState.lastImplicitTargetPath = '';
   _setChatSessionTitle(data.frontmatter?.title || '');
   if (data.frontmatter?.provider) {
     _chatState.provider = data.frontmatter.provider;
@@ -871,6 +900,7 @@ function chatClear() {
   _chatState.messages = [];
   _chatState.sessionId = '';
   _chatState.targetPath = '';
+  _chatState.lastImplicitTargetPath = '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
   } else {
@@ -909,6 +939,7 @@ async function chatAutoSave(options = {}) {
   const hasProvider = Object.prototype.hasOwnProperty.call(options || {}, 'provider');
   const hasModel = Object.prototype.hasOwnProperty.call(options || {}, 'model');
   const hasSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
+  const hasWorkspaceId = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
   if (savingCurrentSession && !hasSessionTitle) _captureChatSessionTitleFromInput();
   _ensureChatMessageIds(messages);
   let sid = hasSessionId ? String(options.sessionId || '') : String(_chatState.sessionId || '');
@@ -916,10 +947,15 @@ async function chatAutoSave(options = {}) {
   if (messages.length === 0 && options?.allowEmpty && !sid) return false;
   if (!sid) return false;
   const sessionTitle = hasSessionTitle ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
-  const targetPath = hasTargetPath ? String(options.targetPath || '') : (_chatState.targetPath || '');
+  const targetPath = hasTargetPath ? String(options.targetPath || '') : String(_chatState.targetPath || _chatState.lastImplicitTargetPath || (typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '') || '');
   const provider = hasProvider ? options.provider : _chatState.provider;
   const model = hasModel ? options.model : _chatState.model;
   const sourceFolder = hasSourceFolder ? String(options.sourceFolder || '') : _chatSourceFolderValue();
+  const workspaceId = hasWorkspaceId ? String(options.workspaceId || '') : (hasSourceFolder ? '' : (typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : ''));
+  if (!sourceFolder && !workspaceId) {
+    if (!silent) throw new Error('対象ワークスペースまたはフォルダを選択してください');
+    return false;
+  }
   // 全チャットを _chat/llm/ に統一保存（ファイル紐づきもセッションの一つ）
   const savePath = _chatSavedPathForSession(sid);
   try {
@@ -935,6 +971,7 @@ async function chatAutoSave(options = {}) {
       tags: targetPath ? [targetPath] : [],
       targetPath,
       source_folder: sourceFolder,
+      workspace_id: workspaceId,
       user: typeof getUsername === 'function' ? getUsername() : '',
       ...(knowledgeAutomation ? { knowledge_automation: knowledgeAutomation } : {}),
     }));

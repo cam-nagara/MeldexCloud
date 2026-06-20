@@ -8,7 +8,7 @@ function _meldexHelpItems() {
     { label: 'Q&A', icon: 'helpCircle', type: 'manual', title: 'よくある質問', path: 'マニュアル/04_サポート/よくある質問.md' },
     { type: 'separator' },
     { label: 'LLM / チャット', type: 'heading' },
-    { label: 'LLMプラン比較・料金ガイド', icon: 'externalLink', type: 'external', url: 'https://www.notion.so/GelBoard-LLM-2026-3-e8f290d995ad45edb8363f3a0f60cf07' },
+    { label: 'LLMの必要性とコスト方針', icon: 'fileText', type: 'manual', title: 'LLMの必要性とコスト方針', path: 'マニュアル/03_設定と連携/LLMの必要性とコスト方針.md' },
     { label: 'チャットLLM ツールガイド', icon: 'fileText', type: 'manual', title: 'チャットLLM ツールガイド', path: 'マニュアル/03_設定と連携/チャットLLM ツールガイド.md' },
     { label: 'LLMプライバシーガイド', icon: 'eyeOff', type: 'manual', title: 'LLMプライバシーガイド', path: 'マニュアル/03_設定と連携/LLMプライバシーガイド.md' },
     { label: 'チャットルール', icon: 'clipboardList', type: 'action', action: 'chatRules' },
@@ -20,7 +20,7 @@ function _meldexHelpItems() {
     { type: 'separator' },
     { label: '更新履歴', icon: 'history', type: 'changelog' },
     { label: '診断情報をエクスポート', icon: 'lifeBuoy', type: 'action', action: 'diagnostics' },
-    { label: 'Meldexについて', icon: 'info', type: 'about' },
+    { label: 'Meldex（メルデックス）について', icon: 'info', type: 'about' },
   ];
 }
 
@@ -191,9 +191,9 @@ function showMeldexAboutDialog() {
   const o = document.createElement('div');
   o.className = 'modal-overlay';
   o.innerHTML = `<div class="modal" style="width:min(680px, calc(100vw - 24px));max-width:680px;max-height:85vh;overflow-y:auto;">
-    <h3 style="display:flex;align-items:center;gap:8px;">${lucide('info',16)} Meldexについて</h3>
+    <h3 style="display:flex;align-items:center;gap:8px;">${lucide('info',16)} Meldex（メルデックス）について</h3>
     <section class="gb-section gb-section--boxed">
-      <div class="gb-section-title">${lucide('info',14)} Meldex BETA</div>
+      <div class="gb-section-title">${lucide('info',14)} Meldex（メルデックス） BETA</div>
       <div class="gb-section-desc" style="line-height:1.7;">
         複数のアプリが連携して、創作全般を補助する統合ワークスペースです。
       </div>

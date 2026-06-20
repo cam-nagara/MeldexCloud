@@ -181,7 +181,9 @@ window.addEventListener('mousedown', (e) => {
 window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
 window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, true);
 
-// DB表示設定（DBパスごとにlocalStorageで永続化）
+// DB表示設定（シートメタデータを正、localStorageを即時キャッシュとして使う）
+const _dbViewConfigBackendSaveTimers = new Map();
+
 function getDbViewConfigStorageKey(dbPath) {
   const fileId = _pathToFileId(dbPath);
   return 'dbViewConfig:' + (fileId || dbPath || '');
@@ -205,6 +207,12 @@ function _cloneDbViewArray(value) {
 function _cloneDbViewObject(value) {
   return _isDbViewPlainObject(value) ? _cloneDbViewValue(value, {}) : {};
 }
+function _hasDbViewArrayState(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+function _hasDbViewObjectState(value) {
+  return _isDbViewPlainObject(value) && Object.keys(value).length > 0;
+}
 function _normalizeDbViewModeValue(mode) {
   const value = String(mode || '').trim();
   return ['pivot', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
@@ -219,11 +227,20 @@ function _normalizeDbTimelineTypeSpecific(timeline) {
     rowProp: String(src.rowProp || '_entity'),
     scale: String(src.scale || 'day'),
     direction: String(src.direction || 'horizontal'),
+    displayStart: String(src.displayStart || ''),
+    displayEnd: String(src.displayEnd || ''),
+    timeStepMinutes: Math.max(1, Math.round(Number(src.timeStepMinutes || 1) || 1)),
+    calendarSystemId: String(src.calendarSystemId || 'gregorian'),
     ...src,
   };
   out.colWidths = _cloneDbViewObject(src.colWidths);
   out.rowHeights = _cloneDbViewObject(src.rowHeights);
   out.cardProps = _cloneDbViewArray(src.cardProps);
+  out.calendarSystems = _cloneDbViewArray(src.calendarSystems);
+  out.displayStart = String(out.displayStart || '');
+  out.displayEnd = String(out.displayEnd || '');
+  out.timeStepMinutes = Math.max(1, Math.round(Number(out.timeStepMinutes || 1) || 1));
+  out.calendarSystemId = String(out.calendarSystemId || 'gregorian');
   return out;
 }
 function _makeLegacyDbSavedView(cfg) {
@@ -315,15 +332,13 @@ function _normalizeSavedDbViewForV2(view, cfg, index) {
   return v;
 }
 function _hasLegacyDbViewState(cfg) {
-  const hasArray = (value) => Array.isArray(value) && value.length > 0;
-  const hasObject = (value) => _isDbViewPlainObject(value) && Object.keys(value).length > 0;
-  return hasArray(cfg.hiddenCols)
-    || hasArray(cfg.pinnedCols)
-    || hasArray(cfg.colOrder)
-    || hasArray(cfg.advancedFilters)
-    || hasObject(cfg.conditionalColors)
-    || hasObject(cfg.countTypes)
-    || hasObject(cfg.colWidths)
+  return _hasDbViewArrayState(cfg.hiddenCols)
+    || _hasDbViewArrayState(cfg.pinnedCols)
+    || _hasDbViewArrayState(cfg.colOrder)
+    || _hasDbViewArrayState(cfg.advancedFilters)
+    || _hasDbViewObjectState(cfg.conditionalColors)
+    || _hasDbViewObjectState(cfg.countTypes)
+    || _hasDbViewObjectState(cfg.colWidths)
     || !!cfg.conditionalFormat
     || !!cfg.groupBy
     || !!cfg.kanbanGroupBy
@@ -338,6 +353,67 @@ function _hasLegacyDbViewState(cfg) {
     || cfg.entityColumnPinned === false
     || (cfg.thumbnailSize && cfg.thumbnailSize !== 'small')
     || (cfg.currentViewMode && cfg.currentViewMode !== 'pivot');
+}
+function _hasDbViewMeaningfulValue(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (_isDbViewPlainObject(value)) return Object.values(value).some(_hasDbViewMeaningfulValue);
+  return value !== null && value !== undefined && value !== '' && value !== false;
+}
+function _hasMeaningfulDbTimelineState(timeline) {
+  if (!_isDbViewPlainObject(timeline)) return false;
+  if (String(timeline.timeProp || '')) return true;
+  if (String(timeline.endProp || '')) return true;
+  if (String(timeline.rowProp || '_entity') !== '_entity') return true;
+  if (String(timeline.scale || 'day') !== 'day') return true;
+  if (String(timeline.direction || 'horizontal') !== 'horizontal') return true;
+  if (String(timeline.displayStart || '')) return true;
+  if (String(timeline.displayEnd || '')) return true;
+  if (Math.max(1, Math.round(Number(timeline.timeStepMinutes || 1) || 1)) !== 1) return true;
+  if (String(timeline.calendarSystemId || 'gregorian') !== 'gregorian') return true;
+  if (_hasDbViewObjectState(timeline.colWidths)) return true;
+  if (_hasDbViewObjectState(timeline.rowHeights)) return true;
+  if (_hasDbViewArrayState(timeline.cardProps)) return true;
+  if (_hasDbViewArrayState(timeline.calendarSystems)) return true;
+  const defaults = new Set([
+    'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
+    'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
+  ]);
+  return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
+}
+function _hasMeaningfulDbSavedViewState(view, index) {
+  if (!_isDbViewPlainObject(view)) return false;
+  const viewMode = _normalizeDbViewModeValue(view.viewMode || 'pivot');
+  if (viewMode !== 'pivot') return true;
+  const defaultName = typeof _defaultDbSavedViewName === 'function'
+    ? _defaultDbSavedViewName(viewMode, index)
+    : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
+  const name = String(view.name || '').trim();
+  if (name && name !== defaultName) return true;
+  if (_hasDbViewArrayState(view.hiddenCols) || _hasDbViewArrayState(view.pinnedCols)) return true;
+  if (_hasDbViewArrayState(view.colOrder) || _hasDbViewObjectState(view.colOrder)) return true;
+  if (_hasDbViewArrayState(view.advancedFilters)) return true;
+  if (view.conditionalFormat === true || _hasDbViewObjectState(view.conditionalColors)) return true;
+  if (view.filter && view.filter !== 'disabled') return true;
+  if (_hasDbViewMeaningfulValue(view.sortConfig) || _hasDbViewMeaningfulValue(view.manualOrder)) return true;
+  if (view.showFooter === true || view.entityColumnPinned === false) return true;
+  if (_hasDbViewObjectState(view.countTypes) || _hasDbViewObjectState(view.colWidths)) return true;
+  if (view.thumbnailSize && view.thumbnailSize !== 'small') return true;
+  const typeSpecific = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
+  if (typeSpecific.pivot?.groupBy) return true;
+  if (typeSpecific.kanban?.groupBy && typeSpecific.kanban.groupBy !== '_status') return true;
+  if (_hasDbViewObjectState(typeSpecific.calendar?.mapping)) return true;
+  if (_hasMeaningfulDbTimelineState(typeSpecific.timeline)) return true;
+  if (_hasDbViewObjectState(typeSpecific.chart) || _hasDbViewObjectState(typeSpecific.graph)) return true;
+  return typeSpecific.form?.formConfig != null;
+}
+function _hasMeaningfulDbViewConfigState(cfg) {
+  if (!_isDbViewPlainObject(cfg)) return false;
+  if (_hasDbViewArrayState(cfg.deletedProps)) return true;
+  if (_hasLegacyDbViewState(cfg)) return true;
+  const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
+  if (views.length > 1) return true;
+  if (Number.isInteger(cfg.currentViewIdx) && cfg.currentViewIdx > 0) return true;
+  return views.some((view, index) => _hasMeaningfulDbSavedViewState(view, index));
 }
 function _migrateLegacyViewConfig(dbPath, cfg) {
   const config = _isDbViewPlainObject(cfg) ? cfg : {};
@@ -376,6 +452,52 @@ function _migrateLegacyViewConfig(dbPath, cfg) {
 }
 function _persistMigratedDbViewConfig(dbPath, cfg) {
   try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
+}
+function _sanitizeDbViewConfigForBackend(cfg) {
+  const cleaned = _cloneDbViewObject(cfg);
+  // プロパティ型は property_types として別保存される。重複保存すると新旧形式がずれやすい。
+  if (Object.prototype.hasOwnProperty.call(cleaned, 'propertyTypes')) delete cleaned.propertyTypes;
+  return cleaned;
+}
+function _hasLocalDbViewConfigCache(dbPath) {
+  const fileId = _pathToFileId(dbPath);
+  const keys = [];
+  if (fileId) keys.push('dbViewConfig:' + fileId);
+  keys.push('dbViewConfig:' + (dbPath || ''));
+  return [...new Set(keys)].some((key) => {
+    try {
+      const value = localStorage.getItem(key);
+      if (value == null || String(value).trim() === '') return false;
+      return _hasMeaningfulDbViewConfigState(JSON.parse(value));
+    } catch {
+      return false;
+    }
+  });
+}
+function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
+  if (!dbPath || typeof apiPut !== 'function') return Promise.resolve(false);
+  const payload = _sanitizeDbViewConfigForBackend(cfg);
+  const key = String(dbPath || '');
+  const run = () => apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
+    .then(() => true)
+    .catch((error) => {
+      console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+      return false;
+    });
+  if (_dbViewConfigBackendSaveTimers.has(key)) {
+    clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
+    _dbViewConfigBackendSaveTimers.delete(key);
+  }
+  if (options.immediate === true) return run();
+  const timer = setTimeout(() => {
+    _dbViewConfigBackendSaveTimers.delete(key);
+    run();
+  }, 180);
+  _dbViewConfigBackendSaveTimers.set(key, timer);
+  return Promise.resolve(true);
+}
+function _hasPendingDbViewConfigBackendSave(dbPath) {
+  return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
 }
 function getDbViewConfig(dbPath) {
   const fileId = _pathToFileId(dbPath);
@@ -437,10 +559,20 @@ function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, d
   const refresh = typeof onRestore === 'function'
     ? onRestore
     : () => _refreshDbViewConfigAfterHistory(dbPath);
+  const restoreViewConfigSnapshot = (snapshot) => {
+    const restored = restoreLocalStorageSettings(snapshot);
+    if (!restored) return false;
+    const finish = () => refresh(snapshot.keys || [], snapshot);
+    if (typeof _persistDbViewConfigToBackend === 'function') {
+      return _persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true })
+        .finally(finish);
+    }
+    return finish();
+  };
   historyPush(
     label || 'シート表示設定',
-    () => restoreLocalStorageSettings(snapshots.before, refresh),
-    () => restoreLocalStorageSettings(snapshots.after, refresh),
+    () => restoreViewConfigSnapshot(snapshots.before),
+    () => restoreViewConfigSnapshot(snapshots.after),
     _dbViewConfigHistoryScope(dbPath),
     detail || ''
   );
@@ -458,6 +590,9 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
   const label = options.historyLabel || options.label || '';
   const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
   localStorage.setItem(key, JSON.stringify(cfg || {}));
+  if (options.skipBackend !== true) {
+    _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: options.flushBackend === true });
+  }
   if (label && options.skipHistory !== true) {
     pushDbViewConfigHistory(
       dbPath,
@@ -469,26 +604,33 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
     );
   }
 }
-function _getCurrentDbViewConfigEntryFromConfig(cfg) {
+function _getCurrentDbViewIndexFromConfig(cfg, options = {}) {
   const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
-  if (views.length === 0) return null;
-  const rawIdx = Number.isInteger(cfg.currentViewIdx) ? cfg.currentViewIdx : 0;
-  const idx = rawIdx >= 0 && rawIdx < views.length ? rawIdx : 0;
+  if (views.length === 0) return -1;
+  const ctxIdx = Number.isInteger(options?.ctx?.currentViewIdx) ? options.ctx.currentViewIdx : null;
+  const optIdx = Number.isInteger(options?.currentViewIdx) ? options.currentViewIdx : null;
+  const rawIdx = ctxIdx != null ? ctxIdx : (optIdx != null ? optIdx : (Number.isInteger(cfg.currentViewIdx) ? cfg.currentViewIdx : 0));
+  return rawIdx >= 0 && rawIdx < views.length ? rawIdx : 0;
+}
+function _getCurrentDbViewConfigEntryFromConfig(cfg, options = {}) {
+  const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
+  const idx = _getCurrentDbViewIndexFromConfig(cfg, options);
+  if (idx < 0) return null;
   return views[idx] || null;
 }
-function getCurrentDbViewConfigEntry(dbPath) {
-  return _getCurrentDbViewConfigEntryFromConfig(getDbViewConfig(dbPath));
+function getCurrentDbViewConfigEntry(dbPath, options = {}) {
+  return _getCurrentDbViewConfigEntryFromConfig(getDbViewConfig(dbPath), options);
 }
-function getCurrentViewMode(dbPath) {
-  return getCurrentDbViewConfigEntry(dbPath)?.viewMode || 'pivot';
+function getCurrentViewMode(dbPath, options = {}) {
+  return getCurrentDbViewConfigEntry(dbPath, options)?.viewMode || 'pivot';
 }
-function getCurrentDbViewTypeSpecific(dbPath, type) {
-  const bucket = getCurrentDbViewConfigEntry(dbPath)?.typeSpecific?.[type];
+function getCurrentDbViewTypeSpecific(dbPath, type, options = {}) {
+  const bucket = getCurrentDbViewConfigEntry(dbPath, options)?.typeSpecific?.[type];
   return _isDbViewPlainObject(bucket) ? bucket : null;
 }
 function _saveCurrentDbViewField(dbPath, label, detail, options, mutator) {
   const c = getDbViewConfig(dbPath);
-  const v = _getCurrentDbViewConfigEntryFromConfig(c);
+  const v = _getCurrentDbViewConfigEntryFromConfig(c, options);
   if (!v || typeof mutator !== 'function') return false;
   mutator(v, c);
   saveDbViewConfig(dbPath, c, {
@@ -506,17 +648,17 @@ function setCurrentDbViewTypeSpecific(dbPath, type, value, options = {}) {
   });
 }
 // 非表示カラム
-function getHiddenCols(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.hiddenCols || []; }
+function getHiddenCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.hiddenCols || []; }
 function setHiddenCols(dbPath, cols, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 表示列', options.detail || '', options, (v) => { v.hiddenCols = cols; });
 }
 // ピン留めカラム
-function getPinnedCols(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.pinnedCols || []; }
+function getPinnedCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.pinnedCols || []; }
 function setPinnedCols(dbPath, cols, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 固定列', options.detail || '', options, (v) => { v.pinnedCols = cols; });
 }
 // カウントタイプ
-function getCountTypes(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.countTypes || {}; }
+function getCountTypes(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.countTypes || {}; }
 function setCountType(dbPath, prop, type, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計タイプ', options.detail || prop || '', options, (v) => {
     if (!v.countTypes || typeof v.countTypes !== 'object' || Array.isArray(v.countTypes)) v.countTypes = {};
@@ -524,7 +666,7 @@ function setCountType(dbPath, prop, type, options = {}) {
   });
 }
 // カラム幅
-function getColWidths(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.colWidths || {}; }
+function getColWidths(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.colWidths || {}; }
 function setColWidthPersist(dbPath, prop, w, options = {}) {
   const label = options.historyLabel || options.label || '';
   _saveCurrentDbViewField(dbPath, label, options.detail || prop || '', options, (v) => {
@@ -533,18 +675,18 @@ function setColWidthPersist(dbPath, prop, w, options = {}) {
   });
 }
 // 条件付き書式ON/OFF
-function getConditionalFormat(dbPath) { return !!getCurrentDbViewConfigEntry(dbPath)?.conditionalFormat; }
+function getConditionalFormat(dbPath, options = {}) { return !!getCurrentDbViewConfigEntry(dbPath, options)?.conditionalFormat; }
 function setConditionalFormat(dbPath, on, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 条件付き書式', options.detail || (on ? '有効' : '無効'), options, (v) => { v.conditionalFormat = !!on; });
 }
 // 集計行
-function getShowFooter(dbPath) { return !!getCurrentDbViewConfigEntry(dbPath)?.showFooter; }
+function getShowFooter(dbPath, options = {}) { return !!getCurrentDbViewConfigEntry(dbPath, options)?.showFooter; }
 function setShowFooter(dbPath, on, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計行', options.detail || (on ? '表示' : '非表示'), options, (v) => { v.showFooter = !!on; });
 }
 // エントリ名列固定
-function getEntityColumnPinned(dbPath) {
-  const view = getCurrentDbViewConfigEntry(dbPath);
+function getEntityColumnPinned(dbPath, options = {}) {
+  const view = getCurrentDbViewConfigEntry(dbPath, options);
   return view ? view.entityColumnPinned !== false : true;
 }
 function setEntityColumnPinned(dbPath, on, options = {}) {
@@ -558,18 +700,18 @@ function setStatusEnabled(dbPath, on, options = {}) {
   saveDbViewConfig(dbPath, c, { historyLabel: options.label || 'シート表示: ステータス機能', historyDetail: options.detail || (on ? 'オン' : 'オフ'), skipHistory: options.skipHistory === true });
 }
 // サムネサイズ
-function getThumbnailSize(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.thumbnailSize || 'small'; }
+function getThumbnailSize(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.thumbnailSize || 'small'; }
 function setThumbnailSize(dbPath, size, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: サムネイル', options.detail || size || '', options, (v) => { v.thumbnailSize = size; });
 }
 // カラム順序
-function getColOrder(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.colOrder || null; }
+function getColOrder(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.colOrder || null; }
 function setColOrder(dbPath, order, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 列順序', options.detail || '', options, (v) => { v.colOrder = order; });
 }
 // 並び替え
-function getDbSortConfig(dbPath) {
-  const sc = getCurrentDbViewConfigEntry(dbPath)?.sortConfig;
+function getDbSortConfig(dbPath, options = {}) {
+  const sc = getCurrentDbViewConfigEntry(dbPath, options)?.sortConfig;
   return sc && typeof sc === 'object' && sc.key ? sc : null;
 }
 function setDbSortConfig(dbPath, sortConfig, options = {}) {
@@ -579,8 +721,8 @@ function setDbSortConfig(dbPath, sortConfig, options = {}) {
   });
 }
 // マニュアル行順序
-function getDbManualOrder(dbPath) {
-  const order = getCurrentDbViewConfigEntry(dbPath)?.manualOrder;
+function getDbManualOrder(dbPath, options = {}) {
+  const order = getCurrentDbViewConfigEntry(dbPath, options)?.manualOrder;
   return Array.isArray(order) ? order : null;
 }
 function setDbManualOrder(dbPath, order, sortConfig, options = {}) {
@@ -594,7 +736,7 @@ function setDbManualOrder(dbPath, order, sortConfig, options = {}) {
   });
 }
 // 複数条件フィルタ
-function getAdvancedFilters(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.advancedFilters || []; }
+function getAdvancedFilters(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.advancedFilters || []; }
 function setAdvancedFilters(dbPath, filters, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 複数条件フィルタ', options.detail || '', options, (v) => { v.advancedFilters = filters; });
 }
@@ -734,36 +876,161 @@ function _paneLayoutRestoredFromStorage() {
 /* ==============================
    API呼び出し
    ============================== */
-async function apiFetch(path, opts) {
+function _perfNowMs() {
+  return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+    ? performance.now()
+    : Date.now();
+}
+
+function _perfElapsedMs(startedAt) {
+  return Math.max(0, Math.round(_perfNowMs() - startedAt));
+}
+
+function _perfTargetLabelFromPath(path) {
   try {
-    const res = await fetch(API_BASE + path, opts);
-    if (!res.ok) {
-      let detail = res.statusText || '';
-      let payload = null;
-      try {
-        payload = await res.clone().json();
-        const rawDetail = payload?.error || payload?.detail || detail;
-        detail = rawDetail && typeof rawDetail === 'object'
-          ? (rawDetail.message || rawDetail.code || detail)
-          : rawDetail;
-      } catch {}
-      const error = new Error(`HTTP ${res.status}: ${detail}`);
-      error.status = res.status;
-      error.payload = payload;
-      error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
-      throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
-    }
-    const data = await res.json();
-    window.MeldexSaveSafety?.reportApiSuccess?.(path, opts);
-    return data;
-  } catch (e) {
-    if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
-    if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
-      const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
-      showStatus('エラー: ' + text, true);
-    }
-    throw e;
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const rawPath = url.searchParams.get('path') || '';
+    if (!rawPath) return '';
+    return rawPath.split(/[\\/]/).filter(Boolean).pop() || rawPath;
+  } catch {
+    return '';
   }
+}
+
+function _apiFetchPerfInfo(path) {
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const endpoint = url.pathname || '';
+    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return null;
+    return {
+      endpoint,
+      label: 'api' + endpoint,
+      targetLabel: _perfTargetLabelFromPath(path),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const _apiFetchInFlightGets = new Map();
+
+function _apiFetchInFlightKey(path, opts) {
+  if (opts && Object.keys(opts).length > 0) return '';
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const endpoint = url.pathname || '';
+    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return '';
+    return endpoint + '?' + url.searchParams.toString();
+  } catch {
+    return '';
+  }
+}
+
+function _apiFetchBackendPerf(res) {
+  try {
+    const raw = res?.headers?.get?.('x-meldex-perf') || '';
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function _logPerfEvent(label, startedAt, detail) {
+  try {
+    const durationMs = _perfElapsedMs(startedAt);
+    const payload = {
+      message: `[perf] ${label}: ${durationMs}ms`,
+      perf: true,
+      label,
+      durationMs,
+      ...(detail || {}),
+    };
+    if (typeof console !== 'undefined' && typeof console.info === 'function') {
+      console.info('[Meldex perf] ' + payload.message, payload);
+    }
+    if (typeof _sendLog === 'function') _sendLog('info', payload);
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function apiFetch(path, opts) {
+  const inFlightKey = _apiFetchInFlightKey(path, opts);
+  if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
+    return _apiFetchInFlightGets.get(inFlightKey);
+  }
+  const perfInfo = _apiFetchPerfInfo(path);
+  const perfStartedAt = perfInfo ? _perfNowMs() : 0;
+  const requestPromise = (async () => {
+    try {
+      const res = await fetch(API_BASE + path, opts);
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+          ...perfInfo,
+          status: res.status,
+          contentLength: res.headers?.get?.('content-length') || '',
+        });
+      }
+      const backendPerf = _apiFetchBackendPerf(res);
+      if (!res.ok) {
+        let detail = res.statusText || '';
+        let payload = null;
+        try {
+          payload = await res.clone().json();
+          const rawDetail = payload?.error || payload?.detail || detail;
+          detail = rawDetail && typeof rawDetail === 'object'
+            ? (rawDetail.message || rawDetail.code || detail)
+            : rawDetail;
+        } catch {}
+        const error = new Error(`HTTP ${res.status}: ${detail}`);
+        error.status = res.status;
+        error.payload = payload;
+        error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+        throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+      }
+      const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+      const data = await res.json();
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
+          ...perfInfo,
+          backendPerf,
+        });
+      }
+      if (backendPerf && data && typeof data === 'object') {
+        try {
+          Object.defineProperty(data, '_backendPerf', {
+            value: backendPerf,
+            configurable: true,
+          });
+        } catch {}
+      }
+      window.MeldexSaveSafety?.reportApiSuccess?.(path, opts);
+      if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf });
+      return data;
+    } catch (e) {
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
+          ...perfInfo,
+          error: e?.message || String(e),
+        });
+      }
+      if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
+        const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
+        showStatus('エラー: ' + text, true);
+      }
+      throw e;
+    }
+  })();
+  if (inFlightKey) {
+    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
+    requestPromise.then(
+      () => _apiFetchInFlightGets.delete(inFlightKey),
+      () => _apiFetchInFlightGets.delete(inFlightKey),
+    );
+  }
+  return requestPromise;
 }
 
 async function apiPut(path, body) {
@@ -905,4 +1172,16 @@ async function _syncMyTeamProfile() {
   if (!name || name === 'anonymous') return;
   const avatar = localStorage.getItem('meldex-avatar') || '';
   const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncWorkspaceProfiles = async () => {
+    try {
+      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
+        ? await window.MeldexWorkspaces.load({ force: true })
+        : [];
+      for (const workspace of workspaces || []) {
+        if (!workspace?.id) continue;
+        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+      }
+      await window.MeldexWorkspaces?.load?.({ force: true });
+    } catch {}
+  };
   // 全ソースフォルダに同期

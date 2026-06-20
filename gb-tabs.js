@@ -97,10 +97,28 @@ const GBTabs = (() => {
     const opts = options || {};
     const initialPaneInfo = GBLayout.findNode(GBLayout.root, paneId);
     if (!initialPaneInfo) return null;
+    const initialPane = initialPaneInfo.node;
+    const preferTargetPane = !!opts.preferTargetPane;
+
+    // メインパネル固定など、呼び出し元が明示したパネルを優先する場合は、
+    // 他パネルに残った同種タブで開き先が横取りされないよう対象パネル内だけ再利用する。
+    if (preferTargetPane) {
+      const existingTargetTab = (initialPane.tabs || []).find(t => {
+        if (path) return t.path === path && t.type === type;
+        return !t.path && t.type === type;
+      });
+      if (existingTargetTab) {
+        if (state && typeof state === 'object' && Object.keys(state).length) {
+          existingTargetTab.state = { ...(existingTargetTab.state || {}), ...state };
+        }
+        activateTab(paneId, existingTargetTab.id, opts);
+        return existingTargetTab.id;
+      }
+    }
 
     // 同じpath+typeのタブがあればそちらをアクティブに（全ペイン横断）
     if (path) {
-      const existing = _findVisibleTab(t => t.path === path && t.type === type);
+      const existing = preferTargetPane ? null : _findVisibleTab(t => t.path === path && t.type === type);
       if (existing) {
         if (state && typeof state === 'object' && Object.keys(state).length) {
           existing.tab.state = { ...(existing.tab.state || {}), ...state };
@@ -110,7 +128,7 @@ const GBTabs = (() => {
       }
     }
     if (!path && SINGLETON_TOOL_TYPES.has(type) && !opts.forceNewToolTab) {
-      const existing = _findVisibleTab(t => !t.path && t.type === type);
+      const existing = preferTargetPane ? null : _findVisibleTab(t => !t.path && t.type === type);
       if (existing) {
         activateTab(existing.paneId, existing.tab.id, opts);
         return existing.tab.id;
@@ -398,13 +416,19 @@ const GBTabs = (() => {
 
   // アクティブペインにタブを追加（ショートカット）
   function addToActivePane(label, type, path) {
-    let paneId = GBLayout.activePane;
+    let paneId = '';
+    let preferTargetPane = false;
+    if ((path || !SINGLETON_TOOL_TYPES.has(type)) && typeof GBPaneDefaultLayout !== 'undefined' && typeof GBPaneDefaultLayout.resolveMainPaneId === 'function') {
+      paneId = GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true });
+      preferTargetPane = !!paneId;
+    }
+    if (!paneId) paneId = GBLayout.activePane;
     if (!paneId) {
       const firstPane = GBLayout.findFirstPane(GBLayout.root);
       if (firstPane) paneId = firstPane.id;
     }
     if (!paneId) return null;
-    return addTab(paneId, label, type, path);
+    return addTab(paneId, label, type, path, null, { preferTargetPane });
   }
 
   // 指定のタブを持つペインを検索

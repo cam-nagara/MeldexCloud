@@ -711,6 +711,8 @@ function _bdApplyCardStyleFromMenu(nodeIds, styleId) {
     const node = bd.nodes.find(item => item.id === nodeId);
     if (!node) return;
     node.cardStyle = styleId || '';
+    if (styleId) node._userCardStyle = true;
+    else delete node._userCardStyle;
   });
   bdRender();
   bdDirty();
@@ -720,7 +722,7 @@ function _bdApplyCardStyleFromMenu(nodeIds, styleId) {
 // ノードを「階層別スタイル」に戻す。
 // - cardStyle (個別カードスタイル参照) をクリア
 // - bdClearCardStyleOverrides で per-node 視覚 override を削除
-// - _userBgColor / _userFontSize / _userFontBold / _userW フラグを削除
+// - _userCardStyle / _userBgColor / _userFontSize / _userFontBold / _userW フラグを削除
 //   （これらが立っていると bdApplyAutoStyle が深さ別の値で上書きしないため、
 //    フラグを消して階層スタイルが効くようにする）
 // - 対象ノードからルートまで遡り、ルートに _autoStyle: true があれば
@@ -735,6 +737,7 @@ function _bdRestoreCardToHierarchy(nodeIds) {
     if (!node) return;
     node.cardStyle = '';
     if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(node);
+    delete node._userCardStyle;
     delete node._userBgColor;
     delete node._userFontSize;
     delete node._userFontBold;

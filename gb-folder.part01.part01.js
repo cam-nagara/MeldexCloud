@@ -9,36 +9,13 @@
 // ファイルタイプアイコン（Lucide SVG）
 // fileTypeIcon は meldex-core.js で定義済み
 // FILE_TYPE_LABELS は meldex-core.js で定義済み
-const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
 // NATIVE_TYPES は meldex-core.js で定義済み
 
-let _folderPath = '';
-let _folderItems = [];
-let _folderSelected = null;
-let _folderSelectedItems = []; // 複数選択
-let _folderLayout = localStorage.getItem('folder-layout') || 'waterfall';
-let _folderVisibleItems = [];
-let _folderBulkPopupRaf = 0;
-let _folderBulkPopupTracking = false;
-// パネル表示状態は_getFvPanelCfg()で管理（旧_folderPreviewVisibleは廃止）
-let _folderZoom = parseFloat(localStorage.getItem('folder-zoom') || '1');
-const HOME_FOLDER_DISPLAY_LABEL = 'ホームフォルダ';
-
-function _normalizeFolderPathForCompare(path) {
-  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
-}
-
-function _isHomeFolderPath(path) {
-  try {
-    return !!_homeFolderPath && _normalizeFolderPathForCompare(path) === _normalizeFolderPathForCompare(_homeFolderPath);
-  } catch {
-    return false;
-  }
-}
-
-function _folderDisplayLabel(label, path) {
-  if (_isHomeFolderPath(path)) return HOME_FOLDER_DISPLAY_LABEL;
-  return String(label || '').trim();
+function _isFolderFreeLayoutUiEnabled() {
+  if (typeof GBLayout === 'undefined') return true;
+  return typeof GBLayout.isFreeLayoutUiEnabled === 'function'
+    ? !!GBLayout.isFreeLayoutUiEnabled()
+    : true;
 }
 
 async function openFolder(label, path, opts) {
@@ -47,7 +24,7 @@ async function openFolder(label, path, opts) {
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
-  if (showOpenLoading) showLoading('フォルダを読み込み中...');
+  let loadingShown = false;
   const displayLabel = _folderDisplayLabel(label, path);
   const folderLoadSeq = (window._openFolderLoadSeq || 0) + 1;
   window._openFolderLoadSeq = folderLoadSeq;
@@ -55,6 +32,7 @@ async function openFolder(label, path, opts) {
     || window._openFolderLoadSeq !== folderLoadSeq
     || _folderPath !== path;
   try {
+    if (showOpenLoading) { showLoading('フォルダを読み込み中...'); loadingShown = true; }
     if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
     if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('folder-view');
     _folderPath = path;
@@ -71,7 +49,7 @@ async function openFolder(label, path, opts) {
       const _navEntry = {type:'folder', label: displayLabel, path};
       navPush(_navEntry);
     }
-    if (!openOpts.skipHighlight) highlightOutlinerNode(path, { noScroll: true });
+    if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
     let fetchedItems = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
     if (typeof isOutlinerDeletePendingPath === 'function') {
@@ -123,7 +101,7 @@ async function openFolder(label, path, opts) {
       showStatus('フォルダ読み込みエラー: ' + (e?.message || e), true);
     }
   } finally {
-    if (showOpenLoading) hideLoading();
+    if (loadingShown) hideLoading();
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');
 }
@@ -251,8 +229,13 @@ function _folderItemExt(item) {
   if (explicit) return explicit.startsWith('.') ? explicit : '.' + explicit;
   const path = String(item?.path || item?.name || '').split(/[?#]/)[0].toLowerCase();
   const name = path.split(/[\\/]/).pop() || '';
+  if (name.endsWith('.mel-board')) return '.mel-board';
+  if (name.endsWith('.mel-sheet')) return '.mel-sheet';
+  if (name.endsWith('.mel-scenario')) return '.mel-scenario';
+  if (name.endsWith('.mel-timer')) return '.mel-timer';
   if (name.endsWith('.scriptnote.json')) return '.scriptnote.json';
   if (name.endsWith('.smart-db.json')) return '.smart-db.json';
+  if (name.endsWith('.timer.json')) return '.timer.json';
   const index = name.lastIndexOf('.');
   return index >= 0 ? name.slice(index) : '';
 }
@@ -321,6 +304,7 @@ function _folderHasActiveFilters(cfg) {
   return !!String(cfg.filterText || '').trim()
     || _folderFilterArray(cfg.filterTypes).length > 0
     || _folderFilterArray(cfg.filterExts).length > 0
+    || _folderHasActiveFolderFilter(cfg)
     || (cfg.filterModifiedPreset && cfg.filterModifiedPreset !== 'all');
 }
 
@@ -329,6 +313,7 @@ function _getFolderFilteredItems() {
   const text = String(cfg.filterText || '').trim().toLowerCase();
   const types = new Set(_folderFilterArray(cfg.filterTypes));
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
+  const folders = new Set(_folderFilterFolderKeys(cfg));
   return _folderItems.filter(item => {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
@@ -337,6 +322,7 @@ function _getFolderFilteredItems() {
     }
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
+    if (!_folderMatchesFolderFilter(item, folders)) return false;
     return _folderMatchesModifiedFilter(item, cfg);
   });
 }
@@ -345,19 +331,30 @@ function _folderFilterChoices() {
   const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
   const selectedTypes = _folderFilterArray(cfg.filterTypes);
   const selectedExts = _folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase());
+  const selectedFolders = _folderFilterFolderKeys(cfg);
   const typeMap = new Map();
   const extMap = new Map();
+  const folderMap = new Map();
   _folderItems.forEach(item => {
     const type = _folderItemTypeKey(item);
     if (type && !typeMap.has(type)) typeMap.set(type, _folderItemTypeLabel(type));
     const ext = _folderItemExt(item);
     if (ext && !extMap.has(ext)) extMap.set(ext, ext);
+    const memberships = _folderItemMemberships(item);
+    if (memberships.length > 1 || memberships.some(row => row.type === 'link')) {
+      memberships.forEach(row => {
+        const folder = _folderMembershipKey(row.folder);
+        if (folder && !folderMap.has(folder)) folderMap.set(folder, _folderMembershipFolderLabel(folder));
+      });
+    }
   });
   selectedTypes.forEach(type => { if (!typeMap.has(type)) typeMap.set(type, _folderItemTypeLabel(type)); });
   selectedExts.forEach(ext => { if (ext && !extMap.has(ext)) extMap.set(ext, ext); });
+  selectedFolders.forEach(folder => { if (folder && !folderMap.has(folder)) folderMap.set(folder, _folderMembershipFolderLabel(folder)); });
   return {
     types: Array.from(typeMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
     exts: Array.from(extMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
+    folders: Array.from(folderMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
   };
 }
 
@@ -373,6 +370,7 @@ function _clearFolderFilters() {
     filterText: '',
     filterTypes: [],
     filterExts: [],
+    filterFolders: [],
     filterModifiedPreset: 'all',
     filterModifiedFrom: '',
     filterModifiedTo: '',
@@ -393,8 +391,11 @@ function _updateFolderDisplayFilterButton(cfg) {
 function renderFolderGrid(opts) {
   const renderOpts = opts || {};
   const preserveSelectedPaths = new Set((renderOpts.preserveSelectedPaths || []).filter(Boolean));
+  const resetScrollTop = !!renderOpts.resetScrollTop;
   const container = document.getElementById('folder-grid');
+  const renderSeq = ++_folderRenderSeq;
   container.innerHTML = '';
+  if (resetScrollTop) container.scrollTop = 0;
   const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
   container.className = layoutMap[_folderLayout] || 'grid-layout';
   _installFolderBlankContextMenu(container);
@@ -415,7 +416,8 @@ function renderFolderGrid(opts) {
   }
 
   const dcfg = getFolderDisplayConfig();
-  const filteredItems = _getFolderFilteredItems();
+  if (_folderHasActiveFolderFilter(dcfg)) _folderEnsureMemberships(_folderItems, { rerender: true });
+  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems());
   _folderVisibleItems = filteredItems;
   _updateFolderDisplayFilterButton(dcfg);
   document.getElementById('folder-item-count').textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
@@ -424,6 +426,10 @@ function renderFolderGrid(opts) {
   const showSize = dcfg.showSize !== false;
   const showDate = dcfg.showDate !== false;
   const showType = dcfg.showType !== false;
+  const isListLayout = _folderLayout === 'list';
+  const showThumbForLayout = isListLayout || showThumb;
+  _folderConfigureListLayout(container, isListLayout);
+  if (isListLayout) _folderRenderListHeader(container);
 
   if (filteredItems.length === 0) {
     const empty = document.createElement('div');
@@ -433,7 +439,37 @@ function renderFolderGrid(opts) {
     return;
   }
 
-  filteredItems.forEach((item, idx) => {
+  let nextRenderIndex = 0;
+  const finishFolderGridRender = () => {
+    if (renderSeq !== _folderRenderSeq) return;
+    _syncFolderCheckboxes();
+    _updateFolderBulkBar();
+    if (preserveSelectedPaths.size > 0 && _folderSelected) {
+      const panelCfg = _getFvPanelCfg();
+      if ((panelCfg.previewVisible ?? true) || (panelCfg.detailVisible ?? true)) showFolderPreview(_folderSelected);
+    }
+
+    // ウォーターフォール: 全アイテム追加後にレイアウト計算 + 画像読み込み完了後に再計算（debounce）
+    if (_folderLayout === 'waterfall') {
+      _scheduleWaterfallLayout();
+      let _wfDebounceTimer = null;
+      const debouncedLayout = () => {
+        clearTimeout(_wfDebounceTimer);
+        _wfDebounceTimer = setTimeout(() => _scheduleWaterfallLayout(), 80);
+      };
+      container.querySelectorAll('img').forEach(img => {
+        if (!img.complete) img.onload = debouncedLayout;
+      });
+      _ensureWaterfallResizeObserver();
+    }
+  };
+  const renderFolderGridChunk = () => {
+    if (renderSeq !== _folderRenderSeq) return;
+    const fragment = document.createDocumentFragment();
+    const endIndex = Math.min(filteredItems.length, nextRenderIndex + _folderPanelRenderChunkSize(filteredItems.length));
+    for (; nextRenderIndex < endIndex; nextRenderIndex++) {
+      const item = filteredItems[nextRenderIndex];
+      const idx = nextRenderIndex;
     const el = document.createElement('div');
     el.className = 'fv-item';
     el.dataset.idx = idx;
@@ -463,6 +499,7 @@ function renderFolderGrid(opts) {
         _folderSelectedItems = _folderSelectedItems.filter(i => i !== item);
       }
       _folderSelected = _folderSelectedItems.length > 0 ? _folderSelectedItems[_folderSelectedItems.length - 1] : null;
+      _syncFolderSelectionToOutliner(_folderSelected);
       _updateFolderBulkBar();
       if (_folderSelectedItems.length > 1) showStatus(_folderSelectedItems.length + ' 件選択中');
     });
@@ -494,9 +531,13 @@ function renderFolderGrid(opts) {
       el.appendChild(lockBadge);
     }
 
-    if (showThumb) {
+    if (showThumbForLayout) {
       const thumb = document.createElement('div');
       thumb.className = 'fv-thumb';
+      if (isListLayout) {
+        thumb.style.gridColumn = '1';
+        thumb.style.gridRow = '1';
+      }
       const THUMB_TYPES = new Set(['image','video']);
       const SHELL_THUMB_TYPES = new Set(['3d','psd','clip','document']);
       const appendIconThumb = () => {
@@ -507,9 +548,19 @@ function renderFolderGrid(opts) {
       };
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
-        img.src = '/api/file-raw?path=' + encodeURIComponent(item.path);
+        img.src = _folderItemRawUrl(item);
         img.loading = 'lazy';
-        img.onerror = () => { const sp = document.createElement('span'); sp.className='fv-icon'; sp.innerHTML=fileTypeIcon(item.type); img.replaceWith(sp); };
+        img.onerror = () => {
+          if (!img.dataset.thumbFallback && !item?.external_reference) {
+            img.dataset.thumbFallback = '1';
+            img.src = _folderItemThumbnailUrl(item);
+            return;
+          }
+          const sp = document.createElement('span');
+          sp.className = 'fv-icon';
+          sp.innerHTML = fileTypeIcon(item.type);
+          img.replaceWith(sp);
+        };
         thumb.appendChild(img);
       } else if (SHELL_THUMB_TYPES.has(item.type)) {
         // Windows シェルサムネイルは起動直後の大量生成で固まるため、フォルダカードでは安定したアイコンを使う。
@@ -531,7 +582,9 @@ function renderFolderGrid(opts) {
       el.appendChild(thumb);
     }
 
-    if (showName) {
+    if (isListLayout) {
+      _folderAppendListCells(el, item);
+    } else if (showName) {
       const name = document.createElement('div');
       name.className = 'fv-name';
       name.textContent = item.name;
@@ -540,14 +593,14 @@ function renderFolderGrid(opts) {
       el.appendChild(name);
     }
 
-    const meta = document.createElement('div');
-    meta.className = 'fv-meta';
-    // リスト表示では表示設定に関わらず全メタデータを常に表示
-    const isList = _folderLayout === 'list';
-    if ((isList || showSize) && item.size != null) meta.appendChild(Object.assign(document.createElement('span'), {textContent: formatFileSize(item.size)}));
-    if ((isList || showDate) && item.modified) meta.appendChild(Object.assign(document.createElement('span'), {textContent: item.modified.substring(0, 16).replace('T', ' ')}));
-    if (isList || showType) meta.appendChild(Object.assign(document.createElement('span'), {textContent: FILE_TYPE_LABELS[item.type] || item.ext || ''}));
-    if (meta.childNodes.length > 0) el.appendChild(meta);
+    if (!isListLayout) {
+      const meta = document.createElement('div');
+      meta.className = 'fv-meta';
+      if (showSize && item.size != null) meta.appendChild(Object.assign(document.createElement('span'), {textContent: formatFileSize(item.size)}));
+      if (showDate && item.modified) meta.appendChild(Object.assign(document.createElement('span'), {textContent: item.modified.substring(0, 16).replace('T', ' ')}));
+      if (showType) meta.appendChild(Object.assign(document.createElement('span'), {textContent: FILE_TYPE_LABELS[item.type] || item.ext || ''}));
+      if (meta.childNodes.length > 0) el.appendChild(meta);
+    }
 
     // クリック: 選択（Ctrl=トグル追加、Shift=範囲選択）
     el.addEventListener('click', (e) => {
@@ -583,6 +636,7 @@ function renderFolderGrid(opts) {
         _folderSelectedItems = [item];
       }
       _folderSelected = item;
+      _syncFolderSelectionToOutliner(item);
       _syncFolderCheckboxes();
       _updateFolderBulkBar();
       { const _pc = _getFvPanelCfg(); if ((_pc.previewVisible ?? true) || (_pc.detailVisible ?? true)) showFolderPreview(item); }
@@ -635,6 +689,23 @@ function renderFolderGrid(opts) {
       }
       window._gbFolderViewDragPayload = null;
     });
+    el.addEventListener('dragover', (e) => {
+      if (!_folderCanAcceptLinkDrop(e, item)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'link';
+      el.classList.add('fv-link-drop');
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('fv-link-drop');
+    });
+    el.addEventListener('drop', async (e) => {
+      if (!_folderCanAcceptLinkDrop(e, item)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.remove('fv-link-drop');
+      await _folderCreateLinksFromDrop(e, item);
+    });
 
     // 右クリックメニュー
     el.oncontextmenu = (e) => {
@@ -642,29 +713,16 @@ function renderFolderGrid(opts) {
       showFolderItemContextMenu(e, item);
     };
 
-    container.appendChild(el);
-  });
-
-  _syncFolderCheckboxes();
-  _updateFolderBulkBar();
-  if (preserveSelectedPaths.size > 0 && _folderSelected) {
-    const panelCfg = _getFvPanelCfg();
-    if ((panelCfg.previewVisible ?? true) || (panelCfg.detailVisible ?? true)) showFolderPreview(_folderSelected);
-  }
-
-  // ウォーターフォール: 全アイテム追加後にレイアウト計算 + 画像読み込み完了後に再計算（debounce）
-  if (_folderLayout === 'waterfall') {
-    _scheduleWaterfallLayout();
-    let _wfDebounceTimer = null;
-    const debouncedLayout = () => {
-      clearTimeout(_wfDebounceTimer);
-      _wfDebounceTimer = setTimeout(() => _scheduleWaterfallLayout(), 80);
-    };
-    container.querySelectorAll('img').forEach(img => {
-      if (!img.complete) img.onload = debouncedLayout;
-    });
-    _ensureWaterfallResizeObserver();
-  }
+    fragment.appendChild(el);
+    }
+    container.appendChild(fragment);
+    if (nextRenderIndex < filteredItems.length) {
+      _folderScheduleRenderFrame(renderFolderGridChunk);
+      return;
+    }
+    finishFolderGridRender();
+  };
+  renderFolderGridChunk();
 }
 
 function _folderMenuItemLocked(item) {
@@ -689,6 +747,38 @@ async function _toggleFolderItemLock(item) {
     skipHighlight: true,
   });
   showStatus(_folderMenuItemLocked(item) ? '編集ロックしました' : '編集ロックを解除しました');
+}
+
+function _isPureRefFolderItem(item) {
+  return !!(item?.path && /\.pur$/i.test(String(item.path).split(/[?#]/)[0]));
+}
+
+function _folderParentPath(path) {
+  const normalized = String(path || '').replace(/\\/g, '/');
+  const index = normalized.lastIndexOf('/');
+  return index >= 0 ? normalized.slice(0, index) : '';
+}
+
+async function _convertPureRefFolderItemToBoard(item) {
+  if (!_isPureRefFolderItem(item)) return;
+  const baseName = String(item.name || item.path.split(/[\\/]/).pop() || 'PureRef').replace(/\.pur$/i, '') || 'PureRef';
+  try {
+    showStatus('PureRefをボードファイルに変換しています...');
+    const result = await apiPost('/external-import/pureref/import', {
+      path: item.path,
+      board_name: baseName,
+      save_dir: _folderParentPath(item.path),
+      save_root: 'source',
+    }, { silentError: true });
+    if (_folderPath) await _folderRefreshCurrentFolder();
+    if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
+    if (result?.board_path && typeof openBoard === 'function') {
+      openBoard(result.board_path.split('/').pop(), result.board_path, { fromExplorer: true });
+    }
+    showStatus(`PureRefをボードファイルに変換しました: ${result?.board_path || baseName}`);
+  } catch (err) {
+    showStatus('PureRefを変換できませんでした: ' + (err?.userMessage || err?.message || err), true);
+  }
 }
 
 function refreshVisibleFolderLockState() {
@@ -788,8 +878,11 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (!blankTarget) addItem('開く', () => openFolderItem(item), null, 'folderOpen');
   if (item.type === 'image') {
     const openSub = addSub('別の方法で開く');
-    openSub.item('ビューワーで開く', () => openViewer('/viewer?file=' + encodeURIComponent(item.path)));
+    openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)));
     openSub.item('ボードで開く', () => openImageInCanvas(item));
+  }
+  if (_isPureRefFolderItem(item)) {
+    addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
   if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
   if (item.type !== 'folder') addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');

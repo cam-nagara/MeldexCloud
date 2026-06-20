@@ -221,20 +221,27 @@ function _settingsCliProviderRows(config) {
     claude_code: 'Claude Code',
     gemini_cli: 'Gemini CLI',
   };
+  const defaultModels = {
+    codex: 'gpt-5.5',
+    claude_code: 'Claude Code',
+    gemini_cli: 'Gemini CLI',
+  };
   return order.map(key => {
     const item = providers[key] || {};
     const label = item.label || labels[key] || key;
     const command = item.command || (key === 'claude_code' ? 'claude' : key === 'gemini_cli' ? 'gemini' : 'codex');
+    const model = item.model || defaultModels[key] || label;
     const available = item.available !== false;
     const statusText = available ? '検出済み' : '未検出';
     const statusColor = available ? 'var(--accent)' : 'var(--red)';
     return `
-      <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(115px,1fr) minmax(120px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
+      <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
         <label class="gb-check" style="min-width:0;">
           <input type="checkbox" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-enabled" data-cli-chat-field="enabled" ${item.enabled === false ? '' : 'checked'}>
           <span>${_settingsCliEsc(label)}</span>
         </label>
         <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
+        <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(model)}" placeholder="${_settingsCliEsc(defaultModels[key] || label)}" title="CLIへ渡すモデル名">
         <span style="font-size:11px;color:${statusColor};white-space:nowrap;">${_settingsCliEsc(statusText)}</span>
       </div>`;
   }).join('');
@@ -283,7 +290,8 @@ async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
     if (!key) return;
     const enabled = row.querySelector('[data-cli-chat-field="enabled"]')?.checked !== false;
     const command = row.querySelector('[data-cli-chat-field="command"]')?.value?.trim() || '';
-    providers[key] = { enabled, command };
+    const model = row.querySelector('[data-cli-chat-field="model"]')?.value?.trim() || '';
+    providers[key] = { enabled, command, model };
   });
   const body = {
     cli_chat_enabled: document.getElementById('settings-cli-chat-enabled')?.checked !== false,

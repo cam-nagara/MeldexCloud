@@ -1,10 +1,12 @@
 /* タイムラインビュー専用の上書き */
 
 .tl-grid {
-  column-gap: 4px;
-  row-gap: 3px;
+  column-gap: 0;
+  row-gap: 0;
   padding: 2px 2px 4px;
   align-items: stretch;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
 }
 
 .tl-header-cell {
@@ -12,6 +14,15 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.tl-cell {
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 .tl-header-label {
@@ -55,7 +66,7 @@
 }
 
 .tl-header-cell.tl-col-header {
-  padding-right: 20px;
+  padding-right: 8px;
 }
 
 .tl-col-resize-handle {
@@ -81,7 +92,36 @@
 .tl-bar.tl-axis-colored {
   background: var(--tl-axis-bg);
   color: var(--tl-axis-fg);
-  border-color: var(--tl-axis-bg);
+}
+
+.tl-card,
+.tl-bar {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: 0;
+}
+
+.tl-card {
+  border-radius: 0;
+  margin: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.tl-bar {
+  align-self: stretch;
+  border-radius: 0;
+  margin: 0;
+  min-height: 0;
+  position: relative;
+  z-index: 4;
+}
+
+.tl-card.tl-axis-colored,
+.tl-bar.tl-axis-colored,
+.tl-card:hover {
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 .tl-card.tl-axis-colored .tl-card-prop-name,
@@ -140,4 +180,305 @@
   color: var(--fg);
   font-size: 13px;
   padding: 4px 0;
+}
+
+.tl-settings .tl-calendar-date-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.tl-calendar-date-controls {
+  display: grid;
+  grid-template-columns: 64px minmax(96px, 1fr) 54px;
+  gap: 4px;
+  align-items: center;
+}
+
+.tl-calendar-date-controls .gb-input,
+.tl-calendar-date-controls .gb-select {
+  min-width: 0;
+}
+
+.tl-calendar-date-time {
+  grid-column: span 3;
+}
+
+.tl-calendar-modal {
+  box-sizing: border-box;
+  width: min(700px, calc(100vw - 24px)) !important;
+  min-width: 0 !important;
+  max-width: 700px !important;
+  max-height: calc(100vh - 32px);
+  padding: 16px;
+  overflow: auto;
+}
+
+.tl-calendar-preset-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.tl-calendar-preset-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+.tl-calendar-preset-select-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.tl-calendar-preset-select-wrap::after {
+  content: "▼";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--fg2);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.tl-calendar-preset-select-wrap select {
+  display: block;
+  width: 100% !important;
+  padding-right: 30px;
+  appearance: none;
+}
+
+.tl-calendar-preset-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.tl-calendar-preset-actions button {
+  white-space: nowrap;
+}
+
+.tl-calendar-top-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(320px, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.tl-calendar-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.tl-calendar-fields label,
+.tl-calendar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+.tl-calendar-fields input,
+.tl-calendar-fields select,
+.tl-calendar-preset-row select,
+.tl-calendar-leap-fields input,
+.tl-calendar-leap-fields select,
+.tl-calendar-list input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--ui-h-sm, 28px);
+  background: var(--ui-bg-app, var(--bg));
+  color: var(--ui-fg-default, var(--fg));
+  border: 1px solid var(--ui-border, var(--border));
+  border-radius: var(--ui-radius-xs, 3px);
+  padding: 0 var(--ui-space-4, 8px);
+  font: inherit;
+}
+
+input.tl-number-input {
+  -moz-appearance: number-input;
+}
+
+input.tl-number-input::-webkit-outer-spin-button,
+input.tl-number-input::-webkit-inner-spin-button {
+  -webkit-appearance: auto;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+input.tl-number-input:hover::-webkit-outer-spin-button,
+input.tl-number-input:hover::-webkit-inner-spin-button,
+input.tl-number-input:focus::-webkit-outer-spin-button,
+input.tl-number-input:focus::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
+.tl-calendar-sections-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) minmax(240px, 0.8fr);
+  gap: 10px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.tl-calendar-section {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+.tl-calendar-side-stack {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.tl-calendar-section--units {
+  margin-top: 0;
+  max-width: none;
+}
+
+.tl-calendar-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.tl-calendar-section-head strong {
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.tl-calendar-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.tl-calendar-list-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  justify-content: start;
+}
+
+.tl-calendar-list-row--length {
+  grid-template-columns: minmax(130px, 1fr) 72px auto;
+}
+
+.tl-calendar-list-row label {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.tl-calendar-list-row label input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tl-calendar-list-row--length label input {
+  max-width: none;
+}
+
+.tl-calendar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  color: var(--fg);
+}
+
+.tl-calendar-check input {
+  width: auto;
+}
+
+.tl-calendar-leap-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.tl-calendar-leap-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--fg2);
+}
+
+.tl-calendar-row-remove {
+  white-space: nowrap;
+}
+
+.tl-calendar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.tl-calendar-actions-spacer {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .tl-calendar-preset-row,
+  .tl-calendar-top-grid,
+  .tl-calendar-fields,
+  .tl-calendar-sections-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tl-calendar-modal {
+    width: min(520px, calc(100vw - 16px)) !important;
+    padding: 12px;
+  }
+
+  .tl-calendar-list {
+    grid-template-columns: 1fr;
+  }
+
+  .tl-calendar-actions {
+    flex-wrap: wrap;
+  }
+
+  .tl-calendar-list-row,
+  .tl-calendar-list-row--length {
+    grid-template-columns: 1fr;
+  }
+
+  .tl-calendar-leap-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .tl-calendar-date-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .tl-calendar-date-time {
+    grid-column: auto;
+  }
 }

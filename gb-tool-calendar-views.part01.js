@@ -21,7 +21,7 @@ CalendarComponent.prototype._renderMonth = function() {
   const prevM = m === 0 ? 12 : m, prevY = m === 0 ? y - 1 : y;
   for (let i = firstDay - 1; i >= 0; i--) { const day = prevDays - i; const ds = `${prevY}-${String(prevM).padStart(2,'0')}-${String(day).padStart(2,'0')}`; html += this._monthDayCell(ds, day, ds === todayStr, true); }
   for (let d = 1; d <= daysInMonth; d++) { const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; html += this._monthDayCell(ds, d, ds === todayStr, false); }
-  const total = firstDay + daysInMonth, rem = (7 - total % 7) % 7;
+  const total = firstDay + daysInMonth, rem = Math.max(0, 42 - total);
   const nextM = m + 2 > 12 ? 1 : m + 2, nextY = m + 2 > 12 ? y + 1 : y;
   for (let i = 1; i <= rem; i++) { const ds = `${nextY}-${String(nextM).padStart(2,'0')}-${String(i).padStart(2,'0')}`; html += this._monthDayCell(ds, i, ds === todayStr, true); }
   html += '</div>';
@@ -30,9 +30,17 @@ CalendarComponent.prototype._renderMonth = function() {
   if (el._calClickHandler) el.removeEventListener('click', el._calClickHandler);
   el._calClickHandler = (e) => {
     const evEl = e.target.closest('.gb-cal-day-event');
+    const moreBtn = e.target.closest('[data-cal-event-more]');
+    if (moreBtn && evEl) {
+      e.preventDefault();
+      e.stopPropagation();
+      const eid = evEl.dataset.eventId;
+      if (eid && typeof this._showEventCardMenu === 'function') this._showEventCardMenu(moreBtn, eid);
+      return;
+    }
     if (evEl) { e.stopPropagation(); const eid = evEl.dataset.eventId; const tid = evEl.dataset.taskId; if (eid) this._openEventInPanel(eid); else if (tid) this._showTaskModal(tid); return; }
     const dayEl = e.target.closest('.gb-cal-day');
-    if (dayEl) this._onDayClick(dayEl.dataset.date);
+    if (dayEl) this._onDayClick(dayEl.dataset.date, dayEl);
   };
   el.addEventListener('click', el._calClickHandler);
   // 月表示イベントのdragstart（日付間D&D移動用）
@@ -111,6 +119,8 @@ function _calEventRange(ev) {
   let end = ev.end ? _calParseDateValue(ev.end) : null;
   if (ev.all_day || startIsDate || endIsDate) {
     if (!end || end <= start) end = _calDateAddDays(start, 1);
+    // 日付のみの終了日は「最終日を含む」扱い（保存慣例は包括的な終了日のため、表示境界は翌日0時）
+    else if (endIsDate) end = _calDateAddDays(end, 1);
   } else if (!end) {
     end = new Date(start.getTime() + 3600000);
   }
@@ -136,29 +146,78 @@ CalendarComponent.prototype._sanitizeEventColor = function(color) {
   if (!raw) return 'var(--cal-event-bg, var(--cal-accent, var(--accent)))';
   if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
   if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(raw)) return raw;
-  if (/^var\(--[-_a-zA-Z0-9]+\)$/.test(raw)) return raw;
+  if (/^var\(--[-_a-zA-Z0-9]+(?:\s*,\s*(?:#[0-9a-f]{3,8}|var\(--[-_a-zA-Z0-9]+\)))?\)$/i.test(raw)) return raw;
   return 'var(--cal-event-bg, var(--cal-accent, var(--accent)))';
+};
+
+CalendarComponent.prototype._eventSourceClass = function(ev) {
+  const source = String(ev?.calendar_source || '');
+  if (source === 'production-task') return ' gb-cal-production-task-event';
+  if (source === 'shift') return ' gb-cal-shift-event';
+  if (source === 'shift-break') return ' gb-cal-shift-break-event';
+  if (source === 'attendance') return ' gb-cal-attendance-event';
+  return '';
+};
+
+CalendarComponent.prototype._eventTitleContentHtml = function(ev) {
+  const source = String(ev?.calendar_source || '');
+  const iconName = source === 'production-task' ? 'hammer' : source === 'shift' ? 'calendarClock' : source === 'shift-break' ? 'coffee' : source === 'attendance' ? 'clock' : '';
+  const icon = iconName ? `<span class="gb-cal-event-source-icon">${lucide(iconName, 10)}</span>` : '';
+  return `${icon}<span class="gb-cal-event-title">${esc(ev?.title || '')}</span>`;
+};
+
+function _calMonthGroupKey(ev, dateStr) {
+  const source = String(ev?.calendar_source || '');
+  const baseId = String(ev?.external_id || ev?.id || '').replace(/^shift:/, '').split(':break:')[0];
+  if (source === 'shift' || source === 'shift-break') return `shift:${baseId || ev?.id || ''}:${dateStr}`;
+  if (source === 'attendance') return `attendance:${ev?.user || ev?.external_id || ev?.id || ''}:${dateStr}`;
+  return '';
+}
+
+CalendarComponent.prototype._monthDisplayEvents = function(dateStr, events) {
+  const rows = Array.isArray(events) ? events : [];
+  const shiftWorkKeys = new Set(rows
+    .filter(ev => String(ev?.calendar_source || '') === 'shift')
+    .map(ev => _calMonthGroupKey(ev, dateStr)));
+  const seenAttendance = new Set();
+  return rows.filter(ev => {
+    const source = String(ev?.calendar_source || '');
+    if (source === 'shift-break' && shiftWorkKeys.has(_calMonthGroupKey(ev, dateStr))) return false;
+    if (source === 'attendance') {
+      const key = _calMonthGroupKey(ev, dateStr);
+      if (seenAttendance.has(key)) return false;
+      seenAttendance.add(key);
+    }
+    return true;
+  });
+};
+
+CalendarComponent.prototype._eventCardMenuHtml = function() {
+  return `<button type="button" class="gb-cal-event-more" data-cal-event-more draggable="false" title="イベントメニュー" aria-label="イベントメニュー">${lucide('moreHorizontal', 10)}</button>`;
 };
 
 CalendarComponent.prototype._monthDayCell = function(dateStr, dayNum, isToday, isOther) {
   const dayEvents = this._events.filter(e => this._eventIntersectsDay(e, dateStr) && this._isCalVisible(e));
+  const monthEvents = this._monthDisplayEvents(dateStr, dayEvents);
   const dayTasks = this._tasks.filter(t => t.due_date === dateStr);
   const dow = this._parseLocalDate(dateStr).getDay();
   let html = `<div class="gb-cal-day${isToday?' gb-cal-today':''}${isOther?' gb-cal-other-month':''}" data-date="${dateStr}" data-cal-dow="${dow}">`;
   html += `<div class="gb-cal-day-num">${dayNum}</div>`;
-  dayEvents.forEach(e => {
+  monthEvents.forEach(e => {
     const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(e, 14) : '';
-    html += `<div class="gb-cal-day-event" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}"><span class="gb-cal-event-title">${esc(e.title)}</span>${avatars}</div>`;
+    const summaryClass = ['shift', 'attendance'].includes(String(e?.calendar_source || '')) ? ' gb-cal-month-summary-event' : '';
+    html += `<div class="gb-cal-day-event${summaryClass}${this._eventSourceClass(e)}" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}">${this._eventTitleContentHtml(e)}${this._eventCardMenuHtml()}${avatars}</div>`;
   });
   dayTasks.forEach(t => {
     const pc = {urgent:'var(--red)',high:'var(--orange)',medium:'var(--blue)',low:'var(--cal-control-bg, var(--bg3))'}[t.priority] || 'var(--cal-control-bg, var(--bg3))';
-    html += `<div class="gb-cal-day-event" data-task-id="${t.id}" style="background:${pc};color:var(--cal-event-fg, #fff);" title="${esc(t.title)}">${lucide('square', 10)} ${esc(t.title)}</div>`;
+    html += `<div class="gb-cal-day-event gb-cal-all-day-task" data-task-id="${t.id}" style="background:${pc};color:var(--cal-event-fg, #fff);" title="${esc(t.title)}">${lucide('checkSquare', 10)} ${esc(t.title)}</div>`;
   });
   return html + '</div>';
 };
 
-CalendarComponent.prototype._onDayClick = function(dateStr) {
+CalendarComponent.prototype._onDayClick = function(dateStr, anchorEl) {
   if (this._view === 'month') {
+    if (typeof this._handleShiftCalendarDayClick === 'function' && this._handleShiftCalendarDayClick(dateStr, anchorEl)) return;
     this._openEventInPanel(null, dateStr + 'T00:00', dateStr + 'T23:59', true);
   } else {
     this._date = this._parseLocalDate(dateStr); this.setView('day');
@@ -244,7 +303,7 @@ CalendarComponent.prototype._allDayStripHtml = function(dateStrs) {
     html += `<div class="gb-cal-all-day-cell" data-date="${dateStr}" style="min-height:30px;padding:2px;border-left:1px solid var(--cal-grid-line, var(--border));">`;
     this._allDayEventsForDay(dateStr).forEach(ev => {
       const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : '';
-      html += `<div class="gb-cal-day-event gb-cal-all-day-event" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}"><span class="gb-cal-event-title">${esc(ev.title || '')}</span>${avatars}</div>`;
+      html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml()}${avatars}</div>`;
     });
     html += '</div>';
   });
@@ -253,7 +312,16 @@ CalendarComponent.prototype._allDayStripHtml = function(dateStrs) {
 
 CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
   rootEl.querySelectorAll('.gb-cal-all-day-event[data-event-id]').forEach(evEl => {
-    evEl.addEventListener('click', (e) => { e.stopPropagation(); this._openEventInPanel(evEl.dataset.eventId); });
+    evEl.addEventListener('click', (e) => {
+      const moreBtn = e.target.closest('[data-cal-event-more]');
+      if (moreBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof this._showEventCardMenu === 'function') this._showEventCardMenu(moreBtn, evEl.dataset.eventId);
+        return;
+      }
+      e.stopPropagation(); this._openEventInPanel(evEl.dataset.eventId);
+    });
     evEl.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('application/x-cal-move', JSON.stringify({ id: evEl.dataset.eventId, startH: 0, allDay: true }));
       e.dataTransfer.effectAllowed = 'move';
@@ -354,7 +422,7 @@ CalendarComponent.prototype._renderWeek = function() {
     const d = new Date(start); d.setDate(d.getDate() + i);
     dateStrs.push(this._localDateStr(d));
   }
-  let html = this._allDayStripHtml(dateStrs) + '<div class="gb-cal-week"><div></div>';
+  let html = '<div class="gb-cal-timed-view">' + this._allDayStripHtml(dateStrs) + '<div class="gb-cal-week"><div></div>';
   for (let i = 0; i < 7; i++) {
     const d = new Date(start); d.setDate(d.getDate() + i);
     const ds = this._localDateStr(d);
@@ -368,7 +436,7 @@ CalendarComponent.prototype._renderWeek = function() {
       html += `<div class="gb-cal-week-cell" data-date="${this._localDateStr(d)}" data-hour="${h}"></div>`;
     }
   }
-  html += '</div>';
+  html += '</div></div>';
   el.innerHTML = html;
   for (let i = 0; i < 7; i++) {
     const d = new Date(start); d.setDate(d.getDate() + i);
@@ -383,14 +451,41 @@ CalendarComponent.prototype._renderWeek = function() {
 CalendarComponent.prototype._renderDay = function() {
   const el = this._contentEl;
   const ds = this._localDateStr(this._date);
-  let html = this._allDayStripHtml([ds]) + '<div style="display:grid;grid-template-columns:60px 1fr;">';
+  let html = this._allDayStripHtml([ds]) + '<div class="gb-cal-week gb-cal-day-grid" style="grid-template-columns:60px minmax(0,1fr);">';
   for (let h = 0; h < 24; h++) {
     html += `<div class="gb-cal-week-time">${h}:00</div>`;
     html += `<div class="gb-cal-week-cell" data-date="${ds}" data-hour="${h}"></div>`;
   }
-  html += '</div>';
+  html = '<div class="gb-cal-timed-view">' + html + '</div>';
   el.innerHTML = html;
   this._renderTimedEventSegmentsForDay(el, ds);
+  this._bindAllDayStripEvents(el);
+  this._initWeekDrag(el);
+  this._syncNowLineTimer();
+};
+
+// === 複数日表示 ===
+CalendarComponent.prototype._renderMultiDays = function() {
+  const el = this._contentEl;
+  const dateStrs = this._multiDayDateStrs();
+  const today = this._localDateStr();
+  const dayNames = ['日','月','火','水','木','金','土'];
+  let html = '<div class="gb-cal-timed-view">' + this._allDayStripHtml(dateStrs) + `<div class="gb-cal-week gb-cal-multi-day-grid" style="grid-template-columns:60px repeat(${dateStrs.length}, minmax(96px,1fr));">`;
+  html += '<div></div>';
+  dateStrs.forEach(ds => {
+    const d = this._parseLocalDate(ds);
+    const dow = d.getDay();
+    html += `<div class="gb-cal-week-header" data-cal-dow="${dow}" data-date="${ds}"${ds===today?' data-today="1"':''}>${dayNames[dow]} ${d.getMonth()+1}/${d.getDate()}</div>`;
+  });
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="gb-cal-week-time">${h}:00</div>`;
+    dateStrs.forEach(ds => {
+      html += `<div class="gb-cal-week-cell" data-date="${ds}" data-hour="${h}"></div>`;
+    });
+  }
+  html += '</div></div>';
+  el.innerHTML = html;
+  dateStrs.forEach(ds => this._renderTimedEventSegmentsForDay(el, ds));
   this._bindAllDayStripEvents(el);
   this._initWeekDrag(el);
   this._syncNowLineTimer();
@@ -399,7 +494,7 @@ CalendarComponent.prototype._renderDay = function() {
 // === イベントカード生成 ===
 CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, endH, layout) {
   const card = document.createElement('div');
-  card.className = 'gb-cal-week-event gb-cal-day-event';
+  card.className = 'gb-cal-week-event gb-cal-day-event' + this._eventSourceClass(ev);
   card.dataset.eventId = ev.id;
   card.dataset.calendarId = ev.calendar_id || '_calendar';
   card.style.background = this._sanitizeEventColor(ev.color);
@@ -413,9 +508,18 @@ CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, end
   card.style.left = (2 + offset) + 'px';
   card.style.right = rightReserve + 'px';
   card.style.zIndex = String(2 + lane);
-  card.innerHTML = `<span class="gb-cal-event-title">${esc(ev.title || '')}</span>${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : ''}`;
+  card.innerHTML = `${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml()}${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : ''}`;
   card.title = ev.title + '\n' + (ev.start||'').substring(11,16) + '–' + (ev.end||'').substring(11,16);
-  card.addEventListener('click', (e) => { e.stopPropagation(); this._openEventInPanel(ev.id); });
+  card.addEventListener('click', (e) => {
+    const moreBtn = e.target.closest('[data-cal-event-more]');
+    if (moreBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof this._showEventCardMenu === 'function') this._showEventCardMenu(moreBtn, ev.id);
+      return;
+    }
+    e.stopPropagation(); this._openEventInPanel(ev.id);
+  });
   // リサイズハンドル
   const resBot = document.createElement('div'); resBot.className = 'gb-cal-ev-resize-bottom';
   const resTop = document.createElement('div'); resTop.className = 'gb-cal-ev-resize-top';
@@ -476,6 +580,10 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
   cells.forEach(cell => {
     cell.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.gb-cal-week-event')) return;
+      if (self._selectedCalendar?.()?.source === 'shift') {
+        self._showStatus?.('シフトカレンダーは月表示で日付をクリックして追加してください', true);
+        return;
+      }
       e.preventDefault(); dragging = true;
       startDate = cell.dataset.date; startHour = parseInt(cell.dataset.hour);
       document.body.style.userSelect = 'none';
@@ -498,7 +606,16 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       if (preview) { preview.remove(); preview = null; }
       const endH = parseInt(cell.dataset.hour) + 1;
       const minH = Math.min(startHour, endH - 1), maxH = Math.max(startHour + 1, endH);
-      self._openEventInPanel(null, startDate + 'T' + String(minH).padStart(2,'0') + ':00', startDate + 'T' + String(maxH).padStart(2,'0') + ':00');
+      let endStr;
+      if (maxH >= 24) {
+        // 「T24:00」は日時入力欄で扱えないため、翌日0:00として渡す（月末・年末も Date 演算で処理）
+        const next = new Date(startDate + 'T00:00');
+        next.setDate(next.getDate() + 1);
+        endStr = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}T00:00`;
+      } else {
+        endStr = startDate + 'T' + String(maxH).padStart(2, '0') + ':00';
+      }
+      self._openEventInPanel(null, startDate + 'T' + String(minH).padStart(2,'0') + ':00', endStr);
     });
     // D&Dドロップ受け入れ
     cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.15)'; });
@@ -544,7 +661,7 @@ CalendarComponent.prototype._clearNowLineTimer = function() {
 };
 
 CalendarComponent.prototype._syncNowLineTimer = function() {
-  if (!['week', 'day'].includes(this._view)) {
+  if (!['week', 'multi', 'day'].includes(this._view)) {
     this._clearNowLineTimer?.();
     return;
   }
@@ -555,7 +672,7 @@ CalendarComponent.prototype._syncNowLineTimer = function() {
 
 CalendarComponent.prototype._updateNowLine = function() {
   const root = this._contentEl;
-  if (!root || !['week', 'day'].includes(this._view)) return;
+  if (!root || !['week', 'multi', 'day'].includes(this._view)) return;
   root.querySelectorAll('.gb-cal-now-line').forEach(el => el.remove());
   const now = new Date();
   const dateStr = this._localDateStr(now);
@@ -570,7 +687,7 @@ CalendarComponent.prototype._updateNowLine = function() {
   cell.appendChild(line);
 };
 
-// === タスクボード ===
+// === ToDoリスト ===
 CalendarComponent.prototype._renderTaskBoard = function() {
   this._clearNowLineTimer?.();
   const el = this._contentEl;
@@ -672,6 +789,55 @@ CalendarComponent.prototype._loadShifts = async function() {
 };
 
 // === ミニカレンダー ===
+CalendarComponent.prototype._miniDateRange = function(startStr, endStr) {
+  const start = this._parseLocalDate(startStr);
+  const end = this._parseLocalDate(endStr);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [endStr].filter(Boolean);
+  const dir = start <= end ? 1 : -1;
+  const out = [];
+  const cur = new Date(start);
+  while ((dir > 0 && cur <= end) || (dir < 0 && cur >= end)) {
+    out.push(this._localDateStr(cur));
+    cur.setDate(cur.getDate() + dir);
+  }
+  return dir > 0 ? out : out.reverse();
+};
+
+CalendarComponent.prototype._onMiniDayClick = function(dateStr, event) {
+  const previousDateStr = this._localDateStr(this._date);
+  const selected = this._selectedMiniDates || new Set();
+  if (event?.shiftKey) {
+    const anchor = this._lastMiniDateStr || this._selectedMiniDateList()[0] || previousDateStr;
+    this._selectedMiniDates = new Set(this._miniDateRange(anchor, dateStr));
+  } else if (event?.ctrlKey || event?.metaKey) {
+    if (!selected.size) selected.add(previousDateStr);
+    if (selected.has(dateStr)) selected.delete(dateStr);
+    else selected.add(dateStr);
+    if (!selected.size) selected.add(dateStr);
+    this._selectedMiniDates = selected;
+    this._lastMiniDateStr = dateStr;
+  } else {
+    selected.clear();
+    this._selectedMiniDates = selected;
+    this._lastMiniDateStr = dateStr;
+  }
+  let focusDateStr = dateStr;
+  const selectedList = this._selectedMiniDateList();
+  if (selectedList.length > 1) {
+    this._view = 'multi';
+  } else if (selectedList.length === 1) {
+    focusDateStr = selectedList[0];
+    this._selectedMiniDates.clear();
+  }
+  this._date = this._parseLocalDate(focusDateStr);
+  this._persistViewToTabState?.(this._view);
+  const viewSel = this.el?.querySelector?.('.gb-cal-view-select');
+  if (viewSel && viewSel.value !== this._view) viewSel.value = this._view;
+  this._syncMultiDayControls?.();
+  this._loadEvents().then(() => this._render());
+  this._renderMiniCal();
+};
+
 CalendarComponent.prototype._renderMiniCal = function() {
   const y = this._date.getFullYear(), m = this._date.getMonth();
   this._miniTitleEl.textContent = `${y}年${m+1}月`;
@@ -679,32 +845,83 @@ CalendarComponent.prototype._renderMiniCal = function() {
   const firstDay = (rawFirst - this._startDay + 7) % 7;
   const dim = new Date(y, m+1, 0).getDate();
   const todayStr = this._localDateStr(), selStr = this._localDateStr(this._date);
+  const selectedDates = new Set(this._selectedMiniDateList());
   let html = this._getDayNames().map(d => `<div style="font-size:10px;color:var(--cal-muted-fg, var(--fg2));padding:2px;">${d}</div>`).join('');
   for (let i = 0; i < firstDay; i++) html += '<div></div>';
   for (let d = 1; d <= dim; d++) {
     const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const cls = [ds===todayStr?'gb-cal-today':'',ds===selStr?'gb-cal-selected':''].filter(Boolean).join(' ');
+    const isSelected = selectedDates.size ? selectedDates.has(ds) : ds === selStr;
+    const cls = [ds===todayStr?'gb-cal-today':'',isSelected?'gb-cal-selected':''].filter(Boolean).join(' ');
     html += `<div class="gb-cal-mini-day ${cls}" data-date="${ds}">${d}</div>`;
   }
   this._miniGridEl.innerHTML = html;
   this._miniGridEl.querySelectorAll('.gb-cal-mini-day').forEach(el => {
-    el.addEventListener('click', () => { this._date = this._parseLocalDate(el.dataset.date); this._loadEvents().then(() => this._render()); this._renderMiniCal(); });
+    el.addEventListener('click', (event) => this._onMiniDayClick(el.dataset.date, event));
   });
 };
 
-// === 今日のタスク ===
+// === 今日のToDo ===
 CalendarComponent.prototype._renderTodayTasks = function() {
   const todayStr = this._localDateStr();
   const tasks = this._tasks.filter(t => t.due_date === todayStr || (t.status !== 'done' && t.status !== 'backlog'));
   const el = this._todayTasksEl;
-  if (!tasks.length) { el.innerHTML = '<div style="color:var(--cal-muted-fg, var(--fg2));">タスクなし</div>'; return; }
-  el.innerHTML = tasks.slice(0, 10).map(t =>
-    `<div class="gb-cal-today-task-item" data-task-id="${t.id}" style="padding:4px 0;border-bottom:1px solid var(--cal-grid-line, var(--border));cursor:pointer;">` +
-    `<span class="gb-cal-task-priority ${t.priority||'medium'}" style="margin-right:4px;">${(t.priority||'M')[0].toUpperCase()}</span>${esc(t.title)}</div>`
-  ).join('');
-  el.querySelectorAll('.gb-cal-today-task-item').forEach(item => {
-    item.addEventListener('click', () => this._showTaskModal(item.dataset.taskId));
-  });
+  if (!tasks.length) {
+    el.innerHTML = '<div style="color:var(--cal-muted-fg, var(--fg2));">ToDoなし</div>';
+  } else {
+    el.innerHTML = tasks.slice(0, 10).map(t =>
+      `<div class="gb-cal-today-task-item" data-task-id="${t.id}" style="padding:4px 0;border-bottom:1px solid var(--cal-grid-line, var(--border));cursor:pointer;">` +
+      `<span class="gb-cal-task-priority ${t.priority||'medium'}" style="margin-right:4px;">${(t.priority||'M')[0].toUpperCase()}</span>${esc(t.title)}</div>`
+    ).join('');
+    el.querySelectorAll('.gb-cal-today-task-item').forEach(item => {
+      item.addEventListener('click', () => this._showTaskModal(item.dataset.taskId));
+    });
+  }
+  this._renderProductionTodayTasks?.(el, todayStr);
+};
+
+CalendarComponent.prototype._renderProductionTodayTasks = async function(container, todayStr) {
+  if (!container || !window.MeldexProductionApi?.list) return;
+  const seq = (this._productionTodaySeq || 0) + 1;
+  this._productionTodaySeq = seq;
+  container.querySelector('.gb-cal-production-today-section')?.remove();
+  const user = String(this._getUser?.() || '').trim();
+  if (!user) return;
+  const plannedOnToday = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const [startRaw, endRaw] = text.includes('|') ? text.split('|', 2) : [text, text];
+    const start = String(startRaw || '').slice(0, 10);
+    const end = String(endRaw || startRaw || '').slice(0, 10);
+    return start <= todayStr && todayStr <= (end || start);
+  };
+  try {
+    const data = await window.MeldexProductionApi.list('タスクリスト', { limit: 1000 });
+    if (this._productionTodaySeq !== seq) return;
+    const rows = (data.rows || []).filter(row => {
+      const props = row.properties || {};
+      const assignees = String(props['担当者'] || '').split(/[,\n、]/).map(v => v.trim()).filter(Boolean);
+      return assignees.includes(user) && plannedOnToday(props['作業予定日時']);
+    }).slice(0, 8);
+    if (!rows.length) return;
+    const section = document.createElement('div');
+    section.className = 'gb-cal-production-today-section';
+    const heading = document.createElement('div');
+    heading.className = 'gb-cal-production-today-heading';
+    heading.textContent = '自分のタスク';
+    section.appendChild(heading);
+    rows.forEach(row => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'gb-cal-production-today-task';
+      item.textContent = row.name || 'タスク';
+      item.title = item.textContent;
+      item.addEventListener('click', () => {
+        if (row.path && typeof openPage === 'function') openPage(row.name || 'タスク', row.path);
+      });
+      section.appendChild(item);
+    });
+    container.appendChild(section);
+  } catch {}
 };
 
 // === カレンダーリスト ===
@@ -821,7 +1038,7 @@ CalendarComponent.prototype._bindSidebarResize = function() {
 // === アラーム ===
 CalendarComponent.prototype._checkAlarms = async function() {
   try {
-    const alerts = await apiFetch('/cal/alerts?minutes_ahead=2&user=' + encodeURIComponent(this._getUser()));
+    const alerts = await apiFetch('/cal/alerts?minutes_ahead=2&lookback_minutes=1440&user=' + encodeURIComponent(this._getUser()));
     alerts.forEach(ev => {
       const key = ev.id + ev._alert_time;
       if (this._alertedIds.has(key)) return;
@@ -939,13 +1156,13 @@ CalendarComponent.prototype._closeRightPanel = function() {
 
 CalendarComponent._recParse = function(ev) { try { return ev?.recurrence ? (typeof ev.recurrence === 'string' ? JSON.parse(ev.recurrence) : ev.recurrence) : {}; } catch { return {}; } };
 
-// === タスクモーダル ===
+// === ToDoモーダル ===
 CalendarComponent.prototype._showTaskModal = function(editId, defaultStatus) {
   const t = editId ? this._tasks.find(x => x.id === editId) : null;
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
   const sts = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
   const pris = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
-  o.innerHTML = `<div class="gb-cal-modal" style="min-width:450px;"><h3>${t?'タスク編集':'新規タスク'}</h3>
+  o.innerHTML = `<div class="gb-cal-modal" style="min-width:450px;"><h3>${t?'ToDo編集':'新規ToDo'}</h3>
 <div class="field"><label>タイトル</label><input class="tk-title" value="${esc(t?.title||'')}"></div>
 <div style="display:flex;gap:8px;">
   <div class="field" style="flex:1;"><label>ステータス</label><select class="tk-status">${sts.map(([v,l])=>`<option value="${v}" ${(t?.status||defaultStatus||'todo')===v?'selected':''}>${l}</option>`).join('')}</select></div>

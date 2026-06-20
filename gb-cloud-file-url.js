@@ -10,8 +10,29 @@
     return window.MeldexRuntimeAdapter;
   }
 
-  function _normalizePath(path) {
-    return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
+  function _normalizePath(path, options) {
+    const opts = options || {};
+    let normalized = String(path || '').replace(/\\/g, '/').trim();
+    if (!normalized) return '';
+    if (!opts.preserveAbsolute) {
+      return normalized.replace(/^\/+/, '').replace(/\/+/g, '/');
+    }
+    if (/^[a-zA-Z]:\//.test(normalized)) {
+      return normalized.replace(/\/+/g, '/');
+    }
+    if (normalized.startsWith('//')) {
+      const body = normalized.slice(2).replace(/\/+/g, '/');
+      return '//' + body;
+    }
+    return normalized.replace(/\/+/g, '/');
+  }
+
+  function _normalizeLocalPath(path) {
+    return _normalizePath(path, { preserveAbsolute: !_runtime()?.isDropboxMode?.() });
+  }
+
+  function _isAppRelativeUrl(raw) {
+    return /^\/(?:api|viewer(?:\.html)?|pdf-viewer(?:\.html)?|slideshow(?:\.html)?|Meldex(?:\.html)?|Meldex-dev(?:\.html)?|vendor|assets|data|icons)(?:\/|\?|#|$)/i.test(raw);
   }
 
   function _looksLikeFileRawUrl(value) {
@@ -27,27 +48,27 @@
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) {
       try {
         const parsed = new URL(raw, document.baseURI || window.location.href);
-        return _normalizePath(parsed.searchParams.get('path') || '');
+        return _normalizeLocalPath(parsed.searchParams.get('path') || '');
       } catch {
         const match = /[?&]path=([^&#]+)/.exec(raw);
         if (match) {
-          try { return _normalizePath(decodeURIComponent(match[1])); } catch {}
+          try { return _normalizeLocalPath(decodeURIComponent(match[1])); } catch {}
         }
       }
     }
     if (/^(https?:|data:|blob:)/i.test(raw)) return '';
-    if (raw.startsWith('/')) return '';
-    return _normalizePath(raw);
+    if (raw.startsWith('/') && _isAppRelativeUrl(raw)) return '';
+    return _normalizeLocalPath(raw);
   }
 
   function _isDirectUrl(value) {
     const raw = String(value || '').trim();
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) return false;
-    return /^(https?:|data:|blob:)/i.test(raw) || raw.startsWith('/');
+    return /^(https?:|data:|blob:)/i.test(raw) || (raw.startsWith('/') && _isAppRelativeUrl(raw));
   }
 
   function _fallbackRawUrl(path) {
-    const normalized = _normalizePath(path);
+    const normalized = _normalizeLocalPath(path);
     if (!normalized) return '';
     return window.MeldexResourceUrl?.fileRaw
       ? window.MeldexResourceUrl.fileRaw(normalized)
@@ -55,17 +76,24 @@
   }
 
   function _mimeFromPath(path) {
-    const ext = _normalizePath(path).split('.').pop().toLowerCase();
+    const ext = _normalizeLocalPath(path).split('.').pop().toLowerCase();
     return {
       png: 'image/png',
+      apng: 'image/apng',
       jpg: 'image/jpeg',
       jpeg: 'image/jpeg',
+      jpe: 'image/jpeg',
+      jfif: 'image/jpeg',
       gif: 'image/gif',
       webp: 'image/webp',
       svg: 'image/svg+xml',
       bmp: 'image/bmp',
       avif: 'image/avif',
       ico: 'image/x-icon',
+      tif: 'image/tiff',
+      tiff: 'image/tiff',
+      heic: 'image/heic',
+      heif: 'image/heif',
       mp4: 'video/mp4',
       webm: 'video/webm',
       mov: 'video/quicktime',
@@ -194,7 +222,7 @@
   }
 
   function _clearCachePath(path, isFolder) {
-    const normalized = _normalizePath(path);
+    const normalized = _normalizeLocalPath(path);
     Object.keys(CACHE).forEach((key) => {
       if (key === normalized || (isFolder && key.startsWith(normalized + '/'))) {
         const url = CACHE[key]?.url;
@@ -305,8 +333,8 @@
   }
 
   PATH_MUTATION_HOOKS.push(async (event) => {
-    const oldPath = _normalizePath(event?.oldPath || event?.path || '');
-    const newPath = _normalizePath(event?.newPath || '');
+    const oldPath = _normalizeLocalPath(event?.oldPath || event?.path || '');
+    const newPath = _normalizeLocalPath(event?.newPath || '');
     if (!oldPath) return;
     if (event?.action === 'delete' || !newPath) {
       _clearCachePath(oldPath, !!event?.isFolder);

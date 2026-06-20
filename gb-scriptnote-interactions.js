@@ -34,6 +34,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._insertRuby();
         return true;
       case 'scenario.search':
+      case 'scenario.replace':
         return this._runSearchShortcut();
       case 'scenario.deselectAll':
         return this._runDeselectAllShortcut();
@@ -227,10 +228,16 @@ Object.assign(ScriptNoteEditor.prototype, {
     const focusId = this.doc.rows[focusIdx].id;
     this._render();
     this._markDirty({ skipUndo: true });
-    requestAnimationFrame(() => {
+    const focusDeletedNeighbor = () => {
       const nextEl = this.host?.querySelector(`.sn2-row[data-row-id="${focusId}"] .sn2-text`);
-      if (nextEl) this._focusText(nextEl, 'start');
-    });
+      if (nextEl) {
+        this._focusText(nextEl, 'start');
+        document.dispatchEvent(new Event('selectionchange'));
+        if (this._caretSelChangeHandler) this._caretSelChangeHandler();
+      }
+    };
+    focusDeletedNeighbor();
+    requestAnimationFrame(focusDeletedNeighbor);
     return true;
   },
 
@@ -502,7 +509,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       const dx = e.clientX - panStartX;
       const dy = e.clientY - panStartY;
       if (!panMoved && Math.abs(dx) + Math.abs(dy) > 3) panMoved = true;
-      panSc.scrollLeft = panOrigSL - dx;
+      if (panSc.classList.contains('sn2-vertical') && panSc.classList.contains('sn2-wrap')) {
+        panSc.scrollLeft = 0;
+      } else {
+        panSc.scrollLeft = panOrigSL - dx;
+      }
       panSc.scrollTop = panOrigST - dy;
     });
 

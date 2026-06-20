@@ -223,8 +223,9 @@ async function loadRpStickyList() {
     e.preventDefault();
     startX = e.clientX;
     startW = panel.offsetWidth;
-    // ドラッグ開始時に最大幅を固定（振動防止）
-    maxW = document.getElementById('main-area').offsetWidth - 300;
+    // ドラッグ開始時に最大幅を固定（振動防止）。#main-area 不在時は window 幅で代替
+    const mainArea = document.getElementById('main-area');
+    maxW = (mainArea ? mainArea.offsetWidth : window.innerWidth) - 300;
     handle.classList.add('dragging');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';

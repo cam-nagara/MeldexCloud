@@ -1,3 +1,9 @@
+    };
+  }
+  const pane = GBLayout.findNode?.(GBLayout.root, resolvedPaneId)?.node || null;
+  if (!pane) {
+    return {
+      kind: 'legacy',
       paneId: null,
       history: _legacyNavHistory,
       get index() { return _legacyNavIndex; },
@@ -81,13 +87,13 @@ function _navPushWithViewState(ctx, entityName) {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const cfg = getDbViewConfig(dbPath);
-  const viewMode = getCurrentViewMode(dbPath);
+  const viewMode = getCurrentViewMode(dbPath, { ctx });
   const container = _getDbViewScrollContainer(ctx, viewMode);
   _forcedNavPush({
     type: 'pivot',
     path: dbPath,
     label: dbPath.split('/').pop() || dbPath,
-    viewIdx: cfg.currentViewIdx,
+    viewIdx: Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx,
     scrollState: {
       scrollLeft: container?.scrollLeft || 0,
       scrollTop: container?.scrollTop || 0,
@@ -556,7 +562,9 @@ window.addEventListener('mousedown', (e) => {
 window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
 window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, true);
 
-// DB表示設定（DBパスごとにlocalStorageで永続化）
+// DB表示設定（シートメタデータを正、localStorageを即時キャッシュとして使う）
+const _dbViewConfigBackendSaveTimers = new Map();
+
 function getDbViewConfigStorageKey(dbPath) {
   const fileId = _pathToFileId(dbPath);
   return 'dbViewConfig:' + (fileId || dbPath || '');
@@ -580,6 +588,12 @@ function _cloneDbViewArray(value) {
 function _cloneDbViewObject(value) {
   return _isDbViewPlainObject(value) ? _cloneDbViewValue(value, {}) : {};
 }
+function _hasDbViewArrayState(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+function _hasDbViewObjectState(value) {
+  return _isDbViewPlainObject(value) && Object.keys(value).length > 0;
+}
 function _normalizeDbViewModeValue(mode) {
   const value = String(mode || '').trim();
   return ['pivot', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
@@ -594,11 +608,20 @@ function _normalizeDbTimelineTypeSpecific(timeline) {
     rowProp: String(src.rowProp || '_entity'),
     scale: String(src.scale || 'day'),
     direction: String(src.direction || 'horizontal'),
+    displayStart: String(src.displayStart || ''),
+    displayEnd: String(src.displayEnd || ''),
+    timeStepMinutes: Math.max(1, Math.round(Number(src.timeStepMinutes || 1) || 1)),
+    calendarSystemId: String(src.calendarSystemId || 'gregorian'),
     ...src,
   };
   out.colWidths = _cloneDbViewObject(src.colWidths);
   out.rowHeights = _cloneDbViewObject(src.rowHeights);
   out.cardProps = _cloneDbViewArray(src.cardProps);
+  out.calendarSystems = _cloneDbViewArray(src.calendarSystems);
+  out.displayStart = String(out.displayStart || '');
+  out.displayEnd = String(out.displayEnd || '');
+  out.timeStepMinutes = Math.max(1, Math.round(Number(out.timeStepMinutes || 1) || 1));
+  out.calendarSystemId = String(out.calendarSystemId || 'gregorian');
   return out;
 }
 function _makeLegacyDbSavedView(cfg) {
@@ -690,15 +713,13 @@ function _normalizeSavedDbViewForV2(view, cfg, index) {
   return v;
 }
 function _hasLegacyDbViewState(cfg) {
-  const hasArray = (value) => Array.isArray(value) && value.length > 0;
-  const hasObject = (value) => _isDbViewPlainObject(value) && Object.keys(value).length > 0;
-  return hasArray(cfg.hiddenCols)
-    || hasArray(cfg.pinnedCols)
-    || hasArray(cfg.colOrder)
-    || hasArray(cfg.advancedFilters)
-    || hasObject(cfg.conditionalColors)
-    || hasObject(cfg.countTypes)
-    || hasObject(cfg.colWidths)
+  return _hasDbViewArrayState(cfg.hiddenCols)
+    || _hasDbViewArrayState(cfg.pinnedCols)
+    || _hasDbViewArrayState(cfg.colOrder)
+    || _hasDbViewArrayState(cfg.advancedFilters)
+    || _hasDbViewObjectState(cfg.conditionalColors)
+    || _hasDbViewObjectState(cfg.countTypes)
+    || _hasDbViewObjectState(cfg.colWidths)
     || !!cfg.conditionalFormat
     || !!cfg.groupBy
     || !!cfg.kanbanGroupBy
@@ -713,6 +734,67 @@ function _hasLegacyDbViewState(cfg) {
     || cfg.entityColumnPinned === false
     || (cfg.thumbnailSize && cfg.thumbnailSize !== 'small')
     || (cfg.currentViewMode && cfg.currentViewMode !== 'pivot');
+}
+function _hasDbViewMeaningfulValue(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (_isDbViewPlainObject(value)) return Object.values(value).some(_hasDbViewMeaningfulValue);
+  return value !== null && value !== undefined && value !== '' && value !== false;
+}
+function _hasMeaningfulDbTimelineState(timeline) {
+  if (!_isDbViewPlainObject(timeline)) return false;
+  if (String(timeline.timeProp || '')) return true;
+  if (String(timeline.endProp || '')) return true;
+  if (String(timeline.rowProp || '_entity') !== '_entity') return true;
+  if (String(timeline.scale || 'day') !== 'day') return true;
+  if (String(timeline.direction || 'horizontal') !== 'horizontal') return true;
+  if (String(timeline.displayStart || '')) return true;
+  if (String(timeline.displayEnd || '')) return true;
+  if (Math.max(1, Math.round(Number(timeline.timeStepMinutes || 1) || 1)) !== 1) return true;
+  if (String(timeline.calendarSystemId || 'gregorian') !== 'gregorian') return true;
+  if (_hasDbViewObjectState(timeline.colWidths)) return true;
+  if (_hasDbViewObjectState(timeline.rowHeights)) return true;
+  if (_hasDbViewArrayState(timeline.cardProps)) return true;
+  if (_hasDbViewArrayState(timeline.calendarSystems)) return true;
+  const defaults = new Set([
+    'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
+    'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
+  ]);
+  return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
+}
+function _hasMeaningfulDbSavedViewState(view, index) {
+  if (!_isDbViewPlainObject(view)) return false;
+  const viewMode = _normalizeDbViewModeValue(view.viewMode || 'pivot');
+  if (viewMode !== 'pivot') return true;
+  const defaultName = typeof _defaultDbSavedViewName === 'function'
+    ? _defaultDbSavedViewName(viewMode, index)
+    : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
+  const name = String(view.name || '').trim();
+  if (name && name !== defaultName) return true;
+  if (_hasDbViewArrayState(view.hiddenCols) || _hasDbViewArrayState(view.pinnedCols)) return true;
+  if (_hasDbViewArrayState(view.colOrder) || _hasDbViewObjectState(view.colOrder)) return true;
+  if (_hasDbViewArrayState(view.advancedFilters)) return true;
+  if (view.conditionalFormat === true || _hasDbViewObjectState(view.conditionalColors)) return true;
+  if (view.filter && view.filter !== 'disabled') return true;
+  if (_hasDbViewMeaningfulValue(view.sortConfig) || _hasDbViewMeaningfulValue(view.manualOrder)) return true;
+  if (view.showFooter === true || view.entityColumnPinned === false) return true;
+  if (_hasDbViewObjectState(view.countTypes) || _hasDbViewObjectState(view.colWidths)) return true;
+  if (view.thumbnailSize && view.thumbnailSize !== 'small') return true;
+  const typeSpecific = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
+  if (typeSpecific.pivot?.groupBy) return true;
+  if (typeSpecific.kanban?.groupBy && typeSpecific.kanban.groupBy !== '_status') return true;
+  if (_hasDbViewObjectState(typeSpecific.calendar?.mapping)) return true;
+  if (_hasMeaningfulDbTimelineState(typeSpecific.timeline)) return true;
+  if (_hasDbViewObjectState(typeSpecific.chart) || _hasDbViewObjectState(typeSpecific.graph)) return true;
+  return typeSpecific.form?.formConfig != null;
+}
+function _hasMeaningfulDbViewConfigState(cfg) {
+  if (!_isDbViewPlainObject(cfg)) return false;
+  if (_hasDbViewArrayState(cfg.deletedProps)) return true;
+  if (_hasLegacyDbViewState(cfg)) return true;
+  const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
+  if (views.length > 1) return true;
+  if (Number.isInteger(cfg.currentViewIdx) && cfg.currentViewIdx > 0) return true;
+  return views.some((view, index) => _hasMeaningfulDbSavedViewState(view, index));
 }
 function _migrateLegacyViewConfig(dbPath, cfg) {
   const config = _isDbViewPlainObject(cfg) ? cfg : {};
@@ -752,6 +834,52 @@ function _migrateLegacyViewConfig(dbPath, cfg) {
 function _persistMigratedDbViewConfig(dbPath, cfg) {
   try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
 }
+function _sanitizeDbViewConfigForBackend(cfg) {
+  const cleaned = _cloneDbViewObject(cfg);
+  // プロパティ型は property_types として別保存される。重複保存すると新旧形式がずれやすい。
+  if (Object.prototype.hasOwnProperty.call(cleaned, 'propertyTypes')) delete cleaned.propertyTypes;
+  return cleaned;
+}
+function _hasLocalDbViewConfigCache(dbPath) {
+  const fileId = _pathToFileId(dbPath);
+  const keys = [];
+  if (fileId) keys.push('dbViewConfig:' + fileId);
+  keys.push('dbViewConfig:' + (dbPath || ''));
+  return [...new Set(keys)].some((key) => {
+    try {
+      const value = localStorage.getItem(key);
+      if (value == null || String(value).trim() === '') return false;
+      return _hasMeaningfulDbViewConfigState(JSON.parse(value));
+    } catch {
+      return false;
+    }
+  });
+}
+function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
+  if (!dbPath || typeof apiPut !== 'function') return Promise.resolve(false);
+  const payload = _sanitizeDbViewConfigForBackend(cfg);
+  const key = String(dbPath || '');
+  const run = () => apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
+    .then(() => true)
+    .catch((error) => {
+      console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+      return false;
+    });
+  if (_dbViewConfigBackendSaveTimers.has(key)) {
+    clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
+    _dbViewConfigBackendSaveTimers.delete(key);
+  }
+  if (options.immediate === true) return run();
+  const timer = setTimeout(() => {
+    _dbViewConfigBackendSaveTimers.delete(key);
+    run();
+  }, 180);
+  _dbViewConfigBackendSaveTimers.set(key, timer);
+  return Promise.resolve(true);
+}
+function _hasPendingDbViewConfigBackendSave(dbPath) {
+  return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
+}
 function getDbViewConfig(dbPath) {
   const fileId = _pathToFileId(dbPath);
   let cfg = {};
@@ -770,131 +898,3 @@ function getDbViewConfig(dbPath) {
 }
 function _dbViewConfigHistoryScope(dbPath) {
   const fileId = _pathToFileId(dbPath);
-  if (fileId) return 'db:' + fileId;
-  if (dbPath) return 'db:' + String(dbPath).replace(/\\/g, '/');
-  return (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
-}
-function _refreshDbViewConfigAfterHistory(dbPath) {
-  if (!dbPath || state.currentDbPath !== dbPath) return;
-  const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
-  if (typeof selectDatabase === 'function') {
-    Promise.resolve(selectDatabase(dbPath, ctx, {
-      silent: true,
-      skipRecent: true,
-      skipNavPush: true,
-      skipSaveLastView: true,
-      skipAutoVersion: true,
-    })).catch(() => {});
-  } else if (typeof renderPivot === 'function') {
-    renderPivot(ctx);
-  }
-}
-function captureDbViewConfigHistory(dbPath) {
-  if (typeof captureLocalStorageSettings !== 'function') return null;
-  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-    && isLocalStorageSettingsHistorySuppressed()) return null;
-  return captureLocalStorageSettings([getDbViewConfigStorageKey(dbPath)]);
-}
-function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, detail, onRestore) {
-  if (!beforeSnapshot || !afterSnapshot || typeof historyPush !== 'function'
-    || typeof restoreLocalStorageSettings !== 'function'
-    || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
-  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-    && isLocalStorageSettingsHistorySuppressed()) return false;
-  const snapshots = _normalizeLocalStorageSettingsSnapshots(beforeSnapshot, afterSnapshot);
-  let beforeKey = '';
-  let afterKey = '';
-  try {
-    beforeKey = JSON.stringify(snapshots.before);
-    afterKey = JSON.stringify(snapshots.after);
-  } catch {}
-  if (beforeKey && beforeKey === afterKey) return false;
-  const refresh = typeof onRestore === 'function'
-    ? onRestore
-    : () => _refreshDbViewConfigAfterHistory(dbPath);
-  historyPush(
-    label || 'シート表示設定',
-    () => restoreLocalStorageSettings(snapshots.before, refresh),
-    () => restoreLocalStorageSettings(snapshots.after, refresh),
-    _dbViewConfigHistoryScope(dbPath),
-    detail || ''
-  );
-  return true;
-}
-function withDbViewConfigHistory(dbPath, label, mutator, detail, onRestore) {
-  const before = captureDbViewConfigHistory(dbPath);
-  const result = typeof mutator === 'function' ? mutator() : undefined;
-  const after = captureDbViewConfigHistory(dbPath);
-  pushDbViewConfigHistory(dbPath, label, before, after, detail, onRestore);
-  return result;
-}
-function saveDbViewConfig(dbPath, cfg, options = {}) {
-  const key = getDbViewConfigStorageKey(dbPath);
-  const label = options.historyLabel || options.label || '';
-  const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
-  localStorage.setItem(key, JSON.stringify(cfg || {}));
-  if (label && options.skipHistory !== true) {
-    pushDbViewConfigHistory(
-      dbPath,
-      label,
-      before,
-      captureDbViewConfigHistory(dbPath),
-      options.historyDetail || options.detail || '',
-      options.onRestore
-    );
-  }
-}
-function _getCurrentDbViewConfigEntryFromConfig(cfg) {
-  const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
-  if (views.length === 0) return null;
-  const rawIdx = Number.isInteger(cfg.currentViewIdx) ? cfg.currentViewIdx : 0;
-  const idx = rawIdx >= 0 && rawIdx < views.length ? rawIdx : 0;
-  return views[idx] || null;
-}
-function getCurrentDbViewConfigEntry(dbPath) {
-  return _getCurrentDbViewConfigEntryFromConfig(getDbViewConfig(dbPath));
-}
-function getCurrentViewMode(dbPath) {
-  return getCurrentDbViewConfigEntry(dbPath)?.viewMode || 'pivot';
-}
-function getCurrentDbViewTypeSpecific(dbPath, type) {
-  const bucket = getCurrentDbViewConfigEntry(dbPath)?.typeSpecific?.[type];
-  return _isDbViewPlainObject(bucket) ? bucket : null;
-}
-function _saveCurrentDbViewField(dbPath, label, detail, options, mutator) {
-  const c = getDbViewConfig(dbPath);
-  const v = _getCurrentDbViewConfigEntryFromConfig(c);
-  if (!v || typeof mutator !== 'function') return false;
-  mutator(v, c);
-  saveDbViewConfig(dbPath, c, {
-    historyLabel: label || '',
-    historyDetail: detail || '',
-    skipHistory: options?.skipHistory === true || !label,
-  });
-  return true;
-}
-function setCurrentDbViewTypeSpecific(dbPath, type, value, options = {}) {
-  const label = options.historyLabel || options.label || '';
-  return _saveCurrentDbViewField(dbPath, label, options.detail || '', options, (v) => {
-    if (!_isDbViewPlainObject(v.typeSpecific)) v.typeSpecific = {};
-    v.typeSpecific[type] = _isDbViewPlainObject(value) ? value : {};
-  });
-}
-// 非表示カラム
-function getHiddenCols(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.hiddenCols || []; }
-function setHiddenCols(dbPath, cols, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 表示列', options.detail || '', options, (v) => { v.hiddenCols = cols; });
-}
-// ピン留めカラム
-function getPinnedCols(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.pinnedCols || []; }
-function setPinnedCols(dbPath, cols, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 固定列', options.detail || '', options, (v) => { v.pinnedCols = cols; });
-}
-// カウントタイプ
-function getCountTypes(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.countTypes || {}; }
-function setCountType(dbPath, prop, type, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計タイプ', options.detail || prop || '', options, (v) => {
-    if (!v.countTypes || typeof v.countTypes !== 'object' || Array.isArray(v.countTypes)) v.countTypes = {};
-    v.countTypes[prop] = type;
-  });
-}

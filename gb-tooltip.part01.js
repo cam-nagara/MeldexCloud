@@ -65,6 +65,12 @@
     '.bd-link-node[data-link-path]'
   ];
   const CELL_CONTENT_EXCLUDE_SELECTORS = [
+    '#pivot-table tbody td',
+    '.pivot-table tbody td',
+    '.pivot-view td[role="cell"]',
+    'td[data-prop-name]',
+    'td.col-entity',
+    '.new-entity-row td',
     '.cell-value',
     '.entity-name-label',
     '.value-text',
@@ -76,6 +82,17 @@
     '.cell-select-val',
     '.cell-number',
     '.relation-link'
+  ];
+  const TRANSIENT_TOOLTIP_EXCLUDE_SELECTORS = [
+    '.status-dropdown',
+    '.cell-inline-dd',
+    '.user-dropdown',
+    '.gb-context-menu',
+    '.db-picker-popup',
+    '.gb-selection-float-bar',
+    '.value-input',
+    '.cell-inline-input',
+    '.cell-date-editor'
   ];
   const TARGET_SELECTORS = [
     '[' + ATTR_PRIMARY + ']',
@@ -128,7 +145,7 @@
   const ACTION_HINTS = Object.freeze({
     add: '追加します',
     addcolumn: '列を追加します',
-    addtodaytask: '今日のタスクを追加します',
+    addtodaytask: '今日のToDoを追加します',
     annclear: '注釈をすべて削除します',
     applyapplayout: '単一レイアウトを維持します',
     bdopenfindbar: 'ボード内を検索または置換します',
@@ -163,12 +180,13 @@
     onstampsend: 'スタンプを送信します',
     onvalidateclick: 'シートの整合性を検証します',
     opencurrenttoolbarsearchreplace: 'このビューで検索と置換を開きます',
-    openrightpaneltab: '右パネルのタブを開きます',
+    openrightpaneltab: '右サイドバーのタブを開きます',
     opensearchpanel: '全文検索パネルを開きます',
     rtcmd: 'ノートの書式を変更します',
     showchatllmhelpmenu: 'LLMチャットのヘルプを開きます',
     showchatrulesdialog: 'LLMに守らせるルールを編集します',
-    showcolvisibilitymodal: 'シート列の表示状態を変更します',
+    showcolumndisplayordermodal: 'シート列の表示状態と並び順を変更します',
+    showcolvisibilitymodal: 'シート列の表示状態と並び順を変更します',
     showcreatecalendar: '新しいカレンダーを作成します',
     showcreateroommodal: '新しいルームを作成します',
     showdbsearchmodal: '複数シートを横断検索します',
@@ -182,7 +200,7 @@
     showusermenu: 'ユーザー設定を開きます',
     showvalidationrulesmodal: '検証ルールを管理します',
     switchchatmode: 'チャット表示を切り替えます',
-    switchrighttab: '右パネルの表示を切り替えます',
+    switchrighttab: '右サイドバーの表示を切り替えます',
     teamattachmentpick: 'チームチャットに画像を添付します',
     teamsend: 'チームチャットへ送信します',
     toggleactivitymenu: 'メニューを開閉します',
@@ -192,7 +210,7 @@
     toggleheadingindent: '見出しインデント表示を切り替えます',
     togglenotevertical: 'ノートの縦書きを切り替えます',
     toggleoverlayvisibility: '注釈オーバーレイを表示または非表示にします',
-    togglerightpaneltab: '右パネルのタブを開閉します',
+    togglerightpaneltab: '右サイドバーのタブを開閉します',
     togglesidebar: 'フォルダツリーを開閉します',
     togglesidebarsection: 'セクションを開閉します',
     togglenotetoc: '目次を表示または非表示にします',
@@ -234,18 +252,19 @@
     'sn-action:saveFilter': '現在のフィルタを登録します',
     'sn-action:search': 'シナリオ本文を検索または置換します',
     'sn-action:detail': 'シナリオのオプションを開きます',
-    'cal-action:toggleSidebar': 'カレンダーサイドバーを開閉します',
+    'cal-action:toggleSidebar': 'スケジューラーサイドバーを開閉します',
     'cal-action:today': '今日へ移動します',
     'cal-action:prev': '前の期間へ移動します',
     'cal-action:next': '次の期間へ移動します',
     'cal-action:template': 'カレンダーテンプレートを開きます',
     'cal-action:timer': 'タイマーを開きます',
+    'cal-action:production': '制作管理パネルを開きます',
     'cal-action:sync': '外部カレンダーと同期します',
     'cal-action:sidebarOnly': 'サイドバーのみの表示に切り替えます',
-    'cal-action:settings': 'カレンダー設定を開きます',
+    'cal-action:settings': 'スケジューラー設定を開きます',
     'cal-action:miniPrev': '小型カレンダーを前の月へ移動します',
     'cal-action:miniNext': '小型カレンダーを次の月へ移動します',
-    'cal-action:addTodayTask': '今日のタスクを追加します',
+    'cal-action:addTodayTask': '今日のToDoを追加します',
     'cal-action:createCalendar': '新しいカレンダーを作成します',
     'tool:pen': 'ペンで注釈を書き込みます',
     'tool:marker': 'マーカーで注釈を書き込みます',
@@ -304,13 +323,14 @@
     messagesSquare: 'チャットを開きます',
     minus: '区切り線を挿入します',
     panelLeft: '左パネルを開閉します',
-    panelRight: 'オプションパネルを開閉します',
+    panelRight: '右サイドバーを開閉します',
     play: '再生またはスライドショーを開始します',
     plus: '追加します',
     refreshCw: '更新します',
     save: '保存します',
     search: '検索します',
     settings2: '設定を開きます',
+    slidersHorizontal: 'オプションを開きます',
     stickyNote: '注釈を開きます',
     strikethrough: '取り消し線を適用します',
     table: '表を挿入します',
@@ -364,19 +384,29 @@
     return !!el.closest(CELL_CONTENT_EXCLUDE_SELECTORS.join(','));
   }
 
+  function isTransientTooltipTarget(el) {
+    if (!el || !el.closest) return false;
+    return !!el.closest(TRANSIENT_TOOLTIP_EXCLUDE_SELECTORS.join(','));
+  }
+
+  function findCellContentNativeTitleTarget(start) {
+    if (!(start instanceof Element)) return null;
+    const cellTarget = start.closest(CELL_CONTENT_EXCLUDE_SELECTORS.join(','));
+    if (!cellTarget) return null;
+    const titleTarget = start.closest('[title],[' + ATTR_NATIVE_TITLE + ']');
+    if (titleTarget && (cellTarget.contains(titleTarget) || titleTarget.contains(cellTarget))) return titleTarget;
+    if (cellTarget.hasAttribute('title') || cellTarget.hasAttribute(ATTR_NATIVE_TITLE)) return cellTarget;
+    return null;
+  }
+
   function isTooltipEligible(el) {
     if (!(el instanceof HTMLElement)) return false;
     if (el.closest('.gb-tooltip')) return false;
     if (el.getAttribute(ATTR_DISABLED) === 'true') return false;
     if (isTabLike(el)) return false;
     if (isCustomLinkTooltipTarget(el)) return false;
-    if (
-      isCellContentTooltipTarget(el) &&
-      !isExplicitTooltip(el) &&
-      !el.hasAttribute('title') &&
-      !el.hasAttribute(ATTR_NATIVE_TITLE) &&
-      !el.hasAttribute('aria-label')
-    ) return false;
+    if (isCellContentTooltipTarget(el)) return false;
+    if (isTransientTooltipTarget(el)) return false;
     if (isExplicitTooltip(el)) return true;
     return isInteractiveLike(el);
   }
@@ -774,6 +804,12 @@
 
   function handlePointerOver(ev) {
     if (ev.pointerType && ev.pointerType !== 'mouse') return;
+    if (isTransientTooltipTarget(ev.target)) {
+      hideNow();
+      return;
+    }
+    const cellTitleEl = findCellContentNativeTitleTarget(ev.target);
+    if (cellTitleEl) suppressNativeTitle(cellTitleEl);
     const el = findTooltipTarget(ev.target);
     if (!el) return;
     queueShow(el, SHOW_DELAY_MS);
@@ -783,6 +819,10 @@
     if (ev.pointerType && ev.pointerType !== 'mouse') {
       clearTouchLongPress();
       return;
+    }
+    const cellTitleEl = findCellContentNativeTitleTarget(ev.target);
+    if (cellTitleEl && (!(ev.relatedTarget instanceof Node) || !cellTitleEl.contains(ev.relatedTarget))) {
+      restoreNativeTitle(cellTitleEl);
     }
     if (suppressedEl && (!(ev.relatedTarget instanceof Node) || !suppressedEl.contains(ev.relatedTarget))) {
       clearSuppressed();
@@ -813,7 +853,13 @@
   }
 
   function handlePointerDown(ev) {
-    if (!ev.pointerType || ev.pointerType === 'mouse') return;
+    if (!ev.pointerType || ev.pointerType === 'mouse') {
+      if (activeEl || pendingEl || touchLongPressEl) {
+        clearTouchLongPress();
+        hideNow({ suppressUntilLeave: true });
+      }
+      return;
+    }
     const el = findTooltipTarget(ev.target);
     if (!el) return;
     suppressFocusTooltipAfterTouch();
@@ -835,8 +881,18 @@
     if (activeEl) queueHide(activeEl);
   }
 
+  function handleImmediateDismiss() {
+    if (!activeEl && !pendingEl && !touchLongPressEl) return;
+    clearTouchLongPress();
+    hideNow({ suppressUntilLeave: true });
+  }
+
   function handleFocusIn(ev) {
     if (Date.now() < suppressFocusTooltipUntil) return;
+    if (isTransientTooltipTarget(ev.target)) {
+      hideNow();
+      return;
+    }
     const el = findTooltipTarget(ev.target);
     if (!el) return;
     queueShow(el, FOCUS_DELAY_MS);
@@ -869,6 +925,9 @@
 
   function install() {
     document.addEventListener('pointerdown', handlePointerDown, true);
+    document.addEventListener('mousedown', handleImmediateDismiss, true);
+    document.addEventListener('contextmenu', handleImmediateDismiss, true);
+    document.addEventListener('wheel', handleImmediateDismiss, true);
     document.addEventListener('pointerover', handlePointerOver, true);
     document.addEventListener('pointermove', handlePointerMove, true);
     document.addEventListener('pointerout', handlePointerOut, true);

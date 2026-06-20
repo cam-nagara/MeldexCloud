@@ -16,6 +16,7 @@
   const CLI_CHAT_PROVIDER_KEYS = new Set(CLI_CHAT_PROVIDERS.map(provider => provider.key));
   let cliChatConfig = null;
   let originalChatSend = null;
+  let activeCliChatStream = null;
 
   function icon(name, size = 14) {
     return typeof lucide === 'function' ? lucide(name, size) : '';
@@ -457,18 +458,27 @@
 
   function createCliChatActivity(provider) {
     const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;align-self:flex-start;';
+    wrapper.className = 'chat-cli-activity';
+    wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;min-width:0;align-self:flex-start;box-sizing:border-box;';
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
     const label = cliChatModel(provider);
     header.innerHTML = (typeof getProviderIconHtml === 'function' ? getProviderIconHtml(provider, 16) : icon('terminal', 16)) + '<span>' + esc(label) + '</span>';
     const body = document.createElement('div');
-    body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;';
-    body.innerHTML = '<span class="chat-spinner"></span><span data-cli-chat-status>CLIを起動中...</span>';
+    body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;box-sizing:border-box;';
+    body.innerHTML = '<span class="chat-spinner"></span><span data-cli-chat-status style="min-width:0;overflow-wrap:anywhere;word-break:break-word;">CLIを起動中...</span>';
     const log = document.createElement('div');
-    log.style.cssText = 'display:none;flex-direction:column;gap:4px;width:100%;max-height:28vh;overflow:auto;color:var(--fg2);font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px;white-space:pre-wrap;word-break:break-word;';
+    log.style.cssText = 'display:none;flex-direction:column;gap:4px;width:100%;max-height:28vh;overflow:auto;color:var(--fg2);font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px;white-space:pre-wrap;word-break:break-word;box-sizing:border-box;';
     wrapper.append(header, body, log);
     return { wrapper, status: body.querySelector('[data-cli-chat-status]'), log };
+  }
+
+  function formatCliChatDuration(ms) {
+    const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    if (minutes <= 0) return seconds + '秒';
+    return minutes + '分' + String(seconds).padStart(2, '0') + '秒';
   }
 
   function appendCliChatLog(log, textValue) {
@@ -479,6 +489,11 @@
     log.appendChild(line);
     log.scrollTop = log.scrollHeight;
   }
+
+  function restoreActiveCliChatActivity() {
+    try { activeCliChatStream?.restore?.(); } catch {}
+  }
+  window.GBChatCliRestoreActivity = restoreActiveCliChatActivity;
 
   async function sendCliChat(options = {}) {
     if (_chatState.streaming) {
@@ -513,6 +528,16 @@
       }
       return false;
     }
+
+    const hasWorkspaceIdOption = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
+    const hasSourceFolderOption = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
+    const requestWorkspaceId = hasWorkspaceIdOption
+      ? String(options.workspaceId || '')
+      : (hasSourceFolderOption ? '' : (typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : ''));
+    const requestSourceFolder = hasSourceFolderOption
+      ? String(options.sourceFolder || '')
+      : (requestWorkspaceId ? '' : (typeof _chatRequireSourceFolder === 'function' ? _chatRequireSourceFolder() : ''));
+    if (!requestWorkspaceId && !requestSourceFolder) return false;
 
     if (!usingDeferredMessages) {
       input.value = '';
@@ -553,25 +578,27 @@
     const streamMessages = targetMessages;
     const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
     const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
-    const streamTargetPath = Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || '');
-    const streamSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder')
-      ? String(options.sourceFolder || '')
-      : (typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '');
+    const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
+    const streamSourceFolder = requestSourceFolder;
+    const streamWorkspaceId = requestWorkspaceId;
     const streamMode = Object.prototype.hasOwnProperty.call(options || {}, 'mode')
       ? String(options.mode || '')
       : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''));
-    const streamWorkFolder = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
+    const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
     const streamModel = cliChatModel(provider);
     const streamController = new AbortController();
     const streamVisibleInCurrentChat = () => _chatState.messages === streamMessages
-      && (_chatState.sessionId || '') === streamSessionId
-      && (_chatState.targetPath || '') === streamTargetPath;
+      && (_chatState.sessionId || '') === streamSessionId;
     const streamLiveContainer = () => streamVisibleInCurrentChat()
       ? (typeof _chatLiveMessagesContainer === 'function' ? _chatLiveMessagesContainer() : document.getElementById('chat-messages'))
       : null;
+    let _autoScroll = true;
     const scrollStreamContainer = () => {
       const liveContainer = streamLiveContainer();
-      if (liveContainer) liveContainer.scrollTop = liveContainer.scrollHeight;
+      if (liveContainer && _autoScroll) {
+        if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
+        else liveContainer.scrollTop = liveContainer.scrollHeight;
+      }
     };
     const addAssistantToVisibleStream = (content, renderOptions) => (
       streamVisibleInCurrentChat() && typeof chatAddMessage === 'function'
@@ -582,11 +609,20 @@
     _chatState.streaming = true;
     _chatState.abortController = streamController;
     _chatState.streamingProvider = provider;
+    _chatState.streamingTargetPath = streamTargetPath;
+    _chatState.lastImplicitTargetPath = streamTargetPath;
     cliChatSetSendButtonStreaming(true);
     const activity = createCliChatActivity(provider);
+    const _scrollHandler = () => {
+      _autoScroll = typeof _chatIsScrolledNearBottom === 'function'
+        ? _chatIsScrolledNearBottom(msgContainer)
+        : (msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 48);
+    };
+    if (!detachedScope) msgContainer.addEventListener('scroll', _scrollHandler);
     if (!detachedScope) {
       msgContainer.appendChild(activity.wrapper);
-      msgContainer.scrollTop = msgContainer.scrollHeight;
+      if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(msgContainer);
+      else msgContainer.scrollTop = msgContainer.scrollHeight;
     }
 
     const assistantMessageId = typeof _newChatMessageId === 'function' ? _newChatMessageId() : 'msg_' + Math.random().toString(16).slice(2, 10);
@@ -594,6 +630,9 @@
     let assistantDiv = null;
     let fullText = '';
     let stderrText = '';
+    let lastStatusText = 'CLIを起動中...';
+    let lastCliOutputAt = 0;
+    const streamStartedAt = Date.now();
     let sendOk = false;
     let sawCliEvent = false;
     let cliCompleted = false;
@@ -607,6 +646,52 @@
         timestamp: assistantTimestamp,
       };
     };
+    const findAssistantBubble = () => {
+      const liveContainer = streamLiveContainer();
+      if (!liveContainer) return null;
+      const row = Array.from(liveContainer.querySelectorAll('.chat-message-row'))
+        .find(el => String(el.dataset.msgId || '') === assistantMessageId);
+      return row?.querySelector?.('.chat-message-bubble') || null;
+    };
+    const ensureAssistantVisible = (content = fullText) => {
+      if (!String(content || '').trim()) return null;
+      if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = findAssistantBubble();
+      if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream('', renderOptions());
+      if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, String(content || ''), []);
+      else if (assistantDiv) assistantDiv.textContent = String(content || '');
+      return assistantDiv;
+    };
+    const refreshActivityStatus = (label = lastStatusText) => {
+      lastStatusText = String(label || 'CLIを実行中...');
+      if (!activity.status) return;
+      const elapsed = formatCliChatDuration(Date.now() - streamStartedAt);
+      const idle = lastCliOutputAt
+        ? '最終出力 ' + formatCliChatDuration(Date.now() - lastCliOutputAt) + '前'
+        : 'まだ出力なし';
+      activity.status.textContent = `${lastStatusText}（経過 ${elapsed} / ${idle}）`;
+    };
+    const ensureActivityVisible = () => {
+      const liveContainer = streamLiveContainer();
+      if (!liveContainer) return;
+      if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
+      refreshActivityStatus();
+      if (_autoScroll) {
+        if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
+        else liveContainer.scrollTop = liveContainer.scrollHeight;
+      }
+    };
+    const activityTimer = setInterval(() => {
+      if (!streamVisibleInCurrentChat()) return;
+      if (fullText.trim()) ensureAssistantVisible(fullText);
+      ensureActivityVisible();
+    }, 1000);
+    activeCliChatStream = {
+      restore() {
+        if (!streamVisibleInCurrentChat()) return;
+        if (fullText.trim()) ensureAssistantVisible(fullText);
+        ensureActivityVisible();
+      },
+    };
     const saveStreamMessages = async (throwOnError = false) => {
       if (typeof chatAutoSave !== 'function') return false;
       const saved = await chatAutoSave({
@@ -615,6 +700,7 @@
         sessionTitle: streamSessionTitle,
         targetPath: streamTargetPath,
         sourceFolder: streamSourceFolder,
+        workspaceId: streamWorkspaceId,
         provider,
         model: streamModel,
         silent: !throwOnError,
@@ -634,11 +720,12 @@
           provider,
           model: streamModel,
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
-          system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt() : '',
+          system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath }) : '',
           session_id: streamSessionId,
           session_title: streamSessionTitle,
           target_path: streamTargetPath,
           source_folder: streamSourceFolder,
+          workspace_id: streamWorkspaceId,
           work_folder: streamWorkFolder,
           active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
           user: typeof getUsername === 'function' ? getUsername() : '',
@@ -671,21 +758,27 @@
               || (data.status === 'started' ? 'CLIを実行中...'
                 : data.status === 'waiting' ? 'CLIからの応答を待っています...'
                   : String(data.status || 'CLIを実行中...'));
-            if (activity.status && streamVisibleInCurrentChat()) activity.status.textContent = nextStatus;
+            refreshActivityStatus(nextStatus);
+            ensureActivityVisible();
           } else if (data.type === 'text_delta') {
             const chunk = data.content == null ? '' : String(data.content);
             if (!chunk) continue;
-            activity.wrapper.remove();
+            lastCliOutputAt = Date.now();
+            refreshActivityStatus('CLIの出力を受信中...');
             fullText += chunk;
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
-            if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream('', renderOptions());
-            if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
-            else if (assistantDiv) assistantDiv.textContent = fullText;
+            ensureAssistantVisible(fullText);
+            ensureActivityVisible();
             scrollStreamContainer();
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
-            if (streamVisibleInCurrentChat()) appendCliChatLog(activity.log, chunk);
+            lastCliOutputAt = Date.now();
+            refreshActivityStatus('CLIの進行ログを受信中...');
+            if (streamVisibleInCurrentChat()) {
+              appendCliChatLog(activity.log, chunk);
+              ensureActivityVisible();
+            }
           } else if (data.type === 'error') {
             const detail = stderrText.trim();
             throw new Error((data.error || 'CLIチャットでエラーが発生しました') + (detail ? '\n\n' + detail : ''));
@@ -734,10 +827,14 @@
         } catch {}
       }
     } finally {
+      clearInterval(activityTimer);
+      if (activeCliChatStream?.restore) activeCliChatStream = null;
+      activity.wrapper.remove();
       if (_chatState.abortController === streamController) {
         _chatState.streaming = false;
         _chatState.abortController = null;
         _chatState.streamingProvider = '';
+        _chatState.streamingTargetPath = '';
         cliChatSetSendButtonStreaming(false);
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
         if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
@@ -749,12 +846,14 @@
               sessionTitle: streamSessionTitle,
               targetPath: streamTargetPath,
               sourceFolder: streamSourceFolder,
+              workspaceId: streamWorkspaceId,
               provider,
               mode: streamMode,
             }).catch(() => {});
           }, 0);
         }
       }
+      if (!detachedScope) msgContainer.removeEventListener('scroll', _scrollHandler);
     }
     return sendOk;
   }

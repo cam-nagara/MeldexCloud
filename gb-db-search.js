@@ -16,6 +16,405 @@ async function doDbSearch(query, scope) {
   return await apiFetch('/smart-db?' + params.toString());
 }
 
+/* --- 現在のシート内検索/置換バー --- */
+
+let _dbFindState = {
+  bar: null,
+  ctx: null,
+  dbPath: '',
+  query: '',
+  matches: [],
+  index: -1,
+};
+
+function _dbFindCssEscape(value) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(String(value || ''));
+  return String(value || '').replace(/["\\]/g, '\\$&');
+}
+
+function _dbFindCurrentCtx() {
+  return (typeof _currentPaneState === 'function' ? _currentPaneState() : null) || {};
+}
+
+function _dbFindData(ctx, dbPath) {
+  if (ctx?.dbPath === dbPath && ctx.pivotData) return ctx.pivotData;
+  if (state.currentDbPath === dbPath && state.pivotData) return state.pivotData;
+  return ctx?.pivotData || state.pivotData || null;
+}
+
+function _dbFindRoot(ctx) {
+  return (typeof _paneEl === 'function' && (_paneEl(ctx, '.pivot-view') || _paneEl(ctx, '#db-view-container')))
+    || document.getElementById('pivot-view')
+    || document.getElementById('db-view-container')
+    || document.body;
+}
+
+function _positionDbFindBar() {
+  const bar = _dbFindState.bar;
+  if (!bar) return;
+  const root = _dbFindRoot(_dbFindState.ctx);
+  const rect = root.getBoundingClientRect?.() || { top: 0, right: document.documentElement.clientWidth };
+  const width = bar.offsetWidth || 420;
+  const top = Math.max(8, rect.top + 8);
+  const left = Math.max(8, rect.right - width - 16);
+  bar.style.top = top + 'px';
+  bar.style.left = left + 'px';
+  bar.style.right = '';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(bar);
+}
+
+function _dbFindRegex(query) {
+  const escaped = String(query || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escaped ? new RegExp(escaped, 'gi') : null;
+}
+
+function _dbFindValueRef(dbPath, entityName, propName, val, rawIndex, pivotData) {
+  return {
+    file: val?.file || _entityPath(dbPath, entityName, pivotData),
+    property: val?.property || propName,
+    candidate_index: val?.candidate_index != null ? val.candidate_index : rawIndex,
+    value: val?.value,
+    status: val?.status,
+  };
+}
+
+function _dbFindVisibleProps(dbPath, pivotData) {
+  const props = Array.isArray(pivotData?.properties) ? pivotData.properties : [];
+  return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
+}
+
+function _dbFindCollectMatches(query, ctx, dbPath) {
+  const pivotData = _dbFindData(ctx, dbPath);
+  const entities = pivotData?.entities || {};
+  const props = _dbFindVisibleProps(dbPath, pivotData);
+  const needle = String(query || '').toLowerCase();
+  if (!needle) return [];
+  const matches = [];
+  Object.keys(entities).forEach(entityName => {
+    const entityText = String(entityName || '');
+    let pos = 0;
+    while ((pos = entityText.toLowerCase().indexOf(needle, pos)) >= 0) {
+      matches.push({ kind: 'entity', entityName, text: entityText, start: pos, end: pos + query.length });
+      pos += query.length;
+    }
+    const entityData = entities[entityName] || {};
+    props.forEach(propName => {
+      const rawValues = Array.isArray(entityData[propName]) ? entityData[propName] : [];
+      const values = typeof filterValues === 'function' ? filterValues(rawValues, undefined, ctx?.filter) : rawValues;
+      values.forEach(val => {
+        const text = _dbSearchValueText(val?.value);
+        if (!text) return;
+        let valuePos = 0;
+        while ((valuePos = text.toLowerCase().indexOf(needle, valuePos)) >= 0) {
+          const rawIndex = Math.max(0, rawValues.indexOf(val));
+          matches.push({
+            kind: 'value',
+            entityName,
+            propName,
+            text,
+            start: valuePos,
+            end: valuePos + query.length,
+            valObj: _dbFindValueRef(dbPath, entityName, propName, val, rawIndex, pivotData),
+          });
+          valuePos += query.length;
+        }
+      });
+    });
+  });
+  return matches;
+}
+
+function _dbFindClearCurrentMark() {
+  document.querySelectorAll('.db-find-current-cell').forEach(el => el.classList.remove('db-find-current-cell'));
+}
+
+function _dbFindCellForMatch(match) {
+  const root = _dbFindRoot(_dbFindState.ctx);
+  const row = root.querySelector(`tbody tr[data-entity-name="${_dbFindCssEscape(match.entityName)}"]`)
+    || document.querySelector(`tbody tr[data-entity-name="${_dbFindCssEscape(match.entityName)}"]`);
+  if (!row) return null;
+  if (match.kind === 'entity') return row.querySelector('.col-entity') || row.firstElementChild;
+  return row.querySelector(`td[data-prop-name="${_dbFindCssEscape(match.propName)}"]`);
+}
+
+function _dbFindEnsureMatchRendered(match) {
+  const ctx = _dbFindState.ctx;
+  if (!ctx || !match?.entityName || _dbFindCellForMatch(match)) return false;
+  const pivotData = _dbFindData(ctx, _dbFindState.dbPath);
+  const entityNames = Array.isArray(ctx._lastEntityNames) ? ctx._lastEntityNames : Object.keys(pivotData?.entities || {});
+  const rowIndex = entityNames.indexOf(match.entityName);
+  if (rowIndex < 0) return false;
+  const visibleProps = _dbFindVisibleProps(_dbFindState.dbPath, pivotData);
+  const currentLimit = typeof _dbEffectiveRenderRowLimit === 'function'
+    ? _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps)
+    : (Number.parseInt(ctx._dbRenderRowLimit, 10) || 0);
+  if (!currentLimit || rowIndex < currentLimit) return false;
+  if (typeof _dbSetRenderRowLimit === 'function') _dbSetRenderRowLimit(ctx, entityNames.length, rowIndex + 1);
+  else ctx._dbRenderRowLimit = Math.min(entityNames.length, rowIndex + 1);
+  if (typeof renderPivot === 'function') {
+    renderPivot(ctx);
+    return true;
+  }
+  return false;
+}
+
+function _dbFindRevealCell(match) {
+  const cell = match ? _dbFindCellForMatch(match) : null;
+  if (!cell) return false;
+  cell.classList.add('db-find-current-cell');
+  cell.scrollIntoView({ block: 'center', inline: 'center' });
+  if (typeof setActiveCell === 'function' && match.kind === 'value') setActiveCell(cell, { scroll: false });
+  return true;
+}
+
+function _dbFindRevealWhenRendered(match, attempt = 0) {
+  const current = _dbFindState.matches[_dbFindState.index];
+  if (!current || current !== match || !_dbFindState.bar?.isConnected) return;
+  if (_dbFindRevealCell(match)) return;
+  if (attempt < 40) setTimeout(() => _dbFindRevealWhenRendered(match, attempt + 1), attempt < 5 ? 0 : 30);
+}
+
+function _dbFindUpdateStatus() {
+  const count = _dbFindState.bar?.querySelector?.('[data-db-find-count]');
+  if (!count) return;
+  const total = _dbFindState.matches.length;
+  count.textContent = total ? `${_dbFindState.index + 1}/${total}` : '0/0';
+}
+
+function _dbFindShowCurrent() {
+  _dbFindClearCurrentMark();
+  const match = _dbFindState.matches[_dbFindState.index];
+  if (match && _dbFindEnsureMatchRendered(match)) _dbFindRevealWhenRendered(match);
+  else if (match && !_dbFindRevealCell(match)) _dbFindRevealWhenRendered(match);
+  _dbFindUpdateStatus();
+}
+
+function _dbFindRun(direction = 1) {
+  const input = _dbFindState.bar?.querySelector?.('[data-db-find-query]');
+  const query = String(input?.value || '');
+  const sameQuery = query === _dbFindState.query && _dbFindState.matches.length > 0;
+  if (!query) {
+    _dbFindState.query = '';
+    _dbFindState.matches = [];
+    _dbFindState.index = -1;
+    _dbFindClearCurrentMark();
+    _dbFindUpdateStatus();
+    return;
+  }
+  if (!sameQuery) {
+    _dbFindState.query = query;
+    _dbFindState.matches = _dbFindCollectMatches(query, _dbFindState.ctx, _dbFindState.dbPath);
+    _dbFindState.index = direction >= 0 ? 0 : _dbFindState.matches.length - 1;
+  } else {
+    _dbFindState.index = (_dbFindState.index + (direction >= 0 ? 1 : -1) + _dbFindState.matches.length) % _dbFindState.matches.length;
+  }
+  if (!_dbFindState.matches.length) _dbFindState.index = -1;
+  _dbFindShowCurrent();
+}
+
+function closeDbFindReplace() {
+  _dbFindClearCurrentMark();
+  _dbFindState.bar?.remove?.();
+  window.removeEventListener('resize', _positionDbFindBar);
+  _dbFindState = { bar: null, ctx: null, dbPath: '', query: '', matches: [], index: -1 };
+}
+
+function _setDbFindMode(mode) {
+  const replaceMode = String(mode || '').toLowerCase() === 'replace';
+  _dbFindState.bar?.classList.toggle('replace-open', replaceMode);
+}
+
+function openDbFindReplace(mode = 'find') {
+  const ctx = _dbFindCurrentCtx();
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  if (!dbPath) return false;
+  if (_dbFindState.bar) {
+    _dbFindState.ctx = ctx;
+    _dbFindState.dbPath = dbPath;
+    _setDbFindMode(mode);
+    _positionDbFindBar();
+    _dbFindState.bar.querySelector('[data-db-find-query]')?.focus();
+    return true;
+  }
+
+  const bar = document.createElement('div');
+  bar.className = 'db-find-bar';
+  bar.innerHTML = `
+    <textarea data-db-find-query rows="1" placeholder="検索..."></textarea>
+    <span data-db-find-count class="db-find-count">0/0</span>
+    <button type="button" data-db-find-prev title="前へ">↑</button>
+    <button type="button" data-db-find-next title="次へ">↓</button>
+    <textarea data-db-find-replace rows="1" placeholder="置換..."></textarea>
+    <button type="button" data-db-find-replace-one title="置換">置換</button>
+    <button type="button" data-db-find-replace-all title="全置換">全置換</button>
+    <button type="button" data-db-find-close title="検索を閉じる">×</button>
+  `;
+  document.body.appendChild(bar);
+  _dbFindState = { bar, ctx, dbPath, query: '', matches: [], index: -1 };
+  _setDbFindMode(mode);
+  _positionDbFindBar();
+
+  const queryInput = bar.querySelector('[data-db-find-query]');
+  const replaceInput = bar.querySelector('[data-db-find-replace]');
+  const autoResize = (ta) => {
+    const lines = String(ta.value || '').split('\n').length;
+    ta.rows = Math.min(Math.max(1, lines), 5);
+    ta.classList.toggle('multiline', lines > 1);
+  };
+  let queryComposing = false;
+  queryInput.addEventListener('input', () => {
+    autoResize(queryInput);
+    if (!queryInput.value) _dbFindRun(1);
+  });
+  queryInput.addEventListener('compositionstart', () => { queryComposing = true; });
+  queryInput.addEventListener('compositionend', () => {
+    queryComposing = false;
+    autoResize(queryInput);
+    _dbFindRun(1);
+  });
+  replaceInput.addEventListener('input', () => autoResize(replaceInput));
+  queryInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeDbFindReplace(); return; }
+    if ((e.ctrlKey || e.metaKey) && String(e.key || '').toLowerCase() === 'h') { e.preventDefault(); _setDbFindMode('replace'); return; }
+    if (e.key === 'Enter') {
+      if (queryComposing || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      _dbFindRun(e.shiftKey ? -1 : 1);
+    }
+  });
+  replaceInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeDbFindReplace(); return; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _dbFindReplaceCurrent(); }
+  });
+  bar.querySelector('[data-db-find-prev]').addEventListener('click', () => _dbFindRun(-1));
+  bar.querySelector('[data-db-find-next]').addEventListener('click', () => _dbFindRun(1));
+  bar.querySelector('[data-db-find-replace-one]').addEventListener('click', () => _dbFindReplaceCurrent());
+  bar.querySelector('[data-db-find-replace-all]').addEventListener('click', () => _dbFindReplaceAll());
+  bar.querySelector('[data-db-find-close]').addEventListener('click', () => closeDbFindReplace());
+  window.addEventListener('resize', _positionDbFindBar, { passive: true });
+  setTimeout(() => queryInput.focus(), 0);
+  return true;
+}
+
+async function _dbFindRefreshAfterChange(preferredIndex = 0) {
+  const { dbPath, ctx, query } = _dbFindState;
+  if (typeof selectDatabase === 'function') {
+    await selectDatabase(dbPath, ctx, {
+      silent: true,
+      skipRecent: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+    });
+  } else if (typeof renderPivot === 'function') {
+    renderPivot(ctx);
+  }
+  _dbFindState.matches = _dbFindCollectMatches(query, ctx, dbPath);
+  _dbFindState.index = _dbFindState.matches.length ? Math.min(Math.max(0, preferredIndex), _dbFindState.matches.length - 1) : -1;
+  _dbFindShowCurrent();
+}
+
+async function _dbFindRenameEntity(match, nextName) {
+  const dbPath = _dbFindState.dbPath;
+  const ctx = _dbFindState.ctx;
+  const pivotData = _dbFindData(ctx, dbPath);
+  const cleanName = String(nextName || '').trim();
+  if (!cleanName) throw new Error('エントリ名を空にはできません');
+  if (cleanName !== match.entityName && pivotData?.entities && Object.prototype.hasOwnProperty.call(pivotData.entities, cleanName)) {
+    throw new Error('同じエントリ名が既にあります: ' + cleanName);
+  }
+  await apiPost('/entity/rename', { path: _entityPath(dbPath, match.entityName, pivotData), new_name: cleanName });
+  if (typeof _dbUndoRename === 'function') _dbUndoRename(dbPath, match.entityName, cleanName, ctx);
+}
+
+async function _dbFindReplaceCurrent() {
+  const query = String(_dbFindState.bar?.querySelector?.('[data-db-find-query]')?.value || '');
+  if (query !== _dbFindState.query || !_dbFindState.matches.length) _dbFindRun(1);
+  const match = _dbFindState.matches[_dbFindState.index];
+  if (!match) return;
+  const replacement = String(_dbFindState.bar?.querySelector?.('[data-db-find-replace]')?.value || '');
+  const nextText = match.text.slice(0, match.start) + replacement + match.text.slice(match.end);
+  try {
+    if (match.kind === 'entity') {
+      await _dbFindRenameEntity(match, nextText);
+    } else {
+      const oldValue = String(match.valObj.value ?? '');
+      await _apiPutValue(match.valObj, { new_value: nextText, __source: 'sheet-find-replace' });
+      if (typeof _dbUndoValue === 'function') {
+        _dbUndoValue('シート置換: ' + match.propName, match.valObj, oldValue, nextText, undefined, undefined, {
+          dbPath: _dbFindState.dbPath,
+          ctx: _dbFindState.ctx,
+        });
+      }
+    }
+    await _dbFindRefreshAfterChange(_dbFindState.index);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus(e?.message || '置換に失敗しました', true);
+  }
+}
+
+async function _dbFindReplaceAll() {
+  const queryInput = _dbFindState.bar?.querySelector?.('[data-db-find-query]');
+  const query = String(queryInput?.value || '');
+  if (!_dbFindRegex(query)) return;
+  if (query !== _dbFindState.query || !_dbFindState.matches.length) _dbFindRun(1);
+  const replacement = String(_dbFindState.bar?.querySelector?.('[data-db-find-replace]')?.value || '');
+  const matches = _dbFindCollectMatches(query, _dbFindState.ctx, _dbFindState.dbPath);
+  const valueTasks = new Map();
+  const entityTasks = new Map();
+
+  matches.forEach(match => {
+    if (match.kind === 'entity') {
+      entityTasks.set(match.entityName, match.text.replace(_dbFindRegex(query), replacement));
+      return;
+    }
+    const key = [match.valObj.file, match.valObj.property, match.valObj.candidate_index].join('\n');
+    if (!valueTasks.has(key)) {
+      const oldValue = String(match.valObj.value ?? '');
+      valueTasks.set(key, { match, oldValue, nextValue: oldValue.replace(_dbFindRegex(query), replacement) });
+    }
+  });
+
+  let count = 0;
+  try {
+    const pivotData = _dbFindData(_dbFindState.ctx, _dbFindState.dbPath);
+    const entityNames = new Set(Object.keys(pivotData?.entities || {}));
+    const plannedEntityNames = new Set();
+    for (const [oldName, rawNewName] of entityTasks.entries()) {
+      const newName = String(rawNewName || '').trim();
+      if (!newName) throw new Error('エントリ名を空にはできません');
+      if (oldName === newName) continue;
+      if (plannedEntityNames.has(newName)) throw new Error('置換後のエントリ名が重複します: ' + newName);
+      if (entityNames.has(newName)) throw new Error('同じエントリ名が既にあります: ' + newName);
+      plannedEntityNames.add(newName);
+    }
+    for (const item of valueTasks.values()) {
+      if (item.oldValue === item.nextValue) continue;
+      await _apiPutValue(item.match.valObj, { new_value: item.nextValue, __source: 'sheet-find-replace-all' });
+      if (typeof _dbUndoValue === 'function') {
+        _dbUndoValue('シート全置換: ' + item.match.propName, item.match.valObj, item.oldValue, item.nextValue, undefined, undefined, {
+          dbPath: _dbFindState.dbPath,
+          ctx: _dbFindState.ctx,
+        });
+      }
+      count++;
+    }
+    for (const [oldName, newName] of entityTasks.entries()) {
+      if (oldName === newName) continue;
+      await _dbFindRenameEntity({ kind: 'entity', entityName: oldName, text: oldName }, newName);
+      count++;
+    }
+    await _dbFindRefreshAfterChange(0);
+    if (typeof showStatus === 'function') showStatus(count + '件置換しました');
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus(e?.message || '全置換に失敗しました', true);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.openDbFindReplace = openDbFindReplace;
+  window.closeDbFindReplace = closeDbFindReplace;
+}
+
 /* --- 検索モーダル --- */
 
 /**
@@ -39,10 +438,10 @@ function showDbSearchModal(options) {
   const input = document.createElement('input');
   input.type = 'text';
   input.placeholder = 'シート横断検索...（エントリ名・プロパティ値）';
-  input.style.cssText = 'flex:1;padding:6px 10px;font-size:14px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
+  input.style.cssText = 'flex:1;width:auto;min-width:0;padding:6px 10px;font-size:14px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
 
   const scopeSelect = document.createElement('select');
-  scopeSelect.style.cssText = 'padding:4px 8px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
+  scopeSelect.style.cssText = 'width:auto;flex-shrink:0;padding:4px 8px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
   const optAll = document.createElement('option');
   optAll.value = '';
   optAll.textContent = '全シート';
@@ -197,12 +596,23 @@ function _renderDbSearchResults(container, results, query) {
 }
 
 function _highlightMatch(text, qLower) {
-  const escaped = esc(text);
-  const qEsc = esc(qLower);
-  try {
-    return escaped.replace(new RegExp(qEsc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
-      m => '<span style="background:var(--accent);color:var(--ui-fg-strong);padding:0 2px;border-radius:2px;">' + m + '</span>');
-  } catch { return escaped; }
+  const raw = String(text == null ? '' : text);
+  const needle = String(qLower == null ? '' : qLower).toLowerCase();
+  if (!needle) return esc(raw);
+  const lower = raw.toLowerCase();
+  let pos = 0;
+  let out = '';
+  while (pos < raw.length) {
+    const idx = lower.indexOf(needle, pos);
+    if (idx < 0) break;
+    out += esc(raw.slice(pos, idx));
+    out += '<span style="background:var(--accent);color:var(--ui-fg-strong);padding:0 2px;border-radius:2px;">'
+      + esc(raw.slice(idx, idx + needle.length))
+      + '</span>';
+    pos = idx + needle.length;
+  }
+  out += esc(raw.slice(pos));
+  return out;
 }
 
 function _dbSearchValueText(value) {

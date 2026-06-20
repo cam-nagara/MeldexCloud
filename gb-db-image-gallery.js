@@ -19,12 +19,21 @@ function _imagePropOptions(ptc) {
   const opts = ptc?.options || {};
   const accept = Array.isArray(opts.accept) && opts.accept.length
     ? opts.accept.map(s => String(s).toLowerCase().replace(/^\./, ''))
-    : ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+    : ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+  const thumbSize = Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256));
   return {
     maxCount: opts.max_count == null || opts.max_count === '' ? 100 : Math.max(1, parseInt(opts.max_count, 10) || 100),
-    accept,
-    thumbSize: Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256)),
+    accept: accept.filter(ext => ext !== 'svg'),
+    thumbSize,
+    cellSize: _imagePropCellSize(ptc),
   };
+}
+
+function _imagePropCellSize(ptc) {
+  const opts = ptc?.options || {};
+  const thumbSize = Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256));
+  const raw = opts.cell_height ?? opts.cell_thumbnail_size;
+  return Math.max(32, Math.min(320, parseInt(raw, 10) || Math.min(96, thumbSize)));
 }
 
 function _imageSrc(item, preferThumb) {
@@ -62,31 +71,46 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   if (room <= 0) { showStatus('画像数の上限に達しています', true); return current; }
   const targetFiles = accepted.slice(0, room);
   if (accepted.length > room) showStatus('画像数の上限を超えた分は追加しませんでした');
+  let added = 0;
+  let failed = 0;
   for (const file of targetFiles) {
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('thumbnail_size', String(options.thumbSize));
-    const res = await fetch(API_BASE + '/media/upload', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error('画像アップロード失敗: HTTP ' + res.status);
-    const meta = await res.json();
-    current.push({
-      id: (typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : ('img_' + Date.now() + '_' + Math.random().toString(16).slice(2))),
-      content_hash: meta.content_hash || meta.hash,
-      filename: meta.filename || file.name,
-      src: meta.src,
-      thumb: meta.thumb,
-      url: meta.url,
-      thumb_url: meta.thumb_url,
-      width: meta.width || null,
-      height: meta.height || null,
-      size: meta.size || file.size,
-      added_at: new Date().toISOString(),
-      caption: '',
-    });
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('thumbnail_size', String(options.thumbSize));
+      const res = await fetch(API_BASE + '/media/upload', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const meta = await res.json();
+      current.push({
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : ('img_' + Date.now() + '_' + Math.random().toString(16).slice(2))),
+        content_hash: meta.content_hash || meta.hash,
+        filename: meta.filename || file.name,
+        src: meta.src,
+        thumb: meta.thumb,
+        url: meta.url,
+        thumb_url: meta.thumb_url,
+        width: meta.width || null,
+        height: meta.height || null,
+        size: meta.size || file.size,
+        added_at: new Date().toISOString(),
+        caption: '',
+      });
+      added += 1;
+    } catch (err) {
+      failed += 1;
+      console.warn('[image-property] upload failed:', err);
+    }
   }
-  await saveImagePropertyItems(entityPath, propName, val, current);
+  if (added > 0) await saveImagePropertyItems(entityPath, propName, val, current);
+  if (failed > 0) {
+    const message = added > 0
+      ? `一部の画像を追加できませんでした（成功 ${added} 件 / 失敗 ${failed} 件）`
+      : '画像追加に失敗しました';
+    showStatus(message, true);
+    if (added === 0) throw new Error(message);
+  }
   return current;
 }
 
@@ -119,10 +143,43 @@ function _imagePropCloneItems(items) {
   return JSON.parse(JSON.stringify(Array.isArray(items) ? items : []));
 }
 
+function _imagePropOpenPath(item) {
+  const candidates = [item?.url, item?.src, item?.path, item?.file, item?.thumb_url, item?.thumb];
+  for (const raw of candidates) {
+    const value = String(raw || '').trim();
+    if (!value || /^(?:data:|blob:|https?:)/i.test(value)) continue;
+    if (value.startsWith('/')) {
+      try {
+        const parsed = new URL(value, location.origin);
+        const apiPath = parsed.searchParams.get('path') || '';
+        if (apiPath) return apiPath.replace(/\\/g, '/');
+      } catch {}
+      continue;
+    }
+    return value.replace(/\\/g, '/');
+  }
+  return '';
+}
+
+function openImagePropertyItemInViewer(item) {
+  const imagePath = _imagePropOpenPath(item);
+  if (imagePath && typeof openViewer === 'function') {
+    openViewer('/viewer?file=' + encodeURIComponent(imagePath));
+    return true;
+  }
+  const imageUrl = _imageSrc(item, false);
+  if (imageUrl && typeof openViewer === 'function') {
+    openViewer(imageUrl);
+    return true;
+  }
+  return false;
+}
+
 function createImagePropertyValueElement(val, entityPath, propName, thumbSize, ptc) {
   const wrap = document.createElement('div');
   wrap.className = 'gb-image-cell';
   const options = _imagePropOptions(ptc);
+  wrap.style.setProperty('--gb-image-cell-size', options.cellSize + 'px');
   const items = parseImagePropertyValue(val?.value);
   const previewCount = Math.min(3, items.length);
   if (!items.length) {
@@ -136,8 +193,7 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
       img.className = 'gb-image-thumb';
       img.src = _imageSrc(items[i], true);
       img.alt = items[i].caption || items[i].filename || '';
-      img.style.width = options.thumbSize + 'px';
-      img.style.height = options.thumbSize + 'px';
+      img.dataset.imageIndex = String(i);
       stack.appendChild(img);
     }
     if (items.length > previewCount) {
@@ -168,7 +224,13 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
   });
   wrap.addEventListener('click', (e) => {
     e.stopPropagation();
-    showImageGalleryModal(entityPath, propName, val, ptc);
+    if (!items.length) return;
+    const thumb = e.target?.closest?.('.gb-image-thumb');
+    const idx = thumb && wrap.contains(thumb) ? parseInt(thumb.dataset.imageIndex || '0', 10) : 0;
+    const item = items[Number.isFinite(idx) ? idx : 0] || items[0];
+    if (!openImagePropertyItemInViewer(item)) {
+      showStatus('画像を開けませんでした', true);
+    }
   });
   return wrap;
 }
@@ -192,8 +254,10 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
   document.body.appendChild(overlay);
   const list = overlay.querySelector('#gb-img-gallery-list');
   const fileInput = overlay.querySelector('#gb-img-file-input');
+  const countEl = overlay.querySelector('.gb-section-desc');
   if (fileInput) fileInput.disabled = !canEdit;
   const render = () => {
+    if (countEl) countEl.textContent = `${items.length} / ${options.maxCount}`;
     list.innerHTML = '';
     if (!items.length) {
       const empty = document.createElement('div');
@@ -230,16 +294,27 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       meta.appendChild(cap);
       const actions = document.createElement('div');
       actions.className = 'gb-image-gallery-actions';
-      const actionBtn = (icon, title, fn) => {
+      const actionBtn = (icon, title, fn, options = {}) => {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'gb-icon-btn';
         b.innerHTML = typeof lucide === 'function' ? lucide(icon, 14) : title;
         b.title = title;
-        b.disabled = !canEdit;
+        b.disabled = options.disabled === true || (!canEdit && options.requiresEdit !== false);
         b.addEventListener('click', fn);
         return b;
       };
+      const imagePath = _imagePropOpenPath(item);
+      actions.appendChild(actionBtn('externalLink', '開き方を選ぶ', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const imageLabel = item.caption || item.filename || imagePath.split('/').pop() || '画像';
+        if (typeof showLinkedOpenTargetMenu === 'function') {
+          showLinkedOpenTargetMenu(ev, imagePath, imageLabel, { linkType: 'image' });
+        } else if (typeof openViewer === 'function') {
+          openViewer('/viewer?file=' + encodeURIComponent(imagePath));
+        }
+      }, { requiresEdit: false, disabled: !imagePath }));
       actions.appendChild(actionBtn('arrowUp', '上へ', async () => {
         if (idx <= 0) return;
         const nextItems = _imagePropCloneItems(items);
@@ -286,7 +361,10 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     }
   };
-  fileInput?.addEventListener('change', (e) => addFiles(e.target.files));
+  fileInput?.addEventListener('change', async (e) => {
+    await addFiles(e.target.files);
+    e.target.value = '';
+  });
   list.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.add('gb-cell-dropzone-active'); });
   list.addEventListener('dragleave', (e) => { e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); });
   list.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); addFiles(e.dataTransfer.files); });

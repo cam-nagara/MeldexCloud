@@ -31,11 +31,57 @@ function isExpandedState(path) {
 }
 
 const OUTLINER_AUTO_EXPAND_LIMIT = 40;
+const OUTLINER_CHILD_RENDER_CHUNK_SIZE = 120;
 let _outlinerAutoExpandQueue = [];
 let _outlinerAutoExpandRunning = false;
 let _outlinerAutoExpandScheduled = 0;
 let _outlinerAutoExpandOverflowNotified = false;
+// デスクトップ起動時は初回のみ自動展開を抑制するが、
+// ユーザー操作の更新では直前の展開状態を必ず復元する
+let _outlinerForceExpansionMode = false;
+let _outlinerLoadGeneration = 0;
+let _outlinerLoadInFlight = null;
+let _outlinerLastLoadCompletedAt = 0;
+const OUTLINER_RECENT_LOAD_REUSE_MS = 4000;
 const _treeNodeCache = new Map();
+
+function _outlinerNowMs() {
+  return typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+}
+
+function _outlinerHasRenderedTree() {
+  const el = document.getElementById('outliner-tree');
+  return !!el?.querySelector?.(':scope > .tree-node');
+}
+
+function _outlinerScheduleRenderFrame(callback) {
+  if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
+    requestAnimationFrame(callback);
+    return;
+  }
+  setTimeout(callback, 0);
+}
+
+function _outlinerChildRenderChunkSize(total) {
+  return total > OUTLINER_CHILD_RENDER_CHUNK_SIZE ? OUTLINER_CHILD_RENDER_CHUNK_SIZE : Math.max(1, total || 1);
+}
+
+function _outlinerNextFrame() {
+  return new Promise(resolve => _outlinerScheduleRenderFrame(resolve));
+}
+
+async function _appendOutlinerChildrenChunked(container, children, rootPath) {
+  if (!container || !Array.isArray(children) || !children.length) return;
+  const chunkSize = _outlinerChildRenderChunkSize(children.length);
+  for (let i = 0; i < children.length; i += chunkSize) {
+    const fragment = document.createDocumentFragment();
+    children.slice(i, i + chunkSize).forEach(child => {
+      fragment.appendChild(createTreeNodeFromBrowse(child, rootPath));
+    });
+    container.appendChild(fragment);
+    if (i + chunkSize < children.length) await _outlinerNextFrame();
+  }
+}
 
 function _treeNodeCacheKey(path) {
   return path == null ? '' : String(path);
@@ -89,7 +135,7 @@ function _pruneTreeNodeCache(path) {
 
 function _findTreeNodeByPathFallback(path) {
   const found = [];
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node').forEach(node => {
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
     if (node._nodeData?.path === path) {
       _registerTreeNode(node);
       found.push(node);
@@ -118,6 +164,7 @@ function _isOutlinerDesktopLaunch() {
 }
 
 function _getOutlinerAutoExpandLimit() {
+  if (_outlinerForceExpansionMode) return OUTLINER_AUTO_EXPAND_LIMIT;
   return _isOutlinerDesktopLaunch() ? 0 : OUTLINER_AUTO_EXPAND_LIMIT;
 }
 
@@ -161,6 +208,7 @@ async function _drainOutlinerAutoExpandQueue() {
     }
   } finally {
     _outlinerAutoExpandRunning = false;
+    _outlinerForceExpansionMode = false;
   }
 }
 
@@ -181,7 +229,7 @@ function _queueSavedOutlinerExpansion(item, toggle) {
 function _outlinerResolvedType(type, path) {
   const rawType = String(type || '');
   const lowerPath = String(path || '').split(/[?#]/)[0].toLowerCase();
-  if (!['folder', 'database', 'entity'].includes(rawType) && lowerPath.endsWith('.board.md')) return 'board';
+  if (!['folder', 'database', 'entity'].includes(rawType) && (lowerPath.endsWith('.mel-board') || lowerPath.endsWith('.board.md'))) return 'board';
   if (type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(path))) return 'scriptnote';
   return type || 'page';
 }
@@ -215,31 +263,97 @@ function _outlinerIconMarkup(item, size) {
   return lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && item?.path === getWorkFolder()), size || 18);
 }
 
-async function loadOutliner() {
-  showLoading('フォルダを読み込み中...');
-  try {
-  if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
-  // スクロール位置を保存してから再読み込み
-  const tree = document.getElementById('tree-scroll-container');
-  const scrollTop = tree ? tree.scrollTop : 0;
-  try {
-    const roots = await apiFetch('/outliner-roots');
-    renderOutlinerMultiRoot(roots);
-  } catch (e) {
-    // フォールバック: 従来のルートフォルダルート
+async function loadOutliner(options) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const perfStartedAt = _outlinerNowMs();
+  if (!opts.force && opts.coalesce && _outlinerLoadInFlight) {
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('outliner.load.coalesced', perfStartedAt, { reason: opts.reason || '' });
+    }
+    return _outlinerLoadInFlight;
+  }
+  const recentMs = Number.isFinite(opts.recentMs) ? opts.recentMs : OUTLINER_RECENT_LOAD_REUSE_MS;
+  if (!opts.force && opts.skipIfRecentlyLoaded && _outlinerLastLoadCompletedAt
+      && (perfStartedAt - _outlinerLastLoadCompletedAt) < recentMs && _outlinerHasRenderedTree()) {
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('outliner.load.skip.recent', perfStartedAt, {
+        ageMs: Math.round(perfStartedAt - _outlinerLastLoadCompletedAt),
+        reason: opts.reason || '',
+      });
+    }
+    return { skipped: true, reason: 'recent' };
+  }
+
+  const loadGeneration = ++_outlinerLoadGeneration;
+  const loadPromise = (async () => {
+    showLoading('フォルダを読み込み中...');
+    let rendered = false;
     try {
-      const items = await apiFetch('/browse?all_files=true');
-      renderOutlinerLegacy(items);
-    } catch (e2) { renderOutlinerLegacy([]); }
+      if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
+      // スクロール位置を保存してから再読み込み
+      const tree = document.getElementById('tree-scroll-container');
+      const scrollTop = tree ? tree.scrollTop : 0;
+      try {
+        const roots = await apiFetch('/outliner-roots');
+        if (loadGeneration !== _outlinerLoadGeneration) {
+          if (typeof _logPerfEvent === 'function') {
+            _logPerfEvent('outliner.load.stale', perfStartedAt, { stage: 'roots', reason: opts.reason || '' });
+          }
+          return { stale: true };
+        }
+        renderOutlinerMultiRoot(Array.isArray(roots) ? roots : []);
+        rendered = true;
+        if (typeof _logPerfEvent === 'function') {
+          _logPerfEvent('outliner.load.roots', perfStartedAt, {
+            rootsCount: Array.isArray(roots) ? roots.length : 0,
+          });
+        }
+      } catch (e) {
+        // フォールバック: 従来のルートフォルダルート
+        try {
+          const items = await apiFetch('/browse?all_files=true');
+          if (loadGeneration !== _outlinerLoadGeneration) {
+            if (typeof _logPerfEvent === 'function') {
+              _logPerfEvent('outliner.load.stale', perfStartedAt, { stage: 'legacy', reason: opts.reason || '' });
+            }
+            return { stale: true };
+          }
+          renderOutlinerLegacy(items);
+          rendered = true;
+          if (typeof _logPerfEvent === 'function') {
+            _logPerfEvent('outliner.load.legacy', perfStartedAt, {
+              itemCount: Array.isArray(items) ? items.length : 0,
+              fallback: true,
+            });
+          }
+        } catch (e2) {
+          if (loadGeneration === _outlinerLoadGeneration) {
+            renderOutlinerLegacy([]);
+            rendered = true;
+          }
+        }
+      }
+      if (loadGeneration !== _outlinerLoadGeneration) return { stale: true };
+      if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
+      // スクロール位置を復元（DOM再構築後も確実に復元）
+      if (tree) {
+        tree.scrollTop = scrollTop;
+        requestAnimationFrame(() => { tree.scrollTop = scrollTop; });
+      }
+      if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
+      if (rendered) _outlinerLastLoadCompletedAt = _outlinerNowMs();
+      return { rendered };
+    } finally {
+      if (typeof _logPerfEvent === 'function') _logPerfEvent('outliner.load.total', perfStartedAt);
+      hideLoading();
+    }
+  })();
+  _outlinerLoadInFlight = loadPromise;
+  try {
+    return await loadPromise;
+  } finally {
+    if (_outlinerLoadInFlight === loadPromise) _outlinerLoadInFlight = null;
   }
-  if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
-  // スクロール位置を復元（DOM再構築後も確実に復元）
-  if (tree) {
-    tree.scrollTop = scrollTop;
-    requestAnimationFrame(() => { tree.scrollTop = scrollTop; });
-  }
-  if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
-  } finally { hideLoading(); }
 }
 
 function renderOutlinerLegacy(items) {
@@ -249,7 +363,9 @@ function renderOutlinerLegacy(items) {
   const visibleItems = (items || []).filter(item => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleItems);
-  visibleItems.forEach(item => el.appendChild(createTreeNodeFromBrowse(item)));
+  const fragment = document.createDocumentFragment();
+  visibleItems.forEach(item => fragment.appendChild(createTreeNodeFromBrowse(item)));
+  el.appendChild(fragment);
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
   applyManualSort(el, '_root');
 }
@@ -258,24 +374,32 @@ function renderOutlinerMultiRoot(roots) {
   const el = document.getElementById('outliner-tree');
   _unregisterTreeSubtree(el);
   el.innerHTML = '';
-  const visibleRoots = roots.filter(r => r.visible && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(r.path)));
+  // ワークスペース由来のルートはワークスペースセクション側で表示するため、ソースフォルダセクションには描画しない
+  const visibleRoots = roots.filter(r => r.visible
+    && !(r.kind === 'workspace' || r.workspaceId)
+    && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(r.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleRoots);
 
   // 各ルートを通常のフォルダノードとしてツリーに追加（_isRootフラグ付き）
+  const fragment = document.createDocumentFragment();
   for (const root of visibleRoots) {
+    const isWorkspaceRoot = root.kind === 'workspace' || !!root.workspaceId;
     const rootItem = {
       name: root.name,
       type: 'folder',
       path: root.path,
-      sourceId: root.sourceId || root.id || '',
+      sourceId: isWorkspaceRoot ? '' : (root.sourceId || root.id || ''),
       provider: root.provider || '',
       dropboxPath: root.dropboxPath || '',
       needsMapping: root.needsMapping === true,
+      rootKind: root.kind || '',
+      workspaceId: root.workspaceId || '',
       _isRoot: true,
     };
-    el.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
+    fragment.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
   }
+  el.appendChild(fragment);
   // ルート直下のマニュアル並び順を復元
   applyManualSort(el, '_root');
 }
@@ -315,6 +439,7 @@ function _treeScrollGuardRestore() {
 
 function _getTreeSelectionScope(nodeEl) {
   if (nodeEl?.closest('#body-home')) return '#body-home';
+  if (nodeEl?.closest('#body-workspaces')) return '#body-workspaces';
   return '#outliner-tree';
 }
 
@@ -675,12 +800,12 @@ async function toggleItemLock(path) {
     if (locked) {
       await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
     } else {
-      const reasonInput = window.prompt('編集ロックの理由（任意）', '');
-      if (reasonInput == null) return false;
-      const reason = reasonInput || '';
+      // ダイアログ禁止原則: window.prompt は使わない。
+      // 編集ロックの理由は任意であり、後から付箋注釈・履歴ノートで補足できるため、
+      // ロック取得時点では空でセットし、必要なら後段で編集する運用にする。
       await _fileLockApi('/file-lock', {
         method: 'PUT',
-        body: JSON.stringify({ path, file_id: (typeof _pathToFileId === 'function' && _pathToFileId(path)) || '', reason }),
+        body: JSON.stringify({ path, file_id: (typeof _pathToFileId === 'function' && _pathToFileId(path)) || '', reason: '' }),
       });
     }
     await _ensureLocksLoaded({ force: true });
@@ -793,7 +918,7 @@ function _syncOutlinerConflictBadgeToNode(nodeEl) {
 }
 
 function refreshVisibleOutlinerConflictState() {
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
     .forEach(node => _syncOutlinerConflictBadgeToNode(node));
 }
 
@@ -829,7 +954,7 @@ function _syncOutlinerAddHoverButton(nodeEl, item, locked) {
 }
 
 function refreshVisibleOutlinerLockState() {
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
     .forEach(node => _applyOutlinerLockStateToNode(node));
 }
 
@@ -878,13 +1003,16 @@ function refreshOutlinerSettingsAfterHistory() {
   if (typeof loadOutliner === 'function') loadOutliner();
   if (typeof renderFavorites === 'function') renderFavorites();
   if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+  if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
 }
 
-async function refreshOutliner() {
+async function refreshOutliner(options) {
+  const opts = options && typeof options === 'object' ? options : {};
   const refreshJobs = [];
-  if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner()));
+  if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(opts)));
   if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
   if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+  if (typeof renderWorkspaceSidebar === 'function') refreshJobs.push(Promise.resolve().then(() => renderWorkspaceSidebar()));
   return Promise.allSettled(refreshJobs);
 }
 
@@ -897,8 +1025,12 @@ async function refreshOutlinerFromButton(event) {
     btn.disabled = true;
     btn.setAttribute('aria-busy', 'true');
   }
+  // 更新前の展開状態を維持するため、自動展開の制限とカウンタを初期化する
+  _outlinerForceExpansionMode = true;
+  _outlinerAutoExpandScheduled = 0;
+  _outlinerAutoExpandOverflowNotified = false;
   try {
-    const results = await refreshOutliner();
+    const results = await refreshOutliner({ force: true, reason: 'manual-refresh' });
     const failedCount = (results || []).filter(result => result?.status === 'rejected').length;
     if (typeof showStatus === 'function') {
       showStatus(failedCount ? 'フォルダツリーの一部更新に失敗しました' : 'フォルダツリーを更新しました', !!failedCount);
@@ -909,6 +1041,9 @@ async function refreshOutlinerFromButton(event) {
     if (btn) {
       btn.disabled = false;
       btn.removeAttribute('aria-busy');
+    }
+    if (!_outlinerAutoExpandQueue.length && !_outlinerAutoExpandRunning) {
+      _outlinerForceExpansionMode = false;
     }
   }
 }
@@ -957,10 +1092,14 @@ function createTreeNodeFromBrowse(item, rootPath) {
   div._nodeData = item;
   if (item.path) div.dataset.path = item.path;
   if (item.sourceId) div.dataset.sourceId = item.sourceId;
+  if (item.rootKind) div.dataset.rootKind = item.rootKind;
+  if (item.workspaceId) div.dataset.workspaceId = item.workspaceId;
   if (item.file_id) _registerFileId(item.path, item.file_id);
 
   const row = document.createElement('div');
   row.className = 'tree-node-row';
   row.dataset.itemType = item.type || '';
   if (item.sourceId) row.dataset.sourceId = item.sourceId;
+  if (item.rootKind) row.dataset.rootKind = item.rootKind;
+  if (item.workspaceId) row.dataset.workspaceId = item.workspaceId;
   const itemLocked = item.path && isItemLocked(item.path);

@@ -717,6 +717,13 @@
     max-height: calc(var(--cloud-visual-vh, 100dvh) - var(--cloud-mobile-safe-top, 0px) - var(--cloud-mobile-safe-bottom, 0px) - 16px) !important;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal.settings-modal {
+    box-sizing: border-box !important;
+    min-width: 0 !important;
+    width: min(560px, calc(100vw - 16px)) !important;
+    max-width: calc(100vw - 16px) !important;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer[role="dialog"] {
     max-width: min(72vw, 560px) !important;
     max-height: var(--cloud-visual-vh, 100dvh) !important;

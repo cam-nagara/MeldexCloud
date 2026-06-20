@@ -81,6 +81,29 @@ function _autoFillValueRef(val, propName) {
   };
 }
 
+function _autoFillSameDbPath(a, b) {
+  const norm = typeof _dbNormalizePath === 'function'
+    ? _dbNormalizePath
+    : (path) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return !!a && !!b && norm(a) === norm(b);
+}
+
+async function _autoFillPivotDataForDb(dbPath, options = {}) {
+  const ctx = options.ctx || null;
+  if (ctx?.pivotData?.entities && _autoFillSameDbPath(ctx.dbPath, dbPath)) return ctx.pivotData;
+  if (state?.pivotData?.entities) {
+    if (!state.currentDbPath || _autoFillSameDbPath(state.currentDbPath, dbPath)) return state.pivotData;
+  }
+  if (typeof _dbFindPaneContextForPath === 'function') {
+    const paneCtx = _dbFindPaneContextForPath(dbPath);
+    if (paneCtx?.pivotData?.entities) return paneCtx.pivotData;
+  }
+  if (typeof apiFetch === 'function') {
+    try { return await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch {}
+  }
+  return null;
+}
+
 async function _writeAutoFillValue(entityPath, entityData, propName, value, writeStatus) {
   const existing = _findAutoFillExistingValue(entityData, propName, writeStatus);
   if (existing) {
@@ -141,10 +164,11 @@ async function _autoFillOnCreate(dbPath, entityPath, overrides) {
   }
 }
 
-async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath) {
+async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath, options = {}) {
   if (!dbPath) return;
   const ops = [];
   const ptypes = getPropertyTypes(dbPath);
+  const pivotData = await _autoFillPivotDataForDb(dbPath, options);
   const needsVersion = Object.values(ptypes).some(p => {
     const a = p && p.autoFillOnStatus;
     return a && typeof a === 'object' && a[newStatus] === '$version';
@@ -169,7 +193,7 @@ async function _autoFillOnStatusChange(entityPath, propName, newStatus, dbPath) 
     const ep = _autoFillEntityPathForWrite(entityPath);
     if (!ep) continue;
     const entName = _autoFillEntityNameFromPath(ep);
-    const ent = state.pivotData?.entities?.[entName] || null;
+    const ent = pivotData?.entities?.[entName] || null;
     try {
       const op = await _writeAutoFillValue(ep, ent, pName, value, writeStatus);
       if (op) ops.push(op);

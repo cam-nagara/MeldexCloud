@@ -72,6 +72,7 @@
       skipAutoVersion: true,
       skipSaveLastView: true,
       skipHighlight: true,
+      forceRefresh: true,
     };
   }
 
@@ -131,7 +132,7 @@
         openViewer('/viewer?file=' + encodeURIComponent(path), opts);
         return true;
       }
-      if (DB_VIEW_TYPES.has(type) && typeof selectDatabase === 'function') return _handled(() => selectDatabase(path, null, opts));
+      if (DB_VIEW_TYPES.has(type) && typeof selectDatabase === 'function') return _handled(() => selectDatabase(path, typeof _currentPaneState === 'function' ? _currentPaneState() : null, opts));
       if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
         GBPaneBridge.refreshPaneAfterTabSwitch(paneId || _activePaneId(), { force: true });
         return true;

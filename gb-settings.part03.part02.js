@@ -330,6 +330,7 @@ const _SETTINGS_PANEL_INIT_DATA_KEYS = {
   'Discord Bot': 'settingsInitDiscordBot',
   'フィードバック': 'settingsInitFeedbackForm',
   'ユーザー': 'settingsInitUsers',
+  'ワークスペース': 'settingsInitWorkspaces',
   '取り込み': 'settingsInitExternalImport',
   '拡張機能': 'settingsInitExtensions',
   'ショートカット': 'settingsInitShortcuts',
@@ -354,6 +355,7 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
       if (typeof loadStorageInfoForSettings === 'function') loadStorageInfoForSettings();
       if (typeof loadMobileAccessUrlsForSettings === 'function') loadMobileAccessUrlsForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
+      if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
       if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
       return;
     }
@@ -384,12 +386,16 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
       if (typeof loadFileLockListForSettings === 'function') loadFileLockListForSettings();
       return;
     }
+    if (canonical === 'ワークスペース') {
+      if (typeof settingsInitWorkspaces === 'function') settingsInitWorkspaces(modal);
+      return;
+    }
     if (canonical === '取り込み') {
       if (typeof renderExternalImportSettings === 'function') renderExternalImportSettings(modal);
+      if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
       return;
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
-      if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
       if (typeof renderNotionSyncSettings === 'function') renderNotionSyncSettings(modal);
       if (typeof loadWebClipperSetupForSettings === 'function') loadWebClipperSetupForSettings();
       _loadExtensionStatus();
@@ -515,8 +521,8 @@ async function _loadExtensionStatus() {
           <div style="font-size:11px;color:var(--fg2);margin-bottom:2px;">Thunderbird: ${esc(info.instructions.thunderbird)}</div>
           <div style="font-size:11px;color:var(--fg2);">Google: ${esc(info.instructions.google)}</div>
           <div style="margin-top:6px;display:flex;gap:6px;">
-            <button data-action="apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))" style="font-size:11px;padding:3px 10px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">シート → CalDAV同期</button>
-            <button data-action="apiPost('/caldav/sync-from-ics').then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))" style="font-size:11px;padding:3px 10px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">CalDAV → シート同期</button>
+            <button data-action="apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))" style="font-size:11px;padding:3px 10px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">Meldex → CalDAV同期</button>
+            <button data-action="apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))" style="font-size:11px;padding:3px 10px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">CalDAV → Meldex同期</button>
           </div>
         </div>`;
       } catch {}

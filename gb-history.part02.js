@@ -15,9 +15,13 @@ async function _flushPendingEditorVersionTarget(path, folderPath) {
     ? _normalizeVersionComparePath(getCurrentFilePath())
     : _normalizeVersionComparePath(document.getElementById('page-content')?.dataset?.path || '');
   if (folderPath ? !_historyPathUnderFolder(current, folderPath) : (target && !_sameVersionTargetPath(current, target))) return 0;
-  const results = await Promise.resolve(flushPendingEditorAutosave());
-  if (Array.isArray(results) && results.some(r => r?.status === 'rejected')) throw new Error('ノートの未保存内容を保存できませんでした');
-  return Array.isArray(results) ? results.length : 1;
+  const raw = await Promise.resolve(flushPendingEditorAutosave());
+  // 戻り値が配列でなくても rejection が検知できるよう正規化
+  const results = Array.isArray(raw) ? raw : [raw];
+  if (results.some(r => r && typeof r === 'object' && r.status === 'rejected')) {
+    throw new Error('ノートの未保存内容を保存できませんでした');
+  }
+  return results.length;
 }
 
 async function _flushOpenAppVersionTarget(path, folderPath) {
@@ -255,6 +259,10 @@ function historyPush(label, undoFn, redoFn, scope, detail) {
   const max = getHistoryMax();
   while (s.undo.length > max) s.undo.shift();
   s.redo.length = 0;
+  // 新規アクション後はグローバル redo も破棄する（スコープ push でも redo 履歴は無効化される）
+  if (scope && _historyGlobal && _historyGlobal !== s) {
+    _historyGlobal.redo.length = 0;
+  }
   renderHistoryList();
   renderHistoryPanel();
 }

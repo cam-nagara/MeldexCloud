@@ -105,7 +105,7 @@
       <p style="line-height:1.7;color:var(--fg2);">ベータ版の利用条件を確認し、最初の無題ノートを作成して開始します。</p>
       <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
         <button class="gb-btn gb-btn-sm" data-onboarding-action="consent">${lucide('shieldCheck',14)} 利用条件を確認</button>
-        <button class="gb-btn gb-btn-sm" data-onboarding-action="about">${lucide('info',14)} Meldexについて</button>
+        <button class="gb-btn gb-btn-sm" data-onboarding-action="about">${lucide('info',14)} Meldex（メルデックス）について</button>
       </div>`;
   }
 

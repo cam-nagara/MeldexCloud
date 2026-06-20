@@ -352,10 +352,18 @@ function bdScreenToWorld(sx, sy) {
   return { x: (lx - bd.panX) / bd.zoom, y: (ly - bd.panY) / bd.zoom };
 }
 function bdResetRotation() { bd.rotation = 0; bdTransform(); showStatus('回転をリセット'); }
-function bdFitAll() {
+function bdFitAll(_retryCount) {
   if (!bd.nodes.length) { bd.zoom=1; bd.panX=bd.panY=0; bd.rotation=0; bdTransform(); return; }
   const c=document.getElementById('bd-canvas');
   if (!c) return; // ボード DOM 未生成時 (非同期タブ切替中など) はスキップ
+  // キャンバスがまだレイアウト前 (clientWidth/Height が 0) の場合、
+  // ズーム計算が 0 になり Math.max(0.1, 0) で 10% に張り付く不具合になる。
+  // 次フレームで再試行する。最大 30 フレーム (約 500ms) で諦める。
+  if (c.clientWidth <= 0 || c.clientHeight <= 0) {
+    const next = (_retryCount || 0) + 1;
+    if (next <= 30) requestAnimationFrame(() => bdFitAll(next));
+    return;
+  }
   let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
   // contained カードは相対座標のため fit 計算から除外 (親の範囲は container の絶対座標で含まれる)
   bd.nodes.forEach(n => { if (n.contained) return; x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); const el=document.getElementById('bdn-'+n.id); x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:40)); });

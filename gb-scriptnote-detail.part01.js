@@ -241,7 +241,12 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     // 各列のプレビューセル
     const previewCells = [];
-    const CELL_LABELS = { _gutter: 'p01', _gutter2: 'コマ01', _role: null, _text: 'テキスト列' };
+    const CELL_LABELS = {
+      _gutter: this._detailCellPreviewLabel('_gutter'),
+      _gutter2: this._detailCellPreviewLabel('_gutter2'),
+      _role: null,
+      _text: this._detailCellPreviewLabel('_text'),
+    };
     const _pageBg = 'var(--sn2-page-bg, var(--content-bg, var(--bg)))';
     // 動的スタイルを一括適用するヘルパー (背景・文字・太字・斜体・サイズ)
     const applyDynStyle = (el, props) => { Object.assign(el.style, props); };
@@ -256,14 +261,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       const bgIsTransparent = !rawBg || rawBg === 'transparent' || rawBg === 'rgba(0,0,0,0)';
       const bgDisplay = bgIsTransparent ? _pageBg : rawBg;
       const fgDisplay = cs.textColor || ec.textColor || 'var(--fg)';
-      // フォント: _text列と_role列はcharaフォールバック（エディタの挙動と一致）
+      // フォント: _text列は旧データ互換のcharaフォールバックを使う。_role列はタイプ列専用設定のみ使う。
       const isRole = col.id === '_role';
-      const fwActive = ((isText || isRole) ? (cs.fontWeight || chara.fontWeight) : cs.fontWeight) === 'bold';
-      const fstActive = ((isText || isRole) ? (cs.fontStyle || chara.fontStyle) : cs.fontStyle) === 'italic';
-      const effFz = (isText || isRole) ? (cs.fontSize || chara.fontSize) : cs.fontSize;
-      const effFont = (isText || isRole) ? (cs.fontFamily || chara.fontFamily) : cs.fontFamily;
-      const effStrokeColor = (isText || isRole) ? (cs.textStrokeColor || chara.textStrokeColor) : cs.textStrokeColor;
-      const effStrokeWidth = (isText || isRole) ? (cs.textStrokeWidth || chara.textStrokeWidth) : cs.textStrokeWidth;
+      const fwActive = (isText ? (cs.fontWeight || chara.fontWeight) : cs.fontWeight) === 'bold';
+      const fstActive = (isText ? (cs.fontStyle || chara.fontStyle) : cs.fontStyle) === 'italic';
+      const effFz = isText ? (cs.fontSize || chara.fontSize) : cs.fontSize;
+      const effFont = isText ? (cs.fontFamily || chara.fontFamily) : cs.fontFamily;
+      const effStrokeColor = isText ? (cs.textStrokeColor || chara.textStrokeColor) : cs.textStrokeColor;
+      const effStrokeWidth = isText ? (cs.textStrokeWidth || chara.textStrokeWidth) : cs.textStrokeWidth;
       const effAccentColor = cs.accentColor || chara.accentColor || fgDisplay || 'var(--accent)';
       const dynStyle = {
         background: bgDisplay,
@@ -399,13 +404,13 @@ Object.assign(ScriptNoteEditor.prototype, {
         const bgTrans = !rawBg || rawBg === 'transparent' || rawBg === 'rgba(0,0,0,0)';
         const bg = bgTrans ? _pageBg : rawBg;
         const fg = cs.textColor || ec.textColor || 'var(--fg)';
-        // フォント: _text列と_role列はcharaフォールバック（エディタと一致）
-        const fw = ((isText || isRole) ? (cs.fontWeight || chara.fontWeight) : cs.fontWeight) === 'bold' ? 'bold' : '';
-        const fst = ((isText || isRole) ? (cs.fontStyle || chara.fontStyle) : cs.fontStyle) === 'italic' ? 'italic' : '';
-        const fz = (isText || isRole) ? (cs.fontSize || chara.fontSize || '') : (cs.fontSize || '');
-        const ff = (isText || isRole) ? (cs.fontFamily || chara.fontFamily || '') : (cs.fontFamily || '');
-        const strokeColor = (isText || isRole) ? (cs.textStrokeColor || chara.textStrokeColor || '') : (cs.textStrokeColor || '');
-        const strokeWidth = (isText || isRole) ? (cs.textStrokeWidth || chara.textStrokeWidth || '') : (cs.textStrokeWidth || '');
+        // フォント: _text列は旧データ互換のcharaフォールバックを使う。_role列はタイプ列専用設定のみ使う。
+        const fw = (isText ? (cs.fontWeight || chara.fontWeight) : cs.fontWeight) === 'bold' ? 'bold' : '';
+        const fst = (isText ? (cs.fontStyle || chara.fontStyle) : cs.fontStyle) === 'italic' ? 'italic' : '';
+        const fz = isText ? (cs.fontSize || chara.fontSize || '') : (cs.fontSize || '');
+        const ff = isText ? (cs.fontFamily || chara.fontFamily || '') : (cs.fontFamily || '');
+        const strokeColor = isText ? (cs.textStrokeColor || chara.textStrokeColor || '') : (cs.textStrokeColor || '');
+        const strokeWidth = isText ? (cs.textStrokeWidth || chara.textStrokeWidth || '') : (cs.textStrokeWidth || '');
         const accentColor = cs.accentColor || chara.accentColor || fg || 'var(--accent)';
         const ta = isText ? (cs.textAlign || chara.textAlign || 'center') : (cs.textAlign || 'center');
         const va = isText ? (cs.textValign || chara.textValign || '') : (cs.textValign || '');
@@ -442,7 +447,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           }
           nextProps.whiteSpace = toVal === 'wrap' ? 'normal' : 'nowrap';
           if (!pc.isDefaultLabel) {
-            const label = CELL_LABELS[pc.colId] !== undefined ? CELL_LABELS[pc.colId] : '';
+            const label = this._detailCellPreviewLabel(pc.colId) ?? (CELL_LABELS[pc.colId] !== undefined ? CELL_LABELS[pc.colId] : '');
             pc.el.textContent = tb + (label || '') + taf;
           }
         }
@@ -465,6 +470,33 @@ Object.assign(ScriptNoteEditor.prototype, {
     toolbar.querySelectorAll('.sn2-detail-bulk-btn').forEach(btn => {
       btn.hidden = hidden;
     });
+  },
+
+  _detailMultiSelectionPositionAnchor(anchorEl, panelContainer) {
+    if (!this._detailSelection || this._detailSelection.size <= 1) return null;
+    const root = panelContainer || anchorEl?.closest?.('.sn2-detail') || document;
+    const selectedRows = [...this._detailSelection]
+      .map(idx => root.querySelector?.(`.sn2-detail-item[data-idx="${idx}"]`))
+      .filter(Boolean);
+    const rows = selectedRows.length
+      ? selectedRows
+      : Array.from(root.querySelectorAll?.('.sn2-detail-item.selected') || []);
+    let bottomRect = null;
+    rows.forEach((row) => {
+      const rect = row.getBoundingClientRect?.();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      if (!bottomRect || rect.bottom > bottomRect.bottom || (rect.bottom === bottomRect.bottom && rect.top > bottomRect.top)) {
+        bottomRect = rect;
+      }
+    });
+    if (!bottomRect) return null;
+    const anchorRect = {
+      left: bottomRect.left,
+      right: bottomRect.right,
+      top: bottomRect.bottom,
+      bottom: bottomRect.bottom,
+    };
+    return { getBoundingClientRect: () => anchorRect };
   },
 
   _bulkColorChange(prop, panelContainer) {
@@ -578,6 +610,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     };
     const bulkValues = {};
+    const isEmptyBulkValue = (value) => value === '' || value === null || value === undefined
+      || (typeof value === 'number' && !Number.isFinite(value));
+    const setBulkValue = (target, prop, value) => {
+      if (!target) return;
+      if (isEmptyBulkValue(value)) delete target[prop];
+      else target[prop] = value;
+    };
+    const cleanupTextStyle = (chara) => {
+      if (chara?.textStyle && !Object.keys(chara.textStyle).length) delete chara.textStyle;
+    };
+    const mirrorToTextStyle = new Set(['bgColor', 'textColor', 'fontWeight', 'fontStyle', 'fontSize', 'textBefore', 'textAfter']);
     // カラーピッカー（直接openColorPaletteを使用。適用前なので_refreshRowStylesは呼ばない）
     popup.querySelectorAll('[data-bulk-color]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -616,15 +659,25 @@ Object.assign(ScriptNoteEditor.prototype, {
           // デフォルトタイプは kind 変更のみ対象外（常に 'none' 固定）
           if (chara.isDefault && realProp === 'kind') return;
           if (isTs) {
-            if (!chara.textStyle) chara.textStyle = {};
-            chara.textStyle[realProp] = val;
+            if (!chara.textStyle && !isEmptyBulkValue(val)) chara.textStyle = {};
+            if (chara.textStyle) {
+              setBulkValue(chara.textStyle, realProp, val);
+              cleanupTextStyle(chara);
+            }
           } else if (realProp === 'kind') {
             chara.kind = val;
             chara.isBreak = val === 'break';
             chara.isSummary = val === 'summary';
             this._calcCache = null;
           } else {
-            chara[realProp] = val;
+            setBulkValue(chara, realProp, val);
+            if (mirrorToTextStyle.has(realProp)) {
+              if (!chara.textStyle && !isEmptyBulkValue(val)) chara.textStyle = {};
+              if (chara.textStyle) {
+                setBulkValue(chara.textStyle, realProp, val);
+                cleanupTextStyle(chara);
+              }
+            }
           }
         });
       });
@@ -641,7 +694,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         close: closePopup,
       });
     }
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect());
+    const positionAnchor = this._detailMultiSelectionPositionAnchor(anchor, panelContainer) || anchor;
+    if (typeof positionPopup === 'function') positionPopup(popup, positionAnchor.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
     setTimeout(() => {
       closeHandler = (ev) => {
@@ -821,13 +875,180 @@ Object.assign(ScriptNoteEditor.prototype, {
     return chara.customStyles[colId];
   },
 
+  _countConfigPrefixForColumn(colId) {
+    if (colId === '_gutter') return 'primary';
+    if (colId === '_gutter2') return 'secondary';
+    return '';
+  },
+
+  _countConfigLabelForPrefix(prefix) {
+    return prefix === 'primary' ? '大区切り' : '小区切り';
+  },
+
+  _countConfigDefaultLabel(prefix) {
+    const def = this._getCountDef ? this._getCountDef() : {};
+    return prefix === 'primary' ? (def.primaryLabel || 'p') : (def.secondaryLabel || 'コマ');
+  },
+
+  _countConfigFieldValues(prefix) {
+    const cc = this.doc?.editor?.countConfig || {};
+    const unit = cc[prefix + 'Label'] ?? this._countConfigDefaultLabel(prefix);
+    const pad = Math.max(0, Math.min(5, Number(cc[prefix + 'Pad'] ?? cc.padDigits ?? 2) || 0));
+    const pos = ['before', 'after', 'both'].includes(cc[prefix + 'Pos']) ? cc[prefix + 'Pos'] : (cc.labelPosition || 'before');
+    const labelBeforeRaw = cc[prefix + 'LabelBefore'];
+    const labelAfterRaw = cc[prefix + 'LabelAfter'];
+    return {
+      unit,
+      pad,
+      pos: ['before', 'after', 'both'].includes(pos) ? pos : 'before',
+      labelBefore: labelBeforeRaw == null ? unit : labelBeforeRaw,
+      labelAfter: labelAfterRaw == null ? unit : labelAfterRaw,
+    };
+  },
+
+  _detailCellPreviewLabel(colId) {
+    const prefix = this._countConfigPrefixForColumn(colId);
+    if (prefix) {
+      const values = this._countConfigFieldValues(prefix);
+      return this._fmtCount(values.unit, 1, {
+        pad: values.pad,
+        pos: values.pos,
+        labelBefore: values.labelBefore,
+        labelAfter: values.labelAfter,
+      });
+    }
+    if (colId === '_role') return null;
+    if (colId === '_text') return 'テキスト列';
+    return '';
+  },
+
+  _refreshDetailCountPreviews(panelContainer) {
+    const root = panelContainer || document;
+    root.querySelectorAll?.('.sn2-detail-item').forEach((item) => {
+      if (item?._applyPreview) item._applyPreview();
+    });
+  },
+
+  _applyCountConfigFormatSetting(key, value, panelContainer) {
+    if (!key) return;
+    if (!this.doc.editor) this.doc.editor = {};
+    if (!this.doc.editor.countConfig) this.doc.editor.countConfig = {};
+    this._pushUndo('区切り表示設定変更');
+    const cc = this.doc.editor.countConfig;
+    if (key.endsWith('Pad')) {
+      const parsed = Number(value);
+      cc[key] = Math.max(0, Math.min(5, Number.isFinite(parsed) ? Math.round(parsed) : 0));
+    } else if (key.endsWith('Pos')) {
+      cc[key] = ['before', 'after', 'both'].includes(value) ? value : 'before';
+      if (cc[key] === 'both') {
+        const prefix = key.slice(0, -3);
+        const unitVal = cc[prefix + 'Label'] ?? this._countConfigDefaultLabel(prefix);
+        if (cc[prefix + 'LabelBefore'] == null) cc[prefix + 'LabelBefore'] = unitVal;
+        if (cc[prefix + 'LabelAfter'] == null) cc[prefix + 'LabelAfter'] = unitVal;
+      }
+    } else {
+      cc[key] = String(value == null ? '' : value).trim();
+    }
+    this._calcCache = null;
+    this._updateGuttersFrom(0);
+    this._render();
+    this._markDirty();
+    this._refreshDetailCountPreviews(panelContainer);
+  },
+
+  _buildCountConfigFormatControls(colId, panelContainer) {
+    const prefix = this._countConfigPrefixForColumn(colId);
+    if (!prefix || typeof gbFmt === 'undefined') return [];
+    const label = this._countConfigLabelForPrefix(prefix);
+    const values = this._countConfigFieldValues(prefix);
+    const unitKey = prefix + 'Label';
+    const padKey = prefix + 'Pad';
+    const posKey = prefix + 'Pos';
+    const beforeKey = prefix + 'LabelBefore';
+    const afterKey = prefix + 'LabelAfter';
+    const update = (key, value) => this._applyCountConfigFormatSetting(key, value, panelContainer);
+
+    const unitInput = gbFmt.makeTextInput({
+      value: values.unit,
+      placeholder: this._countConfigDefaultLabel(prefix),
+      title: label + 'の単位',
+      width: 54,
+      onChange: (v) => update(unitKey, v),
+    });
+    unitInput.dataset.e2eId = `scriptnote-format-${prefix}-label`;
+    const padInput = gbFmt.makeNumInput({
+      title: label + 'の桁',
+      value: values.pad,
+      min: 0,
+      max: 5,
+      width: 44,
+      placeholder: '桁',
+      allowEmpty: false,
+      onChange: (v) => update(padKey, v),
+    });
+    padInput.dataset.e2eId = `scriptnote-format-${prefix}-pad`;
+    const posSelect = gbFmt.makeSelect({
+      value: values.pos,
+      opts: [
+        { v: 'before', l: '単位+数' },
+        { v: 'after', l: '数+単位' },
+        { v: 'both', l: '前+数+後' },
+      ],
+      onChange: (v) => {
+        update(posKey, v);
+        syncBothControls();
+      },
+    });
+    posSelect.title = label + 'の表示位置';
+    posSelect.dataset.e2eId = `scriptnote-format-${prefix}-position`;
+
+    const beforeInput = gbFmt.makeTextInput({
+      value: values.labelBefore,
+      placeholder: '前',
+      title: label + 'の前の単位',
+      width: 36,
+      onChange: (v) => update(beforeKey, v),
+    });
+    beforeInput.dataset.e2eId = `scriptnote-format-${prefix}-label-before`;
+    const afterInput = gbFmt.makeTextInput({
+      value: values.labelAfter,
+      placeholder: '後',
+      title: label + 'の後の単位',
+      width: 36,
+      onChange: (v) => update(afterKey, v),
+    });
+    afterInput.dataset.e2eId = `scriptnote-format-${prefix}-label-after`;
+    const beforeGroup = gbFmt.makeGroup([gbFmt.makeLabel('前'), beforeInput]);
+    const afterGroup = gbFmt.makeGroup([gbFmt.makeLabel('後'), afterInput]);
+    const syncBothControls = () => {
+      const hidden = posSelect.value !== 'both';
+      beforeGroup.hidden = hidden;
+      afterGroup.hidden = hidden;
+      if (!hidden) {
+        const latest = this._countConfigFieldValues(prefix);
+        beforeInput.value = latest.labelBefore;
+        afterInput.value = latest.labelAfter;
+      }
+    };
+    syncBothControls();
+
+    return [
+      gbFmt.makeGroup([gbFmt.makeLabel(label, 'gb-fmt-label--group')]),
+      gbFmt.makeGroup([gbFmt.makeLabel('単位'), unitInput]),
+      gbFmt.makeGroup([gbFmt.makeLabel('桁'), padInput]),
+      gbFmt.makeGroup([gbFmt.makeLabel('位置'), posSelect]),
+      beforeGroup,
+      afterGroup,
+    ];
+  },
+
   // セルスタイルポップアップ（列別スタイル編集）— openFormatPopup 経由
   _showCellStylePopup(anchorEl, chara, colId, panelContainer) {
     if (typeof openFormatPopup !== 'function') return;
     const style = this._getColStyle(chara, colId);
     const isTextCol = colId === '_text';
     const isRoleCol = colId === '_role';
-    const needsLegacySync = isTextCol || isRoleCol;
+    const needsLegacySync = isTextCol;
     const refreshItem = () => { const item = anchorEl.closest('.sn2-detail-item'); if (item?._applyPreview) item._applyPreview(); };
     const ec = this._resolveCharaColors(chara, colId) || {};
     const pick = (primary, fallback) => (primary != null && primary !== '' ? primary : fallback);
@@ -872,6 +1093,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     openFormatPopup(anchorEl, {
       values,
       className: 'gb-fmt-popup--cell-style',
+      positionAnchor: this._detailMultiSelectionPositionAnchor(anchorEl, panelContainer),
+      extraRow2: this._buildCountConfigFormatControls(colId, panelContainer),
       onChange: (prop, value) => {
         this._pushUndo(UNDO_LABELS[prop] || 'タイプ書式変更');
         if (prop === 'bgColor' || prop === 'textColor') {

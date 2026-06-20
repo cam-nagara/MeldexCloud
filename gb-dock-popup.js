@@ -163,7 +163,7 @@
     el.innerHTML = `
       <div class="gb-dock-popup-header">
         <span class="gb-dock-popup-title"></span>
-        <button type="button" class="gb-dock-popup-close" title="閉じる">×</button>
+        <button type="button" class="gb-dock-popup-close" data-e2e-id="dock-popup-close" aria-label="閉じる" title="閉じる">×</button>
       </div>
       <div class="gb-dock-popup-body"></div>
       <div class="gb-dock-popup-resize-handle" data-dir="n"></div>

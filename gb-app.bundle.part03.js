@@ -1,5 +1,153 @@
+  if (fileId) return 'db:' + fileId;
+  if (dbPath) return 'db:' + String(dbPath).replace(/\\/g, '/');
+  return (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
+}
+function _refreshDbViewConfigAfterHistory(dbPath) {
+  if (!dbPath || state.currentDbPath !== dbPath) return;
+  const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
+  if (typeof selectDatabase === 'function') {
+    Promise.resolve(selectDatabase(dbPath, ctx, {
+      silent: true,
+      skipRecent: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+      skipAutoVersion: true,
+    })).catch(() => {});
+  } else if (typeof renderPivot === 'function') {
+    renderPivot(ctx);
+  }
+}
+function captureDbViewConfigHistory(dbPath) {
+  if (typeof captureLocalStorageSettings !== 'function') return null;
+  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
+    && isLocalStorageSettingsHistorySuppressed()) return null;
+  return captureLocalStorageSettings([getDbViewConfigStorageKey(dbPath)]);
+}
+function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, detail, onRestore) {
+  if (!beforeSnapshot || !afterSnapshot || typeof historyPush !== 'function'
+    || typeof restoreLocalStorageSettings !== 'function'
+    || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
+  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
+    && isLocalStorageSettingsHistorySuppressed()) return false;
+  const snapshots = _normalizeLocalStorageSettingsSnapshots(beforeSnapshot, afterSnapshot);
+  let beforeKey = '';
+  let afterKey = '';
+  try {
+    beforeKey = JSON.stringify(snapshots.before);
+    afterKey = JSON.stringify(snapshots.after);
+  } catch {}
+  if (beforeKey && beforeKey === afterKey) return false;
+  const refresh = typeof onRestore === 'function'
+    ? onRestore
+    : () => _refreshDbViewConfigAfterHistory(dbPath);
+  const restoreViewConfigSnapshot = (snapshot) => {
+    const restored = restoreLocalStorageSettings(snapshot);
+    if (!restored) return false;
+    const finish = () => refresh(snapshot.keys || [], snapshot);
+    if (typeof _persistDbViewConfigToBackend === 'function') {
+      return _persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true })
+        .finally(finish);
+    }
+    return finish();
+  };
+  historyPush(
+    label || 'シート表示設定',
+    () => restoreViewConfigSnapshot(snapshots.before),
+    () => restoreViewConfigSnapshot(snapshots.after),
+    _dbViewConfigHistoryScope(dbPath),
+    detail || ''
+  );
+  return true;
+}
+function withDbViewConfigHistory(dbPath, label, mutator, detail, onRestore) {
+  const before = captureDbViewConfigHistory(dbPath);
+  const result = typeof mutator === 'function' ? mutator() : undefined;
+  const after = captureDbViewConfigHistory(dbPath);
+  pushDbViewConfigHistory(dbPath, label, before, after, detail, onRestore);
+  return result;
+}
+function saveDbViewConfig(dbPath, cfg, options = {}) {
+  const key = getDbViewConfigStorageKey(dbPath);
+  const label = options.historyLabel || options.label || '';
+  const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
+  localStorage.setItem(key, JSON.stringify(cfg || {}));
+  if (options.skipBackend !== true) {
+    _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: options.flushBackend === true });
+  }
+  if (label && options.skipHistory !== true) {
+    pushDbViewConfigHistory(
+      dbPath,
+      label,
+      before,
+      captureDbViewConfigHistory(dbPath),
+      options.historyDetail || options.detail || '',
+      options.onRestore
+    );
+  }
+}
+function _getCurrentDbViewIndexFromConfig(cfg, options = {}) {
+  const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
+  if (views.length === 0) return -1;
+  const ctxIdx = Number.isInteger(options?.ctx?.currentViewIdx) ? options.ctx.currentViewIdx : null;
+  const optIdx = Number.isInteger(options?.currentViewIdx) ? options.currentViewIdx : null;
+  const rawIdx = ctxIdx != null ? ctxIdx : (optIdx != null ? optIdx : (Number.isInteger(cfg.currentViewIdx) ? cfg.currentViewIdx : 0));
+  return rawIdx >= 0 && rawIdx < views.length ? rawIdx : 0;
+}
+function _getCurrentDbViewConfigEntryFromConfig(cfg, options = {}) {
+  const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
+  const idx = _getCurrentDbViewIndexFromConfig(cfg, options);
+  if (idx < 0) return null;
+  return views[idx] || null;
+}
+function getCurrentDbViewConfigEntry(dbPath, options = {}) {
+  return _getCurrentDbViewConfigEntryFromConfig(getDbViewConfig(dbPath), options);
+}
+function getCurrentViewMode(dbPath, options = {}) {
+  return getCurrentDbViewConfigEntry(dbPath, options)?.viewMode || 'pivot';
+}
+function getCurrentDbViewTypeSpecific(dbPath, type, options = {}) {
+  const bucket = getCurrentDbViewConfigEntry(dbPath, options)?.typeSpecific?.[type];
+  return _isDbViewPlainObject(bucket) ? bucket : null;
+}
+function _saveCurrentDbViewField(dbPath, label, detail, options, mutator) {
+  const c = getDbViewConfig(dbPath);
+  const v = _getCurrentDbViewConfigEntryFromConfig(c, options);
+  if (!v || typeof mutator !== 'function') return false;
+  mutator(v, c);
+  saveDbViewConfig(dbPath, c, {
+    historyLabel: label || '',
+    historyDetail: detail || '',
+    skipHistory: options?.skipHistory === true || !label,
+  });
+  return true;
+}
+function setCurrentDbViewTypeSpecific(dbPath, type, value, options = {}) {
+  const label = options.historyLabel || options.label || '';
+  return _saveCurrentDbViewField(dbPath, label, options.detail || '', options, (v) => {
+    if (!_isDbViewPlainObject(v.typeSpecific)) v.typeSpecific = {};
+    v.typeSpecific[type] = _isDbViewPlainObject(value) ? value : {};
+  });
+}
+// 非表示カラム
+function getHiddenCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.hiddenCols || []; }
+function setHiddenCols(dbPath, cols, options = {}) {
+  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 表示列', options.detail || '', options, (v) => { v.hiddenCols = cols; });
+}
+// ピン留めカラム
+function getPinnedCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.pinnedCols || []; }
+function setPinnedCols(dbPath, cols, options = {}) {
+  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 固定列', options.detail || '', options, (v) => { v.pinnedCols = cols; });
+}
+// カウントタイプ
+function getCountTypes(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.countTypes || {}; }
+function setCountType(dbPath, prop, type, options = {}) {
+  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計タイプ', options.detail || prop || '', options, (v) => {
+    if (!v.countTypes || typeof v.countTypes !== 'object' || Array.isArray(v.countTypes)) v.countTypes = {};
+    v.countTypes[prop] = type;
+  });
+}
 // カラム幅
-function getColWidths(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.colWidths || {}; }
+function getColWidths(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.colWidths || {}; }
 function setColWidthPersist(dbPath, prop, w, options = {}) {
   const label = options.historyLabel || options.label || '';
   _saveCurrentDbViewField(dbPath, label, options.detail || prop || '', options, (v) => {
@@ -8,18 +156,18 @@ function setColWidthPersist(dbPath, prop, w, options = {}) {
   });
 }
 // 条件付き書式ON/OFF
-function getConditionalFormat(dbPath) { return !!getCurrentDbViewConfigEntry(dbPath)?.conditionalFormat; }
+function getConditionalFormat(dbPath, options = {}) { return !!getCurrentDbViewConfigEntry(dbPath, options)?.conditionalFormat; }
 function setConditionalFormat(dbPath, on, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 条件付き書式', options.detail || (on ? '有効' : '無効'), options, (v) => { v.conditionalFormat = !!on; });
 }
 // 集計行
-function getShowFooter(dbPath) { return !!getCurrentDbViewConfigEntry(dbPath)?.showFooter; }
+function getShowFooter(dbPath, options = {}) { return !!getCurrentDbViewConfigEntry(dbPath, options)?.showFooter; }
 function setShowFooter(dbPath, on, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計行', options.detail || (on ? '表示' : '非表示'), options, (v) => { v.showFooter = !!on; });
 }
 // エントリ名列固定
-function getEntityColumnPinned(dbPath) {
-  const view = getCurrentDbViewConfigEntry(dbPath);
+function getEntityColumnPinned(dbPath, options = {}) {
+  const view = getCurrentDbViewConfigEntry(dbPath, options);
   return view ? view.entityColumnPinned !== false : true;
 }
 function setEntityColumnPinned(dbPath, on, options = {}) {
@@ -33,18 +181,18 @@ function setStatusEnabled(dbPath, on, options = {}) {
   saveDbViewConfig(dbPath, c, { historyLabel: options.label || 'シート表示: ステータス機能', historyDetail: options.detail || (on ? 'オン' : 'オフ'), skipHistory: options.skipHistory === true });
 }
 // サムネサイズ
-function getThumbnailSize(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.thumbnailSize || 'small'; }
+function getThumbnailSize(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.thumbnailSize || 'small'; }
 function setThumbnailSize(dbPath, size, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: サムネイル', options.detail || size || '', options, (v) => { v.thumbnailSize = size; });
 }
 // カラム順序
-function getColOrder(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.colOrder || null; }
+function getColOrder(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.colOrder || null; }
 function setColOrder(dbPath, order, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 列順序', options.detail || '', options, (v) => { v.colOrder = order; });
 }
 // 並び替え
-function getDbSortConfig(dbPath) {
-  const sc = getCurrentDbViewConfigEntry(dbPath)?.sortConfig;
+function getDbSortConfig(dbPath, options = {}) {
+  const sc = getCurrentDbViewConfigEntry(dbPath, options)?.sortConfig;
   return sc && typeof sc === 'object' && sc.key ? sc : null;
 }
 function setDbSortConfig(dbPath, sortConfig, options = {}) {
@@ -54,8 +202,8 @@ function setDbSortConfig(dbPath, sortConfig, options = {}) {
   });
 }
 // マニュアル行順序
-function getDbManualOrder(dbPath) {
-  const order = getCurrentDbViewConfigEntry(dbPath)?.manualOrder;
+function getDbManualOrder(dbPath, options = {}) {
+  const order = getCurrentDbViewConfigEntry(dbPath, options)?.manualOrder;
   return Array.isArray(order) ? order : null;
 }
 function setDbManualOrder(dbPath, order, sortConfig, options = {}) {
@@ -69,7 +217,7 @@ function setDbManualOrder(dbPath, order, sortConfig, options = {}) {
   });
 }
 // 複数条件フィルタ
-function getAdvancedFilters(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.advancedFilters || []; }
+function getAdvancedFilters(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.advancedFilters || []; }
 function setAdvancedFilters(dbPath, filters, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 複数条件フィルタ', options.detail || '', options, (v) => { v.advancedFilters = filters; });
 }
@@ -209,36 +357,161 @@ function _paneLayoutRestoredFromStorage() {
 /* ==============================
    API呼び出し
    ============================== */
-async function apiFetch(path, opts) {
+function _perfNowMs() {
+  return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+    ? performance.now()
+    : Date.now();
+}
+
+function _perfElapsedMs(startedAt) {
+  return Math.max(0, Math.round(_perfNowMs() - startedAt));
+}
+
+function _perfTargetLabelFromPath(path) {
   try {
-    const res = await fetch(API_BASE + path, opts);
-    if (!res.ok) {
-      let detail = res.statusText || '';
-      let payload = null;
-      try {
-        payload = await res.clone().json();
-        const rawDetail = payload?.error || payload?.detail || detail;
-        detail = rawDetail && typeof rawDetail === 'object'
-          ? (rawDetail.message || rawDetail.code || detail)
-          : rawDetail;
-      } catch {}
-      const error = new Error(`HTTP ${res.status}: ${detail}`);
-      error.status = res.status;
-      error.payload = payload;
-      error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
-      throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
-    }
-    const data = await res.json();
-    window.MeldexSaveSafety?.reportApiSuccess?.(path, opts);
-    return data;
-  } catch (e) {
-    if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
-    if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
-      const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
-      showStatus('エラー: ' + text, true);
-    }
-    throw e;
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const rawPath = url.searchParams.get('path') || '';
+    if (!rawPath) return '';
+    return rawPath.split(/[\\/]/).filter(Boolean).pop() || rawPath;
+  } catch {
+    return '';
   }
+}
+
+function _apiFetchPerfInfo(path) {
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const endpoint = url.pathname || '';
+    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return null;
+    return {
+      endpoint,
+      label: 'api' + endpoint,
+      targetLabel: _perfTargetLabelFromPath(path),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const _apiFetchInFlightGets = new Map();
+
+function _apiFetchInFlightKey(path, opts) {
+  if (opts && Object.keys(opts).length > 0) return '';
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const endpoint = url.pathname || '';
+    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return '';
+    return endpoint + '?' + url.searchParams.toString();
+  } catch {
+    return '';
+  }
+}
+
+function _apiFetchBackendPerf(res) {
+  try {
+    const raw = res?.headers?.get?.('x-meldex-perf') || '';
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function _logPerfEvent(label, startedAt, detail) {
+  try {
+    const durationMs = _perfElapsedMs(startedAt);
+    const payload = {
+      message: `[perf] ${label}: ${durationMs}ms`,
+      perf: true,
+      label,
+      durationMs,
+      ...(detail || {}),
+    };
+    if (typeof console !== 'undefined' && typeof console.info === 'function') {
+      console.info('[Meldex perf] ' + payload.message, payload);
+    }
+    if (typeof _sendLog === 'function') _sendLog('info', payload);
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function apiFetch(path, opts) {
+  const inFlightKey = _apiFetchInFlightKey(path, opts);
+  if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
+    return _apiFetchInFlightGets.get(inFlightKey);
+  }
+  const perfInfo = _apiFetchPerfInfo(path);
+  const perfStartedAt = perfInfo ? _perfNowMs() : 0;
+  const requestPromise = (async () => {
+    try {
+      const res = await fetch(API_BASE + path, opts);
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+          ...perfInfo,
+          status: res.status,
+          contentLength: res.headers?.get?.('content-length') || '',
+        });
+      }
+      const backendPerf = _apiFetchBackendPerf(res);
+      if (!res.ok) {
+        let detail = res.statusText || '';
+        let payload = null;
+        try {
+          payload = await res.clone().json();
+          const rawDetail = payload?.error || payload?.detail || detail;
+          detail = rawDetail && typeof rawDetail === 'object'
+            ? (rawDetail.message || rawDetail.code || detail)
+            : rawDetail;
+        } catch {}
+        const error = new Error(`HTTP ${res.status}: ${detail}`);
+        error.status = res.status;
+        error.payload = payload;
+        error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+        throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+      }
+      const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+      const data = await res.json();
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
+          ...perfInfo,
+          backendPerf,
+        });
+      }
+      if (backendPerf && data && typeof data === 'object') {
+        try {
+          Object.defineProperty(data, '_backendPerf', {
+            value: backendPerf,
+            configurable: true,
+          });
+        } catch {}
+      }
+      window.MeldexSaveSafety?.reportApiSuccess?.(path, opts);
+      if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf });
+      return data;
+    } catch (e) {
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
+          ...perfInfo,
+          error: e?.message || String(e),
+        });
+      }
+      if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
+        const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
+        showStatus('エラー: ' + text, true);
+      }
+      throw e;
+    }
+  })();
+  if (inFlightKey) {
+    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
+    requestPromise.then(
+      () => _apiFetchInFlightGets.delete(inFlightKey),
+      () => _apiFetchInFlightGets.delete(inFlightKey),
+    );
+  }
+  return requestPromise;
 }
 
 async function apiPut(path, body) {
@@ -380,6 +653,18 @@ async function _syncMyTeamProfile() {
   if (!name || name === 'anonymous') return;
   const avatar = localStorage.getItem('meldex-avatar') || '';
   const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncWorkspaceProfiles = async () => {
+    try {
+      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
+        ? await window.MeldexWorkspaces.load({ force: true })
+        : [];
+      for (const workspace of workspaces || []) {
+        if (!workspace?.id) continue;
+        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+      }
+      await window.MeldexWorkspaces?.load?.({ force: true });
+    } catch {}
+  };
   // 全ソースフォルダに同期
   try {
     const roots = await apiFetch('/outliner-roots').catch(() => []);
@@ -392,6 +677,7 @@ async function _syncMyTeamProfile() {
         const me = members.find(m => m.name === name);
         if (me) _myTeamRole = me.role || 'editor';
       } catch {}
+      await syncWorkspaceProfiles();
       return;
     }
     for (const root of visibleRoots) {
@@ -405,6 +691,7 @@ async function _syncMyTeamProfile() {
     // デフォルトロール = 最初の可視ソースフォルダのロール
     const firstRole = _myTeamRoles[visibleRoots[0].path];
     if (firstRole) _myTeamRole = firstRole;
+    await syncWorkspaceProfiles();
   } catch {}
 }
 
@@ -423,12 +710,16 @@ function _hideStartupSplash() {
 function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
   if (!timeout) return Promise.resolve(promise);
+  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   return new Promise((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
+      }
       if (typeof _sendLog === 'function') {
         _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
       }
@@ -438,11 +729,20 @@ function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
       resolve(value);
     }).catch((error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.error.' + label, startedAt, {
+          timeoutMs: timeout,
+          error: error?.message || String(error),
+        });
+      }
       reject(error);
     });
   });
@@ -464,6 +764,34 @@ function _runStartupBackground(label, promise, onReady) {
       }
       return null;
     });
+}
+
+function _refreshOutlinerAfterStartupReady() {
+  try {
+    const outlinerOptions = {
+      coalesce: true,
+      skipIfRecentlyLoaded: true,
+      reason: 'startup-ready',
+    };
+    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
+    const refreshJobs = [];
+    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
+    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    return Promise.allSettled(refreshJobs);
+  } catch (error) {
+    console.warn('[Meldex] startup outliner refresh failed:', error);
+    return Promise.resolve(null);
+  }
+}
+
+function _highlightLastOutlinerNodeAfterStartup() {
+  setTimeout(() => {
+    const last = _readLastViewFromStorage();
+    if (!last) return;
+    const p = last.path || last.dbPath || last.entityPath || '';
+    if (p) highlightOutlinerNode(p);
+  }, 500);
 }
 
 function _readLastViewFromStorage() {
@@ -560,341 +888,12 @@ function getMyRoleForPath(filePath) {
     }
   }
   localStorage.setItem('gb:migrated', '1');
+  if (typeof _refreshOutlinerStorageViewsAfterMigration === 'function') {
+    _refreshOutlinerStorageViewsAfterMigration();
+  }
 })();
 
 async function init() {
+  const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
   _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
-
-  try {
-    const [vault, roots, homeRes] = await Promise.all([
-      _withStartupTimeout('vault', apiFetch('/vault'), 5000, { path: '', name: '' }),
-      _withStartupTimeout('outliner-roots', apiFetch('/outliner-roots').catch(() => []), 5000, []),
-      _withStartupTimeout('home-folder', apiFetch('/home-folder').catch(() => ({ exists: false })), 5000, { exists: false }),
-    ]);
-    state.vaultPath = vault.path;
-    try {
-      if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
-    } catch (e) {}
-
-    const hasRoots = roots.length > 0 && roots.some(r => r.visible);
-    const hasHome = homeRes.exists;
-    const onboardingShown = !!window.MeldexOnboarding?.handleStartupState?.({
-      vaultPath: vault.path || '',
-      hasRoots,
-      hasHome,
-      homePath: homeRes?.path || '',
-    });
-    if (hasHome && !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({
-        trigger: 'desktop-home-ready',
-        homePath: homeRes?.path || '',
-      });
-    }
-    if (!vault.path && !hasRoots && !hasHome) {
-      // ソースフォルダもルートもホームもない場合はウェルカム画面
-      // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
-      showView('welcome');
-    }
-
-    document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
-    document.getElementById('current-title').textContent = '';
-
-    // file_id マイグレーションは初回のみだが、起動表示を止めないよう背景化する。
-    const rawMigrationPromise = _migratePathsToFileIds();
-    const migrationPromise = _withStartupTimeout('file-id-migration', rawMigrationPromise, 5000, null);
-
-    // 廃止された非表示機能の localStorage を一度だけ除去
-    if (!localStorage.getItem('_folder-hidden-removed')) {
-      localStorage.removeItem('folder-files-hidden');
-      localStorage.setItem('_folder-hidden-removed', '1');
-    }
-    if (typeof removeLegacyDashboardStorageOnce === 'function') removeLegacyDashboardStorageOnce();
-
-    // フォルダツリーとビュー復元を並行実行
-    const outlinerPromise = loadOutliner();
-    const linkDictPromise = loadLinkDict();
-
-    // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
-    let restored = onboardingShown;
-    const restoredByPaneLayout = _paneLayoutRestoredFromStorage();
-    const urlParams = new URLSearchParams(window.location.search);
-    const openType = urlParams.get('open');
-    const openPath = urlParams.get('path');
-    const openLabel = urlParams.get('label') || (openPath ? openPath.split('/').pop() : '');
-    const isUrlOpen = !!(openType && openPath);
-    if (isUrlOpen && _isCloudPhase1UnsupportedOpenType(openType)) {
-      _showCloudPhase1UnsupportedOpen(openType);
-      restored = true;
-    } else if (isUrlOpen) {
-      const _urlOpenOpts = { skipAutoAppLayout: true, skipSaveLastView: true };
-      // URLパラメータ経由の場合、lastViewを上書きしないフラグを設定
-      const previousSkipLastView = window._skipLastViewSave;
-      window._skipLastViewSave = true;
-      try {
-        if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
-        else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
-        else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
-          const mt = urlParams.get('mediaType') || (openType === 'media' ? 'image' : openType);
-          openMedia(openLabel, openPath, mt, _urlOpenOpts);
-          restored = true;
-        }
-        else if (openType === 'document') {
-          if (typeof openViewer === 'function') {
-            const viewerUrl = /\.pdf(?:[?#]|$)/i.test(openPath)
-              ? '/viewer?pdf=' + encodeURIComponent(openPath)
-              : '/viewer?file=' + encodeURIComponent(openPath);
-            openViewer(viewerUrl, _urlOpenOpts);
-            restored = true;
-          }
-        }
-        else if (openType === 'html') { openHtmlFile(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'csv') { if (typeof openCsvFile === 'function') { openCsvFile(openLabel, openPath, _urlOpenOpts); restored = true; } }
-        else if (openType === 'folder') { openFolder(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'calendar') { await openCalendarFile(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'chat') {
-          if (typeof openSavedChat === 'function') {
-            await openSavedChat(openPath);
-            restored = true;
-          }
-        }
-        else if (openType === 'scriptnote' || openType === 'scenario') {
-          if (typeof openScenarioInScriptNote === 'function') {
-            openScenarioInScriptNote(openPath, openLabel, _urlOpenOpts);
-            restored = true;
-          }
-        }
-        else if (openType === 'smart-db') {
-          if (typeof openSmartDbFile === 'function') {
-            openSmartDbFile(openLabel, openPath, _urlOpenOpts);
-            restored = true;
-          }
-        }
-      } finally {
-        window._skipLastViewSave = previousSkipLastView;
-      }
-    }
-
-    // v5.0 ペイン配置が復元済みなら、旧 lastView 復元でアクティブペインを上書きしない。
-    if (!restored && restoredByPaneLayout) restored = true;
-
-    // 前回のビューを即座に復元（URLパラメータがなかった場合）
-    if (!restored) {
-    try {
-      let last = _readLastViewFromStorage();
-      if (last && _isCloudPhase1UnsupportedOpenType(last.type)) {
-        localStorage.removeItem('lastView');
-        _showCloudPhase1UnsupportedOpen(last.type);
-        last = null;
-      }
-      const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
-      if (last) {
-        if (last.type === 'pivot' && last.dbPath) { await selectDatabase(last.dbPath, null, _expOpts); restored = true; }
-        else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
-        else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
-        else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
-        else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
-        else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
-        else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'smart-db' && last.path && last.path.startsWith('file:') === false && typeof openSmartDbFile === 'function') { openSmartDbFile(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'smart-db' && last.smartDbId) { selectSmartDb(last.smartDbId, null, _expOpts); restored = true; }
-      }
-    } catch (e) {}
-    } // if (!restored) from URL params
-
-    // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
-    // マニュアルのクイックスタートをノートとして開く（ファイルが存在する場合のみ）
-    if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
-      const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
-      try {
-        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
-        if (_check && typeof _check.content === 'string') {
-          const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
-          openPage('クイックスタート', _qsPath, _qsOpts);
-          localStorage.setItem('meldex-quickstart-shown', '1');
-          restored = true;
-        }
-      } catch (e) {}
-    }
-
-    if (!restored && !_isDesktopStartupLaunch()) {
-      const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
-      if (startupFolder?.path) {
-        const _startupOpts = { fromExplorer: true, skipAutoAppLayout: true };
-        await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
-        restored = true;
-      }
-    }
-
-    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
-    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
-    if (!restored) {
-      const _paneHasTabs = _paneLayoutHasAnyTabs();
-      if (!_paneHasTabs) showView('welcome');
-    }
-
-    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
-    _scheduleStartupDatabaseViewTabsRepair();
-    _hideStartupSplash();
-    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
-      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
-        _refreshDbViewConfigAfterHistory(state.currentDbPath);
-      }
-    });
-    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
-      initGlobalFilterBar();
-      setTimeout(() => {
-        const last = _readLastViewFromStorage();
-        if (last) {
-          const p = last.path || last.dbPath || last.entityPath || '';
-          if (p) highlightOutlinerNode(p);
-        }
-      }, 500);
-      showStatus('準備完了');
-    });
-  } catch (e) {
-    showStatus('ソースフォルダ情報の取得に失敗しました', true);
-  }
-  _hideStartupSplash();
-}
-/* ==============================
-   表示切替
-   ============================== */
-function showView(viewName, ctx) {
-  const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
-  const isDbViewName = (name) => ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
-  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
-  if (ctx && ctx.containerEl) {
-    const isDbView = isDbViewName(viewName);
-    const c = ctx.containerEl;
-    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
-    if (hasPaneViewSurfaces) {
-      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
-      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
-      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
-      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
-      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
-      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
-      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
-      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
-      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-      _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
-      ctx.viewMode = viewName;
-      return;
-    }
-  }
-  // ビュー切替前にボードの未保存を即時保存
-  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
-    if (typeof bdSave === 'function') bdSave();
-  }
-  // ボードから離れたらノートタブを非表示
-  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
-    hideBoardNoteTab();
-  }
-  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
-    clearBoardDetailTabs();
-  }
-  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
-  const isDbView = isDbViewName(viewName);
-  const _setDisplay = (id, value) => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = value;
-  };
-  _setDisplay('login-view', 'none');
-  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
-  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
-  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
-  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
-  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
-  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
-  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
-  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
-  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-  _setDisplay('smart-db-view', resolvedViewName === 'smart-db' ? 'flex' : 'none');
-  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
-  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
-  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
-  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
-  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
-  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
-  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
-  // app-toolbarの表示切替
-  const appTb = document.getElementById('app-toolbar');
-  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
-  // ページビュー: app-toolbarにリッチテキストツールバー表示
-  const showRtInAppbar = (resolvedViewName === 'page');
-  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
-  const hasAppTb = isDbView || showRtInAppbar;
-  if (appTb) appTb.classList.toggle('visible', hasAppTb);
-  // エントリビュー: エントリ内ツールバー
-  const entityRt = document.getElementById('entity-rt-toolbar');
-  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
-  // ステータスバーのショートカットヘルプ
-  const sc = document.getElementById('sb-shortcuts');
-  if (isDbView) {
-    sc.textContent = '';
-  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
-    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
-  } else if (resolvedViewName === 'scriptnote') {
-    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
-    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
-  } else {
-    sc.textContent = '';
-  }
-
-  state.view = viewName;
-
-  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
-  if (typeof ann !== 'undefined') {
-    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
-    if (newTarget !== ann.targetPath) {
-      ann.targetPath = newTarget;
-      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
-      // スタンドアロン側の loadAnnotations を呼ぶと同じ注釈が二重に描画される
-      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
-        && _usesEmbeddedAnnotationSurface(viewName);
-      if (embedded) {
-        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
-        const layer = document.getElementById('ann-layer');
-        if (layer) layer.innerHTML = '';
-        if (typeof _forEachStandaloneAnnotationNote === 'function') {
-          _forEachStandaloneAnnotationNote(el => el.remove());
-        }
-      } else if (typeof loadAnnotations === 'function') {
-        loadAnnotations();
-      }
-    }
-    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
-  }
-}
-// スクリーンショットメニュー
-function showScreenshotMenu(e) {
-  const existing = document.querySelector('.ab-dropdown.ss-menu');
-  if (existing) { existing.remove(); return; }
-  const menu = document.createElement('div');
-  menu.className = 'ab-dropdown ss-menu';
-  function addItem(label, fn) { const item = document.createElement('div'); item.className = 'ab-dropdown-item'; item.textContent = label; item.addEventListener('click', () => { menu.remove(); fn(); }); menu.appendChild(item); }
-  function addSep() { const s = document.createElement('div'); s.className = 'ab-dropdown-sep'; menu.appendChild(s); }
-  addItem('全画面キャプチャ', () => captureScreenshot('full'));
-  addItem('範囲選択キャプチャ', () => captureScreenshot('region'));
-  addSep();
-  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'));
-  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'));
-  addSep();
-  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
-  document.body.appendChild(menu);
-  const btn = e.target.closest('button') || e.target;
-  const rect = btn.getBoundingClientRect();
-  { const z = _getZoom(); menu.style.left = (rect.right / z + 4) + 'px'; menu.style.top = (rect.top / z) + 'px'; }
-  requestAnimationFrame(() => { const z = _getZoom(); const mr = menu.getBoundingClientRect(); if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px'; if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px'; });
-  setTimeout(() => { document.addEventListener('pointerdown', function closer(ev) { if (!menu.contains(ev.target) && !btn.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } }); }, 0);
-}
-
-function _screenshotModeIsRegion(mode) {
-  return String(mode || '').includes('region');
-}

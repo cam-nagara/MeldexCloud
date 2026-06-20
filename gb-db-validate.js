@@ -77,8 +77,13 @@ async function runValidation(dbPath, pivotData, propTypes) {
 
 /* --- 各バリデーター --- */
 
-function _validationValues(values) {
-  return Array.isArray(values) ? values : [];
+function _validationValues(values, options = {}) {
+  const list = Array.isArray(values) ? values : [];
+  if (options.allStatuses) return list;
+  return list.filter(v => {
+    const status = v?.status || '採用';
+    return status === '採用' || status === '掲載済み';
+  });
 }
 
 function _validationRelationNames(entityData, relationProperty, ptc) {
@@ -126,17 +131,20 @@ function _validationComparable(rawValue, ptc) {
     const n = Number(normalized);
     if (Number.isFinite(n)) return { ok: true, value: n, display: raw };
   }
-  return { ok: false, display: raw };
+  if (type === 'number') return { ok: false, display: raw };
+  return { ok: true, value: raw, display: raw };
 }
 
 function _validationCompare(left, right, operator) {
+  const bothNumbers = typeof left === 'number' && typeof right === 'number';
+  const cmp = bothNumbers ? (left - right) : String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
   switch (operator) {
-    case '>=': return left >= right;
-    case '<=': return left <= right;
-    case '>':  return left > right;
-    case '<':  return left < right;
-    case '==': return left === right;
-    case '!=': return left !== right;
+    case '>=': return cmp >= 0;
+    case '<=': return cmp <= 0;
+    case '>':  return cmp > 0;
+    case '<':  return cmp < 0;
+    case '==': return bothNumbers ? left === right : String(left) === String(right);
+    case '!=': return bothNumbers ? left !== right : String(left) !== String(right);
   }
   return true;
 }
@@ -577,9 +585,14 @@ function showValidationRuleEditor(dbPath, existingRule) {
   saveBtn.className = 'primary';
   saveBtn.dataset.e2eId = 'validation-editor-save';
   saveBtn.addEventListener('click', () => {
-    rule.label = nameInput.value.trim() || rule.type;
+    rule.label = nameInput.value.trim();
     rule.type = typeSel.value;
     rule.config = _collectRuleConfig(rule.type);
+    const errors = _validationRuleConfigErrors(rule.type, rule.config, rule.label);
+    if (errors.length) {
+      if (typeof showStatus === 'function') showStatus(errors[0], true);
+      return;
+    }
     const rules = getValidationRules(dbPath);
     const idx = rules.findIndex(r => r.id === rule.id);
     if (idx >= 0) rules[idx] = rule; else rules.push(rule);
@@ -594,6 +607,28 @@ function showValidationRuleEditor(dbPath, existingRule) {
   overlay.appendChild(modal);
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
+}
+
+function _validationRuleConfigErrors(type, config, label) {
+  const cfg = config || {};
+  const errors = [];
+  if (!String(label || '').trim()) errors.push('ルール名を入力してください');
+  if (type === 'range_check') {
+    if (!cfg.property) errors.push('プロパティ1を選択してください');
+    if (!cfg.operator) errors.push('比較演算子を選択してください');
+    if (!cfg.compareProperty) errors.push('プロパティ2を選択してください');
+  } else if (type === 'reference_exists') {
+    if (!cfg.relationProperty) errors.push('リレーションプロパティを選択してください');
+  } else if (type === 'cross_db_range') {
+    if (!cfg.property) errors.push('プロパティを選択してください');
+    if (!cfg.operator) errors.push('演算子を選択してください');
+    if (!String(cfg.targetDb || '').trim()) errors.push('参照先シートパスを入力してください');
+    if (!String(cfg.targetProperty || '').trim()) errors.push('参照先プロパティを入力してください');
+    if (!cfg.matchRelation) errors.push('マッチリレーションを選択してください');
+  } else if (type === 'required') {
+    if (!cfg.property) errors.push('プロパティを選択してください');
+  }
+  return errors;
 }
 
 function _fieldSelect(label, id, options, selected) {
@@ -620,14 +655,14 @@ function _collectRuleConfig(type) {
     return {
       property: document.getElementById('vr-prop1')?.value || '',
       operator: document.getElementById('vr-op')?.value || '>=',
-      targetDb: document.getElementById('vr-targetdb')?.value || '',
-      targetProperty: document.getElementById('vr-targetprop')?.value || '',
+      targetDb: (document.getElementById('vr-targetdb')?.value || '').trim(),
+      targetProperty: (document.getElementById('vr-targetprop')?.value || '').trim(),
       matchRelation: document.getElementById('vr-matchrel')?.value || '',
     };
   } else if (type === 'required') {
     return {
       property: document.getElementById('vr-prop1')?.value || '',
-      statusFilter: document.getElementById('vr-status')?.value || '',
+      statusFilter: (document.getElementById('vr-status')?.value || '').trim(),
     };
   }
   return {};

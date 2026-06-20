@@ -91,7 +91,8 @@
     if (typeof _ptBindFormulaEditor === 'function') _ptBindFormulaEditor(scope);
   } else if (type === 'rollup' && typeof buildRollupOptionsHtml === 'function') {
     const { dbPath, pivotData } = _ptState(scope);
-    const allProps = pivotData?.properties || [];
+    const rawProps = pivotData?.properties || [];
+    const allProps = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, rawProps) : rawProps;
     const propTypes = getPropertyTypes(dbPath);
     optDiv.innerHTML = buildRollupOptionsHtml(current, allProps, propTypes, scope);
     const relSel = _ptGet('rollup-relation-prop', scope);
@@ -136,21 +137,23 @@
   } else if (type === 'date') {
     const curSource = current.source || '';
     const withTime = !!current.withTime;
-    const isRange = !!current.range && curSource !== 'modified';
+    const isAutoSource = _ptIsAutoDateSource(curSource);
+    const isRange = !!current.range && !isAutoSource;
     optDiv.innerHTML = `<div class="field"><label>データソース</label>
       <select id="pt-date-source">
         <option value="" ${!curSource?'selected':''}>候補値（通常）</option>
-        <option value="modified" ${curSource==='modified'?'selected':''}>最終更新日（自動・読み取り専用）</option>
+        <option value="created" ${curSource==='created'?'selected':''}>作成日時（自動・読み取り専用）</option>
+        <option value="modified" ${curSource==='modified'?'selected':''}>更新日時（自動・読み取り専用）</option>
       </select>
     </div>
     <label class="pt-check-label">
       <input id="pt-date-with-time" type="checkbox" ${withTime?'checked':''}>
-      時間まで入力可能にする
+      時刻（時分）を入力できるようにする
     </label>
     <label class="pt-check-label">
-      <input id="pt-date-range" type="checkbox" ${isRange?'checked':''} ${curSource==='modified'?'disabled':''}>
+      <input id="pt-date-range" type="checkbox" ${isRange?'checked':''} ${isAutoSource?'disabled':''}>
       開始と終了を持つ期間にする
     </label>
-    <div id="pt-date-range-note" class="pt-hint"${curSource==='modified'?'':' style="display:none;"'}>
-      最終更新日は単一日時として扱います。
+    <div id="pt-date-range-note" class="pt-hint"${isAutoSource?'':' style="display:none;"'}>
+      自動日時は単一日時として扱います。
     </div>

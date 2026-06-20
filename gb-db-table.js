@@ -3,4 +3,6 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
 __loadSplitScript('gb-db-table.js', [
   'gb-db-table.part01.js',
   'gb-db-table.part02.js',
+  'gb-db-table.part03.js',
+  'gb-db-table.part04.js',
 ]);

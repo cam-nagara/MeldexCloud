@@ -1,21 +1,15 @@
-                const rW = rRect.width / zV;
-                const scrollW = txt.scrollWidth;
-                if (scrollW > rW) {
-                  r.style.minWidth = scrollW + 'px';
-                }
-              }
-            });
-          });
         });
       }
       this._setupPanSpacer(scroll, editor, viewMode);
       // スクロール位置を復元
       scroll.scrollTop = savedScrollTop;
-      scroll.scrollLeft = savedScrollLeft;
+      scroll.scrollLeft = viewMode === 'vertical' ? 0 : savedScrollLeft;
+      if (viewMode === 'vertical') resetVerticalWrapHorizontalPosition();
       // 折り返し表示でも行コメントバッジを通常表示と同じタイミングで再描画する
       if (this._path && typeof CommentBadges !== 'undefined') {
         try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
       }
+      this._setupWrapResizeObserver(scroll, viewMode, wrapMode);
       return;
     }
 
@@ -187,9 +181,10 @@
       if (calc) {
         const gutterText = this._formatGutterPrimary(calc);
         const prevGutterText = (mergeGutter && prevCalc) ? this._formatGutterPrimary(prevCalc) : '';
-        gutter.textContent = (mergeGutter && gutterText === prevGutterText) ? '' : gutterText;
+        const showGutterText = !(mergeGutter && gutterText === prevGutterText);
+        gutter.textContent = showGutterText ? gutterText : '';
         // countConfigスタイルはdata属性に保存し、_applyRowStyleで参照する
-        if (calc.showPage && cc.primaryStyle) {
+        if (showGutterText && cc.primaryStyle) {
           const gs = cc.primaryStyle;
           if (gs.bgColor) gutter.dataset.ccBg = gs.bgColor;
           if (gs.textColor) gutter.dataset.ccColor = gs.textColor;
@@ -207,8 +202,9 @@
       if (calc) {
         const gutter2Text = this._formatGutterSecondary(calc);
         const prevGutter2Text = (mergeGutter && prevCalc) ? this._formatGutterSecondary(prevCalc) : '';
-        gutter2.textContent = (mergeGutter && gutter2Text === prevGutter2Text) ? '' : gutter2Text;
-        if (calc.showPanel && cc.secondaryStyle) {
+        const showGutter2Text = !(mergeGutter && gutter2Text === prevGutter2Text);
+        gutter2.textContent = showGutter2Text ? gutter2Text : '';
+        if (showGutter2Text && cc.secondaryStyle) {
           const gs = cc.secondaryStyle;
           if (gs.bgColor) gutter2.dataset.ccBg = gs.bgColor;
           if (gs.textColor) gutter2.dataset.ccColor = gs.textColor;
@@ -818,6 +814,14 @@
             sel.addRange(restoreRange);
           }
         });
+      } else {
+        // settleWrapPacking は別メソッドのローカル const のため、ここからは参照できない。
+        // ファイル分割前は同じスコープに居たが、現状のコード構造では到達不可能。
+        // ReferenceError を防ぐため typeof で存在チェックしてから呼ぶ。
+        // （未到達時は折り返し再パックが走らないが、次のフル再レンダリングで反映される）
+        requestAnimationFrame(() => {
+          if (typeof settleWrapPacking === 'function') settleWrapPacking();
+        });
       }
     });
 
@@ -840,7 +844,8 @@
         e.preventDefault(); this._insertRuby(); return;
       }
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (lk === 'f' || lk === 'h')) {
-        if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.search', e)) return;
+        const shortcutId = lk === 'h' ? 'scenario.replace' : 'scenario.search';
+        if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
         e.preventDefault();
         const searchBtn = this.host?.closest?.('.gb-se-root')?.querySelector?.('[data-sn-action="search"]') || null;
         this._showSearchReplacePopup?.(searchBtn);

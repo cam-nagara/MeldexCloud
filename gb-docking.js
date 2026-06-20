@@ -13,7 +13,7 @@ const GBDocking = (() => {
     database: 'シート',
     scriptnote: 'シナリオ',
     board: 'ボード',
-    calendar: 'カレンダー',
+    calendar: 'スケジューラー',
     preview: 'ビューワー',
     'smart-db': 'スマートシート',
     folder: 'フォルダ',
@@ -27,6 +27,13 @@ const GBDocking = (() => {
 
   function _hasLockedPane() {
     return typeof GBLayout.hasLockedPane === 'function' && GBLayout.hasLockedPane();
+  }
+
+  function _isFreeLayoutUiEnabled() {
+    if (typeof GBLayout === 'undefined') return true;
+    return typeof GBLayout.isFreeLayoutUiEnabled === 'function'
+      ? !!GBLayout.isFreeLayoutUiEnabled()
+      : true;
   }
 
   function _isLockedPane(paneId) {
@@ -666,6 +673,10 @@ const GBDocking = (() => {
   }
 
   function setupDropTargets() {
+    if (!_isFreeLayoutUiEnabled()) {
+      hideIndicator();
+      return;
+    }
     _ensureGlobalDragEnd();
     _setupColumnDropOnPanes();
     _setupColumnDropOnSplitHandles();

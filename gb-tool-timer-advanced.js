@@ -7,22 +7,24 @@
 
   const SETTINGS_KEY = 'gb:timer-advanced-settings';
   const PRESETS_KEY = 'gb:timer-presets';
-  const SEQUENCE_KEY = 'gb:timer-sequence';
   const TIMER_HISTORY_SCOPE = 'timer:settings';
   const CALENDAR_POLL_MS = 30000;
   const CALENDAR_START_WINDOW_MS = 120000;
+  const LOUD_ALARM_NAME = 'alarm';
+  const CUSTOM_ALARM_NAME = 'custom';
   const DEFAULT_SETTINGS = Object.freeze({
     calendarEnabled: false,
     calendarId: '',
-    alarmSound: 'beep',
+    alarmSound: LOUD_ALARM_NAME,
+    alarmCustomName: '',
+    alarmCustomDataUrl: '',
     alarmVolume: 70,
     countdownEnabled: true,
     countdownVoice: false,
     countdownEvery10: true,
     countdownEvery5: false,
-    countdownLast10: true,
+    countdownLast10: false,
     repeatSingle: false,
-    repeatList: false,
   });
 
   function _timerReadJson(key, fallback) {
@@ -35,7 +37,12 @@
   }
 
   function _timerWriteJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function _timerStorageHistoryKeys(keys) {
@@ -54,7 +61,6 @@
     const labels = {
       [SETTINGS_KEY]: '拡張設定',
       [PRESETS_KEY]: '保存済みタイマー',
-      [SEQUENCE_KEY]: '実行リスト',
     };
     return _timerStorageHistoryKeys(keys).map(key => labels[key] || key).join(' / ');
   }
@@ -148,10 +154,16 @@
   function _timerNormalizeSettings(raw) {
     const next = { ...DEFAULT_SETTINGS, ...(raw || {}) };
     next.alarmVolume = _timerClampInt(next.alarmVolume, 0, 100, DEFAULT_SETTINGS.alarmVolume);
-    ['calendarEnabled', 'countdownEnabled', 'countdownVoice', 'countdownEvery10', 'countdownEvery5', 'countdownLast10', 'repeatSingle', 'repeatList']
+    ['calendarEnabled', 'countdownEnabled', 'countdownVoice', 'countdownEvery10', 'countdownEvery5', 'countdownLast10', 'repeatSingle']
       .forEach(key => { next[key] = !!next[key]; });
     next.calendarId = String(next.calendarId || '');
-    next.alarmSound = ['none', 'beep', 'chime', 'bell'].includes(next.alarmSound) ? next.alarmSound : DEFAULT_SETTINGS.alarmSound;
+    next.alarmCustomName = String(next.alarmCustomName || '');
+    next.alarmCustomDataUrl = String(next.alarmCustomDataUrl || '').startsWith('data:audio/') ? String(next.alarmCustomDataUrl) : '';
+    if (next.alarmCustomDataUrl && !next.alarmCustomName) next.alarmCustomName = '設定した音源';
+    if (String(next.alarmSound || '') === 'none') next.alarmSound = 'none';
+    else if (String(next.alarmSound || '') === CUSTOM_ALARM_NAME) next.alarmSound = CUSTOM_ALARM_NAME;
+    else next.alarmSound = LOUD_ALARM_NAME;
+    if (next.countdownEnabled && next.countdownLast10) next.countdownLast10 = false;
     return next;
   }
 
@@ -163,13 +175,12 @@
       totalSeconds: seconds,
       countUp: !!item?.countUp,
       displayMode: ['digital', 'analog', 'circle', 'bar'].includes(item?.displayMode) ? item.displayMode : 'digital',
-      alarmSound: ['none', 'beep', 'chime', 'bell'].includes(item?.alarmSound) ? item.alarmSound : undefined,
+      alarmSound: item?.alarmSound === 'none' ? 'none' : item?.alarmSound === CUSTOM_ALARM_NAME ? CUSTOM_ALARM_NAME : item?.alarmSound ? LOUD_ALARM_NAME : undefined,
       countdownEnabled: item?.countdownEnabled === undefined ? undefined : !!item.countdownEnabled,
       countdownVoice: item?.countdownVoice === undefined ? undefined : !!item.countdownVoice,
       countdownEvery10: item?.countdownEvery10 === undefined ? undefined : !!item.countdownEvery10,
       countdownEvery5: item?.countdownEvery5 === undefined ? undefined : !!item.countdownEvery5,
       countdownLast10: item?.countdownLast10 === undefined ? undefined : !!item.countdownLast10,
-      sourcePresetId: item?.sourcePresetId ? String(item.sourcePresetId) : '',
     };
   }
 
@@ -203,9 +214,10 @@
   const baseDestroy = TimerComponent.prototype.destroy;
   TimerComponent.prototype.destroy = function() {
     this._timerAdvancedClearPendingAutoStart?.();
+    this._timerAdvancedClearCountdownTimers?.();
+    this._timerAdvancedStopAlarmAudio?.();
     this._timerAdvancedCancelSpeech?.();
     this._timerAdvancedStopCalendarPolling?.();
-    this._timerAdvancedCancelSequence?.();
     this._timerAdvancedCloseSettingsDialog?.();
     baseDestroy.call(this);
   };
@@ -242,6 +254,7 @@
     const fresh = !this.timerStarted || this.elapsed <= 0;
     if (fresh) this._timerAdvancedResetCountdownState();
     baseStartTicking.call(this);
+    this._timerAdvancedScheduleCountdowns?.();
   };
 
   const baseStartTimer = TimerComponent.prototype._startTimer;
@@ -256,6 +269,8 @@
   const basePauseTimer = TimerComponent.prototype._pauseTimer;
   TimerComponent.prototype._pauseTimer = function() {
     this._timerAdvancedClearPendingAutoStart?.();
+    this._timerAdvancedClearCountdownTimers?.();
+    this._timerAdvancedStopAlarmAudio?.();
     this._timerAdvancedCancelSpeech?.();
     return basePauseTimer.call(this);
   };
@@ -269,7 +284,7 @@
   const baseResetTimer = TimerComponent.prototype._resetTimer;
   TimerComponent.prototype._resetTimer = function() {
     this._timerAdvancedClearPendingAutoStart?.();
-    this._timerAdvancedCancelSequence?.();
+    this._timerAdvancedStopAlarmAudio?.();
     baseResetTimer.call(this);
     this._timerAdvancedActiveLabel = '';
     this._timerAdvancedTimerSource = '';
@@ -280,16 +295,14 @@
   TimerComponent.prototype._timerAdvancedInit = function() {
     this._timerAdvancedSettings = _timerNormalizeSettings(_timerReadJson(SETTINGS_KEY, DEFAULT_SETTINGS));
     this._timerPresets = _timerReadItems(PRESETS_KEY);
-    this._timerSequence = _timerReadItems(SEQUENCE_KEY);
     this._timerCalendars = [];
     this._timerCalendarStartedKeys = this._timerCalendarStartedKeys || new Set();
     this._timerAdvancedCountdownKeys = new Set();
+    this._timerAdvancedCountdownTimers = [];
     this._timerAdvancedPreviousRemaining = null;
-    this._timerAdvancedSequenceRunning = false;
-    this._timerAdvancedSequenceIndex = -1;
-    this._timerAdvancedDragIndex = -1;
     this._timerAdvancedActiveLabel = this._timerAdvancedActiveLabel || '';
     this._timerAdvancedAutoStartTimer = null;
+    this._timerAdvancedAlarmAudio = null;
     this._timerAdvancedTimerSource = this._timerAdvancedTimerSource || '';
     this._timerAdvancedNextStartSource = '';
   };
@@ -302,16 +315,8 @@
     if (changed.has(PRESETS_KEY)) {
       this._timerPresets = _timerReadItems(PRESETS_KEY);
     }
-    if (changed.has(SEQUENCE_KEY)) {
-      this._timerSequence = _timerReadItems(SEQUENCE_KEY);
-      if (!this._timerSequence.length) this._timerAdvancedCancelSequence();
-      else if (this._timerAdvancedSequenceIndex >= this._timerSequence.length) {
-        this._timerAdvancedSequenceIndex = this._timerSequence.length - 1;
-      }
-    }
     this._timerAdvancedSyncControls();
     this._timerAdvancedRenderPresets();
-    this._timerAdvancedRenderSequence();
     this._timerAdvancedReconcileCalendarPolling();
   };
 
@@ -327,14 +332,15 @@
 
   TimerComponent.prototype._timerAdvancedShowSettingsDialog = function() {
     if (this._timerAdvancedModal?.isConnected) {
-      this._timerAdvancedModal.querySelector('[data-timer-settings-close]')?.focus?.();
+      this._timerAdvancedModal.querySelector('.gb-timer-settings-modal')?.focus?.();
       return;
     }
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay gb-timer-settings-overlay';
     overlay.dataset.timerSettingsModal = '1';
+    overlay.dataset.modalShell = 'off';
     overlay.innerHTML = `
-      <div class="modal gb-timer-settings-modal" role="dialog" aria-modal="true" aria-label="タイマー設定">
+      <div class="modal gb-timer-settings-modal" role="dialog" aria-modal="true" aria-label="タイマー設定" tabindex="-1" data-gb-tooltip-disabled="true" style="outline:none!important;box-shadow:none!important;">
         <div class="gb-timer-settings-header">
           <h3>${_timerIcon('settings', 18)} タイマー設定</h3>
           <button class="tb-icon-btn" type="button" data-timer-settings-close aria-label="閉じる" title="タイマー設定を閉じます">${_timerIcon('x', 14)}</button>
@@ -357,11 +363,10 @@
     this._timerAdvancedBindEvents(panel);
     this._timerAdvancedRenderCalendars();
     this._timerAdvancedRenderPresets();
-    this._timerAdvancedRenderSequence();
     this._timerAdvancedSyncControls();
     this._timerAdvancedLoadCalendars();
     if (typeof replaceIcons === 'function') replaceIcons();
-    overlay.querySelector('[data-timer-settings-close]')?.focus?.();
+    overlay.querySelector('.gb-timer-settings-modal')?.focus?.();
   };
 
   TimerComponent.prototype._timerAdvancedCloseSettingsDialog = function() {
@@ -385,17 +390,22 @@
           <div class="gb-timer-panel-title">${_timerIcon('bell', 14)} アラームとカウントダウン</div>
           <div class="gb-timer-row">
             <select class="gb-select" data-timer-setting="alarmSound" aria-label="アラーム音" title="タイマー完了時に鳴らす音を選択します">
-              <option value="beep">ビープ</option>
-              <option value="chime">チャイム</option>
-              <option value="bell">ベル</option>
+              <option value="alarm">警報音</option>
+              <option value="custom">設定した音源</option>
               <option value="none">なし</option>
             </select>
             <label class="gb-timer-range" title="アラーム音の音量を調整します">音量 <input type="range" min="0" max="100" step="5" data-timer-setting="alarmVolume"><span data-timer-volume-label></span></label>
             <button class="tb-icon-btn" type="button" data-timer-action="testAlarm" title="現在のアラーム音を試聴します">${_timerIcon('volume2', 14)}</button>
           </div>
+          <div class="gb-timer-row gb-timer-alarm-source-row">
+            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="chooseAlarmSource" title="アラームに使う音源ファイルを選択します">${_timerIcon('music', 13)} 音源を選択</button>
+            <button class="tb-icon-btn" type="button" data-timer-action="clearAlarmSource" title="設定した音源を削除します">${_timerIcon('x', 13)}</button>
+            <span class="gb-timer-source-name" data-timer-alarm-source-name></span>
+            <input class="gb-timer-alarm-file" data-timer-alarm-file type="file" accept="audio/*">
+          </div>
           <div class="gb-timer-row gb-timer-row--wrap">
-            <label class="gb-timer-check" title="残り時間の節目を通知します"><input data-timer-setting="countdownEnabled" type="checkbox"> カウントダウン</label>
             <label class="gb-timer-check" title="通知を合成音声で読み上げます"><input data-timer-setting="countdownVoice" type="checkbox"> 音声で通知</label>
+            <label class="gb-timer-check" title="残り時間の節目を通知します"><input data-timer-setting="countdownEnabled" type="checkbox"> カウントダウン</label>
             <label class="gb-timer-check" title="残り10分ごとに通知します"><input data-timer-setting="countdownEvery10" type="checkbox"> 10分刻み</label>
             <label class="gb-timer-check" title="残り5分ごとに通知します"><input data-timer-setting="countdownEvery5" type="checkbox"> 5分刻み</label>
             <label class="gb-timer-check" title="残り10秒から1秒まで数字を通知します"><input data-timer-setting="countdownLast10" type="checkbox"> ラスト10秒</label>
@@ -410,17 +420,6 @@
           </div>
           <div class="gb-timer-preset-list" data-timer-preset-list></div>
         </section>
-        <section class="gb-timer-panel-section">
-          <div class="gb-timer-panel-title">${_timerIcon('listStart', 14)} 実行リスト</div>
-          <div class="gb-timer-row">
-            <button class="gb-btn gb-btn-xs gb-btn-primary" type="button" data-timer-action="runSequence" title="実行リストの先頭から順番に開始します">${_timerIcon('play', 13)} リスト実行</button>
-            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="stopSequence" title="実行リストの連続実行を停止します">${_timerIcon('square', 13)} 停止</button>
-            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="nextSequence" title="次のタイマーへ進みます">${_timerIcon('skipForward', 13)} 次へ</button>
-            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="clearSequence" title="実行リストを空にします">${_timerIcon('trash2', 13)} クリア</button>
-            <label class="gb-timer-check" title="最後まで実行した後に先頭へ戻ります"><input data-timer-setting="repeatList" type="checkbox"> リスト全体を繰り返す</label>
-          </div>
-          <div class="gb-timer-sequence-list" data-timer-sequence-list></div>
-        </section>
       </div>`;
   };
 
@@ -430,14 +429,8 @@
     panel._timerAdvancedBound = true;
     panel.addEventListener('click', e => this._timerAdvancedHandleClick(e));
     panel.addEventListener('change', e => this._timerAdvancedHandleSettingChange(e));
+    panel.addEventListener('change', e => this._timerAdvancedHandleAlarmFile(e));
     panel.addEventListener('input', e => this._timerAdvancedHandleSettingInput(e));
-    panel.addEventListener('dragstart', e => this._timerAdvancedHandleDragStart(e));
-    panel.addEventListener('dragover', e => this._timerAdvancedHandleDragOver(e));
-    panel.addEventListener('drop', e => this._timerAdvancedHandleDrop(e));
-    panel.addEventListener('dragend', () => {
-      this._timerAdvancedDragIndex = -1;
-      panel.querySelectorAll?.('.gb-timer-sequence-item.is-dragging').forEach(row => row.classList.remove('is-dragging'));
-    });
   };
 
   TimerComponent.prototype._timerAdvancedHandleClick = async function(e) {
@@ -445,20 +438,14 @@
     if (!btn) return;
     const action = btn.dataset.timerAction;
     const id = btn.dataset.timerPresetId;
-    const index = btn.dataset.timerSequenceIndex === undefined ? -1 : parseInt(btn.dataset.timerSequenceIndex, 10);
     if (action === 'refreshCalendars') this._timerAdvancedLoadCalendars();
     else if (action === 'testAlarm') this._timerAdvancedPlayAlarm();
+    else if (action === 'chooseAlarmSource') this._timerAdvancedChooseAlarmSource();
+    else if (action === 'clearAlarmSource') this._timerAdvancedClearAlarmSource();
     else if (action === 'savePreset') this._timerAdvancedSavePreset();
     else if (action === 'loadPreset') this._timerAdvancedApplyItem(this._timerPresets.find(item => item.id === id), false, { settingsHistoryLabel: 'タイマー: プリセット読み込み' });
     else if (action === 'startPreset') this._timerAdvancedApplyItem(this._timerPresets.find(item => item.id === id), true, { settingsHistoryLabel: 'タイマー: プリセット開始' });
-    else if (action === 'addPresetToSequence') this._timerAdvancedAddPresetToSequence(id);
     else if (action === 'deletePreset') await this._timerAdvancedDeletePreset(id);
-    else if (action === 'runSequence') this._timerAdvancedRunSequence(0);
-    else if (action === 'stopSequence') this._timerAdvancedStopSequence();
-    else if (action === 'nextSequence') this._timerAdvancedRunNextSequenceItem();
-    else if (action === 'clearSequence') await this._timerAdvancedClearSequence();
-    else if (action === 'runSequenceItem') this._timerAdvancedRunSequence(index);
-    else if (action === 'deleteSequenceItem') await this._timerAdvancedDeleteSequenceItem(index);
   };
 
   TimerComponent.prototype._timerAdvancedHandleSettingChange = function(e) {
@@ -486,6 +473,8 @@
     let value = input.type === 'checkbox' ? !!input.checked : input.value;
     if (key === 'alarmVolume') value = _timerClampInt(value, 0, 100, DEFAULT_SETTINGS.alarmVolume);
     this._timerAdvancedSettings[key] = value;
+    if (key === 'countdownEnabled' && value) this._timerAdvancedSettings.countdownLast10 = false;
+    if (key === 'countdownLast10' && value) this._timerAdvancedSettings.countdownEnabled = false;
     this._timerAdvancedSettings = _timerNormalizeSettings(this._timerAdvancedSettings);
     this._timerAdvancedSyncControls();
     this._timerAdvancedSaveSettings({ skipHistory: true });
@@ -495,6 +484,22 @@
       _timerPushStorageHistory('タイマー: 拡張設定変更', before, [SETTINGS_KEY], key);
     }
     if (key === 'calendarEnabled' || key === 'calendarId') this._timerAdvancedReconcileCalendarPolling();
+    if (key === 'alarmSound' && value === CUSTOM_ALARM_NAME && !this._timerAdvancedSettings.alarmCustomDataUrl
+      && typeof this._timerAdvancedChooseAlarmSource === 'function') {
+      this._timerAdvancedChooseAlarmSource();
+    }
+    if (key.startsWith('countdown')) {
+      this._timerAdvancedResetCountdownState();
+      if (this.timerRunning) this._timerAdvancedScheduleCountdowns();
+    }
+  };
+
+  TimerComponent.prototype._timerAdvancedSetSettingDisabled = function(panel, key, disabled) {
+    const input = panel?.querySelector?.(`[data-timer-setting="${key}"]`);
+    if (!input) return;
+    input.disabled = !!disabled;
+    const label = input.closest?.('.gb-timer-check, .gb-timer-range');
+    label?.classList?.toggle?.('is-disabled', !!disabled);
   };
 
   TimerComponent.prototype._timerAdvancedSyncControls = function() {
@@ -511,17 +516,31 @@
     if (calSel) calSel.value = settings.calendarId || '';
     const volumeLabel = panel.querySelector('[data-timer-volume-label]');
     if (volumeLabel) volumeLabel.textContent = `${settings.alarmVolume}%`;
+    const sourceLabel = panel.querySelector('[data-timer-alarm-source-name]');
+    if (sourceLabel) sourceLabel.textContent = settings.alarmCustomName ? `設定音源: ${settings.alarmCustomName}` : '設定音源なし';
+    const clearSourceBtn = panel.querySelector('[data-timer-action="clearAlarmSource"]');
+    if (clearSourceBtn) clearSourceBtn.disabled = !settings.alarmCustomDataUrl;
     const nameInput = panel.querySelector('[data-timer-preset-name]');
     if (nameInput && !nameInput.value) nameInput.value = this._timerAdvancedActiveLabel || '';
-    this._timerAdvancedRenderSequence();
+    const voiceEnabled = !!settings.countdownVoice;
+    const intervalEnabled = voiceEnabled && !!settings.countdownEnabled;
+    const last10Enabled = voiceEnabled && !!settings.countdownLast10;
+    this._timerAdvancedSetSettingDisabled(panel, 'countdownEnabled', !voiceEnabled || last10Enabled);
+    this._timerAdvancedSetSettingDisabled(panel, 'countdownEvery10', !intervalEnabled);
+    this._timerAdvancedSetSettingDisabled(panel, 'countdownEvery5', !intervalEnabled);
+    this._timerAdvancedSetSettingDisabled(panel, 'countdownLast10', !voiceEnabled || intervalEnabled);
   };
 
   TimerComponent.prototype._timerAdvancedSaveSettings = function(options = {}) {
     const before = options.skipHistory ? null : _timerCaptureStorageHistory([SETTINGS_KEY]);
-    _timerWriteJson(SETTINGS_KEY, this._timerAdvancedSettings || DEFAULT_SETTINGS);
+    if (!_timerWriteJson(SETTINGS_KEY, this._timerAdvancedSettings || DEFAULT_SETTINGS)) {
+      if (typeof showStatus === 'function') showStatus('タイマー設定を保存できませんでした');
+      return false;
+    }
     if (!options.skipHistory) {
       _timerPushStorageHistory(options.label || 'タイマー: 拡張設定変更', before, [SETTINGS_KEY], options.detail || '');
     }
+    return true;
   };
 
   TimerComponent.prototype._timerAdvancedCurrentItem = function(name) {
@@ -569,7 +588,6 @@
         </div>
         <button class="tb-icon-btn" type="button" data-timer-action="loadPreset" data-timer-preset-id="${_timerEsc(item.id)}" title="読み込み">${_timerIcon('download', 14)}</button>
         <button class="tb-icon-btn" type="button" data-timer-action="startPreset" data-timer-preset-id="${_timerEsc(item.id)}" title="開始">${_timerIcon('play', 14)}</button>
-        <button class="tb-icon-btn" type="button" data-timer-action="addPresetToSequence" data-timer-preset-id="${_timerEsc(item.id)}" title="実行リストに追加">${_timerIcon('listPlus', 14)}</button>
         <button class="tb-icon-btn" type="button" data-timer-action="deletePreset" data-timer-preset-id="${_timerEsc(item.id)}" title="削除">${_timerIcon('trash2', 14)}</button>
       </div>`).join('');
     if (typeof replaceIcons === 'function') replaceIcons();
@@ -618,151 +636,11 @@
     const item = this._timerPresets.find(preset => preset.id === id);
     if (!item) return;
     if (!await _timerConfirm(`タイマー設定「${item.name}」を削除しますか？`)) return;
-    const before = _timerCaptureStorageHistory([PRESETS_KEY, SEQUENCE_KEY]);
+    const before = _timerCaptureStorageHistory([PRESETS_KEY]);
     this._timerPresets = this._timerPresets.filter(preset => preset.id !== id);
-    this._timerSequence = this._timerSequence.filter(seq => seq.sourcePresetId !== id);
     _timerWriteJson(PRESETS_KEY, this._timerPresets);
-    _timerWriteJson(SEQUENCE_KEY, this._timerSequence);
-    _timerPushStorageHistory('タイマー: プリセット削除', before, [PRESETS_KEY, SEQUENCE_KEY], item.name);
+    _timerPushStorageHistory('タイマー: プリセット削除', before, [PRESETS_KEY], item.name);
     this._timerAdvancedRenderPresets();
-    this._timerAdvancedRenderSequence();
-  };
-
-  TimerComponent.prototype._timerAdvancedAddPresetToSequence = function(id) {
-    const item = this._timerPresets.find(preset => preset.id === id);
-    if (!item) return;
-    const before = _timerCaptureStorageHistory([SEQUENCE_KEY]);
-    this._timerSequence.push({ ..._timerNormalizeItem(item), id: _timerId('seq'), sourcePresetId: id });
-    _timerWriteJson(SEQUENCE_KEY, this._timerSequence);
-    _timerPushStorageHistory('タイマー: 実行リスト追加', before, [SEQUENCE_KEY], item.name);
-    this._timerAdvancedRenderSequence();
-  };
-
-  TimerComponent.prototype._timerAdvancedRenderSequence = function() {
-    const list = this._timerAdvancedPanelRoot()?.querySelector?.('[data-timer-sequence-list]');
-    if (!list) return;
-    if (!this._timerSequence.length) {
-      list.innerHTML = '<div class="gb-timer-empty">実行リストは空です</div>';
-      return;
-    }
-    list.innerHTML = this._timerSequence.map((item, index) => `
-      <div class="gb-timer-sequence-item${index === this._timerAdvancedSequenceIndex && this._timerAdvancedSequenceRunning ? ' is-active' : ''}" draggable="true" data-timer-sequence-index="${index}">
-        <span class="gb-timer-drag-handle" title="ドラッグで並べ替え">${_timerIcon('gripVertical', 14)}</span>
-        <div class="gb-timer-item-main">
-          <span class="gb-timer-item-name">${_timerEsc(item.name)}</span>
-          <span class="gb-timer-muted">${this._formatTime(item.totalSeconds)}</span>
-        </div>
-        <button class="tb-icon-btn" type="button" data-timer-action="runSequenceItem" data-timer-sequence-index="${index}" title="ここから実行">${_timerIcon('play', 14)}</button>
-        <button class="tb-icon-btn" type="button" data-timer-action="deleteSequenceItem" data-timer-sequence-index="${index}" title="削除">${_timerIcon('trash2', 14)}</button>
-      </div>`).join('');
-    if (typeof replaceIcons === 'function') replaceIcons();
-  };
-
-  TimerComponent.prototype._timerAdvancedRunSequence = function(index) {
-    if (!this._timerSequence.length) return;
-    const startIndex = Math.max(0, Math.min(this._timerSequence.length - 1, Number(index) || 0));
-    this._timerAdvancedSequenceRunning = true;
-    this._timerAdvancedSequenceIndex = startIndex;
-    this._timerAdvancedRunCurrentSequenceItem();
-  };
-
-  TimerComponent.prototype._timerAdvancedRunCurrentSequenceItem = function() {
-    const item = this._timerSequence[this._timerAdvancedSequenceIndex];
-    if (!item) {
-      this._timerAdvancedStopSequence(false);
-      return;
-    }
-    this._timerAdvancedApplyItem(item, true, { skipSettingsHistory: true, source: 'sequence' });
-    this._timerAdvancedRenderSequence();
-  };
-
-  TimerComponent.prototype._timerAdvancedRunNextSequenceItem = function() {
-    if (!this._timerSequence.length) return;
-    if (!this._timerAdvancedSequenceRunning) {
-      this._timerAdvancedRunSequence(0);
-      return;
-    }
-    this._timerAdvancedSequenceIndex += 1;
-    if (this._timerAdvancedSequenceIndex >= this._timerSequence.length) {
-      if (this._timerAdvancedSettings.repeatList) this._timerAdvancedSequenceIndex = 0;
-      else {
-        this._timerAdvancedStopSequence(false);
-        return;
-      }
-    }
-    this._timerAdvancedRunCurrentSequenceItem();
-  };
-
-  TimerComponent.prototype._timerAdvancedStopSequence = function(pauseTimer = true) {
-    this._timerAdvancedClearPendingAutoStart();
-    this._timerAdvancedCancelSpeech();
-    this._timerAdvancedSequenceRunning = false;
-    this._timerAdvancedSequenceIndex = -1;
-    if (pauseTimer) this._pauseTimer();
-    this._timerAdvancedRenderSequence();
-  };
-
-  TimerComponent.prototype._timerAdvancedCancelSequence = function() {
-    this._timerAdvancedClearPendingAutoStart();
-    this._timerAdvancedSequenceRunning = false;
-    this._timerAdvancedSequenceIndex = -1;
-  };
-
-  TimerComponent.prototype._timerAdvancedDeleteSequenceItem = async function(index) {
-    if (index < 0 || index >= this._timerSequence.length) return;
-    const item = this._timerSequence[index];
-    if (!await _timerConfirm(`実行リストから「${item.name}」を削除しますか？`)) return;
-    const before = _timerCaptureStorageHistory([SEQUENCE_KEY]);
-    this._timerSequence.splice(index, 1);
-    if (this._timerAdvancedSequenceRunning && index <= this._timerAdvancedSequenceIndex) {
-      this._timerAdvancedSequenceIndex -= 1;
-    }
-    if (this._timerAdvancedSequenceIndex >= this._timerSequence.length) this._timerAdvancedSequenceIndex = this._timerSequence.length - 1;
-    _timerWriteJson(SEQUENCE_KEY, this._timerSequence);
-    _timerPushStorageHistory('タイマー: 実行リスト削除', before, [SEQUENCE_KEY], item.name);
-    this._timerAdvancedRenderSequence();
-  };
-
-  TimerComponent.prototype._timerAdvancedClearSequence = async function() {
-    if (!this._timerSequence.length) return;
-    if (!await _timerConfirm('実行リストをすべて削除しますか？')) return;
-    const before = _timerCaptureStorageHistory([SEQUENCE_KEY]);
-    this._timerAdvancedStopSequence(false);
-    this._timerSequence = [];
-    _timerWriteJson(SEQUENCE_KEY, this._timerSequence);
-    _timerPushStorageHistory('タイマー: 実行リストクリア', before, [SEQUENCE_KEY], '実行リスト');
-    this._timerAdvancedRenderSequence();
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleDragStart = function(e) {
-    const row = e.target.closest('[data-timer-sequence-index]');
-    if (!row) return;
-    this._timerAdvancedDragIndex = parseInt(row.dataset.timerSequenceIndex, 10);
-    row.classList.add('is-dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(this._timerAdvancedDragIndex));
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleDragOver = function(e) {
-    if (e.target.closest('[data-timer-sequence-index]')) e.preventDefault();
-  };
-
-  TimerComponent.prototype._timerAdvancedHandleDrop = function(e) {
-    const row = e.target.closest('[data-timer-sequence-index]');
-    if (!row) return;
-    e.preventDefault();
-    const from = this._timerAdvancedDragIndex;
-    const to = parseInt(row.dataset.timerSequenceIndex, 10);
-    if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return;
-    const before = _timerCaptureStorageHistory([SEQUENCE_KEY]);
-    const [moved] = this._timerSequence.splice(from, 1);
-    this._timerSequence.splice(to, 0, moved);
-    if (this._timerAdvancedSequenceIndex === from) this._timerAdvancedSequenceIndex = to;
-    else if (from < this._timerAdvancedSequenceIndex && to >= this._timerAdvancedSequenceIndex) this._timerAdvancedSequenceIndex -= 1;
-    else if (from > this._timerAdvancedSequenceIndex && to <= this._timerAdvancedSequenceIndex) this._timerAdvancedSequenceIndex += 1;
-    _timerWriteJson(SEQUENCE_KEY, this._timerSequence);
-    _timerPushStorageHistory('タイマー: 実行リスト並べ替え', before, [SEQUENCE_KEY], moved?.name || '');
-    this._timerAdvancedRenderSequence();
   };
 
   TimerComponent.prototype._timerAdvancedClearPendingAutoStart = function() {
@@ -792,26 +670,57 @@
   };
 
   TimerComponent.prototype._timerAdvancedResetCountdownState = function() {
+    this._timerAdvancedClearCountdownTimers?.();
     this._timerAdvancedCountdownKeys = new Set();
     this._timerAdvancedPreviousRemaining = null;
   };
 
+  TimerComponent.prototype._timerAdvancedClearCountdownTimers = function() {
+    (this._timerAdvancedCountdownTimers || []).forEach(timerId => clearTimeout(timerId));
+    this._timerAdvancedCountdownTimers = [];
+  };
+
   TimerComponent.prototype._timerAdvancedCountdownThresholds = function() {
     const settings = this._timerAdvancedSettings || DEFAULT_SETTINGS;
-    if (!settings.countdownEnabled || this.countUp || this.totalSeconds <= 0) return [];
+    if (!settings.countdownVoice || this.countUp || this.totalSeconds <= 0) return [];
     const thresholds = new Set();
-    if (settings.countdownEvery10) {
+    if (settings.countdownEnabled && settings.countdownEvery10) {
       for (let s = 600; s < this.totalSeconds; s += 600) thresholds.add(s);
     }
-    if (settings.countdownEvery5) {
+    if (settings.countdownEnabled && settings.countdownEvery5) {
       for (let s = 300; s < this.totalSeconds; s += 300) thresholds.add(s);
     }
     if (settings.countdownLast10) {
       for (let s = 10; s >= 1; s -= 1) {
-        if (s < this.totalSeconds) thresholds.add(s);
+        if (s <= this.totalSeconds) thresholds.add(s);
       }
     }
     return [...thresholds].sort((a, b) => b - a);
+  };
+
+  TimerComponent.prototype._timerAdvancedPreciseRemainingSeconds = function() {
+    if (!this.timerRunning || !this.timerStartMs) return this._remainingSeconds();
+    const preciseElapsed = this.elapsedAtStart + Math.max(0, (Date.now() - this.timerStartMs) / 1000);
+    return this.countUp ? preciseElapsed : Math.max(0, this.totalSeconds - preciseElapsed);
+  };
+
+  TimerComponent.prototype._timerAdvancedScheduleCountdowns = function() {
+    this._timerAdvancedClearCountdownTimers();
+    if (!this.timerRunning || this.countUp) return;
+    const currentRemaining = this._timerAdvancedPreciseRemainingSeconds();
+    this._timerAdvancedCountdownThresholds().forEach(threshold => {
+      const key = String(threshold);
+      if (this._timerAdvancedCountdownKeys.has(key)) return;
+      if (threshold > currentRemaining) return;
+      const delayMs = Math.max(0, Math.round((currentRemaining - threshold) * 1000));
+      const timerId = setTimeout(() => {
+        this._timerAdvancedCountdownTimers = (this._timerAdvancedCountdownTimers || []).filter(id => id !== timerId);
+        if (!this.timerRunning || this.countUp || this._timerAdvancedCountdownKeys.has(key)) return;
+        this._timerAdvancedCountdownKeys.add(key);
+        this._timerAdvancedAnnounceCountdown(threshold);
+      }, delayMs);
+      this._timerAdvancedCountdownTimers.push(timerId);
+    });
   };
 
   TimerComponent.prototype._timerAdvancedCheckCountdown = function() {
@@ -835,9 +744,10 @@
     const speechMessage = seconds <= 10 ? String(seconds) : message;
     if (this._timerAdvancedSettings.countdownVoice && 'speechSynthesis' in window) {
       try {
+        window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(speechMessage);
         utterance.lang = 'ja-JP';
-        utterance.rate = seconds <= 10 ? 1.05 : 0.95;
+        utterance.rate = seconds <= 10 ? 1.25 : 0.98;
         window.speechSynthesis.speak(utterance);
       } catch {}
     }
@@ -848,32 +758,38 @@
     const name = sound || this._timerAdvancedSettings?.alarmSound || DEFAULT_SETTINGS.alarmSound;
     if (name === 'none') return;
     const vol = Math.max(0, Math.min(1, (volume ?? this._timerAdvancedSettings?.alarmVolume ?? 70) / 100));
+    if (name === CUSTOM_ALARM_NAME && typeof this._timerAdvancedPlayCustomAlarm === 'function') {
+      this._timerAdvancedPlayCustomAlarm(volume);
+      return;
+    }
     try {
+      this._timerAdvancedStopAlarmAudio?.();
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
       const master = ctx.createGain();
-      master.gain.value = vol * 0.18;
+      master.gain.value = vol * 0.42;
       master.connect(ctx.destination);
-      const tones = {
-        beep: [[880, 0, 0.22], [660, 0.28, 0.22]],
-        chime: [[784, 0, 0.18], [988, 0.2, 0.28], [1175, 0.5, 0.35]],
-        bell: [[523, 0, 0.18], [659, 0.18, 0.18], [784, 0.36, 0.42], [523, 0.86, 0.2]],
-      }[name] || [[880, 0, 0.22]];
-      tones.forEach(([freq, start, length]) => {
+      const tones = [];
+      for (let i = 0; i < 12; i += 1) {
+        const start = i * 0.22;
+        tones.push([i % 2 ? 1320 : 1760, start, 0.17, 'square']);
+        tones.push([i % 2 ? 660 : 880, start, 0.17, 'sawtooth']);
+      }
+      tones.forEach(([freq, start, length, type]) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc.type = name === 'bell' ? 'triangle' : 'sine';
+        osc.type = type || 'square';
         osc.frequency.value = freq;
         gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
-        gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + start + 0.01);
         gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + length);
         osc.connect(gain);
         gain.connect(master);
         osc.start(ctx.currentTime + start);
         osc.stop(ctx.currentTime + start + length + 0.04);
       });
-      setTimeout(() => ctx.close().catch(() => {}), 1800);
+      setTimeout(() => ctx.close().catch(() => {}), 3200);
     } catch {}
   };
 
@@ -889,10 +805,6 @@
 
   TimerComponent.prototype._timerAdvancedHandleTimerDone = function() {
     const source = this._timerAdvancedTimerSource || 'manual';
-    if (this._timerAdvancedSequenceRunning) {
-      this._timerAdvancedScheduleAutoStart(() => this._timerAdvancedRunNextSequenceItem());
-      return;
-    }
     if (source !== 'calendar' && this._timerAdvancedSettings?.repeatSingle && !this.countUp && this.totalSeconds > 0) {
       this._timerAdvancedScheduleAutoStart(() => {
         if (!this.timerRunning) this._startTimer();
@@ -981,7 +893,6 @@
     const end = ev.end ? new Date(ev.end) : new Date(start.getTime() + 3600000);
     const seconds = Math.max(1, Math.ceil((end.getTime() - now.getTime()) / 1000));
     if (this.timerRunning || this._timerInterval) this._pauseTimer();
-    this._timerAdvancedCancelSequence();
     this._timerAdvancedActiveLabel = ev.title || 'カレンダーイベント';
     this.totalSeconds = seconds;
     this.elapsed = 0;

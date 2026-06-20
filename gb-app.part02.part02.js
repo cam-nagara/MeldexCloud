@@ -9,6 +9,7 @@
         const me = members.find(m => m.name === name);
         if (me) _myTeamRole = me.role || 'editor';
       } catch {}
+      await syncWorkspaceProfiles();
       return;
     }
     for (const root of visibleRoots) {
@@ -22,6 +23,7 @@
     // デフォルトロール = 最初の可視ソースフォルダのロール
     const firstRole = _myTeamRoles[visibleRoots[0].path];
     if (firstRole) _myTeamRole = firstRole;
+    await syncWorkspaceProfiles();
   } catch {}
 }
 
@@ -40,12 +42,16 @@ function _hideStartupSplash() {
 function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
   if (!timeout) return Promise.resolve(promise);
+  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   return new Promise((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
+      }
       if (typeof _sendLog === 'function') {
         _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
       }
@@ -55,11 +61,20 @@ function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
       resolve(value);
     }).catch((error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.error.' + label, startedAt, {
+          timeoutMs: timeout,
+          error: error?.message || String(error),
+        });
+      }
       reject(error);
     });
   });
@@ -81,6 +96,34 @@ function _runStartupBackground(label, promise, onReady) {
       }
       return null;
     });
+}
+
+function _refreshOutlinerAfterStartupReady() {
+  try {
+    const outlinerOptions = {
+      coalesce: true,
+      skipIfRecentlyLoaded: true,
+      reason: 'startup-ready',
+    };
+    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
+    const refreshJobs = [];
+    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
+    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    return Promise.allSettled(refreshJobs);
+  } catch (error) {
+    console.warn('[Meldex] startup outliner refresh failed:', error);
+    return Promise.resolve(null);
+  }
+}
+
+function _highlightLastOutlinerNodeAfterStartup() {
+  setTimeout(() => {
+    const last = _readLastViewFromStorage();
+    if (!last) return;
+    const p = last.path || last.dbPath || last.entityPath || '';
+    if (p) highlightOutlinerNode(p);
+  }, 500);
 }
 
 function _readLastViewFromStorage() {
@@ -177,18 +220,29 @@ function getMyRoleForPath(filePath) {
     }
   }
   localStorage.setItem('gb:migrated', '1');
+  if (typeof _refreshOutlinerStorageViewsAfterMigration === 'function') {
+    _refreshOutlinerStorageViewsAfterMigration();
+  }
 })();
 
 async function init() {
+  const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
   _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
 
   try {
+    const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
     const [vault, roots, homeRes] = await Promise.all([
       _withStartupTimeout('vault', apiFetch('/vault'), 5000, { path: '', name: '' }),
       _withStartupTimeout('outliner-roots', apiFetch('/outliner-roots').catch(() => []), 5000, []),
       _withStartupTimeout('home-folder', apiFetch('/home-folder').catch(() => ({ exists: false })), 5000, { exists: false }),
     ]);
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.initial-fetches', initialFetchStartedAt, {
+        rootsCount: Array.isArray(roots) ? roots.length : 0,
+        hasHome: !!homeRes?.exists,
+      });
+    }
     state.vaultPath = vault.path;
     try {
       if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
@@ -229,7 +283,10 @@ async function init() {
     if (typeof removeLegacyDashboardStorageOnce === 'function') removeLegacyDashboardStorageOnce();
 
     // フォルダツリーとビュー復元を並行実行
-    const outlinerPromise = loadOutliner();
+    const outlinerStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+    const outlinerPromise = Promise.resolve(loadOutliner()).finally(() => {
+      if (typeof _logPerfEvent === 'function') _logPerfEvent('startup.loadOutliner.promise', outlinerStartedAt);
+    });
     const linkDictPromise = loadLinkDict();
 
     // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
@@ -299,29 +356,33 @@ async function init() {
 
     // 前回のビューを即座に復元（URLパラメータがなかった場合）
     if (!restored) {
-    try {
-      let last = _readLastViewFromStorage();
-      if (last && _isCloudPhase1UnsupportedOpenType(last.type)) {
-        localStorage.removeItem('lastView');
-        _showCloudPhase1UnsupportedOpen(last.type);
-        last = null;
+      const restoreStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+      try {
+        let last = _readLastViewFromStorage();
+        if (last && _isCloudPhase1UnsupportedOpenType(last.type)) {
+          localStorage.removeItem('lastView');
+          _showCloudPhase1UnsupportedOpen(last.type);
+          last = null;
+        }
+        const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
+        if (last) {
+          if (last.type === 'pivot' && last.dbPath) { await selectDatabase(last.dbPath, null, _expOpts); restored = true; }
+          else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
+          else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
+          else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
+          else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
+          else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
+          else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'smart-db' && last.path && last.path.startsWith('file:') === false && typeof openSmartDbFile === 'function') { openSmartDbFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'smart-db' && last.smartDbId) { selectSmartDb(last.smartDbId, null, _expOpts); restored = true; }
+        }
+      } catch (e) {}
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.restore-last-view', restoreStartedAt, { restored });
       }
-      const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
-      if (last) {
-        if (last.type === 'pivot' && last.dbPath) { await selectDatabase(last.dbPath, null, _expOpts); restored = true; }
-        else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
-        else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
-        else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
-        else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
-        else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
-        else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'smart-db' && last.path && last.path.startsWith('file:') === false && typeof openSmartDbFile === 'function') { openSmartDbFile(last.label || '', last.path, _expOpts); restored = true; }
-        else if (last.type === 'smart-db' && last.smartDbId) { selectSmartDb(last.smartDbId, null, _expOpts); restored = true; }
-      }
-    } catch (e) {}
     } // if (!restored) from URL params
 
     // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
@@ -358,6 +419,9 @@ async function init() {
     // 起動後の重い補助処理は背景で継続し、表示を先に返す。
     _scheduleStartupDatabaseViewTabsRepair();
     _hideStartupSplash();
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.visible', initStartedAt, { restored });
+    }
     _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
       if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
         _refreshDbViewConfigAfterHistory(state.currentDbPath);
@@ -365,14 +429,10 @@ async function init() {
     });
     _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
       initGlobalFilterBar();
-      setTimeout(() => {
-        const last = _readLastViewFromStorage();
-        if (last) {
-          const p = last.path || last.dbPath || last.entityPath || '';
-          if (p) highlightOutlinerNode(p);
-        }
-      }, 500);
-      showStatus('準備完了');
+      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
+        _highlightLastOutlinerNodeAfterStartup();
+        showStatus('準備完了');
+      });
     });
   } catch (e) {
     showStatus('ソースフォルダ情報の取得に失敗しました', true);
@@ -412,6 +472,11 @@ function showView(viewName, ctx) {
   // ボードから離れたらノートタブを非表示
   if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
     hideBoardNoteTab();
+  }
+  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
+  if (viewName !== 'folder') {
+    const fvBar = document.getElementById('fv-bulk-bar');
+    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
   }
   if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
     clearBoardDetailTabs();

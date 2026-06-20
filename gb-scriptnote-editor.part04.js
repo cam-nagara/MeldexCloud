@@ -218,34 +218,46 @@
     const cc = this.doc.editor?.countConfig || {};
     const rows = this.host.querySelectorAll('.sn2-row');
     const isVert = this.doc.editor?.viewMode === 'vertical';
+    const mergeDisplay = !!this.doc.editor?.mergeDisplay;
     const clearCc = (el) => { delete el.dataset.ccBg; delete el.dataset.ccColor; delete el.dataset.ccWeight; delete el.dataset.ccSize; };
     const setCc = (el, gs) => { if (gs.bgColor) el.dataset.ccBg = gs.bgColor; if (gs.textColor) el.dataset.ccColor = gs.textColor; if (gs.fontWeight) el.dataset.ccWeight = gs.fontWeight; if (gs.fontSize) el.dataset.ccSize = gs.fontSize; };
+    let prevVisibleCalc = null;
     for (const rowEl of rows) {
       const rowId = rowEl.dataset.rowId;
       const docIdx = this.doc.rows.findIndex(r => r.id === rowId);
-      if (docIdx < 0 || docIdx < startIdx) continue;
+      if (docIdx < 0) continue;
       const rowCalc = calc[docIdx];
       if (!rowCalc) continue;
-      // 大区切り（primary）
-      const gutter = rowEl.querySelector('.sn2-gutter:not(.sn2-gutter2)');
-      if (gutter) {
-        gutter.textContent = this._formatGutterPrimary(rowCalc);
-        // 縦書き: 半角英数字を縦中横に再ラップ (textContent 設定で tcy span が消えるため)
-        if (isVert) this._wrapTcy(gutter, 'sn2-tcy-wide');
-        clearCc(gutter);
-        if (rowCalc.showPage && cc.primaryStyle) setCc(gutter, cc.primaryStyle);
+      const prevCalc = prevVisibleCalc;
+      if (docIdx >= startIdx) {
+        // 大区切り（primary）
+        const gutter = rowEl.querySelector('.sn2-gutter:not(.sn2-gutter2)');
+        if (gutter) {
+          const gutterText = this._formatGutterPrimary(rowCalc);
+          const prevGutterText = (mergeDisplay && prevCalc) ? this._formatGutterPrimary(prevCalc) : '';
+          const showGutterText = !(mergeDisplay && gutterText === prevGutterText);
+          gutter.textContent = showGutterText ? gutterText : '';
+          // 縦書き: 半角英数字を縦中横に再ラップ (textContent 設定で tcy span が消えるため)
+          if (isVert) this._wrapTcy(gutter, 'sn2-tcy-wide');
+          clearCc(gutter);
+          if (showGutterText && cc.primaryStyle) setCc(gutter, cc.primaryStyle);
+        }
+        // 小区切り（secondary）
+        const gutter2 = rowEl.querySelector('.sn2-gutter2');
+        if (gutter2) {
+          const gutter2Text = this._formatGutterSecondary(rowCalc);
+          const prevGutter2Text = (mergeDisplay && prevCalc) ? this._formatGutterSecondary(prevCalc) : '';
+          const showGutter2Text = !(mergeDisplay && gutter2Text === prevGutter2Text);
+          gutter2.textContent = showGutter2Text ? gutter2Text : '';
+          if (isVert) this._wrapTcy(gutter2, 'sn2-tcy-wide');
+          clearCc(gutter2);
+          if (showGutter2Text && cc.secondaryStyle) setCc(gutter2, cc.secondaryStyle);
+        }
+        // スタイル再適用
+        const row = this.doc.rows[docIdx];
+        if (row) this._applyRowStyle(rowEl, row.role);
       }
-      // 小区切り（secondary）
-      const gutter2 = rowEl.querySelector('.sn2-gutter2');
-      if (gutter2) {
-        gutter2.textContent = this._formatGutterSecondary(rowCalc);
-        if (isVert) this._wrapTcy(gutter2, 'sn2-tcy-wide');
-        clearCc(gutter2);
-        if (rowCalc.showPanel && cc.secondaryStyle) setCc(gutter2, cc.secondaryStyle);
-      }
-      // スタイル再適用
-      const row = this.doc.rows[docIdx];
-      if (row) this._applyRowStyle(rowEl, row.role);
+      prevVisibleCalc = rowCalc;
     }
   }
 
@@ -625,6 +637,7 @@
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
     if (this._undoTimer) { clearTimeout(this._undoTimer); this._undoTimer = null; }
     if (this._textInputUndoTimer) { clearTimeout(this._textInputUndoTimer); this._textInputUndoTimer = null; }
+    if (typeof this._teardownWrapResizeObserver === 'function') this._teardownWrapResizeObserver();
     if (typeof this._stopRowBulkBarGuard === 'function') this._stopRowBulkBarGuard();
     // エディタレジストリから除去
     if (typeof _sn2Editors !== 'undefined') {

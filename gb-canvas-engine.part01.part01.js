@@ -460,7 +460,8 @@ function _bdPathExtension(path) {
 }
 
 function _bdIsBoardWritablePath(path) {
-  return _bdPathExtension(path) === '.md';
+  const ext = _bdPathExtension(path);
+  return ext === '.md' || ext === '.mel-board';
 }
 
 function _bdRawLooksLikeBoardFile(raw) {
@@ -580,8 +581,18 @@ function bdParseMd(raw) {
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
       const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);
+      if (ispm) {
+        try { t.imageSourcePath = String(bdYamlScalar(ispm[1]) || '').replace(/\\/g, '/'); }
+        catch { t.imageSourcePath = ispm[1].slice(1, -1).replace(/\\/g, '/'); }
+      }
       if (/autoStyle:\s*true/.test(props)) t._autoStyle = true;
       if (/followChildren:\s*true/.test(props)) t._followChildren = true;
+      if (/userBgColor:\s*true/.test(props)) t._userBgColor = true;
+      if (/userFontSize:\s*true/.test(props)) t._userFontSize = true;
+      if (/userFontBold:\s*true/.test(props)) t._userFontBold = true;
+      if (/userW:\s*true/.test(props)) t._userW = true;
+      if (/userCardStyle:\s*true/.test(props)) t._userCardStyle = true;
       if (/collapsed:\s*true/.test(props)) t.collapsed = true;
       if (/minimized:\s*true/.test(props)) t.minimized = true;
       if (!transforms[id]) transforms[id] = {};
@@ -598,6 +609,26 @@ function bdParseMd(raw) {
         if (Object.prototype.hasOwnProperty.call(t, 'followChildren')) {
           t._followChildren = !!t.followChildren;
           delete t.followChildren;
+        }
+        if (Object.prototype.hasOwnProperty.call(t, 'userBgColor')) {
+          t._userBgColor = !!t.userBgColor;
+          delete t.userBgColor;
+        }
+        if (Object.prototype.hasOwnProperty.call(t, 'userFontSize')) {
+          t._userFontSize = !!t.userFontSize;
+          delete t.userFontSize;
+        }
+        if (Object.prototype.hasOwnProperty.call(t, 'userFontBold')) {
+          t._userFontBold = !!t.userFontBold;
+          delete t.userFontBold;
+        }
+        if (Object.prototype.hasOwnProperty.call(t, 'userW')) {
+          t._userW = !!t.userW;
+          delete t.userW;
+        }
+        if (Object.prototype.hasOwnProperty.call(t, 'userCardStyle')) {
+          t._userCardStyle = !!t.userCardStyle;
+          delete t.userCardStyle;
         }
         if (!transforms[id]) transforms[id] = {};
         Object.assign(transforms[id], t);
@@ -814,6 +845,7 @@ function bdParseMd(raw) {
         if (n.shape) node.shape = n.shape;
         if (n.link) node.link = n.link;
         if (n.linkType) node.linkType = n.linkType;
+        if (n.imageSourcePath) node.imageSourcePath = String(n.imageSourcePath).replace(/\\/g, '/');
         if (n.status) node.status = n.status;
         if (n.parent) node._jsonParent = n.parent;
         if (n.container) node.container = true;

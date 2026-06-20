@@ -28,7 +28,22 @@
 .bd-style-picker-trigger { display: inline-flex; align-items: center; gap: 8px; min-width: 90px; justify-content: space-between; }
 .bd-style-picker-caret { font-size: 10px; color: var(--fg2); }
 .ab-dropdown.bd-style-picker-menu,
-.bd-style-picker-menu { display: grid; gap: 4px; min-width: 240px; padding: 6px; z-index: 10010; }
+.bd-style-picker-menu {
+  position: fixed;
+  display: grid;
+  gap: 4px;
+  min-width: 240px;
+  max-height: min(70vh, 620px);
+  padding: 6px;
+  overflow: auto;
+  z-index: 10010;
+  background: var(--ui-popup-bg, var(--bg3));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-sizing: border-box;
+}
 
 /* --- in-panel スタイル管理タブ: タブ上部ピッカー & ドロップダウンポップアップ --- */
 .bd-style-in-panel { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
@@ -214,6 +229,28 @@
 .bd-node.bd-selected .bd-text, .bd-node.bd-editing .bd-text { pointer-events: auto; }
 .bd-node .bd-img { position: relative; z-index: 1; width: 100%; height: auto; max-width: 100%; border-radius: 3px; display: block; pointer-events: none; }
 .bd-node:has(.bd-img) .bd-text { padding: 2px 6px 4px; }
+.bd-node.bd-image-missing { min-width: 180px; min-height: 108px; }
+.bd-node .bd-missing-image {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 108px;
+  padding: 14px;
+  box-sizing: border-box;
+  border: 1px dashed color-mix(in srgb, var(--warn, #f59e0b) 80%, var(--border));
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg3) 92%, var(--warn, #f59e0b) 8%);
+  color: var(--fg);
+  pointer-events: auto;
+}
+.bd-node .bd-missing-image-title { font-weight: 700; font-size: 13px; line-height: 1.4; }
+.bd-node .bd-missing-image-path { color: var(--fg2); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; word-break: break-word; max-height: 3.9em; overflow: hidden; }
+.bd-node .bd-missing-image-action { align-self: flex-start; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); color: var(--fg); cursor: pointer; font-size: 12px; line-height: 1.4; }
+.bd-node .bd-missing-image-action:hover { background: var(--bg4); }
 .bd-node .bd-caption { font-size: 12px; color: var(--fg2); margin-top: 4px; }
 .bd-resize { position: absolute; width: calc(18px / var(--bd-current-zoom, 1)); height: calc(18px / var(--bd-current-zoom, 1)); cursor: nwse-resize; opacity: 0; z-index: 12; transform: translate(-35%, -35%); pointer-events: none; }
 .bd-resize.is-visible { opacity: 0.88; pointer-events: auto; }

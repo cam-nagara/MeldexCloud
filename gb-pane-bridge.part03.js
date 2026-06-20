@@ -1,5 +1,5 @@
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'カレンダー',
+      board: 'ボード', calendar: 'スケジューラー',
       'smart-db': 'スマートシート', folder: 'フォルダ',
       };
       const containerId = LEGACY_CONTAINERS[toolType];
@@ -20,7 +20,9 @@
         + '<div style="font-size:16px;color:var(--fg);">' + label + '</div>'
         + '<div style="font-size:13px;color:var(--fg2);">ファイルを開くか、新規作成してください</div>'
         + '<button class="gb-empty-create-btn" style="margin-top:8px;padding:6px 16px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:6px;cursor:pointer;font-size:13px;">+ 新規作成</button>';
-      emptyEl.querySelector('.gb-empty-create-btn').addEventListener('click', () => {
+      const createBtn = emptyEl.querySelector('.gb-empty-create-btn');
+      createBtn.dataset.e2eId = `empty-create-${toolType}`;
+      createBtn.addEventListener('click', () => {
         emptyEl.remove();
         if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(toolType);
       });
@@ -281,7 +283,7 @@
     }
 
     // 既に開いているか確認
-    const existing = GBTabs.findPaneWithTab(toolType, '') || _findToolPaneInAnyGroup(toolType);
+    const existing = _findToolPaneInAnyGroup(toolType) || GBTabs.findPaneWithTab(toolType, '');
     if (existing) {
       const paneId = existing.paneId;
       const activePane = GBLayout.activePane;
@@ -290,11 +292,16 @@
       const existingVisible = typeof GBLayout.isPaneVisible === 'function'
         ? GBLayout.isPaneVisible(paneId)
         : paneId === activePane;
-      const closeExisting = openOpts.toggleExisting && (paneId === activePane || (preserveWorkActive && existingVisible));
+      const closeExisting = openOpts.toggleExisting && (paneId === activePane || (preserveWorkActive && existingVisible) || (existing.panelsetNode && existingVisible));
       if (!closeExisting) {
         const restorePaneId = _getContentPane(activePane) || _getFileOpenPane(activePane);
         _activateToolPaneMatch(existing, { preserveActivePane: preserveWorkActive });
+        if (toolType === 'detail') _syncDetailForActivePane(restorePaneId || activePane);
         _scheduleContentPaneRestore(restorePaneId);
+      } else if (existing.panelsetNode) {
+        existing.panelsetNode.collapsed = true;
+        if (typeof GBLayout?.render === 'function') GBLayout.render();
+        if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
       } else {
         GBTabs.closeTab(paneId, existing.tabId);
       }
@@ -345,7 +352,7 @@
       ['シナリオ', 'bookOpenText', () => openToolTab('scriptnote')],
       ['シート', 'db', () => openToolTab('database')],
       ['ボード', 'presentation', () => openToolTab('board')],
-      ['カレンダー', 'calendar', () => openToolTab('calendar')],
+      ['スケジューラー', 'calendar', () => openToolTab('calendar')],
       ['スマートシート', 'databaseSearch', () => openToolTab('smart-db')],
       ['---'],
       ['フォルダ', 'folder', () => openToolTab('folder')],
@@ -445,7 +452,8 @@
     }
     _syncStateView();
     _mountFloatingAnnotationUi();
-    _syncDetailForActivePane(GBLayout.activePane || paneId);
+    const detailSourcePaneId = _isDetailSyncSourcePane(paneId) ? paneId : (GBLayout.activePane || paneId);
+    _syncDetailForActivePane(detailSourcePaneId);
     _syncToolButtonStates();
     if (typeof GBAppLayouts !== 'undefined' && typeof GBAppLayouts.syncButtons === 'function') {
       GBAppLayouts.syncButtons();
@@ -500,6 +508,8 @@
     activateAnnotationFabForPane: _activateAnnotationFabForPane,
     getAnnotationContentPaneInfo: _getAnnotationContentPaneInfo,
     getCurrentAnnotationTarget: _getCurrentAnnotationTarget,
+    getCurrentOpenTargetInfo: _getAnnotationContentPaneInfo,
+    getCurrentOpenTarget: _getCurrentAnnotationTarget,
     rememberAnnotationTargetForPane: _rememberAnnotationTargetForPane,
     refreshPaneAfterTabSwitch: _refreshPaneAfterTabSwitch,
     retractPaneContent: _retractPaneContent,

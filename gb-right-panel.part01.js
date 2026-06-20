@@ -129,9 +129,13 @@ function switchRightTab(tabName) {
   });
   // タブ固有の初期化
   if (tabName === 'chat') {
+    // チャットモジュール未ロード時は静かに離脱（ReferenceError 防止）
+    if (typeof _chatState === 'undefined' || typeof updateChatModels !== 'function' || typeof switchChatMode !== 'function') {
+      return;
+    }
     const savedProvider = localStorage.getItem('chat-provider');
     const savedModel = localStorage.getItem('chat-model');
-    if (savedProvider) { _chatState.provider = savedProvider; _safeSetValue('chat-provider', savedProvider); }
+    if (savedProvider) { _chatState.provider = savedProvider; if (typeof _safeSetValue === 'function') _safeSetValue('chat-provider', savedProvider); }
     updateChatModels();
     if (savedModel) {
       const modelSel = document.getElementById('chat-model');
@@ -150,7 +154,7 @@ function switchRightTab(tabName) {
       const p = _chatState.provider;
       const info = cfg.providers?.[p];
       const localConfigured = await window.MeldexLlmKeys?.hasProvider?.(p).catch(() => false);
-      if (info && !info.configured && !localConfigured) {
+      if (info && !info.configured && !localConfigured && typeof chatAddSystem === 'function') {
         chatAddSystem('APIキーが未設定です。設定ダイアログからAPIキーを入力してください。');
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});

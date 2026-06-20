@@ -13,6 +13,32 @@ try { updateRecentItems(); } catch (e) { console.warn('updateRecentItems failed 
 // ==============================
 let _homeFolderPath = '';
 let _homeFolderRenderSeq = 0;
+const _HOME_FOLDER_BROWSE_RETRY_DELAYS = [250, 750];
+
+function _homeFolderRenderDelay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function _isHomeFolderRenderCurrent(renderSeq, homePath) {
+  return renderSeq === _homeFolderRenderSeq && homePath === _homeFolderPath;
+}
+
+async function _browseHomeFolderChildren(homePath, renderSeq) {
+  let lastError = null;
+  const url = '/browse?path=' + encodeURIComponent(homePath) + '&root=' + encodeURIComponent(homePath) + '&all_files=true';
+  for (let attempt = 0; attempt <= _HOME_FOLDER_BROWSE_RETRY_DELAYS.length; attempt++) {
+    if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return null;
+    try {
+      return await apiFetch(url, { silentError: attempt < _HOME_FOLDER_BROWSE_RETRY_DELAYS.length });
+    } catch (e) {
+      lastError = e;
+      const delay = _HOME_FOLDER_BROWSE_RETRY_DELAYS[attempt];
+      if (delay == null) break;
+      await _homeFolderRenderDelay(delay);
+    }
+  }
+  throw lastError;
+}
 
 async function loadHomeFolder() {
   try {
@@ -35,10 +61,11 @@ async function renderHomeFolderTree() {
   if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
   container.innerHTML = '';
   if (!homePath) return;
+  container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">読み込み中...</div>';
   try {
     if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
-    const children = await apiFetch('/browse?path=' + encodeURIComponent(homePath) + '&root=' + encodeURIComponent(homePath) + '&all_files=true');
-    if (renderSeq !== _homeFolderRenderSeq || homePath !== _homeFolderPath) return;
+    const children = await _browseHomeFolderChildren(homePath, renderSeq);
+    if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return;
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
     container.innerHTML = '';
     registerFileTypes(children);
@@ -46,9 +73,10 @@ async function renderHomeFolderTree() {
     children.forEach(child => {
       container.appendChild(createTreeNodeFromBrowse(child, homePath));
     });
+    if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
     if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
   } catch {
-    if (renderSeq !== _homeFolderRenderSeq || homePath !== _homeFolderPath) return;
+    if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return;
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
     container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">読み込みエラー</div>';
   }

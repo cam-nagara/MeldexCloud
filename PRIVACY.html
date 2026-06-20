@@ -1,22 +1,22 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" spellcheck="false">
 <head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+<meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="color-scheme" content="dark">
-  <title>Meldex プライバシーポリシー</title>
-  <meta name="description" content="Meldex BETA のプライバシーポリシーです。作品データ、テレメトリ、LLM連携時の外部送信について説明します。">
+  <title>Meldex（メルデックス） プライバシーポリシー</title>
+  <meta name="description" content="Meldex（メルデックス） BETA のプライバシーポリシーです。作品データ、テレメトリ、LLM連携時の外部送信について説明します。">
   <link rel="icon" href="Meldex_icon_64.png" type="image/png">
   <link rel="stylesheet" href="public-legal.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="public-index.html" aria-label="Meldex BETA 配布ページへ戻る">
+    <a class="brand" href="public-index.html" aria-label="Meldex（メルデックス） BETA 配布ページへ戻る">
       <img src="Meldex_icon_64.png" alt="">
-      <span>Meldex BETA</span>
+      <span>Meldex（メルデックス） BETA</span>
     </a>
     <nav class="nav" aria-label="関連ページ">
       <a href="public-index.html">配布ページ</a>
@@ -44,11 +44,11 @@
 
     <article class="doc-content">
       <header class="doc-header">
-        <div class="doc-kind">Meldex BETA</div>
+        <div class="doc-kind">Meldex（メルデックス） BETA</div>
         <h1>プライバシーポリシー</h1>
-        <p class="doc-lead">Meldexで作成した作品・データがどこに保存され、どの操作で外部サービスへ送信される可能性があるかを説明します。</p>
+        <p class="doc-lead">Meldex（メルデックス）で作成した作品・データがどこに保存され、どの操作で外部サービスへ送信される可能性があるかを説明します。</p>
         <ul class="doc-meta">
-          <li>最終更新日: 2026-05-10</li>
+          <li>最終更新日: 2026-05-17</li>
           <li>配布者: cam-nagara / Meldex 開発者</li>
           <li>問い合わせ: <a href="https://github.com/cam-nagara/MeldexCloud/issues">GitHub Issues</a> または配布ページ記載の連絡先</li>
         </ul>
@@ -102,19 +102,25 @@
                 <td>OpenAI API</td>
                 <td>チャット本文、選択コンテキスト、添付内容</td>
                 <td>API経由の入力・出力は、ユーザーが明示的に共有へ同意しない限り、モデルの訓練・改善に使われない方針です。安全監視等のため一定期間ログが保持される場合があります。</td>
-                <td><a href="https://platform.openai.com/docs/guides/your-data">公式情報</a></td>
+                <td><a href="https://developers.openai.com/api/docs/guides/your-data">公式情報</a></td>
               </tr>
               <tr>
                 <td>Anthropic API</td>
                 <td>チャット本文、選択コンテキスト、添付内容</td>
-                <td>API等の商用利用では、ユーザーが明示的にモデル改善へ提供しない限り、プロンプトや出力を生成モデルの訓練に使わない方針です。</td>
-                <td><a href="https://docs.anthropic.com/en/docs/claude-code/data-usage">公式情報</a></td>
+                <td>API / Team / Enterpriseなどの商用条件では、ユーザーが明示的にモデル改善へ提供しない限り、プロンプトや出力を生成モデルの訓練に使わない方針です。</td>
+                <td><a href="https://privacy.claude.com/en/articles/7996885-how-do-you-use-personal-data-in-model-training">公式情報</a></td>
               </tr>
               <tr>
                 <td>Google Gemini API</td>
                 <td>チャット本文、選択コンテキスト、添付内容</td>
                 <td>無料枠では入力・出力がGoogleのサービス改善や機械学習技術の改善に使われ、人間のレビュー対象になる場合があります。Cloud Billingが有効な有料扱いのGemini APIでは、入力・出力を製品改善に使わない方針です。</td>
-                <td><a href="https://ai.google.dev/gemini-api/terms">公式情報</a></td>
+                <td><a href="https://ai.google.dev/gemini-api/terms?hl=ja">公式情報</a></td>
+              </tr>
+              <tr>
+                <td>Google Vertex AI</td>
+                <td>チャット本文、選択コンテキスト、添付内容</td>
+                <td>事前の許可または指示なしに、管理対象モデルの訓練・微調整には使われない方針です。</td>
+                <td><a href="https://cloud.google.com/vertex-ai/generative-ai/docs/vertex-ai-zero-data-retention">公式情報</a></td>
               </tr>
             </tbody>
           </table>
@@ -142,7 +148,7 @@
   </main>
 
   <footer class="doc-footer">
-    <span>Meldex BETA</span>
+    <span>Meldex（メルデックス） BETA</span>
     <span>プライバシーポリシー</span>
   </footer>
 </body>

@@ -432,7 +432,10 @@ function _getScrollContainerForView(viewName) {
   if (viewName === 'compare') return document.getElementById('compare-view');
   if (viewName === 'folder') return document.getElementById('folder-grid');
   if (viewName === 'media') return document.getElementById('media-view');
-  if (viewName === 'csv') return document.getElementById('csv-table-container') || document.getElementById('csv-view');
+  if (viewName === 'csv') {
+    if (document.body?.dataset?.csvSheetMode === '1') return document.getElementById('pivot-view') || document.getElementById('db-view-container');
+    return document.getElementById('csv-table-container') || document.getElementById('csv-view');
+  }
   if (viewName === 'scriptnote') {
     return document.querySelector('.gb-pane-active .gb-scriptnote-root .sn2-scroll')
       || document.querySelector('.gb-pane-active .gb-scriptnote-root #scenario-note-surface')

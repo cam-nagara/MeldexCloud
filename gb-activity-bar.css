@@ -1,34 +1,34 @@
 /* アクティビティバー（左端の縦バー）
    ============================== */
 #activity-bar {
-  width: 40px; flex-shrink: 0; background: var(--bg2);
+  width: 46px; flex-shrink: 0; background: var(--bg2);
   display: flex; flex-direction: column; align-items: center;
   padding: 4px 0; gap: 2px; border-right: 1px solid var(--border);
   z-index: 91; overflow: hidden;
 }
 #activity-bar button {
-  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
   background: none; border: none; color: var(--fg2); border-radius: 4px; cursor: pointer;
   flex-shrink: 0; position: relative;
 }
 #activity-bar button:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 #activity-bar button.active { color: var(--ui-selection-fg); background: var(--ui-selection-bg); }
-#activity-bar .ab-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0; flex-shrink: 0; }
+#activity-bar .ab-sep { width: 24px; height: 1px; background: var(--border); margin: 4px 0; flex-shrink: 0; }
 /* 右アクティビティバー */
 #activity-bar-right {
-  width: 40px; flex-shrink: 0; background: var(--bg2);
+  width: 46px; flex-shrink: 0; background: var(--bg2);
   display: flex; flex-direction: column; align-items: center;
   padding: 4px 0; gap: 2px; border-left: 1px solid var(--border);
   z-index: 91; overflow: hidden;
 }
 #activity-bar-right button {
-  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
   background: none; border: none; color: var(--fg2); border-radius: 4px; cursor: pointer;
   flex-shrink: 0; position: relative;
 }
 #activity-bar-right button:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 #activity-bar-right button.active { color: var(--ui-selection-fg); background: var(--ui-selection-bg); }
-#activity-bar-right .ab-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0; flex-shrink: 0; }
+#activity-bar-right .ab-sep { width: 24px; height: 1px; background: var(--border); margin: 4px 0; flex-shrink: 0; }
 /* 高さが狭い時: 入出力→ゴミ箱→追加系の順で非表示 */
 @media (max-height: 750px) { #activity-bar .ab-io { display: none; } }
 @media (max-height: 650px) { #activity-bar .ab-trash { display: none; } }

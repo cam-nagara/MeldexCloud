@@ -54,8 +54,8 @@ function svgGroup(x, y) {
 
 /* --- チャート設定の取得/保存 --- */
 
-function getChartConfig(dbPath) {
-  return getCurrentDbViewTypeSpecific(dbPath, 'chart') || {
+function getChartConfig(dbPath, options = {}) {
+  return getCurrentDbViewTypeSpecific(dbPath, 'chart', { ctx: options.ctx || null }) || {
     chartType: 'bar',
     xProperty: '',
     yAggregation: 'count',
@@ -71,6 +71,7 @@ function setChartConfig(dbPath, config, options = {}) {
   delete chartConfig.propertyTypes;
   const label = options.historyLabel || options.label || '';
   setCurrentDbViewTypeSpecific(dbPath, 'chart', chartConfig, {
+    ctx: options.ctx || null,
     historyLabel: label,
     detail: options.detail || '',
     skipHistory: options.skipHistory === true || !label,
@@ -80,7 +81,7 @@ function setChartConfig(dbPath, config, options = {}) {
 function _chartNumericProps(allProps, propTypes) {
   return allProps.filter(p => {
     const pt = propTypes[p]?.type;
-    return pt === 'number' || pt === 'formula';
+    return pt === 'number' || pt === 'formula' || pt === 'rollup';
   });
 }
 
@@ -114,12 +115,13 @@ function _normalizeChartConfig(config, allProps, dbPath) {
  * pivotDataからチャート用データを準備する
  * @returns {{ labels: string[], values: number[], colors: string[], total: number }}
  */
-function prepareChartData(pivotData, chartConfig, dbPathOverride) {
+function prepareChartData(pivotData, chartConfig, dbPathOverride, options = {}) {
   if (!pivotData || !pivotData.entities) return { labels: [], values: [], colors: [], total: 0 };
 
   const entities = pivotData.entities;
   const dbPath = dbPathOverride || state.currentDbPath;
-  const entityNames = _chartFilteredEntityNames(pivotData, dbPath);
+  const filterMode = options.filter ?? options.ctx?.filter;
+  const entityNames = _chartFilteredEntityNames(pivotData, dbPath, options.ctx || null);
   const allProps = _collectChartProperties(entities, pivotData, dbPath);
   chartConfig = _normalizeChartConfig(chartConfig, allProps, dbPath);
   const xProp = chartConfig.xProperty;
@@ -131,13 +133,13 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride) {
   // X軸プロパティの値でグルーピング
   const groups = Object.create(null);
   entityNames.forEach(en => {
-    const vals = filterValues(entities[en][xProp] || []);
+    const vals = filterValues(entities[en][xProp] || [], undefined, filterMode);
     const key = vals.length > 0 ? String(vals[0].value ?? '') : '(空)';
     if (!Object.prototype.hasOwnProperty.call(groups, key)) groups[key] = [];
     groups[key].push(en);
   });
 
-  const labels = Object.keys(groups);
+  const labels = _chartSortedLabels(Object.keys(groups));
   const values = [];
 
   if (yAgg === 'count') {
@@ -152,9 +154,71 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride) {
       // グループ内エントリだけのサブマップ
       const subMap = {};
       groupEntities.forEach(en => { subMap[en] = entities[en]; });
-      const result = calcAggregation(chartConfig.yProperty, subMap, groupEntities, yAgg, yPtc, propTypes);
+      const result = calcAggregation(chartConfig.yProperty, subMap, groupEntities, yAgg, yPtc, propTypes, filterMode);
       values.push(typeof result === 'number' ? result : parseFloat(result) || 0);
     });
+  } else {
+    labels.forEach(label => values.push(groups[label].length));
+  }
+
+  const colors = labels.map((_, i) => palette[i % palette.length]);
+  const total = values.reduce((a, b) => a + b, 0);
+
+  return { labels, values, colors, total };
+}
+
+async function prepareChartDataAsync(pivotData, chartConfig, dbPathOverride, options = {}) {
+  if (!pivotData || !pivotData.entities) return { labels: [], values: [], colors: [], total: 0 };
+
+  const entities = pivotData.entities;
+  const dbPath = dbPathOverride || state.currentDbPath;
+  const filterMode = options.filter ?? options.ctx?.filter;
+  const entityNames = _chartFilteredEntityNames(pivotData, dbPath, options.ctx || null);
+  const allProps = _collectChartProperties(entities, pivotData, dbPath);
+  chartConfig = _normalizeChartConfig(chartConfig, allProps, dbPath);
+  const propTypes = chartConfig.propertyTypes || getPropertyTypes(dbPath);
+  const xProp = chartConfig.xProperty;
+  const xPtc = propTypes?.[xProp] || null;
+  const yAgg = chartConfig.yAggregation || 'count';
+  const palette = CHART_PALETTES[chartConfig.palette] || CHART_PALETTES.default;
+
+  if (!xProp) return { labels: [], values: [], colors: [], total: 0 };
+
+  let rollupXValues = null;
+  if (xPtc?.type === 'rollup' && typeof calcRollupColumn === 'function') {
+    rollupXValues = await calcRollupColumn(entities, entityNames, xPtc, propTypes, dbPath, filterMode);
+  }
+
+  const groups = Object.create(null);
+  entityNames.forEach(en => {
+    let key = '';
+    if (rollupXValues) {
+      const rollupValue = rollupXValues.has(en) ? rollupXValues.get(en) : '';
+      key = rollupValue == null || String(rollupValue).trim() === '' || String(rollupValue).trim() === '-' ? '(空)' : String(rollupValue);
+    } else {
+      const vals = filterValues(entities[en][xProp] || [], undefined, filterMode);
+      key = vals.length > 0 ? String(vals[0].value ?? '') : '(空)';
+    }
+    if (!Object.prototype.hasOwnProperty.call(groups, key)) groups[key] = [];
+    groups[key].push(en);
+  });
+
+  const labels = _chartSortedLabels(Object.keys(groups));
+  const values = [];
+
+  if (yAgg === 'count') {
+    labels.forEach(label => values.push(groups[label].length));
+  } else if (chartConfig.yProperty && ['sum', 'average', 'min', 'max', 'median'].includes(yAgg)) {
+    const yPtc = propTypes[chartConfig.yProperty] || null;
+    for (const label of labels) {
+      const groupEntities = groups[label];
+      const subMap = {};
+      groupEntities.forEach(en => { subMap[en] = entities[en]; });
+      const result = typeof calcAggregationAsync === 'function'
+        ? await calcAggregationAsync(chartConfig.yProperty, subMap, groupEntities, yAgg, yPtc, propTypes, filterMode, { dbPath, sourceDbPath: dbPath })
+        : calcAggregation(chartConfig.yProperty, subMap, groupEntities, yAgg, yPtc, propTypes, filterMode);
+      values.push(typeof result === 'number' ? result : parseFloat(result) || 0);
+    }
   } else {
     labels.forEach(label => values.push(groups[label].length));
   }
@@ -260,6 +324,28 @@ function renderPieChart(data, w, h, options = {}) {
   const cy = h / 2;
   const r = Math.min(cx - 30, cy - 30);
   const legendX = cx + r + 40;
+
+  if (positiveItems.length === 1) {
+    const item = positiveItems[0];
+    const circle = svgCreate('circle', { cx, cy, r, fill: item.color });
+    const title = svgCreate('title');
+    title.textContent = item.label + ': ' + _formatDisplayVal(item.value) + ' (100%)';
+    circle.appendChild(title);
+    svg.appendChild(circle);
+    if (showLabels) {
+      svg.appendChild(svgText(cx, cy, '100%', {
+        fontSize: '11', fill: '#fff', anchor: 'middle', baseline: 'central',
+      }));
+    }
+    if (showLegend) {
+      svg.appendChild(svgRect(legendX, 14, 12, 12, item.color, 2));
+      const truncLabel = item.label.length > 16 ? item.label.slice(0, 15) + '…' : item.label;
+      svg.appendChild(svgText(legendX + 18, 24, truncLabel + ' (' + _formatDisplayVal(item.value) + ')', {
+        fontSize: '11', fill: 'var(--fg2)', anchor: 'start',
+      }));
+    }
+    return svg;
+  }
 
   let startAngle = -Math.PI / 2;
 
@@ -446,8 +532,10 @@ function _calcGridSteps(maxVal) {
 }
 
 function _formatAxisVal(v) {
-  if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M';
-  if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs >= 1000000) return sign + (abs / 1000000).toFixed(1) + 'M';
+  if (abs >= 1000) return sign + (abs / 1000).toFixed(1) + 'K';
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
@@ -456,41 +544,75 @@ function _formatDisplayVal(v) {
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
+function _chartLabelSortValue(label) {
+  const text = String(label ?? '').trim();
+  if (!text || text === '(空)') return null;
+  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) {
+    const n = Number(text);
+    if (Number.isFinite(n)) return { type: 'number', value: n };
+  }
+  if (/^\d{4}[-/]\d{2}(?:[-/]\d{2})?/.test(text)) {
+    const d = typeof parseLocalDate === 'function' ? parseLocalDate(text) : new Date(text);
+    if (!Number.isNaN(d.getTime())) return { type: 'date', value: d.getTime() };
+  }
+  return null;
+}
+
+function _chartSortedLabels(labels) {
+  return [...labels].sort((a, b) => {
+    const av = _chartLabelSortValue(a);
+    const bv = _chartLabelSortValue(b);
+    if (av && bv && av.type === bv.type && av.value !== bv.value) return av.value - bv.value;
+    if (av && !bv) return -1;
+    if (!av && bv) return 1;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
 /* --- メインレンダラ --- */
 
 /**
  * チャートビューを描画する
  */
-function renderChart(ctx) {
+async function renderChart(ctx) {
   ctx = ctx || _currentPaneState();
   const container = typeof _dbViewSurfaceEl === 'function'
     ? _dbViewSurfaceEl(ctx, '.chart-view', 'chart-view')
     : ((ctx?.containerEl ? ctx.containerEl.querySelector('.chart-view') : null) || document.getElementById('chart-view') || document.querySelector('.chart-view'));
   if (!container) return;
+  if (!_chartIsActiveView(ctx, container)) {
+    _disconnectChartResizeObserver(container);
+    return;
+  }
   container.style.display = 'flex';
   container.innerHTML = '';
 
   const dbPath = ctx.dbPath || state.currentDbPath;
   const pivotData = ctx.pivotData || state.pivotData;
   if (!dbPath || !pivotData) {
+    _disconnectChartResizeObserver(container);
     container.textContent = 'シートを選択してください';
     return;
   }
 
-  let config = getChartConfig(dbPath);
+  let config = getChartConfig(dbPath, { ctx });
   const entities = pivotData.entities || {};
   if (Object.keys(entities).length === 0) {
-    renderEmptyState(container, 'barChart', 'データがありません', 'エントリを追加するとチャートが表示されます');
+    if (typeof _dbRenderEmptyStateWithCreate === 'function') {
+      _dbRenderEmptyStateWithCreate(container, 'barChart', 'データがありません', 'エントリを追加するとチャートが表示されます', ctx);
+    } else {
+      renderEmptyState(container, 'barChart', 'データがありません', 'エントリを追加するとチャートが表示されます');
+    }
     return;
   }
   const allProps = _collectChartProperties(entities, pivotData, dbPath);
 
   config = _normalizeChartConfig(config, allProps, dbPath);
-  const savedConfig = getChartConfig(dbPath);
+  const savedConfig = getChartConfig(dbPath, { ctx });
   const configForSave = { ...config };
   delete configForSave.propertyTypes;
   if (JSON.stringify(configForSave) !== JSON.stringify(savedConfig)) {
-    setChartConfig(dbPath, config);
+    setChartConfig(dbPath, config, { ctx });
   }
 
   // 設定バー
@@ -500,10 +622,18 @@ function renderChart(ctx) {
   // チャート描画エリア
   const chartArea = document.createElement('div');
   chartArea.className = 'chart-area';
+  chartArea.style.overflowX = 'auto';
+  chartArea.style.overflowY = 'hidden';
   container.appendChild(chartArea);
 
   // チャート描画（containerのサイズを使用 — chartAreaは新規要素でサイズ未確定のため）
-  const data = prepareChartData(pivotData, config, dbPath);
+  const data = typeof prepareChartDataAsync === 'function'
+    ? await prepareChartDataAsync(pivotData, config, dbPath, { ctx, filter: ctx?.filter })
+    : prepareChartData(pivotData, config, dbPath, { ctx, filter: ctx?.filter });
+  if (!_chartIsActiveView(ctx, container)) {
+    _disconnectChartResizeObserver(container);
+    return;
+  }
   const containerRect = container.getBoundingClientRect();
   const w = Math.max(containerRect.width - 32 || 600, 400);  // padding分を差し引く
   const h = Math.max(containerRect.height - 80 || 400, 300);  // settings bar分を差し引く
@@ -527,6 +657,10 @@ function renderChart(ctx) {
   let lastW = containerRect.width, lastH = containerRect.height;
   if (typeof ResizeObserver !== 'function') return;
   container._resizeObs = new ResizeObserver(entries => {
+    if (!_chartIsActiveView(ctx, container)) {
+      _disconnectChartResizeObserver(container);
+      return;
+    }
     const entry = entries[0];
     if (!entry) return;
     const newW = entry.contentRect.width, newH = entry.contentRect.height;
@@ -538,6 +672,40 @@ function renderChart(ctx) {
     container._resizeTimer = resizeTimer;
   });
   container._resizeObs.observe(container);
+}
+
+function _renderChartForDbPanels(dbPath, preferredCtx) {
+  const targets = typeof _dbPaneContextsForPath === 'function'
+    ? _dbPaneContextsForPath(dbPath)
+    : [preferredCtx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null)].filter(Boolean);
+  if (preferredCtx && !targets.includes(preferredCtx)) targets.unshift(preferredCtx);
+  (targets.length ? targets : [preferredCtx]).forEach(targetCtx => renderChart(targetCtx));
+}
+
+function _disconnectChartResizeObserver(container) {
+  if (!container) return;
+  if (container._resizeTimer) {
+    clearTimeout(container._resizeTimer);
+    container._resizeTimer = null;
+  }
+  if (container._resizeObs) {
+    container._resizeObs.disconnect();
+    container._resizeObs = null;
+  }
+}
+
+function _chartIsActiveView(ctx, container) {
+  const c = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const dbPath = c?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+  if (!dbPath) return false;
+  if (typeof _dbCurrentViewModeForContext === 'function') {
+    try { return _dbCurrentViewModeForContext(c, dbPath) === 'chart'; } catch {}
+  }
+  if (typeof getCurrentViewMode === 'function') {
+    try { return getCurrentViewMode(dbPath, { ctx: c }) === 'chart'; } catch {}
+  }
+  if (c && c.viewMode) return c.viewMode === 'chart';
+  return !container || container.style.display !== 'none';
 }
 
 /**
@@ -561,15 +729,17 @@ function _collectChartProperties(entities, pivotData, dbPath) {
       add(k);
     });
   });
-  return [...propSet];
+  const names = [...propSet];
+  return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
 }
 
-function _chartFilteredEntityNames(pivotData, dbPath) {
+function _chartFilteredEntityNames(pivotData, dbPath, ctx) {
   const entities = pivotData?.entities || {};
   let names = Object.keys(entities);
-  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath) : [];
+  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx }) : [];
+  const filterMode = ctx?.filter;
   if (Array.isArray(advFilters) && advFilters.length > 0 && typeof _dbEntityPassesAdvancedFilters === 'function') {
-    names = names.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters));
+    names = names.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters, filterMode));
   }
   return names;
 }
@@ -591,8 +761,8 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
   ], config.chartType, chartScope + '-type', 'チャートタイプ');
   typeSelect.addEventListener('change', () => {
     config.chartType = typeSelect.value;
-    setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: 'タイプ' });
-    renderChart(ctx);
+    setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: 'タイプ' });
+    _renderChartForDbPanels(dbPath, ctx);
   });
   bar.appendChild(typeSelect);
 
@@ -606,8 +776,8 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
   );
   xSelect.addEventListener('change', () => {
     config.xProperty = xSelect.value;
-    setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: 'X軸' });
-    renderChart(ctx);
+    setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: 'X軸' });
+    _renderChartForDbPanels(dbPath, ctx);
   });
   bar.appendChild(xSelect);
 
@@ -631,8 +801,8 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
   yAggSelect.addEventListener('change', () => {
     config.yAggregation = yAggSelect.value;
     config.yProperty = config.yAggregation === 'count' ? null : (numProps.includes(config.yProperty) ? config.yProperty : (numProps[0] || null));
-    setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: 'Y軸' });
-    renderChart(ctx);
+    setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: 'Y軸' });
+    _renderChartForDbPanels(dbPath, ctx);
   });
   bar.appendChild(yAggSelect);
 
@@ -647,8 +817,8 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
     );
     yPropSelect.addEventListener('change', () => {
       config.yProperty = yPropSelect.value;
-      setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: '対象' });
-      renderChart(ctx);
+      setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: '対象' });
+      _renderChartForDbPanels(dbPath, ctx);
     });
     bar.appendChild(yPropSelect);
   }
@@ -662,16 +832,16 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
   ], config.palette || 'default', chartScope + '-palette', 'チャート配色');
   paletteSelect.addEventListener('change', () => {
     config.palette = paletteSelect.value;
-    setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: '配色' });
-    renderChart(ctx);
+    setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: '配色' });
+    _renderChartForDbPanels(dbPath, ctx);
   });
   bar.appendChild(paletteSelect);
 
   const labelsToggle = _chartCheckbox('値ラベル', config.showLabels !== false, chartScope + '-show-labels', 'チャート値ラベル表示');
   labelsToggle.input.addEventListener('change', () => {
     config.showLabels = labelsToggle.input.checked;
-    setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: '値ラベル' });
-    renderChart(ctx);
+    setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: '値ラベル' });
+    _renderChartForDbPanels(dbPath, ctx);
   });
   bar.appendChild(labelsToggle.el);
 
@@ -679,8 +849,8 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
     const legendToggle = _chartCheckbox('凡例', config.showLegend !== false, chartScope + '-show-legend', 'チャート凡例表示');
     legendToggle.input.addEventListener('change', () => {
       config.showLegend = legendToggle.input.checked;
-      setChartConfig(dbPath, config, { label: 'シート表示: チャート設定', detail: '凡例' });
-      renderChart(ctx);
+      setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: '凡例' });
+      _renderChartForDbPanels(dbPath, ctx);
     });
     bar.appendChild(legendToggle.el);
   }

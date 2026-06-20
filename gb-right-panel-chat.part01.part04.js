@@ -71,12 +71,14 @@ function _chatDrainQueuedMessages() {
 
 function _chatQueueScopeFromOptions(options = {}) {
   if (!Object.prototype.hasOwnProperty.call(options || {}, 'messages')) return _chatCurrentQueueScope();
+  const hasWorkspaceId = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
   const hasSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
   const hasMode = Object.prototype.hasOwnProperty.call(options || {}, 'mode');
   return {
     messages: options.messages,
     sessionId: String(options.sessionId || ''),
     targetPath: String(options.targetPath || ''),
+    workspaceId: String(hasWorkspaceId ? (options.workspaceId || '') : (_chatState.queuedScope?.workspaceId || '')),
     sourceFolder: String(hasSourceFolder ? (options.sourceFolder || '') : (_chatState.queuedScope?.sourceFolder || '')),
     mode: String(hasMode ? (options.mode || '') : (_chatState.queuedScope?.mode || (typeof _chatMode === 'undefined' ? '' : _chatMode || ''))),
   };
@@ -120,6 +122,7 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
         sessionTitle: options.sessionTitle,
         targetPath: options.targetPath,
         sourceFolder: options.sourceFolder,
+        workspaceId: options.workspaceId,
         provider: options.provider,
         model: options.model,
         mode: options.mode,
@@ -255,7 +258,15 @@ async function chatSend(options = {}) {
     if (!detachedScope) chatAddSystem(window.MeldexOnlineStatus.offlineMessage());
     return false;
   }
-  chatRefreshUsageBanner().catch(() => {});
+  const hasWorkspaceIdOption = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
+  const hasSourceFolderOption = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
+  const requestWorkspaceId = hasWorkspaceIdOption
+    ? String(options.workspaceId || '')
+    : (hasSourceFolderOption ? '' : (typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : ''));
+  const requestSourceFolder = hasSourceFolderOption
+    ? String(options.sourceFolder || '')
+    : (requestWorkspaceId ? '' : _chatRequireSourceFolder());
+  if (!requestWorkspaceId && !requestSourceFolder) return false;
   if (!usingDeferredMessages) {
     if (typeof _chatWithDraftUploadCleanupPaused === 'function') {
       _chatWithDraftUploadCleanupPaused(() => {
@@ -285,7 +296,7 @@ async function chatSend(options = {}) {
       div.style.cssText = 'padding:8px;background:var(--bg3);border-radius:8px;max-width:95%;';
       div.innerHTML = html;
       container.appendChild(div);
-      container.scrollTop = container.scrollHeight;
+      _chatScrollToBottom(container);
     }
     return;
   }
@@ -344,14 +355,17 @@ async function chatSend(options = {}) {
       : (localStorage.getItem('chat-model:' + _chatProviderKey(streamProvider)) || _chatDefaultModel(streamProvider)));
   const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
   const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
-  const streamTargetPath = Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || '');
-  const streamSourceFolder = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder') ? String(options.sourceFolder || '') : _chatSourceFolderValue();
-  const streamWorkFolder = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
+  const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
+  const streamSourceFolder = requestSourceFolder;
+  const streamWorkspaceId = requestWorkspaceId;
+  const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
   const streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath });
   const streamController = new AbortController();
   _chatState.streaming = true;
   _chatState.abortController = streamController;
   _chatState.streamingProvider = streamProvider;
+  _chatState.streamingTargetPath = streamTargetPath;
+  _chatState.lastImplicitTargetPath = streamTargetPath;
   _syncChatSourceFolderUi();
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn && !detachedScope) {
@@ -378,7 +392,7 @@ async function chatSend(options = {}) {
   spinnerWrapper.appendChild(activityLog);
   if (msgContainer && !detachedScope) {
     msgContainer.appendChild(spinnerWrapper);
-    msgContainer.scrollTop = msgContainer.scrollHeight;
+    _chatScrollToBottom(msgContainer);
   }
 
   let assistantDiv = null; // テキストが来たら作る
@@ -404,7 +418,7 @@ async function chatSend(options = {}) {
   const streamLiveContainer = () => streamVisibleInCurrentChat() ? _chatLiveMessagesContainer() : null;
   const scrollStreamContainer = () => {
     const liveContainer = streamLiveContainer();
-    if (liveContainer && _autoScroll) liveContainer.scrollTop = liveContainer.scrollHeight;
+    if (liveContainer && _autoScroll) _chatScrollToBottom(liveContainer);
   };
   const addAssistantToVisibleStream = (content, renderOptions) => (
     streamVisibleInCurrentChat() ? chatAddMessage('assistant', content, renderOptions) : null
@@ -419,8 +433,7 @@ async function chatSend(options = {}) {
   let streamError = null;
   let streamCompleted = false;
   const _scrollHandler = () => {
-    const atBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 40;
-    _autoScroll = atBottom;
+    _autoScroll = _chatIsScrolledNearBottom(msgContainer);
   };
   if (msgContainer && !detachedScope) msgContainer.addEventListener('scroll', _scrollHandler);
   const setLiveActivityStatus = (label) => {

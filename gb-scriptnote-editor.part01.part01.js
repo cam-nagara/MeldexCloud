@@ -171,6 +171,12 @@ class ScriptNoteEditor {
     this._pushUndoSuppressed = false;
     this._textInputUndoOpen = false;
     this._textInputUndoTimer = null;
+    this._wrapResizeObserver = null;
+    this._wrapResizeRaf = null;
+    this._wrapResizeTimer = null;
+    this._wrapResizeWindowHandler = null;
+    this._wrapResizeInterval = null;
+    this._wrapResizeLastSize = 0;
   }
 
   // === ドキュメント操作 ===
@@ -274,7 +280,7 @@ class ScriptNoteEditor {
   static get MODE_COUNT_DEFS() {
     if (ScriptNoteEditor._modeCountDefsCache) return ScriptNoteEditor._modeCountDefsCache;
     return (ScriptNoteEditor._modeCountDefsCache = {
-      manga:   { primaryLabel: '頁', secondaryLabel: 'コマ' },
+      manga:   { primaryLabel: 'p', secondaryLabel: 'コマ' },
       drama:   { primaryLabel: '頁', secondaryLabel: 'カット' },
       afureko: { primaryLabel: '頁', secondaryLabel: 'カット' },
       stage:   { primaryLabel: '頁', secondaryLabel: 'カット' },
@@ -359,7 +365,7 @@ class ScriptNoteEditor {
     const def = this._getCountDef();
     const cc = this.doc?.editor?.countConfig || {};
     const parts = [];
-    if (calc.showPage) parts.push(this._fmtCount(def.primaryLabel, calc.page, {
+    parts.push(this._fmtCount(def.primaryLabel, calc.page, {
       pad: cc.primaryPad ?? cc.padDigits ?? 2,
       pos: cc.primaryPos ?? cc.labelPosition ?? 'before',
       labelBefore: cc.primaryLabelBefore,
@@ -375,7 +381,7 @@ class ScriptNoteEditor {
   }
 
   _formatGutterPrimary(calc) {
-    if (!calc || !calc.showPage) return '';
+    if (!calc) return '';
     const def = this._getCountDef();
     const cc = this.doc?.editor?.countConfig || {};
     return this._fmtCount(def.primaryLabel, calc.page, {
@@ -431,12 +437,12 @@ class ScriptNoteEditor {
     const parts = [];
     if (rs.bgColor || bgColor) parts.push(`background:${rs.bgColor || bgColor}`);
     if (rs.textColor || textColor) parts.push(`color:${rs.textColor || textColor}`);
-    if ((rs.fontWeight || chara.fontWeight) === 'bold') parts.push('font-weight:bold');
-    if ((rs.fontStyle || chara.fontStyle) === 'italic') parts.push('font-style:italic');
-    if (rs.fontSize || chara.fontSize) parts.push(`font-size:${rs.fontSize || chara.fontSize}px`);
-    if (rs.fontFamily || chara.fontFamily) parts.push(`font-family:${rs.fontFamily || chara.fontFamily}`);
-    if (rs.textStrokeColor || chara.textStrokeColor) parts.push(`-webkit-text-stroke-color:${rs.textStrokeColor || chara.textStrokeColor}`);
-    if (rs.textStrokeWidth || chara.textStrokeWidth) parts.push(`-webkit-text-stroke-width:${rs.textStrokeWidth || chara.textStrokeWidth}px`);
+    if (rs.fontWeight === 'bold') parts.push('font-weight:bold');
+    if (rs.fontStyle === 'italic') parts.push('font-style:italic');
+    if (rs.fontSize) parts.push(`font-size:${rs.fontSize}px`);
+    if (rs.fontFamily) parts.push(`font-family:${rs.fontFamily}`);
+    if (rs.textStrokeColor) parts.push(`-webkit-text-stroke-color:${rs.textStrokeColor}`);
+    if (rs.textStrokeWidth) parts.push(`-webkit-text-stroke-width:${rs.textStrokeWidth}px`);
     if (rs.leftAccent) parts.push(`box-shadow:inset 3px 0 0 ${rs.accentColor || chara.accentColor || rs.textColor || textColor || 'var(--accent)'}`);
     if (rs.underline) parts.push(`text-decoration:underline;text-decoration-color:${rs.accentColor || chara.accentColor || rs.textColor || textColor || 'var(--accent)'}`);
     return parts.length ? parts.join(';') : null;
@@ -530,7 +536,7 @@ class ScriptNoteEditor {
     if (roleBtn) {
       const ecRole = this._resolveCharaColors(chara, '_role');
       const rs = chara?.roleStyle || {};
-      const roleRole = { bgColor: rs.bgColor || ecRole.bgColor, textColor: rs.textColor || ecRole.textColor, fontWeight: rs.fontWeight || chara?.fontWeight, fontStyle: rs.fontStyle || chara?.fontStyle, fontSize: rs.fontSize || chara?.fontSize, fontFamily: rs.fontFamily || chara?.fontFamily, textStrokeColor: rs.textStrokeColor || chara?.textStrokeColor, textStrokeWidth: rs.textStrokeWidth || chara?.textStrokeWidth, leftAccent: rs.leftAccent, underline: rs.underline, accentColor: rs.accentColor || chara?.accentColor };
+      const roleRole = { bgColor: rs.bgColor || ecRole.bgColor, textColor: rs.textColor || ecRole.textColor, fontWeight: rs.fontWeight, fontStyle: rs.fontStyle, fontSize: rs.fontSize, fontFamily: rs.fontFamily, textStrokeColor: rs.textStrokeColor, textStrokeWidth: rs.textStrokeWidth, leftAccent: rs.leftAccent, underline: rs.underline, accentColor: rs.accentColor || chara?.accentColor };
       setStyle(roleBtn, resolve(colStyles._role, roleRole), true);
     }
     // テキスト列
@@ -676,12 +682,81 @@ class ScriptNoteEditor {
 
   // === レンダリング ===
 
+  _teardownWrapResizeObserver() {
+    if (this._wrapResizeObserver) {
+      this._wrapResizeObserver.disconnect();
+      this._wrapResizeObserver = null;
+    }
+    if (this._wrapResizeWindowHandler) {
+      window.removeEventListener('resize', this._wrapResizeWindowHandler);
+      this._wrapResizeWindowHandler = null;
+    }
+    if (this._wrapResizeInterval != null) {
+      clearInterval(this._wrapResizeInterval);
+      this._wrapResizeInterval = null;
+    }
+    if (this._wrapResizeRaf != null) {
+      cancelAnimationFrame(this._wrapResizeRaf);
+      this._wrapResizeRaf = null;
+    }
+    if (this._wrapResizeTimer != null) {
+      clearTimeout(this._wrapResizeTimer);
+      this._wrapResizeTimer = null;
+    }
+    this._wrapResizeLastSize = 0;
+  }
+
+  _setupWrapResizeObserver(scroll, viewMode, wrapMode) {
+    this._teardownWrapResizeObserver();
+    if (!scroll || !wrapMode) return;
+    const isVertical = viewMode === 'vertical';
+    const readSize = () => {
+      if (!scroll.isConnected) return 0;
+      const rect = scroll.getBoundingClientRect();
+      const size = isVertical ? rect.width : rect.height;
+      return Number.isFinite(size) ? Math.round(size) : 0;
+    };
+    let lastSize = readSize();
+    this._wrapResizeLastSize = lastSize;
+    const scheduleRender = () => {
+      if (this._wrapResizeTimer != null) return;
+      this._wrapResizeTimer = setTimeout(() => {
+        this._wrapResizeTimer = null;
+        if (!this.host || !this.doc || !scroll.isConnected || !this.host.contains(scroll)) return;
+        const state = this.doc.editor || {};
+        const currentMode = state.viewMode || 'horizontal';
+        if (!state.wrapMode || currentMode !== viewMode) return;
+        this._render();
+      }, 0);
+    };
+    const checkSize = () => {
+      const nextSize = readSize();
+      if (nextSize <= 0 || Math.abs(nextSize - lastSize) < 2) return;
+      lastSize = nextSize;
+      this._wrapResizeLastSize = nextSize;
+      scheduleRender();
+    };
+    if (typeof ResizeObserver === 'function') {
+      this._wrapResizeObserver = new ResizeObserver(checkSize);
+      this._wrapResizeObserver.observe(scroll);
+      if (this.host && this.host !== scroll) this._wrapResizeObserver.observe(this.host);
+      const root = this.host?.closest?.('.gb-scriptnote-root');
+      if (root && root !== this.host && root !== scroll) this._wrapResizeObserver.observe(root);
+      requestAnimationFrame(checkSize);
+    } else {
+      this._wrapResizeWindowHandler = checkSize;
+      window.addEventListener('resize', this._wrapResizeWindowHandler);
+    }
+    this._wrapResizeInterval = setInterval(checkSize, 180);
+  }
+
   _getCustomColumns() {
     return Array.isArray(this.doc.editor?.customColumns) ? this.doc.editor.customColumns : [];
   }
 
   _render() {
     if (!this.host || !this.doc) return;
+    this._teardownWrapResizeObserver();
     if (typeof this._sanitizeRowSelection === 'function') this._sanitizeRowSelection();
     // フロートバーを除去（document.body上にあるため host.innerHTML='' では消えない）
     document.querySelectorAll('.sn2-row-bulk-bar').forEach(el => el.remove());

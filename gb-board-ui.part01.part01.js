@@ -708,7 +708,22 @@ function bdClearCardStyleOverrides(node) {
     'cloudSubBumpRatio',
     'cloudSubWidthRatio',
     'cloudSubHeightRatio',
+    '_userBgColor',
+    '_userFontSize',
+    '_userFontBold',
+    '_userW',
   ].forEach(key => delete node[key]);
+}
+
+function bdSetNodeCardStyleRef(node, styleId, options = {}) {
+  if (!node) return false;
+  node.cardStyle = styleId || '';
+  if (options.clearOverrides !== false && typeof bdClearCardStyleOverrides === 'function') {
+    bdClearCardStyleOverrides(node);
+  }
+  if (styleId) node._userCardStyle = true;
+  else delete node._userCardStyle;
+  return true;
 }
 
 function bdCreateNodeWithStyle(text, x, y, opts) {
@@ -744,7 +759,7 @@ function bdCreateNodeWithStyle(text, x, y, opts) {
 // cardStyle (スタイル ID) と、各カードに保存されている個別 override (フォント / 色 / 形状 等) を写す。
 // 内容系 (text/img/link/linkType) と状態系 (locked/collapsed/minimized/contained/note 等) はコピーしない。
 const _BD_INHERIT_STYLE_KEYS = [
-  'cardStyle',
+  'cardStyle', '_userCardStyle',
   'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
   'fontSize', 'fontBold', 'fontItalic',
   'textStrokeColor', 'textStrokeWidth',

@@ -70,18 +70,219 @@ function _appShouldHandleStandaloneCalendarDrop() {
 
 // Phase D: HTMLビューワー(viewer.html)のiframe通信のみ残存
 // canvas/calendarのpostMessageはPhase Cで直接関数呼び出しに変換済み
+function _getTrustedEmbeddedMessageIframe(e) {
+  if (!e) return null;
+  const candidates = [];
+  const addCandidate = iframe => {
+    if (iframe && !candidates.includes(iframe)) candidates.push(iframe);
+  };
+  addCandidate((typeof _getActiveIframe === 'function') ? _getActiveIframe() : null);
+  addCandidate(document.getElementById('html-iframe'));
+  document.querySelectorAll('iframe').forEach(addCandidate);
+  for (const iframe of candidates) {
+    if (!iframe?.contentWindow || e.source !== iframe.contentWindow) continue;
+    const iframeSrc = iframe.getAttribute('src') || iframe.src || '';
+    if (!_gbIsTrustedInternalViewerUrl(iframeSrc)) continue;
+    if (e.origin === window.location.origin || e.origin === 'null') return iframe;
+  }
+  return null;
+}
+
 function _isTrustedEmbeddedMessage(e) {
-  const iframe = (typeof _getActiveIframe === 'function') ? _getActiveIframe() : document.getElementById('html-iframe');
-  if (!e || !iframe?.contentWindow || e.source !== iframe.contentWindow) return false;
-  if (e.origin === window.location.origin) return true;
-  const iframeSrc = iframe.getAttribute('src') || iframe.src || '';
-  return e.origin === 'null' && _gbIsTrustedInternalViewerUrl(iframeSrc);
+  return !!_getTrustedEmbeddedMessageIframe(e);
+}
+
+function _syncViewerCurrentFileFromMessage(msg) {
+  const path = typeof msg?.path === 'string' ? msg.path : '';
+  if (!path) return false;
+  state.currentPagePath = path;
+  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
+  if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
+  return true;
+}
+
+const _VIEWER_FOLDER_NAV_FILE_EXTS = new Set([
+  '.png', '.apng', '.jpg', '.jpeg', '.jpe', '.jfif', '.gif', '.bmp', '.webp',
+  '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic', '.heif', '.psd', '.psb',
+  '.pdf',
+]);
+const _viewerFolderNavDisplayableCache = new Map();
+
+function _viewerFolderNavCleanPath(path) {
+  return String(path || '').replace(/\\/g, '/').split('#')[0].split('?')[0].replace(/\/+$/, '');
+}
+
+function _viewerFolderNavExt(path) {
+  const name = _viewerFolderNavCleanPath(path).split('/').pop() || '';
+  const index = name.lastIndexOf('.');
+  return index >= 0 ? name.slice(index).toLowerCase() : '';
+}
+
+function _viewerFolderNavIsDisplayableFile(path) {
+  return _VIEWER_FOLDER_NAV_FILE_EXTS.has(_viewerFolderNavExt(path));
+}
+
+function _viewerFolderNavParentPath(path) {
+  const clean = _viewerFolderNavCleanPath(path);
+  if (!clean) return '';
+  if (!_viewerFolderNavIsDisplayableFile(clean)) return clean;
+  const index = clean.lastIndexOf('/');
+  return index >= 0 ? clean.slice(0, index) : '';
+}
+
+function _viewerFolderNavCurrentFolderFromMessage(msg) {
+  const folderPath = _viewerFolderNavCleanPath(msg?.folderPath || '');
+  if (folderPath) return folderPath;
+  return _viewerFolderNavParentPath(msg?.currentPath || msg?.path || state.currentPagePath || '');
+}
+
+function _viewerFolderNavNodePath(node) {
+  return _viewerFolderNavCleanPath(node?._nodeData?.path || node?.dataset?.path || '');
+}
+
+function _viewerFolderNavPathMatches(nodePath, targetPath) {
+  if (typeof _outlinerHighlightPathMatches === 'function') return _outlinerHighlightPathMatches(nodePath, targetPath);
+  const a = _viewerFolderNavCleanPath(nodePath).toLowerCase();
+  const b = _viewerFolderNavCleanPath(targetPath).toLowerCase();
+  return !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a));
+}
+
+function _viewerFolderNavIsFolderNode(node) {
+  const data = node?._nodeData || {};
+  if (!node || node.style?.display === 'none') return false;
+  return data.type === 'folder' || data._isRoot === true;
+}
+
+function _viewerFolderNavFolderNodes() {
+  const candidates = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')];
+  return candidates.filter(node => _viewerFolderNavIsFolderNode(node) && _viewerFolderNavNodePath(node));
+}
+
+function _viewerFolderNavFindIndex(nodes, targetPath) {
+  if (!targetPath) return -1;
+  return nodes.findIndex(node => _viewerFolderNavPathMatches(_viewerFolderNavNodePath(node), targetPath));
+}
+
+function _viewerFolderNavDelay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function _viewerFolderNavEnsureNodeExpanded(node) {
+  const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
+  if (!toggle || toggle.dataset.expanded === undefined || toggle.dataset.expanded === 'true') return false;
+  const childrenDiv = node.querySelector(':scope > .tree-children');
+  toggle.click();
+  for (let i = 0; i < 30; i++) {
+    await _viewerFolderNavDelay(100);
+    if (!childrenDiv) break;
+    if (!childrenDiv.classList.contains('collapsed') && childrenDiv.dataset.loaded === 'true') break;
+  }
+  return true;
+}
+
+async function _viewerFolderNavEnsureAncestorsExpanded(node) {
+  const ancestors = [];
+  let parent = node?.parentElement?.closest?.('.tree-node') || null;
+  while (parent) {
+    ancestors.unshift(parent);
+    parent = parent.parentElement?.closest?.('.tree-node') || null;
+  }
+  for (const ancestor of ancestors) {
+    await _viewerFolderNavEnsureNodeExpanded(ancestor);
+  }
+}
+
+async function _viewerFolderNavRevealCurrentFolder(folderPath) {
+  if (!folderPath) return;
+  if (typeof _autoExpandToPath === 'function') {
+    try { await _autoExpandToPath(folderPath, true); } catch {}
+  }
+  if (typeof highlightOutlinerNode === 'function') {
+    try { highlightOutlinerNode(folderPath, { noScroll: true }); } catch {}
+  }
+  await _viewerFolderNavDelay(50);
+}
+
+function _viewerFolderNavDisplayableFromBrowseItems(items) {
+  const files = Array.isArray(items) ? items.filter(item => item && item.type !== 'folder') : [];
+  const images = files.filter(item => item.type === 'image' || _viewerFolderNavIsDisplayableFile(item.path || item.name || ''))
+    .filter(item => _viewerFolderNavExt(item.path || item.name || '') !== '.pdf');
+  const pdfs = files.filter(item => _viewerFolderNavExt(item.path || item.name || '') === '.pdf');
+  return {
+    has: images.length > 0 || pdfs.length > 0,
+    hasImage: images.length > 0,
+    firstImage: images[0] || null,
+    firstPdf: pdfs[0] || null,
+  };
+}
+
+async function _viewerFolderNavDisplayableInFolder(folderPath) {
+  const key = _viewerFolderNavCleanPath(folderPath);
+  if (!key) return { has: false, hasImage: false, firstImage: null, firstPdf: null };
+  if (_viewerFolderNavDisplayableCache.has(key)) return _viewerFolderNavDisplayableCache.get(key);
+  const result = await apiFetch('/browse?path=' + encodeURIComponent(key) + '&all_files=true')
+    .then(items => _viewerFolderNavDisplayableFromBrowseItems(items))
+    .catch(() => ({ has: false, hasImage: false, firstImage: null, firstPdf: null }));
+  _viewerFolderNavDisplayableCache.set(key, result);
+  return result;
+}
+
+function _viewerFolderNavOpenTarget(folderPath, result) {
+  const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
+  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
+  if (result?.hasImage) {
+    openViewer('/viewer?folder=' + encodeURIComponent(folderPath));
+  } else if (result?.firstPdf?.path) {
+    openViewer('/viewer?pdf=' + encodeURIComponent(result.firstPdf.path));
+  }
+}
+
+async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath) {
+  await _viewerFolderNavRevealCurrentFolder(currentFolderPath);
+  let cursorPath = currentFolderPath;
+  for (let guard = 0; guard < 400; guard++) {
+    const nodes = _viewerFolderNavFolderNodes();
+    if (!nodes.length) break;
+    let cursorIndex = _viewerFolderNavFindIndex(nodes, cursorPath);
+    if (cursorIndex < 0) cursorIndex = direction > 0 ? -1 : nodes.length;
+    const candidate = nodes[cursorIndex + direction];
+    if (!candidate) break;
+    await _viewerFolderNavEnsureAncestorsExpanded(candidate);
+    const candidatePath = _viewerFolderNavNodePath(candidate);
+    if (!candidatePath) {
+      cursorPath = '';
+      continue;
+    }
+    const result = await _viewerFolderNavDisplayableInFolder(candidatePath);
+    if (result.has) {
+      _viewerFolderNavOpenTarget(candidatePath, result);
+      return true;
+    }
+    const expanded = await _viewerFolderNavEnsureNodeExpanded(candidate);
+    if (expanded && direction < 0) continue;
+    cursorPath = candidatePath;
+  }
+  return false;
+}
+
+function _handleViewerFolderNavRequest(msg) {
+  const direction = Number(msg?.direction) < 0 ? -1 : 1;
+  const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);
+  _navigateViewerFolderByTreeOrder(direction, currentFolderPath).then(moved => {
+    if (!moved && typeof showStatus === 'function') {
+      showStatus('画像またはPDFがあるフォルダがありません', true);
+    }
+  }).catch(error => {
+    if (typeof showStatus === 'function') showStatus('フォルダ移動に失敗しました: ' + (error?.message || error || ''), true);
+  });
 }
 
 window.addEventListener('message', (e) => {
   if (!_isTrustedEmbeddedMessage(e)) return;
   const msg = e.data;
   if (!msg || !msg.type) return;
+  if (msg.type === 'viewer-current-file-changed') { _syncViewerCurrentFileFromMessage(msg); return; }
+  if (msg.type === 'viewer-folder-nav-request') { _handleViewerFolderNavRequest(msg); return; }
   const reloadEmbeddedAnnotations = () => {
     const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
     if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
@@ -274,9 +475,9 @@ function openMedia(label, path, type, opts) {
   // ビューワーペインを更新
   state.currentPagePath = path;
   const container = document.getElementById('media-content');
-  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
+  const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
   if (type === 'image') {
-    openViewer('/viewer?file=' + encodeURIComponent(path), openOpts);
+    openViewer(openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
     return;
   } else if (type === 'pdf') {
     openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
@@ -319,7 +520,8 @@ function _gbIsTrustedInternalViewerUrl(rawUrl) {
   if (!text) return false;
   try {
     const parsed = new URL(text, window.location.origin);
-    return parsed.origin === window.location.origin && parsed.pathname.replace(/\/+$/, '') === '/viewer';
+    const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    return parsed.origin === window.location.origin && /\/viewer(?:\.html)?$/.test(pathname);
   } catch {
     return false;
   }

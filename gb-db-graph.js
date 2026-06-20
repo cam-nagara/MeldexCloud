@@ -5,8 +5,8 @@
 
 /* --- グラフ設定 --- */
 
-function getGraphConfig(dbPath) {
-  return getCurrentDbViewTypeSpecific(dbPath, 'graph') || {
+function getGraphConfig(dbPath, options = {}) {
+  return getCurrentDbViewTypeSpecific(dbPath, 'graph', { ctx: options.ctx || null }) || {
     colorProperty: '',
     showExternalNodes: true,
     layout: 'force',
@@ -18,6 +18,7 @@ function getGraphConfig(dbPath) {
 function setGraphConfig(dbPath, config, options = {}) {
   const label = options.historyLabel || options.label || '';
   setCurrentDbViewTypeSpecific(dbPath, 'graph', config || {}, {
+    ctx: options.ctx || null,
     historyLabel: label,
     detail: options.detail || '',
     skipHistory: options.skipHistory === true || !label,
@@ -43,7 +44,8 @@ function _collectGraphProperties(pivotData, dbPath) {
   Object.values(entities).forEach(entData => {
     Object.keys(entData || {}).forEach(add);
   });
-  return [...propSet];
+  const names = [...propSet];
+  return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
 }
 
 /* --- データ準備 --- */
@@ -57,9 +59,9 @@ function _graphEntityPathForDb(pivotData, dbPath, entityName) {
   return pivotData?.new_format ? `${dbPath}/${entityName}.md` : `${dbPath}/${entityName}`;
 }
 
-function _graphRelationRawValues(entityData, propName, ptc) {
+function _graphRelationRawValues(entityData, propName, ptc, filterMode) {
   const rawVals = entityData?.[propName] || [];
-  const vals = typeof filterValues === 'function' ? filterValues(rawVals) : rawVals;
+  const vals = typeof filterValues === 'function' ? filterValues(rawVals, undefined, filterMode) : rawVals;
   const rawNames = [];
   vals.forEach(v => {
     if (!v?.value) return;
@@ -86,8 +88,8 @@ function _graphParseMsrValue(value) {
   });
 }
 
-async function _graphResolveMsrTargets(entityData, propName) {
-  const vals = typeof filterValues === 'function' ? filterValues(entityData?.[propName] || []) : (entityData?.[propName] || []);
+async function _graphResolveMsrTargets(entityData, propName, filterMode) {
+  const vals = typeof filterValues === 'function' ? filterValues(entityData?.[propName] || [], undefined, filterMode) : (entityData?.[propName] || []);
   const rawEntries = [];
   vals.forEach(v => _graphParseMsrValue(v?.value || '').forEach(entry => rawEntries.push(entry)));
   const targets = [];
@@ -135,12 +137,13 @@ async function _graphResolveRelationTargets(rawValues, sourceDbPath, ptc, entity
 /**
  * pivotDataからグラフノード・エッジを構築する
  */
-async function buildGraphData(pivotData, dbPath, graphConfig) {
+async function buildGraphData(pivotData, dbPath, graphConfig, options = {}) {
   const entities = pivotData.entities || {};
   let entityNames = Object.keys(entities);
-  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath) : [];
+  const filterMode = options.filter ?? options.ctx?.filter;
+  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx: options.ctx || null }) : [];
   if (Array.isArray(advFilters) && advFilters.length > 0 && typeof _dbEntityPassesAdvancedFilters === 'function') {
-    entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters));
+    entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters, filterMode));
   }
   const propTypes = getPropertyTypes(dbPath);
   const nodes = [];
@@ -157,7 +160,7 @@ async function buildGraphData(pivotData, dbPath, graphConfig) {
   entityNames.forEach(name => {
     const node = {
       id: _graphNodeKey(dbPath, name), x: 0, y: 0, vx: 0, vy: 0,
-      color: _getNodeColor(name, entities[name], graphConfig.colorProperty),
+      color: _getNodeColor(name, entities[name], graphConfig.colorProperty, filterMode),
       label: name, entityName: name, dbPath, isExternal: false,
       entityPath: _graphEntityPathForDb(pivotData, dbPath, name),
     };
@@ -173,8 +176,8 @@ async function buildGraphData(pivotData, dbPath, graphConfig) {
 
     for (const en of entityNames) {
       const targets = ptc.type === 'multi-source-relation'
-        ? await _graphResolveMsrTargets(entities[en], propName)
-        : await _graphResolveRelationTargets(_graphRelationRawValues(entities[en], propName, ptc), dbPath, ptc, entityIdToName);
+        ? await _graphResolveMsrTargets(entities[en], propName, filterMode)
+        : await _graphResolveRelationTargets(_graphRelationRawValues(entities[en], propName, ptc, filterMode), dbPath, ptc, entityIdToName);
       targets.forEach(target => {
         const targetName = target.name;
         const resolvedTargetDbPath = target.dbPath || dbPath || '';
@@ -210,9 +213,9 @@ async function buildGraphData(pivotData, dbPath, graphConfig) {
   return { nodes, edges };
 }
 
-function _getNodeColor(name, entityData, colorProp) {
+function _getNodeColor(name, entityData, colorProp, filterMode) {
   if (!colorProp || !entityData || !entityData[colorProp]) return '#569cd6';
-  const vals = filterValues(entityData[colorProp] || []);
+  const vals = filterValues(entityData[colorProp] || [], undefined, filterMode);
   if (vals.length === 0) return '#569cd6';
   const v = vals[0].value;
   // ステータス色
@@ -471,8 +474,8 @@ function _buildGraphSettingsBar(dbPath, config, allProps, ctx) {
   ], config.layout, graphScope + '-layout', 'グラフレイアウト');
   layoutSel.addEventListener('change', () => {
     config.layout = layoutSel.value;
-    setGraphConfig(dbPath, config, { label: 'シート表示: グラフ設定', detail: 'レイアウト' });
-    renderGraph(ctx);
+    setGraphConfig(dbPath, config, { ctx, label: 'シート表示: グラフ設定', detail: 'レイアウト' });
+    _renderGraphForDbPanels(dbPath, ctx);
   });
   bar.appendChild(layoutSel);
 
@@ -481,8 +484,8 @@ function _buildGraphSettingsBar(dbPath, config, allProps, ctx) {
   const colorSel = _chartSelect(colorOpts, config.colorProperty || '', graphScope + '-color-property', 'グラフ色分けプロパティ');
   colorSel.addEventListener('change', () => {
     config.colorProperty = colorSel.value;
-    setGraphConfig(dbPath, config, { label: 'シート表示: グラフ設定', detail: '色分け' });
-    renderGraph(ctx);
+    setGraphConfig(dbPath, config, { ctx, label: 'シート表示: グラフ設定', detail: '色分け' });
+    _renderGraphForDbPanels(dbPath, ctx);
   });
   bar.appendChild(colorSel);
 
@@ -496,8 +499,8 @@ function _buildGraphSettingsBar(dbPath, config, allProps, ctx) {
   cb.checked = config.showLabels;
   cb.addEventListener('change', () => {
     config.showLabels = cb.checked;
-    setGraphConfig(dbPath, config, { label: 'シート表示: グラフ設定', detail: 'ラベル' });
-    renderGraph(ctx);
+    setGraphConfig(dbPath, config, { ctx, label: 'シート表示: グラフ設定', detail: 'ラベル' });
+    _renderGraphForDbPanels(dbPath, ctx);
   });
   labelCb.appendChild(cb);
   labelCb.appendChild(document.createTextNode('ラベル'));
@@ -513,8 +516,8 @@ function _buildGraphSettingsBar(dbPath, config, allProps, ctx) {
   ecb.checked = config.showExternalNodes;
   ecb.addEventListener('change', () => {
     config.showExternalNodes = ecb.checked;
-    setGraphConfig(dbPath, config, { label: 'シート表示: グラフ設定', detail: '外部ノード' });
-    renderGraph(ctx);
+    setGraphConfig(dbPath, config, { ctx, label: 'シート表示: グラフ設定', detail: '外部ノード' });
+    _renderGraphForDbPanels(dbPath, ctx);
   });
   extCb.appendChild(ecb);
   extCb.appendChild(document.createTextNode('外部ノード'));
@@ -531,6 +534,10 @@ async function renderGraph(ctx) {
     ? _dbViewSurfaceEl(ctx, '.graph-view', 'graph-view')
     : ((ctx?.containerEl ? ctx.containerEl.querySelector('.graph-view') : null) || document.getElementById('graph-view') || document.querySelector('.graph-view'));
   if (!container) return;
+  if (!_graphIsActiveView(ctx, container)) {
+    _disconnectGraphResizeObserver(container);
+    return;
+  }
   container.style.display = 'flex';
   const renderSeq = (container._graphRenderSeq || 0) + 1;
   container._graphRenderSeq = renderSeq;
@@ -539,17 +546,23 @@ async function renderGraph(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const pivotData = ctx.pivotData || state.pivotData;
   if (!dbPath || !pivotData) {
+    _disconnectGraphResizeObserver(container);
     container.textContent = 'シートを選択してください';
     return;
   }
 
   const entities = pivotData.entities || {};
   if (Object.keys(entities).length === 0) {
-    renderEmptyState(container, 'share2', 'データがありません', 'リレーションを設定するとグラフが表示されます');
+    _disconnectGraphResizeObserver(container);
+    if (typeof _dbRenderEmptyStateWithCreate === 'function') {
+      _dbRenderEmptyStateWithCreate(container, 'share2', 'データがありません', 'エントリを追加するとグラフが表示されます', ctx);
+    } else {
+      renderEmptyState(container, 'share2', 'データがありません', 'エントリを追加するとグラフが表示されます');
+    }
     return;
   }
 
-  const config = getGraphConfig(dbPath);
+  const config = getGraphConfig(dbPath, { ctx });
   const allProps = _collectGraphProperties(pivotData, dbPath);
 
   // 設定バー
@@ -562,17 +575,26 @@ async function renderGraph(ctx) {
   container.appendChild(graphArea);
 
   // データ構築＆レイアウト
-  const { nodes, edges } = await buildGraphData(pivotData, dbPath, config);
+  const { nodes, edges } = await buildGraphData(pivotData, dbPath, config, { ctx, filter: ctx?.filter });
   if (container._graphRenderSeq !== renderSeq) return;
   const rect = container.getBoundingClientRect();
   const w = Math.max(rect.width || 600, 400);
   const h = Math.max(rect.height - 40 || 400, 300);
+  if (nodes.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'height:100%;display:flex;align-items:center;justify-content:center;color:var(--fg2);font-size:14px;';
+    empty.textContent = '表示するエントリがありません';
+    graphArea.appendChild(empty);
+    _observeGraphResize(container, ctx, rect);
+    return;
+  }
 
   if (config.layout === 'hierarchical') layoutHierarchical(nodes, edges, w, h);
   else layoutForceDirected(nodes, edges, w, h);
 
   const svg = renderGraphSvg(nodes, edges, w, h, config);
   graphArea.appendChild(svg);
+  _observeGraphResize(container, ctx, rect);
 
   // パン＆ズーム
   addGraphPanZoom(svg, graphArea);
@@ -612,4 +634,64 @@ async function renderGraph(ctx) {
     if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, nodeName);
     selectEntity(resolvedPath);
   });
+}
+
+function _renderGraphForDbPanels(dbPath, preferredCtx) {
+  const targets = typeof _dbPaneContextsForPath === 'function'
+    ? _dbPaneContextsForPath(dbPath)
+    : [preferredCtx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null)].filter(Boolean);
+  if (preferredCtx && !targets.includes(preferredCtx)) targets.unshift(preferredCtx);
+  (targets.length ? targets : [preferredCtx]).forEach(targetCtx => renderGraph(targetCtx));
+}
+
+function _observeGraphResize(container, ctx, initialRect) {
+  if (!container || typeof ResizeObserver !== 'function') return;
+  if (container._graphResizeTimer) clearTimeout(container._graphResizeTimer);
+  if (container._graphResizeObs) container._graphResizeObs.disconnect();
+  let resizeTimer = null;
+  let lastW = initialRect?.width || container.getBoundingClientRect().width;
+  let lastH = initialRect?.height || container.getBoundingClientRect().height;
+  container._graphResizeObs = new ResizeObserver(entries => {
+    if (!_graphIsActiveView(ctx, container)) {
+      _disconnectGraphResizeObserver(container);
+      return;
+    }
+    const entry = entries[0];
+    if (!entry) return;
+    const newW = entry.contentRect.width;
+    const newH = entry.contentRect.height;
+    if (Math.abs(newW - lastW) < 2 && Math.abs(newH - lastH) < 2) return;
+    lastW = newW;
+    lastH = newH;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => renderGraph(ctx), 200);
+    container._graphResizeTimer = resizeTimer;
+  });
+  container._graphResizeObs.observe(container);
+}
+
+function _disconnectGraphResizeObserver(container) {
+  if (!container) return;
+  if (container._graphResizeTimer) {
+    clearTimeout(container._graphResizeTimer);
+    container._graphResizeTimer = null;
+  }
+  if (container._graphResizeObs) {
+    container._graphResizeObs.disconnect();
+    container._graphResizeObs = null;
+  }
+}
+
+function _graphIsActiveView(ctx, container) {
+  const c = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const dbPath = c?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+  if (!dbPath) return false;
+  if (typeof _dbCurrentViewModeForContext === 'function') {
+    try { return _dbCurrentViewModeForContext(c, dbPath) === 'graph'; } catch {}
+  }
+  if (typeof getCurrentViewMode === 'function') {
+    try { return getCurrentViewMode(dbPath, { ctx: c }) === 'graph'; } catch {}
+  }
+  if (c && c.viewMode) return c.viewMode === 'graph';
+  return !container || container.style.display !== 'none';
 }

@@ -110,6 +110,11 @@ function bdContextMenu(e, nodeId) {
   const nd = nodeId ? bd.nodes.find(n=>n.id===nodeId) : null;
   const connColors = ['','#ef4444','#3b82f6','#22c55e','#f97316','#8b5cf6','#ec4899','#eab308'];
   const colorLabels = {'':'デフォルト','#ef4444':'赤','#3b82f6':'青','#22c55e':'緑','#f97316':'橙','#8b5cf6':'紫','#ec4899':'桃','#eab308':'黄'};
+  const currentImageDropMode = typeof bdGetImageDropMode === 'function' ? bdGetImageDropMode() : 'link';
+  const imageDropCheck = mode => currentImageDropMode === mode ? (typeof lucide === 'function' ? lucide('checkSquare', 12) + ' ' : '') : '';
+  const imageDropLabel = mode => typeof bdImageDropModeLabel === 'function'
+    ? bdImageDropModeLabel(mode)
+    : (mode === 'embed' ? 'ファイルに埋め込む' : '画像ファイルへのリンク');
 
   if (nodeId) {
     // 2026-04-18: board-card-popup-redesign-plan.md §4 に沿って再構築。
@@ -130,6 +135,25 @@ function bdContextMenu(e, nodeId) {
         if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(linkPath, linkName, { linkType: nd.linkType });
         else if (typeof bdOpenLinkedPath === 'function') bdOpenLinkedPath(linkPath, linkName, { linkType: nd.linkType, rightOfBoard: true });
       });
+      item('メインパネルで開く', () => {
+        const linkPath = nd.link;
+        const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
+        if (typeof openLinkedPathInMainPane === 'function') openLinkedPathInMainPane(linkPath, linkName, { linkType: nd.linkType });
+        else if (typeof openLink === 'function') openLink(linkPath, linkName);
+      });
+      item('右サイドバーで開く', () => {
+        const linkPath = nd.link;
+        const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
+        if (typeof openLinkedPathInRightPane === 'function') openLinkedPathInRightPane(linkPath, linkName, { linkType: nd.linkType });
+        else if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(linkPath, linkName, { linkType: nd.linkType });
+      });
+      if (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nd.link, nd.linkType || '')) {
+        item('単独アプリで開く', () => {
+          const linkPath = nd.link;
+          const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
+          if (typeof openLinkedPathStandalone === 'function') openLinkedPathStandalone(linkPath, linkName, { linkType: nd.linkType });
+        });
+      }
       item('リンクをコピー', () => {
         const linkPath = nd.link;
         const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
@@ -162,8 +186,10 @@ function bdContextMenu(e, nodeId) {
       });
       const linkifySub = sub('リンクカード化');
       linkifySub.item('ノート', () => bdLinkifyCardAs(nodeId, 'page'));
-      linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'database'));
+      linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'smart-db'));
+      linkifySub.item('シナリオ', () => bdLinkifyCardAs(nodeId, 'scriptnote'));
       linkifySub.item('ボード', () => bdLinkifyCardAs(nodeId, 'board'));
+      linkifySub.item('タイマー', () => bdLinkifyCardAs(nodeId, 'timer'));
       linkifySub.sep();
       linkifySub.item('既存ファイル...', () => bdLinkifyCardFromExisting(nodeId));
       item('接続カードを全選択', () => {
@@ -333,6 +359,7 @@ function bdContextMenu(e, nodeId) {
           si.addEventListener('click', () => {
             document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
             nd._autoStyle = val;
+            if (val) delete nd._userCardStyle;
             if (val && typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(nd.id);
             bdRender(); bdDirty();
             if (nd.structure && typeof bdAutoLayout === 'function') bdAutoLayout(nd.id);
@@ -357,6 +384,10 @@ function bdContextMenu(e, nodeId) {
     // --- 画像操作 サブ (画像カード時のみルート直下) ---
     if (isImageCard) {
       const imgSub = sub('画像操作');
+      imgSub.item('画像ファイルを再指定...', () => {
+        if (typeof bdRelocateImageNode === 'function') bdRelocateImageNode(nodeId);
+      });
+      imgSub.sep();
       imgSub.item('水平反転', () => bdFlip('h'));
       imgSub.item('垂直反転', () => bdFlip('v'));
       imgSub.item('90°回転', () => bdRotate(90));
@@ -653,8 +684,10 @@ function bdContextMenu(e, nodeId) {
     const newLinkSub = sub('新規リンクカード');
     [
       ['ノート', 'page'],
-      ['シート', 'database'],
+      ['シート', 'smart-db'],
+      ['シナリオ', 'scriptnote'],
       ['ボード', 'board'],
+      ['タイマー', 'timer'],
     ].forEach(([label, type]) => {
       newLinkSub.item(label, () => {
         if (typeof bdCreateLinkedFileCardAt === 'function') bdCreateLinkedFileCardAt(clickWx, clickWy, type);
@@ -696,6 +729,23 @@ function bdContextMenu(e, nodeId) {
     if (_bdDrillRoot) item('ドリルダウン解除', () => bdDrillUp());
     if (bd.selected.size > 1) {
       item('集約カードを追加', () => bdAddSummary());
+    }
+  }
+
+  sep();
+  const imageDropSub = sub('画像追加方式');
+  imageDropSub.item(imageDropCheck('embed') + esc(imageDropLabel('embed')), () => {
+    if (typeof bdSetImageDropMode === 'function') bdSetImageDropMode('embed');
+  });
+  imageDropSub.item(imageDropCheck('link') + esc(imageDropLabel('link')), () => {
+    if (typeof bdSetImageDropMode === 'function') bdSetImageDropMode('link');
+  });
+
+  if (typeof window !== 'undefined' && window.MeldexBoardStandalone?.appendContextMenuItems) {
+    try {
+      window.MeldexBoardStandalone.appendContextMenuItems(menu);
+    } catch (err) {
+      console.warn('[board] standalone context menu extension failed', err);
     }
   }
 
@@ -884,11 +934,11 @@ async function bdLinkifyCardAs(nodeId, type) {
     if (!path) throw new Error('path missing');
     bdPushUndo();
     n.link = path;
-    n.linkType = type;
+    n.linkType = nodeData.type || type;
     n.text = label;
     bdRender();
     bdDirty();
-    if (typeof _bdOpenEntryInSubPanel === 'function') _bdOpenEntryInSubPanel(label, path, type);
+    if (typeof _bdOpenEntryInSubPanel === 'function') _bdOpenEntryInSubPanel(label, path, n.linkType);
     showStatus('リンクカード化: ' + label);
   } catch {
     showStatus('リンクカード化に失敗しました', true);

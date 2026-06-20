@@ -248,7 +248,13 @@ async function _migratePathsToFileIds() {
   }
 
   localStorage.setItem('_file-id-migrated', '1');
+  _refreshOutlinerStorageViewsAfterMigration();
   console.log('[Meldex] file_id migration completed:', Object.values(idMap).filter(Boolean).length, 'paths resolved');
+}
+
+function _refreshOutlinerStorageViewsAfterMigration() {
+  try { if (typeof renderFavorites === 'function') renderFavorites(); } catch (e) { console.warn('renderFavorites failed after file_id migration', e); }
+  try { if (typeof updateRecentItems === 'function') updateRecentItems(); } catch (e) { console.warn('updateRecentItems failed after file_id migration', e); }
 }
 
 // エクスプローラー履歴（戻る/進む — Phase 1 でエクスプローラー経由のオープンに限定）
@@ -892,9 +898,3 @@ function _getNavState(paneId) {
       history: _legacyNavHistory,
       get index() { return _legacyNavIndex; },
       set index(v) { _legacyNavIndex = v; },
-    };
-  }
-  const pane = GBLayout.findNode?.(GBLayout.root, resolvedPaneId)?.node || null;
-  if (!pane) {
-    return {
-      kind: 'legacy',

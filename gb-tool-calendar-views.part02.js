@@ -1,6 +1,6 @@
 
 CalendarComponent.prototype._saveTask = async function(editId, overlay) {
-  this._pushUndo(editId ? 'タスク編集' : 'タスク作成');
+  this._pushUndo(editId ? 'ToDo編集' : 'ToDo作成');
   const o = overlay;
   const data = {
     title: o.querySelector('.tk-title').value, status: o.querySelector('.tk-status').value,
@@ -14,13 +14,13 @@ CalendarComponent.prototype._saveTask = async function(editId, overlay) {
   try {
     if (editId) await apiPut('/cal/tasks/' + editId, data); else await apiPost('/cal/tasks', data);
     await this._loadTasks(); this._render(); this._renderTodayTasks();
-    this._showStatus('タスクを保存しました');
+    this._showStatus('ToDoを保存しました');
   } catch { this._showStatus('保存に失敗', true); }
 };
 
 CalendarComponent.prototype._deleteTask = async function(id) {
-  if (typeof cfConfirm === 'function' && !await cfConfirm('このタスクを削除しますか？')) return false;
-  this._pushUndo('タスク削除');
+  if (typeof cfConfirm === 'function' && !await cfConfirm('このToDoを削除しますか？')) return false;
+  this._pushUndo('ToDo削除');
   try {
     await apiFetch('/cal/tasks/' + id, { method: 'DELETE' });
     await this._loadTasks();
@@ -47,7 +47,7 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
 <div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>開始</label><input class="sh-start" type="time" value="${startValue}"></div>
 <div class="field" style="flex:1;"><label>終了</label><input class="sh-end" type="time" value="${endValue}"></div></div>
 <div class="field"><label>種別</label><select class="sh-type"><option value="work" ${shiftType==='work'?'selected':''}>勤務</option><option value="off" ${shiftType==='off'?'selected':''}>休み</option><option value="holiday" ${shiftType==='holiday'?'selected':''}>祝日</option></select></div>
-<div class="field"><label>メモ</label><input class="sh-note" value="${esc(existing?.note||'')}"></div>
+<div class="field"><label>メモ</label><textarea class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>
 <div class="btn-row">${existing?'<button class="sh-delete" style="color:var(--red);">削除</button>':''}<button class="sh-cancel">キャンセル</button><button class="primary sh-save">保存</button></div></div>`;
   document.body.appendChild(o);
   const syncTimeState = () => {
@@ -92,20 +92,52 @@ CalendarComponent.prototype._saveShift = async function(editId, o) {
     type,
     note: o.querySelector('.sh-note').value,
   };
+  const shiftId = editId || this._newShiftId?.() || ('shift_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+  const snapshot = this._shiftMutationSnapshot?.();
   o.remove();
-  try {
-    if (editId) await apiPut('/cal/shifts/' + editId, data); else await apiPost('/cal/shifts', data);
-    await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
+  if (typeof this._upsertShiftOptimistic === 'function') {
+    this._upsertShiftOptimistic({ id: shiftId, ...data, _optimistic: true }, { select: true });
     this._renderCalendarList?.();
     this._render();
+  }
+  try {
+    if (editId) await apiPut('/cal/shifts/' + encodeURIComponent(editId), data);
+    else await apiPost('/cal/shifts', { id: shiftId, ...data });
+    if (typeof this._upsertShiftOptimistic === 'function') {
+      this._upsertShiftOptimistic({ id: shiftId, ...data, _optimistic: false }, { select: true });
+      this._renderCalendarList?.();
+      this._render();
+      this._refreshShiftStateAfterMutation?.();
+    } else {
+      await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
+      this._renderCalendarList?.();
+      this._render();
+    }
     this._showStatus('シフトを保存しました');
-  } catch { this._showStatus('保存に失敗', true); }
+  } catch {
+    if (snapshot && typeof this._restoreShiftMutationSnapshot === 'function') this._restoreShiftMutationSnapshot(snapshot);
+    this._showStatus('保存に失敗', true);
+  }
 };
 
 CalendarComponent.prototype._deleteShift = async function(id) {
   if (typeof cfConfirm === 'function' && !await cfConfirm('このシフトを削除しますか？')) return false;
+  const snapshot = this._shiftMutationSnapshot?.();
+  if (typeof this._removeShiftOptimistic === 'function') {
+    this._removeShiftOptimistic(id);
+    this._renderCalendarList?.();
+    this._render();
+    apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' }).then(() => {
+      this._refreshShiftStateAfterMutation?.();
+      this._showStatus('削除しました');
+    }).catch(() => {
+      if (snapshot && typeof this._restoreShiftMutationSnapshot === 'function') this._restoreShiftMutationSnapshot(snapshot);
+      this._showStatus('削除に失敗', true);
+    });
+    return true;
+  }
   try {
-    await apiFetch('/cal/shifts/' + id, { method: 'DELETE' });
+    await apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' });
     await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
     this._renderCalendarList?.();
     this._render();
@@ -173,7 +205,11 @@ CalendarComponent.prototype._googleCalPull = async function(o) {
 
 CalendarComponent.prototype._googleCalPush = async function() {
   this._showStatus('Googleカレンダーに送信中...');
-  try { const res = await apiPost('/cal/sync/google/push', {}); this._showStatus(`送信完了: ${res.pushed}件プッシュ`); } catch(e) { this._showStatus('送信失敗: ' + e.message, true); }
+  try {
+    const res = await apiPost('/cal/sync/google/push', {});
+    if ((res.failed || 0) > 0) this._showStatus(`送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
+    else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
+  } catch(e) { this._showStatus('送信失敗: ' + e.message, true); }
 };
 
 CalendarComponent.prototype._icalImport = function() {
@@ -188,7 +224,8 @@ CalendarComponent.prototype._icalImport = function() {
 
 // === テンプレートモーダル ===
 CalendarComponent.prototype._showScheduleTemplateModal = async function() {
-  const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+  const allTemplates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+  const templates = (allTemplates || []).filter(template => !(typeof this._isShiftScheduleTemplate === 'function' && this._isShiftScheduleTemplate(template)));
   const dl = ['日','月','火','水','木','金','土'];
   const addMin = (ts, min) => {
     const match = /^(\d{1,2}):(\d{2})$/.exec(String(ts || ''));

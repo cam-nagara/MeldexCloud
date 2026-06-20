@@ -21,6 +21,7 @@
   let inTable = false, _tableRowCount = 0;
   let pendingTableLayout = null;
   let pendingNoteTitle = false;
+  const headingSlugCounts = new Map();
   // リストネスト管理: スタックで深度・種別を追跡
   const listStack = []; // [{ type: 'ul'|'ol', indent: number }, ...]
 

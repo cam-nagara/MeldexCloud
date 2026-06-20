@@ -1,10 +1,23 @@
     else { ta.rows = 1; ta.classList.remove('multiline'); }
   }
 
+  let queryComposing = false;
+  const isComposingQuery = (e) => queryComposing || e.isComposing || e.keyCode === 229;
+  q.addEventListener('compositionstart', () => { queryComposing = true; });
+  q.addEventListener('compositionend', () => {
+    queryComposing = false;
+    autoResize(q);
+    doFileSearch(1);
+  });
   q.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeFileSearch(); e.preventDefault(); return; }
     // Enter（Shift なし）: 次の検索結果へジャンプ。Shift+Enter: 改行入力
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doFileSearch(1); return; }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (isComposingQuery(e)) return;
+      e.preventDefault();
+      doFileSearch(1);
+      return;
+    }
   });
   q.addEventListener('input', () => autoResize(q));
 
@@ -27,7 +40,15 @@ function _currentFileSearchEditable() {
 
 function doFileSearch(direction) {
   const q = document.getElementById('fsb-query').value;
-  if (!q) return;
+  if (!q) {
+    clearFileSearchHighlights();
+    _fileSearchMatches = [];
+    _fileSearchIdx = -1;
+    _fileSearchLastQuery = '';
+    _fileSearchLastRoot = null;
+    document.getElementById('fsb-count').textContent = '0/0';
+    return;
+  }
 
   // ボードビューの場合はボード内検索
   if (state.view === 'board') { doBoardSearch(q, direction); return; }
@@ -377,7 +398,7 @@ document.addEventListener('keydown', async (e) => {
     e.preventDefault();
     const nd = treeSelection.lastClicked._nodeData;
     const lbl = treeSelection.lastClicked.querySelector('.tree-label');
-    if (nd && lbl && nd.type !== 'entity' && !(nd.path && isItemLocked(nd.path))) startTreeLabelEdit(lbl, nd);
+    if (nd && lbl && nd.type !== 'entity' && !nd._isRoot && !(nd.path && isItemLocked(nd.path))) startTreeLabelEdit(lbl, nd);
     return;
   }
   // Delete: フォルダツリーのツリー項目削除
@@ -390,7 +411,7 @@ document.addEventListener('keydown', async (e) => {
   const inTreeByFocus = !!(active && (active.id === 'outliner-tree' || active.closest?.('#outliner-tree') || active.closest?.('.tree-node')));
   const inTreeByPointer = !!window._lastPointerInTree;
   if (e.key === 'Delete' && !isEditing && (inTreeByFocus || inTreeByPointer) && treeSelection.items.size > 0 && state.view !== 'folder' && state.view !== 'board') {
-    const items = [...treeSelection.items].map(n => n._nodeData).filter(d => d && !(d.path && isItemLocked(d.path)));
+    const items = [...treeSelection.items].map(n => n._nodeData).filter(d => d && !d._isRoot && !(d.path && isItemLocked(d.path)));
     if (items.length === 0) return;
     if (!await cfConfirm(items.length + ' 件を削除しますか？')) return;
     deleteOutlinerItemsWithHistory(items, {
@@ -400,6 +421,7 @@ document.addEventListener('keydown', async (e) => {
       },
       refresh: async () => {
         if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
       },
     }).then((result) => {
       const deletedCount = result.deletedCount || result.succeeded.length;
@@ -726,6 +748,14 @@ function _noteCtxMenuHandler(e) {
     { label: 'すべて選択', enabled: true, action: () => { editable.focus(); document.execCommand('selectAll'); } },
     { type: 'sep' },
     { type: 'format', label: '書式…', enabled: hasSelection },
+    { type: 'sep' },
+    { label: 'Googleで検索', enabled: hasSelection, action: () => {
+      const query = (savedRange ? savedRange.toString() : (sel ? sel.toString() : '')).trim();
+      if (!query) return;
+      const url = 'https://www.google.com/search?q=' + encodeURIComponent(query);
+      try { window.open(url, '_blank', 'noopener,noreferrer'); }
+      catch { window.location.href = url; }
+    }},
     { type: 'sep' },
     { label: 'ルビを設定...', enabled: hasSelection, action: () => {
       if (!savedRange) return;

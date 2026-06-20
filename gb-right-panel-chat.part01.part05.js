@@ -54,7 +54,8 @@ function _chatCurrentQueueScope() {
   return {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
-    targetPath: String(_chatState.targetPath || ''),
+    targetPath: String(_chatState.streamingTargetPath || (typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : (_chatState.targetPath || '')) || ''),
+    workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),
   };
@@ -63,6 +64,7 @@ function _chatCurrentQueueScope() {
 function _chatQueueScopesMatch(scope, current) {
   if (!scope || !current) return false;
   if (String(scope.mode || '') !== String(current.mode || '')) return false;
+  if (String(scope.workspaceId || '') !== String(current.workspaceId || '')) return false;
   if (String(scope.sourceFolder || '') !== String(current.sourceFolder || '')) return false;
   if (String(scope.targetPath || '') !== String(current.targetPath || '')) return false;
   const scopeSession = String(scope.sessionId || '');

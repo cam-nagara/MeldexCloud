@@ -1,6 +1,7 @@
     _normalizePaneNode(nextRoot);
-    _removeOrphanComponentInstances(_root, nextRoot);
-    _root = nextRoot;
+    const fixedRoot = _migrateLayoutToFixedRailsIfNeeded(nextRoot);
+    _removeOrphanComponentInstances(_root, fixedRoot);
+    _root = fixedRoot;
     _savedRootForMaximize = null;
     _maximizedPaneId = null;
     _setMaximizeChrome(false);
@@ -257,6 +258,7 @@
     restoreLayoutSnapshot,
     pushLayoutHistory,
     applyLayoutTree,
+    isFreeLayoutUiEnabled: _showFreeLayoutUi,
     createPaneNode,
     createSplitNode,
     splitPane,
@@ -271,6 +273,7 @@
     hasLockedPane,
     findFirstUnlockedPane,
     revealPane,
+    setNodeCollapsed,
     setPaneLocked,
     togglePaneLocked,
     updatePaneNavButtons: _updatePaneNavButtons,

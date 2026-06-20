@@ -235,9 +235,14 @@
         }));
     }
     const filters = Array.isArray(def?.filters) ? def.filters : [];
+    const bulkSources = (typeof _smartDbEffectiveSources === 'function')
+      ? _smartDbEffectiveSources(def)
+      : (Array.isArray(def?.sources) ? def.sources.filter(s => s && s.path) : []);
+    let bulkUrl = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(filters));
+    if (bulkSources.length) bulkUrl += '&sources=' + encodeURIComponent(JSON.stringify(bulkSources));
     const payload = _currentSmartDbMatches(path, def) && Array.isArray(state?.smartDbData?.entities)
       ? state.smartDbData
-      : await apiFetch('/smart-db?filters=' + encodeURIComponent(JSON.stringify(filters)));
+      : await apiFetch(bulkUrl);
     const entities = Array.isArray(payload?.entities) ? payload.entities : [];
     return entities
       .filter(e => e && e.path)

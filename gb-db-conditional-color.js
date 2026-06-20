@@ -1,6 +1,6 @@
 /* シート条件付きカラー — gb-db-props.js から分離 */
 
-function getConditionalColors(dbPath) { return getCurrentDbViewConfigEntry(dbPath)?.conditionalColors || {}; }
+function getConditionalColors(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, { ctx: options.ctx || null })?.conditionalColors || {}; }
 function setConditionalColors(dbPath, colors, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 条件付きカラー', options.detail || '', options, (v) => {
     v.conditionalColors = colors;
@@ -29,7 +29,7 @@ function showConditionalColorModal(propName, dbPathOverride = '', ctx = null) {
   const dbPath = dbPathOverride || state.currentDbPath;
   if (!dbPath) return;
   if (!propName) { showConditionalColorPickerModal(dbPath, ctx); return; }
-  const colors = getConditionalColors(dbPath);
+  const colors = getConditionalColors(dbPath, { ctx });
   const rules = _conditionalColorRules(colors, propName);
 
   const o = document.createElement('div');
@@ -66,9 +66,10 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null) {
     if (prop && !props.includes(prop) && !['button', 'chat', 'multi-source-relation'].includes(type)) props.push(prop);
   };
   (_conditionalColorPivotData(dbPath, ctx)?.properties || []).forEach(add);
-  (getColOrder(dbPath) || []).forEach(add);
+  (getColOrder(dbPath, { ctx }) || []).forEach(add);
   Object.keys(propTypes).forEach(add);
-  if (props.length === 0) {
+  const visibleProps = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
+  if (visibleProps.length === 0) {
     showStatus('条件付きカラーを設定できるプロパティがありません', true);
     return;
   }
@@ -78,7 +79,7 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null) {
     <h3>条件付きカラー</h3>
     <div class="field"><label>プロパティ</label>
       <select id="cc-picker-prop" class="gb-select" style="width:100%;">
-        ${props.map(prop => `<option value="${esc(prop)}">${esc(prop)}</option>`).join('')}
+        ${visibleProps.map(prop => `<option value="${esc(prop)}">${esc(prop)}</option>`).join('')}
       </select>
     </div>
     <div class="btn-row">
@@ -192,13 +193,16 @@ function applyConditionalColors(propName, dbPathOverride = '', ctx = null) {
       fg: getColorSwatchValue(row.querySelector('.cc-fg'), '#ffffff'),
     });
   });
-  const colors = getConditionalColors(dbPath);
+  const colors = getConditionalColors(dbPath, { ctx });
   if (rules.length > 0) colors[propName] = rules;
   else if (Object.prototype.hasOwnProperty.call(colors, propName)) delete colors[propName];
-  setConditionalColors(dbPath, colors);
+  setConditionalColors(dbPath, colors, { ctx });
   closeConditionModal('#cc-rules');
-  const renderCtx = _conditionalColorContext(dbPath, ctx);
-  renderPivot(renderCtx);
+  const renderTargets = typeof _dbPaneContextsForPath === 'function'
+    ? _dbPaneContextsForPath(dbPath)
+    : [_conditionalColorContext(dbPath, ctx)].filter(Boolean);
+  if (ctx && !renderTargets.includes(ctx)) renderTargets.unshift(ctx);
+  (renderTargets.length ? renderTargets : [null]).forEach(renderCtx => renderPivot(renderCtx));
 }
 
 function _conditionalColorText(value) {
@@ -215,8 +219,8 @@ function _conditionalColorText(value) {
   return v;
 }
 
-function getCellColor(value, propName, dbPath) {
-  const colors = getConditionalColors(dbPath);
+function getCellColor(value, propName, dbPath, ctx = null) {
+  const colors = getConditionalColors(dbPath, { ctx });
   const rules = _conditionalColorRules(colors, propName);
   if (!Array.isArray(rules)) return null;
   const v = _conditionalColorText(value);

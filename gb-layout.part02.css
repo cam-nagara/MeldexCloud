@@ -25,9 +25,6 @@
   min-width: 32px; min-height: 32px; overflow: hidden;
   border: 1px solid transparent;
 }
-.gb-pane-active {
-  border-color: var(--accent);
-}
 
 /* ペインタブバー */
 .gb-pane-tabs {
@@ -336,11 +333,28 @@
 .gb-split-horizontal > .gb-split-handle { width: 4px; cursor: col-resize; }
 .gb-split-vertical > .gb-split-handle { height: 4px; cursor: row-resize; }
 .gb-split-handle:hover, .gb-split-handle.active { background: var(--accent); }
+.gb-split-handle.gb-split-handle-fixed {
+  cursor: default;
+  pointer-events: none;
+}
+.gb-split-handle.gb-split-handle-fixed:hover,
+.gb-split-handle.gb-split-handle-fixed.active {
+  background: transparent;
+}
+.gb-split-handle.gb-split-handle-resize-only {
+  cursor: col-resize;
+}
+.gb-split-vertical > .gb-split-handle.gb-split-handle-resize-only {
+  cursor: row-resize;
+}
 
 /* 掴みやすさ向上: 本体は 4px のまま、擬似要素で当たり判定を 8px に拡張 */
 .gb-split-handle::before {
   content: ""; position: absolute; z-index: 1;
   background: transparent; transition: background 0.15s;
+}
+.gb-split-handle.gb-split-handle-fixed::before {
+  display: none;
 }
 .gb-split-horizontal > .gb-split-handle::before {
   top: 0; bottom: 0; left: -2px; right: -2px;
@@ -555,10 +569,10 @@
 
 /* ドックバー本体: 各 panelset ノードの右端に常設される 32px 幅の縦バー（単独ペインのカラムでは非表示） */
 .gb-dock-bar {
-  width: 32px;
-  min-width: 32px;
-  max-width: 32px;
-  flex: 0 0 32px;
+  width: 38px;
+  min-width: 38px;
+  max-width: 38px;
+  flex: 0 0 38px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -570,11 +584,55 @@
   overflow-x: hidden;
   user-select: none;
 }
+.gb-dock-fixed-left .gb-dock-bar {
+  border-right: 1px solid var(--border);
+  border-left: 0;
+}
+.gb-dock-fixed-right .gb-dock-bar {
+  border-left: 1px solid var(--border);
+  border-right: 0;
+}
+.gb-dock-bar-fixed {
+  background: var(--ui-dockbar-bg, var(--bg2));
+  padding: 3px 0;
+  gap: 1px;
+}
+.gb-dock-rail-toggle {
+  margin-top: 0;
+  background: transparent;
+}
+.gb-dock-rail-separator {
+  width: 24px;
+  height: 1px;
+  margin: 4px 0;
+  flex: 0 0 1px;
+  background: var(--border);
+}
+.gb-dock-rail-app {
+  background: transparent;
+}
+.gb-rail-app-menu-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.gb-rail-app-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gb-dock-fixed-left .gb-dock-body,
+.gb-dock-fixed-right .gb-dock-body {
+  min-width: 0;
+}
 
 /* ドラッグハンドル: ドックを別位置へ移動するためのつまみ */
 .gb-dock-bar-handle {
-  width: 32px;
-  height: 16px;
+  width: 38px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -585,11 +643,11 @@
 }
 .gb-dock-bar-handle:hover { opacity: 0.8; }
 .gb-dock-bar-handle:active { cursor: grabbing; }
-.gb-dock-bar-handle svg { width: 14px; height: 14px; }
+.gb-dock-bar-handle svg { width: 16px; height: 16px; }
 
 /* ドックタブスペーサー: group 間の視覚的な隙間（クリック操作はなし、純粋な余白）*/
 .gb-dock-tab-spacer {
-  width: 32px;
+  width: 38px;
   height: 12px;
   min-height: 12px;
   flex: 0 0 12px;
@@ -599,9 +657,9 @@
 
 /* ドックバー内のパネルアイコンボタン */
 .gb-dock-icon {
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
   margin: 2px 0;
   display: flex;
   align-items: center;
@@ -611,11 +669,11 @@
   border-radius: var(--ui-radius-sm, 4px);
   color: var(--ui-fg-default);
   cursor: pointer;
-  flex: 0 0 28px;
+  flex: 0 0 34px;
   padding: 0;
   position: relative;
 }
-.gb-dock-icon svg { width: 16px; height: 16px; }
+.gb-dock-icon svg { width: 20px; height: 20px; }
 .gb-dock-icon:hover { background: var(--ui-bg-control-hover); color: var(--ui-fg-default); }
 .gb-dock-icon.active {
   background: var(--ui-accent);

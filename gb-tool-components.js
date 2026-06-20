@@ -264,7 +264,15 @@ class SearchComponent extends ToolComponent {
   create() {
     this.el = document.createElement('div');
     this.el.className = 'gb-tool-search';
-    this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:hidden;';
+    this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;padding:12px;';
+    this.el.innerHTML = `<div class="gb-empty-state" style="padding:24px;">
+      <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide('search', 42) : ''}</div>
+      <div class="gb-empty-message">検索</div>
+      <button type="button" class="gb-btn gb-btn-sm" data-gb-open-vault-search data-e2e-id="search-empty-open-vault-search">検索を開く</button>
+    </div>`;
+    this.el.querySelector('[data-gb-open-vault-search]')?.addEventListener('click', () => {
+      if (typeof openSearchPanel === 'function') openSearchPanel();
+    });
     return this.el;
   }
 }
@@ -682,7 +690,7 @@ registerToolComponent('page',       { cls: EditorComponent, icon: 'page', label:
 registerToolComponent('chat',       { cls: ChatComponent, icon: 'messagesSquare', label: 'チャット', multi: false });
 registerToolComponent('annotation', { cls: AnnotationComponent, icon: 'stickyNote', label: '注釈', multi: false });
 registerToolComponent('history',    { cls: HistoryComponent, icon: 'history', label: 'ヒストリー', multi: false });
-registerToolComponent('detail',     { cls: DetailComponent, icon: 'panelRight', label: 'オプション', multi: false });
+registerToolComponent('detail',     { cls: DetailComponent, icon: 'slidersHorizontal', label: 'オプション', multi: false });
 registerToolComponent('folder',     { cls: FolderComponent, icon: 'folder', label: 'フォルダビュー', multi: true, requiresViewLock: true });
 registerToolComponent('media',      { cls: MediaComponent, icon: 'galleryThumbnails', label: 'メディア', multi: true, requiresViewLock: true });
 registerToolComponent('compare',    { cls: CompareComponent, icon: 'columns', label: '比較', multi: true, requiresViewLock: true });

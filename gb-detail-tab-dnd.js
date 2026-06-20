@@ -5,6 +5,8 @@
     'note-editor',
     'db-property-settings',
     'calendar-today',
+    'calendar-settings',
+    'calendar-production',
     'board-card',
     'board-line',
     'board-note',
@@ -18,6 +20,7 @@
     'sn2-ruby',
     'sn2-rowset',
     'backlinks',
+    'tag-management',
   ];
   let _draggedTabId = '';
 

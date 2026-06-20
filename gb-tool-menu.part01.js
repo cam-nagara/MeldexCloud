@@ -176,7 +176,7 @@ function getActiveScriptNoteComponent() {
 }
 
 function isScriptNotePath(path = '') {
-  return /\.scriptnote\.json$/i.test(String(path || '').trim());
+  return /(\.mel-scenario|\.scriptnote\.json)$/i.test(String(path || '').trim());
 }
 
 function isScriptNoteBrowseItem(item) {
@@ -193,7 +193,7 @@ function getScriptNoteLabelFromPath(path = '', fallback = '') {
   const raw = String(path || '').trim();
   if (!raw) return fallback || 'シナリオ';
   const fileName = raw.split('/').pop() || raw.split('\\').pop() || raw;
-  return fileName.replace(/\.scriptnote\.json$/i, '').replace(/\.\w+$/i, '') || fallback || 'シナリオ';
+  return fileName.replace(/\.mel-scenario$/i, '').replace(/\.scriptnote\.json$/i, '').replace(/\.[^./\\]+$/i, '') || fallback || 'シナリオ';
 }
 
 async function _probeJsonFile(path) {
@@ -241,6 +241,10 @@ async function _resolveScriptNoteTargetFromScenario(sourcePath, label = '') {
 
 function getScriptNoteTargetPaneId() {
   if (typeof GBLayout === 'undefined') return null;
+  const mainPaneId = typeof GBPaneDefaultLayout !== 'undefined' && typeof GBPaneDefaultLayout.resolveMainPaneId === 'function'
+    ? GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true })
+    : '';
+  if (mainPaneId) return mainPaneId;
   const activePaneId = GBLayout.activePane;
   if (!activePaneId) return null;
   const paneInfo = GBLayout.findNode?.(GBLayout.root, activePaneId);

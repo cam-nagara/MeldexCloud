@@ -13,6 +13,7 @@ const GBPaneBridge = (() => {
   let _initialized = false;
   let _bridgeUpdating = 0; // 再帰防止（入れ子対応）
   let _outlinerLoaded = false; // loadOutliner初回のみフラグ
+  let _appToolbarTemplateHtml = '';
 
   // ビュータイプ → レガシーコンテナ要素ID
   // 注: login-viewはペインシステム外で管理（認証時のオーバーレイ）
@@ -69,7 +70,7 @@ const GBPaneBridge = (() => {
     outliner: 'フォルダツリー',
     detail: 'オプション',
     preview: 'ビューワー',
-    calendar: 'カレンダー',
+    calendar: 'スケジューラー',
     timer: 'タイマー',
     chat: 'チャット',
     annotation: '注釈',
@@ -97,6 +98,37 @@ const GBPaneBridge = (() => {
     compare: '比較',
   });
   const FLOATING_UI_CONTAINERS = ['ann-overlay', 'btn-tb-annotation'];
+
+  function _isLegacySnapshotNode(el) {
+    return !!el?.closest?.('[data-gb-snapshot="true"]');
+  }
+
+  function _rememberAppToolbarTemplate() {
+    const appTb = document.getElementById('app-toolbar');
+    if (appTb && !_isLegacySnapshotNode(appTb) && !_appToolbarTemplateHtml) {
+      _appToolbarTemplateHtml = appTb.outerHTML;
+    }
+    return appTb;
+  }
+
+  function _ensureAppToolbarElement() {
+    const existing = document.getElementById('app-toolbar');
+    if (existing && !_isLegacySnapshotNode(existing)) {
+      if (!_appToolbarTemplateHtml) _appToolbarTemplateHtml = existing.outerHTML;
+      return existing;
+    }
+    if (!_appToolbarTemplateHtml) _rememberAppToolbarTemplate();
+    if (!_appToolbarTemplateHtml) return null;
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = _appToolbarTemplateHtml.trim();
+    const restored = wrapper.firstElementChild;
+    if (!restored || restored.id !== 'app-toolbar') return null;
+    restored.classList.remove('visible');
+    const storage = document.getElementById('legacy-views') || document.body;
+    storage.appendChild(restored);
+    if (typeof replaceIcons === 'function') replaceIcons(restored);
+    return restored;
+  }
   // コンテナID → 現在配置ペインID
   const _containerPane = {};
   const _legacySnapshots = new Map(); // tabId -> cloned DOM
@@ -192,13 +224,12 @@ const GBPaneBridge = (() => {
       if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
       return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     };
-    const isSnapshotNode = (el) => !!el?.closest?.('[data-gb-snapshot="true"]');
     Document.prototype.getElementById = function(id) {
       const first = nativeGetElementById.call(this, id);
-      if (!first || !isSnapshotNode(first)) return first;
+      if (!first || !_isLegacySnapshotNode(first)) return first;
       const matches = this.querySelectorAll('[id="' + escapeId(id) + '"]');
       for (const el of matches) {
-        if (!isSnapshotNode(el)) return el;
+        if (!_isLegacySnapshotNode(el)) return el;
       }
       return first;
     };
@@ -229,6 +260,7 @@ const GBPaneBridge = (() => {
   function init() {
     if (_initialized) return;
     _patchDomLookupForSnapshots();
+    _rememberAppToolbarTemplate();
 
     // Phase 6: URL パラメータ解析を init 最初で実行
     const _bootParams = _bootstrapFromURL();
@@ -355,6 +387,11 @@ const GBPaneBridge = (() => {
         storage.appendChild(el);
       }
     }
+    const appTb = _ensureAppToolbarElement();
+    if (appTb && appTb.parentNode && appTb.parentNode.id !== 'legacy-views') {
+      appTb.classList.remove('visible');
+      storage.appendChild(appTb);
+    }
   }
 
   function _getLegacyUiState(tab) {
@@ -367,8 +404,8 @@ const GBPaneBridge = (() => {
     tab.state._legacyPaneUi = data;
   }
 
-  const _detailTabIds = ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'];
-  const _detailScrollSelectors = ['__root__', '#detail-tab-note-editor', '#detail-tab-db-property-settings', '#detail-tab-sn2-main', '#detail-tab-calendar-today', '#detail-tab-board-card', '#detail-tab-board-line', '#detail-tab-board-note', '#detail-tab-board-card-style', '#detail-tab-board-line-style', '#detail-tab-board-depth-style'];
+  const _detailTabIds = ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'];
+  const _detailScrollSelectors = ['__root__', '#detail-tab-note-editor', '#detail-tab-db-property-settings', '#detail-tab-sn2-main', '#detail-tab-calendar-today', '#detail-tab-calendar-settings', '#detail-tab-calendar-production', '#detail-tab-board-card', '#detail-tab-board-line', '#detail-tab-board-note', '#detail-tab-board-card-style', '#detail-tab-board-line-style', '#detail-tab-board-depth-style'];
   const _viewScrollSelectors = {
     page: ['#page-content'],
     entity: ['#entity-view'],
@@ -421,9 +458,10 @@ const GBPaneBridge = (() => {
     const bar = root.querySelector('#detail-tab-bar');
     if (!bar) return;
     bar.querySelectorAll('.gb-inner-tab, .detail-tab').forEach(t => {
-      const active = t.dataset.detailTab === normalizedTab;
+      const active = !t.hidden && t.dataset.detailTab === normalizedTab;
       t.classList.toggle('gb-inner-tab-active', active);
       t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
       // 旧インライン style が残っていれば除去（CSS クラス優先）
       t.style.borderBottomColor = '';
       t.style.color = '';
@@ -835,7 +873,7 @@ const GBPaneBridge = (() => {
       }
     }
     // ツールバーをストレージに退避
-    const appTb = document.getElementById('app-toolbar');
+    const appTb = _ensureAppToolbarElement();
     if (appTb && appTb.parentNode && appTb.parentNode.id !== 'legacy-views') {
       appTb.classList.remove('visible');
       storage.appendChild(appTb);

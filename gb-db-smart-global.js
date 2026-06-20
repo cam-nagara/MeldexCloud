@@ -76,7 +76,7 @@
     const v = f.value;
     if (op === 'is_null') return raw === null || raw === undefined;
     if (op === 'not_null') return !(raw === null || raw === undefined);
-    if (raw === null || raw === undefined) return false;
+    if (raw === null || raw === undefined) return op === 'not_equals' || op === 'not_contains';
     const s = String(raw).toLowerCase();
     const vs = String(v == null ? '' : v).toLowerCase();
     switch (op) {

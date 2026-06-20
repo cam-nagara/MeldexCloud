@@ -186,9 +186,21 @@
     acHeader.innerHTML = colDefs.map(cd =>
       `<span class="sn2-detail-settings-label sn2-detail-ac-settings-label">${cd.label}</span>`
     ).join('');
-    acSection.appendChild(acHeader);
     const acSelOpt = (val, cur) => val === cur ? ' selected' : '';
     const acRule = this.doc.editor?.autoColorRule || {};
+    const acPaletteRow = typeof this._getAutoColorPaletteRow === 'function' ? this._getAutoColorPaletteRow() : 3;
+    const acPaletteRowEl = document.createElement('div');
+    acPaletteRowEl.className = 'sn2-detail-settings-row';
+    acPaletteRowEl.innerHTML = `
+      <label class="sn2-detail-settings-label">テーマカラー</label>
+      <select class="sn2-detail-settings-select" data-ac-palette-row data-e2e-id="scriptnote-theme-auto-color-palette-row" title="自動配色で繰り返すテーマカラーの行">
+        <option value="1"${acSelOpt(1, acPaletteRow)}>1行目</option>
+        <option value="2"${acSelOpt(2, acPaletteRow)}>2行目</option>
+        <option value="3"${acSelOpt(3, acPaletteRow)}>3行目</option>
+        <option value="4"${acSelOpt(4, acPaletteRow)}>4行目</option>
+      </select>`;
+    acSection.appendChild(acPaletteRowEl);
+    acSection.appendChild(acHeader);
     const acRow = document.createElement('div');
     acRow.className = 'sn2-detail-settings-row';
     acRow.innerHTML = colDefs.map(cd => {
@@ -202,6 +214,21 @@
     }).join('');
     acSection.appendChild(acRow);
     acSection.addEventListener('change', (ev) => {
+      const paletteRowSel = ev.target.closest('[data-ac-palette-row]');
+      if (paletteRowSel) {
+        this._pushUndo('自動配色変更');
+        const nextRow = Math.max(1, Math.min(4, parseInt(paletteRowSel.value, 10) || 3));
+        if (!this.doc.editor) this.doc.editor = {};
+        this.doc.editor.autoColorPaletteRow = nextRow;
+        (this.doc.characters || []).forEach(chara => {
+          if (chara.isDefault) return;
+          delete chara.autoColor;
+          if (typeof this._reapplyAutoColor === 'function') this._reapplyAutoColor(chara);
+        });
+        this._refreshRowStyles();
+        this._markDirty();
+        return;
+      }
       const sel = ev.target.closest('[data-ac-col]');
       if (!sel) return;
       this._pushUndo('自動配色変更');

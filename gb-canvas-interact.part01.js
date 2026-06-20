@@ -421,6 +421,7 @@ function bdInitInteraction(root) {
         node.w = Math.max(40, Math.round(item.w * scaleX));
         node.h = Math.max(28, Math.round(item.h * scaleY));
       }
+      node._userW = true;
       const el = document.getElementById('bdn-' + item.id);
       if (!el) return;
       el.style.left = node.x + 'px';

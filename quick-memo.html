@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" spellcheck="false">
 <head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:">
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1e1e1e">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Meldex Memo">
@@ -25,13 +25,16 @@
       </div>
       <div class="qm-header-actions">
         <button id="shortcutBtn" class="qm-ghost" type="button">Ctrl+Alt+M</button>
+        <button id="autoTagBtn" class="qm-ghost qm-auto-tag" type="button">タグを自動付け</button>
+        <button id="newMemoBtn" class="qm-icon" type="button" title="新規メモ">＋</button>
         <button id="saveBtn" class="qm-primary" type="button">保存</button>
       </div>
     </header>
 
     <section class="qm-meta">
-      <input id="titleInput" type="text" placeholder="タイトル">
-      <input id="tagsInput" type="text" placeholder="タグ（カンマ区切り）">
+      <input id="titleInput" type="text" placeholder="タイトル" spellcheck="false">
+      <input id="tagsInput" type="text" placeholder="タグ（カンマ区切り）" spellcheck="false">
+      <input id="targetSheetInput" type="text" placeholder="保存先シート（空ならメモ）" spellcheck="false" autocomplete="off">
     </section>
 
     <nav class="qm-toolbar" aria-label="書式と入力">
@@ -52,7 +55,7 @@
     </nav>
 
     <section class="qm-surface">
-      <div id="editor" class="qm-editor" contenteditable="true" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
+      <div id="editor" class="qm-editor" contenteditable="true" spellcheck="false" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
       <canvas id="drawingCanvas" class="qm-canvas" aria-label="手書きメモ"></canvas>
     </section>
   </main>

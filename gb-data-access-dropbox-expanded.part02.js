@@ -164,9 +164,6 @@
     for (const row of rows.slice(1)) {
       const entityName = _sheetImportCellText(row?.[0]);
       if (!entityName) continue;
-      const entryStem = await _uniqueName(provider, dbPath, _safeFileStem(entityName, '無題'), '.md');
-      const entryPath = _joinPath(dbPath, entryStem + '.md');
-      await _requireUnlocked(provider, entryPath, { action: 'import-csv-entry' });
       const properties = {};
       headers.slice(1).forEach((propName, offset) => {
         if (!propName) return;
@@ -175,12 +172,13 @@
         if (!properties[propName]) properties[propName] = [];
         properties[propName].push({ value: rawText, status: '採用', note: '', created: _nowIso() });
       });
-      await _writeFrontmatterFile(provider, entryPath, {
-        type: 'settings-entry',
-        category: _basename(dbPath),
-        properties: _normalizeCreateProperties(properties),
-        created: _nowIso(),
-      }, '');
+      await _createEntity(provider, {
+        parent_path: dbPath,
+        name: entityName,
+        properties,
+        source: 'csv-import',
+        user: body?.user || 'anonymous',
+      });
       count += 1;
     }
     return { ok: true, count };
@@ -554,8 +552,10 @@
 
   async function _calendarAlerts(provider, url) {
     const minutes = Math.max(0, Number(url.searchParams.get('minutes_ahead') || 30) || 30);
+    const lookback = Math.max(0, Number(url.searchParams.get('lookback_minutes') || 0) || 0);
     const user = String(url.searchParams.get('user') || '');
     const now = new Date();
+    const windowStart = new Date(now.getTime() - lookback * 60000);
     const windowEnd = new Date(now.getTime() + minutes * 60000);
     const rows = (await _readStore(provider, 'events')).filter(event => Number(event.alert_minutes) >= 0);
     const alerts = [];
@@ -563,18 +563,18 @@
       if (user && event.user && event.user !== user && event.creator !== user) return;
       const offset = Math.max(0, Number(event.alert_minutes || 0) || 0);
       const eventWindowEnd = new Date(windowEnd.getTime() + offset * 60000);
-      const candidates = event.recurrence ? _expandCalendarRecurrence(event, now.toISOString(), eventWindowEnd.toISOString()) : [event];
+      const candidates = event.recurrence ? _expandCalendarRecurrence(event, windowStart.toISOString(), eventWindowEnd.toISOString()) : [event];
       candidates.forEach((candidate) => {
         const start = _parseCalendarDate(candidate.start);
         if (!start) return;
         const alertTime = new Date(start.getTime() - offset * 60000);
-        if (alertTime >= now && alertTime <= windowEnd) alerts.push({ ...candidate, _alert_time: alertTime.toISOString() });
+        if (alertTime >= windowStart && alertTime <= windowEnd) alerts.push({ ...candidate, _alert_time: alertTime.toISOString() });
       });
     });
     return alerts;
   }
 
-  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
+  const RELOCATE_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.html', '.css', '.js', '.txt', '.csv']);
 
   function _relocateText(text, oldPath, newPath) {
     const oldNorm = _normalizeFolderPath(oldPath);
@@ -608,6 +608,192 @@
       }
     }, '');
     return { rewritten_count: rewritten.length, failed_count: failed, rewritten_paths: rewritten.slice(0, 100), truncated: rewritten.length > 100 };
+  }
+
+  const SEARCH_TEXT_EXTS = new Set(['.md', '.json', '.mel-board', '.mel-sheet', '.scriptnote.json', '.smart-db.json', '.dashboard.json', '.board.md', '.txt', '.csv']);
+
+  function _searchPattern(q, caseSensitive, useRegex) {
+    if (!q) return null;
+    const flags = caseSensitive ? 'g' : 'gi';
+    try {
+      return useRegex ? new RegExp(q, flags) : new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+    } catch {
+      return null;
+    }
+  }
+
+  function _collectTextMatches(text, pattern, field) {
+    const matches = [];
+    String(text || '').split(/\r?\n/).forEach((line, index) => {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(line)) && matches.length < 50) {
+        matches.push({ line: index + 1, field: field || '', text: line.slice(0, 200).trim(), col: match.index });
+        if (!match[0]) pattern.lastIndex += 1;
+      }
+    });
+    return matches;
+  }
+
+  function _sheetStoreSearchText(row) {
+    const parts = [row.name || '', row.body || ''];
+    const fm = row.frontmatter || {};
+    const props = fm.properties && typeof fm.properties === 'object' ? fm.properties : {};
+    Object.entries(props).forEach(([prop, values]) => {
+      parts.push(prop);
+      _normalizeCandidates(values).forEach((candidate) => {
+        parts.push(candidate.value || '', candidate.status || '', candidate.note || '', candidate.rich_html || '');
+      });
+    });
+    return parts.filter(Boolean).join('\n');
+  }
+
+  function _searchSheetStoreRows(store, pattern, results) {
+    Object.values(store?.rows || {}).forEach((row) => {
+      const fileName = _sheetStoreFileName(row.file_name || row.path || row.name);
+      const path = _joinPath(store.db_path || '', fileName);
+      const matches = _collectTextMatches(_sheetStoreSearchText(row), pattern, 'sheet');
+      if (matches.length) {
+        results.push({ path, name: _sheetStoreEntityName(row.name || fileName), type: 'database', matches });
+      }
+    });
+  }
+
+  async function _cloudSearch(provider, url) {
+    const q = String(url.searchParams.get('q') || '');
+    if (!q) return { results: [], total: 0 };
+    const caseSensitive = _truthy(url.searchParams.get('case'));
+    const useRegex = _truthy(url.searchParams.get('regex'));
+    const pattern = _searchPattern(q, caseSensitive, useRegex);
+    if (!pattern) return { results: [], total: 0, error: '無効な正規表現' };
+    const root = _normalizeFolderPath(url.searchParams.get('path') || '');
+    const results = [];
+    const searchedSheetStores = new Set();
+    function searchSheetStoreOnce(dbPath, store) {
+      const normalizedDbPath = _normalizeFolderPath(dbPath);
+      if (searchedSheetStores.has(normalizedDbPath)) return;
+      searchedSheetStores.add(normalizedDbPath);
+      _searchSheetStoreRows(store, pattern, results);
+    }
+    await _iterateWorkspaceFiles(provider, async (path) => {
+      const normalized = _normalizeFolderPath(path);
+      if (_isWorkspaceScanExcluded(normalized)) return;
+      if (_basename(normalized) === SHEET_CLOUD_STORE_FILE) {
+        const store = _normalizeSheetStore(await _readJsonSafe(provider, normalized, null), _dirname(normalized));
+        searchSheetStoreOnce(_dirname(normalized), store);
+        return;
+      }
+      const lower = normalized.toLowerCase();
+      if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return;
+      if (lower.endsWith('.md')) {
+        const store = await _sheetStoreForRead(provider, _dirname(normalized)).catch(() => null);
+        if (store?.rows?.[_sheetStoreFileName(normalized)]) {
+          searchSheetStoreOnce(_dirname(normalized), store);
+          return;
+        }
+      }
+      try {
+        const content = await provider.readText(normalized);
+        const matches = _collectTextMatches(content, pattern, '');
+        if (matches.length) {
+          const type = await _classifyFileType(provider, normalized, { allFiles: true }).catch(() => 'page');
+          results.push({ path: normalized, name: _basename(normalized).replace(/\.[^.]+$/, ''), type: type || 'page', matches });
+        }
+      } catch {}
+    }, root);
+    return { results, total: results.reduce((sum, item) => sum + (item.matches?.length || 0), 0) };
+  }
+
+  function _replaceStringValue(value, pattern, replacement, state) {
+    if (state.remaining === 0) return value;
+    const text = String(value || '');
+    pattern.lastIndex = 0;
+    const matches = [...text.matchAll(pattern)];
+    if (!matches.length) return value;
+    const count = state.replaceAll ? matches.length : 1;
+    state.count += count;
+    if (!state.replaceAll) state.remaining = 0;
+    if (state.replaceAll) return text.replace(pattern, replacement);
+    const once = new RegExp(pattern.source, pattern.flags.replace(/g/g, ''));
+    return text.replace(once, replacement);
+  }
+
+  function _replaceNestedText(value, pattern, replacement, state) {
+    if (typeof value === 'string') return _replaceStringValue(value, pattern, replacement, state);
+    if (Array.isArray(value)) return value.map(item => _replaceNestedText(item, pattern, replacement, state));
+    if (value && typeof value === 'object') {
+      const out = {};
+      Object.entries(value).forEach(([key, item]) => { out[key] = _replaceNestedText(item, pattern, replacement, state); });
+      return out;
+    }
+    return value;
+  }
+
+  async function _replaceInSheetStoreEntry(provider, path, body, pattern) {
+    const stored = await _readSheetStoreEntry(provider, path);
+    if (!stored) return null;
+    const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
+    const replacement = String(body?.replace ?? '');
+    const nextFrontmatter = _replaceNestedText(stored.frontmatter, pattern, replacement, state);
+    const nextBody = _replaceStringValue(stored.body || '', pattern, replacement, state);
+    if (state.count > 0) {
+      await _requireUnlocked(provider, stored.dbPath, { action: 'replace-sheet-store' });
+      const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
+      if (physical?.kind === 'file') await _writeEntity(provider, stored.path, nextFrontmatter, nextBody);
+      else await _writeSheetStoreEntryOnly(provider, stored.path, nextFrontmatter, nextBody);
+    }
+    return { ok: true, count: state.count };
+  }
+
+  async function _cloudReplace(provider, body) {
+    const path = _normalizeFolderPath(body?.path || '');
+    const q = String(body?.search || '');
+    if (!path || !q) throw new Error('path, search は必須です');
+    const pattern = _searchPattern(q, _truthy(body?.case), _truthy(body?.regex));
+    if (!pattern) throw new Error('無効な正規表現');
+    const storeResult = await _replaceInSheetStoreEntry(provider, path, body || {}, pattern);
+    if (storeResult) return storeResult;
+    const entry = await _resolveEntryHandle(provider, path);
+    if (!entry || entry.kind !== 'file') throw new Error('ファイルが見つかりません');
+    const lower = path.toLowerCase();
+    if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return { ok: true, count: 0 };
+    await _requireUnlocked(provider, path, { action: 'replace' });
+    const content = await provider.readText(path);
+    const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
+    const next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
+    if (state.count > 0) await provider.writeText(path, next);
+    return { ok: true, count: state.count };
+  }
+
+  async function _cloudLinkDict(provider, url) {
+    const work = _normalizeFolderPath(url.searchParams.get('work') || '');
+    const dbs = [];
+    const baseKind = work ? await _databaseKind(provider, work).catch(() => '') : '';
+    if (baseKind === 'settings-db') dbs.push({ path: work, kind: baseKind });
+    dbs.push(...await _findDatabaseFolders(provider, work, 6));
+    const entries = [];
+    const seen = new Set();
+    for (const db of dbs) {
+      if (db.kind && db.kind !== 'settings-db') continue;
+      const pivot = await _readPivot(provider, db.path, '').catch(() => null);
+      Object.entries(pivot?.entities || {}).forEach(([name, props]) => {
+        const text = String(name || '').trim();
+        if (text.length < 2 || seen.has(text)) return;
+        seen.add(text);
+        let ruby = '';
+        for (const key of ['ふりがな', 'ルビ', 'フリガナ', 'ruby']) {
+          const values = Array.isArray(props?.[key]) ? props[key] : [];
+          const adopted = values.find(item => item?.status === '採用' && item?.value);
+          if (adopted) {
+            ruby = String(adopted.value || '');
+            break;
+          }
+        }
+        entries.push({ text, type: 'entity', path: _joinPath(db.path, _sheetStoreFileName(text)), entity: text, ruby });
+      });
+    }
+    entries.sort((a, b) => b.text.length - a.text.length);
+    return { entries };
   }
 
   async function _handleCalendar(provider, method, body, url, pathname) {
@@ -648,14 +834,22 @@
     };
   }
 
-  function _requireCloudSecretWritable() {
+  async function assertOwnerWrite(provider, path) {
     const role = _cloudRole();
     if (role.access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
       throw new Error('閲覧専用モードではCloud保存APIキーを更新できません');
     }
+    if (typeof provider?.assertOwnerWrite === 'function') {
+      return provider.assertOwnerWrite(path);
+    }
     if (!role.isOwner) {
       throw new Error('Cloud保存APIキーの作成・更新・削除は管理者のみ可能です');
     }
+    return { ok: true, path: _normalizeFolderPath(path) };
+  }
+
+  async function _requireCloudSecretWritable(provider) {
+    await assertOwnerWrite(provider, SECRET_FILE);
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
@@ -707,6 +901,9 @@
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/smart-db' && method === 'GET') return _smartDb(await _requirePwaProvider('read'), url);
     if (pathname === '/global-index' && method === 'GET') return _globalIndex(await _requirePwaProvider('read'));
+    if (pathname === '/search' && method === 'GET') return _cloudSearch(await _requirePwaProvider('read'), url);
+    if (pathname === '/replace' && method === 'PUT') return _cloudReplace(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/link-dict' && method === 'GET') return _cloudLinkDict(await _requirePwaProvider('read'), url);
 
     if (pathname === '/version/read-db' && method === 'GET') {
       return _readDbVersionSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('version') || '');
@@ -753,15 +950,15 @@
       return envelope ? { exists: true, envelope } : { exists: false, envelope: null };
     }
     if (pathname === '/llm-keys/cloud' && method === 'PUT') {
-      _requireCloudSecretWritable();
       const provider = await _requirePwaProvider('readwrite');
+      await _requireCloudSecretWritable(provider);
       await _directoryHandle(provider, _dirname(SECRET_FILE), true);
       await provider.writeJson(SECRET_FILE, { ...(body || {}), updated_at: _nowIso() });
       return { ok: true, path: SECRET_FILE };
     }
     if (pathname === '/llm-keys/cloud' && method === 'DELETE') {
-      _requireCloudSecretWritable();
       const provider = await _requirePwaProvider('readwrite');
+      await _requireCloudSecretWritable(provider);
       const existing = await _resolveEntryHandle(provider, SECRET_FILE);
       if (!existing) return { ok: true, missing: true };
       await _removeEntry(provider, SECRET_FILE);

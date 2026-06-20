@@ -82,6 +82,21 @@
     return path;
   }
 
+  // 既存エントリをパス指定で直接更新する（キー検索に依存しない。割り当て結果の書き戻し用）
+  async function _pmCloudUpdateEntryAtPath(provider, path, props) {
+    const parsed = await _pmCloudReadFrontmatter(provider, path);
+    const fm = { ...(parsed.frontmatter || {}) };
+    fm.type = fm.type || 'settings-entry';
+    fm.modified = new Date().toISOString();
+    fm.properties = { ...(fm.properties || {}) };
+    Object.entries(props || {}).forEach(([prop, value]) => {
+      if (value == null || value === '') return;
+      fm.properties[prop] = [{ value: String(value), status: '採用', note: '', created: new Date().toISOString() }];
+    });
+    await provider.writeText(path, _pmCloudFrontmatterText(fm, parsed.body || ''));
+    return path;
+  }
+
   async function _pmCloudFindByProp(provider, internals, sheet, prop, value) {
     for (const entry of await _pmCloudListEntries(provider, internals, sheet)) {
       if (_pmCloudPropValue(entry.frontmatter, prop) === String(value)) return entry.path;
@@ -109,23 +124,96 @@
     return found && typeof found === 'object' ? String(found.value || '') : String(found || '');
   }
 
+  function _pmHierarchyConfig(body) {
+    const explicitPreset = String(body.preset || body['プリセット種別'] || '').trim();
+    const preset = explicitPreset || (_pmHasMangaCountInput(body) ? 'マンガ' : '汎用');
+    const rawCount = body.hierarchy_count || body['階層数'];
+    const fallback = preset === 'マンガ' ? 2 : 1;
+    const count = Math.max(1, Math.min(5, Number(rawCount || fallback) || fallback));
+    const labels = _pmList(body.hierarchy_labels || body['階層ラベル'] || (preset === 'マンガ' ? 'ページ,コマ' : '項目,サブ項目,詳細,工程,単位'));
+    while (labels.length < count) labels.push('単位レベル' + (labels.length + 1));
+    const granularity = String(body.granularity || body['作業作成粒度'] || (preset === 'マンガ' ? 'ページ単位' : ''));
+    return { preset, count, labels: labels.slice(0, count), granularity };
+  }
+
+  function _pmHierarchyPaths(body, config) {
+    const explicit = _pmExplicitHierarchyPaths(body.hierarchy_paths || body['階層パス'], config.count);
+    if (explicit.length) return explicit;
+    if (config.preset === 'マンガ' || _pmHasMangaCountInput(body)) {
+      const pages = _pmLevelValues(body.pages, body.page_count || body['ページ数'], 1, 'P');
+      if (config.granularity !== 'コマ単位' || config.count < 2) return pages.map(page => [page]);
+      const panels = _pmLevelValues(body.panels, body.panel_count || body['コマ数'], 1, 'C');
+      return pages.flatMap(page => panels.map(panel => [page, panel]));
+    }
+    const counts = _pmHierarchyCounts(body.hierarchy_counts || body['階層別件数'], config.count);
+    return _pmCartesian(counts.map((count, level) => Array.from({ length: count }, (_, i) => `L${level + 1}-${i + 1}`)));
+  }
+
+  function _pmExplicitHierarchyPaths(value, count) {
+    const rows = Array.isArray(value) ? value : String(value || '').split(/\r?\n/).filter(Boolean);
+    return rows.map((row) => {
+      const parts = Array.isArray(row) ? row : String(row).split(/[>\/\\|-]/);
+      return parts.map(part => String(part).trim()).filter(Boolean).slice(0, count);
+    }).filter(path => path.length);
+  }
+
+  function _pmLevelValues(values, countValue, fallback, prefix) {
+    const list = _pmList(values);
+    if (list.length) return list.map(value => _pmUnitLabel(value, prefix));
+    const count = Math.max(1, Number(countValue || fallback) || fallback);
+    return Array.from({ length: count }, (_, i) => _pmFormatUnitLabel(i + 1, prefix));
+  }
+
+  function _pmHasMangaCountInput(body) {
+    return ['page_count', 'ページ数', 'panel_count', 'コマ数', 'pages', 'panels'].some((key) => {
+      const value = body?.[key];
+      return value !== undefined && value !== null && value !== '' && !(Array.isArray(value) && !value.length);
+    });
+  }
+
+  function _pmUnitLabel(value, prefix) {
+    const text = String(value || '').trim();
+    const number = text.match(/\d+/)?.[0];
+    if (number && (new RegExp('^' + prefix + '\\d+', 'i')).test(text)) return _pmFormatUnitLabel(Number(number), prefix);
+    if (/^\d+$/.test(text)) return _pmFormatUnitLabel(Number(text), prefix);
+    return text || _pmFormatUnitLabel(1, prefix);
+  }
+
+  function _pmFormatUnitLabel(index, prefix) {
+    const normalized = String(prefix || '').toLowerCase();
+    const width = normalized === 'p' ? 4 : normalized === 'c' ? 2 : 2;
+    return normalized + String(Math.max(1, Number(index) || 1)).padStart(width, '0');
+  }
+
+  function _pmHierarchyCounts(value, count) {
+    const list = _pmList(value);
+    return Array.from({ length: count }, (_, i) => Math.max(1, Number(list[i] || 1) || 1));
+  }
+
+  function _pmCartesian(levels) {
+    return levels.reduce((acc, level) => acc.flatMap(path => level.map(value => [...path, value])), [[]]);
+  }
+
+  function _pmHierarchyId(path) {
+    return path.map(value => String(value).trim()).filter(Boolean).join('-');
+  }
+
   function _pmBuildTaskRows(body) {
     const workTitle = String(body.work_title || body['作品タイトル'] || '無題作品');
-    const pageCount = Math.max(1, Number(body.page_count || body['ページ数'] || 1) || 1);
-    const granularity = String(body.granularity || body['作業作成粒度'] || 'ページ単位');
-    const panels = Math.max(1, Number(body.panel_count || body['コマ数'] || 1) || 1);
+    const config = _pmHierarchyConfig(body);
     const targets = _pmList(body.target_names || body['作業対象リスト'] || '全体');
-    const contents = _pmList(body.content_names || body['作業内容リスト'] || 'ネーム');
-    const scales = _pmList(body.scale_names || body['作業規模リスト'] || 'ページ全体');
+    const contents = _pmList(body.content_names || body['作業内容リスト'] || (config.preset === 'マンガ' ? 'ネーム' : '制作'));
+    const scales = _pmList(body.scale_names || body['作業規模リスト'] || (config.preset === 'マンガ' ? 'ページ全体' : '標準'));
+    const paths = _pmHierarchyPaths(body, config);
     const rows = [];
-    for (let page = 1; page <= pageCount; page += 1) {
-      const pageLabel = 'p' + String(page).padStart(3, '0');
-      const panelList = granularity === 'コマ単位' ? Array.from({ length: panels }, (_, i) => 'c' + String(i + 1).padStart(2, '0')) : ['全体'];
-      panelList.forEach(panel => targets.forEach(target => contents.forEach(content => scales.forEach((scale) => {
-        const key = [workTitle, granularity, pageLabel, panel, target, content, scale].join('|');
-        rows.push({ 'タスク名': _pmTaskTitle(pageLabel, panel, target, scale, content), '作品タイトル': workTitle, 'ページ': pageLabel, 'コマ': panel, '作業作成粒度': granularity, '作業対象リスト': target, '作業内容リスト': content, '作業規模リスト': scale, '対象数': '1', '状況': '未着手', '目標作業時間_値': '1', 'ページソート値': String(page), '作成キー': key });
-      }))));
-    }
+    paths.forEach(path => targets.forEach(target => contents.forEach(content => scales.forEach((scale) => {
+      const unitId = _pmHierarchyId(path);
+      const key = [workTitle, unitId, target, content, scale].join('|');
+      const levels = {};
+      path.slice(0, 5).forEach((value, index) => { levels['単位レベル' + (index + 1)] = value; });
+      const usesMangaUnits = config.preset === 'マンガ';
+      rows.push({ _entry_name: _pmTaskTitle(path, target, scale, content), '作品タイトル': workTitle, 'ページ': usesMangaUnits ? (path[0] || '') : '', 'コマ': usesMangaUnits ? (path[1] || '全体') : '', '階層パス': unitId, '階層ラベル': config.labels.join(','), 'プリセット種別': config.preset, ...levels, '作業作成粒度': config.granularity || `階層${path.length || 1}単位`, '作業対象リスト': target, '作業内容リスト': content, '作業規模リスト': scale, '対象数': '1', '状況': '未着手', '目標作業時間_値': '1', 'ページソート値': String(_pmSortPath(path)), '作成キー': key });
+    }))));
     return rows;
   }
 
@@ -134,8 +222,13 @@
     return String(value || '').split(/[,、\n]/).map(v => v.trim()).filter(Boolean);
   }
 
-  function _pmTaskTitle(page, panel, target, scale, content) {
-    return [page, panel, target === '全体' ? '' : target, scale === 'ページ全体' ? '' : scale, content].filter(Boolean).join(' ');
+  function _pmTaskTitle(path, target, scale, content) {
+    return [_pmHierarchyId(path), target === '全体' ? '' : target, (scale === 'ページ全体' || scale === '標準') ? '' : scale, content].filter(Boolean).join(' ');
+  }
+
+  function _pmSortPath(path) {
+    const number = path.map(part => String(part).match(/\d+/)?.[0]).find(Boolean);
+    return number ? Number(number) : 0;
   }
 
   function _pmNormalizeIncomingShift(row) {
@@ -143,7 +236,13 @@
     const user = String(row.user || row['担当者'] || row['スタッフ名'] || '').trim();
     const date = _pmDate(row.date || row['日付']);
     if (!user || !date) return null;
-    return { user, date, start_time: _pmTime(row.start_time || row['開始時刻'] || row.start), end_time: _pmTime(row.end_time || row['終了時刻'] || row.end), type: _pmShiftType(row.type || row['種別']), note: String(row.note || row['備考'] || '') };
+    const startRaw = row.start_time || row['開始時刻'] || row.start;
+    const endRaw = row.end_time || row['終了時刻'] || row.end;
+    const start_time = _pmTime(startRaw);
+    const end_time = _pmTime(endRaw, { allowOver24: true });
+    if (String(startRaw || '').trim() && !start_time) return null;
+    if (String(endRaw || '').trim() && !end_time) return null;
+    return { user, date, start_time, end_time, type: _pmShiftType(row.type || row['種別']), note: String(row.note || row['備考'] || '') };
   }
 
   function _pmScheduleProps(row, id) {
@@ -164,7 +263,8 @@
   function _pmAddDay(date) {
     const d = new Date(date + 'T00:00:00');
     d.setDate(d.getDate() + 1);
-    return d.toISOString().slice(0, 10);
+    // toISOString()（UTC変換）はUTCより進んだタイムゾーンで同じ日付を返すため、ローカル整形を使う
+    return _pmDateTimeText(d).slice(0, 10);
   }
 
   function _pmDateTime(date, time) {
@@ -337,9 +437,11 @@
   window.openProductionShiftImport = openProductionShiftImport;
   window.openProductionTaskCreate = openProductionTaskCreate;
   window.runProductionAssignment = runProductionAssignment;
+  window.runProductionExternalSync = runProductionExternalSync;
   window.openProductionExport = openProductionExport;
   window.MeldexCloudShiftSync = { sync: _pmSyncCloudShiftEvent, remove: _pmRemoveCloudShiftEvent };
   window.MeldexProductionManagement = { parseCsv: _pmParseCsv, rowsToShifts: _pmRowsToShifts, buildTaskRows: _pmBuildTaskRows };
 
   _pmInstallCloudHandler();
+  _pmStartExternalSyncTimer();
 })();

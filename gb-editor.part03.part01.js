@@ -5,14 +5,16 @@
       closeListAll();
       const lv = hm[1].length;
       let content = hm[2];
+      const headingId = _noteHeadingId(content, headingSlugCounts);
       content = content.replace(/^:([a-zA-Z][a-zA-Z0-9-]*):/, (match, iconName) => {
         if (typeof LUCIDE !== 'undefined' && LUCIDE[iconName] && typeof lucide === 'function') {
           return `<span class="heading-icon">${lucide(iconName, lv <= 2 ? 20 : 16)}</span> `;
         }
         return match; // 存在しないアイコン名はテキストとして保持
       });
+      const idAttrs = headingId ? ` id="${esc(headingId)}" data-note-heading-id="${esc(headingId)}"` : '';
       const titleAttrs = pendingNoteTitle ? ' class="note-title" data-note-title="1"' : '';
-      html += `<h${lv}${titleAttrs}>${inlinemd(content)}</h${lv}>`;
+      html += `<h${lv}${idAttrs}${titleAttrs}>${inlinemd(content)}</h${lv}>`;
       pendingNoteTitle = false;
       continue;
     }
@@ -166,6 +168,52 @@ function getOrAssignNoteLineId(blockEl) {
   return span.dataset.lineId;
 }
 
+function _noteHeadingPlainText(value) {
+  return String(value || '')
+    .replace(/\x02NLID:[A-Za-z0-9_-]+\x02/g, '')
+    .replace(/^:([a-zA-Z][a-zA-Z0-9-]*):\s*/, '')
+    .replace(/!\[((?:[^\]\\]|\\.)*)\]\(((?:[^)\\]|\\.)*)\)/g, '$1')
+    .replace(/\[((?:[^\]\\]|\\.)+)\]\(((?:[^)\\]|\\.)*)\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[*_~]/g, '')
+    .replace(/\\([\])])/g, '$1')
+    .trim();
+}
+
+function _noteHeadingBaseId(value) {
+  const text = _noteHeadingPlainText(value).replace(/\s+/g, '-');
+  return text || 'section';
+}
+
+function _noteHeadingId(value, counts) {
+  const base = _noteHeadingBaseId(value);
+  const current = counts?.get(base) || 0;
+  counts?.set(base, current + 1);
+  return current ? `${base}-${current + 1}` : base;
+}
+
+function _noteAnchorIdFromHref(href) {
+  let raw = String(href || '').trim();
+  if (!raw.startsWith('#') || raw === '#') return '';
+  raw = raw.slice(1);
+  try { raw = decodeURIComponent(raw); } catch (_) {}
+  return raw.trim();
+}
+
+function _scrollNoteAnchorIntoView(anchorEl, anchorId) {
+  const id = String(anchorId || '').trim();
+  if (!id) return;
+  const host = anchorEl?.closest?.('[contenteditable="true"]') || document.getElementById('page-content');
+  if (!host) return;
+  const headings = [...host.querySelectorAll('[data-note-heading-id], h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]')];
+  const target = headings.find(el => el.dataset?.noteHeadingId === id || el.id === id);
+  if (!target) {
+    if (typeof showStatus === 'function') showStatus('リンク先の見出しが見つかりません');
+    return;
+  }
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // パスからファイルタイプアイコンを推定して返す
 function _linkIcon(path) {
   const fname = path.split(/[/\\]/).pop();
@@ -224,6 +272,10 @@ function inlinemd(text) {
     else if (cleanHref.startsWith('<') && cleanHref.endsWith('>')) cleanHref = cleanHref.slice(1, -1);
     if (cleanHref.startsWith('http://') || cleanHref.startsWith('https://') || cleanHref.startsWith('mailto:')) {
       return `<a href="${cleanHref}" style="color:var(--accent2);">${cleanText}</a>`;
+    }
+    const noteAnchorId = _noteAnchorIdFromHref(cleanHref);
+    if (noteAnchorId) {
+      return `<a href="#${esc(noteAnchorId)}" class="note-anchor-link" data-note-anchor="${esc(noteAnchorId)}" data-e2e-id="note-anchor-link" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${cleanText}</a>`;
     }
     // ファイルタイプアイコン: テキストがファイル名風またはパスが拡張子なし（DBフォルダ）の場合に付与
     // エンティティ自動リンク（テキスト=エンティティ名、パス=.mdファイル）にはアイコンを付けない
@@ -539,6 +591,11 @@ function _resolveAutoLinkPath(filePath) {
  */
 async function openLink(filePath, name, options) {
   if (!filePath) return;
+  const noteAnchorId = _noteAnchorIdFromHref(filePath);
+  if (noteAnchorId) {
+    _scrollNoteAnchorIntoView(null, noteAnchorId);
+    return;
+  }
   if (/^(https?:|mailto:)/i.test(filePath)) {
     if (typeof window !== 'undefined' && typeof window.open === 'function') {
       window.open(filePath, '_blank', 'noopener');
@@ -554,6 +611,11 @@ async function openLink(filePath, name, options) {
 
 async function openLinkInSubPanel(filePath, name, options) {
   if (!filePath) return;
+  const noteAnchorId = _noteAnchorIdFromHref(filePath);
+  if (noteAnchorId) {
+    _scrollNoteAnchorIntoView(null, noteAnchorId);
+    return;
+  }
   const label = name || filePath.split(/[/\\]/).pop();
   if (typeof flushPendingEditorAutosave === 'function') await flushPendingEditorAutosave();
   if (typeof openLinkedPathInSubPanel === 'function') {
@@ -563,7 +625,29 @@ async function openLinkInSubPanel(filePath, name, options) {
 }
 
 function openLinkInRightPane(filePath, name, options) {
+  if (typeof openLinkedPathInRightPane === 'function') {
+    const label = name || filePath.split(/[/\\]/).pop();
+    return openLinkedPathInRightPane(filePath, label, options || {});
+  }
   return openLinkInSubPanel(filePath, name, options);
+}
+
+function openLinkInMainPane(filePath, name, options) {
+  if (!filePath) return;
+  const label = name || filePath.split(/[/\\]/).pop();
+  if (typeof openLinkedPathInMainPane === 'function') {
+    return openLinkedPathInMainPane(filePath, label, options || {});
+  }
+  return openLink(filePath, label, options || {});
+}
+
+function openLinkStandalone(filePath, name, options) {
+  if (!filePath) return;
+  const label = name || filePath.split(/[/\\]/).pop();
+  if (typeof openLinkedPathStandalone === 'function') {
+    return openLinkedPathStandalone(filePath, label, options || {});
+  }
+  return openLink(filePath, label, options || {});
 }
 
 async function _openLinkInCurrentTab(filePath, name) {
@@ -597,7 +681,7 @@ async function _openLinkInCurrentTab(filePath, name) {
   } else if (mediaExts.includes(ext)) {
     const mtype = ['mp3','wav','ogg','flac','aac'].includes(ext) ? 'audio' : 'video';
     if (typeof openMedia === 'function') openMedia(name, filePath, mtype);
-  } else if (ext === 'scriptnote.json' || filePath.endsWith('.scriptnote.json')) {
+  } else if (ext === 'mel-scenario' || ext === 'scriptnote.json' || filePath.endsWith('.scriptnote.json')) {
     if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(filePath, name);
   } else if (!ext || ext === 'json') {
     // フォルダ or DB
@@ -715,6 +799,22 @@ function _resolveContextLinkTarget(rawTarget) {
     return { path: _entityPath(dbPath, entityName), label: entityName, linkType: 'entity', sourcePaneId, element: relationLink };
   }
 
+  const noteAnchor = target.closest('a.note-anchor-link[data-note-anchor], a[href^="#"]');
+  if (noteAnchor && !noteAnchor.closest('.gb-context-menu')) {
+    const anchorId = String(noteAnchor.dataset?.noteAnchor || _noteAnchorIdFromHref(noteAnchor.getAttribute('href') || '')).trim();
+    if (anchorId) {
+      return {
+        path: '#' + anchorId,
+        label: _contextLinkLabel(noteAnchor, anchorId),
+        linkType: 'note-anchor',
+        sourcePaneId,
+        localAnchor: anchorId,
+        element: noteAnchor,
+        openAction: () => _scrollNoteAnchorIntoView(noteAnchor, anchorId),
+      };
+    }
+  }
+
   const anchor = target.closest('a[href]');
   if (anchor && !anchor.closest('.gb-context-menu')) {
     const path = anchor.getAttribute('href') || '';
@@ -764,10 +864,26 @@ function _showLinkContextMenu(e, linkTarget) {
     if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
     else openLink(linkTarget.path, linkTarget.label);
   });
-  addItem('layers-2', 'サブパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
-    linkType: linkTarget.linkType || '',
-    sourcePaneId: linkTarget.sourcePaneId || '',
-  }));
+  if (!linkTarget.localAnchor) {
+    addItem('layers-2', 'サブパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
+      linkType: linkTarget.linkType || '',
+      sourcePaneId: linkTarget.sourcePaneId || '',
+    }));
+    addItem('panelTop', 'メインパネルで開く', () => openLinkInMainPane(linkTarget.path, linkTarget.label, {
+      linkType: linkTarget.linkType || '',
+      sourcePaneId: linkTarget.sourcePaneId || '',
+    }));
+    addItem('panelRight', '右サイドバーで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
+      linkType: linkTarget.linkType || '',
+      sourcePaneId: linkTarget.sourcePaneId || '',
+    }));
+    if (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(linkTarget.path, linkTarget.linkType || '')) {
+      addItem('externalLink', '単独アプリで開く', () => openLinkStandalone(linkTarget.path, linkTarget.label, {
+        linkType: linkTarget.linkType || '',
+        sourcePaneId: linkTarget.sourcePaneId || '',
+      }));
+    }
+  }
   if (linkTarget.anchorEl && linkTarget.editableHost) {
     const sep = document.createElement('div');
     sep.className = 'gb-context-menu-sep';
@@ -818,6 +934,10 @@ function _openContextLinkCurrent(linkTarget) {
 
 function _openContextLinkSubPanel(linkTarget) {
   if (!linkTarget?.path) return;
+  if (typeof linkTarget.openAction === 'function') {
+    linkTarget.openAction();
+    return;
+  }
   openLinkInSubPanel(linkTarget.path, linkTarget.label, {
     linkType: linkTarget.linkType || '',
     sourcePaneId: linkTarget.sourcePaneId || '',
@@ -862,11 +982,11 @@ document.addEventListener('dblclick', (e) => {
 }, true);
 
 // 詳細パネルにファイルのメタ情報を表示
-async function _showFileInfoInDetailPanel(filePath) {
+async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
   const fileName = filePath.split(/[/\\]/).pop();
   const ext = fileName.split('.').pop().toLowerCase();
   try {
-    const meta = await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : null).catch(() => null);
+    const meta = preloadedMeta || await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : null).catch(() => null);
     const folderPath = filePath.replace(/[/\\][^/\\]+$/, '');
     const folderName = folderPath.split(/[/\\]/).pop();
     const typeLabel = ext === 'md' ? 'ノート' : ext === 'json' ? 'シナリオ/シート' : ext === 'board' ? 'ボード' : ext;
@@ -881,12 +1001,16 @@ async function _showFileInfoInDetailPanel(filePath) {
       if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${new Date(meta.modified).toLocaleString('ja-JP')}</td></tr>`;
       if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">サイズ</td><td style="padding:4px 0;">${_formatFileSize(meta.size)}</td></tr>`;
     }
-    html += `</table></div>`;
-    if (typeof showDetailPanel === 'function') showDetailPanel(html);
+    html += `</table><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
+    if (typeof showDetailPanel === 'function') {
+      await showDetailPanel(html);
+      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
+    }
   } catch {
     // ファイル情報取得失敗時も基本情報を表示（entity APIフォールバックは不要）
     if (typeof showDetailPanel === 'function') {
-      showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div></div>`);
+      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
+      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     }
   }
 }

@@ -1,4 +1,5 @@
   row.draggable = !itemLocked && !item._isRoot && item.type !== 'entity';
+  row.tabIndex = -1;
 
   const isFolder = item.type === 'folder';
   const isDB = item.type === 'database';
@@ -130,7 +131,8 @@
       saveExpandedState(item.path, true);
 
       // Lazy load children
-      if (childrenDiv.dataset.loaded === 'false') {
+      if (childrenDiv.dataset.loaded === 'false' && childrenDiv.dataset.loading !== 'true') {
+        childrenDiv.dataset.loading = 'true';
         // スピナー表示
         const spinner = document.createElement('div');
         spinner.className = 'tree-spinner';
@@ -139,11 +141,10 @@
         try {
           if (isDB) {
             const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path));
-            const entityNames = Object.keys(pivotData.entities).sort();
-            entityNames.forEach(name => {
-              const entityItem = { name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path };
-              childrenDiv.appendChild(createTreeNodeFromBrowse(entityItem, rootPath));
-            });
+            // entities が undefined でも TypeError にならないようガード
+            const entityNames = Object.keys(pivotData?.entities || {}).sort();
+            const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
+            await _appendOutlinerChildrenChunked(childrenDiv, entityItems, rootPath);
           } else if (isFolder) {
             const sortCfg = getSortForFolder(item.path);
             const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
@@ -155,8 +156,8 @@
             _registerOutlinerConflictPaths(visibleChildren);
             visibleChildren.forEach(child => {
               if (item.sourceId && !child.sourceId) child.sourceId = item.sourceId;
-              childrenDiv.appendChild(createTreeNodeFromBrowse(child, rootPath));
             });
+            await _appendOutlinerChildrenChunked(childrenDiv, visibleChildren, rootPath);
             // マニュアルソート適用
             if (sortCfg.sort === 'manual') applyManualSort(childrenDiv, item.path);
             // 非同期でDB/board判定（NAS高速化: browseは拡張子のみで判定し、後からcheck-typeで確定）
@@ -218,8 +219,12 @@
               }
             });
           }
-        } catch (e) { /* error shown */ }
-        spinner.remove();
+          childrenDiv.dataset.loaded = 'true';
+        } catch (e) { /* error shown — dataset.loaded を 'false' のまま残してリトライ可能にする */ }
+        finally {
+          delete childrenDiv.dataset.loading;
+          spinner.remove();
+        }
       }
     } else {
       toggle.classList.remove('expanded');
@@ -243,6 +248,7 @@
 
   // Row click: 選択＋コンテンツ表示
   row.addEventListener('click', (e) => {
+    try { row.focus({ preventScroll: true }); } catch {}
     if (_outlinerSuppressNextTreeRowClick && (!_outlinerSuppressTreeRowClickNode || _outlinerSuppressTreeRowClickNode === div)) {
       _outlinerSuppressNextTreeRowClick = false;
       _outlinerSuppressTreeRowClickNode = null;
@@ -300,7 +306,7 @@
       if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts);
     } else if (isFolder) {
       openFolder(item.name, item.path, _expOpts);
-      toggle.click(); // 展開/折りたたみをトグル
+      if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
     } else if (!NATIVE_TYPES.has(item.type)) {
       // ネイティブアプリ専用ファイル（psd, clip, 3d等）: 右クリックで開く案内
       showStatus(item.name + ' — 右クリックメニューからアプリで開く');
@@ -356,7 +362,7 @@
     }
     draggedNode = div;
     // DOM順でソート（上から下の順序を維持）
-    const allTreeNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')];
+    const allTreeNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')];
     const selectedNodes = [...treeSelection.items].sort((a, b) => allTreeNodes.indexOf(a) - allTreeNodes.indexOf(b));
     draggedNodes = selectedNodes.filter(n => !selectedNodes.some(parent => parent !== n && parent.contains(n)));
     draggedNodes.forEach(n => n.querySelector('.tree-node-row')?.classList.add('dragging'));
@@ -459,6 +465,13 @@
       : row.classList.contains('drag-over-inside') ? 'inside'
       : 'below';
     clearDragIndicators();
+
+    // ワークスペースセクションのルート行への上下ドロップは、並び替えではなく
+    // ルートフォルダ外（vaultルート）への実移動になってしまうため受け付けない
+    if (position !== 'inside' && item._isRoot && div.closest('#body-workspaces')) {
+      showStatus('ワークスペースの中に移動する場合は、ワークスペース名の上にドロップしてください');
+      return;
+    }
 
     const targetParent = div.parentElement;
 

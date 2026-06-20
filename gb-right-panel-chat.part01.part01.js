@@ -1,5 +1,6 @@
 /* gb-right-panel-chat.js: right panel chat / team chat / history */
 const _CHAT_SOURCE_FOLDER_STORAGE_KEY = 'chat-source-folder';
+const _CHAT_WORKSPACE_STORAGE_KEY = 'chat-workspace-id';
 const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-allow-web-search',
   'chat-auto-compress',
@@ -10,7 +11,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-max-tokens',
   'chat-top-p',
 ];
-const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, queuedMessages: [], queuedScope: null, queuedSendRunning: false, stopSerial: 0 };
+const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, stopSerial: 0 };
 let _chatMode = localStorage.getItem('chat-mode') || 'team';
 if (_chatMode === 'cli') _chatMode = 'history';
 let _teamCurrentRoom = '';
@@ -23,6 +24,7 @@ let _chatLastSubmitFingerprint = '';
 let _chatLastSubmitAt = 0;
 let _chatSourceFoldersCache = [];
 let _chatVaultsCache = [];
+let _chatWorkspacesCache = [];
 let _chatVaultInfo = { path: '', name: '' };
 
 function _chatIsLiveElement(el, options = {}) {
@@ -41,6 +43,27 @@ function _chatLiveElement(id, options = {}) {
 
 function _chatLiveMessagesContainer() {
   return _chatLiveElement('chat-messages');
+}
+
+const CHAT_SCROLL_BOTTOM_THRESHOLD = 48;
+
+function _chatIsScrolledNearBottom(container) {
+  if (!container) return true;
+  const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
+  return gap <= CHAT_SCROLL_BOTTOM_THRESHOLD;
+}
+
+function _chatScrollToBottom(container) {
+  if (!container) return;
+  container.scrollTop = container.scrollHeight;
+}
+
+function _chatShouldStickToBottom(container, force = false) {
+  return !!force || _chatIsScrolledNearBottom(container);
+}
+
+function _chatScrollToBottomIf(container, shouldScroll) {
+  if (shouldScroll) _chatScrollToBottom(container);
 }
 
 function _chatCopyIconHtml(size = 12) {
@@ -171,6 +194,7 @@ function _chatModelCacheKey(provider) {
 
 function _chatRoomSettingsSourceFolder(sourceFolder) {
   if (sourceFolder != null) return String(sourceFolder || '').trim();
+  if (typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue()) return 'workspace:' + _chatWorkspaceIdValue();
   if (typeof _chatSourceFolderValue === 'function') return String(_chatSourceFolderValue() || '').trim();
   return String(_chatState.sourceFolder || '').trim();
 }
@@ -407,50 +431,14 @@ function _chatBudgetTone(used, limit) {
 }
 
 async function chatRefreshUsageBanner() {
+  // 使用量は設定ダイアログに集約し、チャット画面には表示しない。
   const banner = document.getElementById('chat-usage-banner');
-  if (!banner) return;
-  try {
-    const sessionParam = _chatState.sessionId ? '?session_id=' + encodeURIComponent(_chatState.sessionId) : '';
-    const data = await apiFetch('/chat/budget' + sessionParam);
-    const settings = data.settings || {};
-    const totals = data.totals || {};
-    const dayUsed = Number(totals.day?.cost_usd || 0);
-    const monthUsed = Number(totals.month?.cost_usd || 0);
-    const dayLimit = Number(settings.daily_budget_usd || 0);
-    const monthLimit = Number(settings.monthly_budget_usd || 0);
-    const tone = [_chatBudgetTone(dayUsed, dayLimit), _chatBudgetTone(monthUsed, monthLimit)].includes('danger')
-      ? 'danger'
-      : [_chatBudgetTone(dayUsed, dayLimit), _chatBudgetTone(monthUsed, monthLimit)].includes('warning') ? 'warning' : 'normal';
-    banner.style.display = 'block';
-    banner.style.borderColor = tone === 'danger' ? 'var(--danger,#d9534f)' : tone === 'warning' ? 'var(--warning,#d6a300)' : 'var(--border)';
-    banner.style.color = tone === 'danger' ? 'var(--danger,#ff8a80)' : tone === 'warning' ? 'var(--warning,#ffd166)' : 'var(--fg2)';
-    banner.textContent = `LLM使用量 今日 ${_chatFormatUsdWithJpy(dayUsed, 4)} / ${_chatFormatUsdWithJpy(dayLimit, 2)}、今月 ${_chatFormatUsdWithJpy(monthUsed, 4)} / ${_chatFormatUsdWithJpy(monthLimit, 2)}`;
-  } catch {
-    banner.style.display = 'none';
-  }
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => chatRefreshUsageBanner().catch(() => {}), { once: true });
-} else {
-  chatRefreshUsageBanner().catch(() => {});
+  if (banner) banner.remove();
 }
 
 function _chatRenderUsage(el, usage, provider, model) {
   if (!el) return;
-  let usageEl = el.querySelector(':scope > .chat-usage');
-  const label = _chatUsageLabel(usage, provider, model);
-  if (!label) {
-    if (usageEl) usageEl.remove();
-    return;
-  }
-  if (!usageEl) {
-    usageEl = document.createElement('div');
-    usageEl.className = 'chat-usage';
-    usageEl.style.cssText = 'margin-top:6px;text-align:right;font-size:10px;color:var(--fg2);opacity:0.9;';
-    el.appendChild(usageEl);
-  }
-  usageEl.textContent = label;
+  el.querySelectorAll(':scope > .chat-usage').forEach(node => node.remove());
 }
 
 function _chatRenderToolAuditWarning(el, warning) {
@@ -482,13 +470,6 @@ function _chatRenderSessionUsageSummary() {
   const container = _chatLiveMessagesContainer();
   if (!container) return;
   container.querySelectorAll('.chat-session-usage-summary').forEach(el => el.remove());
-  const total = _chatSessionUsage();
-  if (!total.input && !total.output && !total.total) return;
-  const div = document.createElement('div');
-  div.className = 'chat-session-usage-summary';
-  div.style.cssText = 'align-self:center;color:var(--fg2);font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);';
-  div.textContent = `累計 ${total.input} in / ${total.output} out tokens - ${_chatFormatUsdWithJpy(total.cost, 4)}`;
-  container.appendChild(div);
 }
 
 function _chatCodeExecBlockId(block) {
@@ -880,6 +861,11 @@ function switchChatMode(mode) {
 function _teamChatUploadDir() {
   const roomPath = String(_teamCurrentRoom || '').replace(/^\/+/, '');
   const rel = roomPath ? '_chat/' + roomPath : '_chat';
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (workspaceId && Array.isArray(_chatWorkspacesCache)) {
+    const workspace = _chatWorkspacesCache.find(item => item?.id === workspaceId);
+    if (workspace?.folder) return workspace.folder.replace(/[\\/]+$/, '') + '/' + rel;
+  }
   const sourceFolder = _chatSourceFolderValue();
   return sourceFolder ? (sourceFolder.replace(/[\\/]+$/, '') + '/' + rel) : rel;
 }

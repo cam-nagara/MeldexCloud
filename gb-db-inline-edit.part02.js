@@ -1,473 +1,1025 @@
-      o.value = opt.key;
-      o.textContent = opt.label;
-      if (opt.key === countType) o.selected = true;
-      sel.appendChild(o);
-    });
-    sel.onchange = () => { setCountType(dbPath, propName, sel.value); renderPivot(ctx); };
-    wrapper.appendChild(sel);
-
-    if (countType !== 'none') {
-      const span = document.createElement('span');
-      span.textContent = result;
-      wrapper.appendChild(span);
-    }
-    td.appendChild(wrapper);
-    tr.appendChild(td);
-  });
-  // ＋プロパティ列の空セル
-  const tdAddFoot = document.createElement('td');
-  tdAddFoot.className = 'col-add-prop-cell';
-  tdAddFoot.setAttribute('role', 'cell');
-  tr.appendChild(tdAddFoot);
-  tfoot.appendChild(tr);
-}
-
-function calcColumnCount(propName, entitiesMap, entityNames, type, ptc, propTypes) {
-  if (type === 'none') return '';
-  let count = 0, uniqueSet = new Set(), empty = 0, notEmpty = 0;
-  entityNames.forEach(en => {
-    // 数式プロパティの場合、計算結果で集計
-    if (ptc && ptc.type === 'formula' && ptc.formula) {
-      const result = formulaEvalForEntity(ptc.formula, entitiesMap[en], { propTypes });
-      const v = result.error ? '' : String(result.value);
-      if (!v || v === '') empty++;
-      else { notEmpty++; count++; uniqueSet.add(v); }
-    } else {
-      const vals = filterValues(entitiesMap[en][propName] || []);
-      if (vals.length === 0) empty++;
-      else { notEmpty++; vals.forEach(v => { count++; uniqueSet.add(v.value); }); }
-    }
-  });
-  switch (type) {
-    case 'count': return count;
-    case 'unique': return uniqueSet.size;
-    case 'empty': return empty;
-    case 'not_empty': return notEmpty;
-    default: return '';
-  }
-}
-
-// アクティブセル管理
-let activeCell = null;
-let rangeAnchorCell = null;
-
-function _scrollDbActiveCellIntoView(td) {
-  if (!td) return;
-  const table = td.closest?.('table');
-  const scroller = td.closest?.('.pivot-view, #pivot-view') || table?.closest?.('.pivot-view, #pivot-view')
-    || (typeof _getDbViewScrollContainer === 'function' ? _getDbViewScrollContainer(null, 'pivot') : null);
-  if (!scroller) {
-    td.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-    return;
-  }
-  const cellRect = td.getBoundingClientRect?.();
-  const scrollRect = scroller.getBoundingClientRect?.();
-  if (!cellRect || !scrollRect || cellRect.width <= 0 || cellRect.height <= 0) return;
-  const headerRect = table?.querySelector?.('thead')?.getBoundingClientRect?.();
-  const headerHeight = headerRect && headerRect.bottom > scrollRect.top && headerRect.top < scrollRect.bottom
-    ? Math.max(0, headerRect.height)
-    : 0;
-  const cellIndex = td.parentElement ? Array.from(td.parentElement.children).indexOf(td) : -1;
-  const entityPinned = !!table && !table.classList.contains('entity-col-unpinned');
-  const entityRect = entityPinned && cellIndex > 0
-    ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row) td.col-entity')?.getBoundingClientRect?.()
-    : null;
-  const pad = 4;
-  const topLimit = scrollRect.top + headerHeight + pad;
-  const bottomLimit = scrollRect.bottom - pad;
-  const leftLimit = scrollRect.left + (entityRect?.width || 0) + pad;
-  const rightLimit = scrollRect.right - pad;
-  let deltaTop = 0;
-  let deltaLeft = 0;
-  if (cellRect.top < topLimit) deltaTop = cellRect.top - topLimit;
-  else if (cellRect.bottom > bottomLimit) deltaTop = cellRect.bottom - bottomLimit;
-  if (cellRect.left < leftLimit) deltaLeft = cellRect.left - leftLimit;
-  else if (cellRect.right > rightLimit) deltaLeft = cellRect.right - rightLimit;
-  if (deltaTop) scroller.scrollTop += deltaTop;
-  if (deltaLeft) scroller.scrollLeft += deltaLeft;
-}
-
-function _scheduleDbActiveCellScroll(td) {
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(() => _scrollDbActiveCellIntoView(td));
-  } else {
-    setTimeout(() => _scrollDbActiveCellIntoView(td), 0);
-  }
-}
-
-function _clearDbCellRangeSelection(table) {
-  (table || document).querySelectorAll('.db-range-selected').forEach(cell => {
-    cell.classList.remove('db-range-selected');
-    cell.removeAttribute('aria-selected');
-  });
-}
-
-function _dbCellCoords(table, td) {
-  if (!table || !td) return null;
-  const rows = Array.from(table.querySelectorAll('tbody tr:not(.group-header-row):not(.new-entity-row)'));
-  const tr = td.parentElement;
-  const row = rows.indexOf(tr);
-  const col = tr ? Array.from(tr.children).indexOf(td) : -1;
-  if (row < 0 || col < 0) return null;
-  return { row, col, rows };
-}
-
-function _dbCellAt(table, rowIdx, colIdx) {
-  const rows = Array.from(table.querySelectorAll('tbody tr:not(.group-header-row):not(.new-entity-row)'));
-  const row = rows[Math.max(0, Math.min(rows.length - 1, rowIdx))];
-  if (!row) return null;
-  const maxCol = row.children.length - 2;
-  return row.children[Math.max(0, Math.min(maxCol, colIdx))] || null;
-}
-
-function _markDbCellRange(table, anchor, target) {
-  if (!table || !anchor || !target) return;
-  const a = _dbCellCoords(table, anchor);
-  const b = _dbCellCoords(table, target);
-  if (!a || !b) return;
-  _clearDbCellRangeSelection(table);
-  const [rowStart, rowEnd] = a.row < b.row ? [a.row, b.row] : [b.row, a.row];
-  const [colStart, colEnd] = a.col < b.col ? [a.col, b.col] : [b.col, a.col];
-  for (let r = rowStart; r <= rowEnd; r += 1) {
-    const tr = a.rows[r];
-    if (!tr) continue;
-    const maxCol = tr.children.length - 2;
-    for (let c = colStart; c <= Math.min(colEnd, maxCol); c += 1) {
-      const cell = tr.children[c];
-      if (!cell || cell.classList.contains('col-add-prop-cell')) continue;
-      cell.classList.add('db-range-selected');
-      cell.setAttribute('aria-selected', 'true');
-    }
-  }
-}
-
-function setActiveCell(td, options = {}) {
-  const table = td?.closest?.('table') || activeCell?.closest?.('table') || null;
-  if (!options.preserveRange) {
-    _clearDbCellRangeSelection(table);
-    rangeAnchorCell = null;
-  }
-  if (activeCell) {
-    activeCell.classList.remove('active-cell');
-    activeCell.tabIndex = -1;
-  }
-  activeCell = td;
-  if (td) {
-    td.classList.add('active-cell');
-    td.tabIndex = 0;
-    td.focus?.({ preventScroll: true });
-    if (options.scroll !== false) {
-      _scrollDbActiveCellIntoView(td);
-      _scheduleDbActiveCellScroll(td);
-    }
-  }
-}
-
-// テーブルキーボードナビゲーション
-// 離散ショートカット（Ctrl+Enter, Ctrl+Shift+Enter, Enter, F2等）→ gb-shortcuts.js に移行済み
-// 矢印キー・Tab・文字入力のセルナビゲーションのみ残存
-document.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented) return;
-  if (state.view !== 'pivot') return;
-  // ドロップダウンやメニューが開いている場合はそちらのキーナビに任せる
-  if (document.querySelector('.status-dropdown, .cell-inline-dd, .user-dropdown, .gb-context-menu')) return;
-  const ae = document.activeElement;
-  const isEditing = ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT');
-  if (isEditing) return;
-  if (e.isComposing || e.keyCode === 229) return;
-
-  let table = activeCell?.closest?.('table') || _currentPivotTable();
-  if (table && !table.isConnected) table = _currentPivotTable();
-  if (!table) return;
-  let dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.group-header-row)'));
-
-  if (!activeCell) {
-    if (dataRows.length > 0 && dataRows[0].children.length > 1) {
-      setActiveCell(dataRows[0].children[1]);
-    }
-    return;
-  }
-
-  const tr = activeCell.parentElement;
-  const rowIdx = dataRows.indexOf(tr);
-  if (rowIdx < 0) {
-    activeCell = null;
-    rangeAnchorCell = null;
-    if (dataRows.length > 0 && dataRows[0].children.length > 1) setActiveCell(dataRows[0].children[1]);
-    return;
-  }
-  const cells = Array.from(tr.children);
-  const colIdx = cells.indexOf(activeCell);
-  const maxCol = cells.length - 2;
-  const isLastRow = rowIdx === dataRows.length - 1;
-
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'a') {
-    e.preventDefault();
-    const first = _dbCellAt(table, 0, 0);
-    const last = _dbCellAt(table, dataRows.length - 1, maxCol);
-    if (first && last) {
-      rangeAnchorCell = first;
-      setActiveCell(last, { preserveRange: true });
-      _markDbCellRange(table, first, last);
-    }
-    return;
-  }
-
-  if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-    e.preventDefault();
-    const anchor = rangeAnchorCell || activeCell;
-    rangeAnchorCell = anchor;
-    let targetRow = rowIdx;
-    let targetCol = colIdx;
-    if (e.key === 'ArrowUp') targetRow = e.ctrlKey || e.metaKey ? 0 : rowIdx - 1;
-    else if (e.key === 'ArrowDown') targetRow = e.ctrlKey || e.metaKey ? dataRows.length - 1 : rowIdx + 1;
-    else if (e.key === 'ArrowLeft') targetCol = e.ctrlKey || e.metaKey ? 0 : colIdx - 1;
-    else if (e.key === 'ArrowRight') targetCol = e.ctrlKey || e.metaKey ? maxCol : colIdx + 1;
-    const targetCell = _dbCellAt(table, targetRow, targetCol);
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) {
-      setActiveCell(targetCell, { preserveRange: true });
-      _markDbCellRange(table, anchor, targetCell);
-    }
-    return;
-  }
-
-  let nextRow = rowIdx, nextCol = colIdx;
-
-  if (e.key === 'ArrowUp') {
-    nextRow = Math.max(0, rowIdx - 1);
-    e.preventDefault();
-  }
-  else if (e.key === 'ArrowDown') {
-    if (isLastRow) {
-      e.preventDefault();
-      triggerNewEntity(table, dataRows, colIdx);
-      return;
-    }
-    nextRow = rowIdx + 1;
-    e.preventDefault();
-  }
-  else if (e.key === 'ArrowLeft') { nextCol = Math.max(0, colIdx - 1); e.preventDefault(); }
-  else if (e.key === 'ArrowRight') { nextCol = Math.min(maxCol, colIdx + 1); e.preventDefault(); }
-  else if (e.key === 'Tab') {
-    e.preventDefault();
-    if (e.shiftKey) {
-      nextCol = colIdx - 1;
-      if (nextCol < 0) { nextCol = maxCol; nextRow = rowIdx - 1; }
-      nextRow = Math.max(0, nextRow);
-    } else {
-      nextCol = colIdx + 1;
-      if (nextCol > maxCol) {
-        if (isLastRow) { triggerNewEntity(table, dataRows, 1); return; }
-        nextCol = 1; nextRow = rowIdx + 1;
-      }
-    }
-    nextRow = Math.min(dataRows.length - 1, nextRow);
-  }
-  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    // 文字キー入力 → 空セルでインライン入力開始
-    if (colIdx > 0) {
-      const hasValue = activeCell.querySelector('.value-text');
-      if (!hasValue) {
-        const thAll = Array.from(table.querySelectorAll('thead th'));
-        const entityName = dataRows[rowIdx]?.querySelector('.entity-name-label')?.textContent;
-        const propName = thAll[colIdx]?.dataset?.prop;
-        const ctx = typeof _dbPaneContextFromEvent === 'function'
-          ? _dbPaneContextFromEvent(activeCell, { dbPath: state.currentDbPath })
-          : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-        const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
-        if (entityName && propName && dbPath) {
-          e.preventDefault();
-          startCellInlineAdd(activeCell, _entityPath(dbPath, entityName), entityName, propName);
-          setTimeout(() => {
-            const inp = activeCell.querySelector('.cell-inline-input');
-            if (inp) inp.value = e.key;
-          }, 10);
-        }
-      }
-    }
-    return;
-  }
-  else return;
-
-  rangeAnchorCell = null;
-  _clearDbCellRangeSelection(table);
-  const targetRow = dataRows[nextRow];
-  if (targetRow) {
-    const targetCell = targetRow.children[nextCol];
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) setActiveCell(targetCell);
-  }
-});
-
-// 新規エントリ追加（キーボード用）
-async function triggerNewEntity(table, dataRows, focusCol) {
+function startCellInlineAdd(td, entityPath, entityName, propName) {
   const ctx = typeof _dbPaneContextFromEvent === 'function'
-    ? _dbPaneContextFromEvent(table, { dbPath: state.currentDbPath })
-    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-  const pivotData = (ctx && ctx.pivotData) || state.pivotData;
-  const existing = pivotData ? Object.keys(pivotData.entities || {}) : [];
-  const _db = (ctx && ctx.dbPath) || state.currentDbPath;
-  if (!_db) return;
-  try {
-    const created = typeof _apiCreateEntityWithUniqueName === 'function'
-      ? await _apiCreateEntityWithUniqueName(_db, existing)
-      : null;
-    const r = created?.response || await apiPost('/entity/create', { parent_path: _db, name: '無題' });
-    const name = created?.name || '無題';
-    const createdPath = created?.path || (r && (r.path || r.entry_path)) || `${_db}/${name}.md`;
-    if (typeof _shouldRunFrontendAutoFillOnCreate !== 'function' || _shouldRunFrontendAutoFillOnCreate(r)) {
-      try { await _autoFillOnCreate(_db, createdPath, {}); } catch {}
-    }
-    historyPush('エントリ追加: ' + name,
-      async () => { await apiPost('/outliner/delete', { path: _entityPath(_db, name) }); await selectDatabase(_db, ctx); },
-      async () => {
-        const redo = await apiPost('/entity/create', { parent_path: _db, name });
-        const redoPath = (redo && (redo.path || redo.entry_path)) || `${_db}/${name}.md`;
-        if (typeof _shouldRunFrontendAutoFillOnCreate !== 'function' || _shouldRunFrontendAutoFillOnCreate(redo)) {
-          try { await _autoFillOnCreate(_db, redoPath, {}); } catch {}
-        }
-        await selectDatabase(_db, ctx);
-      },
-      typeof _dbScopeForPath === 'function'
-        ? _dbScopeForPath(_db)
-        : (typeof _dbScope === 'function' ? _dbScope() : 'db:' + String(_db).replace(/\\/g, '/'))
-    );
-    await selectDatabase(_db, ctx);
-    // Step 2: チャンク分割中は新規行が遅れて DOM に出現する可能性があるため、待機
-    const _ctxNew = ctx || ((typeof _currentPaneState === 'function') ? _currentPaneState() : null);
-    _waitForEntityRow(_ctxNew, name, (newRow) => {
-      const col = focusCol || 0;
-      const td = newRow.children[col];
-      if (td) setActiveCell(td);
-      if (col === 0 || !focusCol) {
-        const label = newRow.querySelector('.entity-name-label');
-        if (label) startEntityInlineRename(td || newRow.children[0], label, name, _db);
-      }
-    });
-  } catch(e) { /* error shown */ }
-}
-
-// 新規プロパティ追加（キーボード用）
-function triggerNewProperty(ctxOrDbPath) {
-  const ctx = (typeof ctxOrDbPath === 'object' && ctxOrDbPath)
-    ? ctxOrDbPath
-    : (typeof _dbPaneContextFromEvent === 'function'
-      ? _dbPaneContextFromEvent(activeCell, { dbPath: typeof ctxOrDbPath === 'string' ? ctxOrDbPath : state.currentDbPath })
-      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
-  const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
-  if (!dbPath) return;
-  const pivotData = (ctx && ctx.pivotData) || state.pivotData;
-  const order = getColOrder(dbPath) || [...(pivotData?.properties || [])];
-  let idx = 1, name = 'プロパティ';
-  while (order.includes(name)) { idx++; name = 'プロパティ' + idx; }
-  order.push(name);
-  setColOrder(dbPath, order, { skipHistory: true });
-  setPropertyType(dbPath, name, { type: 'text' });
-  renderPivot(ctx);
-  setTimeout(() => {
-    const _ctx2 = ctx || _currentPaneState();
-    const th = _paneEl(_ctx2, '#' + (_ctx2.tableId || 'pivot-table') + ` thead th[data-prop="${name}"]`);
-    if (th) startHeaderInlineRename(th, name, dbPath);
-  }, 30);
-}
-
-// 列リサイズ
-function startColResize(e, th, colIndex, propName) {
-  e.preventDefault();
-  e.stopPropagation();
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
-    ? _dbPaneContextFromEvent(th, { dbPath: state.currentDbPath })
-    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    ? _dbPaneContextFromEvent(td, { dbPath: typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : state.currentDbPath })
+    : _currentPaneState();
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
-  const table = th?.closest?.('table') || _currentPivotTable(ctx);
-  const startX = e.clientX;
-  const startW = th.offsetWidth;
-
-  const handle = e.target;
-  handle.classList.add('active');
-
-  const onMove = (e2) => {
-    const w = Math.max(60, startW + e2.clientX - startX);
-    th.style.width = w + 'px';
-    th.style.minWidth = w + 'px';
-    setColWidth(colIndex, w, table);
+  // 列ロックチェック
+  const lockMsg = checkColumnEditable(dbPath, propName);
+  if (lockMsg) { showStatus(lockMsg); return; }
+  const container = td.querySelector('.cell-values');
+  if (!container) return;
+  let ptc = dbPath ? getPropertyTypes(dbPath)[propName] : null;
+  if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
+  const type = ptc?.type || 'text';
+  const isPickerReplacementType = ['select', 'multi-select', 'relation', 'multi-relation', 'user', 'multi-user'].includes(type);
+  const existingInlineEditor = td.querySelector('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor');
+  if (existingInlineEditor) {
+    if (isPickerReplacementType) existingInlineEditor.remove();
+    else return;
+  }
+  // ステータス機能 OFF の DB は 1セル1値運用。既存値ありセルへの新規候補追加を禁止
+  // セレクト / リレーション / ユーザー系は既存値の置き換え編集として扱うため、既存値ありでも候補ドロップダウンを開く。
+  if (!getStatusEnabled(dbPath) && container.querySelector('.cell-value') && !isPickerReplacementType) {
+    showStatus('このシートは1セル1値運用です（ステータス機能オフ）');
+    return;
+  }
+  const addBtn = container.querySelector('.cell-add-btn');
+  if (addBtn) {
+    addBtn.style.display = 'none';
+    addBtn.dataset.editingHidden = '1';
+  }
+  const cancel = () => {
+    container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
+    if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
+    setActiveCell(td);
   };
-  const onUp = () => {
-    handle.classList.remove('active');
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup', onUp);
-    // 幅を永続化
-    if (propName && dbPath) {
-      setColWidthPersist(dbPath, propName, th.offsetWidth, {
-        label: 'シート表示: 列幅',
-        detail: propName,
-      });
+  const pos = _cellPos(td);
+  const isRelationType = type === 'relation' || type === 'multi-relation';
+  const restoreActiveCellNow = () => {
+    if (typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
+  };
+  const closeInlineEditorShell = () => {
+    container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
+    if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
+    restoreActiveCellNow();
+  };
+  const renderPickerCellFallbackNow = (displayValue) => {
+    if (!isPickerReplacementType || isRelationType || !td?.isConnected) return false;
+    const liveContainer = td.querySelector('.cell-values');
+    if (!liveContainer) return false;
+    const text = String(displayValue ?? '').trim();
+    liveContainer.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
+    liveContainer.querySelectorAll('.cell-value').forEach(el => el.remove());
+    if (text) {
+      const valObj = {
+        value: text,
+        status: '採用',
+        file: '',
+        property: propName,
+        candidate_index: null,
+        note: '',
+      };
+      const thumbSize = typeof getThumbnailSize === 'function' ? getThumbnailSize(dbPath, { ctx }) : 80;
+      if (typeof createTypedValueElement === 'function') {
+        liveContainer.appendChild(createTypedValueElement(valObj, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
+      } else {
+        const span = document.createElement('span');
+        span.className = type === 'multi-select' ? 'multi-select-tags' : 'cell-select-val';
+        span.textContent = text;
+        liveContainer.appendChild(span);
+      }
+    }
+    if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
+    restoreActiveCellNow();
+    return true;
+  };
+  const refreshRelationCellNow = (affectedProps) => {
+    if (!isRelationType) return;
+    try {
+      if (typeof _refreshPivotRelationCell === 'function') {
+        _refreshPivotRelationCell(td, entityPath, propName, ptc, { dbPath, ctx });
+      } else if (typeof _finalizeRelationCellUpdate === 'function') {
+        _finalizeRelationCellUpdate(td, entityPath, propName, ptc, affectedProps || [], { dbPath, ctx });
+      }
+    } catch {}
+  };
+  const refreshCellDisplayNow = (affectedProps, fallbackValue) => {
+    let refreshed = false;
+    if (isRelationType) {
+      refreshRelationCellNow(affectedProps || []);
+      refreshed = true;
+    } else if (typeof _tryRefreshPivotCellLocal === 'function') {
+      refreshed = !!_tryRefreshPivotCellLocal(td, entityPath, propName, { dbPath, ctx });
+    }
+    if (!refreshed && typeof _refreshPivotRelationCell === 'function') {
+      try { refreshed = !!_refreshPivotRelationCell(td, entityPath, propName, ptc, { dbPath, ctx }); } catch {}
+    }
+    if (!refreshed && fallbackValue !== undefined) {
+      refreshed = renderPickerCellFallbackNow(fallbackValue);
+    }
+    if (!refreshed) closeInlineEditorShell();
+    else restoreActiveCellNow();
+    return refreshed;
+  };
+  const removeLocalCellValue = (valueRef) => {
+    if (!valueRef) return;
+    const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+    const entData = pivotData?.entities?.[entityName];
+    const values = entData?.[propName];
+    if (!Array.isArray(values)) return;
+    const idx = values.indexOf(valueRef);
+    if (idx >= 0) values.splice(idx, 1);
+  };
+  const normalizeSelectOptionValues = (values) => {
+    const list = Array.isArray(values) ? values : [values];
+    return list
+      .map(v => String(v ?? '').trim())
+      .filter(Boolean);
+  };
+  const ensureSelectOptions = (values) => {
+    if (type !== 'select' && type !== 'multi-select') return;
+    if (!dbPath || !propName || typeof setPropertyType !== 'function') return;
+    const nextValues = normalizeSelectOptionValues(values);
+    if (!nextValues.length) return;
+    const latest = (typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath) || {})[propName] : null) || ptc || {};
+    const currentOptions = Array.isArray(latest.options) ? latest.options : [];
+    const merged = [...currentOptions];
+    let changed = false;
+    nextValues.forEach(value => {
+      if (!merged.includes(value)) {
+        merged.push(value);
+        changed = true;
+      }
+    });
+    if (!changed) return;
+    const nextConfig = { ...latest, type, options: merged };
+    ptc = { ...nextConfig };
+    try {
+      const result = setPropertyType(dbPath, propName, nextConfig);
+      Promise.resolve(result).catch(e => showStatus('選択肢の保存に失敗: ' + (e?.message || e), true));
+    } catch (e) {
+      showStatus('選択肢の保存に失敗: ' + (e?.message || e), true);
     }
   };
-  document.addEventListener('pointermove', onMove);
-  document.addEventListener('pointerup', onUp);
-}
-
-function setColWidth(colIndex, width, table) {
-  // tbody内の同じ列のセルにも幅を反映
-  table = table || _currentPivotTable();
-  if (!table) return;
-  table.querySelectorAll('tbody tr').forEach(tr => {
-    const td = tr.children[colIndex];
-    if (td) { td.style.width = width + 'px'; td.style.minWidth = width + 'px'; }
-  });
-}
-
-function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
-  const ctx = (typeof ctxOrDbPath === 'object' && ctxOrDbPath)
-    ? ctxOrDbPath
-    : (typeof _dbPaneContextFromEvent === 'function'
-      ? _dbPaneContextFromEvent(activeCell, { dbPath: typeof ctxOrDbPath === 'string' ? ctxOrDbPath : state.currentDbPath })
-      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
-  const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
-  if (!dbPath) return;
-  let targets = _getSelectedColumns(dbPath);
-  if (!targets.length || !targets.includes(propName)) {
-    targets = [propName];
-    _setSelectedColumns(dbPath, targets, propName);
-  }
-  const widths = getColWidths(dbPath);
-  const firstWidth = Number(widths[targets[0]] || 100);
-  const sameWidth = targets.every(name => Number(widths[name] || 100) === firstWidth);
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:360px;">
-    <h3>列幅を指定</h3>
-    <div style="margin:8px 0;color:var(--fg2);font-size:12px;line-height:1.6;">対象: ${targets.map(name => esc(name)).join(' / ')}</div>
-    <div class="field">
-      <label>幅 (px)</label>
-      <input id="bulk-col-width-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="width:100%;padding:6px 8px;">
-    </div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="bulk-col-width-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  overlay.querySelector('#bulk-col-width-apply')?.addEventListener('click', () => {
-    const input = overlay.querySelector('#bulk-col-width-input');
-    const raw = (input?.value || '').trim();
-    const parsed = parseInt(raw, 10);
-    if (!raw || Number.isNaN(parsed)) {
-      showStatus('幅を入力してください', true);
+  const captureSelectedPeerCellsForBulkValueApply = () => {
+    const table = td.closest?.('table');
+    if (!table || !propName) return [];
+    const selected = Array.from(table.querySelectorAll('tbody td.db-range-selected[data-prop-name]'));
+    if (selected.length <= 1 || !selected.includes(td)) return [];
+    return selected.filter(cell => cell !== td && cell.dataset?.propName === propName);
+  };
+  const bulkValueApplyPeerCells = captureSelectedPeerCellsForBulkValueApply();
+  const selectedPeerCellsForBulkValueApply = () => {
+    const captured = bulkValueApplyPeerCells.filter(cell => cell?.isConnected && cell.dataset?.propName === propName);
+    if (captured.length) return captured;
+    return captureSelectedPeerCellsForBulkValueApply();
+  };
+  const applyValueToSelectedPeerCells = (value, meta = {}) => {
+    const valueText = String(value ?? '');
+    if (!meta.allowEmptyClear && valueText === '' && value !== 'false') return;
+    if (typeof _dbPrepareWriteClipboardCellValue !== 'function'
+        || typeof _dbPersistPreparedCellMutations !== 'function') return;
+    const targets = selectedPeerCellsForBulkValueApply();
+    if (!targets.length) return;
+    const ops = [];
+    const writeMeta = {
+      status: meta.status || '採用',
+      note: meta.note || '',
+    };
+    targets.forEach(cell => {
+      try {
+        const op = _dbPrepareWriteClipboardCellValue(cell, valueText, ctx, writeMeta);
+        if (op) ops.push(op);
+      } catch {}
+    });
+    if (!ops.length) return;
+    const debug = {
+      startedAt: Date.now(),
+      source: { entityName, propName, value: valueText },
+      written: ops.length,
+      errors: [],
+    };
+    try { window.__meldexLastCellBulkValueApply = debug; } catch {}
+    _dbPersistPreparedCellMutations(ops, ctx, debug).then(results => {
+      const failed = (results || []).filter(v => v < 0).length;
+      debug.failed = failed;
+      if (failed && typeof showStatus === 'function') {
+        showStatus(`選択セルへの反映に失敗しました（${failed} 件）`, true);
+      }
+    }).catch(e => {
+      debug.failed = ops.length;
+      debug.error = e?.message || String(e || '');
+      if (typeof showStatus === 'function') showStatus('選択セルへの反映に失敗しました', true);
+    });
+  };
+  const saveAndRestore = async (value, moveTo) => {
+    if (!value && value !== 'false') { cancel(); return; }
+    let optimisticValue = null;
+    let restoredOptimistic = false;
+    const writeStatus = isPickerReplacementType || !getStatusEnabled(dbPath) ? '採用' : '案';
+    try {
+      closeInlineEditorShell();
+      if (typeof _upsertLocalPivotValue === 'function') {
+        optimisticValue = _upsertLocalPivotValue(entityPath, propName, null, value, {
+          file: '',
+          property: propName,
+          candidate_index: null,
+          status: writeStatus,
+          note: '',
+        }, ctx);
+        refreshCellDisplayNow([], value);
+        _restoreCellPos(pos, moveTo);
+        restoredOptimistic = true;
+      }
+      applyValueToSelectedPeerCells(value, { status: writeStatus });
+      const result = await _apiPostValue(entityPath, propName, value, writeStatus, '');
+      const filePath = result?.path || '';
+      let cascadeClears = [];
+      const bidirectionalCtx = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional)
+        ? { entityPath, propName, ptc }
+        : null;
+      if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+        try {
+          await _applyBidirectionalRelationSync({
+            sourceDbPath: dbPath,
+            entityPath,
+            propName,
+            ptc,
+            oldValue: '',
+            newValue: value,
+          });
+        } catch (e) {
+          showStatus('双方向リレーションの同期に失敗: ' + (e?.message || e), true);
+        }
+      }
+      if ((type === 'relation' || type === 'multi-relation')
+          && typeof _clearCascadeDependentValues === 'function') {
+        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, '', value, { dbPath, ctx });
+      }
+      const historyScope = typeof _dbScopeForPath === 'function'
+        ? _dbScopeForPath(dbPath)
+        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+      if (filePath) {
+        const candIdx = result?.candidate_index;
+        const undoFn = (candIdx != null)
+          ? async () => {
+            await _apiPutValue({file: filePath, property: propName, candidate_index: candIdx}, { _delete: true });
+            if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+              await _applyBidirectionalRelationSync({
+                sourceDbPath: dbPath,
+                entityPath,
+                propName,
+                ptc,
+                oldValue: value,
+                newValue: '',
+              });
+            }
+            if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
+              await _restoreCascadeDependentValues(entityPath, cascadeClears);
+            }
+            await selectDatabase(dbPath, ctx, { silent: true });
+          }
+          : async () => {
+            await apiPost('/outliner/delete', { path: filePath });
+            if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+              await _applyBidirectionalRelationSync({
+                sourceDbPath: dbPath,
+                entityPath,
+                propName,
+                ptc,
+                oldValue: value,
+                newValue: '',
+              });
+            }
+            if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
+              await _restoreCascadeDependentValues(entityPath, cascadeClears);
+            }
+            await selectDatabase(dbPath, ctx, { silent: true });
+          };
+        historyPush('値追加: ' + propName + '=' + value,
+          undoFn,
+          async () => {
+            await _apiPostValue(entityPath, propName, value, writeStatus, '');
+            if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+              await _applyBidirectionalRelationSync({
+                sourceDbPath: dbPath,
+                entityPath,
+                propName,
+                ptc,
+                oldValue: '',
+                newValue: value,
+              });
+            }
+            if (cascadeClears.length && typeof _redoCascadeDependentValues === 'function') {
+              await _redoCascadeDependentValues(entityPath, cascadeClears);
+            }
+            await selectDatabase(dbPath, ctx, { silent: true });
+          },
+          historyScope
+        );
+      }
+      if (isRelationType
+          && typeof _upsertLocalPivotValue === 'function'
+          && typeof _finalizeRelationCellUpdate === 'function') {
+        _upsertLocalPivotValue(entityPath, propName, optimisticValue, value, {
+          file: filePath,
+          property: propName,
+          candidate_index: result?.candidate_index,
+          status: writeStatus,
+          note: '',
+        }, ctx);
+        await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
+        return;
+      }
+      // 楽観的増分更新: pivotData をローカルで更新してからセル DOM だけ書き換える
+      // フォールバック条件 (group化中等) では従来通り全再描画
+      if (optimisticValue) {
+        optimisticValue.file = filePath;
+        optimisticValue.candidate_index = result?.candidate_index;
+        optimisticValue.property = propName;
+        optimisticValue.status = optimisticValue.status || writeStatus;
+        optimisticValue.note = optimisticValue.note || '';
+      } else {
+        const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+        if (pivotData?.entities) {
+        const _entName = entityPath.replace(/\.md$/, '').split('/').pop();
+        const _entData = pivotData.entities[_entName];
+        if (_entData) {
+          if (!Array.isArray(_entData[propName])) _entData[propName] = [];
+          _entData[propName].push({
+            property: propName,
+            value: value,
+            status: writeStatus,
+            note: '',
+            file: filePath,
+            candidate_index: result?.candidate_index,
+          });
+        }
+        }
+      }
+      const _refreshed = refreshCellDisplayNow(cascadeClears.map(c => c.propName), value);
+      if (!_refreshed) {
+        await selectDatabase(dbPath, ctx, { silent: true });
+      }
+      if (!restoredOptimistic) _restoreCellPos(pos, moveTo);
+    } catch(e) {
+      if (optimisticValue) {
+        removeLocalCellValue(optimisticValue);
+        refreshCellDisplayNow([], '');
+      }
+      cancel();
+    }
+  };
+  const saveSelectAndRestore = async (value, moveTo) => {
+    if (!value && value !== 'false') { cancel(); return; }
+    ensureSelectOptions(value);
+    const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+    const entData = pivotData?.entities?.[entityName];
+    const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
+      || rawValues.find(v => v && v.file)
+      || null;
+    if (!existing?.file) {
+      await saveAndRestore(value, moveTo);
       return;
     }
-    const value = Math.max(60, parsed);
-    const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-    targets.forEach(name => setColWidthPersist(dbPath, name, value, { skipHistory: true }));
-    if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
-      pushDbViewConfigHistory(dbPath, 'シート表示: 列幅', before, captureDbViewConfigHistory(dbPath), targets.join(' / '));
+    if (!existing.property) existing.property = propName;
+    if ((existing.value || '') === value) { cancel(); return; }
+    const oldValue = existing.value || '';
+    try {
+      closeInlineEditorShell();
+      if (typeof _upsertLocalPivotValue === 'function') {
+        _upsertLocalPivotValue(entityPath, propName, existing, value, {
+          file: existing.file,
+          property: existing.property || propName,
+          candidate_index: existing.candidate_index,
+          status: existing.status || '採用',
+          note: existing.note || '',
+        }, ctx);
+      } else {
+        existing.value = value;
+      }
+      const refreshed = refreshCellDisplayNow([], value);
+      if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
+      _restoreCellPos(pos, moveTo);
+      applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
+      await _apiPutValue(existing, { new_value: value });
+      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + value, existing, oldValue, value);
+    } catch (e) {
+      if (typeof _upsertLocalPivotValue === 'function') {
+        _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
+          file: existing.file,
+          property: existing.property || propName,
+          candidate_index: existing.candidate_index,
+          status: existing.status || '採用',
+          note: existing.note || '',
+        }, ctx);
+      } else {
+        existing.value = oldValue;
+      }
+      refreshCellDisplayNow([], oldValue);
+      cancel();
     }
-    overlay.remove();
-    renderPivot(ctx);
-  });
-  setTimeout(() => overlay.querySelector('#bulk-col-width-input')?.focus(), 30);
+  };
+  const splitMultiSelectValue = (value) => String(value || '').split(',').map(s => s.trim()).filter(Boolean);
+  const saveMultiSelectAndRestore = async (value, moveTo) => {
+    const nextValue = splitMultiSelectValue(value).join(', ');
+    ensureSelectOptions(splitMultiSelectValue(nextValue));
+    const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+    const entData = pivotData?.entities?.[entityName];
+    const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
+      || rawValues.find(v => v && v.file)
+      || null;
+    if (!existing?.file) {
+      if (nextValue) await saveAndRestore(nextValue, moveTo);
+      else cancel();
+      return;
+    }
+    if (!existing.property) existing.property = propName;
+    const oldValue = existing.value || '';
+    if (oldValue === nextValue) { cancel(); return; }
+    const saveRef = { ...existing, property: existing.property || propName };
+    try {
+      closeInlineEditorShell();
+      if (nextValue) {
+        if (typeof _upsertLocalPivotValue === 'function') {
+          _upsertLocalPivotValue(entityPath, propName, existing, nextValue, {
+            file: existing.file,
+            property: existing.property || propName,
+            candidate_index: existing.candidate_index,
+            status: existing.status || '採用',
+            note: existing.note || '',
+          }, ctx);
+        } else {
+          existing.value = nextValue;
+        }
+      } else if (typeof _removeLocalPivotValue === 'function') {
+        _removeLocalPivotValue(existing, entityPath, propName);
+      } else {
+        existing.value = '';
+      }
+      const refreshed = refreshCellDisplayNow([], nextValue);
+      if (!refreshed) selectDatabase(dbPath, ctx, { silent: true }).catch(() => {});
+      _restoreCellPos(pos, moveTo);
+      applyValueToSelectedPeerCells(nextValue, {
+        status: existing.status || '採用',
+        note: existing.note || '',
+        allowEmptyClear: true,
+      });
+      if (nextValue) {
+        await _apiPutValue(saveRef, { new_value: nextValue });
+        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, existing, oldValue, nextValue);
+      } else {
+        await _apiPutValue(saveRef, { _delete: true });
+        if (typeof historyPush === 'function') {
+          const savedStatus = existing.status || '採用';
+          const savedNote = existing.note || '';
+          let currentRef = { ...saveRef, value: oldValue, status: savedStatus, note: savedNote };
+          historyPush('値削除: ' + propName + '=' + oldValue,
+            async () => {
+              const result = await _apiPostValue(entityPath, propName, oldValue, savedStatus, savedNote);
+              if (result) {
+                currentRef = {
+                  file: result.path || currentRef.file,
+                  property: propName,
+                  candidate_index: result.candidate_index,
+                  value: oldValue,
+                  status: savedStatus,
+                  note: savedNote,
+                };
+              }
+              await selectDatabase(dbPath, ctx, { silent: true });
+            },
+            async () => {
+              await _apiPutValue(currentRef, { _delete: true });
+              await selectDatabase(dbPath, ctx, { silent: true });
+            },
+            _dbScope(dbPath)
+          );
+        }
+      }
+    } catch (e) {
+      if (typeof _upsertLocalPivotValue === 'function') {
+        _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
+          file: saveRef.file || existing.file,
+          property: existing.property || propName,
+          candidate_index: existing.candidate_index,
+          status: existing.status || '採用',
+          note: existing.note || '',
+        }, ctx);
+      } else {
+        existing.value = oldValue;
+      }
+      refreshCellDisplayNow([], oldValue);
+      cancel();
+    }
+  };
+  const openMultiSelectDropdown = () => {
+    document.querySelectorAll('.cell-inline-dd').forEach(el => el.remove());
+    document.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
+      if (!td.contains(btn)) {
+        btn.style.display = '';
+        delete btn.dataset.editingHidden;
+      }
+    });
+    const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+    const entData = pivotData?.entities?.[entityName];
+    const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
+      || rawValues.find(v => v && v.file)
+      || null;
+    const selected = new Set(splitMultiSelectValue(existing?.value || ''));
+    const baseOptions = Array.isArray(ptc?.options) ? ptc.options : [];
+    const optionSet = new Set([...baseOptions, ...selected]);
+    const dd = document.createElement('div');
+    dd.className = 'cell-inline-dd status-dropdown';
+    dd.style.cssText = 'max-height:300px;overflow-y:auto;min-width:180px;';
+    dd.addEventListener('pointerdown', e => e.stopPropagation());
+    dd.addEventListener('click', e => e.stopPropagation());
+    let pointerCloser = null;
+    const closeMultiSelectDropdown = (shouldCancel = false) => {
+      if (dd.parentNode) dd.remove();
+      if (pointerCloser) {
+        document.removeEventListener('pointerdown', pointerCloser);
+        pointerCloser = null;
+      }
+      if (shouldCancel) cancel();
+    };
+    try {
+      window.__meldexLastMultiSelectDropdownOpen = {
+        dbPath,
+        entityName,
+        propName,
+        type,
+        options: [...optionSet],
+      };
+    } catch {}
+    dd.addEventListener('db-dropdown-cancel', () => closeMultiSelectDropdown(true));
+    const search = document.createElement('input');
+    search.type = 'text';
+    search.placeholder = '検索...';
+    search.style.cssText = 'width:100%;padding:3px 6px;margin-bottom:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    dd.appendChild(search);
+    const listDiv = document.createElement('div');
+    const toggleValue = (opt) => {
+      if (!opt) return;
+      if (selected.has(opt)) selected.delete(opt);
+      else selected.add(opt);
+      if (!optionSet.has(opt)) optionSet.add(opt);
+      renderList(search.value);
+      if (dd.isConnected) search.focus({ preventScroll: true });
+      requestAnimationFrame(() => {
+        if (dd.isConnected) search.focus({ preventScroll: true });
+      });
+    };
+    const renderList = (filter) => {
+      listDiv.innerHTML = '';
+      const query = String(filter || '').trim();
+      const options = [...optionSet].filter(Boolean);
+      const filtered = query
+        ? options.filter(opt => opt.toLowerCase().includes(query.toLowerCase()))
+        : options;
+      filtered.forEach(opt => {
+        const item = document.createElement('div');
+        item.className = 'dd-nav-item status-dropdown-item';
+        item.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(opt);
+        item.appendChild(cb);
+        item.appendChild(document.createTextNode(opt));
+        item._ddActivate = () => toggleValue(opt);
+        item.addEventListener('click', () => toggleValue(opt));
+        listDiv.appendChild(item);
+      });
+      if (query && !options.some(opt => opt === query)) {
+        const addItem = document.createElement('div');
+        addItem.className = 'dd-nav-item status-dropdown-item';
+        addItem.dataset.ddAdd = '1';
+        addItem.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;color:var(--fg2);';
+        addItem.innerHTML = lucide('plus', 12) + ' ' + esc(query) + ' を追加';
+        addItem._ddActivate = () => toggleValue(query);
+        addItem.addEventListener('click', () => toggleValue(query));
+        listDiv.appendChild(addItem);
+      }
+      if (!listDiv.children.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:6px 8px;color:var(--fg2);font-size:12px;font-style:italic;';
+        empty.textContent = '選択肢がありません';
+        listDiv.appendChild(empty);
+      }
+    };
+    search.oninput = () => renderList(search.value);
+    renderList('');
+    dd.appendChild(listDiv);
+    const clearItem = document.createElement('div');
+    clearItem.className = 'status-dropdown-item status-dropdown-clear';
+    clearItem.style.cssText = 'padding:3px 8px;text-align:center;cursor:pointer;font-size:12px;color:var(--fg2);border-top:1px solid var(--border);';
+    clearItem.textContent = '選択を解除';
+    clearItem.addEventListener('click', () => {
+      closeMultiSelectDropdown(false);
+      saveMultiSelectAndRestore('', null);
+    });
+    dd.appendChild(clearItem);
+    const commitMultiSelectDropdown = () => {
+      closeMultiSelectDropdown(false);
+      const value = [...selected].join(', ');
+      saveMultiSelectAndRestore(value, null);
+    };
+    const doneBtn = document.createElement('div');
+    doneBtn.className = 'dd-nav-item status-dropdown-item';
+    doneBtn.style.cssText = 'padding:3px 8px;text-align:center;cursor:pointer;font-size:12px;font-weight:bold;color:var(--accent);border-top:1px solid var(--border);';
+    doneBtn.innerHTML = lucide('check', 12) + ' 確定';
+    doneBtn._ddActivate = commitMultiSelectDropdown;
+    doneBtn.addEventListener('click', commitMultiSelectDropdown);
+    dd.appendChild(doneBtn);
+    search.addEventListener('keydown', (e) => {
+      if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return;
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.altKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+        commitMultiSelectDropdown();
+      }
+    });
+    if (typeof _enableDropdownKeyNav === 'function') {
+      _enableDropdownKeyNav(dd, '.dd-nav-item');
+    }
+    if (typeof _positionCellDropdown === 'function') {
+      _positionCellDropdown(dd, td, { gap: 2, minWidth: 180 });
+    } else {
+      const rect = td.getBoundingClientRect();
+      const _zm = _getZoom();
+      dd.style.position = 'fixed';
+      dd.style.left = (rect.left / _zm) + 'px';
+      dd.style.top = (rect.bottom / _zm + 2) + 'px';
+      document.body.appendChild(dd);
+      clampPopupToViewport(dd);
+    }
+    search.focus();
+    setTimeout(() => {
+      pointerCloser = (e) => {
+        if (!dd.isConnected) {
+          document.removeEventListener('pointerdown', pointerCloser);
+          pointerCloser = null;
+          return;
+        }
+        if (!dd.contains(e.target)) {
+          closeMultiSelectDropdown(true);
+        }
+      };
+      document.addEventListener('pointerdown', pointerCloser);
+    }, 0);
+  };
+  // --- チェックボックス: クリック即座にtrue/false ---
+  if (type === 'checkbox') {
+    saveAndRestore('true', null);
+    return;
+  }
+  // --- セレクト: ドロップダウン表示 ---
+  if (type === 'select') {
+    document.querySelectorAll('.cell-inline-dd').forEach(el => el.remove());
+    document.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
+      if (!td.contains(btn)) {
+        btn.style.display = '';
+        delete btn.dataset.editingHidden;
+      }
+    });
+    const dd = document.createElement('div');
+    dd.className = 'cell-inline-dd status-dropdown';
+    let pointerCloser = null;
+    const closeSelectDropdown = (shouldCancel = false) => {
+      if (dd.parentNode) dd.remove();
+      if (pointerCloser) {
+        document.removeEventListener('pointerdown', pointerCloser);
+        pointerCloser = null;
+      }
+      if (shouldCancel) cancel();
+    };
+    dd.addEventListener('db-dropdown-cancel', () => closeSelectDropdown(true));
+    // 解除（入力キャンセル）
+    const clearItem = document.createElement('div');
+    clearItem.className = 'status-dropdown-item status-dropdown-clear';
+    clearItem.style.cssText = 'color:var(--fg2);font-style:italic;';
+    clearItem.textContent = '解除';
+    clearItem.addEventListener('click', () => { closeSelectDropdown(true); });
+    dd.appendChild(clearItem);
+    (ptc.options || []).forEach(opt => {
+      const item = document.createElement('div');
+      item.className = 'status-dropdown-item';
+      item.textContent = opt;
+      item.addEventListener('click', () => { closeSelectDropdown(false); saveSelectAndRestore(opt, null); });
+      dd.appendChild(item);
+    });
+    // 「新しい選択肢を入力」
+    const addItem = document.createElement('div');
+    addItem.className = 'status-dropdown-item';
+    addItem.style.color = 'var(--fg2)';
+    addItem.innerHTML = lucide('plus', 12) + ' 新しい値を入力';
+    addItem.addEventListener('click', () => {
+      closeSelectDropdown(false);
+      _createTextInput('select');
+    });
+    dd.appendChild(addItem);
+    if (typeof _positionCellDropdown === 'function') {
+      _positionCellDropdown(dd, td, { gap: 2 });
+    } else {
+      const rect = td.getBoundingClientRect();
+      const _zi = _getZoom();
+      dd.style.position = 'fixed';
+      dd.style.left = (rect.left / _zi) + 'px';
+      dd.style.top = (rect.bottom / _zi + 2) + 'px';
+      dd.style.minWidth = (rect.width / _zi) + 'px';
+      document.body.appendChild(dd);
+      clampPopupToViewport(dd);
+    }
+    _enableDropdownKeyNav(dd, '.status-dropdown-item');
+    setTimeout(() => {
+      pointerCloser = (e) => {
+        if (!dd.isConnected) {
+          document.removeEventListener('pointerdown', pointerCloser);
+          pointerCloser = null;
+          return;
+        }
+        if (!dd.contains(e.target)) closeSelectDropdown(true);
+      };
+      document.addEventListener('pointerdown', pointerCloser);
+    }, 0);
+    return;
+  }
+  // --- マルチセレクト: ドロップダウンで複数選択 ---
+  if (type === 'multi-select') {
+    openMultiSelectDropdown();
+    return;
+  }
+  // --- ユーザー: ドロップダウンでユーザー選択 ---
+  if (type === 'user' || type === 'multi-user') {
+    _showUserDropdown(td, null, entityPath, propName, '', type === 'multi-user', {
+      onCancel: cancel,
+      status: '案',
+    });
+    return;
+  }
+  // --- リレーション: ドロップダウンで参照先DBエントリ選択 ---
+  if (type === 'relation' || type === 'multi-relation') {
+    const isMulti = type === 'multi-relation';
+    (async () => {
+      // 自己参照対応: relationDbが空文字の場合は現在のDBを参照
+      const isSelfRef = (ptc.relationDb === '' && ptc.relationDb !== undefined);
+      const relDb = typeof _dbResolveRelationDbPath === 'function'
+        ? _dbResolveRelationDbPath(dbPath, ptc)
+        : (isSelfRef ? dbPath : (ptc.relationDb || ''));
+      if (!relDb) { showStatus('参照先シートが未設定です。プロパティ型設定で指定してください。', true); cancel(); return; }
+      // entry = { name, id }
+      let entryList = [];
+      let refEntities = {};
+      try {
+        const cachedMap = typeof _getCachedRelationMap === 'function' ? _getCachedRelationMap(relDb) : null;
+        const map = cachedMap || (typeof _getRelationMap === 'function'
+          ? await _getRelationMap(relDb)
+          : (typeof _setRelationMapCache === 'function'
+            ? _setRelationMapCache(relDb, await apiFetch('/pivot?path=' + encodeURIComponent(relDb)))
+            : null));
+        if (cachedMap && typeof _refreshRelationMapSoon === 'function') _refreshRelationMapSoon(relDb);
+        refEntities = map?.entities || {};
+        entryList = Object.entries(map?.idToName || {}).map(([id, name]) => ({ name, id }));
+        entryList.sort((a, b) => a.name.localeCompare(b.name));
+      } catch (err) {
+        showStatus('参照先シート読み込み失敗: ' + relDb, true); cancel(); return;
+      }
+      // カスケード絞り込み（依存元列に値があれば参照先DBをフィルタ）
+      if (ptc.cascadeFrom) {
+        let parentValue = '';
+        try {
+          // D-7: ctx.pivotData を優先 (state.pivotData にフォールバック)
+          const piv = (ctx && ctx.pivotData) || state.pivotData;
+          if (piv?.entities) {
+            const entData = piv.entities[entityName];
+            if (entData && entData[ptc.cascadeFrom]) {
+              const vals = entData[ptc.cascadeFrom];
+              const adopted = vals.find(v => v.status === '採用' || v.status === '掲載済み');
+              parentValue = (adopted || vals[0])?.value || '';
+            }
+          }
+        } catch {}
+        if (parentValue) {
+          entryList = entryList.filter(entry => {
+            const entData = refEntities[entry.name];
+            if (!entData) return false;
+            const cascadeVals = entData[ptc.cascadeKey] || [];
+            return cascadeVals.some(v => (v.value || '').split(',').map(s => s.trim()).includes(parentValue));
+          });
+        }
+      }
+      // 自己参照時: 自分自身を除外
+      if (isSelfRef && entityName) {
+        entryList = entryList.filter(e => e.name !== entityName);
+      }
+      if (entryList.length === 0) {
+        showStatus('参照先シートにエントリがありません: ' + relDb, true); cancel(); return;
+      }
+      const dd = document.createElement('div');
+      dd.className = 'cell-inline-dd status-dropdown';
+      dd.style.cssText = 'max-height:250px;overflow-y:auto;min-width:180px;';
+      dd.addEventListener('pointerdown', e => e.stopPropagation());
+      dd.addEventListener('click', e => e.stopPropagation());
+      const search = document.createElement('input');
+      search.type = 'text'; search.placeholder = '検索...';
+      search.style.cssText = 'width:100%;padding:3px 6px;margin-bottom:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;';
+      dd.appendChild(search);
+      const listDiv = document.createElement('div');
+      const selected = []; // 選択済みID配列
+      let closer = null;
+      const closeDropdown = () => {
+        if (dd.parentNode) dd.remove();
+        if (closer) { document.removeEventListener('pointerdown', closer); closer = null; }
+      };
+      const commitRelationDropdown = () => {
+        closeDropdown();
+        if (selected.length) saveAndRestore(selected.join(', '), null);
+        else cancel();
+      };
+      const toggleRelationEntry = (entry) => {
+        if (!entry?.id) return;
+        const si = selected.indexOf(entry.id);
+        if (si >= 0) selected.splice(si, 1);
+        else selected.push(entry.id);
+        renderList(search.value);
+        if (dd.isConnected) search.focus({ preventScroll: true });
+        requestAnimationFrame(() => {
+          if (dd.isConnected) search.focus({ preventScroll: true });
+        });
+      };
+      const renderList = (filter) => {
+        listDiv.innerHTML = '';
+        const filtered = filter ? entryList.filter(e => e.name.toLowerCase().includes(filter.toLowerCase())) : entryList;
+        filtered.forEach(entry => {
+          const item = document.createElement('div');
+          item.className = 'dd-nav-item status-dropdown-item';
+          item.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;';
+          if (isMulti) {
+            item.style.display = 'flex';
+            item.style.alignItems = 'center';
+            item.style.gap = '6px';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = selected.includes(entry.id);
+            cb.tabIndex = -1;
+            item.appendChild(cb);
+            item.appendChild(document.createTextNode(entry.name));
+          } else {
+            item.textContent = entry.name;
+          }
+          if (selected.includes(entry.id)) item.style.color = 'var(--accent)';
+          item.onmouseenter = () => { item.style.background = 'var(--bg4)'; };
+          item.onmouseleave = () => { item.style.background = ''; };
+          item._ddActivate = () => {
+            if (isMulti) {
+              toggleRelationEntry(entry);
+            } else {
+              closeDropdown();
+              saveAndRestore(entry.id, null);
+            }
+          };
+          item.addEventListener('click', (e) => {
+            if (isMulti) {
+              e.preventDefault();
+              e.stopPropagation();
+              toggleRelationEntry(entry);
+            } else {
+              closeDropdown();
+              saveAndRestore(entry.id, null);
+            }
+          });
+          listDiv.appendChild(item);
+        });
+        if (filtered.length === 0) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'padding:6px 8px;color:var(--fg2);font-size:12px;font-style:italic;';
+          empty.textContent = '該当なし';
+          listDiv.appendChild(empty);
+        }
+      };
+      renderList('');
+      search.oninput = () => renderList(search.value);
+      dd.appendChild(listDiv);
+      if (isMulti) {
+        const doneBtn = document.createElement('div');
+        doneBtn.className = 'dd-nav-item';
+        doneBtn.style.cssText = 'padding:3px 8px;text-align:center;cursor:pointer;font-size:12px;font-weight:bold;color:var(--accent);border-top:1px solid var(--border);';
+        doneBtn.innerHTML = lucide('check', 12) + ' 確定';
+        doneBtn._ddActivate = commitRelationDropdown;
+        doneBtn.addEventListener('click', commitRelationDropdown);
+        dd.appendChild(doneBtn);
+        search.addEventListener('keydown', (e) => {
+          if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return;
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.altKey)) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation?.();
+            commitRelationDropdown();
+          }
+        });
+      }
+      if (typeof _positionCellDropdown === 'function') {
+        _positionCellDropdown(dd, td, { gap: 2, minWidth: 180 });
+      } else {
+        const rect = td.getBoundingClientRect();
+        const _zr = _getZoom();
+        dd.style.position = 'fixed'; dd.style.left = (rect.left / _zr) + 'px'; dd.style.top = (rect.bottom / _zr + 2) + 'px';
+        document.body.appendChild(dd);
+        clampPopupToViewport(dd);
+      }
+      _enableDropdownKeyNav(dd, '.dd-nav-item');
+      search.focus();
+      setTimeout(() => {
+        closer = (e) => {
+          if (!dd.contains(e.target)) {
+            closeDropdown();
+            cancel();
+          }
+        };
+        document.addEventListener('pointerdown', closer);
+      }, 0);
+    })();
+    return;
+  }
+  // --- 日付: date input ---
+  if (type === 'date') {
+    const editor = typeof _dbDateCreateEditor === 'function'
+      ? _dbDateCreateEditor('', ptc, {
+        layout: 'inline',
+        className: 'cell-date-editor',
+        rootStyle: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap;width:100%;',
+        inputStyle: 'flex:1 1 0;min-width:120px;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;',
+      })
+      : null;
+    if (!editor) return;
+    // +ボタンを一時的に隠す
+    if (addBtn) { addBtn.dataset.editingHidden = '1'; addBtn.style.display = 'none'; }
+    const restoreAddBtn = () => { if (addBtn && addBtn.dataset.editingHidden) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; } };
+    container.insertBefore(editor.root, addBtn);
+    editor.focus();
+    let committed = false;
+    const commit = () => {
+      if (committed) return;
+      committed = true;
+      restoreAddBtn();
+      const value = editor.getValue();
+      if (value) saveAndRestore(value, null);
+      else cancel();
+    };
+    editor.root.addEventListener('focusout', (e) => {
+      if (editor.contains(e.relatedTarget)) return;
+      commit();
+    });
+    editor.root.addEventListener('db-date-editor-commit', (e) => {
+      e.preventDefault();
+      commit();
+    });
+    if (!editor.mode?.withTime && !editor.mode?.range && editor.startInput) {
+      editor.startInput.addEventListener('change', commit);
+    }
+    editor.root.addEventListener('keydown', (e) => {
+      if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return;
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); committed = true; restoreAddBtn(); cancel(); }
+    });
+    return;
+  }
+  // --- 数値: number input ---
+  if (type === 'number') {
+    const inp = document.createElement('input');
+    inp.className = 'cell-inline-input';
+    inp.type = 'number';
+    inp.placeholder = '数値';
+    inp.style.cssText = 'width:100%;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    container.insertBefore(inp, addBtn);
+    inp.focus();
+    _attachCommitHandlers(inp, saveAndRestore, cancel);
+    return;
+  }
+  // --- テキスト / URL / その他: text input ---
+  _createTextInput(type);
+  function _createTextInput(forType) {
+    const isPlainText = !forType || forType === 'text';
+    const inp = document.createElement(isPlainText ? 'textarea' : 'input');
+    inp.className = isPlainText ? 'cell-inline-input cell-inline-input--textarea' : 'cell-inline-input';
+    if (!isPlainText) inp.type = 'text';
+    if (isPlainText) inp.rows = 1;
+    inp.placeholder = forType === 'url' ? 'https://...' : forType === 'multi-select' ? '値1, 値2, ...' : '値を入力';
+    inp.style.cssText = 'width:100%;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    container.insertBefore(inp, addBtn);
+    if (isPlainText) _autosizeInlineTextarea(inp);
+    inp.focus();
+    _attachCommitHandlers(inp, forType === 'select' ? saveSelectAndRestore : saveAndRestore, cancel);
+  }
+  function _autosizeInlineTextarea(inp) {
+    if (!inp || inp.tagName !== 'TEXTAREA') return;
+    const lineHeight = parseFloat(getComputedStyle(inp).lineHeight) || 18;
+    const maxHeight = Math.max(lineHeight * 10 + 8, 80);
+    inp.style.height = 'auto';
+    inp.style.height = Math.min(inp.scrollHeight, maxHeight) + 'px';
+    inp.style.overflowY = inp.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }
+  function _attachCommitHandlers(inp, save, cancelFn) {
+    let committed = false;
+    const commit = (moveTo) => {
+      if (committed) return;
+      committed = true;
+      const v = inp.value.trim();
+      if (!v) { cancelFn(); return; }
+      save(v, moveTo);
+    };
+    inp.addEventListener('input', () => _autosizeInlineTextarea(inp));
+    inp.addEventListener('keydown', (e) => {
+      if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return;
+      const allowNewline = inp.tagName === 'TEXTAREA' && e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey;
+      if (e.key === 'Enter' && !allowNewline) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); commit(null); }
+      else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); commit(e.shiftKey ? 'left' : 'right'); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); committed = true; cancelFn(); }
+    });
+    inp.addEventListener('blur', () => commit(null));
+  }
 }
-
-/* DB Undo/Redo ヘルパー（scope = 'db:' + dbPath で開いているDB単位） */

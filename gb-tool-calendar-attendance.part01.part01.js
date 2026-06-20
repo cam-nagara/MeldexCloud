@@ -20,6 +20,7 @@
   const DEFAULT_CALENDAR_FOLDER = 'カレンダー';
   const SHIFT_CALENDAR_FOLDER = 'シフトカレンダー';
   const ATTENDANCE_CALENDAR_FOLDER = '実績カレンダー';
+  const ATTENDANCE_SOURCE_HIDDEN_KEY = 'gb:cal-attendance-hidden-source-folders';
   const FALLBACK_CALENDAR_COLORS = ['#569cd6', '#d19a66', '#98c379', '#c678dd', '#e06c75', '#61afef', '#e5c07b', '#56b6c2'];
 
   function _calAttThemePalette() {
@@ -79,6 +80,60 @@
     return `gb:cal-${kind}:${id}`;
   }
 
+  function _calAttReadHiddenSourceFolders() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(ATTENDANCE_SOURCE_HIDDEN_KEY) || '[]');
+      return new Set(Array.isArray(raw) ? raw.map(item => String(item || '')) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function _calAttWriteHiddenSourceFolders(hidden) {
+    try {
+      localStorage.setItem(ATTENDANCE_SOURCE_HIDDEN_KEY, JSON.stringify([...hidden].filter(item => item !== null && item !== undefined)));
+    } catch {}
+  }
+
+  function _calAttRefreshSourceSettingsAfterHistory() {
+    if (typeof forEachComponent !== 'function') return;
+    forEachComponent(component => {
+      if (!component || !(component instanceof CalendarComponent)) return;
+      component._renderAttendanceSourceSettings?.(component._calendarSettingsBody);
+      component._renderAttendanceStatus?.();
+    });
+  }
+
+  function _calAttCaptureSourceSettingsHistory() {
+    if (typeof captureLocalStorageSettings !== 'function') return null;
+    if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
+      && isLocalStorageSettingsHistorySuppressed()) return null;
+    return captureLocalStorageSettings([ATTENDANCE_SOURCE_HIDDEN_KEY]);
+  }
+
+  function _calAttPushSourceSettingsHistory(beforeSnapshot, detail) {
+    if (!beforeSnapshot || typeof historyPush !== 'function'
+      || typeof captureLocalStorageSettings !== 'function'
+      || typeof restoreLocalStorageSettings !== 'function'
+      || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
+    const snapshots = _normalizeLocalStorageSettingsSnapshots(beforeSnapshot, captureLocalStorageSettings([ATTENDANCE_SOURCE_HIDDEN_KEY]));
+    let beforeKey = '';
+    let afterKey = '';
+    try {
+      beforeKey = JSON.stringify(snapshots.before);
+      afterKey = JSON.stringify(snapshots.after);
+    } catch {}
+    if (beforeKey && beforeKey === afterKey) return false;
+    historyPush(
+      'スケジューラー: 出退勤状況の表示変更',
+      () => restoreLocalStorageSettings(snapshots.before, _calAttRefreshSourceSettingsAfterHistory),
+      () => restoreLocalStorageSettings(snapshots.after, _calAttRefreshSourceSettingsAfterHistory),
+      'calendar:settings',
+      detail || '出退勤状況に表示するワークスペース'
+    );
+    return true;
+  }
+
   function _calAttDateLabel(timestamp) {
     const raw = String(timestamp || '');
     if (!raw) return '';
@@ -99,11 +154,25 @@
   }
 
   function _calAttRoleLabel(role) {
-    return { owner: '管理者のみ', editor: '編集者以上', viewer: '閲覧のみ' }[role] || '管理者のみ';
+    return { owner: '管理者のみ', editor: '編集者以上', members: '設定されたメンバーのみ', viewer: '閲覧のみ' }[role] || '管理者のみ';
   }
 
   function _calAttIsTeamCalendar(cal) {
     return cal?.source === 'shift' || cal?.source === 'attendance';
+  }
+
+  function _calAttCalendarSection(component, cal) {
+    const folder = _calAttDefaultFolder(cal);
+    if (!_calAttIsTeamCalendar(cal)) return { key: folder || DEFAULT_CALENDAR_FOLDER, label: folder || DEFAULT_CALENDAR_FOLDER };
+    const labelMap = component?._calTeamFolderLabels;
+    const mapped = labelMap instanceof Map ? labelMap.get(String(cal?.folder || '')) : '';
+    const fallback = folder && folder !== SHIFT_CALENDAR_FOLDER && folder !== ATTENDANCE_CALENDAR_FOLDER
+      ? String(folder).split(/[\\/]/).pop()
+      : '';
+    return {
+      key: `${cal?.source || 'team'}:${folder || fallback || 'default'}`,
+      label: mapped || fallback || 'ワークスペース未設定',
+    };
   }
 
   function _calAttFolderFallbackForSource(source) {
@@ -238,10 +307,17 @@
     const m = this._date.getMonth();
     const start = this._localDateTimeStr(new Date(y, m - 1, 1, 0, 0));
     const end = this._localDateTimeStr(new Date(y, m + 2, 0, 23, 59));
+    if (typeof this._guardUndoLoadWindow === 'function') this._guardUndoLoadWindow(start + '|' + end);
+    const seq = (this._loadEventsSeq = (this._loadEventsSeq || 0) + 1);
     try {
-      this._events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
+      const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
+      if (seq !== this._loadEventsSeq) return; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
+      this._events = events;
     } catch {
-      this._events = [];
+      if (seq !== this._loadEventsSeq) return;
+      // 取得失敗時に表示中の予定を消さない（既存表示を維持してエラーを知らせる）
+      if (!Array.isArray(this._events)) this._events = [];
+      this._showStatus?.('予定の読み込みに失敗しました', true);
     }
   };
 
@@ -334,7 +410,7 @@
     if (!this._clockBtnsEl) return;
     const allowed = this._allowedClockActions(state);
     this._clockBtnsEl.innerHTML = CLOCK_ACTIONS.map(action => {
-      const enabled = allowed.has(action.type) && !this._clockBusy;
+      const enabled = allowed.has(action.type) && !this._clockBusy && !this._clockStateUnknown;
       return `<button class="gb-cal-clock-icon-btn ${enabled ? '' : 'is-disabled'}" data-clock="${action.type}" title="${action.label}" aria-label="${action.label}" ${enabled ? '' : 'disabled'}>${_calAttIcon(action.icon, 18)}</button>`;
     }).join('');
   };
@@ -374,12 +450,15 @@
       );
       this._clockEntries = entries || [];
       this._clockState = this._clockStateFromWindowEntries(this._clockEntries, todayStr);
+      this._clockStateUnknown = false;
       this._renderClockButtons(this._clockState);
       this._renderAttendanceStatus();
     } catch {
-      this._clockEntries = [];
-      this._clockState = 'initial';
-      this._renderClockButtons('initial');
+      // 取得失敗時に「未出勤」へ戻さない。出勤中に再出勤できてしまうと
+      // 同日の打刻が二重記録され実績イベントが壊れるため、状態確定まで全ボタンを無効にする
+      this._clockStateUnknown = true;
+      this._renderClockButtons(this._clockState || 'initial');
+      this._showStatus?.('勤務状態を取得できませんでした。再試行してください', true);
     }
   };
 
@@ -416,7 +495,7 @@
     else this._sidebarEl.appendChild(attendanceSection);
 
     this._wrapCalendarSidebarSection('mini', 'ミニカレンダー', 'calendarDays', miniPanel);
-    this._wrapCalendarSidebarSection('tasks', '今日のタスク', 'listChecks', taskPanel);
+    this._wrapCalendarSidebarSection('tasks', '今日のToDo', 'listChecks', taskPanel);
     this._wrapCalendarSidebarSection('calendars', 'カレンダー', 'calendarDays', calendarPanel);
     this._compactLegacySidebarHeader(taskPanel);
     this._compactLegacySidebarHeader(calendarPanel);
@@ -474,28 +553,28 @@
 
   CalendarComponent.prototype._loadTeamGroups = async function() {
     const current = this._getUser();
-    let roots = [];
-    try { roots = await apiFetch('/outliner-roots'); } catch {}
-    const visibleRoots = (roots || []).filter(root => root?.visible && root?.path);
-    if (!visibleRoots.length) {
-      let members = [];
-      try { members = await apiFetch('/team'); } catch {}
-      return [{ folder: '', label: 'ワークスペース', members: this._normalizeTeamMembers(members, current) }];
-    }
-
-    const groups = [];
-    for (const root of visibleRoots) {
-      let members = [];
-      try { members = await apiFetch('/team?folder=' + encodeURIComponent(root.path)); } catch {}
-      if ((members || []).length || current) {
-        groups.push({
-          folder: root.path,
-          label: root.name || String(root.path).split(/[\\/]/).pop() || root.path,
-          members: this._normalizeTeamMembers(members, current),
-        });
+    try {
+      let payload = null;
+      if (window.MeldexWorkspaces?.load) {
+        const workspaces = await window.MeldexWorkspaces.load({ force: true });
+        payload = { workspaces };
+      } else if (typeof apiFetch === 'function') {
+        payload = await apiFetch('/workspaces');
       }
-    }
-    return groups.length ? groups : [{ folder: '', label: 'ワークスペース', members: [{ name: current, role: '' }] }];
+      const workspaces = Array.isArray(payload?.workspaces) ? payload.workspaces : (Array.isArray(payload) ? payload : []);
+      if (workspaces.length) {
+        const groups = workspaces.map(workspace => ({
+          folder: workspace.id || workspace.folder || '',
+          workspaceId: workspace.id || '',
+          label: workspace.name || workspace.folder || 'ワークスペース',
+          members: this._normalizeTeamMembers(workspace.members || [], current),
+        }));
+        this._calTeamFolderLabels = new Map(groups.map(group => [String(group.folder || ''), group.label || 'ワークスペース']));
+        return groups;
+      }
+    } catch {}
+    this._calTeamFolderLabels = new Map();
+    return [];
   };
 
   CalendarComponent.prototype._normalizeTeamMembers = function(members, current) {
@@ -516,8 +595,12 @@
     list.innerHTML = '<div class="gb-cal-attendance-empty">読み込み中...</div>';
     const todayStr = this._localDateStr();
     const previousDayStr = _calAttPreviousDateStr(this, todayStr);
-    const groups = await this._loadTeamGroups();
+    const groups = await this._loadAttendanceTeamGroups();
     if (token !== this._attendanceRenderSeq) return;
+    if (!groups.length) {
+      list.innerHTML = '<div class="gb-cal-attendance-empty">表示するワークスペースが選択されていません</div>';
+      return;
+    }
 
     const renderedGroups = [];
     for (const group of groups) {
@@ -588,14 +671,20 @@
     container.innerHTML = '';
     this._ensureSelectedCalendar?.();
 
+    if (!this._calTeamFolderLabelsLoadStarted && typeof this._loadTeamGroups === 'function') {
+      this._calTeamFolderLabelsLoadStarted = true;
+      this._loadTeamGroups().then(() => this._renderCalendarList?.()).catch(() => {});
+    }
+
     const folders = new Map();
     (this._calendars || []).forEach(cal => {
-      const folder = _calAttDefaultFolder(cal);
-      if (!folders.has(folder)) folders.set(folder, []);
-      folders.get(folder).push(cal);
+      const section = _calAttCalendarSection(this, cal);
+      if (!folders.has(section.key)) folders.set(section.key, { label: section.label, calendars: [] });
+      folders.get(section.key).calendars.push(cal);
     });
 
-    [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ja')).forEach(([folder, calendars]) => {
+    [...folders.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'ja')).forEach(([folder, section]) => {
+      const calendars = section.calendars;
       calendars.sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
       const group = document.createElement('div');
       group.className = 'gb-cal-calendar-folder';
@@ -606,7 +695,7 @@
       header.type = 'button';
       header.className = 'gb-cal-calendar-folder-header';
       header.dataset.calCalendarFolder = folder || 'default';
-      header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(folder)}</span><span class="gb-cal-folder-count">${calendars.length}</span>`;
+      header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(section.label)}</span><span class="gb-cal-folder-count">${calendars.length}</span>`;
       const body = document.createElement('div');
       body.className = 'gb-cal-calendar-folder-body';
       body.hidden = !open;
@@ -733,32 +822,35 @@
     colorRow.append(colorLabel, colorSwatch);
     menu.appendChild(colorRow);
 
-    const folderRow = document.createElement('div');
-    folderRow.className = 'gb-cal-calendar-menu-field';
-    const folderLabel = document.createElement('label');
-    folderLabel.textContent = _calAttIsTeamCalendar(cal) ? 'チームフォルダ' : 'フォルダ';
-    const folderInput = document.createElement('input');
-    folderInput.type = 'text';
-    folderInput.value = _calAttDefaultFolder(cal);
-    folderInput.placeholder = DEFAULT_CALENDAR_FOLDER;
-    folderInput.disabled = !canEdit;
-    const folderSave = document.createElement('button');
-    folderSave.type = 'button';
-    folderSave.disabled = !canEdit;
-    folderSave.title = canEdit ? 'フォルダ名変更' : '編集権限がありません';
-    folderSave.innerHTML = _calAttIcon('folderPen', 14);
-    folderSave.addEventListener('click', async () => {
-      await this._setCalendarFolder(cal, folderInput.value);
-      menu.remove();
-    });
-    folderInput.addEventListener('keydown', async (e) => {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      await this._setCalendarFolder(cal, folderInput.value);
-      menu.remove();
-    });
-    folderRow.append(folderLabel, folderInput, folderSave);
-    menu.appendChild(folderRow);
+    let folderInput = null;
+    if (!_calAttIsTeamCalendar(cal)) {
+      const folderRow = document.createElement('div');
+      folderRow.className = 'gb-cal-calendar-menu-field';
+      const folderLabel = document.createElement('label');
+      folderLabel.textContent = 'フォルダ';
+      folderInput = document.createElement('input');
+      folderInput.type = 'text';
+      folderInput.value = _calAttDefaultFolder(cal);
+      folderInput.placeholder = DEFAULT_CALENDAR_FOLDER;
+      folderInput.disabled = !canEdit;
+      const folderSave = document.createElement('button');
+      folderSave.type = 'button';
+      folderSave.disabled = !canEdit;
+      folderSave.title = canEdit ? 'フォルダ名変更' : '編集権限がありません';
+      folderSave.innerHTML = _calAttIcon('folderPen', 14);
+      folderSave.addEventListener('click', async () => {
+        await this._setCalendarFolder(cal, folderInput.value);
+        menu.remove();
+      });
+      folderInput.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        await this._setCalendarFolder(cal, folderInput.value);
+        menu.remove();
+      });
+      folderRow.append(folderLabel, folderInput, folderSave);
+      menu.appendChild(folderRow);
+    }
 
     if (_calAttIsTeamCalendar(cal)) {
       menu.appendChild(this._buildCalendarTeamFolderRow(cal, folderInput));
@@ -770,7 +862,7 @@
     roleLabel.textContent = '編集権限';
     const roleSelect = document.createElement('select');
     roleSelect.className = 'gb-cal-calendar-role';
-    ['owner', 'editor', 'viewer'].forEach(role => {
+    ['owner', 'editor', 'members', 'viewer'].forEach(role => {
       const opt = document.createElement('option');
       opt.value = role;
       opt.textContent = _calAttRoleLabel(role);
@@ -867,30 +959,31 @@
     const row = document.createElement('div');
     row.className = 'gb-cal-calendar-menu-field';
     const label = document.createElement('label');
-    label.textContent = 'チーム';
+    label.textContent = 'ワークスペース';
     const select = document.createElement('select');
     select.className = 'gb-cal-calendar-team-folder';
     select.innerHTML = '<option value="">読み込み中...</option>';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.title = 'チームフォルダを適用';
-    save.innerHTML = _calAttIcon('folderCheck', 14);
+    const canEdit = this._calUserCanEditCalendar(cal);
+    select.disabled = !canEdit;
+    select.title = canEdit ? 'ワークスペース' : '編集権限がありません';
     const apply = async () => {
-      const value = select.value || _calAttFolderFallbackForSource(cal.source);
+      if (!canEdit) return;
+      const value = select.value || '';
+      if (!value) {
+        this._showStatus?.('ワークスペースを選択してください', true);
+        return;
+      }
       if (folderInput) folderInput.value = value;
       await this._setCalendarFolder(cal, value);
     };
-    save.addEventListener('click', apply);
     select.addEventListener('change', apply);
-    row.append(label, select, save);
+    row.append(label, select);
 
     this._loadTeamGroups().then(groups => {
-      const opts = [];
-      opts.push({ value: _calAttFolderFallbackForSource(cal.source), label: 'ワークスペース' });
-      (groups || []).forEach(group => {
-        if (!group.folder) return;
-        opts.push({ value: group.folder, label: group.label || group.folder });
-      });
+      const opts = (groups || [])
+        .filter(group => group?.folder)
+        .map(group => ({ value: group.folder, label: group.label || group.folder }));
+      if (!opts.length) opts.push({ value: '', label: 'ワークスペースを設定してください', disabled: true });
       const seen = new Set();
       select.innerHTML = '';
       opts.forEach(opt => {
@@ -898,3 +991,4 @@
         seen.add(opt.value);
         const option = document.createElement('option');
         option.value = opt.value;
+        option.disabled = !!opt.disabled;

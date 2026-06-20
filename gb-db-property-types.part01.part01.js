@@ -35,12 +35,26 @@ function _ptMetadataForDbPath(dbPath) {
   return null;
 }
 
+function _ptContextForDbPath(dbPath, ctx) {
+  if (ctx && (!dbPath || _ptNormalizeDbPath(ctx.dbPath || '') === _ptNormalizeDbPath(dbPath || ''))) return ctx;
+  if (typeof _dbFindPaneContextForPath === 'function' && dbPath) {
+    const found = _dbFindPaneContextForPath(dbPath);
+    if (found) return found;
+  }
+  if (typeof _currentPaneState === 'function') {
+    const current = _currentPaneState();
+    if (!dbPath || _ptNormalizeDbPath(current?.dbPath || '') === _ptNormalizeDbPath(dbPath || '')) return current;
+  }
+  return ctx || null;
+}
+
 function setPropertyType(dbPath, propName, typeConfig) {
   const targetPath = dbPath || state.currentDbPath || '';
   // localStorage にキャッシュ（従来通り）
   const c = getDbViewConfig(targetPath);
   if (!c.propertyTypes) c.propertyTypes = {};
   c.propertyTypes[propName] = typeConfig;
+  _unmarkDbPropertyDeletedInConfig(c, propName);
   saveDbViewConfig(targetPath, c);
   // state.dbMetadata にも反映
   const targetMetadata = _ptMetadataForDbPath(targetPath);
@@ -53,22 +67,63 @@ function setPropertyType(dbPath, propName, typeConfig) {
   return _savePropertyTypesToBackend(targetPath);
 }
 
+const _ptBackendSaveQueues = {};
+
+function _dbDeletedPropsArrayFromConfig(cfg) {
+  return Array.isArray(cfg?.deletedProps) ? cfg.deletedProps : [];
+}
+
+function getDeletedDbProperties(dbPath) {
+  return _dbDeletedPropsArrayFromConfig(getDbViewConfig(dbPath));
+}
+
+function isDbPropertyDeleted(dbPath, propName) {
+  return !!propName && getDeletedDbProperties(dbPath).includes(propName);
+}
+
+function filterDeletedDbProperties(dbPath, props) {
+  if (!Array.isArray(props)) return [];
+  const deleted = new Set(getDeletedDbProperties(dbPath));
+  if (deleted.size === 0) return props.filter(Boolean);
+  return props.filter(prop => prop && !deleted.has(prop));
+}
+
+function _markDbPropertyDeletedInConfig(cfg, propName) {
+  if (!cfg || typeof cfg !== 'object' || !propName) return false;
+  if (!Array.isArray(cfg.deletedProps)) cfg.deletedProps = [];
+  if (cfg.deletedProps.includes(propName)) return false;
+  cfg.deletedProps.push(propName);
+  return true;
+}
+
+function _unmarkDbPropertyDeletedInConfig(cfg, propName) {
+  if (!cfg || typeof cfg !== 'object' || !propName || !Array.isArray(cfg.deletedProps)) return false;
+  const next = cfg.deletedProps.filter(name => name !== propName);
+  if (next.length === cfg.deletedProps.length) return false;
+  if (next.length) cfg.deletedProps = next;
+  else delete cfg.deletedProps;
+  return true;
+}
+
 // 列を削除（設定のみ）: 候補値データは各エントリに残る
-async function _deleteColumn(dbPath, propName) {
-  if (!dbPath || !propName) return;
+async function _deleteColumn(dbPath, propName, ctx) {
+  if (!dbPath || !propName) return false;
+  const renderCtx = _ptContextForDbPath(dbPath, ctx);
   const ok = await cfConfirm(
     `列「${propName}」を削除します。\n\n既存の候補値データはエントリに残りますが、表示されなくなります。\n（再度同名のプロパティを追加すれば値は復活します）\n\n削除しますか？`
   );
-  if (!ok) return;
+  if (!ok) return false;
 
   // undo用スナップショット
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
+  const oldBackendPropertyTypes = JSON.parse(JSON.stringify((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : oldCfg.propertyTypes) || {}));
   const oldPT = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null) || oldCfg.propertyTypes?.[propName];
 
   const c = getDbViewConfig(dbPath);
   _deleteViewConfigPropReferences(c, propName);
   (c.savedViews || []).forEach(view => _deleteViewConfigPropReferences(view, propName));
   if (c.propertyTypes) _deletePropertyTypePropReferences(c.propertyTypes, propName);
+  _markDbPropertyDeletedInConfig(c, propName);
   if (c.columnLocks) {
     delete c.columnLocks[propName];
     if (Object.keys(c.columnLocks).length === 0) delete c.columnLocks;
@@ -77,7 +132,16 @@ async function _deleteColumn(dbPath, propName) {
   if (c.propertyLayout && typeof removePropertyLayoutReferences === 'function') {
     c.propertyLayout = removePropertyLayoutReferences(c.propertyLayout, propName);
   }
-  saveDbViewConfig(dbPath, c);
+  let viewConfigPersisted = true;
+  if (typeof _persistDbViewConfigToBackend === 'function') {
+    viewConfigPersisted = await _persistDbViewConfigToBackend(dbPath, c, { immediate: true });
+  }
+  if (viewConfigPersisted === false) {
+    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
+    showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
+    return false;
+  }
+  saveDbViewConfig(dbPath, c, { skipBackend: true });
 
   // state.dbMetadata にも反映
   if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
@@ -86,10 +150,10 @@ async function _deleteColumn(dbPath, propName) {
   }
 
   // バックエンドに保存
-  if (typeof updatePropertyLayoutForDelete === 'function') await updatePropertyLayoutForDelete(dbPath, propName);
+  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName).catch(() => {});
   const savePromise = _savePropertyTypesToBackend(dbPath);
   if (oldPT?.type === 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).then(() => apiPost('/media/gc', {})).catch(() => {});
+    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
   }
 
   // Undo/Redo
@@ -100,22 +164,33 @@ async function _deleteColumn(dbPath, propName) {
         if (state.dbMetadata) {
           if (_ptIsCurrentDbPath(dbPath)) {
             if (!state.dbMetadata.property_types) state.dbMetadata.property_types = {};
-            if (oldCfg.propertyTypes) state.dbMetadata.property_types = JSON.parse(JSON.stringify(oldCfg.propertyTypes));
+            if (Object.keys(oldBackendPropertyTypes).length) state.dbMetadata.property_types = JSON.parse(JSON.stringify(oldBackendPropertyTypes));
+            else if (oldCfg.propertyTypes) state.dbMetadata.property_types = JSON.parse(JSON.stringify(oldCfg.propertyTypes));
             else if (oldPT) state.dbMetadata.property_types[propName] = oldPT;
             state.dbMetadata.property_layout = oldCfg.propertyLayout || null;
           }
         }
+        if (Object.keys(oldBackendPropertyTypes).length) {
+          const cfg = getDbViewConfig(dbPath);
+          cfg.propertyTypes = JSON.parse(JSON.stringify(oldBackendPropertyTypes));
+          saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+        }
         _savePropertyTypesToBackend(dbPath, { property_layout: oldCfg.propertyLayout || null });
-        selectDatabase(dbPath);
+        selectDatabase(dbPath, renderCtx);
       },
       () => { // redo: 再削除
-        _deleteColumnNoConfirm(dbPath, propName);
+        return _deleteColumnNoConfirm(dbPath, propName, renderCtx);
       },
-      (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope())
+      (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
     );
   }
 
-  selectDatabase(dbPath);
+  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
+    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
+    _renderCurrentDbView(renderCtx, dbPath);
+  } else {
+    selectDatabase(dbPath, renderCtx);
+  }
   showStatus(`列「${propName}」を削除しました`);
   // 列削除 → 該当 sheet_col/sheet_cell コメントを孤児化 (annotation_unification_plan.md §5.3)
   apiPost('/annotations/orphan-by-target', {
@@ -124,54 +199,108 @@ async function _deleteColumn(dbPath, propName) {
     item_id: propName,
     cascade_container: true,
   }).catch(() => {});
+  return true;
 }
 
 // 確認なしで列削除（redo用）
-function _deleteColumnNoConfirm(dbPath, propName) {
+async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
+  if (!dbPath || !propName) return false;
+  const renderCtx = _ptContextForDbPath(dbPath, ctx);
+  const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
   const c = getDbViewConfig(dbPath);
   const oldPT = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null) || c.propertyTypes?.[propName];
   _deleteViewConfigPropReferences(c, propName);
   (c.savedViews || []).forEach(view => _deleteViewConfigPropReferences(view, propName));
   if (c.propertyTypes) _deletePropertyTypePropReferences(c.propertyTypes, propName);
+  _markDbPropertyDeletedInConfig(c, propName);
   if (c.columnLocks) { delete c.columnLocks[propName]; if (Object.keys(c.columnLocks).length === 0) delete c.columnLocks; }
   if (c.entryPropOrder) c.entryPropOrder = c.entryPropOrder.filter(n => n !== propName);
   if (c.propertyLayout && typeof removePropertyLayoutReferences === 'function') {
     c.propertyLayout = removePropertyLayoutReferences(c.propertyLayout, propName);
   }
-  saveDbViewConfig(dbPath, c);
+  let viewConfigPersisted = true;
+  if (typeof _persistDbViewConfigToBackend === 'function') {
+    viewConfigPersisted = await _persistDbViewConfigToBackend(dbPath, c, { immediate: true });
+  }
+  if (viewConfigPersisted === false) {
+    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
+    showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
+    return false;
+  }
+  saveDbViewConfig(dbPath, c, { skipBackend: true });
   if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
   if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
     state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
   }
-  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName);
+  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName).catch(() => {});
   const savePromise = _savePropertyTypesToBackend(dbPath);
   if (oldPT?.type === 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).then(() => apiPost('/media/gc', {})).catch(() => {});
+    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
   }
-  selectDatabase(dbPath);
+  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
+    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
+    _renderCurrentDbView(renderCtx, dbPath);
+  } else {
+    selectDatabase(dbPath, renderCtx);
+  }
+  return true;
 }
 
 async function _savePropertyTypesToBackend(dbPath, extraMetadata) {
-  try {
-    const allTypes = getPropertyTypes(dbPath);
-    const payload = {
-      property_types: allTypes
-    };
-    if (extraMetadata && typeof extraMetadata === 'object') Object.assign(payload, extraMetadata);
-    await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), payload);
-  } catch (e) {
-    console.warn('プロパティ型設定のバックエンド保存に失敗:', e);
-  }
+  const targetPath = dbPath || state.currentDbPath || '';
+  const key = _ptNormalizeDbPath(targetPath);
+  const queue = _ptBackendSaveQueues[key] || (_ptBackendSaveQueues[key] = {
+    dirty: false,
+    extraMetadata: {},
+    promise: null,
+    running: false,
+  });
+  queue.dirty = true;
+  if (extraMetadata && typeof extraMetadata === 'object') Object.assign(queue.extraMetadata, extraMetadata);
+  if (queue.running) return queue.promise || Promise.resolve();
+
+  queue.running = true;
+  queue.promise = (async () => {
+    try {
+      while (queue.dirty) {
+        queue.dirty = false;
+        const payload = {
+          property_types: getPropertyTypes(targetPath)
+        };
+        if (queue.extraMetadata && typeof queue.extraMetadata === 'object') {
+          Object.assign(payload, queue.extraMetadata);
+          queue.extraMetadata = {};
+        }
+        try {
+          await apiPut('/db-metadata?path=' + encodeURIComponent(targetPath), payload);
+        } catch (e) {
+          console.warn('プロパティ型設定のバックエンド保存に失敗:', e);
+        }
+      }
+    } finally {
+      queue.running = false;
+      queue.promise = null;
+      if (!queue.dirty) delete _ptBackendSaveQueues[key];
+    }
+  })();
+  return queue.promise;
 }
 
 function _escapeRegExpForPropName(text) {
   return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function _formulaPropLiteral(propName, quote) {
+  const q = quote === "'" ? "'" : '"';
+  return String(propName || '')
+    .replace(/\\/g, '\\\\')
+    .replace(new RegExp(_escapeRegExpForPropName(q), 'g'), '\\' + q);
+}
+
 function _renameFormulaPropRefs(formula, oldName, newName) {
   if (typeof formula !== 'string' || !oldName) return formula;
   const re = new RegExp('prop\\(\\s*([\\\"\\\'])' + _escapeRegExpForPropName(oldName) + '\\1\\s*\\)', 'g');
-  return formula.replace(re, (match, quote) => 'prop(' + quote + newName + quote + ')');
+  return formula.replace(re, (match, quote) => 'prop(' + quote + _formulaPropLiteral(newName, quote) + quote + ')');
 }
 
 function _deleteFormulaPropRefs(formula, propName) {
@@ -361,21 +490,27 @@ function _renameViewConfigPropReferences(target, oldName, newName) {
 async function renameDbProperty(dbPath, oldName, newName) {
   if (!dbPath || !oldName || !newName || oldName === newName) return false;
   const beforeCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
+  const beforePropertyTypes = JSON.parse(JSON.stringify((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : beforeCfg.propertyTypes) || {}));
   const targetCtx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
   const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(targetCtx) : null) || (_ptIsCurrentDbPath(dbPath) ? state.pivotData : null);
   const c = getDbViewConfig(dbPath);
-  const existingProps = new Set([
+  const rawExistingProps = [
     ...(Array.isArray(pivotData?.properties) ? pivotData.properties : []),
     ...(Array.isArray(c.colOrder) ? c.colOrder : []),
     ...Object.keys(c.propertyTypes || {}),
     ...Object.keys(getPropertyTypes(dbPath) || {}),
-  ]);
+  ];
+  const existingProps = new Set(
+    typeof filterDeletedDbProperties === 'function'
+      ? filterDeletedDbProperties(dbPath, rawExistingProps)
+      : rawExistingProps
+  );
   if (existingProps.has(newName) && newName !== oldName) {
     showStatus('同じ名前の列が既にあります: ' + newName, true);
     return false;
   }
   if (Array.isArray(c.colOrder)) c.colOrder = c.colOrder.map(n => n === oldName ? newName : n);
-  const pt = getPropertyTypes(dbPath);
+  const pt = JSON.parse(JSON.stringify(getPropertyTypes(dbPath) || {}));
   if (pt[oldName]) { pt[newName] = pt[oldName]; delete pt[oldName]; }
   Object.values(pt).forEach(cfg => _renamePropertyTypeReferences(cfg, oldName, newName));
   c.propertyTypes = pt;
@@ -419,21 +554,39 @@ async function renameDbProperty(dbPath, oldName, newName) {
   const entities = pivotData?.entities || {};
   const valueErrors = [];
   const movedEntities = [];
+  const movedValueRefs = [];
+  const restoreBeforeConfig = async () => {
+    saveDbViewConfig(dbPath, beforeCfg);
+    const restoredTypes = Object.keys(beforePropertyTypes).length ? beforePropertyTypes : (beforeCfg.propertyTypes || {});
+    if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata) {
+      state.dbMetadata.property_types = JSON.parse(JSON.stringify(restoredTypes));
+      state.dbMetadata.property_layout = beforeCfg.propertyLayout || null;
+    }
+    const cfg = getDbViewConfig(dbPath);
+    cfg.propertyTypes = JSON.parse(JSON.stringify(restoredTypes));
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+    await _savePropertyTypesToBackend(dbPath, { property_layout: beforeCfg.propertyLayout || null });
+  };
+  const rollbackMovedValues = async () => {
+    for (const ref of [...movedValueRefs].reverse()) {
+      try { await _apiPutValue(ref, { new_property: oldName }); } catch {}
+    }
+  };
   for (const ent of Object.values(entities)) {
     const vals = ent?.[oldName];
     if (!Array.isArray(vals)) continue;
     const moveVals = vals.slice().sort((a, b) => (Number(b?.candidate_index) || 0) - (Number(a?.candidate_index) || 0));
     for (const val of moveVals) {
-      try { await _apiPutValue(val, { new_property: newName }); }
+      try {
+        await _apiPutValue(val, { new_property: newName });
+        val.property = newName;
+        movedValueRefs.push({ ...val, property: newName });
+      }
       catch (e) { valueErrors.push(e); }
     }
     if (valueErrors.length) {
-      saveDbViewConfig(dbPath, beforeCfg);
-      if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata) {
-        state.dbMetadata.property_types = beforeCfg.propertyTypes || {};
-        state.dbMetadata.property_layout = beforeCfg.propertyLayout || null;
-      }
-      await _savePropertyTypesToBackend(dbPath, { property_layout: beforeCfg.propertyLayout || null });
+      await rollbackMovedValues();
+      await restoreBeforeConfig();
       const msg = valueErrors[0]?.message || valueErrors[0] || '値の更新に失敗しました';
       showStatus('列名変更に失敗: ' + msg, true);
       throw valueErrors[0] || new Error('rename value update failed');
@@ -585,7 +738,11 @@ function _renderMsrSources(sources, mode, root) {
   const container = _ptGet('pt-msr-sources', scope);
   if (!container) return;
   container.innerHTML = '';
-  const myProps = _ptState(scope).pivotData?.properties || [];
+  const stateInfo = _ptState(scope);
+  const rawMyProps = stateInfo.pivotData?.properties || [];
+  const myProps = typeof filterDeletedDbProperties === 'function'
+    ? filterDeletedDbProperties(stateInfo.dbPath || state.currentDbPath || '', rawMyProps)
+    : rawMyProps;
 
   sources.forEach((src, idx) => {
     const div = document.createElement('div');
@@ -710,7 +867,11 @@ function _renderButtonActions(actions, root) {
   const container = _ptGet('pt-btn-actions', scope);
   if (!container) return;
   container.innerHTML = '';
-  const allProps = _ptState(scope).pivotData?.properties || [];
+  const stateInfo = _ptState(scope);
+  const rawAllProps = stateInfo.pivotData?.properties || [];
+  const allProps = typeof filterDeletedDbProperties === 'function'
+    ? filterDeletedDbProperties(stateInfo.dbPath || state.currentDbPath || '', rawAllProps)
+    : rawAllProps;
   const actionTypes = [
     { value: 'set-value', label: '値を設定' },
     { value: 'set-current-user', label: '現在のユーザーを設定' },
@@ -817,39 +978,134 @@ function _collectButtonActions(root) {
   return actions;
 }
 
+function _buttonActionResolveContext(dbPath, ctx) {
+  if (ctx) return ctx;
+  if (typeof _dbFindPaneContextForPath === 'function' && dbPath) {
+    const paneCtx = _dbFindPaneContextForPath(dbPath);
+    if (paneCtx) return paneCtx;
+  }
+  return typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+}
+
+function _buttonActionCss(value) {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(value)
+    : String(value || '').replace(/["\\]/g, '\\$&');
+}
+
+function _buttonActionTargetCell(dbPath, entityName, propName, ctx) {
+  const tableId = (ctx && ctx.tableId) || 'pivot-table';
+  const root = (typeof _paneEl === 'function' && ctx ? _paneEl(ctx, '#' + tableId) : null)
+    || document.getElementById(tableId)
+    || document;
+  return root.querySelector(`tbody tr[data-entity-name="${_buttonActionCss(entityName)}"] td[data-prop-name="${_buttonActionCss(propName)}"]`);
+}
+
+function _buttonActionEntityPath(dbPath, entityName, pivotData, entityData) {
+  const groups = entityData && typeof entityData === 'object' ? Object.values(entityData) : [];
+  for (const values of groups) {
+    if (!Array.isArray(values)) continue;
+    for (const candidate of values) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const rawPath = candidate.entry_path || candidate.entity_path || candidate.folder_path || candidate.file || '';
+      if (!rawPath) continue;
+      if (typeof _resolveEntityPathFromValObj === 'function') {
+        const resolved = _resolveEntityPathFromValObj(candidate);
+        if (resolved) return resolved;
+      }
+      const normalized = String(rawPath).replace(/\\/g, '/');
+      if (normalized.endsWith('.md') && normalized.includes('/' + entityName + '/')) {
+        return normalized.slice(0, normalized.lastIndexOf('/'));
+      }
+      return normalized.replace(/\/+$/, '');
+    }
+  }
+  return _entityPath(dbPath, entityName, pivotData);
+}
+
+function _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, oldTarget, value, extra, ctx) {
+  const contexts = [];
+  const addContext = (targetCtx) => {
+    if (targetCtx && !contexts.includes(targetCtx)) contexts.push(targetCtx);
+  };
+  addContext(ctx);
+  if (typeof state !== 'undefined' && state.currentDbPath === dbPath) addContext(state);
+  contexts.forEach(targetCtx => {
+    if (typeof _upsertLocalPivotValue === 'function') {
+      _upsertLocalPivotValue(entityPath, propName, oldTarget, value, extra, targetCtx);
+      return;
+    }
+    const entityData = targetCtx?.pivotData?.entities?.[entityName];
+    if (!entityData) return;
+    if (!Array.isArray(entityData[propName])) entityData[propName] = [];
+    let target = oldTarget && entityData[propName].includes(oldTarget) ? oldTarget : null;
+    if (!target) {
+      target = { property: propName, value: '', status: extra?.status || '採用', note: extra?.note || '' };
+      entityData[propName].push(target);
+    }
+    target.value = value;
+    if (extra?.file !== undefined) target.file = extra.file;
+    if (extra?.property !== undefined) target.property = extra.property;
+    if (extra?.candidate_index !== undefined) target.candidate_index = extra.candidate_index;
+  });
+}
+
+function _buttonActionRefreshTargetCell(dbPath, entityPath, entityName, propName, ctx) {
+  const td = _buttonActionTargetCell(dbPath, entityName, propName, ctx);
+  const ptc = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null;
+  if (td && typeof _refreshPivotRelationCell === 'function') {
+    _refreshPivotRelationCell(td, entityPath, propName, ptc, { dbPath, ctx });
+    if (typeof _refreshDerivedCellsInRow === 'function') _refreshDerivedCellsInRow(td, entityPath, { dbPath, ctx });
+    return true;
+  }
+  if (typeof renderPivot === 'function') {
+    renderPivot(ctx);
+    return true;
+  }
+  return false;
+}
+
+async function _buttonActionWriteValue(dbPath, entityName, entityPath, propName, value, ctx) {
+  if (!propName) return;
+  const actionCtx = _buttonActionResolveContext(dbPath, ctx);
+  const entityData = actionCtx?.pivotData?.entities?.[entityName] || state.pivotData?.entities?.[entityName] || null;
+  const target = entityData ? getAdoptedValueForWrite(entityData[propName] || []) : null;
+  if (target) {
+    const oldVal = target.value;
+    await _apiPutValue(target, { new_value: value });
+    _dbUndoValue(propName, target, oldVal, value);
+    _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, target, value, {}, actionCtx);
+  } else {
+    const result = await _apiPostValue(entityPath, propName, value, '採用', '');
+    _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, null, value, {
+      file: result?.path || result?.file,
+      candidate_index: result?.candidate_index,
+      status: '採用',
+      note: '',
+      property: propName,
+    }, actionCtx);
+  }
+  _buttonActionRefreshTargetCell(dbPath, entityPath, entityName, propName, actionCtx);
+}
+
 // ボタンアクション実行エンジン
 async function _executeButtonActions(dbPath, entityName, actions, ctx) {
   const targetDbPath = dbPath || state.currentDbPath || '';
-  const targetCtx = ctx || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(targetDbPath) : null);
-  const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(targetCtx) : null) || (_ptIsCurrentDbPath(targetDbPath) ? state.pivotData : null);
-  const entityPath = _entityPath(targetDbPath, entityName, pivotData);
-  const entityData = pivotData?.entities?.[entityName];
+  const actionCtx = _buttonActionResolveContext(targetDbPath, ctx);
+  const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(actionCtx) : null) || (_ptIsCurrentDbPath(targetDbPath) ? state.pivotData : null);
+  const entityData = actionCtx?.pivotData?.entities?.[entityName] || state.pivotData?.entities?.[entityName] || null;
+  const entityPath = _buttonActionEntityPath(targetDbPath, entityName, pivotData, entityData);
+  let needsReload = false;
 
   for (const action of actions) {
     switch (action.type) {
       case 'set-value': {
-        if (!entityData) break;
-        const target = getAdoptedValueForWrite(entityData[action.targetProp] || []);
-        if (target) {
-          const oldVal = target.value;
-          await _apiPutValue(target, { new_value: action.value });
-          _dbUndoValue(action.targetProp, target, oldVal, action.value);
-        } else {
-          await _apiPostValue(entityPath, action.targetProp, action.value, '採用', '');
-        }
+        await _buttonActionWriteValue(targetDbPath, entityName, entityPath, action.targetProp, action.value, actionCtx);
         break;
       }
       case 'set-current-user': {
         const username = typeof getUsername === 'function' ? getUsername() : 'anonymous';
-        if (!entityData) break;
-        const target = getAdoptedValueForWrite(entityData[action.targetProp] || []);
-        if (target) {
-          const oldVal = target.value;
-          await _apiPutValue(target, { new_value: username });
-          _dbUndoValue(action.targetProp, target, oldVal, username);
-        } else {
-          await _apiPostValue(entityPath, action.targetProp, username, '採用', '');
-        }
+        await _buttonActionWriteValue(targetDbPath, entityName, entityPath, action.targetProp, username, actionCtx);
         break;
       }
       case 'set-now': {
@@ -858,25 +1114,20 @@ async function _executeButtonActions(dbPath, entityName, actions, ctx) {
         const now = typeof _dbDateCurrentValue === 'function'
           ? _dbDateCurrentValue(targetPtc)
           : new Date().toISOString().substring(0, 10);
-        if (!entityData) break;
-        const target = getAdoptedValueForWrite(entityData[action.targetProp] || []);
-        if (target) {
-          const oldVal = target.value;
-          await _apiPutValue(target, { new_value: now });
-          _dbUndoValue(action.targetProp, target, oldVal, now);
-        } else {
-          await _apiPostValue(entityPath, action.targetProp, now, '採用', '');
-        }
+        await _buttonActionWriteValue(targetDbPath, entityName, entityPath, action.targetProp, now, actionCtx);
         break;
       }
       case 'create-dependent': {
-        await _createDependentEntry(targetDbPath, entityName, action.copyProps, targetCtx);
+        await _createDependentEntry(targetDbPath, entityName, action.copyProps, actionCtx);
+        needsReload = true;
         break;
       }
     }
   }
 
-  if (targetDbPath) selectDatabase(targetDbPath, targetCtx);
+  if (needsReload && targetDbPath && typeof selectDatabase === 'function') {
+    await selectDatabase(targetDbPath, actionCtx, { silent: true });
+  }
 }
 
 // Phase 3 §5.1: カレンダー連動設定エディタ（date 型プロパティ用）

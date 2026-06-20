@@ -56,6 +56,7 @@ const GB_SHORTCUTS = {
   'note.checklist':       { key: 'ctrl+shift+l', label: 'チェックリスト',             scope: 'note' },
   'note.duplicate':       { key: 'ctrl+d',       label: '行を複製',                  scope: 'note' },
   'note.ruby':            { key: 'alt+arrowdown', label: 'ルビを設定',                scope: 'note' },
+  'note.newParagraph':    { key: 'ctrl+enter',   label: '次の段落を追加',            scope: 'note' },
 
   // --- シナリオ ---
   // 実処理は gb-scriptnote-editor.* の既存 keydown / paste ハンドラに委譲する。
@@ -75,6 +76,7 @@ const GB_SHORTCUTS = {
   'scenario.pasteInCell':  { key: 'ctrl+shift+v', label: 'セル内に貼り付け',           scope: 'scenario' },
   'scenario.ruby':         { key: 'ctrl+r',       label: 'ルビを設定',                scope: 'scenario' },
   'scenario.search':       { key: 'ctrl+f',       label: '検索と置換',                scope: 'scenario' },
+  'scenario.replace':      { key: 'ctrl+h',       label: '置換',                      scope: 'scenario' },
   'scenario.undo':         { key: 'ctrl+z',       label: '元に戻す',                  scope: 'scenario' },
   'scenario.redo':         { key: 'ctrl+y',       label: 'やり直す',                  scope: 'scenario' },
 
@@ -85,6 +87,7 @@ const GB_SHORTCUTS = {
   'db.newEntry':          { key: 'ctrl+enter',   label: '新規エントリ追加',           scope: 'database' },
   'db.newProp':           { key: 'ctrl+shift+enter', label: '新規プロパティ追加',    scope: 'database' },
   'db.search':            { key: 'ctrl+f',       label: '現在のシートを検索',         scope: 'database' },
+  'db.replace':           { key: 'ctrl+h',       label: '現在のシートで置換',         scope: 'database' },
   'db.advancedFilter':    { key: 'ctrl+shift+f', label: '複数条件フィルタ',           scope: 'database' },
   'db.bulkEdit':          { key: 'ctrl+e',       label: '選択エントリを一括編集',     scope: 'database' },
   'db.copy':              { key: 'ctrl+c',       label: 'セル値のコピー',            scope: 'database' },
@@ -93,6 +96,8 @@ const GB_SHORTCUTS = {
   'db.filter':            { key: 'ctrl+shift+l', label: 'フィルタの表示/非表示',      scope: 'database' },
 
   // --- ボード ---
+  'board.search':         { key: 'ctrl+f',       label: 'ボード内を検索',            scope: 'board' },
+  'board.replace':        { key: 'ctrl+h',       label: 'ボード内を置換',            scope: 'board' },
   'board.delete':         { key: 'delete',       label: 'カードを削除',              scope: 'board' },
   'board.selectAll':      { key: 'ctrl+a',       label: '全要素を選択',              scope: 'board' },
   'board.deselectAll':    { key: 'ctrl+d',       label: '全選択解除',                scope: 'board' },
@@ -174,7 +179,7 @@ function _viewToScope(view) {
 
 function _resolveShortcutScope() {
   const ae = document.activeElement;
-  const isEditing = ae && (
+  const isEditing = ae && ae.isConnected !== false && (
     ae.contentEditable === 'true' ||
     ae.tagName === 'INPUT' ||
     ae.tagName === 'TEXTAREA' ||
@@ -393,6 +398,7 @@ function getScriptnoteShortcutStatusText() {
     _shortcutStatusItem('scenario.newline', '改行'),
     _shortcutStatusItem('scenario.deleteRow', '行削除'),
     _shortcutStatusItem('scenario.search', '検索'),
+    _shortcutStatusItem('scenario.replace', '置換'),
     _shortcutStatusItem('scenario.moveUp', '上へ'),
     _shortcutStatusItem('scenario.moveDown', '下へ'),
     _shortcutStatusItem('scenario.ruby', 'ルビ'),
@@ -563,12 +569,36 @@ function _currentNoteSelectionRange() {
   return range.cloneRange();
 }
 
+function _insertParagraphAfterCurrentNoteBlock() {
+  const editable = _activeNoteEditable();
+  const sel = editable && typeof window.getSelection === 'function' ? window.getSelection() : null;
+  if (!editable || !sel || !sel.rangeCount) return false;
+  const range = sel.getRangeAt(0);
+  const node = range.startContainer?.nodeType === 1 ? range.startContainer : range.startContainer?.parentElement;
+  const block = node?.closest?.('p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, div');
+  const target = (!block || block === editable || !editable.contains(block)) ? null : block;
+  if (target && !target.parentNode) return false;
+  const beforeHtml = editable.innerHTML;
+  if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+  const next = document.createElement(target?.tagName === 'LI' ? 'li' : 'p');
+  next.appendChild(document.createElement('br'));
+  (target ? target.parentNode : editable).insertBefore(next, target ? target.nextSibling : null);
+  const caret = document.createRange();
+  caret.setStart(next, 0);
+  caret.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(caret);
+  if (editable.innerHTML !== beforeHtml) editable.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}
+
 const _shortcutHandlers = {
 
   // ============ 全般 ============
 
   'global.save': (e) => {
-    if (state.view === 'board' && typeof bdSave === 'function') bdSave();
+    if (state.view === 'board' && window.MeldexBoardStandalone?.saveCurrentBoard) window.MeldexBoardStandalone.saveCurrentBoard();
+    else if (state.view === 'board' && typeof bdSave === 'function') bdSave();
     else if (state.view === 'csv' && typeof saveCsv === 'function') saveCsv();
     else if (state.view === 'scriptnote') {
       const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
@@ -624,7 +654,7 @@ const _shortcutHandlers = {
     if (typeof navForward === 'function') navForward();
   },
   'global.search': () => {
-    // アクティブ pane のタブがボードならボード検索バー、それ以外はノート/ファイル検索バーを開く
+    // アクティブ pane のタブ種別に応じて、現在のビュー内検索バーを開く
     try {
       const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
       const activeTab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
@@ -632,12 +662,16 @@ const _shortcutHandlers = {
         bdOpenFindBar('find');
         return;
       }
+      if (activeTab && (activeTab.type === 'database' || activeTab.type === 'sheet') && typeof openDbFindReplace === 'function') {
+        openDbFindReplace('find');
+        return;
+      }
     } catch (_) {}
     const bar = document.getElementById('file-search-bar');
-    if (bar && bar.classList.contains('open')) {
+    if (bar && bar.classList.contains('open') && !bar.classList.contains('replace-open')) {
       if (typeof closeFileSearch === 'function') closeFileSearch();
     } else {
-      if (typeof openFileSearch === 'function') openFileSearch();
+      if (typeof openFileSearch === 'function') openFileSearch('find');
     }
   },
   'global.vaultSearch': () => { if (typeof openSearchPanel === 'function') openSearchPanel(); },
@@ -744,12 +778,7 @@ const _shortcutHandlers = {
     return false;
   },
   'note.replace':   () => {
-    // 検索と置換：ファイル内検索を開く（置換モード）
-    if (typeof openFileSearch === 'function') openFileSearch();
-    setTimeout(() => {
-      const replaceCheck = document.getElementById('sp-show-replace');
-      if (replaceCheck && !replaceCheck.checked) replaceCheck.click();
-    }, 100);
+    if (typeof openFileSearch === 'function') openFileSearch('replace');
   },
   'note.codeBlock': () => {
     _runNoteRichTextCommand('formatBlock', 'PRE');
@@ -781,6 +810,7 @@ const _shortcutHandlers = {
     if (typeof showNoteRubyPopup !== 'function') return false;
     showNoteRubyPopup(edTarget, sel.getRangeAt(0).cloneRange());
   },
+  'note.newParagraph': () => _insertParagraphAfterCurrentNoteBlock(),
 
   // ============ シナリオ ============
   'scenario.addRow': (e) => _runScriptnoteShortcutAction('scenario.addRow', e),
@@ -799,6 +829,7 @@ const _shortcutHandlers = {
   'scenario.pasteInCell': (e) => _runScriptnoteShortcutAction('scenario.pasteInCell', e),
   'scenario.ruby': (e) => _runScriptnoteShortcutAction('scenario.ruby', e),
   'scenario.search': (e) => _runScriptnoteShortcutAction('scenario.search', e),
+  'scenario.replace': (e) => _runScriptnoteShortcutAction('scenario.replace', e),
   'scenario.undo': (e) => _runScriptnoteShortcutAction('scenario.undo', e),
   'scenario.redo': (e) => _runScriptnoteShortcutAction('scenario.redo', e),
 
@@ -808,7 +839,7 @@ const _shortcutHandlers = {
     if (state.view !== 'pivot') return false;
     const table = activeCell?.closest?.('table') || document.getElementById('pivot-table');
     if (!table) return false;
-    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.group-header-row)'));
+    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)'));
     if (typeof triggerNewEntity === 'function') triggerNewEntity(table, dataRows);
   },
   'db.newProp': () => {
@@ -819,10 +850,10 @@ const _shortcutHandlers = {
     if (state.view !== 'pivot') return false;
     if (!activeCell) return false;
     const ae = document.activeElement;
-    if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
+    if (ae && ae.isConnected !== false && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
     const table = activeCell?.closest?.('table') || document.getElementById('pivot-table');
     if (!table) return false;
-    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.group-header-row)'));
+    const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)'));
     const thAll = Array.from(table.querySelectorAll('thead th'));
     const tr = activeCell.parentElement;
     const colIdx = Array.from(tr.children).indexOf(activeCell);
@@ -831,10 +862,14 @@ const _shortcutHandlers = {
       const nameLabel = activeCell.querySelector('.entity-name-label');
       if (nameLabel) nameLabel.click();
     } else {
-      const valText = activeCell.querySelector('.value-text');
-      if (valText) {
-        valText.click();
+      if (typeof _dbStartCellInlineEditor === 'function') {
+        _dbStartCellInlineEditor(activeCell, { preferExistingValue: true });
       } else {
+        const valText = activeCell.querySelector('.value-text');
+        if (valText) {
+          valText.click();
+          return;
+        }
         const entityName = dataRows[rowIdx]?.querySelector('.entity-name-label')?.textContent;
         const propName = thAll[colIdx]?.dataset?.prop;
         if (entityName && propName && state.currentDbPath) {
@@ -847,7 +882,7 @@ const _shortcutHandlers = {
     if (state.view !== 'pivot') return false;
     if (!activeCell) return false;
     const ae = document.activeElement;
-    if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
+    if (ae && ae.isConnected !== false && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
     const table = activeCell?.closest?.('table') || document.getElementById('pivot-table');
     const tr = activeCell.parentElement;
     const colIdx = Array.from(tr.children).indexOf(activeCell);
@@ -858,11 +893,15 @@ const _shortcutHandlers = {
         startEntityInlineRename(activeCell, nameLabel, entityName, state.currentDbPath);
       }
     } else {
-      const valText = activeCell.querySelector('.value-text');
-      if (valText) {
-        valText.click();
+      if (typeof _dbStartCellInlineEditor === 'function') {
+        _dbStartCellInlineEditor(activeCell, { preferExistingValue: true });
       } else if (table) {
-        const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.group-header-row)'));
+        const valText = activeCell.querySelector('.value-text');
+        if (valText) {
+          valText.click();
+          return;
+        }
+        const dataRows = Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.group-header-row)'));
         const thAll = Array.from(table.querySelectorAll('thead th'));
         const rowIdx = dataRows.indexOf(tr);
         const entityName = dataRows[rowIdx]?.querySelector('.entity-name-label')?.textContent;
@@ -879,7 +918,11 @@ const _shortcutHandlers = {
   },
   'db.search': () => {
     if (!state.currentDbPath) return false;
-    if (typeof showDbSearchModal === 'function') showDbSearchModal({ scope: 'current' });
+    if (typeof openDbFindReplace === 'function') openDbFindReplace('find');
+  },
+  'db.replace': () => {
+    if (!state.currentDbPath) return false;
+    if (typeof openDbFindReplace === 'function') openDbFindReplace('replace');
   },
   'db.advancedFilter': () => {
     if (!state.currentDbPath) return false;
@@ -916,6 +959,14 @@ const _shortcutHandlers = {
 
   // ============ ボード ============
 
+  'board.search': () => {
+    if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
+    if (typeof bdOpenFindBar === 'function') bdOpenFindBar('find');
+  },
+  'board.replace': () => {
+    if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
+    if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
+  },
   'board.delete': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
     if (typeof bdDeleteSelected === 'function') bdDeleteSelected();

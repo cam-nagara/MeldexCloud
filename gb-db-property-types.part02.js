@@ -7,11 +7,13 @@
     const syncBody = _ptGet('pt-calsync-body', scope);
     const refreshDateSourceUi = () => {
       if (!rangeCb || !rangeNote) return;
-      if (srcSel.value === 'modified') {
+      if (_ptIsAutoDateSource(srcSel.value)) {
         rangeCb.disabled = true;
+        rangeCb.checked = false;
         rangeNote.style.display = '';
         if (syncCb) {
           syncCb.disabled = true;
+          syncCb.checked = false;
         }
         if (syncBody) syncBody.style.display = 'none';
       } else {
@@ -20,6 +22,7 @@
         if (syncCb) syncCb.disabled = false;
         if (syncBody && syncCb?.checked) syncBody.style.display = '';
       }
+      _ptRefreshAutoFillVisibility(scope);
     };
     refreshDateSourceUi();
     srcSel?.addEventListener('change', refreshDateSourceUi);
@@ -33,15 +36,20 @@
     </div>`;
   } else if (type === 'image') {
     const options = current.options || {};
-    const accept = Array.isArray(options.accept) ? options.accept.join(', ') : 'png, jpg, jpeg, gif, webp, svg';
+    const accept = Array.isArray(options.accept) ? options.accept.filter(ext => String(ext).toLowerCase() !== 'svg').join(', ') : 'png, jpg, jpeg, gif, webp';
+    const uploadThumbSize = Math.max(64, Math.min(1024, parseInt(options.thumbnail_size, 10) || 256));
+    const cellHeight = Math.max(32, Math.min(320, parseInt(options.cell_height ?? options.cell_thumbnail_size, 10) || Math.min(96, uploadThumbSize)));
     optDiv.innerHTML = `<div class="field"><label>最大枚数</label>
-      <input id="pt-image-max-count" type="number" min="1" max="100" value="${esc(options.max_count == null ? '' : options.max_count)}" placeholder="空欄 = 100">
+      <input id="pt-image-max-count" class="gb-num-input" type="number" min="1" max="100" value="${esc(options.max_count == null ? '' : options.max_count)}" placeholder="空欄 = 100">
     </div>
     <div class="field"><label>許可する拡張子</label>
       <input id="pt-image-accept" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
     </div>
-    <div class="field"><label>サムネイルサイズ(px)</label>
-      <input id="pt-image-thumb-size" type="number" min="64" max="1024" value="${esc(options.thumbnail_size || 256)}">
+    <div class="field"><label>表の画像高さ(px)</label>
+      <input id="pt-image-cell-height" class="gb-num-input" type="number" min="32" max="320" value="${esc(cellHeight)}">
+    </div>
+    <div class="field"><label>保存サムネイルサイズ(px)</label>
+      <input id="pt-image-thumb-size" class="gb-num-input" type="number" min="64" max="1024" value="${esc(uploadThumbSize)}">
     </div>`;
   } else {
     optDiv.innerHTML = '';
@@ -51,15 +59,36 @@
   // $ 接頭辞で動的評価: $today / $now / $currentUser / $version（§15.4.2）
   const curAutoCreate = (current.autoFillOnCreate != null) ? String(current.autoFillOnCreate) : '';
   const autoFillBlock = document.createElement('div');
+  autoFillBlock.id = 'pt-auto-fill-block';
   autoFillBlock.className = 'gb-section-head';
   autoFillBlock.style.cssText = 'margin-top:12px;border-top:1px solid var(--border);padding-top:8px;';
   autoFillBlock.innerHTML = `
-    <div class="field"><label>新規エントリ作成時の初期値 (autoFillOnCreate)</label>
+    <div class="field"><label>新規エントリ作成時の初期値</label>
       <input id="pt-auto-fill-on-create" type="text" value="${esc(curAutoCreate)}" placeholder="例: $now / $currentUser / $version / 提案">
-      <div class="pt-hint">$today (日付) / $now (日時) / $currentUser / $version で動的評価。それ以外は静的リテラル。空欄なら無効。</div>
+      <div class="pt-hint">$today / $now / $currentUser / $version が使えます。空欄なら自動入力しません。</div>
     </div>
   `;
   optDiv.appendChild(autoFillBlock);
+  _ptRefreshAutoFillVisibility(scope);
+}
+
+function _ptIsAutoDateSource(source) {
+  return source === 'created' || source === 'modified';
+}
+
+function _ptIsReadOnlySource(root) {
+  const scope = _ptResolveRoot(root);
+  const type = _ptReadUiType(scope);
+  if (type === 'date') return _ptIsAutoDateSource(_ptGet('pt-date-source', scope)?.value || '');
+  if (type === 'user' || type === 'multi-user') return (_ptGet('pt-user-source', scope)?.value || '') === 'modified_by';
+  return false;
+}
+
+function _ptRefreshAutoFillVisibility(root) {
+  const scope = _ptResolveRoot(root);
+  const block = _ptGet('pt-auto-fill-block', scope);
+  if (!block) return;
+  block.hidden = _ptIsReadOnlySource(scope);
 }
 
 function _ptResolveRoot(root) {
@@ -154,7 +183,7 @@ function _propertySettingsExistingValues(propName, pivotData) {
   return [...existingValues];
 }
 
-async function applyPropertyType(propName, root) {
+async function applyPropertyType(propName, root, options = {}) {
   const scope = _ptResolveRoot(root);
   window._ptActiveRoot = scope;
   const type = _ptReadUiType(scope);
@@ -202,7 +231,7 @@ async function applyPropertyType(propName, root) {
     const src = _ptGet('pt-date-source', scope)?.value || '';
     if (src) config.source = src;
     if (_ptGet('pt-date-with-time', scope)?.checked) config.withTime = true;
-    if (src !== 'modified' && _ptGet('pt-date-range', scope)?.checked) config.range = true;
+    if (!_ptIsAutoDateSource(src) && _ptGet('pt-date-range', scope)?.checked) config.range = true;
   } else if (type === 'user' || type === 'multi-user') {
     const src = _ptGet('pt-user-source', scope)?.value || '';
     if (src) config.source = src;
@@ -211,10 +240,12 @@ async function applyPropertyType(propName, root) {
     const maxCount = maxRaw ? Math.max(1, Math.min(100, parseInt(maxRaw, 10) || 100)) : null;
     const acceptRaw = _ptGet('pt-image-accept', scope)?.value || '';
     const accept = acceptRaw.split(',').map(s => s.trim().toLowerCase().replace(/^\./, '')).filter(Boolean);
+    const cellHeight = Math.max(32, Math.min(320, parseInt(_ptGet('pt-image-cell-height', scope)?.value || '96', 10) || 96));
     const thumbSize = Math.max(64, Math.min(1024, parseInt(_ptGet('pt-image-thumb-size', scope)?.value || '256', 10) || 256));
     config.options = {
       max_count: maxCount,
-      accept: accept.length ? accept : ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'],
+      accept: accept.length ? accept.filter(ext => ext !== 'svg') : ['png', 'jpg', 'jpeg', 'gif', 'webp'],
+      cell_height: cellHeight,
       thumbnail_size: thumbSize,
     };
   }
@@ -222,13 +253,13 @@ async function applyPropertyType(propName, root) {
   // Phase 3 §5.1: calendarSync（date 型のみ）
   if (type === 'date') {
     let cs = null;
-    try { cs = config.source === 'modified' ? null : _collectCalendarSyncConfig(scope); }
+    try { cs = _ptIsAutoDateSource(config.source) ? null : _collectCalendarSyncConfig(scope); }
     catch { return; /* バリデーションエラーは既に showStatus 済み */ }
     if (cs) config.calendarSync = cs;
   }
 
   // Phase 3 §12.1: autoFillOnCreate（全型共通。既存の autoFillOnStatus とは独立して共存）
-  const autoCreateRaw = _ptGet('pt-auto-fill-on-create', scope)?.value?.trim() || '';
+  const autoCreateRaw = _ptIsReadOnlySource(scope) ? '' : (_ptGet('pt-auto-fill-on-create', scope)?.value?.trim() || '');
   if (autoCreateRaw) config.autoFillOnCreate = autoCreateRaw;
   // 以前の autoFillOnStatus は別UI（gb-db-props.js 793行あたり）で編集されるため、存在すれば保持する
   if (prev.autoFillOnStatus && !('autoFillOnStatus' in config)) {
@@ -259,7 +290,7 @@ async function applyPropertyType(propName, root) {
   const savePromise = setPropertyType(dbPath, propName, config);
   _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   if (prev.type === 'image' && type !== 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).then(() => apiPost('/media/gc', {})).catch(() => {});
+    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
   }
   const overlay = scope.closest?.('.modal-overlay');
   if (overlay) overlay.remove();
@@ -267,7 +298,13 @@ async function applyPropertyType(propName, root) {
   if (type === 'formula') {
     for (const k in _formulaCache) delete _formulaCache[k];
   }
-  renderPivot(ctx);
+  if (options.render !== false) renderPivot(ctx);
+  try {
+    await savePromise;
+  } catch (e) {
+    showStatus('プロパティ設定の保存に失敗: ' + (e?.message || e), true);
+    return null;
+  }
   return config;
 }
 
@@ -300,14 +337,17 @@ function testFormula(root) {
 }
 
 function _ptFormulaProps(root) {
-  const props = _ptState(root).pivotData?.properties || state.pivotData?.properties || [];
-  return Array.isArray(props) ? props : [];
+  const stateInfo = _ptState(root);
+  const props = stateInfo.pivotData?.properties || state.pivotData?.properties || [];
+  if (!Array.isArray(props)) return [];
+  const dbPath = stateInfo.dbPath || state.currentDbPath || '';
+  return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
 }
 
 function _ptFormulaTemplates() {
   return [
     { label: 'if', snippet: 'if(prop("状態") == "完了", "完了", "未完了")' },
-    { label: '日付差', snippet: 'dateBetween(now(), prop("開始日"), "days")' },
+    { label: '日時差', snippet: 'dateBetween(now(), prop("開始日時"), "days")' },
     { label: '表示形式', snippet: 'format(prop("数値"), "#,##0.00")' },
   ];
 }
@@ -315,7 +355,7 @@ function _ptFormulaTemplates() {
 function _ptBuildFormulaOptionsHtml(current, root) {
   const props = _ptFormulaProps(root);
   const propButtons = props.length
-    ? props.map(p => '<button type="button" class="pt-small-btn" data-formula-prop="' + esc(p) + '">prop("' + esc(p) + '")</button>').join('')
+    ? props.map(p => '<button type="button" class="pt-small-btn" data-formula-prop="' + esc(p) + '">prop("' + esc(_formulaPropLiteral(p, '"')) + '")</button>').join('')
     : '<span class="pt-hint">利用可能なプロパティがありません</span>';
   const templateButtons = _ptFormulaTemplates()
     .map(t => '<button type="button" class="pt-small-btn" data-formula-template="' + esc(t.snippet) + '">' + esc(t.label) + '</button>')
@@ -397,7 +437,7 @@ function _ptBindFormulaEditor(root) {
   scope.querySelectorAll('[data-formula-prop]').forEach(btn => {
     btn.addEventListener('click', () => {
       const prop = btn.dataset.formulaProp || '';
-      _ptInsertFormulaText(textarea, 'prop("' + prop.replace(/"/g, '\\"') + '")');
+      _ptInsertFormulaText(textarea, 'prop("' + _formulaPropLiteral(prop, '"') + '")');
     });
   });
   scope.querySelectorAll('[data-formula-template]').forEach(btn => {
@@ -435,11 +475,11 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
   const pivotData = ctx?.pivotData || _ptPivotDataForDbPath(dbPath);
   if (propName === '__entity__') {
     const pinned = typeof getEntityColumnPinned === 'function'
-      ? getEntityColumnPinned(dbPath)
+      ? getEntityColumnPinned(dbPath, { ctx })
       : getDbViewConfig(dbPath).entityColumnPinned !== false;
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
       <div class="gb-section-head">エントリ名列</div>
-      <div class="field"><label>列名</label><input type="text" value="エントリ名" disabled></div>
+      <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="エントリ名" disabled aria-label="列名"></div>
       <div class="field"><label class="pt-check-label">
         <input id="entity-column-pinned" type="checkbox" ${pinned ? 'checked' : ''}>
         列を固定
@@ -447,7 +487,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     </div>`;
     target.querySelector('#entity-column-pinned')?.addEventListener('change', function() {
       if (typeof setEntityColumnPinned === 'function') {
-        setEntityColumnPinned(dbPath, !!this.checked);
+        setEntityColumnPinned(dbPath, !!this.checked, { ctx });
       } else {
         const c = getDbViewConfig(dbPath);
         c.entityColumnPinned = !!this.checked;
@@ -460,13 +500,23 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     });
     return;
   }
-  const availableProps = pivotData?.properties || [];
-  if (availableProps.length && !availableProps.includes(propName)) {
+  const types = getPropertyTypes(dbPath);
+  const colOrder = typeof getColOrder === 'function' ? getColOrder(dbPath, { ctx }) : null;
+  const availableProps = [
+    ...new Set([
+      ...(pivotData?.properties || []),
+      ...(Array.isArray(colOrder) ? colOrder : []),
+      ...Object.keys(types || {}),
+    ]),
+  ];
+  const visibleAvailableProps = typeof filterDeletedDbProperties === 'function'
+    ? filterDeletedDbProperties(dbPath, availableProps)
+    : availableProps;
+  if (visibleAvailableProps.length && !visibleAvailableProps.includes(propName)) {
     target.innerHTML = `<div class="gb-empty-placeholder" style="padding:16px;">列を選択してください</div>`;
     return;
   }
 
-  const types = getPropertyTypes(dbPath);
   const current = types[propName] || { type: 'text' };
   const scopeId = 'tab-' + Math.random().toString(36).slice(2, 8);
   target.innerHTML = `<div class="db-prop-settings" data-pt-root>
@@ -481,58 +531,158 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     </div>
     ${_renderPropertyMultiplicityControls(current.type, scopeId)}
     <div id="pt-options"></div>
-    <div class="btn-row">
-      <button class="primary" id="pt-settings-apply">適用</button>
-      <button id="pt-settings-open-modal">詳細設定...</button>
-    </div>
+    <div class="pt-autosave-status" aria-live="polite"></div>
   </div>`;
   const root = target.querySelector('[data-pt-root]');
   _ptSetState(root, current, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   onPropertyTypeChange(root);
-  root.querySelector('#pt-settings-apply')?.addEventListener('click', () => applyDbPropertySettings(propName, root));
-  root.querySelector('#pt-settings-open-modal')?.addEventListener('click', () => showPropertyTypeModal(propName, dbPath, ctx));
+  _bindDbPropertySettingsAutosave(root, propName);
 }
 
-async function applyDbPropertySettings(originalPropName, root) {
+function _ptSplitSelectOptionsFromTextarea(scope) {
+  const textarea = _ptGet('pt-select-options', scope);
+  if (!textarea) return null;
+  return textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function _ptApplyFastLocalSettings(root) {
+  const scope = _ptResolveRoot(root);
+  const type = _ptReadUiType(scope);
+  if (type !== 'select' && type !== 'multi-select') return false;
+  const options = _ptSplitSelectOptionsFromTextarea(scope);
+  if (!options) return false;
+  const stateInfo = _ptState(scope);
+  const dbPath = stateInfo.dbPath || state.currentDbPath || '';
+  const propName = scope._ptAutosavePropName || stateInfo.propName;
+  if (!dbPath || !propName) return false;
+
+  const prev = stateInfo.current || getPropertyTypes(dbPath)?.[propName] || {};
+  const config = { ...prev, type, options };
+  const cfg = getDbViewConfig(dbPath);
+  if (cfg) {
+    if (!cfg.propertyTypes) cfg.propertyTypes = {};
+    cfg.propertyTypes[propName] = config;
+  }
+  const targetMetadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath) : null;
+  if (targetMetadata) {
+    if (!targetMetadata.property_types) targetMetadata.property_types = {};
+    targetMetadata.property_types[propName] = config;
+    const isCurrent = typeof _ptIsCurrentDbPath === 'function'
+      ? _ptIsCurrentDbPath(dbPath)
+      : dbPath === state.currentDbPath;
+    if (isCurrent) state.dbMetadata = targetMetadata;
+  }
+  const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
+  if (ctx?.dbMetadata) {
+    if (!ctx.dbMetadata.property_types) ctx.dbMetadata.property_types = {};
+    ctx.dbMetadata.property_types[propName] = config;
+  }
+  _ptSetState(scope, config, stateInfo.existing, propName, dbPath, stateInfo.pivotData, ctx || stateInfo.ctx);
+  return true;
+}
+
+function _bindDbPropertySettingsAutosave(root, initialPropName) {
+  if (!root || root.dataset.ptAutosaveBound) return;
+  root.dataset.ptAutosaveBound = '1';
+  root._ptAutosavePropName = initialPropName;
+  let timer = null;
+  let saving = false;
+  let queued = false;
+  const schedule = (delay = 450) => {
+    _ptApplyFastLocalSettings(root);
+    const status = root.querySelector('.pt-autosave-status');
+    if (status && !saving) status.textContent = '保存待ち...';
+    clearTimeout(timer);
+    timer = setTimeout(run, delay);
+  };
+  const run = async () => {
+    if (!root.isConnected) return;
+    if (saving) {
+      queued = true;
+      return;
+    }
+    saving = true;
+    const status = root.querySelector('.pt-autosave-status');
+    if (status) status.textContent = '保存中...';
+    try {
+      const result = await applyDbPropertySettings(root._ptAutosavePropName || initialPropName, root, { auto: true });
+      if (result?.propName) root._ptAutosavePropName = result.propName;
+      if (status) status.textContent = result ? '保存しました' : '';
+    } finally {
+      saving = false;
+      if (queued) {
+        queued = false;
+        schedule(250);
+      }
+    }
+  };
+  root.addEventListener('input', (e) => {
+    if (e.target?.closest?.('.db-picker-popup')) return;
+    schedule();
+  });
+  root.addEventListener('change', () => {
+    _ptRefreshAutoFillVisibility(root);
+    schedule(120);
+  });
+  root.addEventListener('click', (e) => {
+    if (e.target?.closest?.('button')) setTimeout(() => schedule(120), 0);
+  });
+  root.querySelector('#pt-type')?.addEventListener('change', () => {
+    onPropertyTypeChange(root);
+    _bindDbPropertySettingsAutosave(root, root._ptAutosavePropName || initialPropName);
+    schedule(120);
+  });
+}
+
+async function applyDbPropertySettings(originalPropName, root, options = {}) {
   const scope = _ptResolveRoot(root);
   const stateInfo = _ptState(scope);
   const dbPath = stateInfo.dbPath || state.currentDbPath;
   const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
   const pivotData = stateInfo.pivotData || _ptPivotDataForDbPath(dbPath);
-  if (!dbPath || !originalPropName) return;
+  if (!dbPath || !originalPropName) return null;
   let propName = originalPropName;
   const nameInput = scope.querySelector('#pt-prop-name');
   const newName = (nameInput?.value || '').trim();
   if (!newName) {
     showStatus('列名を入力してください', true);
-    return;
+    return null;
   }
   if (newName !== originalPropName) {
-    const existingProps = new Set([
+    const rawExistingProps = [
       ...(Array.isArray(pivotData?.properties) ? pivotData.properties : []),
       ...(Array.isArray(getDbViewConfig(dbPath).colOrder) ? getDbViewConfig(dbPath).colOrder : []),
       ...Object.keys(getPropertyTypes(dbPath) || {}),
-    ]);
+    ];
+    const existingProps = new Set(
+      typeof filterDeletedDbProperties === 'function'
+        ? filterDeletedDbProperties(dbPath, rawExistingProps)
+        : rawExistingProps
+    );
     if (existingProps.has(newName)) {
       showStatus('同じ名前の列が既にあります: ' + newName, true);
-      return;
+      return null;
     }
     try {
       const ok = await renameDbProperty(dbPath, originalPropName, newName);
-      if (!ok) return;
+      if (!ok) return null;
     } catch (e) {
       showStatus('列名変更に失敗: ' + (e?.message || e), true);
-      return;
+      return null;
     }
     propName = newName;
+    scope._ptPropName = propName;
   }
   _ptSetState(scope, getPropertyTypes(dbPath)[propName] || {}, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
-  const savedConfig = await applyPropertyType(propName, scope);
-  if (!savedConfig) return;
+  const savedConfig = await applyPropertyType(propName, scope, { render: !options.auto });
+  if (!savedConfig) return null;
   if (typeof _setSelectedColumns === 'function') _setSelectedColumns(dbPath, [propName], propName);
   if (typeof state !== 'undefined') state.selectedColumn = { dbPath, propName };
-  renderDbPropertySettingsPanel(dbPath, propName);
-  showStatus('プロパティ設定を保存しました');
+  if (!options.auto) {
+    renderDbPropertySettingsPanel(dbPath, propName);
+    showStatus('プロパティ設定を保存しました');
+  }
+  return { propName, config: savedConfig };
 }
 
 /* 型別値エディタ・ドロップダウン → gb-db-value-editors.js に分離 */

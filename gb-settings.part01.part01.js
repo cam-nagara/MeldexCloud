@@ -10,6 +10,7 @@ const MELDEX_LLM_API_KEY_URLS = Object.freeze({
   gemini: 'https://aistudio.google.com/app/apikey',
 });
 const MELDEX_WEBCLIP_GUIDE_PATH = 'MeldexHome/マニュアル/03_設定と連携/Chrome拡張機能の設定.md';
+const MELDEX_DEFAULT_APPS_GUIDE_PATH = 'MeldexHome/マニュアル/04_サポート/Windows 既定アプリの設定.md';
 
 function getMeldexSampleDownloadUrl() {
   const cfg = window.MeldexCloudRuntimeConfig || {};
@@ -84,7 +85,7 @@ async function showSettingsModal(opts) {
   opts = opts || {};
   // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
-  const settingsTabs = ['全般','テーマ','LLM','LLMコスト','Discord Bot','ユーザー','取り込み','拡張機能','ショートカット','ゴミ箱','データベース','フィードバック'];
+  const settingsTabs = ['全般','テーマ','LLM','LLMコスト','Discord Bot','ユーザー','ワークスペース','取り込み','拡張機能','ショートカット','ゴミ箱','データベース','フィードバック'];
   const settingsTabLabels = {
     'LLM': 'チャットAI',
     'LLMコスト': 'AI使用量',
@@ -97,6 +98,7 @@ async function showSettingsModal(opts) {
     'LLMコスト': 'coins',
     'Discord Bot': 'messageCircle',
     'ユーザー': 'user',
+    'ワークスペース': 'usersRound',
     '取り込み': 'download',
     '拡張機能': 'blocks',
     'ショートカット': 'keyboard',
@@ -126,11 +128,11 @@ async function showSettingsModal(opts) {
   o.dataset.settingsModal = '1';
   const _isMobile = window.innerWidth <= 768;
   const _settingsModalStyle = _isMobile
-    ? 'width:min(560px, calc(100vw - 16px));height:min(600px, calc(100vh - 16px));'
-    : 'width:min(980px, calc(100vw - 48px));height:min(720px, calc(100vh - 64px));';
+    ? 'box-sizing:border-box;width:min(560px, calc(100vw - 16px));max-width:calc(100vw - 16px);height:min(600px, calc(100vh - 16px));max-height:calc(100vh - 16px);'
+    : 'box-sizing:border-box;width:min(980px, calc(100vw - 48px));max-width:calc(100vw - 48px);height:min(720px, calc(100vh - 64px));max-height:calc(100vh - 64px);';
   o.innerHTML = `<div class="modal settings-modal" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
-      ${_isMobile ? '<span id="settings-back-btn" class="settings-back-btn" style="display:none;cursor:pointer;font-size:18px;" data-action="_backToSettingsList()">←</span>' : ''}
+      ${_isMobile ? '<span id="settings-back-btn" class="settings-back-btn" hidden style="cursor:pointer;font-size:18px;" data-action="_backToSettingsList()">←</span>' : ''}
       <span id="settings-header-text" style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span class="ico ico-settings"></span><span>設定</span></span>
       <button id="settings-modal-close" class="settings-modal-close" type="button" title="設定を閉じる" aria-label="設定を閉じる" style="margin-left:auto;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg);">
         ${lucide('x',16)}
@@ -208,6 +210,20 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
+      <section class="gb-section gb-section--boxed" id="settings-default-apps-section">
+        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ</div>
+        <div class="gb-section-desc">Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます。</div>
+        <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
+        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-sheet" data-action="setMeldexDefaultApp" data-args='["sheet"]'>${lucide('table',14)} シート/CSVをMeldex Sheetにする</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-note" data-action="setMeldexDefaultApp" data-args='["note"]'>${lucide('fileText',14)} MarkdownをMeldex Noteにする</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} 画像/PDFをMeldex Viewerにする</button>
+        </div>
+        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-refresh" data-action="loadDefaultAppAssociationsForSettings">${lucide('refreshCw',14)} 状態を更新</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
+        </div>
+      </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ</div>
         <div class="gb-section-desc">このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません。</div>
@@ -292,7 +308,7 @@ async function showSettingsModal(opts) {
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート</div>
-        <div class="gb-section-desc">チャット履歴・注釈・カレンダーイベント・タスクをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）。</div>
+        <div class="gb-section-desc">チャット履歴・注釈・スケジューラーのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）。</div>
         <div class="gb-field-row">
           <button id="btn-export-to-db" class="gb-btn gb-btn-sm" data-action="runExportToDb()">エクスポート実行</button>
           <span id="export-to-db-status" class="gb-section-desc"></span>
@@ -413,14 +429,16 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">チームメンバー</div>
-        <div class="gb-section-desc">同じソースフォルダを開いているMeldexユーザーが自動的に表示されます</div>
-        <div id="settings-user-list"><div class="gb-section-desc">このタブを開いた時に読み込みます</div></div>
-      </section>
-      <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('lock',14)} 編集ロック中の項目</div>
         <div class="gb-section-desc">管理者はここから編集ロックを解除できます。</div>
         <div id="settings-file-lock-list"><div class="gb-section-desc">このタブを開いた時に読み込みます</div></div>
+      </section>
+    </div>
+    <!-- ワークスペース -->
+    <div class="settings-panel" data-panel="ワークスペース" hidden>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('usersRound',14)} ワークスペース</div>
+        <div class="gb-section-desc">このタブを開いた時に読み込みます。</div>
       </section>
     </div>
     <!-- 取り込み -->
@@ -431,15 +449,15 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
-    </div>
-    <!-- 拡張機能 -->
-    <div class="settings-panel" data-panel="拡張機能" hidden>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('bookmark',14)} Xブックマーク保存</div>
         <div id="x-bookmarks-settings-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
+    </div>
+    <!-- 拡張機能 -->
+    <div class="settings-panel" data-panel="拡張機能" hidden>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('blocks',14)} Web Clipper</div>
         <div class="gb-section-desc">Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の <code>Web Clipper</code> フォルダです。</div>
@@ -632,6 +650,91 @@ async function loadSettingsTransferStatusForSettings() {
     locationEl.textContent = `保存先: ${res.user_data_dir || ''} / 設定: ${configExists} / 内部データベース: ${dbExists}`;
   } catch (e) {
     locationEl.textContent = '設定保存先を取得できませんでした';
+  }
+}
+
+function _defaultAppAssociationLabel(appId) {
+  const labels = {
+    sheet: 'Meldex Sheet',
+    note: 'Meldex Note',
+    viewer: 'Meldex Viewer',
+  };
+  return labels[appId] || 'Meldex';
+}
+
+function _setDefaultAppsSettingsStatus(message, isError) {
+  const el = document.getElementById('settings-default-apps-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
+}
+
+function _formatDefaultAppExtensions(app) {
+  const rows = Array.isArray(app?.extensions) ? app.extensions : [];
+  if (!rows.length) return '';
+  const defaultCount = rows.filter(row => row?.default).length;
+  const lockedCount = rows.filter(row => row?.user_choice_locked).length;
+  const summary = `${defaultCount}/${rows.length}件がMeldex`;
+  return lockedCount ? `${summary}、${lockedCount}件はWindows設定で確認が必要` : summary;
+}
+
+function _renderDefaultAppAssociations(data) {
+  const el = document.getElementById('settings-default-apps-status');
+  if (!el) return;
+  if (!data?.supported) {
+    el.textContent = 'Windows版のMeldexでのみ設定できます。';
+    el.style.color = 'var(--fg2)';
+    return;
+  }
+  const order = ['sheet', 'note', 'viewer'];
+  const apps = data.apps || {};
+  const lines = [];
+  order.forEach(appId => {
+    const app = apps[appId] || {};
+    const label = app.label || _defaultAppAssociationLabel(appId);
+    const target = app.target_exists ? '単独アプリあり' : '単独アプリが見つかりません';
+    const summary = _formatDefaultAppExtensions(app) || '未確認';
+    const note = app.note ? ` / ${app.note}` : '';
+    lines.push(`${label}: ${summary}（${target}）${note}`);
+  });
+  el.textContent = lines.join('\n');
+  el.style.whiteSpace = 'pre-wrap';
+  el.style.color = 'var(--fg2)';
+}
+
+async function loadDefaultAppAssociationsForSettings() {
+  try {
+    const data = await apiFetch('/file-associations/status', { silentError: true });
+    _renderDefaultAppAssociations(data);
+  } catch (e) {
+    _setDefaultAppsSettingsStatus('既定アプリの状態を取得できませんでした: ' + (e.userMessage || e.message || e), true);
+  }
+}
+
+async function setMeldexDefaultApp(appId, event) {
+  const button = event?.currentTarget;
+  const label = _defaultAppAssociationLabel(appId);
+  if (button) button.disabled = true;
+  _setDefaultAppsSettingsStatus(label + ' をWindowsに登録しています...', false);
+  try {
+    const res = await apiPost('/file-associations/set-default', { app: appId, open_settings: true }, { silentError: true });
+    const suffix = res?.settings_opened
+      ? ' Windowsの既定アプリ画面を開きました。必要な拡張子でMeldexを選んでください。'
+      : '';
+    _setDefaultAppsSettingsStatus((res?.message || (label + ' を登録しました。')) + suffix, false);
+    await loadDefaultAppAssociationsForSettings();
+    if (typeof showStatus === 'function') showStatus(label + ' の既定アプリ設定を更新しました');
+  } catch (e) {
+    _setDefaultAppsSettingsStatus(label + ' を登録できませんでした: ' + (e.userMessage || e.message || e), true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function openDefaultAppsGuide() {
+  closeSettingsModalRestoringTheme();
+  if (typeof openPage === 'function') {
+    openPage('Windows 既定アプリの設定', MELDEX_DEFAULT_APPS_GUIDE_PATH, { fromExplorer: true, skipAutoAppLayout: true });
   }
 }
 

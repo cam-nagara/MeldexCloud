@@ -217,30 +217,48 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._activateSearchMatch(this._searchState.matches[this._searchState.index]);
       }
     };
+    const commitQuery = (focusCurrent = true) => {
+      const currentQuery = queryInput.value;
+      if (this._searchState.query !== currentQuery || !Array.isArray(this._searchState.matches)) {
+        syncState(null, focusCurrent);
+        return true;
+      }
+      if (!this._searchState.matches.length) {
+        syncState(null, focusCurrent);
+        return true;
+      }
+      return false;
+    };
 
-    queryInput.addEventListener('input', () => syncState(null, false));
+    let queryComposing = false;
+    queryInput.addEventListener('compositionstart', () => { queryComposing = true; });
+    queryInput.addEventListener('compositionend', () => {
+      queryComposing = false;
+      syncState(null, true);
+    });
     replaceInput.addEventListener('input', () => {
       this._searchState.replace = replaceInput.value;
     });
     queryInput.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') {
+        if (queryComposing || ev.isComposing || ev.keyCode === 229) return;
         ev.preventDefault();
-        if (!this._searchState.matches?.length) syncState();
-        else this._jumpSearchMatch(ev.shiftKey ? -1 : 1);
+        if (!commitQuery(true)) this._jumpSearchMatch(ev.shiftKey ? -1 : 1);
       }
       if (ev.key === 'Escape') this._closeSearchReplacePopup();
     });
     replaceInput.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') {
         ev.preventDefault();
+        commitQuery(false);
         this._replaceCurrentSearchMatch();
       }
       if (ev.key === 'Escape') this._closeSearchReplacePopup();
     });
-    btnPrev.addEventListener('click', () => this._jumpSearchMatch(-1));
-    btnNext.addEventListener('click', () => this._jumpSearchMatch(1));
-    btnReplace.addEventListener('click', () => this._replaceCurrentSearchMatch());
-    btnReplaceAll.addEventListener('click', () => this._replaceAllSearchMatches());
+    btnPrev.addEventListener('click', () => { if (!commitQuery(true)) this._jumpSearchMatch(-1); });
+    btnNext.addEventListener('click', () => { if (!commitQuery(true)) this._jumpSearchMatch(1); });
+    btnReplace.addEventListener('click', () => { commitQuery(false); this._replaceCurrentSearchMatch(); });
+    btnReplaceAll.addEventListener('click', () => { commitQuery(false); this._replaceAllSearchMatches(); });
     popup.querySelector('[data-sn-search-close]').addEventListener('click', () => this._closeSearchReplacePopup());
 
     document.body.appendChild(popup);
@@ -248,7 +266,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (anchorBtn) positionPopup(popup, anchorBtn.getBoundingClientRect());
     else {
       const hostRect = this.host?.getBoundingClientRect?.();
-      const anchorRect = hostRect || { left: 16, right: 16, top: 16, bottom: 16 };
+      const anchorRect = hostRect
+        ? { left: hostRect.right, right: hostRect.right, top: hostRect.top, bottom: hostRect.top }
+        : { left: window.innerWidth - 16, right: window.innerWidth - 16, top: 16, bottom: 16 };
       positionPopup(popup, anchorRect);
     }
     this._searchPopupCloseHandler = (ev) => {

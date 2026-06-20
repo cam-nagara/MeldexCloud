@@ -307,7 +307,12 @@
   async function _pickFolderFromTree(card) {
     try {
       const input = card.querySelector('.notion-folder-path');
-      const selected = await _showNotionFolderTreePicker(input?.value || '');
+      const selected = window.GBFolderPicker?.pickFolder
+        ? await window.GBFolderPicker.pickFolder({
+            title: 'Notion同期するフォルダを選択',
+            initialPath: input?.value || '',
+          })
+        : await _showNotionFolderTreePicker(input?.value || '');
       if (selected?.path !== undefined && input) {
         input.value = selected.path;
         const saved = await _saveFolderConfig(card, {});

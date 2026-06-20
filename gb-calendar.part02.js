@@ -11,7 +11,13 @@
       start:_toCalendarApiValue(newStart, false),
       end:_toCalendarApiValue(newEnd, false),
     });
-    await selectDatabase(dbPath);
+    await _calendarNotifyEventSaved(data, {
+      ...data,
+      start: _toCalendarApiValue(newStart, false),
+      end: _toCalendarApiValue(newEnd, false),
+      allDay: false,
+    });
+    await _refreshCalendarDb(dbPath);
   }catch(err){showStatus('移動に失敗',true);}
 }
 
@@ -249,9 +255,8 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
           });
         }
       } catch {}
-      const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
       const savedName = result?.name || result?.id || (result?.path ? String(result.path).split(/[/\\]/).pop().replace(/\.md$/i, '') : '');
-      await selectDatabase(dbPath, ctx);
+      await _refreshCalendarDb(dbPath);
       const nextEvent = (_calRenderState.allEvents || []).find(item => (savedName && item.name === savedName) || item.name === title)
         || { ...ev, name: title, allDay, color: getColorSwatchValue(colorSwatch, ev.color || ''), creator, members: _collectCalendarEventMembers(body, 'cal-detail', creator) };
       _showCalendarEventDetailPanel(dbPath, nextEvent);
@@ -265,8 +270,7 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
     _calPushUndo('イベント削除');
     try {
       await apiDelete('/calendar-db/events/' + encodeURIComponent(ev.name) + '?db_path=' + encodeURIComponent(dbPath));
-      const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
-      await selectDatabase(dbPath, ctx);
+      await _refreshCalendarDb(dbPath);
       if (typeof clearDetailPanel === 'function') await clearDetailPanel();
       showStatus('イベントを削除しました');
     } catch {
@@ -382,23 +386,26 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
     _calPushUndo(isNew?'イベント作成':'イベント編集');
     try{
       if(isNew) await apiPost('/calendar-db/events',{db_path:dbPath,title:t,start:s,end:en,color:c,location:lc,url:u,description:d,all_day:ad,alert_minutes:al,calendar_id:ci,creator,members,recurrence:recStr});
-      else await apiPut('/calendar-db/events/'+encodeURIComponent(ev.name),{db_path:dbPath,start:s,end:en,color:c,location:lc,url:u,description:d,all_day:ad,alert_minutes:al,calendar_id:ci,creator,members,recurrence:recStr,title:t});
-      overlay.remove();await selectDatabase(dbPath);
+      else {
+        await apiPut('/calendar-db/events/'+encodeURIComponent(ev.name),{db_path:dbPath,start:s,end:en,color:c,location:lc,url:u,description:d,all_day:ad,alert_minutes:al,calendar_id:ci,creator,members,recurrence:recStr,title:t});
+        await _calendarNotifyEventSaved(ev, { ...ev, name: t, start: s, end: en, allDay: ad, color: c, location: lc, url: u, description: d, alertMinutes: al, calendarId: ci, creator, members, recurrence: recStr });
+      }
+      overlay.remove();await _refreshCalendarDb(dbPath);
     }catch{showStatus('保存に失敗',true);}
   });
   panel.querySelector('#ep-cancel').addEventListener('click', ()=>{overlay.remove();});
-  if(!isNew) panel.querySelector('#ep-delete').addEventListener('click', async()=>{if(!await cfConfirm(ev.name+' を削除しますか？'))return;_calPushUndo('イベント削除');try{await apiDelete('/calendar-db/events/'+encodeURIComponent(ev.name)+'?db_path='+encodeURIComponent(dbPath));overlay.remove();await selectDatabase(dbPath);}catch{showStatus('削除に失敗',true);}});
+  if(!isNew) panel.querySelector('#ep-delete').addEventListener('click', async()=>{if(!await cfConfirm(ev.name+' を削除しますか？'))return;_calPushUndo('イベント削除');try{await apiDelete('/calendar-db/events/'+encodeURIComponent(ev.name)+'?db_path='+encodeURIComponent(dbPath));overlay.remove();await _refreshCalendarDb(dbPath);}catch{showStatus('削除に失敗',true);}});
 }
 function _recParse(ev){try{return ev?.recurrence?(typeof ev.recurrence==='string'?JSON.parse(ev.recurrence):ev.recurrence):{};}catch{return {};}}
 
 /* ==============================
-   タスクモーダル（完全版）
+   ToDoモーダル（完全版）
    ============================== */
 function _openTaskModal(dbPath, task, defaultStatus) {
   const isNew=!task;
   const o=document.createElement('div');o.className='modal-overlay';
   o.innerHTML=`<div class="modal" style="min-width:450px;">
-    <h3>${isNew?'新規タスク':'タスク編集'}</h3>
+    <h3>${isNew?'新規ToDo':'ToDo編集'}</h3>
     <div class="field"><label>タイトル</label><input id="tk-title" value="${esc(task?.name||'')}"></div>
     <div style="display:flex;gap:8px;">
       <div class="field" style="flex:1;"><label>ステータス</label><select id="tk-status">
@@ -428,23 +435,26 @@ function _openTaskModal(dbPath, task, defaultStatus) {
     const assignee=o.querySelector('#tk-assignee').value;
     const desc=o.querySelector('#tk-desc').value;
     const fullDesc=`status:${status} priority:${priority} ${desc}`.trim();
-    _calPushUndo(isNew?'タスク作成':'タスク編集');
+    _calPushUndo(isNew?'ToDo作成':'ToDo編集');
     try{
       const fallbackDate = task?.start ? _dateStr(task.start) : _dateStr(new Date());
       const taskDate = due || fallbackDate;
       const color = _calendarTaskStatusColor(status);
       if(isNew) await apiPost('/calendar-db/events',{db_path:dbPath,title,start:taskDate,end:taskDate,description:fullDesc,calendar_id:assignee||'default',color});
-      else await apiPut('/calendar-db/events/'+encodeURIComponent(task.name),{db_path:dbPath,description:fullDesc,calendar_id:assignee||'default',title,start:taskDate,end:taskDate,color});
+      else {
+        await apiPut('/calendar-db/events/'+encodeURIComponent(task.name),{db_path:dbPath,description:fullDesc,calendar_id:assignee||'default',title,start:taskDate,end:taskDate,color});
+        await _calendarNotifyEventSaved(task, { ...task, name: title, description: fullDesc, calendarId: assignee || 'default', start: taskDate, end: taskDate, color });
+      }
       o.remove();
-      await selectDatabase(dbPath);
+      await _refreshCalendarDb(dbPath);
     }catch{showStatus('保存に失敗',true);}
   });
-  if(!isNew) o.querySelector('#tk-delete').addEventListener('click', async()=>{if(!await cfConfirm('このタスクを削除しますか？'))return;o.remove();_calPushUndo('タスク削除');try{await apiDelete('/calendar-db/events/'+encodeURIComponent(task.name)+'?db_path='+encodeURIComponent(dbPath));await selectDatabase(dbPath);}catch{}});
+  if(!isNew) o.querySelector('#tk-delete').addEventListener('click', async()=>{if(!await cfConfirm('このToDoを削除しますか？'))return;o.remove();_calPushUndo('ToDo削除');try{await apiDelete('/calendar-db/events/'+encodeURIComponent(task.name)+'?db_path='+encodeURIComponent(dbPath));await _refreshCalendarDb(dbPath);}catch{}});
   setTimeout(()=>o.querySelector('#tk-title').focus(),50);
 }
 
 /* ==============================
-   タスクボード
+   ToDoリスト
    ============================== */
 function _renderTaskBoard(container, dbPath, events) {
   const statuses=[{key:'backlog',label:'バックログ',color:'var(--fg2)'},{key:'todo',label:'未着手',color:'#569cd6'},{key:'in_progress',label:'進行中',color:'#d19a66'},{key:'review',label:'レビュー',color:'#c678dd'},{key:'done',label:'完了',color:'#98c379'}];
@@ -461,7 +471,7 @@ function _renderTaskBoard(container, dbPath, events) {
     body.addEventListener('drop',async e=>{e.preventDefault();body.style.background='';let data;try{data=JSON.parse(e.dataTransfer.getData('text/plain'));}catch{return;}if(!data||!data.name)return;
       _calPushUndo('タスク移動');
       const ev=events.find(x=>x.name===data.name);const oldDesc=(ev?.description||'').replace(/status:\w+/,'status:'+s.key);
-      try{await apiPut('/calendar-db/events/'+encodeURIComponent(data.name),{db_path:dbPath,description:oldDesc,color:_calendarTaskStatusColor(s.key)});await selectDatabase(dbPath);}catch{};
+      try{await apiPut('/calendar-db/events/'+encodeURIComponent(data.name),{db_path:dbPath,description:oldDesc,color:_calendarTaskStatusColor(s.key)});await _refreshCalendarDb(dbPath);}catch{};
     });
     taskEvs.forEach(ev=>{
       const card=document.createElement('div');
@@ -594,8 +604,8 @@ function _renderMiniCalendar(sidebar,dbPath,events) {
   const box=document.createElement('div');box.style.cssText='background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:6px;';
   const hdr=document.createElement('div');hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
   hdr.innerHTML=`<button class="tl-nav-btn" type="button" data-e2e-id="calendar-mini-prev-month" aria-label="前の月" title="前の月" style="padding:0 4px;">${lucide('chevronLeft', 12)}</button><span style="font-size:11px;font-weight:bold;">${y}年${m+1}月</span><button class="tl-nav-btn" type="button" data-e2e-id="calendar-mini-next-month" aria-label="次の月" title="次の月" style="padding:0 4px;">${lucide('chevronRight', 12)}</button>`;
-  hdr.children[0].addEventListener('click', ()=>{setCalendarDate(dbPath,_addCalendarMonthsClamped(getCalendarDate(dbPath),-1));renderCalendar();});
-  hdr.children[2].addEventListener('click', ()=>{setCalendarDate(dbPath,_addCalendarMonthsClamped(getCalendarDate(dbPath),1));renderCalendar();});
+  hdr.children[0].addEventListener('click', ()=>{setCalendarDate(dbPath,_addCalendarMonthsClamped(getCalendarDate(dbPath),-1));_rerenderCalendarDb(dbPath);});
+  hdr.children[2].addEventListener('click', ()=>{setCalendarDate(dbPath,_addCalendarMonthsClamped(getCalendarDate(dbPath),1));_rerenderCalendarDb(dbPath);});
   box.appendChild(hdr);
   const grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:repeat(7,1fr);gap:0;text-align:center;';
   _getDayNames().forEach(dn=>{const h=document.createElement('div');h.style.cssText='font-size:9px;color:var(--fg2);padding:1px;';h.textContent=dn;grid.appendChild(h);});
@@ -615,7 +625,7 @@ function _renderMiniCalendar(sidebar,dbPath,events) {
       return s<=day&&day<=e;
     });
     el.textContent=d;if(hasEv&&ds!==selStr)el.style.cssText+='text-decoration:underline;';
-    el.addEventListener('click', ()=>{setCalendarDate(dbPath,_parseCalendarDateValue(ds));renderCalendar();});
+    el.addEventListener('click', ()=>{setCalendarDate(dbPath,_parseCalendarDateValue(ds));_rerenderCalendarDb(dbPath);});
     grid.appendChild(el);
   }
   box.appendChild(grid);
@@ -650,7 +660,7 @@ function _renderTodayWidget(sidebar,dbPath,events) {
   if(todayTasks.length>0){
     const tkSection=document.createElement('section');tkSection.className='gb-section gb-section--detail';
     const tkHdr=document.createElement('div');tkHdr.className='gb-section-title';
-    tkHdr.textContent=`タスク (${todayTasks.length})`;tkSection.appendChild(tkHdr);
+    tkHdr.textContent=`ToDo (${todayTasks.length})`;tkSection.appendChild(tkHdr);
     todayTasks.slice(0,10).forEach(ev=>{
       const el=document.createElement('div');el.style.cssText='font-size:10px;padding:2px 4px;margin:2px 0;cursor:pointer;display:flex;align-items:center;gap:4px;';
       const prioColors={urgent:'var(--red)',high:'var(--orange)',medium:'var(--blue)',low:'var(--fg2)'};
@@ -678,7 +688,7 @@ function _renderCalendarList(sidebar,dbPath,events) {
   calIds.forEach(cid=>{
     const el=document.createElement('label');el.style.cssText='display:flex;align-items:center;gap:4px;font-size:10px;padding:2px 0;cursor:pointer;';
     const cb=document.createElement('input');cb.type='checkbox';cb.checked=_calVisibleIds.has(cid);
-    cb.onchange=()=>{if(cb.checked)_calVisibleIds.add(cid);else _calVisibleIds.delete(cid);renderCalendar();};
+    cb.onchange=()=>{if(cb.checked)_calVisibleIds.add(cid);else _calVisibleIds.delete(cid);_rerenderCalendarDb(dbPath);};
     const dot=document.createElement('span');dot.style.cssText='width:8px;height:8px;border-radius:50%;flex-shrink:0;';
     const evOfCal=events.find(e=>e.calendarId===cid);dot.style.background=evOfCal?evOfCal.color:'#569cd6';
     el.appendChild(cb);el.appendChild(dot);el.appendChild(document.createTextNode(cid));box.appendChild(el);
@@ -851,7 +861,7 @@ async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
     }
   }
   if (modalEl) modalEl.remove();
-  await selectDatabase(dbPath);
+  await _refreshCalendarDb(dbPath);
   showStatus(`${count}件のイベントを生成しました`);
 }
 

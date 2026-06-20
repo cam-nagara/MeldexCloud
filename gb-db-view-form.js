@@ -38,27 +38,27 @@ function normalizeDbFormConfig(config, props, propTypes) {
   };
 }
 
-function _getActiveFormViewRecord(dbPath) {
-  const idx = getCurrentViewIdx(dbPath);
+function _getActiveFormViewRecord(dbPath, ctx) {
+  const idx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : getCurrentViewIdx(dbPath);
   const views = getSavedViews(dbPath);
   return { idx, views, view: idx >= 0 ? views[idx] : null };
 }
 
-function getActiveFormConfig(dbPath, props, propTypes) {
-  const { view } = _getActiveFormViewRecord(dbPath);
+function getActiveFormConfig(dbPath, props, propTypes, ctx) {
+  const { view } = _getActiveFormViewRecord(dbPath, ctx);
   const cfg = view?.typeSpecific?.form?.formConfig || view?.formConfig || getDbViewConfig(dbPath).formConfig || null;
   return normalizeDbFormConfig(cfg, props, propTypes);
 }
 
-function saveActiveFormConfig(dbPath, formConfig) {
-  const { idx, views } = _getActiveFormViewRecord(dbPath);
+function saveActiveFormConfig(dbPath, formConfig, ctx) {
+  const { idx, views } = _getActiveFormViewRecord(dbPath, ctx);
   if (idx >= 0 && views[idx]) {
     if (!views[idx].typeSpecific || typeof views[idx].typeSpecific !== 'object' || Array.isArray(views[idx].typeSpecific)) views[idx].typeSpecific = {};
     if (!views[idx].typeSpecific.form || typeof views[idx].typeSpecific.form !== 'object' || Array.isArray(views[idx].typeSpecific.form)) views[idx].typeSpecific.form = {};
     views[idx].typeSpecific.form.formConfig = formConfig;
     setSavedViews(dbPath, views, { label: 'シート表示: フォーム設定' });
   } else {
-    setCurrentDbViewTypeSpecific(dbPath, 'form', { formConfig }, { historyLabel: 'シート表示: フォーム設定' });
+    setCurrentDbViewTypeSpecific(dbPath, 'form', { formConfig }, { ctx, historyLabel: 'シート表示: フォーム設定' });
   }
 }
 
@@ -77,7 +77,10 @@ function renderDbFormView(ctx) {
   root.style.display = 'flex';
   const pivot = ctx.pivotData || state.pivotData || { properties: [] };
   const propTypes = getPropertyTypes(dbPath) || {};
-  let cfg = getActiveFormConfig(dbPath, pivot.properties || [], propTypes);
+  const formProps = typeof filterDeletedDbProperties === 'function'
+    ? filterDeletedDbProperties(dbPath, pivot.properties || [])
+    : (pivot.properties || []);
+  let cfg = getActiveFormConfig(dbPath, formProps, propTypes, ctx);
   root.innerHTML = '';
   root.classList.add('gb-form-view');
 
@@ -92,10 +95,10 @@ function renderDbFormView(ctx) {
     return b;
   };
   toolbar.appendChild(mkBtn('編集', cfg.mode !== 'answer', () => {
-    cfg.mode = 'edit'; saveActiveFormConfig(dbPath, cfg); renderDbFormView(ctx);
+    cfg.mode = 'edit'; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx);
   }));
   toolbar.appendChild(mkBtn('回答プレビュー', cfg.mode === 'answer', () => {
-    cfg.mode = 'answer'; saveActiveFormConfig(dbPath, cfg); renderDbFormView(ctx);
+    cfg.mode = 'answer'; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx);
   }));
   root.appendChild(toolbar);
 
@@ -115,17 +118,17 @@ function renderDbFormView(ctx) {
   titleInput.className = 'gb-input gb-form-title-input';
   titleInput.placeholder = 'フォームタイトル';
   titleInput.value = cfg.headerTitle || '';
-  titleInput.addEventListener('change', () => { cfg.headerTitle = titleInput.value; saveActiveFormConfig(dbPath, cfg); renderDbFormView(ctx); });
+  titleInput.addEventListener('change', () => { cfg.headerTitle = titleInput.value; saveActiveFormConfig(dbPath, cfg, ctx); renderDbFormView(ctx); });
   side.appendChild(titleInput);
   const desc = document.createElement('textarea');
   desc.className = 'gb-input';
   desc.rows = 3;
   desc.placeholder = '説明';
   desc.value = cfg.headerDescription || '';
-  desc.addEventListener('change', () => { cfg.headerDescription = desc.value; saveActiveFormConfig(dbPath, cfg); });
+  desc.addEventListener('change', () => { cfg.headerDescription = desc.value; saveActiveFormConfig(dbPath, cfg, ctx); });
   side.appendChild(desc);
 
-  (pivot.properties || []).forEach(prop => {
+  formProps.forEach(prop => {
     const type = propTypes[prop]?.type || 'text';
     if (DB_FORM_UNSUPPORTED_TYPES.has(type)) return;
     const row = document.createElement('div');
@@ -136,22 +139,22 @@ function renderDbFormView(ctx) {
     cb.addEventListener('change', () => {
       if (cb.checked && !cfg.fields.includes(prop)) cfg.fields.push(prop);
       if (!cb.checked) cfg.fields = cfg.fields.filter(p => p !== prop);
-      saveActiveFormConfig(dbPath, cfg);
+      saveActiveFormConfig(dbPath, cfg, ctx);
       renderDbFormView(ctx);
     });
     side.appendChild(row);
   });
 
   preview.appendChild(_buildFormEditorFields(dbPath, cfg, propTypes, () => {
-    saveActiveFormConfig(dbPath, cfg);
+    saveActiveFormConfig(dbPath, cfg, ctx);
     renderDbFormView(ctx);
-  }));
+  }, ctx));
   editor.appendChild(side);
   editor.appendChild(preview);
   root.appendChild(editor);
 }
 
-function _buildFormEditorFields(dbPath, cfg, propTypes, refresh) {
+function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
   const wrap = document.createElement('div');
   wrap.className = 'gb-form-fields-editor';
   const settings = document.createElement('div');
@@ -163,7 +166,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh) {
   settings.innerHTML = `<label class="field"><span>エントリ名にするフィールド</span><select id="gb-form-entity-name-prop" class="gb-input">${entityNameOptions}</select></label>`;
   settings.querySelector('#gb-form-entity-name-prop')?.addEventListener('change', e => {
     cfg.entityNameProp = e.target.value || '';
-    saveActiveFormConfig(dbPath, cfg);
+    saveActiveFormConfig(dbPath, cfg, ctx);
   });
   wrap.appendChild(settings);
   cfg.fields.forEach((prop, idx) => {
@@ -193,19 +196,19 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh) {
     const label = document.createElement('input');
     label.className = 'gb-input';
     label.value = cfg.labels[prop] || prop;
-    label.addEventListener('change', () => { cfg.labels[prop] = label.value.trim() || prop; saveActiveFormConfig(dbPath, cfg); });
+    label.addEventListener('change', () => { cfg.labels[prop] = label.value.trim() || prop; saveActiveFormConfig(dbPath, cfg, ctx); });
     row.appendChild(label);
     const desc = document.createElement('input');
     desc.className = 'gb-input';
     desc.placeholder = '説明';
     desc.value = cfg.descriptions[prop] || '';
-    desc.addEventListener('change', () => { cfg.descriptions[prop] = desc.value; saveActiveFormConfig(dbPath, cfg); });
+    desc.addEventListener('change', () => { cfg.descriptions[prop] = desc.value; saveActiveFormConfig(dbPath, cfg, ctx); });
     row.appendChild(desc);
     const placeholder = document.createElement('input');
     placeholder.className = 'gb-input';
     placeholder.placeholder = 'プレースホルダー';
     placeholder.value = cfg.placeholders[prop] || '';
-    placeholder.addEventListener('change', () => { cfg.placeholders[prop] = placeholder.value; saveActiveFormConfig(dbPath, cfg); });
+    placeholder.addEventListener('change', () => { cfg.placeholders[prop] = placeholder.value; saveActiveFormConfig(dbPath, cfg, ctx); });
     row.appendChild(placeholder);
     const foot = document.createElement('label');
     foot.className = 'gb-check';
@@ -213,7 +216,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh) {
     foot.querySelector('input').addEventListener('change', (e) => {
       if (e.target.checked && !cfg.required.includes(prop)) cfg.required.push(prop);
       if (!e.target.checked) cfg.required = cfg.required.filter(p => p !== prop);
-      saveActiveFormConfig(dbPath, cfg);
+      saveActiveFormConfig(dbPath, cfg, ctx);
     });
     row.appendChild(foot);
     wrap.appendChild(row);
@@ -221,8 +224,8 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh) {
   const submitRow = document.createElement('div');
   submitRow.className = 'gb-form-submit-editor';
   submitRow.innerHTML = `<input class="gb-input" id="gb-form-submit-label" value="${esc(cfg.submitLabel || '送信')}"><input class="gb-input" id="gb-form-success-message" value="${esc(cfg.successMessage || '送信しました')}">`;
-  submitRow.querySelector('#gb-form-submit-label').addEventListener('change', e => { cfg.submitLabel = e.target.value || '送信'; saveActiveFormConfig(dbPath, cfg); });
-  submitRow.querySelector('#gb-form-success-message').addEventListener('change', e => { cfg.successMessage = e.target.value || '送信しました'; saveActiveFormConfig(dbPath, cfg); });
+  submitRow.querySelector('#gb-form-submit-label').addEventListener('change', e => { cfg.submitLabel = e.target.value || '送信'; saveActiveFormConfig(dbPath, cfg, ctx); });
+  submitRow.querySelector('#gb-form-success-message').addEventListener('change', e => { cfg.successMessage = e.target.value || '送信しました'; saveActiveFormConfig(dbPath, cfg, ctx); });
   wrap.appendChild(submitRow);
   return wrap;
 }

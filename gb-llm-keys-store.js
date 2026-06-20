@@ -49,21 +49,51 @@
     return db.transaction(STORE_NAME, mode).objectStore(STORE_NAME);
   }
 
+  function _readFallbackRaw() {
+    try {
+      return localStorage.getItem(FALLBACK_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
   function _readFallback() {
     try {
-      const parsed = JSON.parse(localStorage.getItem(FALLBACK_STORAGE_KEY) || '{}');
+      const parsed = JSON.parse(_readFallbackRaw() || '{}');
       return parsed && typeof parsed === 'object' ? parsed : {};
     } catch {
+      _removeFallback();
       return {};
     }
   }
 
-  function _writeFallback(keys) {
-    try {
-      localStorage.setItem(FALLBACK_STORAGE_KEY, JSON.stringify(keys || {}));
-    } catch (err) {
-      throw new Error('APIキーをこの端末へ保存できませんでした。ブラウザのストレージ設定または空き容量を確認してください');
+  function _removeFallback() {
+    try { localStorage.removeItem(FALLBACK_STORAGE_KEY); } catch {}
+  }
+
+  function _storageUnavailableError() {
+    return new Error('APIキーをこの端末へ保存できませんでした。ブラウザのIndexedDBが使えないため、この端末には保存せず、必要な時に入力してください');
+  }
+
+  async function _migrateFallbackToDb(db) {
+    const raw = _readFallbackRaw();
+    if (!raw) return 0;
+    const entries = Object.entries(_cleanKeyMap(_readFallback()));
+    if (!entries.length) {
+      _removeFallback();
+      return 0;
     }
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const updatedAt = new Date().toISOString();
+      entries.forEach(([name, value]) => store.put({ name, value, updatedAt, migratedFrom: 'localStorage' }));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB migration failed'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB migration aborted'));
+    });
+    _removeFallback();
+    return entries.length;
   }
 
   function _bytesToBase64(bytes) {
@@ -297,6 +327,7 @@
   async function getAll() {
     try {
       const db = await _openDb();
+      await _migrateFallbackToDb(db);
       return await new Promise((resolve, reject) => {
         const req = _tx(db, 'readonly').getAll();
         req.onsuccess = () => {
@@ -311,7 +342,7 @@
         req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
       });
     } catch {
-      return _readFallback();
+      return {};
     }
   }
 
@@ -322,6 +353,7 @@
     if (!entries.length) return { ok: true, saved: 0 };
     try {
       const db = await _openDb();
+      await _migrateFallbackToDb(db);
       await new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
@@ -331,10 +363,9 @@
         tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
         tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
       });
-    } catch {
-      const current = _readFallback();
-      entries.forEach(([name, value]) => { current[name] = value; });
-      _writeFallback(current);
+    } catch (err) {
+      _removeFallback();
+      throw _storageUnavailableError(err);
     }
     return { ok: true, saved: entries.length };
   }
@@ -344,15 +375,15 @@
     if (!keyName) return { ok: true };
     try {
       const db = await _openDb();
+      await _migrateFallbackToDb(db);
       await new Promise((resolve, reject) => {
         const req = _tx(db, 'readwrite').delete(keyName);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
       });
-    } catch {
-      const current = _readFallback();
-      delete current[keyName];
-      _writeFallback(current);
+    } catch (err) {
+      _removeFallback();
+      throw _storageUnavailableError(err);
     }
     return { ok: true };
   }

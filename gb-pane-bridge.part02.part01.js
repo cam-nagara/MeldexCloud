@@ -609,7 +609,6 @@
   function _isPassiveToolPaneTab(type, tab) {
     const rawType = type || tab?.type || '';
     const normalizedType = rawType === 'sticky' ? 'annotation' : rawType;
-    if (normalizedType === 'calendar') return !tab?.path;
     return PASSIVE_TOOL_PANE_TYPES.has(normalizedType);
   }
 
@@ -717,6 +716,10 @@
 
   function _getFileOpenPane(paneId, options) {
     const opts = options || {};
+    const mainPaneId = typeof GBPaneDefaultLayout !== 'undefined' && typeof GBPaneDefaultLayout.resolveMainPaneId === 'function'
+      ? GBPaneDefaultLayout.resolveMainPaneId({ contentOnly: true })
+      : '';
+    if (mainPaneId) return mainPaneId;
     paneId = paneId || GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id || '';
     if (!paneId) return opts.ensureWorkPane ? _createFileOpenPaneNear('') : _getContentPane(paneId);
     const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
@@ -815,6 +818,44 @@
       const info = _getPaneInfoById(paneId);
       const toolbarView = _toolbarViewForTab(info?.activeTab);
       if (info && toolbarView) return { ...info, viewName: toolbarView };
+    }
+    return null;
+  }
+
+  function _visibleDbToolbarContextForPane(paneId) {
+    const info = _getPaneInfoById(paneId);
+    if (!info || !_isPaneActuallyVisible(info.paneId)) return null;
+    const viewEl = info.contentEl.querySelector?.('#db-view-container, .db-view-container') || null;
+    if (!viewEl) return null;
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(viewEl) : null;
+    if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+    const toolbarView = _toolbarViewForTab(info.activeTab);
+    const normalizedView = _normalizeDbPaneView(toolbarView || info.activeTab?.type || '');
+    if (!TOOLBAR_DB_VIEW_TYPES.has(normalizedView)) return null;
+    return { ...info, viewName: _resolveDbPaneDisplayView(normalizedView, info.activeTab) };
+  }
+
+  function _findVisibleDbToolbarContext() {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root) return null;
+    const paneIds = [];
+    const seen = new Set();
+    const pushPaneId = (paneId) => {
+      if (!paneId || seen.has(paneId)) return;
+      seen.add(paneId);
+      paneIds.push(paneId);
+    };
+    const activePaneId = GBLayout.activePane || '';
+    pushPaneId(_containerPane['db-view-container']);
+    pushPaneId(_getFileOpenPane(activePaneId));
+    pushPaneId(_getContentPane(activePaneId));
+    const panes = typeof GBLayout.getAllPanes === 'function'
+      ? GBLayout.getAllPanes(GBLayout.root, { activeOnly: true }) || []
+      : [];
+    panes.filter(pane => _isPaneActuallyVisible(pane.id)).forEach(pane => pushPaneId(pane.id));
+    panes.forEach(pane => pushPaneId(pane.id));
+    for (const paneId of paneIds) {
+      const context = _visibleDbToolbarContextForPane(paneId);
+      if (context) return context;
     }
     return null;
   }
@@ -930,7 +971,15 @@
 
     window.showView = function(viewName, ctx) {
       // スプリットペイン内のビュー切替はそのまま
-      if (ctx && ctx.containerEl) return _origShowView(viewName, ctx);
+      if (ctx && ctx.containerEl) {
+        const result = _origShowView(viewName, ctx);
+        const toolbarViewForPaneRender = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : _normalizeDbPaneView(viewName);
+        if (TOOLBAR_DB_VIEW_TYPES.has(toolbarViewForPaneRender)) {
+          _updateToolbars(toolbarViewForPaneRender);
+          _scheduleToolbarRecheck(toolbarViewForPaneRender);
+        }
+        return result;
+      }
       if (_bridgeUpdating) {
         // navPush中でもツールバーは更新する
         _updateToolbars(viewName);

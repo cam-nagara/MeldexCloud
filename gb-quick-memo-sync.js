@@ -63,6 +63,21 @@
     return text || fallback || 'メモ';
   }
 
+  function targetSheetPath(item) {
+    const raw = String(item?.target_sheet || '').replace(/\\/g, '/').trim();
+    const clean = raw
+      .split('/')
+      .map(part => safeFileStem(part, '').trim())
+      .filter(Boolean)
+      .join('/');
+    return clean || 'メモ';
+  }
+
+  function targetSheetName(item) {
+    const path = targetSheetPath(item);
+    return path.split('/').filter(Boolean).pop() || 'メモ';
+  }
+
   function memoTitle(item) {
     const title = String(item?.title || '').trim();
     if (title) return safeFileStem(title, 'メモ');
@@ -74,7 +89,7 @@
     if (item.server_path || item.path) return String(item.server_path || item.path).replace(/\\/g, '/');
     const stamp = String(item.created_at || nowIso()).replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '_').slice(0, 15);
     const id = String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
-    return `メモ/${safeFileStem(stamp + '_' + memoTitle(item) + '_' + id, 'メモ')}.md`;
+    return `${targetSheetPath(item)}/${safeFileStem(stamp + '_' + memoTitle(item) + '_' + id, 'メモ')}.md`;
   }
 
   function sanitizeHtml(fragment) {
@@ -117,30 +132,40 @@
   function memoFrontmatter(item, path) {
     const created = String(item.created_at || nowIso());
     const updated = String(item.updated_at || nowIso());
+    const properties = {
+      種別: [candidate('メモ')],
+      タグ: [candidate(tagsValue(item.tags))],
+      追加日時: [candidate(created)],
+      更新日時: [candidate(updated)],
+      保存先: [candidate(path)],
+      メモID: [candidate(String(item.memo_id || item.client_id || ''))],
+    };
+    if (item.source_url) properties.URL = [candidate(item.source_url)];
+    if (item.share_title) properties.共有タイトル = [candidate(item.share_title)];
+    if (item.source_label) properties.共有元 = [candidate(item.source_label)];
     return {
       type: 'settings-entry',
       id: 'ent_' + String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12),
-      category: 'メモ',
+      category: targetSheetName(item),
       quick_memo: true,
       quick_memo_id: String(item.memo_id || item.client_id || ''),
       created,
       modified: updated,
-      properties: {
-        種別: [candidate('メモ')],
-        タグ: [candidate(tagsValue(item.tags))],
-        追加日時: [candidate(created)],
-        更新日時: [candidate(updated)],
-        保存先: [candidate(path)],
-      },
+      source_url: String(item.source_url || ''),
+      share_title: String(item.share_title || ''),
+      source_label: String(item.source_label || ''),
+      target_sheet: targetSheetPath(item),
+      properties,
       relations: [],
     };
   }
 
-  function smartDbDefinition() {
+  function smartDbDefinition(sheetPath = 'メモ') {
+    const name = sheetPath.split('/').filter(Boolean).pop() || 'メモ';
     return {
       type: 'smart-db',
-      id: 'file:メモ.smart-db.json',
-      name: 'メモ',
+      id: 'file:' + name + '.smart-db.json',
+      name,
       sourceType: 'db-entities',
       filters: [
         { property: '種別', field: 'value', operator: 'equals', value: 'メモ' },
@@ -155,52 +180,86 @@
     };
   }
 
-  async function ensureMemoWorkspace() {
+  async function ensureMemoWorkspace(item = {}) {
+    const sheetPath = targetSheetPath(item);
+    const sheetName = targetSheetName(item);
+    const parent = sheetPath.includes('/') ? sheetPath.split('/').slice(0, -1).join('/') : '';
     try {
-      await apiFetch('/file?path=' + encodeURIComponent('メモ/メモ.md'), { silentError: true });
+      await apiFetch('/file?path=' + encodeURIComponent(`${sheetPath}/${sheetName}.md`), { silentError: true });
     } catch {
       await jsonFetch('/outliner/add', {
         method: 'POST',
         silentError: true,
-        body: JSON.stringify({ parent: '', label: 'メモ', type: 'database' }),
+        body: JSON.stringify({ parent, label: sheetName, type: 'database' }),
       }).catch(() => undefined);
     }
-    await jsonFetch('/db-metadata?path=' + encodeURIComponent('メモ'), {
+    await jsonFetch('/db-metadata?path=' + encodeURIComponent(sheetPath), {
       method: 'PUT',
       silentError: true,
       body: JSON.stringify({
         type: 'settings-db',
+        storage: 'sqlite',
+        cloud_storage: 'sheet-store-v1',
         property_types: {
           種別: { type: 'select', options: ['メモ'] },
           タグ: { type: 'multi-select', options: [] },
           追加日時: { type: 'date', withTime: true },
           更新日時: { type: 'date', withTime: true },
           保存先: { type: 'text' },
+          メモID: { type: 'text' },
+          URL: { type: 'url' },
+          共有タイトル: { type: 'text' },
+          共有元: { type: 'text' },
         },
       }),
     });
+    if (sheetPath !== 'メモ') return;
     try {
       await apiFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), { silentError: true });
     } catch {
       await jsonFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), {
         method: 'POST',
         silentError: true,
-        body: JSON.stringify({ content: JSON.stringify(smartDbDefinition(), null, 2) }),
+        body: JSON.stringify({ content: JSON.stringify(smartDbDefinition(sheetPath), null, 2) }),
       });
     }
   }
 
   async function saveViaExistingApis(item) {
-    await ensureMemoWorkspace();
+    await ensureMemoWorkspace(item);
     const path = memoPath(item);
-    const content = frontmatterText(memoFrontmatter(item, path), memoBody(item));
+    const frontmatter = memoFrontmatter(item, path);
+    if (!item.server_path && !item.path) {
+      try {
+        const created = await jsonFetch('/entity/create', {
+          method: 'POST',
+          silentError: true,
+          body: JSON.stringify({
+            parent_path: targetSheetPath(item),
+            name: path.split('/').pop().replace(/\.md$/i, ''),
+            properties: frontmatter.properties,
+            source: 'quick-memo',
+            reviewed: true,
+          }),
+        });
+        const createdPath = created?.path || path;
+        await jsonFetch('/value?path=' + encodeURIComponent(createdPath), {
+          method: 'PUT',
+          silentError: true,
+          body: JSON.stringify({ new_body: memoBody(item) }),
+        });
+        item.server_path = createdPath;
+        return { ok: true, path: createdPath, target_sheet: targetSheetPath(item) };
+      } catch {}
+    }
+    const content = frontmatterText(frontmatter, memoBody(item));
     await jsonFetch('/file?path=' + encodeURIComponent(path), {
       method: 'POST',
       silentError: true,
       body: JSON.stringify({ content }),
     });
     item.server_path = path;
-    return { ok: true, path };
+    return { ok: true, path, target_sheet: targetSheetPath(item) };
   }
 
   async function saveItem(item) {
@@ -230,6 +289,8 @@
           const current = readJson(CURRENT_KEY, {});
           if (current?.memo_id === item.memo_id) {
             current.server_path = result.path || item.server_path || current.server_path || '';
+            if (Array.isArray(result.tags)) current.tags = result.tags;
+            delete current.auto_tag;
             writeJson(CURRENT_KEY, current);
           }
         } catch {

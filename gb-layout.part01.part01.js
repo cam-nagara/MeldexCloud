@@ -9,6 +9,7 @@ const GBLayout = (() => {
   const BACKUP_KEY = 'gb:layout:backup-pre-b';
   const MAX_DEPTH = 4;
   const MIN_PANE_SIZE = 32; // px（折り畳みボタン1つ分まで縮小可能）
+  const FREE_LAYOUT_UI_ENABLED = false;
 
   let _root = null;       // LayoutNode (ツリーのルート)
   let _paneMap = {};       // paneId → { node, el, component }
@@ -21,6 +22,10 @@ const GBLayout = (() => {
   const SAVE_LAYOUT_DEBOUNCE_MS = 80;
   let _saveLayoutTimer = null;
   let _saveLayoutPending = false;
+
+  function _showFreeLayoutUi() {
+    return FREE_LAYOUT_UI_ENABLED;
+  }
 
   // === データモデル ===
   function createPaneNode(id, tabs, activeTabIndex) {
@@ -48,6 +53,163 @@ const GBLayout = (() => {
   // === デフォルトレイアウト ===
   function defaultLayout() {
     return createPaneNode('pane-main', [], -1);
+  }
+
+  const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
+  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'search', 'version']);
+  const FIXED_RAIL_RIGHT_DEFAULTS = [
+    ['ビューワー', 'preview'], ['オプション', 'detail'], ['バージョン管理', 'version'],
+    ['チャット', 'chat'], ['タイマー', 'timer'],
+    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['検索', 'search'],
+  ];
+
+  function _fixedRailGeneratedId(prefix) {
+    return `${prefix}-fixed-${Date.now().toString(36)}-${(++_paneIdCounter).toString(36)}`;
+  }
+
+  function _bumpCounterFromLayout(node) {
+    if (!node) return;
+    const n = parseInt(String(node.id || '').replace(/^(pane|split|panelset)-/, ''), 10);
+    if (Number.isFinite(n) && n > _paneIdCounter) _paneIdCounter = n;
+    if (node.type === 'split' && Array.isArray(node.children)) node.children.forEach(_bumpCounterFromLayout);
+    if (node.type === 'panelset' && Array.isArray(node.groups)) node.groups.forEach(g => _bumpCounterFromLayout(g?.root));
+  }
+
+  function _fixedRailTab(label, type) {
+    const icon = typeof uiTypeIconName === 'function' ? uiTypeIconName(type) : '';
+    return { id: _fixedRailGeneratedId('tab'), type, label, path: '', icon: icon || type, state: {} };
+  }
+
+  function _collectFixedRailPanes(node, out = []) {
+    if (!node) return out;
+    if (node.type === 'pane') out.push(node);
+    else if (node.type === 'split' && Array.isArray(node.children)) node.children.forEach(child => _collectFixedRailPanes(child, out));
+    else if (node.type === 'panelset' && Array.isArray(node.groups)) node.groups.forEach(g => _collectFixedRailPanes(g?.root, out));
+    return out;
+  }
+
+  function _hasFixedRailRoles(node) {
+    const roles = new Set();
+    (function walk(n) {
+      if (!n) return;
+      if (n.meldexRole) roles.add(n.meldexRole);
+      if (n.type === 'split' && Array.isArray(n.children)) n.children.forEach(walk);
+      if (n.type === 'panelset' && Array.isArray(n.groups)) n.groups.forEach(g => walk(g?.root));
+    })(node);
+    return roles.has('left-sidebar') && roles.has('main') && roles.has('right-sidebar');
+  }
+
+  function _findFixedRailPanelset(node, role) {
+    if (!node) return null;
+    if (node.type === 'panelset' && node.meldexRole === role) return node;
+    if (node.type === 'split' && Array.isArray(node.children)) {
+      for (const child of node.children) {
+        const found = _findFixedRailPanelset(child, role);
+        if (found) return found;
+      }
+    }
+    if (node.type === 'panelset' && Array.isArray(node.groups)) {
+      for (const group of node.groups) {
+        const found = _findFixedRailPanelset(group?.root, role);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function _ensureFixedRightRailDefaults(node) {
+    const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
+    if (!rightDock || !Array.isArray(rightDock.groups)) return node;
+    rightDock.groups.forEach(group => {
+      _collectFixedRailPanes(group?.root).forEach(pane => {
+        if (!Array.isArray(pane.tabs)) return;
+        pane.tabs = pane.tabs.filter(tab => tab?.type !== 'calendar');
+        if (pane.activeTabIndex >= pane.tabs.length) pane.activeTabIndex = pane.tabs.length ? 0 : -1;
+      });
+    });
+    const originalGroupCount = rightDock.groups.length;
+    rightDock.groups = rightDock.groups.filter(group => (
+      _collectFixedRailPanes(group?.root).some(pane => (pane.tabs || []).length)
+    ));
+    if (rightDock.groups.length !== originalGroupCount) {
+      if (!rightDock.groups.some(group => group.id === rightDock.activeGroupId)) {
+        rightDock.activeGroupId = rightDock.groups[0]?.id || null;
+      }
+    }
+    const seen = new Set();
+    rightDock.groups.forEach(group => {
+      _collectFixedRailPanes(group?.root).forEach(pane => (pane.tabs || []).forEach(tab => seen.add(tab?.type || '')));
+    });
+    FIXED_RAIL_RIGHT_DEFAULTS.forEach(([label, type]) => {
+      if (seen.has(type)) return;
+      const pane = createPaneNode(null, [_fixedRailTab(label, type)], 0);
+      pane.meldexRole = 'right-sidebar';
+      const group = { id: _fixedRailGeneratedId('group'), root: pane };
+      rightDock.groups.push(group);
+      if (!rightDock.activeGroupId) rightDock.activeGroupId = group.id;
+      seen.add(type);
+    });
+    return node;
+  }
+
+  function _fixedRailPanelset(roots, role, activeIndex, popupWidth) {
+    const groups = roots.map(root => ({ id: _fixedRailGeneratedId('group'), root }));
+    const active = groups[Math.max(0, Math.min(groups.length - 1, activeIndex || 0))];
+    const node = { type: 'panelset', id: _fixedRailGeneratedId('panelset'), groups, activeGroupId: active?.id || null, collapsed: false, meldexRole: role };
+    if (popupWidth) node.defaultPopupWidth = popupWidth;
+    return node;
+  }
+
+  function _fixedRailRatios() {
+    const total = Math.max(1, _layoutEl?.clientWidth || window.innerWidth || 1600);
+    const minWork = Math.min(400, Math.max(260, total * 0.25));
+    let left = 260, right = 360;
+    if (left + right + minWork > total) {
+      const scale = Math.max(0.35, (total - minWork) / (left + right));
+      left *= scale; right *= scale;
+    }
+    return { leftRatio: left / total, workRatio: Math.max(1, total - left - right) / Math.max(1, total - left), leftWidth: Math.round(left), rightWidth: Math.round(right) };
+  }
+
+  function _migrateLayoutToFixedRailsIfNeeded(node) {
+    _bumpCounterFromLayout(node);
+    if (!node || window._gbSingleWindow) return node;
+    if (_hasFixedRailRoles(node)) return _ensureFixedRightRailDefaults(node);
+    const storedActivePaneId = _readStoredActivePaneId();
+    const leftTabs = [], rightTabs = [], contentTabs = [];
+    let contentActiveIndex = -1;
+    _collectFixedRailPanes(node).forEach((pane) => {
+      const tabs = Array.isArray(pane.tabs) ? pane.tabs : [];
+      if (!tabs.length) contentTabs.push(_fixedRailTab('フォルダ', 'folder'));
+      tabs.forEach((tab, tabIdx) => {
+        const type = tab?.type || '';
+        if (FIXED_RAIL_LEFT_TYPES.has(type)) leftTabs.push(tab);
+        else if (FIXED_RAIL_RIGHT_TYPES.has(type)) rightTabs.push(tab);
+        else {
+          if (pane.id === storedActivePaneId && pane.activeTabIndex === tabIdx) contentActiveIndex = contentTabs.length;
+          contentTabs.push(tab);
+        }
+      });
+    });
+    if (!contentTabs.length) contentTabs.push(_fixedRailTab('フォルダ', 'folder'));
+    const mainPane = createPaneNode('pane-main', contentTabs, contentActiveIndex >= 0 ? contentActiveIndex : 0);
+    mainPane.meldexRole = 'main';
+    const leftPane = createPaneNode(null, [leftTabs[0] || _fixedRailTab('フォルダツリー', 'outliner')], 0);
+    leftPane.meldexRole = 'left-sidebar';
+    const seenRight = new Set(rightTabs.map(tab => tab?.type || '').filter(Boolean));
+    FIXED_RAIL_RIGHT_DEFAULTS.forEach(([label, type]) => { if (!seenRight.has(type)) rightTabs.push(_fixedRailTab(label, type)); });
+    const rightPanes = rightTabs.map(tab => {
+      const pane = createPaneNode(null, [tab], 0);
+      pane.meldexRole = 'right-sidebar';
+      return pane;
+    });
+    const activeRightIndex = Math.max(0, rightPanes.findIndex(p => p.tabs?.[0]?.type === 'detail'));
+    const ratios = _fixedRailRatios();
+    const leftDock = _fixedRailPanelset([leftPane], 'left-sidebar', 0, ratios.leftWidth);
+    const workDock = _fixedRailPanelset([mainPane], 'main', 0, 0);
+    const rightDock = _fixedRailPanelset(rightPanes, 'right-sidebar', activeRightIndex, ratios.rightWidth);
+    const contentSplit = createSplitNode('horizontal', ratios.workRatio, [workDock, rightDock]);
+    return createSplitNode('horizontal', ratios.leftRatio, [leftDock, contentSplit]);
   }
 
   // === B案正規化: ドック = 水平split の子を常に panelset でラップ ===
@@ -232,14 +394,14 @@ const GBLayout = (() => {
         if (needsMigration) {
           try { if (rawSaved) localStorage.setItem(BACKUP_KEY, rawSaved); } catch (e) {}
           try {
-            return migrateLayoutToB(saved);
+            return _migrateLayoutToFixedRailsIfNeeded(migrateLayoutToB(saved));
           } catch (err) {
             // マイグレーション失敗時はバックアップを維持し、デフォルトレイアウトを返す
             try { localStorage.setItem('gb:layout:migration-error', String(err?.message || err)); } catch (e) {}
             return null;
           }
         }
-        return saved;
+        return _migrateLayoutToFixedRailsIfNeeded(saved);
       }
     } catch (e) {}
     return null;
@@ -279,7 +441,7 @@ const GBLayout = (() => {
         // 旧ラベル '詳細' / 旧アイコン 'info' を現行値に置換する
         if (tab.type === 'detail') {
           if (tab.label === '詳細') tab.label = 'オプション';
-          if (tab.icon === 'info') tab.icon = 'panelRight';
+          if (tab.icon === 'info' || tab.icon === 'panelRight') tab.icon = 'slidersHorizontal';
         }
         // タブピン留め機能は廃止されたため、既存レイアウト JSON の pinned プロパティを除去
         if ('pinned' in tab) delete tab.pinned;
@@ -409,7 +571,7 @@ const GBLayout = (() => {
       // カラム移動用ドラッグハンドル
       const dragHandle = document.createElement('span');
       dragHandle.className = 'gb-split-collapsed-drag-handle';
-      dragHandle.draggable = true;
+      dragHandle.draggable = _showFreeLayoutUi();
       dragHandle.title = 'ドラッグ: カラム移動';
       dragHandle.innerHTML = lucide('gripVertical', 12);
       dragHandle.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
@@ -424,7 +586,7 @@ const GBLayout = (() => {
           GBDocking.hideIndicator();
         }
       });
-      bar.appendChild(dragHandle);
+      if (_showFreeLayoutUi()) bar.appendChild(dragHandle);
 
       _appendCollapsedIcons(bar, node, () => {
         node.collapsed = false;
@@ -560,6 +722,27 @@ const GBLayout = (() => {
     if (!options?.skipRender) render();
   }
 
+  function setNodeCollapsed(nodeId, collapsed, options) {
+    const info = findNode(_root, nodeId);
+    const node = info?.node || null;
+    if (!node || (node.type !== 'pane' && node.type !== 'split' && node.type !== 'panelset')) return false;
+    const nextCollapsed = !!collapsed;
+    if (node.collapsed === nextCollapsed) {
+      if (options?.activePaneId && typeof setActivePane === 'function') {
+        setActivePane(options.activePaneId, { skipCallback: !!options.skipActivePaneCallback });
+      }
+      return true;
+    }
+    node.collapsed = nextCollapsed;
+    _adjustSplitForCollapse(node, { skipRender: true });
+    if (options?.activePaneId && typeof setActivePane === 'function') {
+      setActivePane(options.activePaneId, { skipCallback: !!options.skipActivePaneCallback });
+    }
+    render();
+    if (!options?.skipSave) saveLayout({ immediate: true });
+    return true;
+  }
+
   function renderPane(node, depth) {
     const pane = document.createElement('div');
     pane.className = 'gb-pane' + (node.id === _activePane ? ' gb-pane-active' : '') + (node.locked ? ' gb-pane-locked' : '');
@@ -573,7 +756,7 @@ const GBLayout = (() => {
     // ドラッグハンドル（先頭に配置）
     const dragHandle = document.createElement('span');
     dragHandle.className = 'gb-pane-drag-handle';
-    dragHandle.draggable = !node.locked;
+    dragHandle.draggable = _showFreeLayoutUi() && !node.locked;
     dragHandle.title = node.locked ? 'ロック中のパネルは移動できません' : 'ドラッグ: パネル移動 / Alt+Shift+ドラッグ: カラム移動';
     dragHandle.innerHTML = lucide('gripVertical', 12);
     const isColumnDragModifier = (event) => !!(event?.altKey && event?.shiftKey);
@@ -584,6 +767,10 @@ const GBLayout = (() => {
     });
     dragHandle.addEventListener('mousedown', (e) => { _altHeld = isColumnDragModifier(e); });
     dragHandle.addEventListener('dragstart', (e) => {
+      if (!_showFreeLayoutUi()) {
+        e.preventDefault();
+        return;
+      }
       if (node.locked) {
         e.preventDefault();
         return;
@@ -608,7 +795,7 @@ const GBLayout = (() => {
         GBDocking.hideIndicator();
       }
     });
-    tabBar.appendChild(dragHandle);
+    if (_showFreeLayoutUi()) tabBar.appendChild(dragHandle);
 
     const navCtrls = document.createElement('span');
     navCtrls.className = 'gb-pane-nav-ctrls';
@@ -671,7 +858,7 @@ const GBLayout = (() => {
       e.stopPropagation();
       e.preventDefault();
     });
-    ctrls.appendChild(moreBtn);
+    if (_showFreeLayoutUi()) ctrls.appendChild(moreBtn);
 
     // タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls が切れないよう、
     // タブ部分だけを横スクロール可能な中間コンテナに入れる
@@ -685,7 +872,7 @@ const GBLayout = (() => {
         tabEl.className = 'gb-tab' + (i === node.activeTabIndex ? ' active' : '');
         tabEl.dataset.tabId = tab.id;
         tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
-        tabEl.draggable = true;
+        tabEl.draggable = _showFreeLayoutUi();
 
         const iconSpan = document.createElement('span');
         iconSpan.className = 'gb-tab-icon';
@@ -725,6 +912,10 @@ const GBLayout = (() => {
 
         // D&D
         tabEl.addEventListener('dragstart', (e) => {
+          if (!_showFreeLayoutUi()) {
+            e.preventDefault();
+            return;
+          }
           e.dataTransfer.setData('application/x-gb-tab', JSON.stringify({ tabId: tab.id, paneId: node.id }));
           e.dataTransfer.effectAllowed = 'move';
           // text/uri-list を併せて入れておくと OS シェル側で「URL の D&D」として
@@ -787,10 +978,10 @@ const GBLayout = (() => {
       if (typeof setActivePane === 'function') setActivePane(node.id);
       if (typeof showPanelMenu === 'function') showPanelMenu(e, { paneId: node.id });
     });
-    tabsScroll.appendChild(addTabBtn);
+    if (_showFreeLayoutUi()) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
-    tabBar.appendChild(ctrls);
+    if (_showFreeLayoutUi()) tabBar.appendChild(ctrls);
 
     // タブバーの D&D 並び替え（同ペイン内のタブを並び替える）
     // 別ペインからのタブ移動は docking システム側が処理する
@@ -801,6 +992,7 @@ const GBLayout = (() => {
         .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     };
     tabBar.addEventListener('dragover', (e) => {
+      if (!_showFreeLayoutUi()) return;
       const types = e.dataTransfer.types;
       const isTab = types.includes('application/x-gb-tab');
       const isNode = types.includes('application/x-meldex-node');
@@ -839,6 +1031,7 @@ const GBLayout = (() => {
       _clearDropMarkers();
     });
     tabBar.addEventListener('drop', (e) => {
+      if (!_showFreeLayoutUi()) return;
       const tabData = e.dataTransfer.getData('application/x-gb-tab');
       const nodeData = e.dataTransfer.getData('application/x-meldex-node');
       if (!tabData && !nodeData) return;
@@ -898,7 +1091,7 @@ const GBLayout = (() => {
         // そのケースを node.tabs.length の差分で検出し、このペインに新規追加された時だけ
         // 挿入位置補正と insertIndex 前進を行う。
         const lenBefore = node.tabs.length;
-        const tabId = GBTabs.addTab(node.id, it.name || '', openType, it.path);
+        const tabId = GBTabs.addTab(node.id, it.name || '', openType, it.path, null, { preferTargetPane: true });
         if (!tabId) return;
         const addedHere = node.tabs.length > lenBefore
           && node.tabs[node.tabs.length - 1]?.id === tabId;

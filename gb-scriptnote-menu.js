@@ -89,7 +89,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           });
           const menuRect = menu.getBoundingClientRect();
           const catRect = catBtn.getBoundingClientRect();
-          sub.style.cssText = 'position:fixed;z-index:10000;';
+          sub.style.cssText = 'position:fixed;z-index:10100;';
           positionPopup(sub, { left: menuRect.right, right: menuRect.right + 2, top: catRect.top, bottom: catRect.bottom }, { prefer: 'right' });
           openSub = sub;
         });
@@ -278,7 +278,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     // 位置決め
     const rect = roleBtn.getBoundingClientRect();
-    menu.style.cssText = 'position:fixed;z-index:9999;';
+    menu.style.cssText = 'position:fixed;z-index:10100;';
     positionPopup(menu, rect);
 
     this._roleMenu = menu;
@@ -536,7 +536,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   _assignAutoColor(chara) {
     if (chara.isDefault) return; // デフォルトタイプは自動配色対象外
     if (chara.autoColor || chara.bgColor) return; // 既に色が設定されている場合はスキップ
-    const colors = typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : [];
+    const colors = typeof this._getAutoColorPalette === 'function'
+      ? this._getAutoColorPalette()
+      : (typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : []);
     if (!colors.length) return;
     // editor.autoColorRule から列ごとの配色先を取得
     const acRule = this.doc.editor?.autoColorRule || {};

@@ -85,8 +85,13 @@
   function _splitNameAndExt(name) {
     const safeName = String(name || '');
     const lower = safeName.toLowerCase();
+    if (lower.endsWith('.mel-board')) return { stem: safeName.slice(0, -10), ext: '.mel-board' };
+    if (lower.endsWith('.mel-sheet')) return { stem: safeName.slice(0, -10), ext: '.mel-sheet' };
+    if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
+    if (lower.endsWith('.mel-timer')) return { stem: safeName.slice(0, -10), ext: '.mel-timer' };
     if (lower.endsWith('.scriptnote.json')) return { stem: safeName.slice(0, -16), ext: '.scriptnote.json' };
     if (lower.endsWith('.smart-db.json')) return { stem: safeName.slice(0, -14), ext: '.smart-db.json' };
+    if (lower.endsWith('.timer.json')) return { stem: safeName.slice(0, -11), ext: '.timer.json' };
     const index = safeName.lastIndexOf('.');
     if (index <= 0) return { stem: safeName, ext: '' };
     return { stem: safeName.slice(0, index), ext: safeName.slice(index) };
@@ -124,6 +129,35 @@
     return split.stem || name;
   }
 
+  function _fallbackOsTypeLabel(name, type, isDirectory) {
+    if (isDirectory) return 'フォルダ';
+    const ext = _splitNameAndExt(name).ext.toLowerCase();
+    const labels = {
+      '.ps1': 'Windows PowerShell スクリプト',
+      '.py': 'Python ソース ファイル',
+      '.json': 'JSON ソース ファイル',
+      '.js': 'JavaScript ファイル',
+      '.css': 'CSS ファイル',
+      '.html': 'HTML ドキュメント',
+      '.htm': 'HTML ドキュメント',
+      '.md': 'Markdown ファイル',
+      '.txt': 'テキスト ドキュメント',
+      '.csv': 'CSV ファイル',
+      '.xlsx': 'Microsoft Excel ワークシート',
+      '.xls': 'Microsoft Excel ワークシート',
+      '.zip': '圧縮フォルダー',
+      '.png': 'PNG ファイル',
+      '.jpg': 'JPG ファイル',
+      '.jpeg': 'JPEG ファイル',
+      '.gif': 'GIF ファイル',
+      '.webp': 'WEBP ファイル',
+      '.svg': 'SVG ファイル',
+      '.blend': 'BLEND ファイル',
+    };
+    const appLabel = typeof FILE_TYPE_LABELS !== 'undefined' ? FILE_TYPE_LABELS?.[type] : '';
+    return labels[ext] || (ext ? ext.slice(1).toUpperCase() + ' ファイル' : (appLabel || 'ファイル'));
+  }
+
   function _phase1SurfaceType(type, kind) {
     const normalized = String(type || '').trim();
     return normalized;
@@ -143,7 +177,8 @@
 
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
-    return TEXT_EXTS.has(ext) || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.smart-db.json');
+    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer'].includes(ext)
+      || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.smart-db.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
   function _isExcludedWorkspacePath(path) {
@@ -407,9 +442,19 @@
     return normalized;
   }
 
+  function assertCloudWriteAllowed(mode) {
+    if ((mode || 'read') !== 'readwrite') return;
+    const state = _runtime()?.getWorkspaceState?.() || {};
+    const access = String(state.access || state.role || '').toLowerCase();
+    if (access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
+      throw new Error('閲覧専用モードのため書き込めません');
+    }
+  }
+
   async function _requirePwaProvider(mode) {
     const provider = await _pwaProvider();
     if (!provider) throw new Error('Dropbox 共有フォルダが未接続です');
+    assertCloudWriteAllowed(mode || 'read');
     const granted = await provider.ensureWorkspacePermission(mode || 'read');
     if (!granted && (mode || 'read') === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') {
       throw new Error('Dropbox 容量が95%を超えているため書き込みを停止しています。空き容量を確保してから再開してください');
@@ -477,6 +522,7 @@
     const file = await fileHandle.getFile();
     return {
       size: Number(file.size || 0),
+      created: file.lastModified ? new Date(file.lastModified).toISOString() : '',
       modified: file.lastModified ? new Date(file.lastModified).toISOString() : '',
       modifiedMs: Number(file.lastModified || 0),
       file,
@@ -597,6 +643,10 @@
     const name = _basename(relativePath);
     const lowerName = name.toLowerCase();
     const ext = _splitNameAndExt(name).ext.toLowerCase();
+    if (ext === '.mel-board') return _phase1SurfaceType('board', 'file');
+    if (ext === '.mel-sheet') return _phase1SurfaceType('smart-db', 'file');
+    if (ext === '.mel-scenario') return 'scriptnote';
+    if (ext === '.mel-timer') return 'timer';
     if (ext === '.md') {
       if (lowerName.endsWith('.board.md')) return _phase1SurfaceType('board', 'file');
       const frontmatterType = _extractFrontmatterType(await _readTextSafe(provider, relativePath, ''));
@@ -604,15 +654,17 @@
       if (frontmatterType === 'chat') return _phase1SurfaceType('chat', 'file');
       return 'page';
     }
-    if (ext === '.json' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.smart-db.json')) {
+    if (ext === '.json' || lowerName.endsWith('.scriptnote.json') || lowerName.endsWith('.smart-db.json') || lowerName.endsWith('.timer.json')) {
       if (lowerName.endsWith('.scriptnote.json')) return 'scriptnote';
       if (lowerName.endsWith('.scenario.json')) return 'scenario';
       if (lowerName.endsWith('.smart-db.json')) return _phase1SurfaceType('smart-db', 'file');
+      if (lowerName.endsWith('.timer.json')) return 'timer';
       const parsed = await _readJsonSafe(provider, relativePath, null);
       if (parsed && typeof parsed === 'object') {
         if (parsed.fileType === 'meldex-scriptnote') return 'scriptnote';
         if (parsed.fileType === 'meldex-scenario' || parsed.type === 'scenario') return 'scenario';
         if (parsed.type === 'smart-db') return _phase1SurfaceType('smart-db', 'file');
+        if (parsed.type === 'meldex-timer') return 'timer';
         if (!parsed.fileType && !parsed.type && Object.prototype.hasOwnProperty.call(parsed, 'title')) return 'scenario';
       }
       return 'unknown';
@@ -635,7 +687,9 @@
       const type = safeOptions.classifyDirectories
         ? (await _classifyDirectoryType(provider, relativePath).catch(() => 'folder')) || 'folder'
         : 'folder';
-      return { name, type, path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
+      const folderItem = { name, type, path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
+      if (safeOptions.detail) folderItem.os_type = _fallbackOsTypeLabel(name, type, true);
+      return folderItem;
     }
     const fileType = await _classifyFileType(provider, relativePath, { forBrowse: true, allFiles: !!safeOptions.allFiles });
     if (!fileType) return null;
@@ -653,8 +707,10 @@
     if (safeOptions.detail) {
       const stats = await _fileStats(handle);
       item.size = stats.size;
+      item.created = stats.created || stats.modified;
       item.modified = stats.modified;
       item._modifiedMs = stats.modifiedMs;
+      item.os_type = _fallbackOsTypeLabel(name, fileType, false);
     }
     return item;
   }
@@ -890,6 +946,7 @@
     _writeFolderLinksStore,
     _readFolderLinks,
     _writeFolderLinks,
+    assertCloudWriteAllowed,
     _requirePwaProvider,
     _directoryHandle,
     _resolveEntryHandle,

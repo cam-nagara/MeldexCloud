@@ -460,7 +460,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-action="filters" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フィルタ" style="position:relative;">${_bdIcon('funnel', 16)}<span id="${idFor('bd-filter-badge')}" class="bd-filter-badge tb-badge" data-bd-control="filter-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
       <button type="button" data-bd-action="reload" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="再読み込み">${_bdIcon('refreshCw', 16)}</button>
       <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換">${_bdIcon('search', 16)}</button>
-      <button type="button" data-bd-action="detail" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="オプションを開く">${_bdIcon('panelRight', 16)}</button>
+      <button type="button" data-bd-action="detail" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く">${_bdIcon('slidersHorizontal', 16)}</button>
     </div>
     <div id="${idFor('bd-canvas')}" data-bd-role="canvas" data-gb-tooltip-disabled="true" tabindex="0" aria-label="ボードキャンバス" title="ボードキャンバス" style="position:relative;flex:1;overflow:hidden;outline:none;background:var(--bd-bg,var(--content-bg,var(--bg)));" oncontextmenu="return false;">
       <div id="${idFor('bd-world')}" data-bd-role="world" style="position:absolute;transform-origin:0 0;">

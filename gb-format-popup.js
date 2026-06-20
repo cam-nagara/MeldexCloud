@@ -346,7 +346,7 @@
    * @param {() => void} [options.onReset] リセット。省略時はリセットボタン非表示
    * @param {Object} [options.bulk] { enabled, label, onToggle(enabled) } 全行適用トグル
    * @param {HTMLElement[]} [options.extraRow1] row1 末尾に追加する要素
-   * @param {HTMLElement[]} [options.extraRow2] row2 末尾に追加する要素
+   * @param {HTMLElement[]} [options.extraRow2] 専用設定の下段に追加する要素
    * @param {HTMLElement[]} [options.extraRow3] row3 末尾に追加する要素
    * @param {boolean} [options.closeOnOutside=true] ポップアップ外クリックで閉じる
    * @param {string} [options.className] 追加クラス名（旧命名互換用）
@@ -479,9 +479,10 @@
     // --- Row 4: タイプ管理固有設定 + リセット ---
     const hasRow4Fields = ['textBefore', 'textAfter', 'textAlign', 'textValign', 'textOverflow']
       .some((f) => fields.has(f));
-    const hasRow4Extra = Array.isArray(options.extraRow2) && options.extraRow2.length > 0;
+    const row4Extra = Array.isArray(options.extraRow2) ? options.extraRow2.filter(Boolean) : [];
+    const hasRow4Extra = row4Extra.length > 0;
     const hasReset = typeof options.onReset === 'function';
-    if (hasRow4Fields || hasRow4Extra || hasReset) {
+    if (hasRow4Fields || hasReset) {
       const row4 = document.createElement('div');
       row4.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap gb-fmt-popup-row--specific';
 
@@ -511,8 +512,6 @@
         row4.appendChild(_makeGroup([lbl, sel]));
       }
 
-      if (hasRow4Extra) options.extraRow2.forEach((el) => el && row4.appendChild(el));
-
       if (hasReset) {
         const resetBtn = document.createElement('button');
         resetBtn.type = 'button';
@@ -529,6 +528,12 @@
 
       popup.appendChild(row4);
     }
+    if (hasRow4Extra) {
+      const row5 = document.createElement('div');
+      row5.className = 'gb-fmt-popup-row gb-fmt-popup-row--count gb-fmt-popup-row--specific';
+      row4Extra.forEach((el) => row5.appendChild(el));
+      popup.appendChild(row5);
+    }
 
     if (options.closeButton !== false && typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
@@ -541,7 +546,11 @@
     document.body.appendChild(popup);
     const anchor = options.positionAnchor || anchorEl;
     if (typeof positionPopup === 'function' && anchor) {
-      positionPopup(popup, anchor.getBoundingClientRect());
+      positionPopup(popup, anchor.getBoundingClientRect(), {
+        avoidRect: options.avoidRect || null,
+        gap: options.gap,
+        prefer: options.prefer,
+      });
     }
 
     // --- 外クリックで閉じる ---

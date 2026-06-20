@@ -621,6 +621,7 @@ const LUCIDE = {
   clapperboard: '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   // v5.23: アイコン統一で追加
   settings2: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
+  slidersHorizontal: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
   messageCircle: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   unlock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
@@ -723,7 +724,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
-  detail: 'panelRight',
+  detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
   annotation: 'stickyNote',
@@ -778,9 +779,9 @@ function replaceIcons(root) {
     else if (cls.includes('ico-upload')) name = 'upload';
     else if (cls.includes('ico-board')) name = 'presentation';
     else if (cls.includes('ico-preview') || cls.includes('ico-tvMinimal')) name = 'tvMinimal';
-    else if (cls.includes('ico-detail')) name = 'panelRight';
+    else if (cls.includes('ico-detail')) name = 'slidersHorizontal';
     else if (cls.includes('ico-info')) name = 'info';
-    else if (cls.includes('ico-settings2') || cls.includes('ico-slidersHorizontal')) name = 'settings2';
+    else if (cls.includes('ico-settings2') || cls.includes('ico-slidersHorizontal')) name = 'slidersHorizontal';
     else if (cls.includes('ico-gear') || cls.includes('ico-settings')) name = 'settings';
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';

@@ -8,6 +8,7 @@
   const EVENT_EDGE_MINUTES = 15;
   const DEFAULT_EVENT_COLOR = '#569cd6';
   const CALENDAR_SETTINGS_SCOPE = 'calendar:settings';
+  const CALENDAR_DETAIL_TABS = new Set(['calendar-today', 'calendar-settings', 'calendar-production']);
 
   function _calEsc(v) {
     return typeof esc === 'function' ? esc(v) : String(v ?? '').replace(/[&<>"']/g, ch => ({
@@ -22,6 +23,15 @@
   function _calCssEscape(value) {
     if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
     return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  function _calKeyboardFromEditableTarget(event) {
+    const target = event?.target instanceof Element ? event.target : null;
+    const active = document.activeElement instanceof Element ? document.activeElement : null;
+    return !!(
+      target?.closest?.('input, textarea, select, [contenteditable="true"], [role="textbox"]') ||
+      active?.closest?.('input, textarea, select, [contenteditable="true"], [role="textbox"]')
+    );
   }
 
   function _calLocalInputValue(component, value, fallbackDate) {
@@ -58,34 +68,75 @@
     endInput.dataset.calRawValue = endInput.value;
   }
 
-  function _calOptionContainer(title) {
+  function _calFindCalendarComponent() {
+    if (typeof GBTabs !== 'undefined' && typeof getComponentInstance === 'function') {
+      const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : null;
+      const activeTab = typeof GBTabs.getActiveTab === 'function' ? GBTabs.getActiveTab(paneId) : null;
+      if (activeTab?.type === 'calendar') {
+        const active = getComponentInstance(activeTab.id);
+        if (active instanceof CalendarComponent) return active;
+      }
+    }
+    let fallback = null;
+    if (typeof forEachComponent === 'function') {
+      forEachComponent((instance) => {
+        if (!fallback && instance instanceof CalendarComponent) fallback = instance;
+      });
+    }
+    return fallback;
+  }
+
+  function _calDetailTabId(tabId) {
+    return CALENDAR_DETAIL_TABS.has(tabId) ? tabId : 'calendar-today';
+  }
+
+  function _calPrepareCalendarDetailShell(detailEl) {
+    if (!detailEl) return;
+    if (typeof showNoteTabs === 'function') showNoteTabs(false);
+    if (typeof showDbTabs === 'function') showDbTabs(false);
+    if (typeof showBoardTabs === 'function') showBoardTabs(false);
+    if (typeof hideBoardNoteTab === 'function') hideBoardNoteTab();
+    if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
+    if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(true);
+    if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
+    if (typeof renderFileStyleTab === 'function') renderFileStyleTab('calendar');
+    if (typeof showPublishDetailTab === 'function') showPublishDetailTab(true);
+    document.querySelectorAll('.detail-tab-calendar[data-detail-tab="calendar-today"]').forEach(t => { t.textContent = 'カレンダー'; });
+  }
+
+  function _calSelectDetailTab(tabId) {
+    if (typeof switchDetailTab !== 'function') return;
+    try { window.__MeldexSuppressCalendarTabAutoRender = true; } catch {}
+    try { switchDetailTab(_calDetailTabId(tabId)); }
+    finally {
+      try { window.__MeldexSuppressCalendarTabAutoRender = false; } catch {}
+    }
+  }
+
+  function _calBuildOptionBody(tabBody, title) {
+    tabBody.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'cal-option-header';
+    header.textContent = title;
+    tabBody.appendChild(header);
+    const body = document.createElement('div');
+    body.className = 'cal-option-body';
+    tabBody.appendChild(body);
+    return body;
+  }
+
+  function _calOptionContainer(title, options = {}) {
     const detailEl = typeof _resolveDetailEl === 'function' ? _resolveDetailEl() : document.getElementById('rp-detail');
     if (!detailEl) return null;
     detailEl.style.display = '';
     if (typeof _ensureDetailTabShell === 'function') _ensureDetailTabShell(detailEl);
 
-    const tabBody = detailEl.querySelector?.('#detail-tab-calendar-today') || null;
+    const tabId = _calDetailTabId(options.tabId);
+    const tabBody = detailEl.querySelector?.('#detail-tab-' + tabId) || null;
     if (tabBody) {
-      if (typeof showNoteTabs === 'function') showNoteTabs(false);
-      if (typeof showDbTabs === 'function') showDbTabs(false);
-      if (typeof showBoardTabs === 'function') showBoardTabs(false);
-      if (typeof hideBoardNoteTab === 'function') hideBoardNoteTab();
-      if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
-      if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(true);
-      if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
-      if (typeof renderFileStyleTab === 'function') renderFileStyleTab('calendar');
-      if (typeof showPublishDetailTab === 'function') showPublishDetailTab(true);
-      document.querySelectorAll('.detail-tab-calendar').forEach(t => { t.textContent = 'カレンダー'; });
-      if (typeof switchDetailTab === 'function') switchDetailTab('calendar-today');
-      tabBody.innerHTML = '';
-      const header = document.createElement('div');
-      header.className = 'cal-option-header';
-      header.textContent = title;
-      tabBody.appendChild(header);
-      const body = document.createElement('div');
-      body.className = 'cal-option-body';
-      tabBody.appendChild(body);
-      return body;
+      _calPrepareCalendarDetailShell(detailEl);
+      if (options.select !== false) _calSelectDetailTab(tabId);
+      return _calBuildOptionBody(tabBody, title);
     }
 
     detailEl.innerHTML = '';
@@ -107,6 +158,14 @@
   function _calField(label, html) {
     return `<div class="cal-option-field"><label>${label}</label>${html}</div>`;
   }
+
+  window.MeldexCalendarOptionPanel = Object.freeze({
+    container: _calOptionContainer,
+    field: _calField,
+    icon: _calIcon,
+    findCalendarComponent: _calFindCalendarComponent,
+    syncDetailTabs: _calPrepareCalendarDetailShell,
+  });
 
   function _calBindSwatch(swatch, color) {
     if (!swatch) return;
@@ -150,6 +209,10 @@
         component._sidebarMode = localStorage.getItem('gb:cal-sidebar-mode') || (localStorage.getItem('gb:cal-sidebar-only') === 'true' ? 'only' : 'all');
         component._sidebarOnly = component._sidebarMode === 'only';
       }
+      if (changed.has('gb:cal-attendance-hidden-source-folders')) {
+        component._renderAttendanceSourceSettings?.(component._calendarSettingsBody);
+        component._renderAttendanceStatus?.();
+      }
       component._applySidebarMode?.();
       component._renderMiniCal?.();
       component._render?.();
@@ -171,7 +234,7 @@
     } catch {}
     if (beforeKey && beforeKey === afterKey) return false;
     historyPush(
-      label || 'カレンダー: 設定変更',
+      label || 'スケジューラー: 設定変更',
       () => restoreLocalStorageSettings(snapshots.before, _calRefreshSettingsAfterHistory),
       () => restoreLocalStorageSettings(snapshots.after, _calRefreshSettingsAfterHistory),
       CALENDAR_SETTINGS_SCOPE,
@@ -301,6 +364,19 @@
     return this._selectedEventIds;
   };
 
+  CalendarComponent.prototype._selectedEventRecords = function() {
+    const eventsById = new Map((this._events || []).map(ev => [String(ev?.id || ''), ev]));
+    const sel = this._eventSelection();
+    const records = [];
+    [...sel].forEach(id => {
+      const ev = eventsById.get(String(id || ''));
+      if (ev) records.push(ev);
+      else sel.delete(id);
+    });
+    if (!records.length) this._lastSelectedEventId = '';
+    return records;
+  };
+
   CalendarComponent.prototype._renderedEventIds = function() {
     const ids = [];
     this._contentEl?.querySelectorAll?.('[data-event-id]').forEach(card => {
@@ -339,11 +415,12 @@
   };
 
   CalendarComponent.prototype._syncEventSelectionDom = function() {
-    const sel = this._eventSelection();
-    this._contentEl?.classList?.toggle?.('gb-cal-has-event-selection', sel.size > 0);
+    const records = this._selectedEventRecords();
+    const selectedIds = new Set(records.map(ev => String(ev?.id || '')));
+    this._contentEl?.classList?.toggle?.('gb-cal-has-event-selection', selectedIds.size > 0);
     this._contentEl?.querySelectorAll?.('[data-event-id]').forEach(card => {
       const id = card.dataset.eventId || '';
-      card.classList.toggle('gb-cal-event-selected', sel.has(id));
+      card.classList.toggle('gb-cal-event-selected', selectedIds.has(id));
       let check = card.querySelector(':scope > .gb-cal-event-select-check');
       if (!check) {
         check = document.createElement('input');
@@ -352,19 +429,332 @@
         check.setAttribute('aria-label', '選択');
         card.insertBefore(check, card.firstChild);
       }
-      check.checked = sel.has(id);
+      check.checked = selectedIds.has(id);
     });
+    this._syncAnalogClockSelectionDom?.();
+    this._syncEventSelectionBar?.(records);
+  };
+
+  CalendarComponent.prototype._clearEventSelection = function() {
+    this._setSelectedEvents([], '');
+    this._closeEventCardMenu?.();
+  };
+
+  CalendarComponent.prototype._eventSource = function(ev) {
+    return String(ev?.calendar_source || '');
+  };
+
+  CalendarComponent.prototype._eventIsShiftManaged = function(ev) {
+    const source = this._eventSource(ev);
+    return source === 'shift' || source === 'shift-break' || String(ev?.id || '').startsWith('shift:');
+  };
+
+  CalendarComponent.prototype._shiftIdFromEvent = function(ev) {
+    const raw = String(ev?.id || '').startsWith('shift:')
+      ? String(ev.id).slice('shift:'.length)
+      : String(ev?.external_id || ev?.id || '');
+    return raw.split(':break:')[0];
+  };
+
+  CalendarComponent.prototype._eventCanBulkDelete = function(ev) {
+    if (!ev || ev._recurrence_instance) return false;
+    return !['production-task', 'attendance'].includes(this._eventSource(ev));
+  };
+
+  CalendarComponent.prototype._eventCanBulkDuplicate = function(ev) {
+    if (!ev || ev._recurrence_instance) return false;
+    if (this._eventIsShiftManaged(ev)) return false;
+    return !['production-task', 'attendance'].includes(this._eventSource(ev));
+  };
+
+  CalendarComponent.prototype._eventDuplicatePayload = function(ev) {
+    const title = String(ev?.title || '無題');
+    const alertMinutes = Number(ev?.alert_minutes);
+    return {
+      title: title.endsWith(' コピー') ? title : title + ' コピー',
+      start: ev?.start || '',
+      end: ev?.end || '',
+      all_day: ev?.all_day ? 1 : 0,
+      color: ev?.color || this._eventColorDefault(),
+      description: ev?.description || '',
+      location: ev?.location || '',
+      url: ev?.url || '',
+      recurrence: ev?.recurrence || '',
+      calendar_id: ev?.calendar_id || '',
+      alert_minutes: Number.isFinite(alertMinutes) ? alertMinutes : -1,
+      user: this._getUser(),
+      creator: this._getUser(),
+      members: Array.isArray(ev?.members) ? ev.members : [],
+    };
+  };
+
+  CalendarComponent.prototype._deletePlanForSelectedEvents = function(records) {
+    const eventIds = [];
+    const shiftIds = new Set();
+    let blocked = 0;
+    (records || []).forEach(ev => {
+      if (!this._eventCanBulkDelete(ev)) {
+        blocked += 1;
+        return;
+      }
+      if (this._eventIsShiftManaged(ev)) {
+        const shiftId = this._shiftIdFromEvent(ev);
+        if (shiftId) shiftIds.add(shiftId);
+        else blocked += 1;
+        return;
+      }
+      if (ev?.id && !eventIds.includes(ev.id)) eventIds.push(ev.id);
+    });
+    return { eventIds, shiftIds: [...shiftIds], blocked };
+  };
+
+  CalendarComponent.prototype._duplicateSelectedEvents = async function() {
+    const selected = this._selectedEventRecords();
+    const targets = selected.filter(ev => this._eventCanBulkDuplicate(ev));
+    const skipped = selected.length - targets.length;
+    if (!targets.length) {
+      this._showStatus('複製できるイベントがありません', true);
+      return;
+    }
+    this._pushUndo('イベント一括複製');
+    const createdIds = [];
+    try {
+      for (const ev of targets) {
+        const result = await apiPost('/cal/events', this._eventDuplicatePayload(ev));
+        if (result?.id) createdIds.push(result.id);
+      }
+      await this._loadEvents();
+      this._setSelectedEvents(createdIds, createdIds[createdIds.length - 1] || '');
+      this._render();
+      const suffix = skipped ? `（${skipped}件は複製対象外）` : '';
+      this._showStatus(`${createdIds.length} 件を複製しました${suffix}`);
+    } catch (error) {
+      await Promise.all(createdIds.map(id => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {})));
+      await this._loadEvents();
+      this._render();
+      this._showStatus(error?.message || '複製に失敗しました', true);
+    }
+  };
+
+  CalendarComponent.prototype._deleteSelectedEvents = async function() {
+    const selected = this._selectedEventRecords();
+    const plan = this._deletePlanForSelectedEvents(selected);
+    const targetCount = plan.eventIds.length + plan.shiftIds.length;
+    if (!targetCount) {
+      this._showStatus('削除できるイベントがありません', true);
+      return;
+    }
+    const skippedText = plan.blocked ? `\n${plan.blocked}件は元データ管理または繰り返し予定のため削除しません。` : '';
+    if (typeof cfConfirm === 'function' && !await cfConfirm(`${targetCount} 件を削除しますか？${skippedText}`)) return;
+    const beforeEvents = (this._events || []).map(event => ({ ...event }));
+    const beforeShifts = (this._shifts || []).map(shift => ({ ...shift }));
+    const beforeSelected = [...this._eventSelection()];
+    const beforeLast = this._lastSelectedEventId || '';
+    const deletedEventMeta = new Map(plan.eventIds.map(id => [id, beforeEvents.find(event => event.id === id) || null]));
+    const eventIdSet = new Set(plan.eventIds);
+    this._pushUndo('イベント一括削除');
+    this._events = (this._events || []).filter(event => !eventIdSet.has(event.id));
+    plan.shiftIds.forEach(shiftId => {
+      if (typeof this._removeShiftOptimistic === 'function') this._removeShiftOptimistic(shiftId);
+      else this._events = (this._events || []).filter(event => {
+        const raw = String(event?.id || '').startsWith('shift:') ? String(event.id).slice('shift:'.length) : String(event?.external_id || event?.id || '');
+        return raw.split(':break:')[0] !== shiftId;
+      });
+    });
+    this._clearEventSelection();
+    this._renderCalendarList?.();
+    this._render();
+    try {
+      await Promise.all([
+        ...plan.eventIds.map(id => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' })),
+        ...plan.shiftIds.map(shiftId => apiFetch('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' })),
+      ]);
+      plan.eventIds.forEach(id => {
+        apiPost('/annotations/orphan-by-target', {
+          target_kind: 'calendar_event',
+          target_file: deletedEventMeta.get(id)?.calendar_id || '_calendar',
+          item_id: id,
+          cascade_container: true,
+        }).catch(() => {});
+      });
+      if (plan.shiftIds.length && typeof this._refreshShiftStateAfterMutation === 'function') {
+        this._refreshShiftStateAfterMutation();
+      } else {
+        this._loadEvents?.().then(() => this._render()).catch(() => {});
+      }
+      const suffix = plan.blocked ? `（${plan.blocked}件は対象外）` : '';
+      this._showStatus(`${targetCount} 件を削除しました${suffix}`);
+    } catch (error) {
+      this._events = beforeEvents;
+      this._shifts = beforeShifts;
+      this._setSelectedEvents(beforeSelected, beforeLast);
+      this._renderCalendarList?.();
+      this._render();
+      this._showStatus(error?.message || '削除に失敗しました', true);
+      // 並列削除の部分成功でサーバーと表示が乖離しないよう再同期する
+      if (plan.shiftIds.length && typeof this._refreshShiftStateAfterMutation === 'function') {
+        this._refreshShiftStateAfterMutation();
+      } else {
+        this._loadEvents?.().then(() => this._render()).catch(() => {});
+      }
+    }
+  };
+
+  CalendarComponent.prototype._eventBulkButton = function(label, icon, handler, options = {}) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-cal-event-bulk-button gb-selection-float-button' + (options.danger ? ' danger' : '') + (options.primary ? ' primary' : '');
+    button.disabled = !!options.disabled;
+    button.title = options.title || label;
+    button.innerHTML = `${_calIcon(icon, 13)}<span>${_calEsc(label)}</span>`;
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) return;
+      window.GBSelectionFloatMenu?.pulseButton?.(button);
+      const result = handler();
+      if (result && typeof result.catch === 'function') result.catch(error => this._showStatus(error?.message || String(error), true));
+    });
+    return button;
+  };
+
+  CalendarComponent.prototype._eventBulkBarId = function() {
+    if (!this._calendarBulkBarId) {
+      this._calendarBulkBarId = 'cal-event-bulk-' + Math.random().toString(36).slice(2);
+    }
+    return this._calendarBulkBarId;
+  };
+
+  CalendarComponent.prototype._eventBulkAnchorRect = function(selected) {
+    const visibleCards = [];
+    (selected || []).forEach(ev => {
+      const id = String(ev?.id || '');
+      if (!id) return;
+      this._contentEl?.querySelectorAll?.(`[data-event-id="${_calCssEscape(id)}"]`).forEach(card => visibleCards.push(card));
+    });
+    const anchor = visibleCards[visibleCards.length - 1]
+      || this.el?.querySelector?.(':scope > .gb-toolbar-cal')
+      || this.el;
+    return anchor?.getBoundingClientRect?.() || { left: 16, right: 16, top: 48, bottom: 48 };
+  };
+
+  CalendarComponent.prototype._positionEventSelectionBar = function(selected) {
+    selected = selected || this._selectedEventRecords();
+    const bar = document.querySelector(`.gb-cal-event-bulk-bar[data-calendar-bulk-id="${this._eventBulkBarId()}"]`);
+    if (!bar || !this.el) return;
+    bar.style.maxHeight = '';
+    bar.style.overflowY = '';
+    if (window.GBSelectionFloatMenu) {
+      window.GBSelectionFloatMenu.bindDrag(bar, { host: this.el });
+      window.GBSelectionFloatMenu.resetPosition(bar, { host: this.el, anchor: this._contentEl, zIndex: '10002' });
+    } else {
+      bar.style.bottom = '';
+      bar.style.maxWidth = Math.max(260, Math.min(this.el.getBoundingClientRect().width - 24, window.innerWidth - 16)) + 'px';
+      if (typeof positionPopup === 'function') {
+        positionPopup(bar, this._eventBulkAnchorRect(selected), { prefer: 'below', gap: 6 });
+      } else if (typeof clampPopupToViewport === 'function') {
+        const rect = this._eventBulkAnchorRect(selected);
+        const zoom = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
+        bar.style.left = (rect.left / zoom) + 'px';
+        bar.style.top = (rect.bottom / zoom + 6) + 'px';
+        clampPopupToViewport(bar);
+      }
+    }
+  };
+
+  CalendarComponent.prototype._setEventBulkBarTracking = function(enabled) {
+    if (enabled && !this._calendarBulkBarTracking) {
+      this._calendarBulkBarTracking = true;
+      this._calendarBulkBarPositionHandler = () => this._positionEventSelectionBar();
+      window.addEventListener('resize', this._calendarBulkBarPositionHandler);
+      document.addEventListener('scroll', this._calendarBulkBarPositionHandler, true);
+    } else if (!enabled && this._calendarBulkBarTracking) {
+      this._calendarBulkBarTracking = false;
+      window.removeEventListener('resize', this._calendarBulkBarPositionHandler);
+      document.removeEventListener('scroll', this._calendarBulkBarPositionHandler, true);
+      this._calendarBulkBarPositionHandler = null;
+    }
+  };
+
+  CalendarComponent.prototype._removeEventSelectionBar = function() {
+    document.querySelector(`.gb-cal-event-bulk-bar[data-calendar-bulk-id="${this._eventBulkBarId()}"]`)?.remove();
+    this._setEventBulkBarTracking(false);
+  };
+
+  CalendarComponent.prototype._syncEventSelectionBar = function(records) {
+    if (!this.el || !document.body) return;
+    const selected = records || this._selectedEventRecords();
+    let bar = document.querySelector(`.gb-cal-event-bulk-bar[data-calendar-bulk-id="${this._eventBulkBarId()}"]`);
+    if (selected.length <= 1) {
+      if (bar) bar.remove();
+      this._setEventBulkBarTracking(false);
+      return;
+    }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'gb-cal-event-bulk-bar gb-selection-float-bar';
+      bar.dataset.calendarBulkId = this._eventBulkBarId();
+      bar.dataset.e2eId = 'cal-event-bulk-bar';
+      this.el.appendChild(bar);
+    }
+    if (window.GBSelectionFloatMenu) {
+      window.GBSelectionFloatMenu.bindDrag(bar, { host: this.el });
+    }
+    const canDuplicate = selected.some(ev => this._eventCanBulkDuplicate(ev));
+    const canDelete = selected.some(ev => this._eventCanBulkDelete(ev));
+    const count = document.createElement('span');
+    count.className = 'gb-cal-event-bulk-count gb-selection-float-count';
+    count.textContent = `${selected.length} 件選択中`;
+    const children = [
+      count,
+      this._eventBulkButton('複製', 'copy', () => this._duplicateSelectedEvents(), { disabled: !canDuplicate, title: '選択中のイベントを複製' }),
+      this._eventBulkButton('削除', 'trash2', () => this._deleteSelectedEvents(), { danger: true, disabled: !canDelete, title: '選択中のイベントを削除' }),
+      this._eventBulkButton('選択解除', 'x', () => this._clearEventSelection(), { title: '選択を解除' }),
+    ];
+    if (window.GBSelectionFloatMenu) children.unshift(window.GBSelectionFloatMenu.createDragHandle());
+    bar.hidden = false;
+    bar.replaceChildren(...children);
+    this._positionEventSelectionBar(selected);
+    this._setEventBulkBarTracking(true);
+  };
+
+  CalendarComponent.prototype._bindCalendarBulkKeyboard = function() {
+    if (this._calendarBulkKeyHandler) return;
+    this._calendarBulkKeyHandler = (event) => {
+      if (event.defaultPrevented || _calKeyboardFromEditableTarget(event)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const active = document.activeElement instanceof Element ? document.activeElement : null;
+      const relevant = !!(
+        this.el?.contains(target) ||
+        this.el?.contains(active) ||
+        this.el?.matches?.(':hover')
+      );
+      if (!relevant || !this._selectedEventRecords().length) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        this._clearEventSelection();
+      } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        this._deleteSelectedEvents();
+      } else if ((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'd') {
+        event.preventDefault();
+        this._duplicateSelectedEvents();
+      }
+    };
+    document.addEventListener('keydown', this._calendarBulkKeyHandler, true);
   };
 
   CalendarComponent.prototype._bindCalendarSelection = function() {
     if (!this._contentEl || this._calendarSelectionBound) return;
     this._calendarSelectionBound = true;
     this._contentEl.addEventListener('click', (event) => {
+      if (event.target.closest?.('[data-cal-event-more]')) return;
       const check = event.target.closest?.('.gb-cal-event-select-check');
       if (check) {
         const card = check.closest('[data-event-id]');
         if (!card) return;
-        event.stopPropagation();
+        event.preventDefault();
+        event.stopImmediatePropagation();
         this._toggleEventSelection(card.dataset.eventId || '');
         return;
       }
@@ -390,6 +780,7 @@
   CalendarComponent.prototype.create = function() {
     const el = _origCreate.call(this);
     this._bindCalendarSelection();
+    this._bindCalendarBulkKeyboard();
     this._bindResponsiveSidebarMode();
     if (typeof applyCalendarPanelStyle === 'function') applyCalendarPanelStyle();
     this._applySidebarMode();
@@ -402,6 +793,9 @@
     this._calResponsiveObserver = null;
     if (this._calResponsiveResizeHandler) window.removeEventListener('resize', this._calResponsiveResizeHandler);
     this._calResponsiveResizeHandler = null;
+    if (this._calendarBulkKeyHandler) document.removeEventListener('keydown', this._calendarBulkKeyHandler, true);
+    this._calendarBulkKeyHandler = null;
+    this._removeEventSelectionBar?.();
     _origDestroy.call(this);
   };
 
@@ -409,6 +803,81 @@
   CalendarComponent.prototype.activate = function() {
     _origActivate.call(this);
     if (typeof historySetScope === 'function') historySetScope(CALENDAR_SETTINGS_SCOPE);
+  };
+
+  CalendarComponent.prototype._closeEventCardMenu = function() {
+    document.querySelectorAll('.gb-cal-event-card-menu').forEach(menu => menu.remove());
+  };
+
+  CalendarComponent.prototype._showEventCardMenu = function(anchor, eventId) {
+    if (!anchor || !eventId) return;
+    const ev = (this._events || []).find(item => item?.id === eventId);
+    if (!ev) return;
+    this._closeEventCardMenu();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu gb-cal-event-card-menu';
+    menu.style.position = 'fixed';
+    menu.style.zIndex = '10003';
+    const addItem = (label, icon, handler, options = {}) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'gb-context-menu-item' + (options.danger ? ' danger' : '') + (options.disabled ? ' disabled' : '');
+      item.disabled = !!options.disabled;
+      item.innerHTML = `${_calIcon(icon, 14)}<span>${_calEsc(label)}</span>`;
+      item.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (item.disabled) return;
+        menu.remove();
+        handler();
+      });
+      menu.appendChild(item);
+    };
+    const addSeparator = () => {
+      const sep = document.createElement('div');
+      sep.className = 'gb-context-menu-separator';
+      sep.style.cssText = 'height:1px;background:var(--border);margin:4px 2px;';
+      menu.appendChild(sep);
+    };
+    const selected = this._selectedEventRecords();
+    const selectionIds = new Set(selected.map(item => String(item?.id || '')));
+    if (selected.length > 1 && selectionIds.has(String(eventId))) {
+      addItem(`${selected.length}件を複製`, 'copy', () => this._duplicateSelectedEvents(), {
+        disabled: !selected.some(item => this._eventCanBulkDuplicate(item)),
+      });
+      addItem(`${selected.length}件を削除`, 'trash2', () => this._deleteSelectedEvents(), {
+        danger: true,
+        disabled: !selected.some(item => this._eventCanBulkDelete(item)),
+      });
+      addItem('選択解除', 'x', () => this._clearEventSelection());
+      addSeparator();
+    }
+    addItem('開く', 'fileText', () => this._openEventInPanel(eventId));
+    const source = String(ev.calendar_source || '');
+    const lockedGenerated = ['production-task', 'attendance'].includes(source);
+    addItem(lockedGenerated ? '元データから編集' : '削除', lockedGenerated ? 'lock' : 'trash2', () => this._deleteEventFromOptions(eventId), {
+      danger: !lockedGenerated,
+      disabled: lockedGenerated,
+    });
+    document.body.appendChild(menu);
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, anchor.getBoundingClientRect());
+    } else {
+      const rect = anchor.getBoundingClientRect();
+      const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+      menu.style.left = (rect.right / z + 4) + 'px';
+      menu.style.top = (rect.top / z) + 'px';
+      if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    }
+    setTimeout(() => {
+      const close = (event) => {
+        if (!menu.contains(event.target) && event.target !== anchor) {
+          menu.remove();
+          document.removeEventListener('pointerdown', close, true);
+        }
+      };
+      document.addEventListener('pointerdown', close, true);
+    }, 0);
   };
 
   const _origRender = CalendarComponent.prototype._render;
@@ -432,6 +901,7 @@
     }
     const viewSel = this.el?.querySelector?.('.gb-cal-view-select');
     if (viewSel && viewSel.value !== this._view) viewSel.value = this._view;
+    this._syncEventSelectionBar?.();
   };
 
   CalendarComponent.prototype._effectiveSidebarOnly = function() {
@@ -480,7 +950,7 @@
     localStorage.setItem('gb:cal-sidebar-mode', normalized);
     localStorage.setItem('gb:cal-sidebar-only', this._sidebarOnly ? 'true' : 'false');
     const detail = normalized === 'hidden' ? 'サイドバーを隠す' : normalized === 'only' ? 'サイドバーのみ' : 'すべて表示';
-    _calPushSettingsHistory('カレンダー: サイドバー表示変更', before, ['gb:cal-sidebar-mode', 'gb:cal-sidebar-only'], detail);
+    _calPushSettingsHistory('スケジューラー: サイドバー表示変更', before, ['gb:cal-sidebar-mode', 'gb:cal-sidebar-only'], detail);
     this._applySidebarMode();
   };
 
@@ -493,9 +963,9 @@
     this._setSidebarMode(mode === 'all' ? 'hidden' : mode === 'hidden' ? 'only' : 'all');
   };
 
-  CalendarComponent.prototype._showCalendarSettingsPanel = function() {
-    const body = _calOptionContainer('カレンダー設定');
+  CalendarComponent.prototype._renderCalendarSettingsPanel = function(body) {
     if (!body) return;
+    this._calendarSettingsBody = body;
     const opts = [[0, '日曜始まり'], [1, '月曜始まり'], [2, '火曜始まり'], [3, '水曜始まり'], [4, '木曜始まり'], [5, '金曜始まり'], [6, '土曜始まり']]
       .map(([v, label]) => `<option value="${v}" ${v === this._startDay ? 'selected' : ''}>${label}</option>`).join('');
     body.innerHTML = `
@@ -506,12 +976,14 @@
         <button type="button" data-cal-settings-action="sync">${_calIcon('refreshCw')} 同期</button>
         <button type="button" data-cal-settings-action="timer">${_calIcon('timer')} タイマー</button>
       </div>`;
+    this._renderAttendanceSourceSettings?.(body);
+    this._renderShiftTemplateSettings?.(body);
     body.querySelector('[data-cal-settings-sidebar-only]')?.addEventListener('change', e => this._setSidebarOnly(e.currentTarget.checked));
     body.querySelector('[data-cal-settings-start-day]')?.addEventListener('change', e => {
       const before = _calCaptureSettingsHistory(['gb-cal-start-day']);
       this._startDay = parseInt(e.currentTarget.value, 10);
       localStorage.setItem('gb-cal-start-day', this._startDay);
-      _calPushSettingsHistory('カレンダー: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
+      _calPushSettingsHistory('スケジューラー: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
       this._render();
       this._renderMiniCal();
     });
@@ -527,6 +999,33 @@
       });
     });
   };
+
+  CalendarComponent.prototype._showCalendarSettingsPanel = function(options = {}) {
+    const body = _calOptionContainer('スケジューラー設定', {
+      tabId: 'calendar-settings',
+      select: options.select !== false,
+    });
+    if (!body) return;
+    this._renderCalendarSettingsPanel(body);
+  };
+
+  window.openCalendarSettingsPanel = function() {
+    const component = _calFindCalendarComponent();
+    if (!component || typeof component._showCalendarSettingsPanel !== 'function') {
+      if (typeof showStatus === 'function') showStatus('スケジューラーを開いてから設定を開いてください', true);
+      return;
+    }
+    component._showCalendarSettingsPanel();
+  };
+
+  document.addEventListener('meldex:detail-tab-switched', (event) => {
+    if (event.detail?.tab !== 'calendar-settings') return;
+    if (window.__MeldexSuppressCalendarTabAutoRender) return;
+    const component = _calFindCalendarComponent();
+    if (component && typeof component._showCalendarSettingsPanel === 'function') {
+      component._showCalendarSettingsPanel({ select: false });
+    }
+  });
 
   CalendarComponent.prototype._createEventQuick = async function(defaultStart, defaultEnd, defaultAllDay) {
     const now = new Date();
@@ -587,6 +1086,22 @@
     const ev = this._events.find(e => e.id === editId);
     if (!ev) return;
     if (typeof _calRecurringInteractionBlocked === 'function' && _calRecurringInteractionBlocked(this, ev)) return;
+    if (ev.calendar_source === 'production-task' && typeof this._openProductionTaskEvent === 'function') {
+      this._openProductionTaskEvent(ev);
+      return;
+    }
+    if ((ev.calendar_source === 'shift' || ev.calendar_source === 'shift-break') && typeof this._showShiftModal === 'function') {
+      const rawShiftId = String(editId || '').startsWith('shift:')
+        ? String(editId).slice('shift:'.length)
+        : String(ev.external_id || editId || '');
+      this._showShiftModal(ev.user || this._getUser(), String(ev.start || '').slice(0, 10), rawShiftId.split(':break:')[0]);
+      return;
+    }
+    if (ev.calendar_source === 'attendance') {
+      // 実績イベントは編集パネルを開いても保存できないため、入力後に拒否せず先に案内する
+      this._showStatus('自動生成された予定は元データ（出退勤の記録）から編集してください', true);
+      return;
+    }
     this._setSelectedEvents([editId], editId);
     this._showEventOptionsPanel(ev, defaultStart, defaultEnd, defaultAllDay);
   };
@@ -599,7 +1114,12 @@
     const startVal = _calLocalInputValue(this, ev?.start || defaultStart, now);
     const endVal = _calLocalInputValue(this, ev?.end || defaultEnd, new Date(now.getTime() + 3600000));
     const isAllDay = ev ? !!ev.all_day : !!defaultAllDay;
-    const calOpts = `<option value="" ${!ev?.calendar_id ? 'selected' : ''}>未設定</option>` + (this._calendars || []).map(c => `<option value="${_calEsc(c.id)}" ${ev?.calendar_id === c.id ? 'selected' : ''}>${_calEsc(c.name)}</option>`).join('');
+    // 他のメンバー所有のカレンダーに属するイベントは自分の一覧に該当カレンダーが無い。
+    // 所属を黙って「未設定」に落とさないよう、元のIDを保持する選択肢を追加する
+    const hasOwnCalendarOption = !ev?.calendar_id || (this._calendars || []).some(c => c.id === ev.calendar_id);
+    const calOpts = `<option value="" ${!ev?.calendar_id ? 'selected' : ''}>未設定</option>`
+      + (hasOwnCalendarOption ? '' : `<option value="${_calEsc(ev.calendar_id)}" selected>他のメンバーのカレンダー</option>`)
+      + (this._calendars || []).map(c => `<option value="${_calEsc(c.id)}" ${ev?.calendar_id === c.id ? 'selected' : ''}>${_calEsc(c.name)}</option>`).join('');
     const creator = _calEventCreator(ev, this._getUser());
     body.dataset.calEventMembers = JSON.stringify(_calUserListFromValue(ev?.members));
     body.innerHTML = `
@@ -633,6 +1153,8 @@
     const endInput = body.querySelector('[data-cal-event-end]');
     if (startInput) startInput.dataset.calRawValue = startInput.value || '';
     if (endInput) endInput.dataset.calRawValue = endInput.value || '';
+    const calendarSelect = body.querySelector('[data-cal-event-calendar]');
+    if (calendarSelect) calendarSelect.dataset.calOriginal = ev?.calendar_id || '';
     allDay?.addEventListener('change', () => {
       _calSetEventDateInputMode(this, startInput, endInput, allDay.checked);
     });
@@ -661,6 +1183,18 @@
   };
 
   CalendarComponent.prototype._saveEventOptions = async function(editId, body) {
+    const evRef = (this._events || []).find(x => x.id === editId);
+    const source = String(evRef?.calendar_source || '');
+    if (['production-task', 'attendance', 'shift', 'shift-break'].includes(source)) {
+      this._showStatus('自動生成された予定は元データから編集してください', true);
+      return;
+    }
+    // 保存中の同一イベントへの多重保存を防ぐ（ロールバック順序の混線防止）
+    if (!this._savingEventIds) this._savingEventIds = new Set();
+    if (this._savingEventIds.has(editId)) {
+      this._showStatus('保存中です。少し待ってからもう一度お試しください');
+      return;
+    }
     this._pushUndo('イベント編集');
     const creator = body.querySelector('[data-cal-event-creator]')?.value || this._getUser();
     const allDay = body.querySelector('[data-cal-event-allday]')?.checked;
@@ -683,42 +1217,104 @@
       creator,
       members: this._collectEventMemberValues(body, creator),
     };
+    // カレンダー所属が未変更ならフィールド自体を送らない（他メンバー所有カレンダーの所属保持）
+    const calendarSelect = body.querySelector('[data-cal-event-calendar]');
+    if (calendarSelect && (calendarSelect.dataset.calOriginal || '') === (calendarSelect.value || '')) {
+      delete data.calendar_id;
+    }
+    if (data.alert_minutes >= 0 && 'Notification' in window && Notification.permission === 'default') {
+      const permissionRequest = Notification.requestPermission();
+      if (permissionRequest && typeof permissionRequest.catch === 'function') permissionRequest.catch(() => {});
+    }
+    // 楽観的更新: 保存完了を待たずに先に画面へ反映し、保存と再取得は裏で行う
+    // （保存に失敗した場合は編集対象イベントだけを元に戻し、サーバー状態を再取得する）
+    const beforeEvent = evRef ? { ...evRef } : null;
+    this._events = (this._events || []).map(event => (event.id === editId ? { ...event, ...data } : event));
+    this._renderCalendarList?.();
+    this._render();
+    this._savingEventIds.add(editId);
     try {
       await apiPut('/cal/events/' + editId, data);
-      await this._loadEvents();
-      this._render();
       this._showStatus('イベントを保存しました');
+      this._loadEvents?.().then(() => this._render()).catch(() => {});
     } catch {
+      if (beforeEvent) {
+        this._events = (this._events || []).map(event => (event.id === editId ? beforeEvent : event));
+      }
+      this._renderCalendarList?.();
+      this._render();
       this._showStatus('保存に失敗', true);
+      this._loadEvents?.().then(() => this._render()).catch(() => {});
+    } finally {
+      this._savingEventIds.delete(editId);
     }
   };
 
   CalendarComponent.prototype._deleteEventFromOptions = async function(id) {
-    if (typeof cfConfirm === 'function' && !await cfConfirm('このイベントを削除しますか？')) return;
-    this._pushUndo('イベント削除');
+    // 削除できないイベントは確認ダイアログより前に弾く（同意後に拒否しない）
     const evRef = (this._events || []).find(x => x.id === id);
+    const source = String(evRef?.calendar_source || '');
+    if (['production-task', 'attendance'].includes(source)) {
+      this._showStatus('自動生成された予定は元データから削除してください', true);
+      return;
+    }
+    // 繰り返しの個別回はシリーズ全体と同じIDを持つため、削除の意味を明示して確認する
+    const confirmText = evRef?._recurrence_instance
+      ? 'これは繰り返しの予定です。繰り返しの予定全体を削除しますか？'
+      : 'このイベントを削除しますか？';
+    if (typeof cfConfirm === 'function' && !await cfConfirm(confirmText)) return;
+    const isShift = source === 'shift' || source === 'shift-break' || String(id || '').startsWith('shift:');
+    const rawShiftId = String(id || '').startsWith('shift:')
+      ? String(id).slice('shift:'.length)
+      : String(evRef?.external_id || id || '');
+    const shiftId = rawShiftId.split(':break:')[0];
+    const beforeEvents = (this._events || []).map(event => ({ ...event }));
+    const beforeShifts = (this._shifts || []).map(shift => ({ ...shift }));
+    const beforeSelected = this._eventSelection ? [...this._eventSelection()] : [];
+    const beforeLast = this._lastSelectedEventId || '';
+    if (!isShift) this._pushUndo('イベント削除');
+    if (isShift && shiftId && typeof this._removeShiftOptimistic === 'function') {
+      this._removeShiftOptimistic(shiftId);
+    } else {
+      this._events = (this._events || []).filter(event => event.id !== id);
+      this._eventSelection?.().delete(id);
+      if (this._lastSelectedEventId === id) this._lastSelectedEventId = '';
+    }
+    this._renderCalendarList?.();
+    this._render();
+    const body = _calOptionContainer('カレンダー');
+    if (body) body.innerHTML = '<div class="cal-option-empty">イベントを削除しました</div>';
     try {
-      await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+      const result = isShift
+        ? await apiFetch('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' })
+        : await apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (result && result.ok === false) throw new Error(result.message || '削除に失敗');
       apiPost('/annotations/orphan-by-target', {
         target_kind: 'calendar_event',
         target_file: evRef?.calendar_id || '_calendar',
         item_id: id,
         cascade_container: true,
       }).catch(() => {});
-      await this._loadEvents();
-      this._eventSelection().delete(id);
-      this._render();
-      const body = _calOptionContainer('カレンダー');
-      if (body) body.innerHTML = '<div class="cal-option-empty">イベントを削除しました</div>';
+      if (isShift && typeof this._refreshShiftStateAfterMutation === 'function') {
+        this._refreshShiftStateAfterMutation();
+      } else {
+        this._loadEvents?.().then(() => this._render()).catch(() => {});
+      }
       this._showStatus('削除しました');
     } catch {
+      this._events = beforeEvents;
+      this._shifts = beforeShifts;
+      this._setSelectedEvents?.(beforeSelected, beforeLast);
+      this._renderCalendarList?.();
+      this._render();
+      if (body) body.innerHTML = '<div class="cal-option-empty">削除に失敗しました</div>';
       this._showStatus('削除に失敗', true);
     }
   };
 
   CalendarComponent.prototype._createTaskQuick = async function(options) {
     const opts = options || {};
-    this._pushUndo('タスク作成');
+    this._pushUndo('ToDo作成');
     try {
       const res = await apiPost('/cal/tasks', {
         title: '無題',
@@ -732,10 +1328,10 @@
       this._renderTodayTasks();
       const id = res?.id || '';
       if (id) this._showTaskModal(id);
-      this._showStatus('タスクを追加しました');
+      this._showStatus('ToDoを追加しました');
       return id;
     } catch {
-      this._showStatus('タスク追加に失敗', true);
+      this._showStatus('ToDo追加に失敗', true);
       return '';
     }
   };
@@ -751,13 +1347,13 @@
   };
 
   CalendarComponent.prototype._showTaskOptionsPanel = function(task) {
-    const body = _calOptionContainer('タスク設定');
+    const body = _calOptionContainer('ToDo設定');
     if (!body) return;
     body._calComponent = this;
     const statuses = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
     const priorities = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
     body.innerHTML = `
-      ${_calField('タイトル', `<input data-cal-task-title type="text" value="${_calEsc(task.title || '')}" placeholder="タスク名">`)}
+      ${_calField('タイトル', `<input data-cal-task-title type="text" value="${_calEsc(task.title || '')}" placeholder="ToDo名">`)}
       ${_calField('ステータス', `<select data-cal-task-status class="gb-select">${statuses.map(([v,l]) => `<option value="${v}" ${(task.status || 'todo') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
       ${_calField('優先度', `<select data-cal-task-priority class="gb-select">${priorities.map(([v,l]) => `<option value="${v}" ${(task.priority || 'medium') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
       ${_calField('期限', `<input data-cal-task-due type="date" value="${_calEsc(task.due_date || '')}">`)}
@@ -778,7 +1374,7 @@
   };
 
   CalendarComponent.prototype._saveTaskOptions = async function(editId, body) {
-    this._pushUndo('タスク編集');
+    this._pushUndo('ToDo編集');
     const data = {
       title: body.querySelector('[data-cal-task-title]')?.value || '無題',
       status: body.querySelector('[data-cal-task-status]')?.value || 'todo',
@@ -795,7 +1391,7 @@
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
-      this._showStatus('タスクを保存しました');
+      this._showStatus('ToDoを保存しました');
     } catch {
       this._showStatus('保存に失敗', true);
     }
@@ -804,7 +1400,7 @@
   CalendarComponent.prototype._deleteTaskFromOptions = async function(id) {
     if (await this._deleteTask(id)) {
       const body = _calOptionContainer('カレンダー');
-      if (body) body.innerHTML = '<div class="cal-option-empty">タスクを削除しました</div>';
+      if (body) body.innerHTML = '<div class="cal-option-empty">ToDoを削除しました</div>';
     }
   };
 
@@ -903,17 +1499,30 @@
       Promise.all(updates).then(() => this._loadEvents()).then(() => this._render()).catch(() => {
         this._showStatus('イベントリサイズに失敗', true);
         this._render();
+        // 並列更新の部分成功でサーバーと表示が乖離しないよう再同期する
+        this._loadEvents?.().then(() => this._render()).catch(() => {});
       });
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
   };
 
+  // 詳細パネル版イベントフォーム（gb-detail-panel）を退避してから上書きする。
+  // スケジューラー未起動時やタイトル付き新規作成（ファイルドロップ等）はこちらへ委譲する
+  const _detailPanelEventForm = typeof _showCalEventInDetailPanel === 'function' ? _showCalEventInDetailPanel : null;
   window._showCalEventInDetailPanel = function(ev, calendars, defaultStart, defaultEnd, defaultAllDay, ownerComponent) {
-    if (ownerComponent && typeof ownerComponent._showEventOptionsPanel === 'function') {
-      if (ev?.id) ownerComponent._showEventOptionsPanel(ev, defaultStart, defaultEnd, defaultAllDay);
-      else ownerComponent._createEventQuick(defaultStart, defaultEnd, defaultAllDay);
+    const owner = ownerComponent || (typeof _calFindCalendarComponent === 'function' ? _calFindCalendarComponent() : null);
+    if (owner && typeof owner._showEventOptionsPanel === 'function') {
+      if (ev?.id) {
+        owner._showEventOptionsPanel(ev, defaultStart, defaultEnd, defaultAllDay);
+        return;
+      }
+      if (!ev || (!ev.title && !ev.description)) {
+        owner._createEventQuick(defaultStart, defaultEnd, defaultAllDay);
+        return;
+      }
     }
+    if (_detailPanelEventForm) _detailPanelEventForm(ev, calendars, defaultStart, defaultEnd, defaultAllDay, owner || null);
   };
   try { _showCalEventInDetailPanel = window._showCalEventInDetailPanel; } catch (_) {}
 })();

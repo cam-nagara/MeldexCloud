@@ -548,6 +548,7 @@ function _restoreDbTemplateBackendPropertyTypes(dbPath, snapshot) {
 }
 
 function _dbTemplateHistoryRestoreHandler(dbPath) {
+  if (!dbPath) return null;
   return (_keys, snapshot) => {
     return _restoreDbTemplateBackendPropertyTypes(dbPath, snapshot);
   };
@@ -719,7 +720,13 @@ function getAllTemplates() {
 function applyDbTemplate(dbPath, template, opts) {
   const overwrite = opts?.overwrite || false;
   const originalConfig = getDbViewConfig(dbPath);
+  const backendTypes = typeof getPropertyTypes === 'function' ? _cloneTemplateData(getPropertyTypes(dbPath) || {}) : {};
+  if (Object.keys(backendTypes).length > 0) {
+    originalConfig.propertyTypes = _cloneTemplateData(backendTypes);
+    saveDbViewConfig(dbPath, originalConfig, { skipHistory: true });
+  }
   const c = _cloneTemplateData(originalConfig) || {};
+  if (Object.keys(backendTypes).length > 0) c.propertyTypes = backendTypes;
   const applied = [];
   const skipped = [];
   const historyKeys = _dbTemplateStorageKeys(dbPath, !!(template.entityTemplates && template.entityTemplates.length > 0));

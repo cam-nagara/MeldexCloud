@@ -4,37 +4,113 @@
   const PM_ROOT = '制作管理';
   const PM_SHEETS = ['作品リスト', 'タスクリスト', '作業対象リスト', '作業内容リスト', '作業規模リスト', 'スタッフリスト', 'スケジュール', '勤怠情報', '自動シフト調整設定', 'スケジュール アーカイブ', 'タスクリスト アーカイブ', 'データソース'];
   const PM_REQUIRED_PAGES = { '制作進行マニュアル.md': '# 制作進行マニュアル\n\n制作管理の手順を記録します。\n', '設定.md': '# 設定\n\n制作管理の設定メモです。\n' };
+  const PM_TASK_LEGACY_NAME_PROP = 'タスク名';
+  const PM_TASK_HIDDEN_COLUMNS = [PM_TASK_LEGACY_NAME_PROP, 'タスク名を固定', '階層パス', '階層ラベル', '単位レベル1', '単位レベル2', '単位レベル3', '単位レベル4', '単位レベル5', 'プリセット種別', '作業作成粒度', '目標作業時間_値', 'ページソート値', '作成キー'];
+  function _pmRelation(target) {
+    return { type: 'relation', target, relationDb: `${PM_ROOT}/シート/${target}` };
+  }
+  function _pmMultiRelation(target) {
+    return { type: 'multi-relation', target, relationDb: `${PM_ROOT}/シート/${target}` };
+  }
+  function _pmTaskRowEntryName(row) {
+    return String(row?._entry_name || row?.['エントリ名'] || row?.[PM_TASK_LEGACY_NAME_PROP] || row?.name || '無題').trim() || '無題';
+  }
+  function _pmTaskRowProps(row) {
+    const out = {};
+    Object.entries(row || {}).forEach(([key, value]) => {
+      if (key === '_entry_name' || key === 'エントリ名' || key === PM_TASK_LEGACY_NAME_PROP) return;
+      out[key] = value;
+    });
+    return out;
+  }
+  function _pmWorkPeriodValue(body) {
+    const source = body || {};
+    for (const key of ['work_period', '作業期間', 'period']) {
+      const value = String(source[key] || '').trim();
+      if (value) return value;
+    }
+    const start = String(source.work_start || source['開始日時'] || '').trim();
+    const end = String(source.work_end || source['完了日時'] || source['終了日時'] || '').trim();
+    return start && end ? `${start}|${end}` : '';
+  }
   const PM_PROPERTY_TYPES = {
-    '作品リスト': { '作品タイトル_話数': { type: 'text' }, 'ページ数': { type: 'number' }, '作業作成粒度': { type: 'select', options: ['ページ単位', 'コマ単位'] }, '作業期間': { type: 'date', withTime: true, range: true }, '状況': { type: 'select' }, '担当者': { type: 'text' }, 'タスク生成': { type: 'select' }, 'タスク生成_ページ': { type: 'select' }, '依存生成': { type: 'select' }, '生成ページ数': { type: 'number' }, '備考': { type: 'text' } },
-    'タスクリスト': { 'タスク名': { type: 'text' }, '作品タイトル': { type: 'text' }, 'ページ': { type: 'text' }, 'コマ': { type: 'text' }, '作業作成粒度': { type: 'select', options: ['ページ単位', 'コマ単位'] }, '作業対象リスト': { type: 'relation', target: '作業対象リスト' }, '作業内容リスト': { type: 'relation', target: '作業内容リスト' }, '作業規模リスト': { type: 'relation', target: '作業規模リスト' }, '対象数': { type: 'number' }, '状況': { type: 'select' }, '担当者': { type: 'text' }, '開始日時': { type: 'date', withTime: true }, '完了日時': { type: 'date', withTime: true }, '作業予定日時': { type: 'date', withTime: true, range: true }, '作業予定時間': { type: 'number' }, '目標作業時間_値': { type: 'number' }, '目標作業時間': { type: 'text' }, '担当者固定': { type: 'checkbox' }, 'シフト固定': { type: 'checkbox' }, 'ページ非共有': { type: 'checkbox' }, 'タスク名を固定': { type: 'checkbox' }, 'シフト割当不能理由': { type: 'text' }, 'ページソート値': { type: 'number' }, '対象色': { type: 'text' }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
-    '作業対象リスト': { '作業対象': { type: 'text' }, '基準作業時間': { type: 'number' }, '担当者候補': { type: 'text' }, '対応する作業内容': { type: 'relation', target: '作業内容リスト' }, '対象色': { type: 'text' }, '備考': { type: 'text' } },
-    '作業内容リスト': { '作業内容': { type: 'text' }, '表示名': { type: 'text' }, '別名': { type: 'text' }, '作業順': { type: 'number' }, '依存階層': { type: 'number' }, 'カテゴリ': { type: 'text' }, '作業時間倍率': { type: 'number' }, '担当者候補': { type: 'text' }, '標準粒度': { type: 'select', options: ['ページ単位', 'コマ単位'] }, '対応する作業対象': { type: 'relation', target: '作業対象リスト' }, '備考': { type: 'text' } },
+    '作品リスト': { '作品タイトル_話数': { type: 'text' }, '完了': { type: 'checkbox' }, 'ページ数': { type: 'number' }, '作業作成粒度': { type: 'select', options: ['階層単位', 'ページ単位', 'コマ単位'] }, '階層数': { type: 'number' }, '階層ラベル': { type: 'text' }, 'プリセット種別': { type: 'select', options: ['汎用', 'マンガ'] }, '作業期間': { type: 'date', withTime: true, range: true }, '状況': { type: 'select' }, '担当者': { type: 'text' }, 'タスク生成': { type: 'select' }, 'タスク生成_ページ': { type: 'select' }, '依存生成': { type: 'select' }, '生成ページ数': { type: 'number' }, 'タスクリスト': _pmRelation('タスクリスト'), 'スケジュール': _pmRelation('スケジュール'), '備考': { type: 'text' } },
+    'タスクリスト': {
+      '作品タイトル': _pmRelation('作品リスト'),
+      'ページ': { type: 'multi-select' },
+      'コマ': { type: 'multi-select' },
+      '階層パス': { type: 'text' },
+      '階層ラベル': { type: 'text' },
+      '単位レベル1': { type: 'text' },
+      '単位レベル2': { type: 'text' },
+      '単位レベル3': { type: 'text' },
+      '単位レベル4': { type: 'text' },
+      '単位レベル5': { type: 'text' },
+      'プリセット種別': { type: 'text' },
+      '作業作成粒度': { type: 'select', options: ['階層単位', 'ページ単位', 'コマ単位'] },
+      '作業対象リスト': _pmRelation('作業対象リスト'),
+      '作業内容リスト': _pmRelation('作業内容リスト'),
+      '作業規模リスト': _pmRelation('作業規模リスト'),
+      '対象数': { type: 'number' },
+      'カテゴリ': { type: 'text' },
+      '作業': { type: 'text' },
+      '状況': { type: 'select' },
+      '担当者': { type: 'text' },
+      '開始日時': { type: 'date', withTime: true },
+      '完了日時': { type: 'date', withTime: true },
+      '作業予定日時': { type: 'date', withTime: true, range: true },
+      '作業予定時間': { type: 'number' },
+      '目標作業時間_値': { type: 'number' },
+      '目標作業時間': { type: 'text' },
+      '作業時間_実績': { type: 'number' },
+      '総合基準作業時間': { type: 'number' },
+      '次のタスクにより保留中：': _pmMultiRelation('タスクリスト'),
+      '次のタスクを保留中：': _pmMultiRelation('タスクリスト'),
+      '依存割当キー': { type: 'text' },
+      '再計算ロック': { type: 'checkbox' },
+      '担当者固定': { type: 'checkbox' },
+      'シフト固定': { type: 'checkbox' },
+      'ページ非共有': { type: 'checkbox' },
+      'シフト割当不能理由': { type: 'text' },
+      'ページソート値': { type: 'number' },
+      '対象色': { type: 'text' },
+      '評価': { type: 'text' },
+      '作成キー': { type: 'text' },
+      '備考': { type: 'text' },
+    },
+    '作業対象リスト': { '作業対象': { type: 'text' }, '基準作業時間': { type: 'number' }, '担当者候補': { type: 'text' }, '対応する作業内容': _pmRelation('作業内容リスト'), '対象色': { type: 'text' }, '備考': { type: 'text' } },
+    '作業内容リスト': { '作業内容': { type: 'text' }, '表示名': { type: 'text' }, '別名': { type: 'text' }, '作業順': { type: 'number' }, '依存階層': { type: 'number' }, 'カテゴリ': { type: 'text' }, '作業時間倍率': { type: 'number' }, '担当者候補': { type: 'text' }, '標準粒度': { type: 'select', options: ['階層単位', 'ページ単位', 'コマ単位'] }, '対応する作業対象': _pmRelation('作業対象リスト'), '備考': { type: 'text' } },
     '作業規模リスト': { '作業規模': { type: 'text' }, '作業時間倍率': { type: 'number' }, '面積比': { type: 'number' }, '備考': { type: 'text' } },
-    'スタッフリスト': { 'スタッフ名': { type: 'text' }, '表示名': { type: 'text' }, '権限': { type: 'select', options: ['管理者', 'メンバー'] }, '作業可能時間': { type: 'text' }, '休憩時間': { type: 'text' }, '休日': { type: 'text' }, '担当できる作業': { type: 'relation', target: '作業内容リスト' }, '備考': { type: 'text' } },
-    'スケジュール': { '予定名': { type: 'text' }, '種別': { type: 'select', options: ['シフト', '休み', '作業予定'] }, '担当者': { type: 'text' }, '予定日時': { type: 'date', withTime: true, range: true }, '開始時刻': { type: 'text' }, '終了時刻': { type: 'text' }, '作品タイトル': { type: 'text' }, 'タスクリスト': { type: 'relation', target: 'タスクリスト' }, 'スタッフリスト': { type: 'relation', target: 'スタッフリスト' }, 'カレンダーID': { type: 'text' }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
+    'スタッフリスト': { 'スタッフ名': { type: 'text' }, '表示名': { type: 'text' }, '権限': { type: 'select', options: ['管理者', 'メンバー'] }, '作業可能時間': { type: 'text' }, '休憩時間': { type: 'text' }, '休日': { type: 'text' }, '参加開始日': { type: 'date' }, '参加終了日': { type: 'date' }, '担当できる作業': _pmRelation('作業内容リスト'), '外部カレンダーURL（Google）': { type: 'text' }, '外部カレンダーURL（CalDAV）': { type: 'text' }, '同期有効': { type: 'checkbox' }, '備考': { type: 'text' } },
+    'スケジュール': { '予定名': { type: 'text' }, '種別': { type: 'select', options: ['シフト', '休み', '作業予定'] }, '担当者': { type: 'text' }, '予定日時': { type: 'date', withTime: true, range: true }, '開始時刻': { type: 'text' }, '終了時刻': { type: 'text' }, '作品タイトル': { type: 'text' }, 'タスクリスト': _pmRelation('タスクリスト'), 'スタッフリスト': _pmRelation('スタッフリスト'), 'カレンダーID': { type: 'text' }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
     '勤怠情報': { 'スタッフ名': { type: 'text' }, '日付': { type: 'date' }, '出勤日時': { type: 'date', withTime: true }, '退勤日時': { type: 'date', withTime: true }, '実績日時': { type: 'date', withTime: true, range: true }, '休憩': { type: 'text' }, '実績時間': { type: 'number' }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
     '自動シフト調整設定': { '設定名': { type: 'text' }, '自動シフト調整': { type: 'checkbox' }, '自動実行の間隔': { type: 'text' }, '最終実行日時': { type: 'date', withTime: true }, '備考': { type: 'text' } },
     'スケジュール アーカイブ': { '予定名': { type: 'text' }, '種別': { type: 'select' }, '担当者': { type: 'text' }, '予定日時': { type: 'date', withTime: true, range: true }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
-    'タスクリスト アーカイブ': { 'タスク名': { type: 'text' }, '作品タイトル': { type: 'text' }, 'ページ': { type: 'text' }, 'コマ': { type: 'text' }, '状況': { type: 'select' }, '作業予定日時': { type: 'date', withTime: true, range: true }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
+    'タスクリスト アーカイブ': { '作品タイトル': { type: 'text' }, 'ページ': { type: 'text' }, 'コマ': { type: 'text' }, '階層パス': { type: 'text' }, '階層ラベル': { type: 'text' }, '状況': { type: 'select' }, '作業予定日時': { type: 'date', withTime: true, range: true }, '作成キー': { type: 'text' }, '備考': { type: 'text' } },
     'データソース': { '役割': { type: 'text' }, '対象シート': { type: 'text' }, '有効': { type: 'checkbox' }, '説明': { type: 'text' } },
   };
 
   const PM_SEEDS = {
     '作業内容リスト': [
-      ['ネーム', { '作業内容': 'ネーム', '表示名': 'ネーム', '作業順': '10', '依存階層': '10', '作業時間倍率': '1', '標準粒度': 'ページ単位' }],
-      ['下描き', { '作業内容': '下描き', '表示名': '下描き', '作業順': '40', '依存階層': '40', '作業時間倍率': '1', '標準粒度': 'コマ単位' }],
-      ['ペン入れ', { '作業内容': 'ペン入れ', '表示名': 'ペン入れ', '別名': '線画', '作業順': '50', '依存階層': '50', '作業時間倍率': '1', '標準粒度': 'コマ単位' }],
-      ['仕上げ', { '作業内容': '仕上げ', '表示名': '仕上げ', '作業順': '60', '依存階層': '60', '作業時間倍率': '1', '標準粒度': 'コマ単位' }],
+      ['企画', { '作業内容': '企画', '表示名': '企画', '作業順': '10', '依存階層': '10', '作業時間倍率': '1', '標準粒度': '階層単位' }],
+      ['準備', { '作業内容': '準備', '表示名': '準備', '作業順': '20', '依存階層': '20', '作業時間倍率': '1', '標準粒度': '階層単位' }],
+      ['制作', { '作業内容': '制作', '表示名': '制作', '作業順': '30', '依存階層': '30', '作業時間倍率': '1', '標準粒度': '階層単位' }],
+      ['確認', { '作業内容': '確認', '表示名': '確認', '作業順': '40', '依存階層': '40', '作業時間倍率': '1', '標準粒度': '階層単位' }],
+      ['修正', { '作業内容': '修正', '表示名': '修正', '作業順': '50', '依存階層': '50', '作業時間倍率': '1', '標準粒度': '階層単位' }],
+      ['完了処理', { '作業内容': '完了処理', '表示名': '完了処理', '作業順': '60', '依存階層': '60', '作業時間倍率': '1', '標準粒度': '階層単位' }],
     ],
     '作業対象リスト': [
       ['全体', { '作業対象': '全体', '基準作業時間': '1' }],
-      ['キャラ胸上', { '作業対象': 'キャラ胸上', '基準作業時間': '0.75' }],
-      ['背景作画', { '作業対象': '背景作画', '基準作業時間': '2' }],
+      ['主要部分', { '作業対象': '主要部分', '基準作業時間': '1' }],
+      ['詳細部分', { '作業対象': '詳細部分', '基準作業時間': '0.75' }],
+      ['補助部分', { '作業対象': '補助部分', '基準作業時間': '0.5' }],
+      ['高難度部分', { '作業対象': '高難度部分', '基準作業時間': '1.5' }],
     ],
     '作業規模リスト': [
       ['小', { '作業規模': '小', '作業時間倍率': '0.5', '面積比': '0.5' }],
-      ['中', { '作業規模': '中', '作業時間倍率': '1', '面積比': '1' }],
-      ['ページ全体', { '作業規模': 'ページ全体', '作業時間倍率': '1', '面積比': '1' }],
+      ['標準', { '作業規模': '標準', '作業時間倍率': '1', '面積比': '1' }],
+      ['大', { '作業規模': '大', '作業時間倍率': '1.5', '面積比': '1.5' }],
+      ['特大', { '作業規模': '特大', '作業時間倍率': '2', '面積比': '2' }],
     ],
   };
 
@@ -48,11 +124,18 @@
   }
 
   function _pmRequest(path, options) {
-    const method = String(options?.method || 'GET').toUpperCase();
-    const body = options?.body || {};
-    if (method === 'POST' && typeof apiPost === 'function') return apiPost(path, body);
-    if (method === 'GET' && typeof apiFetch === 'function') return apiFetch(path);
-    if (window.MeldexDataAccess?.requestJson) return window.MeldexDataAccess.requestJson(path, { method, body });
+  const method = String(options?.method || 'GET').toUpperCase();
+  const body = options?.body || {};
+  if (method === 'POST' && typeof apiPost === 'function') return apiPost(path, body);
+  if (typeof apiFetch === 'function') {
+    if (method === 'GET') return apiFetch(path);
+    return apiFetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+  }
+  if (window.MeldexDataAccess?.requestJson) return window.MeldexDataAccess.requestJson(path, { method, body });
     throw new Error('制作管理APIを呼び出せません');
   }
 
@@ -142,34 +225,46 @@
   }
 
   function openProductionTaskCreate() {
-    const { overlay, modal } = _pmModal('ページ単位またはコマ単位の作業を作成');
+    const { overlay, modal } = _pmModal('タスクを作成');
     const title = _pmInput('', '作品タイトル_話数');
-    const pages = _pmInput('1', 'ページ数');
-    const panels = _pmInput('1', 'コマ数');
+    const preset = _pmSelect(['汎用', 'マンガ'], '汎用');
+    const hierarchyCount = _pmInput('1', '1〜5');
+    const hierarchyLabels = _pmInput('項目', '機能,画面,部品');
+    const hierarchyCounts = _pmInput('1', '1,3,2');
+    const hierarchyPaths = document.createElement('textarea');
+    hierarchyPaths.placeholder = '項目A\n項目B';
+    hierarchyPaths.rows = 3;
+    hierarchyPaths.style.width = '100%';
     const targets = _pmInput('全体', '全体,背景作画');
-    const contents = _pmInput('ネーム', 'ネーム,下描き');
-    const scales = _pmInput('ページ全体', 'ページ全体,中');
-    const granularity = _pmSelect(['ページ単位', 'コマ単位'], 'ページ単位');
+    const contents = _pmInput('制作', '企画,制作,確認');
+    const scales = _pmInput('標準', '小,標準,大');
+    const granularity = _pmSelect(['階層単位', 'ページ単位', 'コマ単位'], '階層単位');
     modal.append(
       _pmField('作品タイトル_話数', title),
-      _pmField('ページ数', pages),
-      _pmField('作業作成粒度', granularity),
-      _pmField('コマ数', panels),
-      _pmField('作業対象リスト', targets),
-      _pmField('作業内容リスト', contents),
-      _pmField('作業規模リスト', scales),
+      _pmField('プリセット種別', preset),
+      _pmField('階層数', hierarchyCount),
+      _pmField('階層ラベル', hierarchyLabels),
+      _pmField('タスク作成粒度', granularity),
+      _pmField('階層別件数', hierarchyCounts),
+      _pmField('階層パス', hierarchyPaths),
+      _pmField('作業対象', targets),
+      _pmField('作業内容', contents),
+      _pmField('作業規模', scales),
       _pmFooter(overlay, '作成', async () => {
         const body = {
           work_title: title.value.trim() || '無題作品',
-          page_count: pages.value,
+          preset: preset.value,
+          hierarchy_count: hierarchyCount.value,
+          hierarchy_labels: hierarchyLabels.value,
+          hierarchy_counts: hierarchyCounts.value,
+          hierarchy_paths: hierarchyPaths.value,
           granularity: granularity.value,
-          panel_count: panels.value,
           target_names: targets.value,
           content_names: contents.value,
           scale_names: scales.value,
         };
         const result = await _pmRequest('/production-management/tasks/create', { method: 'POST', body });
-        _pmShowStatus(_pmRecoveryText(`作業を作成しました: ${result.created || 0}件`, result));
+        _pmShowStatus(_pmRecoveryText(`タスクを作成しました: ${result.created || 0}件`, result));
       })
     );
     title.focus();
@@ -228,6 +323,35 @@
   async function runProductionAssignment() {
     const result = await _pmRequest('/production-management/assign/apply', { method: 'POST', body: {} });
     _pmShowStatus(_pmRecoveryText(`担当者と時間を割り当てました: ${result.updated || 0}件`, result));
+  }
+
+  async function runProductionExternalSync(options = {}) {
+    const result = await _pmRequest('/production-management/external-sync', { method: 'POST', body: { automatic: !!options.silent } });
+    if (result?.unsupported) {
+      if (!options.silent) _pmShowStatus(result.message || '外部カレンダー送信はこの環境では使えません', true);
+      return result;
+    }
+    if (!options.silent) {
+      _pmShowStatus(`外部カレンダーへ送信しました: ${result.caldav_synced || 0}件 / Google ${result.google_pushed || 0}件追加・${result.google_updated || 0}件更新`);
+    }
+    return result;
+  }
+
+  async function _pmAutoProductionExternalSync() {
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+    const status = await _pmRequest('/production-management/status', { method: 'GET' }).catch(() => null);
+    if (!status?.ready) return;
+    await runProductionExternalSync({ silent: true });
+  }
+
+  function _pmStartExternalSyncTimer() {
+    if (window.__meldexProductionExternalSyncTimer) return;
+    const startupTimer = setTimeout(() => _pmAutoProductionExternalSync().catch(() => {}), 15000);
+    if (typeof startupTimer?.unref === 'function') startupTimer.unref();
+    window.__meldexProductionExternalSyncTimer = setInterval(() => {
+      _pmAutoProductionExternalSync().catch(() => {});
+    }, 15 * 60 * 1000);
+    if (typeof window.__meldexProductionExternalSyncTimer?.unref === 'function') window.__meldexProductionExternalSyncTimer.unref();
   }
 
   function openProductionExport() {
@@ -342,10 +466,12 @@
   function _pmShiftRow(user, date, start, end, type, note) {
     const normalizedDate = _pmDate(date);
     const startText = _pmTime(start);
-    const endText = _pmTime(end);
+    const endText = _pmTime(end, { allowOver24: true });
     const range = !endText ? _pmTimeRange(start) : null;
     const finalStart = range ? range.start : startText;
     const finalEnd = range ? range.end : endText;
+    if (String(start || '').trim() && !finalStart) return null;
+    if (String(end || '').trim() && !finalEnd) return null;
     if (!String(user || '').trim() || !normalizedDate) return null;
     return { user: String(user).trim(), date: normalizedDate, start_time: finalStart, end_time: finalEnd, type: _pmShiftType(type), note: String(note || '') };
   }
@@ -371,15 +497,31 @@
     return '';
   }
 
-  function _pmTime(value) {
-    const match = String(value || '').trim().match(/(\d{1,2}):(\d{2})/);
-    return match ? `${String(match[1]).padStart(2, '0')}:${match[2]}` : '';
+  function _pmParseShiftTime(value, options = {}) {
+    const text = String(value || '').trim();
+    const match = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+    const maxHour = options.allowOver24 ? 47 : 23;
+    if (hour < 0 || hour > maxHour) return null;
+    return { text: `${String(hour % 24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`, dayOffset: hour >= 24 ? 1 : 0 };
+  }
+
+  function _pmTime(value, options = {}) {
+    const match = String(value || '').trim().match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+    if (!match) return '';
+    return _pmParseShiftTime(match[1], options)?.text || '';
   }
 
   function _pmTimeRange(value) {
     const text = String(value || '');
-    const match = text.match(/(\d{1,2}:\d{2})\s*(?:~|-|〜|から)\s*(\d{1,2}:\d{2})/);
-    return match ? { start: _pmTime(match[1]), end: _pmTime(match[2]) } : null;
+    const match = text.match(/(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:~|-|〜|から)\s*(\d{1,2}:\d{2}(?::\d{2})?)/);
+    if (!match) return null;
+    const start = _pmParseShiftTime(match[1]);
+    const end = _pmParseShiftTime(match[2], { allowOver24: true });
+    return start && end ? { start: start.text, end: end.text } : null;
   }
 
   async function _pmReadXlsx(file) {
@@ -531,7 +673,51 @@
     if (!internals) return;
     const eventId = `shift:${shiftId}`;
     const rows = await _pmReadCalendarStore(provider, internals, 'events');
-    await _pmWriteCalendarStore(provider, internals, 'events', rows.filter(row => String(row.id) !== eventId));
+    await _pmWriteCalendarStore(provider, internals, 'events', rows.filter(row => {
+      const id = String(row.id || '');
+      return id !== eventId && !id.startsWith(eventId + ':break:');
+    }));
+  }
+
+  function _pmCloudShiftPairKey(row) {
+    return [String(row?.user || ''), String(row?.date || '')].join('\u0000');
+  }
+
+  async function _pmCloudDeleteScheduleEntry(provider, path) {
+    if (!path || typeof provider?.deletePath !== 'function') return false;
+    await provider.deletePath(path);
+    return true;
+  }
+
+  async function _pmCloudDeleteShiftRecord(provider, internals, shiftId) {
+    try {
+      await window.MeldexDataAccess.requestJson('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' });
+      return true;
+    } catch {}
+    const rows = await _pmReadCalendarStore(provider, internals, 'shifts');
+    await _pmWriteCalendarStore(provider, internals, 'shifts', rows.filter(row => String(row.id) !== String(shiftId)));
+    await _pmRemoveCloudShiftEvent(provider, shiftId);
+    return true;
+  }
+
+  async function _pmCloudCleanupExistingShifts(provider, internals, rows) {
+    const targetPairs = new Set((rows || []).map(_pmCloudShiftPairKey).filter(key => !key.startsWith('\u0000') && !key.endsWith('\u0000')));
+    if (!targetPairs.size) return { removed_ids: [] };
+    const currentRows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => _pmReadCalendarStore(provider, internals, 'shifts'));
+    const removedIds = [];
+    for (const current of currentRows || []) {
+      const id = String(current?.id || '');
+      if (!id.startsWith('pm-shift-')) continue;
+      const normalized = _pmNormalizeIncomingShift(current);
+      if (!normalized || !targetPairs.has(_pmCloudShiftPairKey(normalized))) continue;
+      removedIds.push(id);
+    }
+    for (const shiftId of [...new Set(removedIds)]) {
+      await _pmCloudDeleteShiftRecord(provider, internals, shiftId);
+      const schedulePath = await _pmCloudFindByProp(provider, internals, 'スケジュール', '作成キー', shiftId);
+      await _pmCloudDeleteScheduleEntry(provider, schedulePath).catch(() => false);
+    }
+    return { removed_ids: [...new Set(removedIds)] };
   }
 
   function _pmInstallCloudHandler() {
@@ -547,6 +733,9 @@
       if (pathname === '/production-management/shifts/apply' && method === 'POST') return _pmCloudApplyShifts(provider, internals, body || {});
       if (pathname === '/production-management/assign/apply' && method === 'POST') {
         return _pmCloudApplyAssignment(provider, internals, body || {});
+      }
+      if (pathname === '/production-management/external-sync' && method === 'POST') {
+        return { ok: false, unsupported: true, message: '外部カレンダー送信はデスクトップ版で設定してください' };
       }
       if (pathname === '/production-management/export' && method === 'GET') return _pmCloudExport(url);
       return internals.NOT_HANDLED;
@@ -567,7 +756,8 @@
     await internals._directoryHandle(provider, PM_ROOT, true);
     for (const [name, text] of Object.entries(PM_REQUIRED_PAGES)) await _pmCloudEnsurePage(provider, internals, name, text);
     for (const sheet of PM_SHEETS) await _pmCloudEnsureSheet(provider, internals, sheet);
-    await _pmCloudSeed(provider, internals);
+    // 構造が揃っている場合は初期値を再シードしない（編集済みの作業内容・規模リスト等を巻き戻さない）
+    if (missing.length) await _pmCloudSeed(provider, internals);
     const recovered = [...missing];
     const cal = await _pmCloudRecoverFromCalendar(provider, internals, missing);
     if (cal.shifts) recovered.push(`カレンダーからシフトを復旧: ${cal.shifts}件`);
@@ -608,10 +798,84 @@
     const note = internals._joinPath(dir, sheet + '.md');
     const parsed = await _pmCloudReadFrontmatter(provider, note);
     const frontmatter = { ...(parsed.frontmatter || {}), type: 'settings-db', schema_version: 1 };
-    frontmatter.property_types = { ...(frontmatter.property_types || {}), ...(PM_PROPERTY_TYPES[sheet] || {}) };
-    if (sheet === 'タスクリスト') frontmatter.calendar_mapping = frontmatter.calendar_mapping || { startProp: '作業予定日時', endProp: '作業予定日時', titleProp: 'タスク名', descriptionProp: '備考' };
+    const propTypes = { ...(frontmatter.property_types || {}) };
+    if (sheet === 'タスクリスト') {
+      delete propTypes[PM_TASK_LEGACY_NAME_PROP];
+      delete propTypes['タスク名を固定'];
+    }
+    if (sheet === 'タスクリスト アーカイブ') delete propTypes[PM_TASK_LEGACY_NAME_PROP];
+    frontmatter.property_types = _pmCloudMergePropertyTypes(propTypes, PM_PROPERTY_TYPES[sheet] || {});
+    if (sheet === 'タスクリスト') {
+      frontmatter.calendar_mapping = { ...(frontmatter.calendar_mapping || {}), startProp: '作業予定日時', endProp: '作業予定日時', titleProp: '' };
+      if (!frontmatter.calendar_mapping.colorProp) frontmatter.calendar_mapping.colorProp = '対象色';
+      if (!frontmatter.calendar_mapping.descriptionProp) frontmatter.calendar_mapping.descriptionProp = '備考';
+      _pmCloudApplyTaskHiddenColumns(frontmatter);
+    }
     if (sheet === 'スケジュール') frontmatter.calendar_mapping = frontmatter.calendar_mapping || { startProp: '予定日時', endProp: '予定日時', titleProp: '予定名', descriptionProp: '備考' };
     await provider.writeText(note, _pmCloudFrontmatterText(frontmatter, parsed.body || `# ${sheet}\n\n`));
+  }
+
+  function _pmCloudMergePropertyTypes(current, expected) {
+    const merged = { ...(current || {}) };
+    Object.entries(expected || {}).forEach(([prop, spec]) => {
+      const existing = merged[prop] && typeof merged[prop] === 'object' ? merged[prop] : {};
+      merged[prop] = { ...existing, ...(spec || {}) };
+    });
+    return merged;
+  }
+
+  function _pmCloudApplyTaskHiddenColumns(frontmatter) {
+    const config = (frontmatter.view_config && typeof frontmatter.view_config === 'object') ? frontmatter.view_config : {};
+    const views = Array.isArray(config.savedViews) && config.savedViews.length ? config.savedViews : [{ name: 'テーブル', viewMode: 'pivot' }];
+    views.forEach(view => {
+      if (!view || typeof view !== 'object') return;
+      const current = Array.isArray(view.hiddenCols) ? view.hiddenCols : [];
+      view.hiddenCols = [...new Set([...current, ...PM_TASK_HIDDEN_COLUMNS])];
+    });
+    config.savedViews = views;
+    if (!Number.isInteger(config.currentViewIdx)) config.currentViewIdx = 0;
+    frontmatter.view_config = config;
+  }
+
+  function _pmTaskPageOptionCount(rows, fallback) {
+    return (rows || []).reduce((max, row) => {
+      const match = String(row?.['ページ'] || row?.['単位レベル1'] || '').match(/\d+/);
+      return match ? Math.max(max, Number(match[0]) || 1) : max;
+    }, Math.max(1, Number(fallback) || 1));
+  }
+
+  function _pmTaskPageOptions(count) {
+    return Array.from({ length: Math.max(1, Number(count) || 1) }, (_, i) => 'p' + String(i + 1).padStart(4, '0'));
+  }
+
+  function _pmTaskPanelOptions(rows) {
+    return (rows || []).map(row => String(row?.['コマ'] || row?.['単位レベル2'] || '').trim()).filter(Boolean);
+  }
+
+  function _pmMergeOptions(current, additions) {
+    const out = [];
+    [...(Array.isArray(current) ? current : []), ...(additions || [])].forEach((item) => {
+      const value = String(item || '').trim();
+      if (value && !out.includes(value)) out.push(value);
+    });
+    return out;
+  }
+
+  async function _pmCloudEnsureTaskPagePanelOptions(provider, internals, rows, fallbackPageCount) {
+    if (!(rows || []).some(row => String(row?.['ページ'] || row?.['コマ'] || '').trim())) return;
+    const note = internals._joinPath(_pmCloudRoot(internals), 'タスクリスト', 'タスクリスト.md');
+    const parsed = await _pmCloudReadFrontmatter(provider, note);
+    const frontmatter = { ...(parsed.frontmatter || {}), type: 'settings-db', schema_version: 1 };
+    const propTypes = frontmatter.property_types && typeof frontmatter.property_types === 'object' ? { ...frontmatter.property_types } : {};
+    const pageSpec = { ...(propTypes['ページ'] || {}), type: 'multi-select' };
+    pageSpec.options = _pmMergeOptions(pageSpec.options, _pmTaskPageOptions(_pmTaskPageOptionCount(rows, fallbackPageCount)));
+    propTypes['ページ'] = pageSpec;
+    const panelSpec = { ...(propTypes['コマ'] || {}), type: 'multi-select' };
+    const panelOptions = _pmMergeOptions(panelSpec.options, _pmTaskPanelOptions(rows));
+    if (panelOptions.length) panelSpec.options = panelOptions;
+    propTypes['コマ'] = panelSpec;
+    frontmatter.property_types = propTypes;
+    await provider.writeText(note, _pmCloudFrontmatterText(frontmatter, parsed.body || '# タスクリスト\n\n'));
   }
 
   async function _pmCloudSeed(provider, internals) {
@@ -626,47 +890,69 @@
   async function _pmCloudCreateTasks(provider, internals, body) {
     const init = await _pmCloudInit(provider, internals);
     const rows = _pmBuildTaskRows(body || {});
+    const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
+    const config = _pmHierarchyConfig(body || {});
+    const paths = _pmHierarchyPaths(body || {}, config);
+    const firstLevelCount = new Set(paths.map(path => path[0]).filter(Boolean)).size || paths.length || 1;
+    const workProps = {
+      '作品タイトル_話数': workTitle,
+      'ページ数': String(firstLevelCount),
+      '階層数': String(config.count),
+      '階層ラベル': config.labels.join(','),
+      'プリセット種別': config.preset,
+      '作業作成粒度': String((body || {}).granularity || (body || {})['作業作成粒度'] || config.granularity || '階層単位'),
+      '生成ページ数': String(firstLevelCount),
+      'タスク生成': '作成済み',
+    };
+    const workPeriod = _pmWorkPeriodValue(body || {});
+    if (workPeriod) workProps['作業期間'] = workPeriod;
+    await _pmCloudUpsertEntry(provider, internals, '作品リスト', workTitle, workProps, '作品タイトル_話数', workTitle);
+    await _pmCloudEnsureTaskPagePanelOptions(provider, internals, rows, firstLevelCount);
     let created = 0;
     for (const row of rows) {
       const path = await _pmCloudFindByProp(provider, internals, 'タスクリスト', '作成キー', row['作成キー']);
       if (path) continue;
-      await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row['タスク名'], row, '作成キー', row['作成キー']);
+      await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', _pmTaskRowEntryName(row), _pmTaskRowProps(row), '作成キー', row['作成キー']);
       created += 1;
     }
-    const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
-    const pageCount = Math.max(1, Number((body || {}).page_count || (body || {})['ページ数'] || 1) || 1);
-    await _pmCloudUpsertEntry(provider, internals, '作品リスト', workTitle, {
-      '作品タイトル_話数': workTitle,
-      'ページ数': String(pageCount),
-      '作業作成粒度': String((body || {}).granularity || (body || {})['作業作成粒度'] || 'ページ単位'),
-      '生成ページ数': String(pageCount),
-      'タスク生成': '作成済み',
-    }, '作品タイトル_話数', workTitle);
     return { ok: true, created, skipped: rows.length - created, count: rows.length, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
   }
 
   async function _pmCloudApplyShifts(provider, internals, body) {
     const init = await _pmCloudInit(provider, internals);
     const rows = (body.rows || body.shifts || []).map(_pmNormalizeIncomingShift).filter(Boolean);
+    const cleanup = await _pmCloudCleanupExistingShifts(provider, internals, rows);
+    const removed = new Set(cleanup.removed_ids || []);
+    let created = 0;
+    let updated = 0;
     for (const row of rows) {
       const id = _pmShiftId(row);
       const scheduleName = `${row.date}_${row.user}_${_pmScheduleTypeLabel(row.type)}`;
       await _pmCloudUpsertEntry(provider, internals, 'スケジュール', scheduleName, _pmScheduleProps(row, id), '作成キー', id);
       await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST', body: { id, ...row } });
+      if (removed.has(id)) updated += 1;
+      else created += 1;
     }
-    return { ok: true, count: rows.length, created: rows.length, updated: 0, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
+    return { ok: true, count: rows.length, created, updated, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
   }
 
   async function _pmCloudApplyAssignment(provider, internals, body) {
     const init = await _pmCloudInit(provider, internals);
     const planned = await _pmCloudAssignmentPlan(provider, internals, body || {});
     for (const row of planned) {
-      await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.task_name, {
+      const props = {
         '担当者': row.user,
         '作業予定日時': `${row.start}|${row.end}`,
         '作業予定時間': String(row.hours),
-        '状況': '着手待ち',
-      }, '作成キー', row.task_key);
+      };
+      // デスクトップ版と同じく、状況は未設定の場合のみ「着手待ち」を設定する（作業中・保留を巻き戻さない）
+      if (!row.task_status) props['状況'] = '着手待ち';
+      if (row.task_path) {
+        // 既存エントリをパス指定で直接更新する（作成キーの無い手動タスクで複製行が生まれないように）
+        await _pmCloudUpdateEntryAtPath(provider, row.task_path, props);
+      } else {
+        await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.task_name, props, '作成キー', row.task_key);
+      }
       await _pmSyncCloudWorkEvent(provider, internals, row);
     }
     return { ok: true, updated: planned.length, rows: planned, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
@@ -674,7 +960,7 @@
 
   async function _pmCloudAssignmentPlan(provider, internals, body) {
     const tasks = await _pmCloudUnassignedTasks(provider, internals);
-    const shifts = await _pmCloudWorkShifts(body.date_from || new Date().toISOString().slice(0, 10));
+    const shifts = await _pmCloudWorkShifts(provider, internals, body.date_from || new Date().toISOString().slice(0, 10));
     const maxCount = Math.max(1, Number(body.limit || 200) || 200);
     const planned = [];
     for (const task of tasks.slice(0, maxCount)) {
@@ -695,35 +981,77 @@
           path: item.path,
           id,
           task_key: key,
-          task_name: _pmCloudPropValue(item.frontmatter, 'タスク名') || item.name,
+          task_name: item.name,
           hours: Math.max(0.25, Number(_pmCloudPropValue(item.frontmatter, '目標作業時間_値') || 1) || 1),
           fixed_user: _pmCloudPropValue(item.frontmatter, '担当者'),
+          status: _pmCloudPropValue(item.frontmatter, '状況'),
         };
       });
   }
 
-  async function _pmCloudWorkShifts(dateFrom) {
+  function _pmCloudDateIsValid(value) {
+    return value instanceof Date && !Number.isNaN(value.getTime());
+  }
+
+  function _pmCloudBusyForShift(shift, events) {
+    return (events || [])
+      .filter(event => event && event.calendar_source === 'production-task' && String(event.user || '') === String(shift.user || ''))
+      .map(event => {
+        const start = new Date(String(event.start || event.end || ''));
+        const end = new Date(String(event.end || event.start || ''));
+        if (!_pmCloudDateIsValid(start) || !_pmCloudDateIsValid(end)) return null;
+        const clampedStart = start < shift._cursor ? shift._cursor : start;
+        const clampedEnd = end > shift._end ? shift._end : end;
+        return clampedEnd > clampedStart ? [clampedStart, clampedEnd] : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a[0] - b[0]);
+  }
+
+  async function _pmCloudWorkShifts(provider, internals, dateFrom) {
     const rows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => []);
+    const events = await _pmReadCalendarStore(provider, internals, 'events').catch(() => []);
     return (rows || [])
       .map(_pmNormalizeIncomingShift)
       .filter(row => row && row.type === 'work' && (!dateFrom || row.date >= dateFrom))
       .sort((a, b) => [a.date, a.start_time, a.user].join('|').localeCompare([b.date, b.start_time, b.user].join('|')))
-      .map(row => ({ ...row, _cursor: _pmDateTime(row.date, row.start_time || '00:00'), _end: _pmShiftEndDateTime(row) }));
+      .map(row => ({ ...row, _cursor: _pmDateTime(row.date, row.start_time || '00:00'), _end: _pmShiftEndDateTime(row) }))
+      .filter(row => _pmCloudDateIsValid(row._cursor) && _pmCloudDateIsValid(row._end) && row._end > row._cursor)
+      .map(row => ({ ...row, _busy: _pmCloudBusyForShift(row, events) }));
+  }
+
+  function _pmCloudReserveShiftSlot(shift, durationMs) {
+    let cursor = shift._cursor;
+    for (const [busyStart, busyEnd] of shift._busy || []) {
+      if (busyEnd <= cursor) continue;
+      const end = new Date(cursor.getTime() + durationMs);
+      if (end <= busyStart && end <= shift._end) {
+        shift._cursor = end;
+        return [cursor, end];
+      }
+      if (busyStart < shift._end && busyEnd > cursor) cursor = busyEnd;
+    }
+    const end = new Date(cursor.getTime() + durationMs);
+    if (end <= shift._end) {
+      shift._cursor = end;
+      return [cursor, end];
+    }
+    return null;
   }
 
   function _pmCloudPlaceTaskInShift(task, shifts) {
     const durationMs = Math.max(0.25, Number(task.hours || 1) || 1) * 60 * 60 * 1000;
     for (const shift of shifts) {
       if (task.fixed_user && task.fixed_user !== shift.user) continue;
-      const start = shift._cursor;
-      const end = new Date(start.getTime() + durationMs);
-      if (end > shift._end) continue;
-      shift._cursor = end;
+      const slot = _pmCloudReserveShiftSlot(shift, durationMs);
+      if (!slot) continue;
+      const [start, end] = slot;
       return {
         task_path: task.path,
         task_id: task.id,
         task_key: task.task_key,
         task_name: task.task_name,
+        task_status: task.status || '',
         user: shift.user,
         start: _pmDateTimeText(start),
         end: _pmDateTimeText(end),
@@ -778,7 +1106,7 @@
       const events = await window.MeldexDataAccess.requestJson('/cal/events').catch(() => []);
       for (const row of (events || []).filter(event => event.calendar_source === 'production-task')) {
         const key = 'calendar:' + String(row.external_id || row.id || row.title || '');
-        await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.title || '復旧した作業予定', { 'タスク名': row.title || '復旧した作業予定', '担当者': row.user || '', '作業予定日時': row.start && row.end ? `${row.start}|${row.end}` : row.start || '', '状況': '着手待ち', '作成キー': key, '備考': row.description || 'カレンダーから復旧' }, '作成キー', key);
+        await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.title || '復旧した作業予定', { '担当者': row.user || '', '作業予定日時': row.start && row.end ? `${row.start}|${row.end}` : row.start || '', '状況': '着手待ち', '作成キー': key, '備考': row.description || 'カレンダーから復旧' }, '作成キー', key);
         result.tasks += 1;
       }
     }

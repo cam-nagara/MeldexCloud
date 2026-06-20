@@ -29,38 +29,56 @@ function _updateBulkEditBar(ctx) {
   const c = ctx || _currentPaneState();
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
-  let bar = document.body.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
+  const table = _paneEl(c, '#' + ((c && c.tableId) || 'pivot-table'));
+  const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
+  let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
   if (selected.length === 0) {
     if (bar) bar.remove();
     return;
   }
   if (!bar) {
     bar = document.createElement('div');
-    bar.className = 'db-bulk-edit-bar';
+    bar.className = 'db-bulk-edit-bar gb-selection-float-bar';
     bar.dataset.paneId = paneId;
+    bar.dataset.selectionFloatPaneId = paneId;
     bar.id = 'db-bulk-edit-bar';
-    bar.style.cssText = 'position:fixed;bottom:max(24px, env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);max-width:calc(100vw - 16px);background:var(--bg2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 16px rgba(0,0,0,0.5);z-index:500;font-size:13px;box-sizing:border-box;flex-wrap:wrap;';
-    document.body.appendChild(bar);
+    host.appendChild(bar);
+  }
+  if (window.GBSelectionFloatMenu) {
+    window.GBSelectionFloatMenu.bindDrag(bar, { host });
+    window.GBSelectionFloatMenu.resetPosition(bar, { host, anchor: table, zIndex: '500' });
   }
   bar.innerHTML = '';
+  if (window.GBSelectionFloatMenu) {
+    bar.appendChild(window.GBSelectionFloatMenu.createDragHandle());
+  }
 
   const label = document.createElement('span');
-  label.style.cssText = 'color:var(--accent);font-weight:bold;';
+  label.className = 'db-bulk-edit-count gb-selection-float-count';
   label.textContent = selected.length + ' 件選択中';
   bar.appendChild(label);
 
-  const editBtn = document.createElement('button');
-  editBtn.textContent = '一括編集...';
-  editBtn.dataset.e2eId = 'db-bulk-edit-' + paneId;
-  editBtn.style.cssText = 'padding:4px 10px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;font-size:12px;';
-  editBtn.addEventListener('click', () => _showBulkEditModal(selected, ctx));
+  const editBtn = window.GBSelectionFloatMenu
+    ? window.GBSelectionFloatMenu.button('一括編集...', {
+        e2eId: 'db-bulk-edit-' + paneId,
+        onClick: () => _showBulkEditModal(selected, ctx),
+      })
+    : document.createElement('button');
+  if (!window.GBSelectionFloatMenu) {
+    editBtn.textContent = '一括編集...';
+    editBtn.dataset.e2eId = 'db-bulk-edit-' + paneId;
+    editBtn.addEventListener('click', () => _showBulkEditModal(selected, ctx));
+  }
   bar.appendChild(editBtn);
 
-  const addRowsBtn = document.createElement('button');
-  addRowsBtn.textContent = '下に ' + selected.length + ' エントリ追加';
+  const addRowsBtn = window.GBSelectionFloatMenu
+    ? window.GBSelectionFloatMenu.button('下に ' + selected.length + ' エントリ追加')
+    : document.createElement('button');
+  if (!window.GBSelectionFloatMenu) {
+    addRowsBtn.textContent = '下に ' + selected.length + ' エントリ追加';
+  }
   addRowsBtn.title = '選択中の最後のエントリの下に、選択数と同じだけ新規エントリを追加';
   addRowsBtn.dataset.e2eId = 'db-bulk-add-rows-' + paneId;
-  addRowsBtn.style.cssText = 'padding:4px 10px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
   addRowsBtn.addEventListener('click', async () => {
     const c2 = ctx || _currentPaneState();
     const tblSel = '#' + ((c2 && c2.tableId) || 'pivot-table');
@@ -75,11 +93,27 @@ function _updateBulkEditBar(ctx) {
   });
   bar.appendChild(addRowsBtn);
 
-  const clearBtn = document.createElement('button');
-  clearBtn.textContent = '選択解除';
-  clearBtn.dataset.e2eId = 'db-bulk-clear-' + paneId;
-  clearBtn.style.cssText = 'padding:4px 10px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
-  clearBtn.addEventListener('click', () => {
+  const clearBtn = window.GBSelectionFloatMenu
+    ? window.GBSelectionFloatMenu.button('選択解除', {
+        e2eId: 'db-bulk-clear-' + paneId,
+        muted: true,
+        onClick: () => {
+          const c2 = ctx || _currentPaneState();
+          if (c2 && c2._selectedEntities) c2._selectedEntities.clear();
+          const tblSel = '#' + ((c2 && c2.tableId) || 'pivot-table');
+          const paneRoot = _paneEl(c2, tblSel) || document;
+          paneRoot.querySelectorAll('.row-select-cb:checked').forEach(cb => {
+            cb.checked = false;
+            cb.closest('tr')?.classList.remove('row-selected');
+          });
+          _updateBulkEditBar(c2);
+        },
+      })
+    : document.createElement('button');
+  if (!window.GBSelectionFloatMenu) {
+    clearBtn.textContent = '選択解除';
+    clearBtn.dataset.e2eId = 'db-bulk-clear-' + paneId;
+    clearBtn.addEventListener('click', () => {
     const c2 = ctx || _currentPaneState();
     if (c2 && c2._selectedEntities) c2._selectedEntities.clear();
     const tblSel = '#' + ((c2 && c2.tableId) || 'pivot-table');
@@ -89,18 +123,26 @@ function _updateBulkEditBar(ctx) {
       cb.closest('tr')?.classList.remove('row-selected');
     });
     _updateBulkEditBar(c2);
-  });
+    });
+  }
   bar.appendChild(clearBtn);
 
   const sep = document.createElement('span');
   sep.style.cssText = 'width:1px;height:20px;background:var(--border);display:inline-block;';
   bar.appendChild(sep);
 
-  const delBtn = document.createElement('button');
-  delBtn.textContent = '一括削除...';
-  delBtn.dataset.e2eId = 'db-bulk-delete-' + paneId;
-  delBtn.style.cssText = 'padding:4px 10px;background:var(--bg3);color:var(--red);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
-  delBtn.addEventListener('click', () => _bulkDeleteEntities(selected, ctx));
+  const delBtn = window.GBSelectionFloatMenu
+    ? window.GBSelectionFloatMenu.button('一括削除...', {
+        e2eId: 'db-bulk-delete-' + paneId,
+        danger: true,
+        onClick: () => _bulkDeleteEntities(selected, ctx),
+      })
+    : document.createElement('button');
+  if (!window.GBSelectionFloatMenu) {
+    delBtn.textContent = '一括削除...';
+    delBtn.dataset.e2eId = 'db-bulk-delete-' + paneId;
+    delBtn.addEventListener('click', () => _bulkDeleteEntities(selected, ctx));
+  }
   bar.appendChild(delBtn);
 }
 
@@ -113,6 +155,9 @@ function _bulkValueSnapshotFromValues(entityName, entityPath, values) {
       status: v?.status || '採用',
       note: v?.note || '',
       rich_html: v?.rich_html || '',
+      relations: Array.isArray(v?.relations) ? JSON.parse(JSON.stringify(v.relations)) : [],
+      published_in: Array.isArray(v?.published_in) ? JSON.parse(JSON.stringify(v.published_in)) : [],
+      created: v?.created || '',
     })),
   };
 }
@@ -128,7 +173,11 @@ async function _bulkReplaceEntityPropValues(entityPath, prop, values) {
     }
   }
   for (const v of values || []) {
-    await _apiPostValue(entityPath, prop, v.value, v.status || '採用', v.note || '', v.rich_html || '');
+    await _apiPostValue(entityPath, prop, v.value, v.status || '採用', v.note || '', v.rich_html || '', {
+      relations: Array.isArray(v.relations) ? v.relations : [],
+      published_in: Array.isArray(v.published_in) ? v.published_in : [],
+      created: v.created || '',
+    });
   }
 }
 
@@ -143,7 +192,7 @@ async function _bulkApplyPropSnapshots(dbPath, prop, snapshots, ctx) {
 
 function _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx) {
   if (typeof historyPush !== 'function' || !beforeSnapshots.length || !afterSnapshots.length) return;
-  const scope = typeof _dbScope === 'function' ? _dbScope() : ('db:' + String(dbPath || '').split('/').pop());
+  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
   historyPush(
     `一括編集: ${prop} (${beforeSnapshots.length} 件)`,
     () => _bulkApplyPropSnapshots(dbPath, prop, beforeSnapshots, ctx),
@@ -154,7 +203,7 @@ function _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx)
 
 function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   if (typeof historyPush !== 'function' || !deletedItems.length) return;
-  const scope = typeof _dbScope === 'function' ? _dbScope() : ('db:' + String(dbPath || '').split('/').pop());
+  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
   const names = deletedItems.map(item => item.name);
   const toTrashRef = (item, res = item) => {
     const src = res && typeof res === 'object' ? res : item;
@@ -426,23 +475,33 @@ function _showBulkEditModal(entityNames, ctx) {
     const replaceEl = document.getElementById('bulk-edit-replace');
     const replace = statusOn ? (replaceEl ? replaceEl.checked : true) : true;
     const ptc = propTypes[prop] || { type: 'text' };
-    const canBatchUndo = !['relation', 'multi-relation'].includes(ptc.type) && !ptc.bidirectional;
+    const canBatchUndo = true;
     if (!prop) {
       showStatus('プロパティを選択してください', true);
       return;
+    }
+    if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation' || ptc.bidirectional)) {
+      const ok = await (typeof cfConfirm === 'function'
+        ? cfConfirm('一括編集で既存のリレーション候補を置き換えます。\n\n削除される候補は元に戻せるよう履歴へ記録します。続行しますか？')
+        : Promise.resolve(window.confirm('一括編集で既存のリレーション候補を置き換えます。続行しますか？')));
+      if (!ok) return;
     }
     overlay.remove();
     showStatus(entityNames.length + ' 件を更新中...');
     let ok = 0;
     let fail = 0;
+    const failNames = [];
     const beforeSnapshots = [];
     const afterSnapshots = [];
     for (const name of entityNames) {
+      let ep = '';
+      let beforeSnapshot = null;
+      let createdRef = null;
       try {
-        const ep = _entityPath(dbPath, name);
+        ep = _entityPath(dbPath, name);
         const entData = pivotData.entities?.[name];
         const existingVals = [...(entData?.[prop] || [])];
-        const beforeSnapshot = canBatchUndo ? _bulkValueSnapshotFromValues(name, ep, existingVals) : null;
+        beforeSnapshot = canBatchUndo ? _bulkValueSnapshotFromValues(name, ep, existingVals) : null;
         const primaryForOld = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(existingVals) : null) || existingVals[0];
         const oldValue = primaryForOld?.value ?? '';
         let cascadeClears = [];
@@ -459,10 +518,12 @@ function _showBulkEditModal(entityNames, ctx) {
               }
             }
           } else {
-            await _apiPostValue(ep, prop, value, status, '');
+            const res = await _apiPostValue(ep, prop, value, status, '');
+            createdRef = { file: res?.path || res?.file || ep, property: res?.property || prop, candidate_index: res?.candidate_index };
           }
         } else {
-          await _apiPostValue(ep, prop, value, status, '');
+          const res = await _apiPostValue(ep, prop, value, status, '');
+          createdRef = { file: res?.path || res?.file || ep, property: res?.property || prop, candidate_index: res?.candidate_index };
         }
         if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation')
             && typeof _clearCascadeDependentValues === 'function') {
@@ -492,11 +553,16 @@ function _showBulkEditModal(entityNames, ctx) {
         }
         ok++;
       } catch {
+        failNames.push(name);
+        try {
+          if (beforeSnapshot) await _bulkReplaceEntityPropValues(ep || _entityPath(dbPath, name), prop, beforeSnapshot.values);
+          else if (createdRef?.file) await _apiPutValue(createdRef, { _delete: true });
+        } catch {}
         fail++;
       }
     }
     _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx);
-    showStatus(`一括編集完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`);
+    showStatus(`一括編集完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件: ' + failNames.join(', ') : ''}`, fail > 0);
     await selectDatabase(dbPath, ctx);
     _restoreSelectionByEntityNames(ctx, entityNames);
     _updateBulkEditBar(ctx);
@@ -525,11 +591,25 @@ function _restoreSelectionByEntityNames(ctx, entityNames) {
 async function _bulkDeleteEntities(entityNames, ctx) {
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
-  if (!await cfConfirm(`${entityNames.length} 件のエントリをゴミ箱に移動しますか？`)) return;
-  let ok = 0;
-  let fail = 0;
-  const deletedItems = [];
-  for (const name of entityNames) {
+  const names = [...new Set((entityNames || []).filter(Boolean))];
+  if (!names.length) return;
+  if (!await cfConfirm(`${names.length} 件のエントリをゴミ箱に移動しますか？`)) return;
+  if (ctx && ctx._selectedEntities) names.forEach(n => ctx._selectedEntities.delete(n));
+  if (typeof _dbRemoveCreatedEntitiesLocally === 'function') {
+    _dbRemoveCreatedEntitiesLocally(ctx, dbPath, names);
+  } else {
+    const tblSel = '#' + ((ctx && ctx.tableId) || 'pivot-table');
+    const paneRoot = _paneEl(ctx, tblSel) || document;
+    names.forEach(name => {
+      const safeName = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(name)
+        : String(name).replace(/(["\\])/g, '\\$1');
+      paneRoot.querySelector(`tr[data-entity-name="${safeName}"]`)?.remove();
+    });
+  }
+  _updateBulkEditBar(ctx);
+  showStatus(`${names.length} 件のエントリを削除中...`);
+  const results = await Promise.all(names.map(async name => {
     try {
       const ep = _entityPath(dbPath, name);
       const res = await apiPost('/outliner/delete', { path: ep });
@@ -538,15 +618,18 @@ async function _bulkDeleteEntities(entityNames, ctx) {
           await window.GbDbCalendarSync.onEntryDeleted(dbPath, ep);
         }
       } catch {}
-      deletedItems.push({ name, path: ep, trash_name: res?.trash_name || '', trash_root: res?.trash_root || '' });
-      ok++;
+      return { ok: true, item: { name, path: ep, trash_name: res?.trash_name || '', trash_root: res?.trash_root || '' } };
     } catch {
-      fail++;
+      return { ok: false };
     }
-  }
+  }));
+  const deletedItems = results.filter(result => result.ok).map(result => result.item);
+  const ok = deletedItems.length;
+  const fail = results.length - ok;
   _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
   showStatus(`一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`);
-  if (ctx && ctx._selectedEntities) entityNames.forEach(n => ctx._selectedEntities.delete(n));
-  await selectDatabase(dbPath, ctx);
+  if (fail > 0) {
+    await selectDatabase(dbPath, ctx, { silent: true });
+  }
   _updateBulkEditBar(ctx);
 }

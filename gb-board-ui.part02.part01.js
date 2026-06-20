@@ -411,6 +411,7 @@ function _bdUpdateNodeFromField(node, field, value) {
     case 'borderColor':
       if (value) node[field] = value;
       else delete node[field];
+      if (field === 'bgColor') node._userBgColor = true;
       break;
     case 'fontBold':
     case 'fontItalic':
@@ -423,10 +424,17 @@ function _bdUpdateNodeFromField(node, field, value) {
     case 'flipH':
     case 'flipV':
       node[field] = !!value;
+      if (field === 'fontBold') node._userFontBold = true;
+      if (field === '_autoStyle' && node[field]) delete node._userCardStyle;
       break;
     case 'cardStyle':
-      node.cardStyle = value || '';
-      bdClearCardStyleOverrides(node);
+      if (typeof bdSetNodeCardStyleRef === 'function') bdSetNodeCardStyleRef(node, value || '', { clearOverrides: true });
+      else {
+        node.cardStyle = value || '';
+        bdClearCardStyleOverrides(node);
+        if (value) node._userCardStyle = true;
+        else delete node._userCardStyle;
+      }
       break;
     case 'checked':
       if (value === '') delete node.checked;
@@ -479,6 +487,8 @@ function _bdUpdateNodeFromField(node, field, value) {
       else if (field === 'textStrokeWidth') node[field] = Math.max(0, Math.min(12, num));
       else if (field === 'x' || field === 'y') node[field] = num;
       else node[field] = Math.max(0, num);
+      if (field === 'w') node._userW = true;
+      else if (field === 'fontSize') node._userFontSize = true;
       break;
     }
     case 'note':
@@ -633,8 +643,13 @@ function _bdBindNodeDetailPanel(nodeId) {
         .find(panel => panel.dataset.nodeId === nodeId)?.querySelector('[data-bd-node-style-pick]') || null,
       onPick(styleId) {
         bdPushUndo();
-        target.cardStyle = styleId || '';
-        bdClearCardStyleOverrides(target);
+        if (typeof bdSetNodeCardStyleRef === 'function') bdSetNodeCardStyleRef(target, styleId || '', { clearOverrides: true });
+        else {
+          target.cardStyle = styleId || '';
+          bdClearCardStyleOverrides(target);
+          if (styleId) target._userCardStyle = true;
+          else delete target._userCardStyle;
+        }
       },
       onAfterPick() {
         rerenderNodeDetail();

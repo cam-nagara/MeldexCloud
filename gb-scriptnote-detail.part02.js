@@ -54,6 +54,8 @@
         textOverflow: rule0.textOverflow || '',
       },
       className: 'gb-fmt-popup--colbulk',
+      positionAnchor: this._detailMultiSelectionPositionAnchor?.(anchorEl, panelContainer),
+      extraRow2: this._buildCountConfigFormatControls(colId, panelContainer),
       bulk: {
         enabled: applyAll,
         label: '全行に適用（新規行にも反映）',
@@ -337,6 +339,26 @@
   },
 
   // リセット後に自動配色を再適用する
+  _getAutoColorPaletteRow() {
+    const raw = Number(this.doc?.editor?.autoColorPaletteRow);
+    return Number.isFinite(raw) ? Math.max(1, Math.min(4, Math.round(raw))) : 3;
+  },
+
+  _getAutoColorPalette() {
+    const row = this._getAutoColorPaletteRow();
+    if (typeof getStandardPaletteSwatches === 'function') {
+      const colors = getStandardPaletteSwatches(undefined, { themeSlots: true })
+        .filter(swatch => swatch && swatch.row === row && swatch.color && swatch.color !== 'transparent')
+        .map(swatch => swatch.color);
+      if (colors.length) return colors;
+    }
+    const fallback = typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : [];
+    const ranges = { 1: [0, 7], 2: [7, 15], 3: [15, 23], 4: [23, 31] };
+    const [start, end] = ranges[row] || ranges[3];
+    const colors = fallback.slice(start, end).filter(Boolean);
+    return colors.length ? colors : fallback.filter(Boolean);
+  },
+
   _reapplyAutoColor(chara) {
     if (!chara) return;
     const acRule = this.doc.editor?.autoColorRule || {};
@@ -344,7 +366,7 @@
     if (allNone) { delete chara.autoColor; return; }
     // autoColorが未設定なら再割り当て
     if (!chara.autoColor) {
-      const colors = typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : [];
+      const colors = this._getAutoColorPalette();
       if (colors.length) {
         const existingCount = this.doc.characters.filter(c => c !== chara && (c.autoColor || c.bgColor)).length;
         chara.autoColor = colors[existingCount % colors.length];
@@ -479,8 +501,6 @@
     wrap.appendChild(migrBanner);
 
     // 設定セクション
-    const cc = this.doc.editor?.countConfig || {};
-    const def = this._getCountDef();
     const borderMode = this.doc.editor?.borderMode || 'all';
     const borderColor = this.doc.editor?.borderColor || '';
     const borderWidth = this.doc.editor?.borderWidth || '';
@@ -497,34 +517,6 @@
       const num = Number(value);
       const next = Number.isFinite(num) ? num : fallback;
       return String(Math.max(min, Math.min(max, next)));
-    };
-    const mkCountRow = (prefix, label, defLabel) => {
-      const pad = clampNumberText(cc[prefix + 'Pad'] ?? cc.padDigits, 2, 0, 5);
-      const pos = cc[prefix + 'Pos'] ?? cc.labelPosition ?? 'before';
-      const lbRaw = cc[prefix + 'LabelBefore'];
-      const laRaw = cc[prefix + 'LabelAfter'];
-      const unitVal = cc[prefix + 'Label'] ?? defLabel;
-      const lb = (lbRaw === undefined || lbRaw === null) ? unitVal : lbRaw;
-      const la = (laRaw === undefined || laRaw === null) ? unitVal : laRaw;
-      const labelText = e(label);
-      return `
-      <div class="sn2-detail-settings-row">
-        <label class="sn2-detail-settings-label sn2-detail-settings-label--w48">${labelText}</label>
-        <label class="sn2-detail-settings-label">単位</label>
-        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w56" data-setting="${prefix}Label" data-e2e-id="scriptnote-theme-${prefix}-label" value="${e(unitVal)}" placeholder="${e(defLabel)}" title="${labelText}の単位" aria-label="${labelText}の単位">
-        <label class="sn2-detail-settings-label">桁</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}Pad" data-e2e-id="scriptnote-theme-${prefix}-pad" value="${e(pad)}" min="0" max="5" title="${labelText}の桁" aria-label="${labelText}の桁">
-        <label class="sn2-detail-settings-label">位置</label>
-        <select class="sn2-detail-settings-select" data-setting="${prefix}Pos" data-e2e-id="scriptnote-theme-${prefix}-position" title="${labelText}の表示位置" aria-label="${labelText}の表示位置">
-          <option value="before"${selOpt('before', pos)}>単位+数</option>
-          <option value="after"${selOpt('after', pos)}>数+単位</option>
-          <option value="both"${selOpt('both', pos)}>前+数+後</option>
-        </select>
-        ${pos === 'both' ? `
-          <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}LabelBefore" data-e2e-id="scriptnote-theme-${prefix}-label-before" value="${e(lb)}" placeholder="前" title="${labelText}の前の単位" aria-label="${labelText}の前の単位">
-          <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w28" data-setting="${prefix}LabelAfter" data-e2e-id="scriptnote-theme-${prefix}-label-after" value="${e(la)}" placeholder="後" title="${labelText}の後の単位" aria-label="${labelText}の後の単位">
-        ` : ''}
-      </div>`;
     };
     const settings = document.createElement('div');
     settings.className = 'sn2-detail-settings';
@@ -570,9 +562,7 @@
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label">列間枠線</label>
         <div id="sn2-col-border-ui" class="sn2-detail-colborder-ui"></div>
-      </div>
-      ${mkCountRow('primary', '大区切り', def.primaryLabel)}
-      ${mkCountRow('secondary', '小区切り', def.secondaryLabel)}`;
+      </div>`;
     // 枠線色スウォッチの初期背景色
     const borderSwBtn = settings.querySelector('[data-setting-color="borderColor"]');
     if (borderSwBtn) borderSwBtn.style.background = borderColor || 'var(--border)';
@@ -623,7 +613,6 @@
       const key = el.dataset.setting;
       if (!key) return;
       this._pushUndo('テーマ設定変更');
-      if (!this.doc.editor.countConfig) this.doc.editor.countConfig = {};
       const editorEl = this.host?.querySelector('.sn2-editor');
       if (key === 'borderMode') {
         this.doc.editor.borderMode = el.value;
@@ -655,22 +644,5 @@
         if (!this.doc.editor.spreadBorder) this.doc.editor.spreadBorder = {};
         this.doc.editor.spreadBorder.every = Math.max(1, parseInt(el.value) || 2);
         this._render();
-      } else if (key.endsWith('Pos') && el.value === 'both') {
-        // 「前+数+後」選択時はパネルを再描画して前後入力欄を表示
-        this.doc.editor.countConfig[key] = el.value;
-        const prefix = key.slice(0, -3);
-        const unitKey = prefix + 'Label';
-        const unitVal = this.doc.editor.countConfig[unitKey] ?? this._getCountDef()?.[prefix === 'primary' ? 'primaryLabel' : 'secondaryLabel'] ?? '';
-        if (this.doc.editor.countConfig[prefix + 'LabelBefore'] == null) this.doc.editor.countConfig[prefix + 'LabelBefore'] = unitVal;
-        if (this.doc.editor.countConfig[prefix + 'LabelAfter'] == null) this.doc.editor.countConfig[prefix + 'LabelAfter'] = unitVal;
-        this._calcCache = null;
-        this._updateGuttersFrom(0);
-        this._markDirty();
-        this.renderThemePanel(container);
-        return;
       } else {
-        // countConfig系（primaryLabel, primaryPad, primaryPos, secondaryLabel, etc.）
-        const val = el.type === 'number' ? (Number(el.value) || 0) : el.value.trim();
-        this.doc.editor.countConfig[key] = val;
-        this._calcCache = null;
-        this._updateGuttersFrom(0);
+        return;

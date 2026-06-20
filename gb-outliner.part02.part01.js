@@ -28,6 +28,13 @@ function _isOutlinerPathWithin(path, basePath) {
 
 const _outlinerPendingDeletePaths = new Set();
 
+function _isOutlinerFreeLayoutUiEnabled() {
+  if (typeof GBLayout === 'undefined') return true;
+  return typeof GBLayout.isFreeLayoutUiEnabled === 'function'
+    ? !!GBLayout.isFreeLayoutUiEnabled()
+    : true;
+}
+
 function isOutlinerDeletePendingPath(path) {
   const normalizedPath = _normalizeOutlinerPathForCompare(path);
   if (!normalizedPath || !_outlinerPendingDeletePaths.size) return false;
@@ -120,7 +127,7 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
 function _removeOutlinerNodesForPaths(paths) {
   const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
   if (!deletedPaths.length) return;
-  const allTreeNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node');
+  const allTreeNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
   allTreeNodes.forEach(nodeEl => {
     const path = nodeEl?._nodeData?.path;
     if (!path) return;
@@ -213,6 +220,7 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
   const jobs = [];
   if (typeof loadOutliner === 'function') jobs.push(Promise.resolve(loadOutliner()).catch(() => {}));
   if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
+  if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve(renderWorkspaceSidebar()).catch(() => {}));
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
     jobs.push(Promise.resolve(openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
       skipShowView: true,
@@ -843,7 +851,8 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
 
   // --- 所属フォルダ（リンク登録） ---
   if (!isEntity && nodeData.path) {
-    addMenuItem('所属フォルダを設定...', () => {
+    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
+    addMenuItem(linkLabel, () => {
       closeTreeContextMenu();
       showAddFolderLinkModal(nodeData.path, null);
     }, null, 'link2');
@@ -874,8 +883,18 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     menu.appendChild(colorItem);
   }
 
+  // --- ワークスペースルート: ソースフォルダ用メニューは出さない ---
+  // （ワークスペースはソースフォルダ設定に保存されないため、出しても無効操作になる）
+  if (nodeData._isRoot && !isMulti && (nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
+    addSep();
+    addMenuItem('ワークスペースの管理...', () => {
+      closeTreeContextMenu();
+      if (typeof openWorkspaceSettings === 'function') openWorkspaceSettings();
+    }, null, 'usersRound');
+  }
+
   // --- ルートフォルダのパス変更 ---
-  if (nodeData._isRoot && !isMulti) {
+  if (nodeData._isRoot && !isMulti && !(nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
     addSep();
     addMenuItem('パスを変更...', async () => {
       closeTreeContextMenu();

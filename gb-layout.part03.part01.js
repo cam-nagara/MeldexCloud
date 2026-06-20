@@ -573,6 +573,7 @@
 
   // === パネル操作メニュー（…ボタン経由: ロック/折りたたみ/最大化/閉じる） ===
   function _showPaneActionsMenu(e, node) {
+    if (!_showFreeLayoutUi()) return;
     if (typeof closeMeldexDropdowns === 'function') {
       closeMeldexDropdowns({ exceptTarget: e.currentTarget });
     }
@@ -768,43 +769,45 @@
       saveLayout();
       pushLayoutHistory('レイアウト: 他のタブを閉じる', before, captureLayoutSnapshot(), keep.label || keep.path || '');
     }, 'x');
-    addItem(isPaneLocked(paneId) ? 'パネルロックを解除' : 'パネルをロック', () => {
-      togglePaneLocked(paneId);
-    }, isPaneLocked(paneId) ? 'unlock' : 'lock');
-    // ペイン最大化サブメニュー
-    {
-      const maxWrap = document.createElement('div');
-      maxWrap.style.position = 'relative';
-      const maxTrigger = document.createElement('div');
-      maxTrigger.innerHTML = (typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide('maximize2', 14) + '</span>' : '') + '表示モード' + submenuArrow();
-      maxTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-      maxTrigger.onmouseenter = () => { maxTrigger.style.background = 'var(--bg4)'; };
-      maxTrigger.onmouseleave = () => { maxTrigger.style.background = ''; };
-      const maxPanel = document.createElement('div');
-      maxPanel.className = 'gb-context-menu';
-      maxPanel.style.cssText = 'display:none;min-width:120px;';
-      attachHoverSubmenu(maxTrigger, maxPanel);
-      const isMax = _maximizedPaneId === paneId;
-      [['最大化', true], ['通常表示', false]].forEach(([label, val]) => {
-        const si = document.createElement('div');
-        si.innerHTML = radioMark(isMax === val) + label;
-        si.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;' + (isMax === val ? 'color:var(--accent);' : '');
-        si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-        si.onmouseleave = () => { si.style.background = ''; };
-        si.addEventListener('click', () => { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); if (val) maximizePane(paneId); else restoreMaximizedPane(); });
-        maxPanel.appendChild(si);
-      });
-      maxWrap.appendChild(maxTrigger);
-      maxWrap.appendChild(maxPanel);
-      menu.appendChild(maxWrap);
+    if (_showFreeLayoutUi()) {
+      addItem(isPaneLocked(paneId) ? 'パネルロックを解除' : 'パネルをロック', () => {
+        togglePaneLocked(paneId);
+      }, isPaneLocked(paneId) ? 'unlock' : 'lock');
+      // ペイン最大化サブメニュー
+      {
+        const maxWrap = document.createElement('div');
+        maxWrap.style.position = 'relative';
+        const maxTrigger = document.createElement('div');
+        maxTrigger.innerHTML = (typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide('maximize2', 14) + '</span>' : '') + '表示モード' + submenuArrow();
+        maxTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
+        maxTrigger.onmouseenter = () => { maxTrigger.style.background = 'var(--bg4)'; };
+        maxTrigger.onmouseleave = () => { maxTrigger.style.background = ''; };
+        const maxPanel = document.createElement('div');
+        maxPanel.className = 'gb-context-menu';
+        maxPanel.style.cssText = 'display:none;min-width:120px;';
+        attachHoverSubmenu(maxTrigger, maxPanel);
+        const isMax = _maximizedPaneId === paneId;
+        [['最大化', true], ['通常表示', false]].forEach(([label, val]) => {
+          const si = document.createElement('div');
+          si.innerHTML = radioMark(isMax === val) + label;
+          si.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;' + (isMax === val ? 'color:var(--accent);' : '');
+          si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
+          si.onmouseleave = () => { si.style.background = ''; };
+          si.addEventListener('click', () => { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); if (val) maximizePane(paneId); else restoreMaximizedPane(); });
+          maxPanel.appendChild(si);
+        });
+        maxWrap.appendChild(maxTrigger);
+        maxWrap.appendChild(maxPanel);
+        menu.appendChild(maxWrap);
+      }
+      // 別のペインで開く（分割）
+      addItem('右の作業領域で開く', () => {
+        const tabCopy = { ...tab, id: 'tab-' + Date.now() };
+        const newPane = createPaneNode(null, [tabCopy], 0);
+        const newPaneId = splitPane(paneId, 'horizontal', 'right', newPane);
+        if (newPaneId) setActivePane(newPaneId);
+      }, 'columns');
     }
-    // 別のペインで開く（分割）
-    addItem('右の作業領域で開く', () => {
-      const tabCopy = { ...tab, id: 'tab-' + Date.now() };
-      const newPane = createPaneNode(null, [tabCopy], 0);
-      const newPaneId = splitPane(paneId, 'horizontal', 'right', newPane);
-      if (newPaneId) setActivePane(newPaneId);
-    }, 'columns');
     document.body.appendChild(menu);
     clampPopupToViewport(menu);
     setTimeout(() => {

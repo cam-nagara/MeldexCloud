@@ -21,6 +21,7 @@
 
   const INFLIGHT_ENTRIES = new Set(); // 同一エントリの多重同期をブロック
   const PENDING_CONTEXTS = new Map(); // 同期中に来た最後の更新を再実行
+  const PENDING_REVERSE_CONTEXTS = new Map(); // 逆方向同期中/前方向同期中に来た最後のカレンダー編集
 
   async function onValueSaved(ctx) {
     if (!ctx || !ctx.dbPath || !ctx.entityPath || !ctx.propName) return;
@@ -30,9 +31,8 @@
     const ptc = ptypes[ctx.propName];
     if (!ptc || !ptc.calendarSync || !ptc.calendarSync.targetDb) return;
     if (ptc.type !== 'date') return;
-    if (ctx.status !== undefined && !_isCalendarSyncActiveStatus(ctx.status)) return;
 
-    const key = ctx.entityPath + '::' + ctx.propName;
+    const key = _calendarSyncEntryKey(ctx.entityPath, ctx.propName);
     if (INFLIGHT_ENTRIES.has(key)) {
       PENDING_CONTEXTS.set(key, { ...ctx });
       return;
@@ -42,7 +42,11 @@
       let nextCtx = ctx;
       while (nextCtx) {
         PENDING_CONTEXTS.delete(key);
-        await _syncOne(nextCtx, ptc.calendarSync);
+        if (nextCtx.status !== undefined && !_isCalendarSyncActiveStatus(nextCtx.status)) {
+          await _deleteSyncedEventForContext(nextCtx, ptc.calendarSync);
+        } else {
+          await _syncOne(nextCtx, ptc.calendarSync);
+        }
         nextCtx = PENDING_CONTEXTS.get(key) || null;
       }
     } catch (err) {
@@ -50,6 +54,7 @@
     } finally {
       INFLIGHT_ENTRIES.delete(key);
       PENDING_CONTEXTS.delete(key);
+      await _drainPendingReverseSync(key);
     }
   }
 
@@ -101,7 +106,7 @@
 
     try {
       if (existing) {
-        await apiPut('/calendar-db/events/' + encodeURIComponent(existing.name), payload);
+        await apiPut('/calendar-db/events/' + encodeURIComponent(existing.name), _calendarSyncExistingUpdatePayload(existing, payload));
       } else {
         await apiPost('/calendar-db/events', payload);
       }
@@ -111,6 +116,47 @@
         showStatus('カレンダー同期に失敗: ' + (err?.message || err), true);
       }
     }
+  }
+
+  function _calendarSyncEntryKey(entityPath, propName) {
+    return String(entityPath || '').replace(/\\/g, '/') + '::' + String(propName || '');
+  }
+
+  async function _drainPendingReverseSync(key) {
+    const pending = PENDING_REVERSE_CONTEXTS.get(key);
+    if (!pending) return;
+    PENDING_REVERSE_CONTEXTS.delete(key);
+    await onEventSaved(pending);
+  }
+
+  async function _drainPendingForwardSync(key) {
+    const pending = PENDING_CONTEXTS.get(key);
+    if (!pending) return;
+    PENDING_CONTEXTS.delete(key);
+    await onValueSaved(pending);
+  }
+
+  async function _deleteSyncedEventForContext(ctx, cs) {
+    const entityName = _entityNameFromPath(ctx.entityPath);
+    const entityData = await _loadEntityData(ctx.dbPath, entityName);
+    const entityId = entityData?._id || _entityIdFromPath(ctx.entityPath);
+    const existing = await _findEventByEntryId(cs.targetDb, entityId, ctx.propName)
+      || await _findEventByEntryId(cs.targetDb, entityId, ctx.propName, { includeOrphan: true });
+    if (existing && cs.onInactiveStatus !== 'ignore') await _deleteEvent(cs.targetDb, existing.name);
+  }
+
+  function _hasCalendarSyncValue(obj, key) {
+    return obj && Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined && obj[key] !== null && obj[key] !== '';
+  }
+
+  function _calendarSyncExistingUpdatePayload(existing, payload) {
+    const next = { ...payload };
+    // 既存イベントの通常更新ではリネームしない。連番付きイベントが基底名へ戻ろうとして衝突するため。
+    delete next.title;
+    ['color', 'location', 'url', 'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members'].forEach(key => {
+      if (_hasCalendarSyncValue(existing, key)) next[key] = existing[key];
+    });
+    return next;
   }
 
   function _entityIdFromPath(p) {
@@ -220,7 +266,7 @@
   }
 
   function _reverseSyncHistoryScope(dbPath) {
-    return typeof _dbScope === 'function' ? _dbScope() : ('db:' + String(dbPath || '').split('/').pop());
+    return typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
   }
 
   function _pushReverseSyncHistory(ctx) {
@@ -322,6 +368,31 @@
     }
   }
 
+  async function onEntryRenamed(dbPath, oldEntityPath, newEntityPath, oldName, newName) {
+    if (!dbPath || !oldEntityPath || !newEntityPath) return;
+    const ptypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(dbPath) : {};
+    const entityData = await _loadEntityData(dbPath, newName || _entityNameFromPath(newEntityPath));
+    const stableId = entityData?._id || '';
+    const oldEntityId = stableId || _entityIdFromPath(oldEntityPath);
+    const newEntityId = stableId || _entityIdFromPath(newEntityPath);
+    for (const [pName, ptc] of Object.entries(ptypes)) {
+      if (!ptc || !ptc.calendarSync || !ptc.calendarSync.targetDb) continue;
+      if (ptc.type !== 'date') continue;
+      const ev = await _findEventByEntryId(ptc.calendarSync.targetDb, oldEntityId, pName, { includeOrphan: true })
+        || await _findEventByEntryId(ptc.calendarSync.targetDb, newEntityId, pName, { includeOrphan: true });
+      if (!ev) continue;
+      try {
+        await apiPut('/calendar-db/events/' + encodeURIComponent(ev.name), {
+          db_path: ptc.calendarSync.targetDb,
+          linkedEntryId: newEntityId,
+          linkedEntryPath: newEntityPath,
+          linkedEntrySourceProperty: pName,
+          linkedAutoGenerated: true,
+        });
+      } catch {}
+    }
+  }
+
   /**
    * Phase 2 §5.5: カレンダー側イベント保存後の逆方向同期。
    * 自動生成イベント（linkedAutoGenerated === true）の start / タイトルが変化した場合、
@@ -349,19 +420,25 @@
 
     if (rs.syncDate === false) return;
     const entityName = _entityNameFromPath(ev.linkedEntryPath);
+    const key = _calendarSyncEntryKey(ev.linkedEntryPath, ev.linkedEntrySourceProperty);
+    if (INFLIGHT_ENTRIES.has(key)) {
+      PENDING_REVERSE_CONTEXTS.set(key, { ...ctx });
+      return;
+    }
+    INFLIGHT_ENTRIES.add(key);
 
     // pivotData から既存値を検索
-    const ent = await _loadEntityData(dbPath, entityName);
-    const writeStatus = ptc.calendarSync.writeStatus || '採用';
-    const existing = ent && Array.isArray(ent[ev.linkedEntrySourceProperty])
-      ? _calendarSyncActiveValue(ent[ev.linkedEntrySourceProperty])
-      : null;
-    const oldDateVal = existing?.value == null ? '' : String(existing.value);
-    const prevDateVal = _dateValueFromCalendarEvent(ctx.prev || {}, ptc, oldDateVal);
-    const newDateVal = _dateValueFromCalendarEvent(ev, ptc, oldDateVal);
-    if (!newDateVal || prevDateVal === newDateVal) return;
-
     try {
+      const ent = await _loadEntityData(dbPath, entityName);
+      const writeStatus = ptc.calendarSync.writeStatus || '採用';
+      const existing = ent && Array.isArray(ent[ev.linkedEntrySourceProperty])
+        ? _calendarSyncActiveValue(ent[ev.linkedEntrySourceProperty])
+        : null;
+      const oldDateVal = existing?.value == null ? '' : String(existing.value);
+      const prevDateVal = _dateValueFromCalendarEvent(ctx.prev || {}, ptc, oldDateVal);
+      const newDateVal = _dateValueFromCalendarEvent(ev, ptc, oldDateVal);
+      if (!newDateVal || prevDateVal === newDateVal) return;
+
       if (existing) {
         // __source タグ付きで書き戻し、forward hook の再帰発火を抑制
         if (typeof _apiPutValue === 'function') {
@@ -380,29 +457,26 @@
       }
       // 既存値が見つからない場合は新規追加（forward hook 抑制のため postValue には source を渡せないので
       // INFLIGHT ガードを使う）
-      const key = ev.linkedEntryPath + '::' + ev.linkedEntrySourceProperty;
-      INFLIGHT_ENTRIES.add(key);
-      try {
-        if (typeof _apiPostValue === 'function') {
-          const res = await _apiPostValue(ev.linkedEntryPath, ev.linkedEntrySourceProperty, newDateVal, writeStatus, '');
-          _pushReverseSyncHistory({
-            dbPath,
-            entryPath: ev.linkedEntryPath,
-            propName: ev.linkedEntrySourceProperty,
-            createdRef: {
-              file: res?.path || ev.linkedEntryPath,
-              property: ev.linkedEntrySourceProperty,
-              candidate_index: res?.candidate_index,
-            },
-            newValue: newDateVal,
-            status: writeStatus,
-          });
-        }
-      } finally {
-        INFLIGHT_ENTRIES.delete(key);
+      if (typeof _apiPostValue === 'function') {
+        const res = await _apiPostValue(ev.linkedEntryPath, ev.linkedEntrySourceProperty, newDateVal, writeStatus, '');
+        _pushReverseSyncHistory({
+          dbPath,
+          entryPath: ev.linkedEntryPath,
+          propName: ev.linkedEntrySourceProperty,
+          createdRef: {
+            file: res?.path || ev.linkedEntryPath,
+            property: ev.linkedEntrySourceProperty,
+            candidate_index: res?.candidate_index,
+          },
+          newValue: newDateVal,
+          status: writeStatus,
+        });
       }
     } catch (err) {
       console.warn('[calendar-sync] reverse sync failed:', err);
+    } finally {
+      INFLIGHT_ENTRIES.delete(key);
+      await _drainPendingForwardSync(key);
     }
   }
 
@@ -451,5 +525,5 @@
     return start ? `${start}|${end || start}` : '';
   }
 
-  window.GbDbCalendarSync = { onValueSaved, onEntryDeleted, onEntryRestored, onEventSaved };
+  window.GbDbCalendarSync = { onValueSaved, onEntryDeleted, onEntryRestored, onEntryRenamed, onEventSaved };
 })();

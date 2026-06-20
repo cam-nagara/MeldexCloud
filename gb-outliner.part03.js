@@ -67,7 +67,7 @@ function backToPivot() {
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
-  const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node');
+  const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
   const oldPrefix = oldPath + '/';
   const expanded = getExpandedPaths();
   const colors = getNodeColors();
@@ -147,6 +147,34 @@ function _renameTreeNode(oldPath, newPath, newName, fileId) {
   } catch {}
 }
 
+function _normalizeOutlinerHighlightPath(path) {
+  return String(path || '')
+    .trim()
+    .replace(/^file:\/+/i, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .replace(/\/+/g, '/')
+    .toLowerCase();
+}
+
+function _outlinerHighlightPathMatches(nodePath, targetPath) {
+  const nodeKey = _normalizeOutlinerHighlightPath(nodePath);
+  const targetKey = _normalizeOutlinerHighlightPath(targetPath);
+  if (!nodeKey || !targetKey) return false;
+  if (nodeKey === targetKey) return true;
+  const nodeName = nodeKey.split('/').pop();
+  const targetName = targetKey.split('/').pop();
+  if (!nodeName || nodeName !== targetName) return false;
+  return nodeKey.endsWith('/' + targetKey) || targetKey.endsWith('/' + nodeKey);
+}
+
+function _outlinerHighlightNodeCandidates() {
+  const preferred = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')];
+  const fallback = [...document.querySelectorAll('#sidebar .tree-node')]
+    .filter(node => !preferred.includes(node));
+  return [...preferred, ...fallback];
+}
+
 // フォルダツリーで対応ノードをハイライト（auto-link遷移・ページ復元等で使用）
 function highlightOutlinerNode(targetPath, opts) {
   document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
@@ -156,14 +184,14 @@ function highlightOutlinerNode(targetPath, opts) {
   let found = _findAndHighlight(targetPath, noScroll);
   if (found) return;
   // 見つからない場合、パスを分解して親フォルダを順に展開
-  _autoExpandToPath(targetPath);
+  _autoExpandToPath(targetPath, noScroll);
 }
 
 function _findAndHighlight(targetPath, noScroll) {
-  const nodes = document.querySelectorAll('#sidebar .tree-node, #body-home .tree-node');
-  for (const node of nodes) {
+  for (const node of _outlinerHighlightNodeCandidates()) {
     const data = node._nodeData;
-    if (data && data.path === targetPath) {
+    const nodePath = data?.path || node.dataset?.path || '';
+    if (_outlinerHighlightPathMatches(nodePath, targetPath)) {
       const row = node.querySelector('.tree-node-row');
       if (row) {
         row.classList.add('active');
@@ -175,16 +203,16 @@ function _findAndHighlight(targetPath, noScroll) {
   return false;
 }
 
-async function _autoExpandToPath(targetPath) {
+async function _autoExpandToPath(targetPath, noScroll) {
   // パスの各階層を上から順に展開
   const parts = targetPath.replace(/\\/g, '/').split('/');
   for (let i = 1; i <= parts.length; i++) {
     const partial = parts.slice(0, i).join('/');
-    const nodes = document.querySelectorAll('#sidebar .tree-node, #body-home .tree-node');
     let expanded = false;
-    for (const node of nodes) {
+    for (const node of _outlinerHighlightNodeCandidates()) {
       const data = node._nodeData;
-      if (data && data.path === partial) {
+      const nodePath = data?.path || node.dataset?.path || '';
+      if (nodePath && _outlinerHighlightPathMatches(nodePath, partial)) {
         const toggle = node.querySelector('.tree-toggle');
         if (toggle && toggle.dataset.expanded !== 'true') {
           const childrenDiv = node.querySelector(':scope > .tree-children');
@@ -200,9 +228,9 @@ async function _autoExpandToPath(targetPath) {
       }
     }
     // 展開したら次の階層でターゲットが見つかるかチェック
-    if (expanded && _findAndHighlight(targetPath)) return;
+    if (expanded && _findAndHighlight(targetPath, noScroll)) return;
   }
-  _findAndHighlight(targetPath);
+  _findAndHighlight(targetPath, noScroll);
 }
 
 /* ==============================
@@ -210,6 +238,155 @@ async function _autoExpandToPath(targetPath) {
    ============================== */
 /* フィルタ / 検索 / フォルダごとの非表示は gb-outliner-search.js に分離 */
 document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.preventDefault());
+
+const OUTLINER_KEYBOARD_IMAGE_EXTS = new Set([
+  '.png', '.apng', '.jpg', '.jpeg', '.jpe', '.jfif', '.gif', '.bmp', '.webp',
+  '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic', '.heif', '.psd', '.psb',
+]);
+const OUTLINER_KEYBOARD_VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']);
+const OUTLINER_KEYBOARD_AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.flac']);
+let _outlinerKeyboardFocusSeq = 0;
+
+function _outlinerKeyboardRow(nodeEl) {
+  return nodeEl?.querySelector?.(':scope > .tree-node-row') || null;
+}
+
+function _outlinerKeyboardMarkActive() {
+  window._outlinerKeyboardNavigationActiveUntil = Date.now() + 1500;
+}
+
+function _outlinerKeyboardRestoreFocus(row, focusSeq) {
+  if (focusSeq && focusSeq !== _outlinerKeyboardFocusSeq) return;
+  if (!row?.isConnected) return;
+  const active = document.activeElement;
+  if (active?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  _outlinerKeyboardMarkActive();
+  try { row.focus({ preventScroll: true }); } catch {}
+}
+
+function _outlinerKeyboardNodePathExt(path) {
+  const name = String(path || '').replace(/\\/g, '/').split('/').pop() || '';
+  const index = name.lastIndexOf('.');
+  return index >= 0 ? name.slice(index).toLowerCase() : '';
+}
+
+function _outlinerKeyboardMediaType(item) {
+  const type = item?.type || '';
+  if (type === 'image' || type === 'video' || type === 'audio' || type === 'pdf') return type;
+  const ext = _outlinerKeyboardNodePathExt(item?.path || item?.name || '');
+  if (ext === '.pdf') return 'pdf';
+  if (OUTLINER_KEYBOARD_IMAGE_EXTS.has(ext)) return 'image';
+  if (OUTLINER_KEYBOARD_VIDEO_EXTS.has(ext)) return 'video';
+  if (OUTLINER_KEYBOARD_AUDIO_EXTS.has(ext)) return 'audio';
+  return '';
+}
+
+function _outlinerKeyboardOpenNode(nodeEl) {
+  const item = nodeEl?._nodeData || null;
+  if (!item || !item.path || item.needsMapping === true) return false;
+  const opts = { fromExplorer: true, skipHighlight: true, noScrollHighlight: true };
+  const type = item.type || '';
+  const mediaType = _outlinerKeyboardMediaType(item);
+  if (type === 'folder' || item._isRoot) return openFolder(item.name, item.path, opts);
+  if (type === 'database') return selectDatabase(item.path, null, opts);
+  if (type === 'entity') return selectEntity(item.path, opts);
+  if (type === 'page') return openPage(item.name, item.path, opts);
+  if (type === 'scriptnote' || type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
+    return typeof openScenarioInScriptNote === 'function' ? openScenarioInScriptNote(item.path, item.name, opts) : false;
+  }
+  if (type === 'board') return openBoard(item.name, item.path, opts);
+  if (type === 'calendar') return openCalendarFile(item.name, item.path, opts);
+  if (mediaType) return openMedia(item.name, item.path, mediaType, opts);
+  if (type === 'html') return openHtmlFile(item.name, item.path, opts);
+  if (type === 'csv') {
+    return typeof openCsvFile === 'function' ? openCsvFile(item.name, item.path, opts) : openPage(item.name, item.path, opts);
+  }
+  if (type === 'smart-db' && typeof openSmartDbFile === 'function') {
+    return openSmartDbFile(item.name, item.path, opts);
+  }
+  if (!(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(type)) && typeof showStatus === 'function') {
+    showStatus((item.name || item.path) + ' — 右クリックメニューからアプリで開く');
+  }
+  return false;
+}
+
+function _outlinerKeyboardSelectNode(nodeEl, options = {}) {
+  const row = _outlinerKeyboardRow(nodeEl);
+  if (!nodeEl || !row) return false;
+  const focusSeq = ++_outlinerKeyboardFocusSeq;
+  treeSelection.clear();
+  treeSelection.add(nodeEl);
+  treeSelection.lastClicked = nodeEl;
+  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+  row.classList.add('active');
+  _outlinerKeyboardRestoreFocus(row, focusSeq);
+  row.scrollIntoView({ block: 'nearest' });
+  if (options.openPanel !== false) {
+    try {
+      const opened = _outlinerKeyboardOpenNode(nodeEl);
+      Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
+    } catch (err) {
+      _outlinerKeyboardRestoreFocus(row, focusSeq);
+      throw err;
+    }
+  }
+  return true;
+}
+
+function _outlinerKeyboardScopeFromTarget(target) {
+  if (target?.closest?.('#body-home')) return '#body-home';
+  if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
+  if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
+  if (target?.id === 'tree-scroll-container') return '#outliner-tree';
+  return '';
+}
+
+function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
+  const direct = target?.closest?.('.tree-node') || null;
+  if (direct && (!scopeSelector || direct.closest(scopeSelector))) return direct;
+  if (treeSelection.lastClicked && (!scopeSelector || treeSelection.lastClicked.closest(scopeSelector))) return treeSelection.lastClicked;
+  const activeRow = document.querySelector(`${scopeSelector || '#outliner-tree'} .tree-node-row.active`);
+  return activeRow?.closest?.('.tree-node') || null;
+}
+
+function _outlinerKeyboardToggle(nodeEl, expand) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  if (!toggle || toggle.dataset.expanded === undefined) return false;
+  const expanded = toggle.dataset.expanded === 'true';
+  if (expand === true && !expanded) { toggle.click(); return true; }
+  if (expand === false && expanded) { toggle.click(); return true; }
+  return false;
+}
+
+function _handleOutlinerTreeKeydown(event) {
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  const target = event.target;
+  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
+  if (!scopeSelector) return;
+  const current = _outlinerKeyboardNodeFromTarget(target, scopeSelector);
+  event.preventDefault();
+  event.stopPropagation();
+  _outlinerKeyboardMarkActive();
+  if (event.key === 'ArrowLeft') { _outlinerKeyboardToggle(current, false); return; }
+  if (event.key === 'ArrowRight') { _outlinerKeyboardToggle(current, true); return; }
+  const nodes = _getVisibleTreeNodes(scopeSelector);
+  if (!nodes.length) return;
+  const rawIndex = nodes.indexOf(current);
+  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
+  const nextIndex = event.key === 'ArrowUp'
+    ? Math.max(0, currentIndex - 1)
+    : Math.min(nodes.length - 1, currentIndex + 1);
+  _outlinerKeyboardSelectNode(nodes[nextIndex], { openPanel: true });
+}
+
+(function initOutlinerTreeKeyboardNavigation() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
+  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
+})();
 
 // ドラッグ中のホイールスクロール対応
 (function() {
@@ -258,9 +435,11 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
 
   function _outlinerLassoScopeFromTarget(target) {
     if (target?.closest?.('#body-home')) return '#body-home';
+    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
     if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
     const section = target?.closest?.('.sidebar-section');
     if (section?.id === 'section-home') return '#body-home';
+    if (section?.id === 'section-workspaces') return '#body-workspaces';
     if (section?.id === 'section-roots') return '#outliner-tree';
     return '#outliner-tree,#body-home';
   }
@@ -270,8 +449,9 @@ document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.pr
   }
 
   function _outlinerLassoAllowedTarget(target) {
-    if (target?.closest?.('#outliner-tree, #body-home')) return true;
+    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
     const section = target?.closest?.('.sidebar-section');
+    if (section?.id === 'section-workspaces') return true;
     return section?.id === 'section-roots' || section?.id === 'section-home';
   }
 

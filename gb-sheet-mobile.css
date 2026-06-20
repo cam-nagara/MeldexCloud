@@ -2,12 +2,16 @@
 
 .entry-prop-values > .cell-add-btn {
   position: static;
-  display: inline-flex;
+  display: none;
   width: fit-content;
   min-width: 0;
   min-height: 0;
   padding: 2px 6px;
   font-size: 12px;
+}
+.entry-prop-values:hover > .cell-add-btn { display: inline-flex; }
+@media (pointer: coarse) {
+  .entry-prop-values > .cell-add-btn { display: inline-flex; }
 }
 
 @media (pointer: coarse) {

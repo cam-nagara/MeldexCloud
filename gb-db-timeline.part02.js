@@ -4,8 +4,9 @@
       ? formatLocalDateTime(d)
       : (typeof formatLocalDate === 'function' ? formatLocalDate(d) : d.toISOString().substring(0, 10));
   }
-  const n = parseFloat(dateStr);
-  if (!isNaN(n)) return String(n + diff);
+  const numText = String(dateStr ?? '').trim();
+  const n = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(numText) ? Number(numText) : NaN;
+  if (Number.isFinite(n)) return String(n + diff);
   return dateStr;
 }
 
@@ -46,8 +47,9 @@ function roundTimeValue(val, scale) {
     }
   }
   // 数値の場合
-  const num = parseFloat(val);
-  if (!isNaN(num) && isFinite(num)) {
+  const numText = String(val ?? '').trim();
+  const num = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(numText) ? Number(numText) : NaN;
+  if (Number.isFinite(num)) {
     switch (scale) {
       case 'second': return String(Math.floor(num));
       case 'minute': return String(Math.floor(num / 60) * 60);
@@ -93,6 +95,10 @@ function _timelineDatePartsToValue(year, month, day) {
 
 function _timelineGroupStartValue(group, scale) {
   const text = String(group || '').trim();
+  if (typeof _timelineCalendarGroupStartValue === 'function') {
+    const calendarStart = _timelineCalendarGroupStartValue(text);
+    if (calendarStart) return calendarStart;
+  }
   let m = text.match(/^(\d{4,})[-/](\d{2})[-/](\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}${m[4] ? 'T' + m[4] + ':' + m[5] : ''}`;
   m = text.match(/^(\d{4,})[-/](\d{2})$/);
@@ -126,6 +132,10 @@ function _timelineValueForDropTarget(oldValue, targetGroup, scale, ptc) {
 
 function _timelineGroupSortValue(value) {
   const text = String(value ?? '').trim();
+  if (typeof _timelineCalendarGroupSortValue === 'function') {
+    const calendarSort = _timelineCalendarGroupSortValue(text);
+    if (calendarSort != null) return calendarSort;
+  }
   const dateText = _timelineGroupStartValue(text, '');
   if (/^\d{4,}[-/]\d{2}[-/]\d{2}/.test(dateText)) {
     const d = typeof parseLocalDate === 'function' ? parseLocalDate(dateText) : new Date(dateText);
@@ -148,19 +158,25 @@ function _compareTimelineGroupValues(a, b) {
   return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
 }
 
-function navigateToEntity(entityName, dbPath) {
+function navigateToEntity(entityName, dbPath, ctx) {
   if (!entityName) return;
+  const targetCtx = ctx || (dbPath && typeof _dbFindPaneContextForPath === 'function'
+    ? _dbFindPaneContextForPath(dbPath)
+    : null) || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const currentDbPath = targetCtx?.dbPath || state.currentDbPath;
   // dbPath指定時: 別DBに遷移してからエントリを選択
-  if (dbPath && dbPath !== state.currentDbPath) {
-    selectDatabase(dbPath).then(() => {
+  if (dbPath && dbPath !== currentDbPath) {
+    selectDatabase(dbPath, targetCtx).then(() => {
       selectEntity(_entityPath(dbPath, entityName));
     }).catch(() => showStatus('DBの読み込みに失敗: ' + dbPath, true));
     return;
   }
-  if (!state.currentDbPath || !state.pivotData) return;
+  const activeDbPath = dbPath || currentDbPath || state.currentDbPath;
+  const pivotData = targetCtx?.pivotData || state.pivotData;
+  if (!activeDbPath || !pivotData) return;
   // 現在のDB内で一致するエントリを探す
-  if (state.pivotData.entities[entityName]) {
-    selectEntity(_entityPath(state.currentDbPath, entityName));
+  if (pivotData.entities?.[entityName]) {
+    selectEntity(_entityPath(activeDbPath, entityName));
     return;
   }
   // 見つからない場合はステータスバーに表示

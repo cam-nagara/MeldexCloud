@@ -37,23 +37,26 @@
       const offsets = _selectionTextOffsetsIn(editor);
       if (!offsets || offsets.end <= offsets.start) return;
       const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
-      const rect = event ? _eventRect(event) : _selectionRect(range, editor);
+      const avoidRect = _selectionAvoidRect(range, editor);
+      const rect = _eventRect(event) || _selectionRect(range, editor);
       const target = _richInputTargetFromSelection(editor, rect, false);
-      if (target && rect) _openPopup(target, rect, editor);
+      if (target && rect) _openPopup(target, rect, editor, avoidRect);
       return;
     }
     const input = _chatInput();
     if (!input || document.activeElement !== input) return;
     if ((input.selectionEnd || 0) <= (input.selectionStart || 0)) return;
-    const rect = event ? _eventRect(event) : input.getBoundingClientRect();
-    _openPopup(_inputTargetFromSelection(input, rect), rect, input);
+    const avoidRect = input.getBoundingClientRect();
+    const rect = _eventRect(event) || avoidRect;
+    _openPopup(_inputTargetFromSelection(input, rect), rect, input, avoidRect);
   }
 
   function _openForBubbleSelection() {
     const target = _chatCopyTargetFromSelection();
     if (!target) return;
     const rect = _selectionRect(target.range, target.bubble);
-    if (rect) _openCopyPopup(target, rect);
+    const avoidRect = _selectionAvoidRect(target.range, target.bubble);
+    if (rect) _openCopyPopup(target, rect, avoidRect);
   }
 
   function _hasActiveChatFormatSelection() {
@@ -91,20 +94,21 @@
       event.preventDefault();
       const rect = _eventRect(event);
       const target = _richInputTargetFromSelection(editor, rect, true);
-      if (target) _openPopup(target, rect, editor);
+      const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
+      if (target) _openPopup(target, rect, editor, _selectionAvoidRect(range, editor));
       return;
     }
     const input = event.target?.closest?.('#chat-input');
     if (input) {
       event.preventDefault();
       const rect = _eventRect(event);
-      _openPopup(_inputTargetFromSelection(input, rect), rect, input);
+      _openPopup(_inputTargetFromSelection(input, rect), rect, input, input.getBoundingClientRect());
       return;
     }
     const copyTarget = _chatCopyTargetFromSelection();
     if (copyTarget && event.target?.closest?.('.chat-message-bubble')) {
       event.preventDefault();
-      _openCopyPopup(copyTarget, _eventRect(event));
+      _openCopyPopup(copyTarget, _eventRect(event), _selectionAvoidRect(copyTarget.range, copyTarget.bubble));
     }
   }
 
@@ -177,7 +181,8 @@
       editor.id = RICH_INPUT_ID;
       editor.className = RICH_INPUT_CLASS;
       editor.contentEditable = 'true';
-      editor.spellcheck = true;
+      editor.spellcheck = false;
+      editor.setAttribute('spellcheck', 'false');
       editor.dataset.sourceInputId = input.id;
       editor.dataset.placeholder = input.getAttribute('placeholder') || 'メッセージを入力...';
       editor.setAttribute('role', 'textbox');
@@ -192,6 +197,38 @@
       _renderRichInputFromSource();
     }
     return editor;
+  }
+
+  function _chatClipboardAttachmentFiles(event) {
+    const files = [];
+    const seen = new Set();
+    const addFile = (file) => {
+      if (!file) return;
+      const key = [file.name || '', file.type || '', file.size || 0, file.lastModified || 0].join('\n');
+      if (seen.has(key)) return;
+      seen.add(key);
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+      if (file.type?.startsWith('image/') || isPdf) files.push(file);
+    };
+    Array.from(event.clipboardData?.files || []).forEach(addFile);
+    Array.from(event.clipboardData?.items || []).forEach((item) => {
+      if (item?.kind !== 'file') return;
+      try { addFile(item.getAsFile()); } catch {}
+    });
+    return files;
+  }
+
+  async function _handleChatClipboardAttachments(event) {
+    if (typeof _chatUploadAttachment !== 'function') return false;
+    const files = _chatClipboardAttachmentFiles(event);
+    if (!files.length) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    for (const file of files) await _chatUploadAttachment(file);
+    if (typeof showStatus === 'function') {
+      showStatus(files.length === 1 ? 'クリップボードから添付しました' : files.length + '件を添付しました');
+    }
+    return true;
   }
 
   function _bindRichInput(editor, input) {
@@ -229,6 +266,12 @@
       _richVerticalColumn = null;
     });
     editor.addEventListener('paste', (event) => {
+      if (_chatClipboardAttachmentFiles(event).length) {
+        _handleChatClipboardAttachments(event).catch(() => {
+          if (typeof showStatus === 'function') showStatus('添付ファイルのアップロードに失敗しました', true);
+        });
+        return;
+      }
       const text = event.clipboardData?.getData('text/plain');
       if (text == null) return;
       event.preventDefault();
@@ -247,6 +290,12 @@
     });
     input.addEventListener('input', () => {
       if (!_updatingFromRich && !_updatingFromPlain) _renderRichInputFromSource();
+    });
+    input.addEventListener('paste', (event) => {
+      if (!_chatClipboardAttachmentFiles(event).length) return;
+      _handleChatClipboardAttachments(event).catch(() => {
+        if (typeof showStatus === 'function') showStatus('添付ファイルのアップロードに失敗しました', true);
+      });
     });
   }
 

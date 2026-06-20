@@ -30,10 +30,17 @@
     } catch {}
   }
 
+  function _googleTasksCallbackUrl() {
+    const base = typeof API_BASE === 'string' ? API_BASE : '/api';
+    try { return new URL(base + '/cal/sync/google/tasks/callback', window.location.origin).href; }
+    catch { return window.location.origin + '/api/cal/sync/google/tasks/callback'; }
+  }
+
   CalendarComponent.prototype._showSyncModal = async function() {
     let syncStatus = {};
     try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
     const google = syncStatus.google || {};
+    const googleTasks = syncStatus.googleTasks || {};
     const microsoft = syncStatus.microsoft || {};
     const o = document.createElement('div');
     o.className = 'gb-cal-modal-overlay';
@@ -46,6 +53,14 @@
           <div class="field"><label>Client Secret</label><input class="sync-gcal-secret" type="password"></div>
           <button class="sync-gcal-auth" type="button" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Googleにログイン</button>` : ''}
         ${google.connected ? '<div style="display:flex;gap:4px;flex-wrap:wrap;"><button class="sync-gcal-pull" type="button" style="font-size:12px;padding:4px 12px;">Googleから取得</button><button class="sync-gcal-push" type="button" style="font-size:12px;padding:4px 12px;">Googleに送信</button></div>' : ''}
+      `)}
+      ${_syncCard('Google ToDo', `
+        <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
+        ${!googleTasks.connected && googleTasks.available !== false ? `
+          <div class="field"><label>Client ID</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
+          <button class="sync-gtask-auth" type="button" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Google ToDoにログイン</button>
+          <div class="sync-gtask-auth-status" style="font-size:12px;color:var(--fg2);margin-top:8px;"></div>` : ''}
+        ${googleTasks.connected ? '<div style="display:flex;gap:4px;flex-wrap:wrap;"><button class="sync-gtask-sync" type="button" style="font-size:12px;padding:4px 12px;">Google ToDoと同期</button></div>' : ''}
       `)}
       ${_syncCard('Microsoft Calendar', `
         <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
@@ -74,11 +89,14 @@
     document.body.appendChild(o);
     o.querySelector('.sync-close').addEventListener('click', () => {
       if (o._msPollTimer) clearTimeout(o._msPollTimer);
+      if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
       o.remove();
     });
     o.querySelector('.sync-gcal-auth')?.addEventListener('click', () => this._googleCalAuth(o));
     o.querySelector('.sync-gcal-pull')?.addEventListener('click', () => this._googleCalPull(o));
     o.querySelector('.sync-gcal-push')?.addEventListener('click', () => this._googleCalPush());
+    o.querySelector('.sync-gtask-auth')?.addEventListener('click', () => this._googleTasksAuth(o));
+    o.querySelector('.sync-gtask-sync')?.addEventListener('click', () => this._googleTasksSync());
     o.querySelector('.sync-ms-auth')?.addEventListener('click', () => this._microsoftCalAuth(o));
     o.querySelector('.sync-ms-pull')?.addEventListener('click', () => this._microsoftCalPull(o));
     o.querySelector('.sync-ms-push')?.addEventListener('click', () => this._microsoftCalPush());
@@ -117,10 +135,89 @@
     this._showStatus('Googleカレンダーに送信中...');
     try {
       const res = await apiPost('/cal/sync/google/push', { user: this._getUser() });
-      this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
+      if ((res.failed || 0) > 0) this._showStatus(`Google送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
+      else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Google送信失敗: ' + e.message, true);
     }
+  };
+
+  CalendarComponent.prototype._googleTasksAuth = async function(o) {
+    const clientId = o.querySelector('.sync-gtask-id')?.value.trim();
+    const statusEl = o.querySelector('.sync-gtask-auth-status');
+    if (!clientId) { this._showStatus('Google ToDoのClient IDを入力してください', true); return; }
+    if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
+    try {
+      const res = await apiPost('/cal/sync/google/tasks/auth-url', { client_id: clientId, redirect_uri: _googleTasksCallbackUrl() });
+      if (statusEl) statusEl.textContent = 'Googleログイン画面で接続を完了してください。';
+      _openHttpUrl(res.auth_url);
+      this._pollGoogleTasksAuth(o, Date.now() + 5 * 60 * 1000);
+    } catch (e) {
+      this._showStatus('Google ToDo認証開始に失敗: ' + e.message, true);
+    }
+  };
+
+  CalendarComponent.prototype._pollGoogleTasksAuth = function(o, expiresAt) {
+    if (!document.body.contains(o)) return;
+    if (Date.now() > expiresAt) {
+      this._showStatus('Google ToDo認証の待機時間が切れました', true);
+      return;
+    }
+    const statusEl = o.querySelector('.sync-gtask-auth-status');
+    o._gtaskPollTimer = setTimeout(async () => {
+      try {
+        const status = await apiFetch('/cal/sync/status');
+        if (status?.googleTasks?.connected) {
+          this._showStatus('Google ToDo認証成功');
+          o.remove();
+          this._showSyncModal();
+          return;
+        }
+        if (statusEl) statusEl.textContent = 'Googleログイン完了を待っています...';
+        this._pollGoogleTasksAuth(o, expiresAt);
+      } catch (e) {
+        this._showStatus('Google ToDo認証確認に失敗: ' + e.message, true);
+      }
+    }, 3000);
+  };
+
+  CalendarComponent.prototype._googleTasksSync = async function(options = {}) {
+    if (this._googleTasksSyncing) return;
+    this._googleTasksSyncing = true;
+    try {
+      if (!options.silent) this._showStatus('Google ToDoと同期中...');
+      const res = await apiPost('/cal/sync/google/tasks/sync', { user: this._getUser(), automatic: !!options.silent });
+      await this._loadTasks();
+      this._render();
+      this._renderTodayTasks();
+      if (!options.silent) {
+        this._showStatus(`Google ToDo同期完了: ${res.imported || 0}件取得, ${res.pushed || 0}件送信, ${res.updated || 0}件更新`);
+      }
+    } catch (e) {
+      if (!options.silent) this._showStatus('Google ToDo同期失敗: ' + e.message, true);
+    } finally {
+      this._googleTasksSyncing = false;
+    }
+  };
+
+  CalendarComponent.prototype._ensureGoogleTasksAutoSync = function() {
+    if (this._googleTasksAutoTimer || this._destroyed || !this._active) return;
+    this._googleTasksAutoTimer = setInterval(() => this._googleTasksAutoSync(), 5 * 60 * 1000);
+    setTimeout(() => this._googleTasksAutoSync(), 5000);
+  };
+
+  CalendarComponent.prototype._clearGoogleTasksAutoSync = function() {
+    if (this._googleTasksAutoTimer) clearInterval(this._googleTasksAutoTimer);
+    this._googleTasksAutoTimer = null;
+  };
+
+  CalendarComponent.prototype._googleTasksAutoSync = async function() {
+    if (this._destroyed || !this._active || this._googleTasksSyncing) return;
+    try {
+      const status = await apiFetch('/cal/sync/status');
+      if (!status?.googleTasks?.connected) return;
+      await this._googleTasksSync({ silent: true });
+    } catch {}
   };
 
   CalendarComponent.prototype._microsoftCalAuth = async function(o) {
@@ -241,5 +338,24 @@
       okMessage: 'iCal を保存しました',
       errorMessage: 'iCal の保存に失敗しました',
     });
+  };
+
+  const _calSyncOriginalRefreshAfterActivation = CalendarComponent.prototype._refreshAfterActivation;
+  CalendarComponent.prototype._refreshAfterActivation = function(...args) {
+    const result = _calSyncOriginalRefreshAfterActivation.apply(this, args);
+    if (typeof this._ensureGoogleTasksAutoSync === 'function') this._ensureGoogleTasksAutoSync();
+    return result;
+  };
+
+  const _calSyncOriginalDeactivate = CalendarComponent.prototype.deactivate;
+  CalendarComponent.prototype.deactivate = function(...args) {
+    if (typeof this._clearGoogleTasksAutoSync === 'function') this._clearGoogleTasksAutoSync();
+    return _calSyncOriginalDeactivate.apply(this, args);
+  };
+
+  const _calSyncOriginalDestroy = CalendarComponent.prototype.destroy;
+  CalendarComponent.prototype.destroy = function(...args) {
+    if (typeof this._clearGoogleTasksAutoSync === 'function') this._clearGoogleTasksAutoSync();
+    return _calSyncOriginalDestroy.apply(this, args);
   };
 })();

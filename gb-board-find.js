@@ -65,6 +65,8 @@ function _bdCreateFindBar() {
   });
   const q = bar.querySelector('#bd-find-q');
   const rInp = bar.querySelector('#bd-find-r');
+  let queryComposing = false;
+  const commitQuery = () => _bdFindCommitQueryFromInput();
   // 検索バー入力中でも Ctrl+F / Ctrl+H を捕捉する (ブラウザのネイティブ検索ダイアログ発動を抑止)
   const handleFindShortcut = (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey) {
@@ -74,10 +76,21 @@ function _bdCreateFindBar() {
     }
     return false;
   };
-  q.addEventListener('input', () => _bdFindUpdateMatches(q.value));
+  q.addEventListener('input', () => {
+    if (!q.value) _bdFindUpdateMatches('');
+  });
+  q.addEventListener('compositionstart', () => { queryComposing = true; });
+  q.addEventListener('compositionend', () => {
+    queryComposing = false;
+    commitQuery();
+  });
   q.addEventListener('keydown', (ev) => {
     if (handleFindShortcut(ev)) return;
-    if (ev.key === 'Enter') { ev.preventDefault(); ev.shiftKey ? _bdFindPrev() : _bdFindNext(); }
+    if (ev.key === 'Enter') {
+      if (queryComposing || ev.isComposing || ev.keyCode === 229) return;
+      ev.preventDefault();
+      ev.shiftKey ? _bdFindPrev() : _bdFindNext();
+    }
     else if (ev.key === 'Escape') { ev.preventDefault(); bdCloseFindBar(); }
     ev.stopPropagation();
   });
@@ -114,6 +127,13 @@ function _bdFindUpdateMatches(query) {
   _bdFindUpdateUI();
   _bdApplyFindHighlight(query);
   _bdFindScrollToCurrent();
+}
+function _bdFindCommitQueryFromInput() {
+  const qEl = document.getElementById('bd-find-q');
+  const query = qEl ? qEl.value : '';
+  const changed = query !== (bd._findQuery || '') || !Array.isArray(bd._findMatches);
+  if (changed) _bdFindUpdateMatches(query);
+  return changed;
 }
 function _bdFindShowCurrent() {
   // 現在フォーカスのマッチだけ強調色が変わるよう、マーク全体を再描画
@@ -310,12 +330,14 @@ function _bdRenderTextWithHighlight(text, q, currentOccurrence) {
   return result.replace(/\n/g, '<br>');
 }
 function _bdFindPrev() {
+  if (_bdFindCommitQueryFromInput()) return;
   if (!bd._findMatches || !bd._findMatches.length) return;
   bd._findIndex = (bd._findIndex - 1 + bd._findMatches.length) % bd._findMatches.length;
   _bdFindUpdateUI();
   _bdFindShowCurrent();
 }
 function _bdFindNext() {
+  if (_bdFindCommitQueryFromInput()) return;
   if (!bd._findMatches || !bd._findMatches.length) return;
   bd._findIndex = (bd._findIndex + 1) % bd._findMatches.length;
   _bdFindUpdateUI();
@@ -373,6 +395,7 @@ function _bdReplaceFindOccurrencesByIndex(text, query, replacement, occurrenceIn
   return { text: result, count };
 }
 function _bdFindReplaceOne() {
+  _bdFindCommitQueryFromInput();
   const q = bd._findQuery;
   const rEl = document.getElementById('bd-find-r');
   const r = rEl ? rEl.value : '';
@@ -411,6 +434,7 @@ function _bdFindReplaceOne() {
   }
 }
 function _bdFindReplaceAll() {
+  _bdFindCommitQueryFromInput();
   const q = bd._findQuery;
   const rEl = document.getElementById('bd-find-r');
   const r = rEl ? rEl.value : '';

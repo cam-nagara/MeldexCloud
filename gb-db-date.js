@@ -1,5 +1,5 @@
 /**
- * gb-db-date.js: DB日付プロパティ共通ヘルパー
+ * gb-db-date.js: DB日時プロパティ共通ヘルパー
  */
 
 const _DB_DATE_TOKEN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/;
@@ -274,68 +274,215 @@ function _dbDateShiftValue(raw, diff) {
   return _dbDateSerializeValue(shiftOne(parsed.start), shiftOne(parsed.end), mode, raw);
 }
 
+function _dbDateInputDatePart(token) {
+  return _dbDateToInputValue(token || '', false);
+}
+
+function _dbDateInputTimePart(token, fallback = '00:00') {
+  const m = String(token || '').match(/T(\d{2}:\d{2})/);
+  return m ? m[1] : fallback;
+}
+
+function _dbDateInputToken(dateValue, timeValue, withTime) {
+  const date = String(dateValue || '').trim();
+  if (!date) return '';
+  if (!withTime) return date;
+  return date + 'T' + (String(timeValue || '').trim() || '00:00');
+}
+
 function _dbDateCreateEditor(raw, ptc, options = {}) {
-  const mode = _dbDateResolveMode(ptc, raw);
+  const initialMode = _dbDateResolveMode(ptc, raw);
+  const mode = { withTime: !!initialMode.withTime, range: !!initialMode.range };
   const parsed = _dbDateParseValue(raw);
   const layout = options.layout || 'inline';
   const root = document.createElement('div');
-  root.className = options.className || 'cell-date-editor';
+  const baseClass = options.className || 'cell-date-editor';
+  root.className = (baseClass + ' db-date-popup-editor' + (layout === 'block' ? ' db-date-popup-editor--block' : '')).trim();
   root.style.cssText = options.rootStyle || (layout === 'block'
     ? 'display:flex;flex-direction:column;gap:6px;width:100%;'
     : 'display:flex;align-items:center;gap:4px;flex-wrap:wrap;width:100%;');
-  const inputType = mode.withTime ? 'datetime-local' : 'date';
-  const inputStyle = options.inputStyle || 'padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
-  const inputClass = options.inputClassName || 'cell-date-input';
 
-  const createInput = (labelText, value) => {
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'db-date-editor-trigger';
+
+  const pop = document.createElement('div');
+  pop.className = 'db-date-popover';
+  pop.hidden = true;
+
+  const makeField = (labelText, input) => {
+    const label = document.createElement('label');
+    label.className = 'db-date-popover-field';
+    const title = document.createElement('span');
+    title.textContent = labelText;
+    label.append(title, input);
+    return label;
+  };
+  const makeInput = (type, className) => {
     const input = document.createElement('input');
-    input.type = inputType;
-    input.className = inputClass;
-    input.value = _dbDateToInputValue(value, mode.withTime);
-    input.style.cssText = inputStyle;
-    if (layout === 'block') {
-      const field = document.createElement('label');
-      field.style.cssText = 'display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--fg2);';
-      const title = document.createElement('span');
-      title.textContent = labelText;
-      field.appendChild(title);
-      field.appendChild(input);
-      return { wrapper: field, input };
-    }
-    return { wrapper: input, input };
+    input.type = type;
+    input.className = className;
+    return input;
   };
 
-  const startField = createInput('開始', parsed.start);
-  root.appendChild(startField.wrapper);
-  let endField = null;
-  if (mode.range) {
-    if (layout === 'inline') {
-      const sep = document.createElement('span');
-      sep.textContent = '～';
-      sep.style.cssText = 'color:var(--fg2);font-size:12px;';
-      root.appendChild(sep);
-    }
-    endField = createInput('終了', parsed.end);
-    root.appendChild(endField.wrapper);
-  }
+  const startDateInput = makeInput('date', 'db-date-start-date cell-date-input');
+  const startTimeInput = makeInput('time', 'db-date-start-time cell-date-input');
+  startTimeInput.step = '60';
+  const endDateInput = makeInput('date', 'db-date-end-date cell-date-input');
+  const endTimeInput = makeInput('time', 'db-date-end-time cell-date-input');
+  endTimeInput.step = '60';
+
+  startDateInput.value = _dbDateInputDatePart(parsed.start);
+  startTimeInput.value = _dbDateInputTimePart(parsed.start);
+  endDateInput.value = _dbDateInputDatePart(parsed.end);
+  endTimeInput.value = _dbDateInputTimePart(parsed.end, startTimeInput.value || '00:00');
+
+  const timeToggle = document.createElement('label');
+  timeToggle.className = 'db-date-popover-toggle';
+  const timeCb = document.createElement('input');
+  timeCb.type = 'checkbox';
+  timeCb.checked = mode.withTime;
+  timeToggle.append(timeCb, document.createTextNode('時刻を含める'));
+
+  const rangeToggle = document.createElement('label');
+  rangeToggle.className = 'db-date-popover-toggle';
+  const rangeCb = document.createElement('input');
+  rangeCb.type = 'checkbox';
+  rangeCb.checked = mode.range;
+  rangeToggle.append(rangeCb, document.createTextNode('終了を設定'));
+
+  const startRow = document.createElement('div');
+  startRow.className = 'db-date-popover-row';
+  startRow.append(makeField('開始日', startDateInput), makeField('開始時刻', startTimeInput));
+
+  const endRow = document.createElement('div');
+  endRow.className = 'db-date-popover-row db-date-end-row';
+  endRow.append(makeField('終了日', endDateInput), makeField('終了時刻', endTimeInput));
+
+  const quickRow = document.createElement('div');
+  quickRow.className = 'db-date-popover-actions';
+  const todayBtn = document.createElement('button');
+  todayBtn.type = 'button';
+  todayBtn.className = 'db-date-popover-link';
+  todayBtn.textContent = '今日';
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'db-date-popover-link muted';
+  clearBtn.textContent = 'クリア';
+  const doneBtn = document.createElement('button');
+  doneBtn.type = 'button';
+  doneBtn.className = 'primary db-date-popover-done';
+  doneBtn.textContent = '完了';
+  quickRow.append(todayBtn, clearBtn, doneBtn);
+
+  pop.append(timeToggle, rangeToggle, startRow, endRow, quickRow);
+  root.append(trigger, pop);
+
+  const currentValue = () => {
+    const start = _dbDateInputToken(startDateInput.value, startTimeInput.value, mode.withTime);
+    const end = mode.range
+      ? _dbDateInputToken(endDateInput.value || startDateInput.value, endTimeInput.value || startTimeInput.value, mode.withTime)
+      : '';
+    return _dbDateSerializeValue(start, end, mode, '');
+  };
+
+  const refresh = () => {
+    startTimeInput.closest('.db-date-popover-field').hidden = !mode.withTime;
+    endRow.hidden = !mode.range;
+    endTimeInput.closest('.db-date-popover-field').hidden = !mode.withTime;
+    timeCb.checked = mode.withTime;
+    rangeCb.checked = mode.range;
+    if (mode.range && !endDateInput.value && startDateInput.value) endDateInput.value = startDateInput.value;
+    if (mode.withTime && !startTimeInput.value) startTimeInput.value = '00:00';
+    if (mode.withTime && !endTimeInput.value) endTimeInput.value = startTimeInput.value || '00:00';
+    const label = _dbDateFormatDisplay(currentValue(), mode) || '日時を設定';
+    trigger.textContent = label;
+    trigger.title = label;
+  };
+
+  const placePopover = () => {
+    if (pop.hidden) return;
+    const rect = trigger.getBoundingClientRect();
+    const z = typeof _getZoom === 'function' ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
+    pop.style.left = (rect.left / z) + 'px';
+    pop.style.top = (rect.bottom / z + 4) + 'px';
+    pop.style.minWidth = Math.max(280, rect.width / z) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(pop);
+  };
+
+  let positionListenersActive = false;
+  const detachPositionListeners = () => {
+    if (!positionListenersActive) return;
+    window.removeEventListener('resize', placePopover);
+    window.removeEventListener('scroll', placePopover, true);
+    positionListenersActive = false;
+  };
+  const attachPositionListeners = () => {
+    if (positionListenersActive) return;
+    window.addEventListener('resize', placePopover, { passive: true });
+    window.addEventListener('scroll', placePopover, { passive: true, capture: true });
+    positionListenersActive = true;
+  };
+
+  const open = () => {
+    pop.hidden = false;
+    root.classList.add('is-open');
+    refresh();
+    attachPositionListeners();
+    placePopover();
+    setTimeout(() => startDateInput.focus(), 0);
+  };
+
+  const commit = () => {
+    refresh();
+    detachPositionListeners();
+    root.dispatchEvent(new CustomEvent('db-date-editor-commit', { bubbles: true }));
+  };
+
+  [startDateInput, startTimeInput, endDateInput, endTimeInput].forEach(input => {
+    input.addEventListener('input', refresh);
+    input.addEventListener('change', refresh);
+  });
+  timeCb.addEventListener('change', () => { mode.withTime = !!timeCb.checked; refresh(); placePopover(); });
+  rangeCb.addEventListener('change', () => { mode.range = !!rangeCb.checked; refresh(); placePopover(); });
+  todayBtn.addEventListener('click', () => {
+    startDateInput.value = _dbDateValueFromDate(new Date(), false);
+    if (mode.range && !endDateInput.value) endDateInput.value = startDateInput.value;
+    refresh();
+  });
+  clearBtn.addEventListener('click', () => {
+    startDateInput.value = '';
+    endDateInput.value = '';
+    refresh();
+    commit();
+  });
+  doneBtn.addEventListener('click', commit);
+  trigger.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    open();
+  });
+  pop.addEventListener('pointerdown', (e) => e.stopPropagation());
+  pop.addEventListener('click', (e) => e.stopPropagation());
+  root.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (!root.contains(document.activeElement)) detachPositionListeners();
+    }, 0);
+  });
+  refresh();
 
   return {
     root,
     mode,
-    startInput: startField.input,
-    endInput: endField?.input || null,
+    startInput: null,
+    endInput: null,
     contains(target) { return root.contains(target); },
-    focus() { startField.input.focus(); },
+    focus() { open(); },
     isEmpty() {
-      return !startField.input.value && !(endField && endField.input.value);
+      return !startDateInput.value && !(mode.range && endDateInput.value);
     },
     getValue() {
-      return _dbDateSerializeValue(
-        startField.input.value,
-        endField ? endField.input.value : '',
-        ptc,
-        raw
-      );
+      return currentValue();
     },
   };
 }

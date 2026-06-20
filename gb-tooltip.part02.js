@@ -1,15 +1,15 @@
-  regId('rab-detail',          { label: 'オプション', desc: '右パネルにオプション設定タブを表示します' });
-  regId('rab-calendar',        { label: 'カレンダー', desc: '右パネルにカレンダーを表示します' });
-  regId('rab-chat',            { label: 'チャット',   desc: '右パネルにチャットを表示します' });
-  regId('rab-annotation',      { label: '注釈',       desc: '右パネルに注釈一覧を表示します' });
-  regId('rab-history',         { label: '履歴',       desc: '右パネルに操作履歴を表示します' });
+  regId('rab-detail',          { label: 'オプション', desc: '右サイドバーにオプション設定タブを表示します' });
+  regId('rab-calendar',        { label: 'スケジューラー', desc: '右サイドバーにスケジューラーを表示します' });
+  regId('rab-chat',            { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
+  regId('rab-annotation',      { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
+  regId('rab-history',         { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
   // 右アクティビティバー: data-rp-tab
-  regData('rp-tab', 'detail',     { label: 'オプション', desc: '右パネルにオプション設定タブを表示します' });
-  regData('rp-tab', 'calendar',   { label: 'カレンダー', desc: '右パネルにカレンダーを表示します' });
-  regData('rp-tab', 'chat',       { label: 'チャット',   desc: '右パネルにチャットを表示します' });
-  regData('rp-tab', 'annotation', { label: '注釈',       desc: '右パネルに注釈一覧を表示します' });
-  regData('rp-tab', 'history',    { label: '履歴',       desc: '右パネルに操作履歴を表示します' });
+  regData('rp-tab', 'detail',     { label: 'オプション', desc: '右サイドバーにオプション設定タブを表示します' });
+  regData('rp-tab', 'calendar',   { label: 'スケジューラー', desc: '右サイドバーにスケジューラーを表示します' });
+  regData('rp-tab', 'chat',       { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
+  regData('rp-tab', 'annotation', { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
+  regData('rp-tab', 'history',    { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
   // data-action だけを持つボタンでもヒントを拾えるようにする
   regAction('toggleactivitymenu', { label: 'メニュー',   desc: 'ファイル操作・ヘルプ・最近開いた項目などを開きます' });
@@ -21,8 +21,8 @@
   regAction('togglesidebar',      { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
   regAction('toggleannotationtoolbar', { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
   regAction('toggleoverlayvisibility', { label: '注釈オーバーレイ', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
-  regAction('toggleoptionpanel',  { label: 'オプションパネル', desc: '右パネルのオプション設定を開閉します' });
-  regAction('togglerightpaneltab',{ label: '右パネルタブ', desc: '指定した右パネルのタブを開閉します' });
+  regAction('toggleoptionpanel',  { label: 'オプションパネル', desc: '右サイドバーのオプション設定を開閉します' });
+  regAction('togglerightpaneltab',{ label: '右サイドバータブ', desc: '指定した右サイドバーのタブを開閉します' });
 
   // ====== Registry seed (B2: フォルダツリー / ソースフォルダ管理 / フォルダビューツールバー) ======
   regId('btn-tree-search-clear', { label: '検索クリア', desc: 'フォルダツリーの検索キーワードをクリアします' });
@@ -90,7 +90,8 @@
   regData('sn-action', 'detail',        { label: 'オプション', desc: 'シナリオの表示オプションを開きます' });
 
   // ====== Registry seed (B5: シート / スマートシート / カレンダー) ======
-  regAction('showcolvisibilitymodal', { label: '列の表示 / 非表示', desc: '表示する列を選択します' });
+  regAction('showcolumndisplayordermodal', { label: '列の表示と順序', desc: '表示する列と並び順を変更します' });
+  regAction('showcolvisibilitymodal', { label: '列の表示と順序', desc: '表示する列と並び順を変更します' });
   regAction('showdbsearchmodal',  { label: 'シート横断検索', desc: '複数のシートをまたいで値を検索します' });
   regAction('onvalidateclick',    { label: '整合性検証',  desc: 'シートの値が検証ルールを満たしているか確認します' });
   regAction('showvalidationrulesmodal', { label: '検証ルール', desc: '値の整合性検証ルールを管理します' });
@@ -98,18 +99,19 @@
   regId('btn-db-detail',          { label: 'オプション', desc: 'シートの表示オプションを開閉します' });
   regAction('showunifiedfiltermodal', { label: 'フィルタ', desc: 'シートの絞り込み条件を設定します', shortcutId: 'db.filter' });
   regAction('addcolumn',          { label: '列追加',     desc: 'シートに新しい列を追加します' });
-  regData('cal-action', 'toggleSidebar', { label: 'カレンダーサイドバー', desc: '小型カレンダーやイベント一覧の表示を切り替えます' });
+  regData('cal-action', 'toggleSidebar', { label: 'スケジューラーサイドバー', desc: '小型カレンダーやイベント一覧の表示を切り替えます' });
   regData('cal-action', 'today',         { label: '今日',     desc: '表示位置を今日に戻します', shortcutId: 'cal.today' });
   regData('cal-action', 'prev',          { label: '前へ',     desc: '前の期間（日/週/月）に移動します', shortcutId: 'cal.prev' });
   regData('cal-action', 'next',          { label: '次へ',     desc: '次の期間（日/週/月）に移動します', shortcutId: 'cal.next' });
   regData('cal-action', 'template',      { label: 'テンプレート', desc: 'カレンダーテンプレートを開きます' });
   regData('cal-action', 'timer',         { label: 'タイマー', desc: '作業タイマーを開きます' });
+  regData('cal-action', 'production',    { label: '制作管理', desc: '制作管理パネルを開きます' });
   regData('cal-action', 'sync',          { label: '外部同期', desc: 'Googleカレンダー等と同期します' });
   regData('cal-action', 'sidebarOnly',   { label: 'サイドバーのみ', desc: 'メイン領域を隠してサイドバーのみ表示します' });
-  regData('cal-action', 'settings',      { label: 'カレンダー設定', desc: 'カレンダーの表示と動作を設定します' });
+  regData('cal-action', 'settings',      { label: 'スケジューラー設定', desc: 'スケジューラーの表示と動作を設定します' });
   regData('cal-action', 'miniPrev',      { label: '前の月', desc: 'サイドバーの小型カレンダーを前の月に進めます' });
   regData('cal-action', 'miniNext',      { label: '次の月', desc: 'サイドバーの小型カレンダーを次の月に進めます' });
-  regData('cal-action', 'addTodayTask',  { label: '今日のタスク追加', desc: '今日の日付でタスクを追加します' });
+  regData('cal-action', 'addTodayTask',  { label: '今日のToDo追加', desc: '今日の日付でToDoを追加します' });
   regData('cal-action', 'createCalendar',{ label: 'カレンダー作成', desc: '新しいカレンダーを作成します' });
 
   // ====== Registry seed (B6: ボード) ======
@@ -178,7 +180,7 @@
   regAction('htmlrefresh',  { label: '更新',     desc: '表示中のページを再読み込みします' });
   regAction('docmd',        { label: '実行',     desc: '選択中の操作を実行します' });
   regAction('add',          { label: '追加',     desc: '新しい項目を追加します' });
-  regAction('addtodaytask', { label: '今日のタスク追加', desc: '今日の日付でタスクを追加します' });
+  regAction('addtodaytask', { label: '今日のToDo追加', desc: '今日の日付でToDoを追加します' });
   regData('align', 'left',   { label: '左寄せ',   desc: '選択範囲を左寄せにします' });
   regData('align', 'center', { label: '中央寄せ', desc: '選択範囲を中央に揃えます' });
   regData('align', 'right',  { label: '右寄せ',   desc: '選択範囲を右寄せにします' });
@@ -213,12 +215,12 @@
 
   // タブ・パネル
   regAction('closetab',              { label: 'タブを閉じる', desc: 'このタブを閉じます', shortcutId: 'global.closeTab' });
-  regAction('toggleoptionpanel',     { label: 'オプションパネル', desc: '右パネルのオプション設定を開閉します' });
+  regAction('toggleoptionpanel',     { label: 'オプションパネル', desc: '右サイドバーのオプション設定を開閉します' });
   regAction('switchdetailtab',       { label: 'タブ切替',     desc: 'オプションパネルの表示タブを切り替えます' });
   regAction('switchsettingstab',     { label: '設定タブ切替', desc: '設定ダイアログの表示タブを切り替えます' });
   regAction('switchsettingsthemestyletab', { label: 'スタイル切替', desc: 'テーマ設定のスタイルタブを切り替えます' });
   regAction('switchcstab',           { label: 'スタイル切替', desc: 'カードスタイル編集のタブを切り替えます' });
-  regAction('switchrighttab',        { label: '右パネル切替', desc: '右パネルの表示タブを切り替えます' });
+  regAction('switchrighttab',        { label: '右サイドバー切替', desc: '右サイドバーの表示タブを切り替えます' });
 
   // 履歴パネル
   regAction('historypanelclear',     { label: '履歴クリア',   desc: '操作履歴の表示をすべてクリアします' });
@@ -262,7 +264,7 @@
   regAction('addworkspace',          { label: 'ワークスペース追加', desc: '新しいワークスペースを登録します' });
   regAction('submitsettings',        { label: '設定を保存',   desc: '入力した設定を保存します' });
   regAction('submitaddfolderlink',   { label: 'リンク追加',   desc: '入力した内容でフォルダリンクを追加します' });
-  regAction('applycolvisibility',    { label: '表示を適用',   desc: '選択した列の表示状態を確定します' });
+  regAction('applycolvisibility',    { label: '表示と順序を適用', desc: '列の表示状態と並び順を確定します' });
   regAction('dosaveview',            { label: 'ビュー保存',   desc: '現在の表示条件を名前を付けて保存します' });
   regAction('runexporttodb',         { label: 'シート出力',   desc: '結果をシートに書き出します' });
   regAction('testformula',           { label: '数式テスト',   desc: '入力した数式の結果を試算します' });
@@ -276,7 +278,7 @@
   regAction('showmobiletoolmenu',    { label: 'ツールメニュー', desc: 'モバイル向けツールメニューを開きます' });
   regAction('showscreenshotmenu',    { label: 'スクリーンショット', desc: 'スクリーンショット撮影メニューを開きます' });
   regAction('opentooltab',           { label: 'ツールタブを開く', desc: '指定したツールのタブを開きます' });
-  regAction('openrightpaneltab',     { label: '右パネルタブを開く', desc: '指定した右パネルのタブを開きます' });
+  regAction('openrightpaneltab',     { label: '右サイドバータブを開く', desc: '指定した右サイドバーのタブを開きます' });
 
   // チームチャット
   regAction('selectteamroom',        { label: 'ルーム選択',   desc: 'このチームチャットルームを開きます' });
@@ -319,7 +321,7 @@
 
   // カレンダー追加操作（B5未網羅分）
   regData('cal-action', 'addEvent',  { label: 'イベント追加', desc: 'この日付にイベントを追加します' });
-  regData('cal-action', 'addTask',   { label: 'タスク追加',   desc: 'この日付にタスクを追加します' });
+  regData('cal-action', 'addTask',   { label: 'ToDo追加',   desc: 'この日付にToDoを追加します' });
 
   // ====== Registry seed (B12: 主要 input / slider / select) ======
   // 注釈ツール幅・不透明度
@@ -411,7 +413,7 @@
   regId('btn-start',       { label: '開始', desc: '処理を開始します' });
 
   // ノート/シナリオツールバーの個別ボタン
-  regId('btn-detail',         { label: 'オプション',   desc: '右パネルにオプション設定を開きます' });
+  regId('btn-detail',         { label: 'オプション',   desc: '右サイドバーにオプション設定を開きます' });
   regId('btn-horizontal',     { label: '横書き',       desc: '横書き表示に切り替えます' });
   regId('btn-vertical',       { label: '縦書き',       desc: '縦書き表示に切り替えます' });
   regId('btn-wrap',           { label: '折返し',       desc: '本文の自動折返しを切り替えます' });
@@ -419,7 +421,7 @@
 
   // カレンダーボタン
   regId('cal-add-ev',     { label: 'イベント追加', desc: 'カレンダーに新しいイベントを追加します', shortcutId: 'cal.newEvent' });
-  regId('cal-add-task',   { label: 'タスク追加',   desc: 'カレンダーに新しいタスクを追加します' });
+  regId('cal-add-task',   { label: 'ToDo追加',   desc: 'カレンダーに新しいToDoを追加します' });
   regId('cal-prev',       { label: '前へ',         desc: '前の期間に移動します', shortcutId: 'cal.prev' });
   regId('cal-next',       { label: '次へ',         desc: '次の期間に移動します', shortcutId: 'cal.next' });
   regId('cal-today',      { label: '今日',         desc: '表示位置を今日に戻します', shortcutId: 'cal.today' });
