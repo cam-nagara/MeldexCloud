@@ -52,12 +52,45 @@ function _runMeldexHelpAction(item) {
   }
 }
 
+const MELDEX_HELP_MENU_ANCHOR_SELECTOR = '#left-chrome-help, #left-chrome-floating-help, [data-meldex-help-menu-anchor="1"], [data-action^="showMeldexHelpMenu"]';
+const MELDEX_LEFT_CHROME_HELP_ANCHOR_SELECTOR = '#left-chrome-help, #left-chrome-floating-help';
+
+function _isMeldexHelpMenuAnchorVisible(el) {
+  if (!el || el.hidden) return false;
+  const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+  const rect = el.getBoundingClientRect?.();
+  if (!rect) return true;
+  const viewportWidth = Math.max(document.documentElement?.clientWidth || 0, window.innerWidth || 0);
+  const viewportHeight = Math.max(document.documentElement?.clientHeight || 0, window.innerHeight || 0);
+  return rect.width > 0
+    && rect.height > 0
+    && rect.right > 0
+    && rect.bottom > 0
+    && rect.left < viewportWidth
+    && rect.top < viewportHeight;
+}
+
+function _fallbackMeldexHelpMenuAnchor() {
+  const activeAnchor = document.activeElement?.closest?.(MELDEX_HELP_MENU_ANCHOR_SELECTOR);
+  if (_isMeldexHelpMenuAnchorVisible(activeAnchor)) return activeAnchor;
+  const selectors = ['#left-chrome-floating-help', '#left-chrome-help'];
+  for (const selector of selectors) {
+    const el = document.querySelector?.(selector);
+    if (_isMeldexHelpMenuAnchorVisible(el)) return el;
+  }
+  return null;
+}
+
 function _resolveMeldexHelpMenuAnchor(anchor) {
-  return anchor?.closest?.('#left-chrome-help, #left-chrome-floating-help') || anchor;
+  const matched = anchor?.closest?.(MELDEX_HELP_MENU_ANCHOR_SELECTOR);
+  if (matched) return matched;
+  if (anchor?.getBoundingClientRect) return anchor;
+  return _fallbackMeldexHelpMenuAnchor();
 }
 
 function _isMeldexLeftChromeHelpAnchor(anchor) {
-  return !!anchor?.closest?.('#left-chrome-help, #left-chrome-floating-help');
+  return !!anchor?.closest?.(MELDEX_LEFT_CHROME_HELP_ANCHOR_SELECTOR);
 }
 
 function _meldexFixedPositionScale() {
@@ -104,6 +137,27 @@ function _positionMeldexHelpMenuFromLeftChrome(menu, rect) {
   menu.style.visibility = 'visible';
 }
 
+function _positionMeldexHelpMenuWithoutAnchor(menu) {
+  const scale = _meldexFixedPositionScale();
+  const visualViewport = window.visualViewport;
+  const vw = (visualViewport?.width || window.innerWidth || document.documentElement.clientWidth) / scale;
+  const vh = (visualViewport?.height || window.innerHeight || document.documentElement.clientHeight) / scale;
+  const gap = 12;
+  menu.style.visibility = 'hidden';
+  menu.style.right = '';
+  menu.style.bottom = '';
+  if (!menu.parentNode) document.body.appendChild(menu);
+  const pw = menu.offsetWidth || 260;
+  const ph = menu.offsetHeight || 320;
+  const maxLeft = Math.max(gap, vw - pw - gap);
+  const left = Math.min(Math.max(gap, (vw - pw) / 2), maxLeft);
+  const maxTop = Math.max(gap, vh - ph - gap);
+  const top = Math.min(72, maxTop);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  menu.style.visibility = 'visible';
+}
+
 function _positionMeldexHelpMenu(menu, anchor) {
   const anchorEl = _resolveMeldexHelpMenuAnchor(anchor);
   const rect = anchorEl?.getBoundingClientRect?.();
@@ -120,14 +174,14 @@ function _positionMeldexHelpMenu(menu, anchor) {
     menu.style.left = Math.max(4, rect.left / z) + 'px';
     menu.style.top = Math.max(4, (rect.bottom + 4) / z) + 'px';
   } else {
-    menu.style.left = '8px';
-    menu.style.top = '48px';
+    _positionMeldexHelpMenuWithoutAnchor(menu);
+    return;
   }
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
 }
 
 function showMeldexHelpMenu(event) {
-  const anchor = event?.currentTarget || event?.target;
+  const anchor = _resolveMeldexHelpMenuAnchor(event?.currentTarget || event?.target);
   _closeMeldexHelpMenu();
   if (typeof window !== 'undefined') window.GBTooltip?.hide?.({ suppressUntilLeave: true });
   const menu = document.createElement('div');
@@ -165,7 +219,7 @@ function showMeldexHelpMenu(event) {
   _positionMeldexHelpMenu(menu, anchor);
   setTimeout(() => {
     document.addEventListener('pointerdown', function closer(e) {
-      if (!menu.contains(e.target) && e.target !== anchor) {
+      if (!menu.contains(e.target) && e.target !== anchor && !anchor?.contains?.(e.target)) {
         menu.remove();
         document.removeEventListener('pointerdown', closer);
       }

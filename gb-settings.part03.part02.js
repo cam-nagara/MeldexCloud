@@ -447,11 +447,20 @@ function switchSettingsTab(el) {
 }
 
 // モバイル: セクションドリルダウン
-function _openSettingsSection(panelName) {
-  const modal = document.querySelector('.modal-overlay .modal');
+function _settingsModalFromRoot(root) {
+  if (root?.classList?.contains?.('settings-modal')) return root;
+  if (root?.classList?.contains?.('modal-overlay')) return root.querySelector?.('.settings-modal');
+  return root?.querySelector?.('.settings-modal')
+    || root?.closest?.('.modal-overlay')?.querySelector?.('.settings-modal')
+    || document.querySelector('.modal-overlay[data-settings-modal="1"] .settings-modal');
+}
+
+// モバイル: セクションドリルダウン
+function _openSettingsSection(panelName, root) {
+  const modal = _settingsModalFromRoot(root);
   if (!modal) return;
   panelName = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName) : panelName;
-  const navList = document.getElementById('settings-nav-list');
+  const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = true;
   modal.querySelectorAll('.settings-panel').forEach(p => {
     p.hidden = p.dataset.panel !== panelName;
@@ -462,26 +471,26 @@ function _openSettingsSection(panelName) {
   _scheduleSettingsPanelInitialization(panelName, modal);
   const btnRow = modal.querySelector('.btn-row');
   if (btnRow) btnRow.hidden = false;
-  const backBtn = document.getElementById('settings-back-btn');
+  const backBtn = modal.querySelector('#settings-back-btn');
   if (backBtn) backBtn.hidden = false;
-  const headerText = document.getElementById('settings-header-text');
+  const headerText = modal.querySelector('#settings-header-text');
   if (headerText) {
     headerText.textContent = typeof _settingsPanelDisplayName === 'function'
       ? _settingsPanelDisplayName(panelName)
       : panelName;
   }
 }
-function _backToSettingsList() {
-  const modal = document.querySelector('.modal-overlay .modal');
+function _backToSettingsList(root) {
+  const modal = _settingsModalFromRoot(root);
   if (!modal) return;
   modal.querySelectorAll('.settings-panel').forEach(p => { p.hidden = true; p.style.display = ''; });
   const btnRow = modal.querySelector('.btn-row');
   if (btnRow) btnRow.hidden = true;
-  const navList = document.getElementById('settings-nav-list');
+  const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = false;
-  const backBtn = document.getElementById('settings-back-btn');
+  const backBtn = modal.querySelector('#settings-back-btn');
   if (backBtn) backBtn.hidden = true;
-  const headerText = document.getElementById('settings-header-text');
+  const headerText = modal.querySelector('#settings-header-text');
   if (headerText) headerText.innerHTML = '<span class="ico ico-settings"></span> 設定';
   _syncSettingsModalOverlayForPanel(modal, '');
   replaceIcons(modal);

@@ -124,6 +124,10 @@
     gap: 6px;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open #btn-outliner-refresh {
+    display: none !important;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-menu,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-refresh {
     width: 44px;

@@ -12,6 +12,7 @@
     overlay: null,
     palette: null,
     input: null,
+    closeButton: null,
     list: null,
     scope: null,
     items: [],
@@ -139,6 +140,31 @@
       subcommands: options.subcommands || null,
       fileKey: options.fileKey || '',
     };
+  }
+
+  function _notifyActionUnavailable(label) {
+    if (typeof showStatus === 'function') showStatus(`${label}を開けませんでした`, true);
+  }
+
+  function _openSettings(panel) {
+    if (typeof showSettingsModal !== 'function') {
+      _notifyActionUnavailable('設定');
+      return false;
+    }
+    return showSettingsModal(panel ? { panel } : undefined);
+  }
+
+  function _openTrash() {
+    if (typeof openTrashFromFolderTree === 'function') return openTrashFromFolderTree();
+    if (typeof showTrashModal === 'function') return showTrashModal();
+    _notifyActionUnavailable('ゴミ箱');
+    return false;
+  }
+
+  function _openHelp(event) {
+    if (typeof showMeldexHelpMenu === 'function') return showMeldexHelpMenu(event);
+    _notifyActionUnavailable('ヘルプ');
+    return false;
   }
 
   function _scoreItem(item, tokens) {
@@ -426,15 +452,9 @@
       ));
     });
     items.push(
-      _command('trash:open', 'コマンド', '削除済みファイルを開く', 'ゴミ箱', 'trash2', () => {
-        if (typeof showTrashModal === 'function') showTrashModal();
-      }, { keywords: ['trash', 'ゴミ箱', '削除'], priority: 60 }),
-      _command('settings:open', 'コマンド', '設定を開く', '', 'settings', () => {
-        if (typeof showSettingsModal === 'function') showSettingsModal();
-      }, { keywords: ['preferences', 'config'], priority: 62 }),
-      _command('user:settings', 'コマンド', 'ユーザー設定を開く', '', 'userRound', () => {
-        if (typeof showSettingsModal === 'function') showSettingsModal({ panel: 'ユーザー' });
-      }, { keywords: ['user', 'profile', 'アカウント'], priority: 58 }),
+      _command('trash:open', 'コマンド', '削除済みファイルを開く', 'ゴミ箱', 'trash2', () => _openTrash(), { keywords: ['trash', 'ゴミ箱', '削除'], priority: 60 }),
+      _command('settings:open', 'コマンド', '設定を開く', '', 'settings', () => _openSettings(), { keywords: ['preferences', 'config'], priority: 62 }),
+      _command('user:settings', 'コマンド', 'ユーザー設定を開く', '', 'userRound', () => _openSettings('ユーザー'), { keywords: ['user', 'profile', 'アカウント'], priority: 58 }),
       _command('knowledge:settings', 'コマンド', 'LLMの記憶継承を開く', '', 'brain', () => {
         if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('items');
       }, { keywords: ['knowledge', '記憶', 'LLM'], priority: 57 }),
@@ -456,9 +476,7 @@
   function _settingsCommands() {
     return ['全般', 'テーマ', 'LLM', 'ユーザー', '拡張機能', 'ショートカット', 'フィードバック'].map((panel) => {
       const icon = panel === 'ショートカット' ? 'keyboard' : panel === 'テーマ' ? 'palette' : panel === 'フィードバック' ? 'messageSquareText' : panel === '拡張機能' ? 'puzzle' : 'settings';
-      return _command(`settings:${panel}`, '設定', `${panel}設定を開く`, '', icon, () => {
-        if (typeof showSettingsModal === 'function') showSettingsModal({ panel });
-      }, { keywords: ['settings', '設定', panel] });
+      return _command(`settings:${panel}`, '設定', `${panel}設定を開く`, '', icon, () => _openSettings(panel), { keywords: ['settings', '設定', panel] });
     });
   }
 
@@ -717,7 +735,13 @@
     input.setAttribute('aria-label', 'コマンドを検索');
     const scope = document.createElement('span');
     scope.className = 'cmd-palette-scope';
-    header.append(searchIcon, input, scope);
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'cmd-palette-close';
+    closeButton.title = '閉じる';
+    closeButton.setAttribute('aria-label', 'コマンドパレットを閉じる');
+    closeButton.innerHTML = _icon('x', 16);
+    header.append(searchIcon, input, scope, closeButton);
 
     const list = document.createElement('div');
     list.id = 'cmd-palette-list';
@@ -742,11 +766,13 @@
       _refreshItems();
     });
     input.addEventListener('keydown', _onInputKeydown);
+    closeButton.addEventListener('click', closeCommandPalette);
 
     document.body.appendChild(overlay);
     state.overlay = overlay;
     state.palette = palette;
     state.input = input;
+    state.closeButton = closeButton;
     state.list = list;
     state.scope = scope;
   }
@@ -951,10 +977,42 @@
     });
   }
 
+  function _bindLeftChromeButton(id, action) {
+    const button = document.getElementById(id);
+    if (!button || button.__gbLeftChromeActionBound) return;
+    button.__gbLeftChromeActionBound = true;
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      try {
+        const result = action(event);
+        if (result && typeof result.catch === 'function') {
+          result.catch(error => console.error('[left-chrome] action failed', error));
+        }
+      } catch (error) {
+        console.error('[left-chrome] action failed', error);
+      }
+    });
+  }
+
+  function _bindLeftChromeActionTriggers() {
+    _bindLeftChromeButton('left-chrome-help', (event) => _openHelp(event));
+    _bindLeftChromeButton('left-chrome-floating-help', (event) => _openHelp(event));
+    _bindLeftChromeButton('left-chrome-trash', () => _openTrash());
+    _bindLeftChromeButton('left-chrome-floating-trash', () => _openTrash());
+    _bindLeftChromeButton('left-chrome-settings', () => _openSettings());
+    _bindLeftChromeButton('left-chrome-floating-settings', () => _openSettings());
+    _bindLeftChromeButton('left-chrome-user', () => _openSettings('ユーザー'));
+    _bindLeftChromeButton('left-chrome-floating-user', () => _openSettings('ユーザー'));
+    _syncLeftChromeUser();
+  }
+
   function _init() {
     if (state.initialized || typeof document === 'undefined') return;
     state.initialized = true;
     _bindStaticTriggers();
+    _bindLeftChromeActionTriggers();
     _leftChromeFloatingEl();
     _syncLeftChromeUser();
     _syncLeftChromeVisibility();

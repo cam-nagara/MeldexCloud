@@ -45,7 +45,7 @@
             ? 'Google受信箱の取込はデスクトップ版のMeldexサーバー起動時に実行できます'
             : 'Google受信箱を取り込めませんでした。設定を確認してください。';
         } else if (result?.ok) {
-          status.textContent = `Google受信箱の取込完了: 取込 ${result.imported || 0}件 / 重複 ${result.duplicate || 0}件 / 対象外 ${result.ignored || 0}件`;
+          status.textContent = `Google受信箱の取込完了: 取得 ${result.fetched || 0}件 / 取込 ${result.imported || 0}件 / 重複 ${result.duplicate || 0}件 / 対象外 ${result.ignored || 0}件 / Google反映 ${result.marked || 0}件`;
         } else {
           status.textContent = 'Google受信箱を取り込めませんでした。';
         }

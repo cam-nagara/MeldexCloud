@@ -83,6 +83,11 @@ function _setAvatarBgColor(color) {
 async function showSettingsModal(opts) {
   // opts: { panel: 'ユーザー', teamFolder: 'D:/...' } で特定パネル・フォルダを開ける
   opts = opts || {};
+  try {
+    if (document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open')) {
+      window.MeldexCloudMobile?.closeSidebar?.();
+    }
+  } catch {}
   // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
   const settingsTabs = ['全般','テーマ','LLM','LLMコスト','Discord Bot','ユーザー','ワークスペース','取り込み','拡張機能','ショートカット','ゴミ箱','データベース','フィードバック'];
@@ -132,7 +137,7 @@ async function showSettingsModal(opts) {
     : 'box-sizing:border-box;width:min(980px, calc(100vw - 48px));max-width:calc(100vw - 48px);height:min(720px, calc(100vh - 64px));max-height:calc(100vh - 64px);';
   o.innerHTML = `<div class="modal settings-modal" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
-      ${_isMobile ? '<span id="settings-back-btn" class="settings-back-btn" hidden style="cursor:pointer;font-size:18px;" data-action="_backToSettingsList()">←</span>' : ''}
+      ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:36px;height:36px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
       <span id="settings-header-text" style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span class="ico ico-settings"></span><span>設定</span></span>
       <button id="settings-modal-close" class="settings-modal-close" type="button" title="設定を閉じる" aria-label="設定を閉じる" style="margin-left:auto;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg);">
         ${lucide('x',16)}
@@ -147,7 +152,7 @@ async function showSettingsModal(opts) {
     <!-- モバイル: セクションリスト -->
     ${_isMobile ? `<div id="settings-nav-list" style="overflow-y:auto;flex:1;">
       ${settingsTabs.map(t =>
-        `<div class="settings-nav-item" data-target="${t}" data-e2e-id="settings-mobile-tab-${esc(t)}" data-action="_openSettingsSection('${t}')">${settingsTabLabel(t)}</div>`
+        `<button type="button" class="settings-nav-item" data-target="${t}" data-e2e-id="settings-mobile-tab-${esc(t)}">${settingsTabLabel(t)}</button>`
       ).join('')}
     </div>` : ''}
     ${!_isMobile ? `<div class="settings-desktop-layout" style="display:flex;min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--border);">
@@ -549,6 +554,14 @@ async function showSettingsModal(opts) {
   const settingsCloseBtn = o.querySelector('#settings-modal-close');
   settingsCloseBtn?.addEventListener('click', () => {
     closeSettingsModalRestoringTheme();
+  });
+  o.querySelector('#settings-back-btn')?.addEventListener('click', () => _backToSettingsList(o));
+  o.querySelectorAll('.settings-nav-item[data-target]').forEach((item) => {
+    item.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      _openSettingsSection(item.dataset.target, o);
+    });
   });
   if (typeof bindSettingsThemePanel === 'function') bindSettingsThemePanel(o);
   // モバイル時: 全パネルを非表示にして、セクションリストのみ表示

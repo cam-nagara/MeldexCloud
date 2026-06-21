@@ -57,7 +57,7 @@
     { label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
     { label: '注釈ツール', icon: 'penLine', action: () => _callGlobal('toggleAnnotationToolbar') },
     { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
-    { label: '設定', icon: 'settings', action: () => _callGlobal('showSettingsModal') },
+    { label: '設定', icon: 'settings', action: () => _openSettingsModal() },
   ];
   const NEW_ITEMS = [
     { label: 'フォルダ', icon: 'folderPlus', type: 'folder' },
@@ -256,10 +256,22 @@
 
   function _openHelpMenu() {
     if (typeof showMeldexHelpMenu === 'function') {
-      showMeldexHelpMenu();
+      const anchor = document.getElementById('cloud-mobile-main-button')
+        || document.getElementById('left-chrome-floating-help')
+        || document.getElementById('left-chrome-help');
+      showMeldexHelpMenu(anchor ? { currentTarget: anchor, target: anchor } : undefined);
       return true;
     }
     if (typeof showStatus === 'function') showStatus('ヘルプを開けませんでした', true);
+    return false;
+  }
+
+  function _openSettingsModal(panel) {
+    if (typeof showSettingsModal === 'function') {
+      showSettingsModal(panel ? { panel } : undefined);
+      return true;
+    }
+    if (typeof showStatus === 'function') showStatus('設定を開けませんでした', true);
     return false;
   }
 
@@ -286,7 +298,7 @@
         { label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
         { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderPanelSettings') },
         { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
-        { label: '設定', icon: 'settings', action: () => _callGlobal('showSettingsModal') },
+        { label: '設定', icon: 'settings', action: () => _openSettingsModal() },
       ];
     }
     return [];

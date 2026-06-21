@@ -963,10 +963,12 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   .fv-side-panel { max-height: 30vh !important; }
   /* 設定ダイアログ: ドリルダウンナビ */
   .settings-nav-item {
-    padding: 14px 12px; border-bottom: 1px solid var(--border); font-size: 15px;
+    width: 100%; padding: 14px 12px; border: 0; border-bottom: 1px solid var(--border); font-size: 15px;
     cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+    background: transparent; font: inherit; text-align: left;
     color: var(--fg);
   }
+  .settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .settings-nav-item:active { background: var(--bg3); }
   .settings-nav-item::after { content: '›'; color: var(--fg2); font-size: 18px; }
   .gb-tab { min-height: 36px; }

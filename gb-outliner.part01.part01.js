@@ -1019,7 +1019,9 @@ async function refreshOutliner(options) {
 async function refreshOutlinerFromButton(event) {
   event?.preventDefault?.();
   event?.stopPropagation?.();
-  const btn = event?.target?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh') || null;
+  const btn = event?.currentTarget?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
+    || event?.target?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
+    || null;
   if (btn?.disabled) return;
   if (btn) {
     btn.disabled = true;

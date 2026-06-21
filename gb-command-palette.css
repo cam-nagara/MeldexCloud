@@ -283,6 +283,35 @@ html[data-single-window="1"] .left-chrome-floating {
   font-size: 11px;
 }
 
+.cmd-palette-close {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm, 4px);
+  background: transparent;
+  color: var(--fg2);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.cmd-palette-close:hover,
+.cmd-palette-close:focus-visible {
+  background: var(--ui-bg-control-hover, var(--bg3));
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.cmd-palette-close svg,
+.cmd-palette-close .ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
 .cmd-palette-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -409,6 +438,22 @@ html[data-single-window="1"] .left-chrome-floating {
   .cmd-palette {
     width: calc(100vw - 16px);
     max-height: calc(100vh - 24px);
+  }
+
+  .cmd-palette-header {
+    gap: 8px;
+    min-height: 58px;
+    padding: 0 8px 0 12px;
+  }
+
+  .cmd-palette-scope {
+    display: none;
+  }
+
+  .cmd-palette-close {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
   }
 
   .cmd-palette-footer {
