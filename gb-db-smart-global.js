@@ -158,9 +158,11 @@
   }
 
   function renderGlobalIndexTable(def) {
+    const table = document.querySelector('#smart-db-table');
     const thead = document.querySelector('#smart-db-table thead');
     const tbody = document.querySelector('#smart-db-table tbody');
     if (!thead || !tbody) return;
+    if (typeof disposeSmartDbVirtualRows === 'function') disposeSmartDbVirtualRows(table);
     thead.innerHTML = ''; tbody.innerHTML = '';
 
     const data = state.smartDbData || { files: [] };
@@ -192,7 +194,7 @@
     thead.appendChild(tr);
 
     // ボディ
-    files.forEach(file => {
+    const createGlobalIndexRow = (file) => {
       const row = document.createElement('tr');
       row.style.cssText = 'cursor:pointer;';
       row.onmouseenter = () => { row.style.background = 'rgba(255,255,255,0.04)'; };
@@ -210,7 +212,25 @@
         if (col === 'path') td.title = file.abs_path || '';
         row.appendChild(td);
       });
-      tbody.appendChild(row);
+      return row;
+    };
+
+    if (typeof renderSmartDbVirtualRows === 'function' && renderSmartDbVirtualRows({
+      table,
+      tbody,
+      rows: files,
+      colSpan: columns.length,
+      rowHeight: 34,
+      renderRow: createGlobalIndexRow,
+    })) {
+      if (typeof showStatus === 'function') {
+        showStatus(files.length + ' / ' + (data.total || 0) + ' 件');
+      }
+      return;
+    }
+
+    files.forEach(file => {
+      tbody.appendChild(createGlobalIndexRow(file));
     });
 
     // カウント表示

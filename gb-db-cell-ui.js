@@ -1127,12 +1127,14 @@ function _enableDropdownKeyNav(dd, itemSelector) {
       item.addEventListener('pointerenter', () => setActiveFromItem(item));
     });
   };
-  // 初期状態で先頭をアクティブに
-  requestAnimationFrame(() => {
+  const ensureInitialActive = () => {
     bindItems();
     const items = getItems();
-    if (items.length > 0) { activeIdx = 0; highlight(items, 0); }
-  });
+    if (items.length > 0 && activeIdx < 0) { activeIdx = 0; highlight(items, 0); }
+  };
+  // 初期状態で先頭をアクティブにする。キー入力が次フレームより先に来ても選択位置を安定させる。
+  ensureInitialActive();
+  requestAnimationFrame(ensureInitialActive);
   const handler = (e) => {
     if (!document.body.contains(dd)) {
       document.removeEventListener('keydown', handler, true);

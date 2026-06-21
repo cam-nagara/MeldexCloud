@@ -51,6 +51,11 @@ function renderSmartDbActiveView() {
   if (tableArea) tableArea.hidden = active !== 'table';
   if (dashboardArea) dashboardArea.hidden = active !== 'dashboard';
   renderSmartDbViewTabs();
+  if (active === 'table') {
+    const table = document.getElementById('smart-db-table');
+    const virtualRows = table?._smartDbVirtualRows;
+    if (typeof virtualRows?.renderNow === 'function') virtualRows.renderNow(true);
+  }
   if (active === 'dashboard') renderSmartDbDashboardView();
 }
 

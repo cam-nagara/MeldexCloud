@@ -2,13 +2,13 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.6.129",
+    "semver": "0.6.130",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
   "cloudBackupUrl": "",
   "betaFeedback": {
-    "googleWebAppUrl": "",
+    "googleWebAppUrl": "https://script.google.com/macros/s/AKfycbwwt2QNHhABaxGOki7Gpw-Hm6Lnlqnc0uA1LwKncNrNilptWwj6U5-xQeWJj5cZQrzyRw/exec",
     "feedbackFormUrl": ""
   },
   "updateCheck": {

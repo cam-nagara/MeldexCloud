@@ -1073,11 +1073,11 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 #graph-view { flex: 1; overflow: hidden; padding: 0; display: none; flex-direction: column; }
 .graph-view { flex: 1; overflow: hidden; padding: 0; display: flex; flex-direction: column; }
 /* スマートシート: ダッシュボードビュー */
-#smart-db-view { background: var(--db-row-bg, var(--content-bg, var(--bg))); }
+#smart-db-view, .smart-db-view { flex: 1 1 auto; min-height: 0; overflow: hidden; flex-direction: column; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
 .smart-db-toolbar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .smart-db-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.smart-db-table-area { flex: 1; overflow: auto; padding: 8px; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
-.smart-db-dashboard-area { flex: 1; overflow: auto; padding: 12px; flex-direction: column; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
+.smart-db-table-area { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
+.smart-db-dashboard-area { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; flex-direction: column; background: var(--db-row-bg, var(--content-bg, var(--bg))); }
 .smart-db-dashboard-area:not([hidden]) { display: flex; }
 .smart-db-view-tabs { display: inline-flex; align-items: center; gap: 2px; padding: 2px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
 .smart-db-view-tab { min-width: 56px; padding: 4px 10px; background: transparent; border: none; color: var(--fg2); border-radius: 4px; cursor: pointer; font-size: 12px; }

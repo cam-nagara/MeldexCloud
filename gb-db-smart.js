@@ -38,23 +38,11 @@ function normalizeSmartDbDefinition(def) {
   return _ensureSmartDbViews(next);
 }
 
-// スマートシートファイルが置かれたフォルダのソースフォルダ相対パス
-function _smartDbDefaultParentFolder(def) {
-  const filePath = String(def?._filePath || '').replace(/\\/g, '/');
-  if (!filePath) return '';
-  const slash = filePath.lastIndexOf('/');
-  if (slash < 0) return '';
-  return filePath.slice(0, slash);
-}
-
-// 実行時に使う sources（ユーザー設定 or 既定: ファイルの親フォルダ＋サブフォルダ）
+// 実行時に使う sources。通常スマートシートは対象ソースの明示を必須にする。
 function _smartDbEffectiveSources(def) {
   if (!def) return [];
   const explicit = Array.isArray(def.sources) ? def.sources.filter(s => s && s.path) : [];
-  if (explicit.length) return explicit;
-  const parent = _smartDbDefaultParentFolder(def);
-  if (parent) return [{ kind: 'folder', path: parent }];
-  return [];
+  return explicit;
 }
 
 function _serializeSmartDbDefinition(def) {
@@ -376,8 +364,21 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
       return;
     }
     const effectiveSources = _smartDbEffectiveSources(def);
+    if (!effectiveSources.length) {
+      state.smartDbData = {
+        entities: [],
+        filter_properties: (def.filters || []).map(f => f?.property).filter(Boolean),
+        total_dbs_scanned: 0,
+        total_entities_scanned: 0,
+        requires_sources: true,
+      };
+      renderSmartDbTable();
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
+      if (!openOpts.skipGlobalUi) showStatus('対象フォルダまたは対象シートを設定してください', true);
+      return;
+    }
     let url = '/smart-db?filters=' + encodeURIComponent(JSON.stringify(def.filters));
-    if (effectiveSources.length) url += '&sources=' + encodeURIComponent(JSON.stringify(effectiveSources));
+    url += '&sources=' + encodeURIComponent(JSON.stringify(effectiveSources));
     const data = await apiFetch(url);
     if (isStaleSmartDbLoad()) return;
     state.smartDbData = data;
@@ -508,9 +509,11 @@ function showSmartDbRowContextMenu(event, ent) {
 function renderSmartDbTable() {
   const data = state.smartDbData;
   if (!data) return;
+  const table = document.querySelector('#smart-db-table');
   const thead = document.querySelector('#smart-db-table thead');
   const tbody = document.querySelector('#smart-db-table tbody');
   if (!thead || !tbody) return;
+  if (typeof disposeSmartDbVirtualRows === 'function') disposeSmartDbVirtualRows(table);
   thead.innerHTML = ''; tbody.innerHTML = '';
 
   const filterProps = data.filter_properties || [];
@@ -527,7 +530,7 @@ function renderSmartDbTable() {
   thead.appendChild(tr);
 
   // ボディ
-  (data.entities || []).forEach(ent => {
+  const createSmartDbRow = (ent) => {
     const row = document.createElement('tr');
     row.style.cssText = 'cursor:pointer;';
     row.onmouseenter = () => { row.style.background = 'rgba(255,255,255,0.04)'; };
@@ -584,7 +587,21 @@ function renderSmartDbTable() {
     tdMod.textContent = ent.modified ? ent.modified.substring(0, 10) : '';
     row.appendChild(tdMod);
 
-    tbody.appendChild(row);
+    return row;
+  };
+
+  const entities = data.entities || [];
+  if (typeof renderSmartDbVirtualRows === 'function' && renderSmartDbVirtualRows({
+    table,
+    tbody,
+    rows: entities,
+    colSpan: cols.length,
+    rowHeight: 34,
+    renderRow: createSmartDbRow,
+  })) return;
+
+  entities.forEach(ent => {
+    tbody.appendChild(createSmartDbRow(ent));
   });
 }
 
@@ -618,18 +635,20 @@ function showSmartDbFilterModal(smartDbId) {
       <button data-action="this.closest('.sdf-row').remove()" data-e2e-id="smart-filter-${i}-remove" aria-label="スマートシート条件${i + 1}を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
     </div>`;
   });
-  // 既存 sources を「フォルダ」「その他（後方互換: sheet 等）」に分離
-  // フォルダのみを UI で編集対象とし、その他は保存時にそのまま保持する。
+  // 既存 sources を「フォルダ」「対象シート」に分離する。
+  // フォルダは UI で編集対象、対象シートは生成済み定義の正式な参照元として保持する。
   const allExplicit = Array.isArray(def.sources) ? def.sources.filter(s => s && s.path) : [];
   const folderExplicit = allExplicit.filter(s => (s.kind || 'folder') === 'folder');
   const otherExplicit = allExplicit.filter(s => (s.kind || 'folder') !== 'folder');
   let sourcesNote;
   if (folderExplicit.length) {
-    sourcesNote = '対象フォルダ（サブフォルダ含む）';
+    sourcesNote = otherExplicit.length
+      ? '対象フォルダ（サブフォルダ含む）と対象シート ' + otherExplicit.length + ' 件'
+      : '対象フォルダ（サブフォルダ含む）';
   } else if (otherExplicit.length) {
-    sourcesNote = '対象フォルダ（サブフォルダ含む） — 未設定。後方互換の個別シート指定 ' + otherExplicit.length + ' 件が有効（編集はファイル直接編集が必要）';
+    sourcesNote = '対象シート ' + otherExplicit.length + ' 件が有効です。フォルダを追加することもできます。';
   } else {
-    sourcesNote = '対象フォルダ（サブフォルダ含む） — 未設定のため、このスマートシートが置かれたフォルダを既定で使用';
+    sourcesNote = '対象ソース未設定。対象フォルダまたは対象シートを設定すると読み込みます。';
   }
   let sourcesHtml = '';
   folderExplicit.forEach((s, i) => {
@@ -875,7 +894,7 @@ async function _saveSmartDbFilters(smartDbId) {
   });
   const def = _findSmartDbDefinition(smartDbId);
   // 対象フォルダ（sources）— 空の行は無視、kind は folder 固定（サブフォルダ含む）
-  // 既存の非フォルダ source（kind: "sheet" 等）は後方互換のため保持する。
+  // 生成済み定義の対象シート source（kind: "sheet" 等）は正式な参照元として保持する。
   const srcRows = document.querySelectorAll('#sdf-sources .sdf-src-row');
   const folderSources = [];
   srcRows.forEach(r => {
