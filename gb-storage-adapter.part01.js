@@ -833,6 +833,15 @@
       }
     }
 
+    async overwriteBytes(relativePath, bytes) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const parent = _dirname(normalized);
+      if (parent) await this.ensureDirectory(parent);
+      const result = await this._uploadBytesWithMode(normalized, bytes, 'overwrite');
+      this._recentConflictCopies.delete(normalized);
+      return result;
+    }
+
     async writeText(relativePath, content) {
       return this.uploadBytes(relativePath, new TextEncoder().encode(String(content ?? '')));
     }

@@ -149,30 +149,6 @@
     return false;
   }
 
-  function _openSettingsPanel(panelName, event) {
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-    if (_isTreeScreenOpen()) closeSidebarDrawer();
-    if (typeof showSettingsModal === 'function') {
-      showSettingsModal(panelName ? { panel: panelName } : undefined);
-      return true;
-    }
-    return false;
-  }
-
-  function _refreshTreeHeaderUserIcon(header) {
-    const userButton = header?.querySelector?.('.cloud-mobile-tree-user');
-    if (!userButton) return;
-    const username = typeof getUsername === 'function' ? getUsername() : 'anonymous';
-    userButton.title = username || 'ユーザー';
-    userButton.setAttribute('aria-label', `${username || 'ユーザー'}の設定を開く`);
-    if (typeof getUserAvatarHtml === 'function') {
-      userButton.innerHTML = getUserAvatarHtml(username || 'anonymous', 24);
-    } else {
-      userButton.innerHTML = _iconHtml('userRound', 20, 'U');
-    }
-  }
-
   function _bindMobileControlActivation(button, action) {
     let lastRunAt = 0;
     const run = (event) => {
@@ -264,8 +240,8 @@
       header.className = 'cloud-mobile-tree-screen-header';
       sidebar.prepend(header);
     }
-    if (header.dataset.cloudMobileHeaderVersion !== '3') {
-      header.dataset.cloudMobileHeaderVersion = '3';
+    if (header.dataset.cloudMobileHeaderVersion !== '4') {
+      header.dataset.cloudMobileHeaderVersion = '4';
       header.replaceChildren();
 
       const menuButton = document.createElement('button');
@@ -294,28 +270,11 @@
         if (typeof refreshOutliner === 'function') return refreshOutliner();
       });
 
-      const userButton = document.createElement('button');
-      userButton.type = 'button';
-      userButton.className = 'cloud-mobile-tree-user';
-      userButton.title = 'ユーザー';
-      _bindMobileControlActivation(userButton, (event) => _openSettingsPanel('ユーザー', event));
-
-      const settingsButton = document.createElement('button');
-      settingsButton.type = 'button';
-      settingsButton.className = 'cloud-mobile-tree-settings';
-      settingsButton.title = '設定';
-      settingsButton.setAttribute('aria-label', '設定を開く');
-      settingsButton.innerHTML = _iconHtml('settings', 20, '⚙');
-      _bindMobileControlActivation(settingsButton, (event) => _openSettingsPanel('', event));
-
       actions.appendChild(refreshButton);
-      actions.appendChild(userButton);
-      actions.appendChild(settingsButton);
       header.appendChild(menuButton);
       header.appendChild(title);
       header.appendChild(actions);
     }
-    _refreshTreeHeaderUserIcon(header);
     _ensureSidebarDismissHandle(sidebar);
   }
 

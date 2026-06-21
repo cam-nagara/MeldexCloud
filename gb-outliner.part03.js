@@ -573,6 +573,7 @@ function _handleOutlinerTreeKeydown(event) {
 
   scroller.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    if (e.pointerType && e.pointerType !== 'mouse') return;
     if (_outlinerLassoBlockedTarget(e.target)) return;
     if (!_outlinerLassoAllowedTarget(e.target)) return;
     selectionMode = _outlinerLassoMode(e);

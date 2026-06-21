@@ -192,7 +192,7 @@
         backups.original = await _backupConflictSide(provider, 'replaced-original', originalPath, backupStamp);
         const conflictFile = await provider.downloadAsFile(conflictPath);
         await provider.downloadAsFile(originalPath).catch(() => null);
-        await provider.uploadBytes(originalPath, new Uint8Array(await conflictFile.arrayBuffer()));
+        await provider.overwriteBytes(originalPath, new Uint8Array(await conflictFile.arrayBuffer()));
         await provider.deletePath(conflictPath);
       } else {
         await provider.movePath(conflictPath, originalPath);

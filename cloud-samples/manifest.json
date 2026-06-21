@@ -1,11 +1,11 @@
 {
   "type": "meldex-cloud-sample-seed",
-  "generatedAt": "2026-06-21T12:13:03.220814+00:00",
+  "generatedAt": "2026-06-21T14:17:55.748568+00:00",
   "sourceFolder": "MeldexHome/サンプル",
   "targetRoot": "MeldexHome/サンプル",
   "fileCount": 136,
-  "totalBytes": 569203,
-  "contentHash": "c317f06e7a4f6e4f5ffbd53d7166a95473658f4483e604443621f2a8232204b7",
+  "totalBytes": 565364,
+  "contentHash": "4bdab0f45859b1fd331e4bd135bc41b2f4993be7a11d489c129169ec1b16986e",
   "skipExisting": true,
   "entries": [
     {
@@ -326,86 +326,86 @@
     {
       "relativePath": "死霊探偵/小説本文_長編版/00_登場人物.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/00_登場人物.md",
-      "asset": "cloud-samples/files/33d54468cef87b0405addf1a.md",
-      "size": 2311,
-      "sha256": "33d54468cef87b0405addf1ab907434b6d3ecf3274124e4c5e6d9034f4307e9e"
+      "asset": "cloud-samples/files/088771215611d063311bb07d.md",
+      "size": 2284,
+      "sha256": "088771215611d063311bb07df491340de04ec21739da479c13439a49748ad16d"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/01_第一章_雨夜の鬼ヶ瀬邸.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/01_第一章_雨夜の鬼ヶ瀬邸.md",
-      "asset": "cloud-samples/files/69edc82d8d48b0b77241917e.md",
-      "size": 33393,
-      "sha256": "69edc82d8d48b0b77241917ea68cb9c30a65a0fc17b20ddfc2d514a242e48473"
+      "asset": "cloud-samples/files/3f56136832711488b45be467.md",
+      "size": 32876,
+      "sha256": "3f56136832711488b45be4671a71326207046a6366f3c2416ce237833c3bdc28"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/02_第二章_破れた護符.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/02_第二章_破れた護符.md",
-      "asset": "cloud-samples/files/7a5df366417730454f5a07b9.md",
-      "size": 34069,
-      "sha256": "7a5df366417730454f5a07b9c015d1980ae473f034891e4773798ca644c63cd0"
+      "asset": "cloud-samples/files/595c62222b7c7cf88650c4e1.md",
+      "size": 33588,
+      "sha256": "595c62222b7c7cf88650c4e1b659611249856fc321963b128ff4dc7a510f6d84"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/03_第三章_蔵の怪音.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/03_第三章_蔵の怪音.md",
-      "asset": "cloud-samples/files/5776a4b86edc1120f5339caa.md",
-      "size": 29071,
-      "sha256": "5776a4b86edc1120f5339caa8d875f9e18be00038b720e04b3472f99cc35b1fc"
+      "asset": "cloud-samples/files/2d15425e39a13e28789eaa32.md",
+      "size": 28598,
+      "sha256": "2d15425e39a13e28789eaa32b123f1f722656398b3dd95b004d79de7e72e6633"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/04_間章_戸の開いた家.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/04_間章_戸の開いた家.md",
-      "asset": "cloud-samples/files/6009b627933c50682530b598.md",
-      "size": 4770,
-      "sha256": "6009b627933c50682530b598556d619be2ed4f76ea5bd2f264b65325ffdc6d3c"
+      "asset": "cloud-samples/files/1956a712a94e15a69fb79af0.md",
+      "size": 4681,
+      "sha256": "1956a712a94e15a69fb79af0a3f5cd3e66dbc0d911ccea3ade1fa5e920f70fc2"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/05_第四章_古い髪飾り.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/05_第四章_古い髪飾り.md",
-      "asset": "cloud-samples/files/6bd0ae1abf4582f0296df589.md",
-      "size": 31638,
-      "sha256": "6bd0ae1abf4582f0296df589d0a2c1d810206a4414fb9326358bbd9edb7849a0"
+      "asset": "cloud-samples/files/aa412295790cbb1c962f6744.md",
+      "size": 31117,
+      "sha256": "aa412295790cbb1c962f67446d4963d75b3524215e291656fa7457470999309b"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/06_第五章_欠けた時刻.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/06_第五章_欠けた時刻.md",
-      "asset": "cloud-samples/files/927c2b9877de8be4c56216cb.md",
-      "size": 26053,
-      "sha256": "927c2b9877de8be4c56216cb351cc5aea38242f3d6dc493b451a21baa89d14f2"
+      "asset": "cloud-samples/files/4f540e162c266cab580ffb34.md",
+      "size": 25678,
+      "sha256": "4f540e162c266cab580ffb3473e75b95a2c1085a0096ef45b8502c60ee9a957a"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/07_第六章_水路の泥.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/07_第六章_水路の泥.md",
-      "asset": "cloud-samples/files/1004791a97c618854ec886a3.md",
-      "size": 27601,
-      "sha256": "1004791a97c618854ec886a3f78d79c04f0ddf59f1d52841301f8469c43b32fe"
+      "asset": "cloud-samples/files/baab54a1116eb49111e11cff.md",
+      "size": 27198,
+      "sha256": "baab54a1116eb49111e11cffdc8db4aa150f25abb866a3a4f4a461cc32b8a258"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/08_幕間_読者への挑戦.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/08_幕間_読者への挑戦.md",
-      "asset": "cloud-samples/files/763cfd7c183c024f6a8715d8.md",
-      "size": 3139,
-      "sha256": "763cfd7c183c024f6a8715d8fb08b88c5caa98bde8c79993594d7dbab9a28738"
+      "asset": "cloud-samples/files/f78ba3adab142251a89839bf.md",
+      "size": 3104,
+      "sha256": "f78ba3adab142251a89839bf7ddf5e9d1c4b7a65e600b037b7f7e7096610f3e0"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/09_第七章_死者の証明.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/09_第七章_死者の証明.md",
-      "asset": "cloud-samples/files/54d3e63fd629bdcf51e2d583.md",
-      "size": 33976,
-      "sha256": "54d3e63fd629bdcf51e2d5833598a70039b14f2c9ff04b939aa301e8b6d81a8c"
+      "asset": "cloud-samples/files/f59bede8c5c62a13e6ea0acf.md",
+      "size": 33661,
+      "sha256": "f59bede8c5c62a13e6ea0acf0f610eaf19805bb1c25c8df12056592916d36727"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/10_終章_夜明けの鬼灯.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/10_終章_夜明けの鬼灯.md",
-      "asset": "cloud-samples/files/65647faaeff8c12eb4a137ed.md",
-      "size": 31080,
-      "sha256": "65647faaeff8c12eb4a137ed89a3f69502daa3ab63e15a811f06fe8ad6fb2b96"
+      "asset": "cloud-samples/files/5c45480742be82bba4a2185d.md",
+      "size": 30603,
+      "sha256": "5c45480742be82bba4a2185de7217565ea8d5a273715f233e8332510462c98ad"
     },
     {
       "relativePath": "死霊探偵/小説本文_長編版/99_執筆メモ_真相整合表.md",
       "targetPath": "MeldexHome/サンプル/死霊探偵/小説本文_長編版/99_執筆メモ_真相整合表.md",
-      "asset": "cloud-samples/files/05d5f9c5c77c30869704bc0e.md",
-      "size": 12986,
-      "sha256": "05d5f9c5c77c30869704bc0e270f24e102dd8bd3442826919050cbfba53cba4b"
+      "asset": "cloud-samples/files/64a1667e66ce35191f571d4c.md",
+      "size": 12860,
+      "sha256": "64a1667e66ce35191f571d4c09f0f88cf46adbcbba5595948a8347c4423e885a"
     },
     {
       "relativePath": "死霊探偵/死霊探偵_企画書.md",

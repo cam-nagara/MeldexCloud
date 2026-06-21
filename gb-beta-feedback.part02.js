@@ -1,5 +1,5 @@
     updateButton.textContent = '更新を確認';
-    actions.append(flushButton, diagnosticsButton, updateButton);
+    actions.append(saveGoogleButton, importGoogleButton, flushButton, diagnosticsButton, updateButton);
     section.appendChild(actions);
     container.appendChild(section);
 
@@ -25,6 +25,35 @@
         updateChecks: updates.input.checked,
       });
       if (current.acceptedAt && typeof refreshMeldexAboutPanel === 'function') refreshMeldexAboutPanel(document);
+    });
+    saveGoogleButton.addEventListener('click', () => {
+      setGoogleWebAppUrl(googleUrlInput.value);
+      setGoogleAdminToken(tokenInput.value);
+      status.textContent = isGoogleConfigured()
+        ? 'Google受信箱の設定を保存しました'
+        : 'Google受信箱URLを確認してください';
+    });
+    importGoogleButton.addEventListener('click', async () => {
+      importGoogleButton.disabled = true;
+      status.textContent = 'Google受信箱を取り込んでいます...';
+      try {
+        setGoogleWebAppUrl(googleUrlInput.value);
+        setGoogleAdminToken(tokenInput.value);
+        const result = await importGoogleFeedbackEntries({ googleWebAppUrl: googleUrlInput.value, adminToken: tokenInput.value });
+        if (result?.skipped) {
+          status.textContent = result.reason === 'cloud-google-import-needs-desktop-server'
+            ? 'Google受信箱の取込はデスクトップ版のMeldexサーバー起動時に実行できます'
+            : 'Google受信箱を取り込めませんでした。設定を確認してください。';
+        } else if (result?.ok) {
+          status.textContent = `Google受信箱の取込完了: 取込 ${result.imported || 0}件 / 重複 ${result.duplicate || 0}件 / 対象外 ${result.ignored || 0}件`;
+        } else {
+          status.textContent = 'Google受信箱を取り込めませんでした。';
+        }
+      } catch (error) {
+        status.textContent = 'Google受信箱の取込に失敗しました: ' + (error?.message || error);
+      } finally {
+        importGoogleButton.disabled = false;
+      }
     });
     flushButton.addEventListener('click', async () => {
       flushButton.disabled = true;
@@ -81,6 +110,7 @@
       if (method === 'POST' && pathname === '/beta/crash-report') return _writeCloudCrashReport(body || {});
       if (method === 'POST' && pathname === '/beta/feedback-template') return _writeCloudFeedbackSheet();
       if (method === 'POST' && pathname === '/beta/feedback/classify') return { ok: false, skipped: true, reason: 'cloud-classify-needs-desktop-server' };
+      if (method === 'POST' && pathname === '/beta/feedback/google-import') return { ok: false, skipped: true, reason: 'cloud-google-import-needs-desktop-server' };
       return internals.NOT_HANDLED;
     });
   }
@@ -136,9 +166,12 @@
     startTelemetry,
     stopTelemetry,
     sendGoogle,
+    setGoogleWebAppUrl,
+    setGoogleAdminToken,
     setFeedbackFormUrl,
     ensureFeedbackSheet,
     classifyFeedbackEntries,
+    importGoogleFeedbackEntries,
     maybeSendFeedbackForm,
     renderMeldexFeedbackPanel,
     renderMeldexFeedbackSettingsPanel,

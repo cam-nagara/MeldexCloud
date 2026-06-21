@@ -1,7 +1,7 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-06-21T12:13:03.625791+00:00",
-  "semver": "0.6.130",
+  "generatedAt": "2026-06-21T14:17:56.198916+00:00",
+  "semver": "0.6.131",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
   "automatedGateSummary": {
@@ -101,7 +101,7 @@
     "manifest.json": "e678db01adf50a58d4a6b5ae8a5d69305561bfe1d310e55ba27e8fcf957e085a",
     "sw.js": "d8e927701c55926e98dd4bce6c14a0d52f449ce4c05410073853f5cc410488b8",
     "gb-config.js": "3d175466b8ae55c5d708accb6a6f96a387bf953d55510fd208ec4bc278f0e996",
-    "gb-cloud-runtime-config.js": "e2cf29a71d774f3af497906e1da10aa8b2a834f787416de73a9998cb13640b49",
-    "cloud-samples/manifest.json": "2d90754a788f0e0e9c02f1bd859d1492fb753985020801217a4f3e38545bcb89"
+    "gb-cloud-runtime-config.js": "c6e2e111b059304d1e469b99204c52a38b9a90b4b9f8c676f5f9cee098b0e7a6",
+    "cloud-samples/manifest.json": "1fe583edd51b72b5d59910686ecf7245a66534a25ad42eb667b4bc5a7bec9b4d"
   }
 }

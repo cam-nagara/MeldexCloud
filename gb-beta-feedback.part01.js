@@ -19,6 +19,8 @@
   const FEEDBACK_DB_DIR = 'Meldexフィードバック';
   const FEEDBACK_DB_NOTE = 'Meldexフィードバック/Meldexフィードバック.md';
   const FEEDBACK_FORM_URL_KEY = 'meldex-beta-feedback-form-url';
+  const GOOGLE_WEB_APP_URL_KEY = 'meldex-beta-feedback-google-web-app-url';
+  const GOOGLE_ADMIN_TOKEN_KEY = 'meldex-beta-feedback-google-admin-token';
   const CRASH_FIELD_BLOCKLIST = new Set([
     'path', 'filepath', 'filename', 'targetpath',
     'currentpath', 'currentpagepath', 'currentdbpath',
@@ -317,11 +319,23 @@
   }
 
   function _googleUrl() {
-    return String(feedbackConfig.googleWebAppUrl || '').trim();
+    return String(_safeGet(GOOGLE_WEB_APP_URL_KEY) || feedbackConfig.googleWebAppUrl || '').trim();
   }
 
   function isGoogleConfigured() {
     return /^https:\/\/script\.google\.com\/macros\/s\//.test(_googleUrl());
+  }
+
+  function setGoogleWebAppUrl(url) {
+    _safeSet(GOOGLE_WEB_APP_URL_KEY, String(url || '').trim());
+  }
+
+  function _googleAdminToken() {
+    return String(_safeGet(GOOGLE_ADMIN_TOKEN_KEY) || '').trim();
+  }
+
+  function setGoogleAdminToken(token) {
+    _safeSet(GOOGLE_ADMIN_TOKEN_KEY, String(token || '').trim());
   }
 
   async function sendGoogle(kind, payload) {
@@ -615,6 +629,19 @@
     return _postJson('/beta/feedback/classify', {}, false);
   }
 
+  async function importGoogleFeedbackEntries(options) {
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+      return { ok: false, skipped: true, reason: 'cloud-google-import-needs-desktop-server' };
+    }
+    const body = {
+      googleWebAppUrl: options?.googleWebAppUrl || _googleUrl(),
+      adminToken: options?.adminToken || _googleAdminToken(),
+      limit: Number(options?.limit || 50) || 50,
+      markImported: true,
+    };
+    return _postJson('/beta/feedback/google-import', body, false);
+  }
+
   function _isFeedbackFormPayload(data) {
     const cfg = data?.formConfig || {};
     const dbPath = String(data?.dbPath || '').replace(/\\/g, '/');
@@ -881,9 +908,46 @@
       : 'Google Apps Script Web App: 未設定（Meldex内の記録のみ有効）';
     section.appendChild(status);
 
+    const googleUrlRow = document.createElement('label');
+    googleUrlRow.className = 'gb-field-row';
+    const googleUrlLabel = document.createElement('span');
+    googleUrlLabel.className = 'gb-label';
+    googleUrlLabel.textContent = '受信箱URL';
+    const googleUrlInput = document.createElement('input');
+    googleUrlInput.id = 'settings-feedback-google-url';
+    googleUrlInput.className = 'gb-input';
+    googleUrlInput.placeholder = 'Google Apps Script Web App URL';
+    googleUrlInput.value = _googleUrl();
+    googleUrlRow.append(googleUrlLabel, googleUrlInput);
+    section.appendChild(googleUrlRow);
+
+    const tokenRow = document.createElement('label');
+    tokenRow.className = 'gb-field-row';
+    const tokenLabel = document.createElement('span');
+    tokenLabel.className = 'gb-label';
+    tokenLabel.textContent = '管理者トークン';
+    const tokenInput = document.createElement('input');
+    tokenInput.id = 'settings-feedback-google-admin-token';
+    tokenInput.className = 'gb-input';
+    tokenInput.type = 'password';
+    tokenInput.placeholder = 'Apps ScriptのADMIN_TOKEN';
+    tokenInput.value = _googleAdminToken();
+    tokenRow.append(tokenLabel, tokenInput);
+    section.appendChild(tokenRow);
+
     const actions = document.createElement('div');
     actions.className = 'gb-field-row';
     actions.style.justifyContent = 'flex-start';
+    const saveGoogleButton = document.createElement('button');
+    saveGoogleButton.type = 'button';
+    saveGoogleButton.className = 'gb-btn gb-btn-sm';
+    saveGoogleButton.dataset.e2eId = 'settings-feedback-save-google-receiver';
+    saveGoogleButton.textContent = '受信箱設定を保存';
+    const importGoogleButton = document.createElement('button');
+    importGoogleButton.type = 'button';
+    importGoogleButton.className = 'gb-btn gb-btn-sm';
+    importGoogleButton.dataset.e2eId = 'settings-feedback-import-google';
+    importGoogleButton.textContent = 'Google受信箱を取り込む';
     const flushButton = document.createElement('button');
     flushButton.type = 'button';
     flushButton.className = 'gb-btn gb-btn-sm';
