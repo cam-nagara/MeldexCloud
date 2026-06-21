@@ -427,6 +427,9 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
 
 function switchSettingsTab(el) {
   const tabName = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(el.dataset.tab) : el.dataset.tab;
+  try {
+    window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: tabName });
+  } catch {}
   // タブヘッダー (gb-inner-tab-active クラス切替、旧インライン style をクリア)
   el.parentElement.querySelectorAll('.settings-tab').forEach(t => {
     const active = t.dataset.tab === tabName;
@@ -460,6 +463,9 @@ function _openSettingsSection(panelName, root) {
   const modal = _settingsModalFromRoot(root);
   if (!modal) return;
   panelName = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName) : panelName;
+  try {
+    window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: panelName });
+  } catch {}
   const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = true;
   modal.querySelectorAll('.settings-panel').forEach(p => {

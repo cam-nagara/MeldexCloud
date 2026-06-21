@@ -1,7 +1,7 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-06-21T15:26:59.660457+00:00",
-  "semver": "0.6.132",
+  "generatedAt": "2026-06-21T16:59:39.384522+00:00",
+  "semver": "0.6.133",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
   "automatedGateSummary": {
@@ -9,13 +9,13 @@
     "cloudSampleSeedBundled": true,
     "serverFilesExcludedByBuilder": true,
     "secretNamedFilesExcludedByBuilder": true,
-    "requiredPublicEnvSourcesPresent": false,
+    "requiredPublicEnvSourcesPresent": true,
     "externalValuesAreNotWrittenInThisLog": true
   },
   "externalValueSources": {
     "cloudPublicUrl": {
       "source": "MELDEX_CLOUD_PUBLIC_URL",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "cloudBackupUrl": {
@@ -25,7 +25,7 @@
     },
     "feedbackGoogleWebAppUrl": {
       "source": "MELDEX_FEEDBACK_GOOGLE_WEB_APP_URL",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "feedbackFormUrl": {
@@ -40,37 +40,37 @@
     },
     "updatePageUrl": {
       "source": "MELDEX_UPDATE_PAGE_URL",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "desktopDownloadUrl": {
       "source": "MELDEX_DESKTOP_DOWNLOAD_URL",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "desktopReleasesUrl": {
       "source": "MELDEX_DESKTOP_RELEASES_URL",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "desktopVersion": {
       "source": "MELDEX_DESKTOP_VERSION",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "desktopVersionsJson": {
       "source": "MELDEX_DESKTOP_VERSIONS_JSON",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "sampleDownloadUrl": {
       "source": "MELDEX_SAMPLE_DOWNLOAD_URL",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     },
     "dropboxDeveloperAppKey": {
       "source": "MELDEX_DROPBOX_APP_KEY",
-      "present": false,
+      "present": true,
       "valueIncluded": false
     }
   },
@@ -101,7 +101,7 @@
     "manifest.json": "e678db01adf50a58d4a6b5ae8a5d69305561bfe1d310e55ba27e8fcf957e085a",
     "sw.js": "d8e927701c55926e98dd4bce6c14a0d52f449ce4c05410073853f5cc410488b8",
     "gb-config.js": "3d175466b8ae55c5d708accb6a6f96a387bf953d55510fd208ec4bc278f0e996",
-    "gb-cloud-runtime-config.js": "d6ceecb19e9202a18113f724692b4dbac95642c876584d54912f2c16073c5c4e",
-    "cloud-samples/manifest.json": "c4c26138416f6c51cc375d94f31f3d7cb0913430b784a897752586cf90733347"
+    "gb-cloud-runtime-config.js": "44604397380c0a605c636df049536b11c608aa296b7b28813d7258f510c3d787",
+    "cloud-samples/manifest.json": "7e77ec7df0268dd52572414fec1b333b013eed313bf40437f205e92597d4617d"
   }
 }

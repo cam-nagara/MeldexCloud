@@ -144,6 +144,10 @@
     return /conflict|too_many_write_operations|path\/conflict/i.test(err?.message || '');
   }
 
+  function _isDropboxNotFoundError(err) {
+    return /not_found|not found|path_lookup/i.test(err?.message || '');
+  }
+
   function _conflictedCopyPath(relativePath) {
     const normalized = _normalizeRelativePath(relativePath);
     const dir = _dirname(normalized);
@@ -848,6 +852,50 @@
 
     async writeJson(relativePath, data) {
       return this.writeText(relativePath, JSON.stringify(data, null, 2));
+    }
+
+    async writeJsonMerged(relativePath, updater, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const parent = _dirname(normalized);
+      if (parent) await this.ensureDirectory(parent);
+      const fallbackValue = Object.prototype.hasOwnProperty.call(options || {}, 'fallbackValue')
+        ? options.fallbackValue
+        : {};
+      const retries = Math.max(1, Number(options?.retries || 4));
+      const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+      let lastError = null;
+      for (let attempt = 0; attempt < retries; attempt += 1) {
+        let current = fallbackValue;
+        let rev = '';
+        try {
+          const response = await this._content('files/download', { path: this._dropboxPath(normalized) });
+          const resultHeader = response.headers.get('dropbox-api-result');
+          const meta = _safeJsonParse(resultHeader, null) || {};
+          this._rememberMeta(normalized, meta);
+          rev = String(meta.rev || '');
+          current = _safeJsonParse(await response.text(), fallbackValue);
+        } catch (err) {
+          if (!_isDropboxNotFoundError(err)) throw err;
+          this._rememberMeta(normalized, null);
+        }
+        const base = current && typeof current === 'object' && !Array.isArray(current) ? current : fallbackValue;
+        const next = await updater(base, { attempt, rev });
+        if (next === false) return { ok: true, skipped: true };
+        const data = next === undefined ? base : next;
+        const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
+        const mode = rev ? { '.tag': 'update', update: rev } : 'add';
+        try {
+          const meta = await this._uploadBytesWithMode(normalized, bytes, mode);
+          this._recentConflictCopies.delete(normalized);
+          return { ok: true, meta };
+        } catch (err) {
+          lastError = err;
+          if (!_isDropboxConflictError(err) || attempt >= retries - 1) throw err;
+          this._forgetMeta(normalized);
+          await delay(Math.min(1200, 140 * (attempt + 1)));
+        }
+      }
+      throw lastError || new Error('Dropbox 共有メタ情報を保存できませんでした');
     }
 
     async deletePath(relativePath) {

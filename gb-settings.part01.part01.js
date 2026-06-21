@@ -84,6 +84,12 @@ async function showSettingsModal(opts) {
   // opts: { panel: 'ユーザー', teamFolder: 'D:/...' } で特定パネル・フォルダを開ける
   opts = opts || {};
   try {
+    window.MeldexDiagnostics?.recordOperation?.('設定を開く', {
+      settingsPanel: opts.panel || '全般',
+      cloudMode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
+    });
+  } catch {}
+  try {
     if (document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open')) {
       window.MeldexCloudMobile?.closeSidebar?.();
     }

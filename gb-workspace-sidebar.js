@@ -121,7 +121,10 @@
     try { picked = await window.MeldexWorkspaces.pickFolder(); } catch {}
     let path = String(picked?.path || '').trim();
     if (!path) {
-      path = window.prompt('ワークスペースにするフォルダの絶対パス', '');
+      const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
+        ? 'ワークスペースにするDropbox内フォルダ'
+        : 'ワークスペースにするフォルダの絶対パス';
+      path = window.prompt(promptLabel, '');
       if (path == null) return;
       path = String(path || '').trim();
     }

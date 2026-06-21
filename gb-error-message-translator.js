@@ -53,6 +53,12 @@
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',
     },
     {
+      test: info => info.status === 501 || /ブラウザ版ではまだ未対応|クラウド版では未対応|未対応の操作|not implemented/i.test(info.raw),
+      title: 'クラウド版では未対応の操作です',
+      message: 'この設定または操作は、現在のクラウド版では使えません。',
+      action: '必要な場合はデスクトップ版で実行するか、クラウド版で対応済みの操作に切り替えてください。',
+    },
+    {
       test: info => /sqlite|database is locked|database disk image/i.test(info.raw),
       title: 'データベースの処理に失敗しました',
       message: '内部データベースの読み書きで問題が起きました。',

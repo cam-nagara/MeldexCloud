@@ -6,6 +6,7 @@
   const MAX_LOGS = 200;
   const logs = [];
   const apiErrors = [];
+  const operationLogs = [];
   let lastError = null;
 
   function _now() {
@@ -76,6 +77,79 @@
     return out;
   }
 
+  function _safeEndpoint(path) {
+    try {
+      const url = new URL(String(path || ''), 'http://local');
+      return url.pathname || String(path || '').split('?')[0] || '';
+    } catch {
+      return String(path || '').split('?')[0].slice(0, 160);
+    }
+  }
+
+  function _fnv32(text) {
+    let hash = 0x811c9dc5;
+    const source = String(text || '');
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+  }
+
+  function _safeActionName(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const match = text.match(/^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/);
+    return match ? match[1].slice(0, 96) : ('action-' + _fnv32(text));
+  }
+
+  function _safeControlId(value) {
+    const text = String(value || '').trim();
+    return text ? ('ui-' + _fnv32(text)) : '';
+  }
+
+  function _targetFacts(path) {
+    const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/');
+    const name = normalized.split('/').pop() || '';
+    const extMatch = name.match(/(\.[^.]+)$/);
+    return {
+      targetId: _fnv32(normalized),
+      extension: extMatch ? extMatch[1].toLowerCase().slice(0, 24) : 'なし',
+      depth: normalized ? normalized.split('/').filter(Boolean).length : 0,
+    };
+  }
+
+  function _currentSettingsPanelName() {
+    try {
+      const panel = document.querySelector('.modal-overlay[data-settings-modal="1"] .settings-panel:not([hidden])');
+      return panel?.dataset?.panel || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function _cloudStateDigest() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const body = typeof document !== 'undefined' ? (document.body?.dataset || {}) : {};
+    return {
+      mode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
+      connected: !!(state.path || state.name),
+      access: String(state.access || state.role || ''),
+      sourceFolders: Number(state.sourceFolders || 0),
+      readonly: body.cloudReadonly === '1',
+      quotaBlocked: body.cloudQuotaBlocked === '1',
+    };
+  }
+
+  function recordOperation(label, detail) {
+    const entry = {
+      label: _redactDiagnosticText(label).slice(0, 80),
+      detail: _redactObject(detail || {}),
+    };
+    _push(operationLogs, entry);
+    return entry;
+  }
+
   function rememberError(error, context) {
     const friendly = window.MeldexErrorMessages?.translate?.(error, context) || null;
     lastError = {
@@ -90,6 +164,11 @@
   }
 
   function captureApiError(path, opts, error) {
+    recordOperation('API失敗', {
+      endpoint: _safeEndpoint(path),
+      method: opts?.method || 'GET',
+      status: error?.status || error?.httpStatus || 0,
+    });
     const entry = rememberError(error, {
       kind: 'api',
       path,
@@ -122,6 +201,19 @@
     window.addEventListener('unhandledrejection', event => {
       rememberError(event.reason || 'unhandled rejection', { kind: 'unhandledrejection' });
     });
+  }
+
+  function _installOperationCapture() {
+    if (typeof document === 'undefined' || !document.addEventListener) return;
+    document.addEventListener('click', event => {
+      const el = event.target?.closest?.('[data-action],[data-e2e-id],[data-support-action],[data-error-action]');
+      if (!el) return;
+      recordOperation('画面操作', {
+        action: _safeActionName(el.getAttribute('data-action') || el.getAttribute('data-support-action') || el.getAttribute('data-error-action') || ''),
+        controlId: _safeControlId(el.getAttribute('data-e2e-id') || ''),
+        settingsPanel: _currentSettingsPanelName(),
+      });
+    }, true);
   }
 
   function _crcTable() {
@@ -217,9 +309,12 @@
         dataAccessMode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
         cloudWorkspaceConfigured: !!window.MeldexRuntimeAdapter?.getWorkspaceState?.(),
       },
+      cloudState: _cloudStateDigest(),
       lastError: extra?.error || lastError,
       consoleLogs: logs.slice(-MAX_LOGS),
       apiErrors: apiErrors.slice(-MAX_LOGS),
+      operationLogs: operationLogs.slice(-MAX_LOGS),
+      runtimeCompareLogs: window.MeldexRuntimeAdapter?.getCompareLogs?.() || [],
       serverLogs,
     };
   }
@@ -229,8 +324,11 @@
     const entries = [
       { name: 'system_info.json', text: JSON.stringify(data.system, null, 2) },
       { name: 'settings_digest.json', text: JSON.stringify(data.settingsDigest, null, 2) },
+      { name: 'cloud_state.json', text: JSON.stringify(data.cloudState, null, 2) },
       { name: 'console_errors.log', text: data.consoleLogs.map(item => JSON.stringify(item)).join('\n') + '\n' },
       { name: 'api_errors.log', text: data.apiErrors.map(item => JSON.stringify(item)).join('\n') + '\n' },
+      { name: 'operation_logs.log', text: data.operationLogs.map(item => JSON.stringify(item)).join('\n') + '\n' },
+      { name: 'runtime_compare_logs.json', text: JSON.stringify(data.runtimeCompareLogs, null, 2) },
       { name: 'server_logs.json', text: JSON.stringify(data.serverLogs, null, 2) },
       { name: 'last_error.json', text: JSON.stringify(data.lastError || {}, null, 2) },
     ];
@@ -295,14 +393,49 @@
       .slice(0, Math.max(1, limit));
   }
 
+  function _collectSupportOperationEntries(limit = 8) {
+    return operationLogs
+      .slice(-Math.max(1, limit))
+      .reverse();
+  }
+
+  function _operationDetailText(detail) {
+    const parts = [];
+    if (detail?.settingsPanel) parts.push(`設定=${detail.settingsPanel}`);
+    if (detail?.endpoint) parts.push(`${detail.method || 'GET'} ${detail.endpoint}`);
+    if (detail?.status) parts.push(`HTTP ${detail.status}`);
+    if (detail?.controlId) parts.push('UI操作');
+    return parts.join(' / ');
+  }
+
   function buildSupportActivitySummary(limit = 8) {
     const lines = [];
     const view = window.state?.view || '';
     const path = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : '';
     if (view) lines.push(`画面: ${view}`);
-    if (path) lines.push('対象: 現在のファイル（名前は送信しません）');
-    const entries = _collectSupportHistoryEntries(limit);
-    if (entries.length) {
+    const settingsPanel = _currentSettingsPanelName();
+    if (settingsPanel) lines.push(`設定画面: ${settingsPanel}`);
+    if (path) {
+      lines.push('対象: 現在のファイル（名前は送信しません）');
+      const facts = _targetFacts(path);
+      lines.push(`対象情報: 拡張子=${facts.extension} / 匿名ID=${facts.targetId} / 階層=${facts.depth}`);
+    }
+    const cloudState = _cloudStateDigest();
+    lines.push(`保存先: ${cloudState.mode}${cloudState.connected ? ' / 接続済み' : ''}${cloudState.access ? ' / ' + cloudState.access : ''}`);
+    const operations = _collectSupportOperationEntries(limit);
+    const entries = operations.length ? [] : _collectSupportHistoryEntries(limit);
+    if (operations.length) {
+      lines.push('直近の操作:');
+      operations.forEach(entry => {
+        const time = entry.time ? new Date(entry.time).toLocaleTimeString('ja-JP', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }) : '';
+        const detail = _operationDetailText(entry.detail);
+        lines.push(`- ${time} ${entry.label}${detail ? ' / ' + detail : ''}`);
+      });
+    } else if (entries.length) {
       lines.push('直近の操作:');
       entries.forEach(entry => {
         const time = entry.time ? new Date(entry.time).toLocaleTimeString('ja-JP', {
@@ -318,6 +451,21 @@
       lines.push('直近の操作: 取得できませんでした');
     }
     return lines.join('\n');
+  }
+
+  function _supportTechnicalSummary(remembered) {
+    const lines = [];
+    if (remembered?.friendly?.status) lines.push(`HTTP ${remembered.friendly.status}`);
+    if (remembered?.message) lines.push(remembered.message);
+    const api = apiErrors.slice(-3);
+    if (api.length) {
+      lines.push('recent api errors:');
+      api.forEach(item => {
+        const context = item.context || {};
+        lines.push(`- ${context.method || 'GET'} ${context.path || '[redacted]'} ${context.status || ''}`);
+      });
+    }
+    return lines.filter(Boolean).join('\n') || remembered?.message || '';
   }
 
   function showSupportDialog(error, context) {
@@ -345,7 +493,7 @@
         </label>
         <details style="margin-top:2px;">
           <summary>技術的詳細</summary>
-          <pre style="white-space:pre-wrap;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--border);padding:8px;">${esc(remembered.message || '')}</pre>
+          <pre style="white-space:pre-wrap;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--border);padding:8px;">${esc(_supportTechnicalSummary(remembered))}</pre>
         </details>
       </div>
       <div class="btn-row" style="margin-top:12px;flex-shrink:0;">
@@ -362,6 +510,9 @@
       return {
         ...remembered,
         activitySummary: activity,
+        operationLogs: operationLogs.slice(-30),
+        apiErrors: apiErrors.slice(-30),
+        cloudState: _cloudStateDigest(),
         comment,
         kind: 'support-report',
       };
@@ -439,10 +590,12 @@
   }
 
   _installConsoleCapture();
+  _installOperationCapture();
 
   window.MeldexDiagnostics = {
     rememberError,
     captureApiError,
+    recordOperation,
     showSupportDialog,
     showErrorNotice,
     buildDiagnostics,
