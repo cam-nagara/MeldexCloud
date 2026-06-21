@@ -109,6 +109,7 @@
     prepareCloudHomeLaunch,
     markCloudHomeBrowserLaunch,
     markCloudHomeInstalled,
+    openMeldexQuickMemo,
     isStandaloneDisplayMode: _isStandaloneDisplayMode,
     renderMeldexInstallSection,
   };
@@ -116,6 +117,7 @@
   window.installMeldexApp = installMeldexApp;
   window.showMeldexInstallDialog = showMeldexInstallDialog;
   window.showMeldexInstallHelpDialog = showMeldexInstallHelpDialog;
+  window.openMeldexQuickMemo = openMeldexQuickMemo;
   window.prepareMeldexCloudHomeLaunch = prepareCloudHomeLaunch;
   window.renderMeldexInstallSection = renderMeldexInstallSection;
 

@@ -185,6 +185,37 @@
   flex-wrap: wrap;
 }
 
+.meldex-install-options {
+  display: grid;
+  gap: 10px;
+}
+
+.meldex-install-option {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg2) 82%, transparent);
+}
+
+.meldex-install-option-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.meldex-install-option-desc {
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .meldex-install-card--modal .meldex-install-button {
   padding: 6px 10px;
   border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
@@ -199,6 +230,15 @@
   color: var(--fg2);
   border-color: var(--border);
   background: var(--bg3);
+}
+
+.meldex-install-card--modal .meldex-install-quick-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+  color: var(--fg);
+  cursor: pointer;
 }
 
 .meldex-install-prompt-overlay {
@@ -249,6 +289,27 @@
 
 .meldex-cloud-home-status:empty {
   display: none;
+}
+
+.meldex-cloud-home-install-types {
+  display: grid;
+  gap: 8px;
+}
+
+.meldex-cloud-home-install-type {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.meldex-cloud-home-install-type p {
+  margin: 0;
+  color: var(--fg2);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .meldex-cloud-home-first-modal > .meldex-cloud-home-actions {
@@ -335,6 +396,13 @@
   line-height: 1.6;
 }
 
+.meldex-install-help-subtitle {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 .meldex-install-prompt-modal > .btn-row,
 .meldex-install-help-modal > .btn-row {
   margin-top: 0;
@@ -387,5 +455,13 @@
   .settings-about-grid {
     grid-template-columns: 1fr;
     gap: 3px;
+  }
+
+  .meldex-install-option {
+    padding: 9px;
+  }
+
+  .meldex-install-actions button {
+    min-height: 38px;
   }
 }

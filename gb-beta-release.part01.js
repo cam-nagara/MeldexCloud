@@ -343,35 +343,71 @@
     if (_isStandaloneDisplayMode()) return ['Meldexはすでにホーム画面またはアプリ一覧から起動できます。'];
     if (_isIosLike()) {
       return [
-        'SafariでこのMeldexページを開きます。',
+        'SafariでMeldex本体のページを開きます。',
         '共有ボタンを押し、「ホーム画面に追加」を選びます。',
         '表示名を確認し、「追加」を押します。',
       ];
     }
     if (_isAndroidLike()) {
       return [
-        'ChromeまたはEdgeでこのMeldexページを開きます。',
+        'ChromeまたはEdgeでMeldex本体のページを開きます。',
         'ブラウザメニューから「アプリをインストール」または「ホーム画面に追加」を選びます。',
         '確認画面で追加を実行します。',
       ];
     }
     return [
-      'ChromeまたはEdgeでこのMeldexページを開きます。',
+      'ChromeまたはEdgeでMeldex本体のページを開きます。',
       'アドレスバー右側のインストールアイコン、またはブラウザメニューの「アプリをインストール」を選びます。',
       '確認画面でインストールを実行します。',
     ];
   }
 
+  function _quickMemoInstallSteps() {
+    if (_isIosLike()) {
+      return [
+        'クイックメモ画面をSafariで開きます。',
+        '共有ボタンを押し、「ホーム画面に追加」を選びます。',
+        '表示名が「Meldex Memo」になっていることを確認し、「追加」を押します。',
+      ];
+    }
+    if (_isAndroidLike()) {
+      return [
+        'クイックメモ画面をChromeまたはEdgeで開きます。',
+        'ブラウザメニューから「アプリをインストール」または「ホーム画面に追加」を選びます。',
+        '追加後は共有先の「Meldex Memo」からURLや本文を送れます。',
+      ];
+    }
+    return [
+      'クイックメモ画面をChromeまたはEdgeで開きます。',
+      'アドレスバー右側のインストールアイコン、またはブラウザメニューの「アプリをインストール」を選びます。',
+      '追加後は「Meldex Memo」として起動できます。',
+    ];
+  }
+
+  function _quickMemoUrl() {
+    try { return new URL('quick-memo.html', location.href).href; } catch (_) { return 'quick-memo.html'; }
+  }
+
+  function openMeldexQuickMemo() {
+    const url = _quickMemoUrl();
+    const opened = window.open(url, '_blank');
+    if (opened) {
+      try { opened.opener = null; } catch (_) {}
+      return;
+    }
+    location.href = url;
+  }
+
   function _installStatusText() {
-    if (_isStandaloneDisplayMode()) return '追加済みです。ホーム画面やアプリ一覧からMeldexを起動できます。';
-    if (_installPromptEvent) return 'この端末では、Meldexからホーム画面への追加を実行できます。';
+    if (_isStandaloneDisplayMode()) return 'Meldex本体は追加済みです。ホーム画面やアプリ一覧から起動できます。';
+    if (_installPromptEvent) return 'この端末では、Meldex本体の追加確認を開けます。';
     return 'ブラウザ条件により直接追加できない場合は、ボタンから追加手順を確認できます。';
   }
 
   function _installHintText() {
     if (_isStandaloneDisplayMode()) return '現在はアプリ表示で起動しています。';
     if (_installPromptEvent) return 'ボタンを押すとブラウザの確認画面が開きます。';
-    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューから追加します。';
+    return 'iPhone/iPadや一部ブラウザでは、ブラウザメニューから追加します。クイックメモは別画面を開いて追加します。';
   }
 
   function _showInstallStatus(message) {
@@ -475,6 +511,12 @@
     return span;
   }
 
+  function _installOptionTitle(icon, text) {
+    const title = _el('div', { class: 'meldex-install-option-title' });
+    title.append(_iconNode(icon, 14), _el('span', { text }));
+    return title;
+  }
+
   function _refreshInstallUi(root) {
     root = root || document;
     if (!root.querySelectorAll) return;
@@ -493,7 +535,7 @@
       const button = section.querySelector('[data-meldex-install-button]');
       if (button) {
         button.disabled = installed;
-        button.textContent = installed ? '追加済み' : 'ホーム画面に追加';
+        button.textContent = installed ? '本体は追加済み' : 'Meldex本体を追加';
       }
     });
   }
@@ -515,7 +557,7 @@
     title.appendChild(_el('span', { text: 'ホーム画面に追加' }));
     const desc = _el('div', {
       class: modal ? 'meldex-install-desc' : 'gb-section-desc meldex-install-desc',
-      text: '対応ブラウザでは、Meldexをホーム画面やアプリ一覧から直接起動できるようにします。',
+      text: 'Meldex本体とクイックメモは別々にホーム画面へ追加します。用途に合わせて必要なものを追加してください。',
     });
     const status = _el('div', { class: 'meldex-install-status', dataset: { meldexInstallStatus: '1' } });
     const hint = _el('div', { class: 'meldex-install-hint', dataset: { meldexInstallHint: '1' } });
@@ -530,7 +572,36 @@
       if (options.closeOnSuccess && (result?.installed || result?.outcome === 'accepted')) options.closeOnSuccess();
     });
     const actions = _el('div', { class: 'meldex-install-actions' }, [button]);
-    section.append(title, desc, status, hint, actions);
+    const mainOption = _el('div', { class: 'meldex-install-option meldex-install-option--main' }, [
+      _installOptionTitle('monitorSmartphone', 'Meldex本体'),
+      _el('div', {
+        class: 'meldex-install-option-desc',
+        text: 'ワークスペース全体を開く通常のMeldexです。ノート、シート、ボード、チャットを使います。',
+      }),
+      status,
+      hint,
+      actions,
+    ]);
+    const quickButton = _el('button', {
+      type: 'button',
+      class: modal ? 'meldex-install-button meldex-install-quick-button' : 'gb-btn gb-btn-sm meldex-install-quick-button',
+      dataset: { e2eId: modal ? 'install-modal-open-quick-memo-button' : 'settings-install-open-quick-memo-button', meldexQuickMemoInstallButton: '1' },
+      text: 'クイックメモを開く',
+    });
+    quickButton.addEventListener('click', openMeldexQuickMemo);
+    const quickOption = _el('div', { class: 'meldex-install-option meldex-install-option--quick' }, [
+      _installOptionTitle('fileText', 'クイックメモ'),
+      _el('div', {
+        class: 'meldex-install-option-desc',
+        text: '短いメモ、共有URL、ペン入力、音声メモをすばやく保存する軽量画面です。',
+      }),
+      _el('div', {
+        class: 'meldex-install-hint',
+        text: '開いたクイックメモ画面をホーム画面に追加すると、Meldex Memoとして起動できます。',
+      }),
+      _el('div', { class: 'meldex-install-actions' }, [quickButton]),
+    ]);
+    section.append(title, desc, _el('div', { class: 'meldex-install-options' }, [mainOption, quickOption]));
     _refreshInstallUi(section);
     return section;
   }
@@ -554,7 +625,7 @@
     const body = _el('div', { class: 'modal-body meldex-install-prompt-body' }, [
       _el('p', {
         class: 'meldex-install-help-intro',
-        text: 'Meldexをホーム画面やアプリ一覧に追加すると、次回からブラウザのタブを探さずに起動できます。',
+        text: 'Meldex本体とクイックメモは別々にホーム画面へ追加できます。本体はワークスペース全体、クイックメモは短いメモや共有保存に使います。',
       }),
     ]);
     const close = () => {
@@ -622,12 +693,22 @@
       const body = _el('div', { class: 'modal-body meldex-cloud-home-first-body' }, [
         _el('p', {
           class: 'meldex-cloud-home-copy',
-          text: 'Meldexをホーム画面に追加すると、普通のアプリのようにアイコンから起動できます。',
+          text: 'Meldex本体をホーム画面に追加すると、普通のアプリのようにアイコンから起動できます。',
         }),
         _el('p', {
           class: 'meldex-cloud-home-note',
           text: '追加後はホームのMeldexアイコンから開いてください。そこからDropbox設定に進みます。',
         }),
+        _el('div', { class: 'meldex-cloud-home-install-types' }, [
+          _el('div', { class: 'meldex-cloud-home-install-type' }, [
+            _installOptionTitle('monitorSmartphone', 'Meldex本体'),
+            _el('p', { text: 'この画面の「ホームに追加」で追加します。' }),
+          ]),
+          _el('div', { class: 'meldex-cloud-home-install-type' }, [
+            _installOptionTitle('fileText', 'クイックメモ'),
+            _el('p', { text: '初期設定後、設定の「ホーム画面に追加」から別に開いて追加します。' }),
+          ]),
+        ]),
         status,
       ]);
       const buttons = _el('div', { class: 'btn-row meldex-cloud-home-actions' });
@@ -769,11 +850,15 @@
     const body = _el('div', { class: 'modal-body meldex-install-help-body' }, [
       _el('p', {
         class: 'meldex-install-help-intro',
-        text: 'このブラウザではMeldexから追加画面を直接開けないため、次の手順で追加してください。',
+        text: 'このブラウザではMeldex本体の追加画面を直接開けないため、次の手順で追加してください。',
       }),
+      _el('div', { class: 'meldex-install-help-subtitle', text: 'Meldex本体' }),
       _el('ol', { class: 'meldex-install-help-list' }, _installSteps().map(step => _el('li', { text: step }))),
+      _el('div', { class: 'meldex-install-help-subtitle', text: 'クイックメモ' }),
+      _el('ol', { class: 'meldex-install-help-list' }, _quickMemoInstallSteps().map(step => _el('li', { text: step }))),
     ]);
     const buttons = _el('div', { class: 'btn-row' });
+    const quickMemoButton = _el('button', { type: 'button', text: 'クイックメモを開く' });
     const doneButton = options.onManualDone
       ? _el('button', { type: 'button', class: 'primary', text: 'ホームに追加できたら押す' })
       : null;
@@ -789,11 +874,13 @@
       close();
       options.onManualDone?.();
     });
+    quickMemoButton.addEventListener('click', openMeldexQuickMemo);
     closeButton.addEventListener('click', close);
     overlay.addEventListener('click', event => {
       if (event.target === overlay) close();
     });
     document.addEventListener('keydown', onKeydown);
+    buttons.appendChild(quickMemoButton);
     if (doneButton) buttons.appendChild(doneButton);
     buttons.appendChild(closeButton);
     dialog.append(title, body, buttons);
