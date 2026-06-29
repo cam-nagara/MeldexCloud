@@ -194,7 +194,8 @@
       backdrop.style.setProperty('display', 'block', 'important');
       backdrop.classList.add('open');
     }
-    if (withFolderView && typeof showFolderViewForSidebar === 'function') showFolderViewForSidebar();
+    window.MeldexCloudMobileExplorer?.ensure?.();
+    window.MeldexCloudMobileExplorer?.setMode?.(withFolderView ? 'list' : 'tree', { syncFromTree: true });
     return true;
   }
 
@@ -240,8 +241,8 @@
       header.className = 'cloud-mobile-tree-screen-header';
       sidebar.prepend(header);
     }
-    if (header.dataset.cloudMobileHeaderVersion !== '5') {
-      header.dataset.cloudMobileHeaderVersion = '5';
+    if (header.dataset.cloudMobileHeaderVersion !== '6') {
+      header.dataset.cloudMobileHeaderVersion = '6';
       header.replaceChildren();
 
       const menuButton = document.createElement('button');
@@ -261,13 +262,14 @@
       modeSwitch.setAttribute('role', 'group');
       modeSwitch.setAttribute('aria-label', 'フォルダ表示の切り替え');
       const treeModeButton = _mobileTreeModeButton('ツリー', 'tree', true);
-      const panelModeButton = _mobileTreeModeButton('フォルダ', 'panel', false);
+      const panelModeButton = _mobileTreeModeButton('一覧', 'list', false);
       _bindMobileControlActivation(treeModeButton, (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
+        window.MeldexCloudMobileExplorer?.setMode?.('tree');
       });
       _bindMobileControlActivation(panelModeButton, () => {
-        _openSelectedFolderPanelFromTree();
+        window.MeldexCloudMobileExplorer?.setMode?.('list', { syncFromTree: true });
       });
       modeSwitch.appendChild(treeModeButton);
       modeSwitch.appendChild(panelModeButton);
@@ -282,6 +284,7 @@
       addButton.setAttribute('aria-label', '新規作成');
       addButton.innerHTML = _iconHtml('plus', 20, '+');
       _bindMobileControlActivation(addButton, (event) => {
+        if (window.MeldexCloudMobileExplorer?.openCreateSheet?.(addButton)) return;
         _openMobileTreeCreateMenu(event, addButton);
       });
 
@@ -369,14 +372,12 @@
   }
 
   function _openSelectedFolderPanelFromTree() {
-    const target = _selectedFolderPathForTreeAction();
-    if (!target.path || typeof openFolder !== 'function') {
-      if (typeof showStatus === 'function') showStatus('表示するフォルダを選択してください', true);
-      return false;
+    if (window.MeldexCloudMobileExplorer?.setMode) {
+      window.MeldexCloudMobileExplorer.setMode('list', { syncFromTree: true });
+      return true;
     }
-    openFolder(target.name, target.path, { fromExplorer: true, noScrollHighlight: true });
-    closeSidebarDrawer();
-    return true;
+    if (typeof showStatus === 'function') showStatus('フォルダ一覧を読み込み中です', true);
+    return false;
   }
 
   function _openMobileTreeCreateMenu(event, anchor) {
