@@ -413,7 +413,11 @@
       const localResult = await _dropboxJsonRequest(path, requestOpts);
       if (localResult === NOT_HANDLED) {
         _logCompare({ ...logBase, adapter: 'dropbox-unhandled', durationMs: Math.round(performance.now() - started) });
-        throw new Error('ブラウザ版ではまだ未対応の操作です');
+        const err = new Error('この操作を完了できませんでした。画面を更新してもう一度試してください。');
+        err.status = 500;
+        err.code = 'cloud_route_unwired';
+        err.route = String(path || '');
+        throw err;
       }
       _logCompare({ ...logBase, adapter: 'dropbox', durationMs: Math.round(performance.now() - started) });
       return localResult;

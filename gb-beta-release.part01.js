@@ -684,7 +684,7 @@
         'aria-modal': 'true',
         'aria-labelledby': 'meldex-cloud-home-first-title',
       });
-      const title = _el('h3', { id: 'meldex-cloud-home-first-title', text: 'ホームに追加' });
+      const title = _el('h3', { id: 'meldex-cloud-home-first-title', text: 'Meldexをホーム画面に追加' });
       const status = _el('div', {
         class: 'meldex-cloud-home-status',
         role: 'status',
@@ -693,27 +693,27 @@
       const body = _el('div', { class: 'modal-body meldex-cloud-home-first-body' }, [
         _el('p', {
           class: 'meldex-cloud-home-copy',
-          text: 'Meldex本体をホーム画面に追加すると、普通のアプリのようにアイコンから起動できます。',
+          text: 'ホーム画面に追加すると、次回からMeldexアイコンで直接開けます。スマホやタブレットではこの使い方が安定します。',
         }),
         _el('p', {
           class: 'meldex-cloud-home-note',
-          text: '追加後はホームのMeldexアイコンから開いてください。そこからDropbox設定に進みます。',
+          text: '追加しない場合も、このままブラウザで設定を続けられます。Dropbox設定は次の画面で行います。',
         }),
         _el('div', { class: 'meldex-cloud-home-install-types' }, [
           _el('div', { class: 'meldex-cloud-home-install-type' }, [
             _installOptionTitle('monitorSmartphone', 'Meldex本体'),
-            _el('p', { text: 'この画面の「ホームに追加」で追加します。' }),
+            _el('p', { text: '日常的に開く本体アプリです。最初に追加します。' }),
           ]),
           _el('div', { class: 'meldex-cloud-home-install-type' }, [
             _installOptionTitle('fileText', 'クイックメモ'),
-            _el('p', { text: '初期設定後、設定の「ホーム画面に追加」から別に開いて追加します。' }),
+            _el('p', { text: '短いメモや共有保存用です。必要になったら設定から追加できます。' }),
           ]),
         ]),
         status,
       ]);
       const buttons = _el('div', { class: 'btn-row meldex-cloud-home-actions' });
-      const addButton = _el('button', { type: 'button', class: 'primary', text: 'ホームに追加' });
-      const browserButton = _el('button', { type: 'button', text: 'このままブラウザで起動' });
+      const addButton = _el('button', { type: 'button', class: 'primary', text: 'ホーム画面に追加する' });
+      const browserButton = _el('button', { type: 'button', text: 'ブラウザで続ける' });
       function onKeydown(event) {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -741,9 +741,9 @@
         }
         addButton.disabled = false;
         if (result?.outcome === 'dismissed') {
-          status.textContent = 'ホームへの追加はキャンセルされました。もう一度追加するか、ブラウザで起動できます。';
+          status.textContent = 'ホームへの追加はキャンセルされました。もう一度追加するか、ブラウザで続けられます。';
         } else {
-          status.textContent = 'このブラウザでは手順に沿って追加してください。追加しない場合はブラウザで起動できます。';
+          status.textContent = 'このブラウザでは手順に沿って追加してください。追加しない場合はブラウザで続けられます。';
         }
       });
       browserButton.addEventListener('click', continueInBrowser);

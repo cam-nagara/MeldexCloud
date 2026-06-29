@@ -96,7 +96,13 @@ async function showSettingsModal(opts) {
   } catch {}
   // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
-  const settingsTabs = ['全般','テーマ','LLM','LLMコスト','Discord Bot','ユーザー','ワークスペース','取り込み','拡張機能','ショートカット','ゴミ箱','データベース','フィードバック'];
+  const settingsTabGroups = [
+    { label: '基本', tabs: ['全般','テーマ','ユーザー'] },
+    { label: 'AI・連携', tabs: ['LLM','LLMコスト','Discord Bot','拡張機能'] },
+    { label: '作業環境', tabs: ['ワークスペース','取り込み','ショートカット'] },
+    { label: '安全・保守', tabs: ['ゴミ箱','データベース','フィードバック'] },
+  ];
+  const settingsTabs = settingsTabGroups.flatMap(group => group.tabs);
   const settingsTabLabels = {
     'LLM': 'チャットAI',
     'LLMコスト': 'AI使用量',
@@ -154,24 +160,43 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-sidebar-tab:hover{background:var(--bg3);color:var(--fg);}
       .settings-modal .settings-sidebar-tab.active,.settings-modal .settings-sidebar-tab.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-fg-strong);font-weight:600;}
       .settings-modal .settings-sidebar-tab svg{flex:0 0 auto;}
+      .settings-modal .settings-sidebar-group-label{padding:10px 8px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;}
+      .settings-modal .settings-sidebar-group:first-child .settings-sidebar-group-label{padding-top:0;}
+      .settings-modal .settings-nav-group-label{padding:14px 12px 6px;color:var(--fg2);font-size:12px;font-weight:700;}
+      .settings-modal .settings-panel.settings-panel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;align-content:start;}
+      .settings-modal .settings-panel.settings-panel-grid[hidden]{display:none!important;}
+      .settings-modal .settings-panel-grid .gb-section{margin:0;}
+      .settings-modal .settings-panel-grid .settings-section-wide{grid-column:1 / -1;}
+      @media (max-width: 900px){
+        .settings-modal .settings-panel.settings-panel-grid{display:block;}
+        .settings-modal .settings-panel-grid .gb-section{margin-bottom:10px;}
+      }
     </style>
     <!-- モバイル: セクションリスト -->
     ${_isMobile ? `<div id="settings-nav-list" style="overflow-y:auto;flex:1;">
-      ${settingsTabs.map(t =>
-        `<button type="button" class="settings-nav-item" data-target="${t}" data-e2e-id="settings-mobile-tab-${esc(t)}">${settingsTabLabel(t)}</button>`
+      ${settingsTabGroups.map(group =>
+        `<div class="settings-nav-group" data-settings-nav-group="${esc(group.label)}">
+          <div class="settings-nav-group-label">${esc(group.label)}</div>
+          ${group.tabs.map(t => `<button type="button" class="settings-nav-item" data-target="${t}" data-e2e-id="settings-mobile-tab-${esc(t)}">${settingsTabLabel(t)}</button>`).join('')}
+        </div>`
       ).join('')}
     </div>` : ''}
     ${!_isMobile ? `<div class="settings-desktop-layout" style="display:flex;min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--border);">
       <nav id="settings-tab-header" class="settings-sidebar" aria-label="設定カテゴリ" style="width:176px;flex:0 0 176px;padding:12px 10px 12px 0;margin-right:14px;border-right:1px solid var(--border);overflow-y:auto;">
-      ${settingsTabs.map((t,i) =>
-        `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${i===0?' gb-inner-tab-active active':''}" data-tab="${t}" data-e2e-id="settings-tab-${esc(t)}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
+      ${settingsTabGroups.map(group =>
+        `<div class="settings-sidebar-group" data-settings-sidebar-group="${esc(group.label)}">
+          <div class="settings-sidebar-group-label">${esc(group.label)}</div>
+          ${group.tabs.map((t) =>
+            `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${t==='全般'?' gb-inner-tab-active active':''}" data-tab="${t}" data-e2e-id="settings-tab-${esc(t)}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
+          ).join('')}
+        </div>`
       ).join('')}
       </nav>
       <div class="settings-desktop-panel" style="min-width:0;flex:1;display:flex;flex-direction:column;">` : ''}
     <!-- タブ内容 -->
     <div style="overflow-y:auto;flex:1;">
     <!-- 全般 -->
-    <div class="settings-panel" data-panel="全般">
+    <div class="settings-panel settings-panel-grid settings-panel-grid--general" data-panel="全般">
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('home',14)} ホームフォルダ</div>
         <div class="gb-section-desc">Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります。</div>
@@ -180,7 +205,7 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ</div>
         <div class="gb-section-desc">フォルダツリーに表示するフォルダを管理します。</div>
         <div id="modal-outliner-roots"><div class="gb-section-desc">読み込み中...</div></div>
@@ -205,7 +230,7 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm" data-action="closeSettingsModalRestoringTheme(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">保存先を設定...</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続</div>
         <div class="gb-section-desc">このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください。</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
@@ -221,7 +246,7 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
-      <section class="gb-section gb-section--boxed" id="settings-default-apps-section">
+      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section">
         <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ</div>
         <div class="gb-section-desc">Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます。</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
@@ -235,7 +260,7 @@ async function showSettingsModal(opts) {
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ</div>
         <div class="gb-section-desc">このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません。</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>

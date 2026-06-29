@@ -466,7 +466,8 @@ function switchSettingsTab(el) {
     window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: tabName });
   } catch {}
   // タブヘッダー (gb-inner-tab-active クラス切替、旧インライン style をクリア)
-  el.parentElement.querySelectorAll('.settings-tab').forEach(t => {
+  const tabHeader = el.closest('#settings-tab-header') || el.parentElement;
+  tabHeader.querySelectorAll('.settings-tab').forEach(t => {
     const active = t.dataset.tab === tabName;
     t.classList.toggle('gb-inner-tab-active', active);
     t.classList.toggle('active', active);

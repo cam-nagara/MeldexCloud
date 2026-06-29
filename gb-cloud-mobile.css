@@ -101,7 +101,7 @@
     min-height: calc(54px + var(--cloud-mobile-safe-top, 0px));
     padding: calc(6px + var(--cloud-mobile-safe-top, 0px)) max(10px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-columns: 44px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 12px;
     border-bottom: 1px solid var(--border, #333);
@@ -109,12 +109,41 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-screen-title {
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 700;
     color: var(--fg, #d4d4d4);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-mode-switch {
+    min-width: 0;
+    display: inline-grid;
+    grid-template-columns: repeat(2, minmax(54px, 1fr));
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    background: var(--bg, #1f1f1f);
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-mode {
+    min-width: 0;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg2, #969696);
+    font-size: 13px;
+    font-weight: 600;
+    touch-action: manipulation;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-mode[aria-pressed="true"] {
+    background: var(--bg3, #2d2d2d);
+    color: var(--fg, #d4d4d4);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-actions {
@@ -129,6 +158,7 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-menu,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-add,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-refresh {
     width: 44px;
     height: 44px;
@@ -250,6 +280,24 @@
     width: 32px;
     height: 32px;
     touch-action: manipulation;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-tree-create-menu {
+    min-width: 176px;
+    z-index: 10120;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-tree-create-menu .cloud-mobile-tree-create-item {
+    width: 100%;
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    font: inherit;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .fav-more-btn {

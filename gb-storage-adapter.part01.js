@@ -174,6 +174,10 @@
     return options || {};
   }
 
+  const DROPBOX_FILE_CACHE_TTL_MS = 20 * 1000;
+  const DROPBOX_FILE_CACHE_MAX_ENTRIES = 24;
+  const DROPBOX_FILE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+
   function _apiUrl(path, query) {
     if (_resource()?.apiUrl) return _resource().apiUrl(path, query);
     const relative = '/api' + (String(path || '').startsWith('/') ? String(path || '') : ('/' + String(path || '')));
@@ -364,6 +368,8 @@
     constructor() {
       this.rootHandle = null;
       this._metaCache = new Map();
+      this._fileCache = new Map();
+      this._fileDownloadInFlight = new Map();
       this._recentConflictCopies = new Map();
     }
 
@@ -412,9 +418,77 @@
       this._metaCache.set(_normalizeRelativePath(relativePath), meta || null);
     }
 
+    _fileCacheMetaKey(meta) {
+      return String(meta?.rev || meta?.content_hash || meta?.server_modified || meta?.client_modified || '');
+    }
+
+    _rememberDownloadedFile(relativePath, file, meta) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const size = Number(file?.size || meta?.size || 0);
+      if (!normalized || !file || size > DROPBOX_FILE_CACHE_MAX_BYTES) {
+        this._fileCache.delete(normalized);
+        return;
+      }
+      this._fileCache.set(normalized, {
+        file,
+        metaKey: this._fileCacheMetaKey(meta),
+        size,
+        at: Date.now(),
+      });
+      while (this._fileCache.size > DROPBOX_FILE_CACHE_MAX_ENTRIES) {
+        const firstKey = this._fileCache.keys().next().value;
+        if (!firstKey) break;
+        this._fileCache.delete(firstKey);
+      }
+    }
+
+    _cachedDownloadedFile(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const cached = this._fileCache.get(normalized);
+      if (!cached) return null;
+      if (Date.now() - Number(cached.at || 0) > DROPBOX_FILE_CACHE_TTL_MS) {
+        this._fileCache.delete(normalized);
+        return null;
+      }
+      if (this._metaCache.has(normalized)) {
+        const meta = this._metaCache.get(normalized);
+        if (!meta || meta['.tag'] !== 'file') {
+          this._fileCache.delete(normalized);
+          return null;
+        }
+        const currentMetaKey = this._fileCacheMetaKey(meta);
+        if (cached.metaKey && currentMetaKey && cached.metaKey !== currentMetaKey) {
+          this._fileCache.delete(normalized);
+          return null;
+        }
+      }
+      this._fileCache.delete(normalized);
+      this._fileCache.set(normalized, { ...cached, at: Date.now() });
+      return cached.file;
+    }
+
+    _forgetFileCache(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) {
+        this._fileCache.clear();
+        this._fileDownloadInFlight.clear();
+        return;
+      }
+      this._fileCache.delete(normalized);
+      this._fileDownloadInFlight.delete(normalized);
+      const prefix = normalized + '/';
+      [...this._fileCache.keys()].forEach((key) => {
+        if (key.startsWith(prefix)) this._fileCache.delete(key);
+      });
+      [...this._fileDownloadInFlight.keys()].forEach((key) => {
+        if (key.startsWith(prefix)) this._fileDownloadInFlight.delete(key);
+      });
+    }
+
     _forgetMeta(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       this._metaCache.delete(normalized);
+      this._forgetFileCache(normalized);
       const prefix = normalized ? (normalized + '/') : '';
       [...this._metaCache.keys()].forEach((key) => {
         if (prefix && key.startsWith(prefix)) this._metaCache.delete(key);
@@ -456,6 +530,8 @@
     async clearWorkspace() {
       this.rootHandle = null;
       this._metaCache.clear();
+      this._fileCache.clear();
+      this._fileDownloadInFlight.clear();
       this._recentConflictCopies.clear();
     }
 
@@ -737,16 +813,30 @@
 
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
-      const response = await this._content('files/download', { path: this._dropboxPath(normalized) });
-      const resultHeader = response.headers.get('dropbox-api-result');
-      const meta = _safeJsonParse(resultHeader, null) || {};
-      this._rememberMeta(normalized, meta);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      const modified = meta.server_modified || meta.client_modified || '';
-      return _createFile(bytes, meta.name || _basename(normalized), {
-        type: response.headers.get('content-type') || _mimeFromPath(normalized),
-        lastModified: _jsonDate(modified),
-      });
+      const cached = this._cachedDownloadedFile(normalized);
+      if (cached) return cached;
+      const inFlight = this._fileDownloadInFlight.get(normalized);
+      if (inFlight) return inFlight;
+      const promise = (async () => {
+        const response = await this._content('files/download', { path: this._dropboxPath(normalized) });
+        const resultHeader = response.headers.get('dropbox-api-result');
+        const meta = _safeJsonParse(resultHeader, null) || {};
+        this._rememberMeta(normalized, meta);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const modified = meta.server_modified || meta.client_modified || '';
+        const file = _createFile(bytes, meta.name || _basename(normalized), {
+          type: response.headers.get('content-type') || _mimeFromPath(normalized),
+          lastModified: _jsonDate(modified),
+        });
+        this._rememberDownloadedFile(normalized, file, meta);
+        return file;
+      })();
+      this._fileDownloadInFlight.set(normalized, promise);
+      try {
+        return await promise;
+      } finally {
+        if (this._fileDownloadInFlight.get(normalized) === promise) this._fileDownloadInFlight.delete(normalized);
+      }
     }
 
     async getTemporaryLink(relativePath) {
@@ -782,6 +872,10 @@
       });
       const meta = await response.json();
       this._rememberMeta(normalized, meta);
+      this._rememberDownloadedFile(normalized, _createFile(bytes, meta.name || _basename(normalized), {
+        type: _mimeFromPath(normalized),
+        lastModified: _jsonDate(meta.server_modified || meta.client_modified || ''),
+      }), meta);
       return meta;
     }
 
@@ -939,6 +1033,8 @@
 
     async preflight() {
       this._metaCache.clear();
+      this._fileCache.clear();
+      this._fileDownloadInFlight.clear();
       const vaultPath = this.getVaultPath();
       if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
       const mountInfo = await this.findMountedFolderByPath();

@@ -53,10 +53,10 @@
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',
     },
     {
-      test: info => info.status === 501 || /ブラウザ版ではまだ未対応|クラウド版では未対応|未対応の操作|not implemented/i.test(info.raw),
-      title: 'クラウド版では未対応の操作です',
-      message: 'この設定または操作は、現在のクラウド版では使えません。',
-      action: '必要な場合はデスクトップ版で実行するか、クラウド版で対応済みの操作に切り替えてください。',
+      test: info => info.status === 501 || /not implemented|cloud_route_unwired/i.test(info.raw),
+      title: '操作を完了できませんでした',
+      message: '画面の操作とクラウド保存先の接続に問題があります。',
+      action: '画面を更新してもう一度試し、繰り返す場合はサポートに送信してください。',
     },
     {
       test: info => /sqlite|database is locked|database disk image/i.test(info.raw),

@@ -110,7 +110,7 @@
 
   async function _renderNotionSyncSettings(container, options = {}) {
     if (_isCloudMode()) {
-      container.textContent = 'Notion同期はMeldex Cloud BETAでは未対応です。デスクトップ版でローカルからNotionへの片方向pushを使用してください。';
+      container.textContent = 'Notion同期はデスクトップ版のローカル連携です。クラウド版で制作データを開いている場合も、Notionへの片方向pushはデスクトップ版から実行してください。';
       return;
     }
     let cfg = {};

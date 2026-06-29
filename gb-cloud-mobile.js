@@ -240,8 +240,8 @@
       header.className = 'cloud-mobile-tree-screen-header';
       sidebar.prepend(header);
     }
-    if (header.dataset.cloudMobileHeaderVersion !== '4') {
-      header.dataset.cloudMobileHeaderVersion = '4';
+    if (header.dataset.cloudMobileHeaderVersion !== '5') {
+      header.dataset.cloudMobileHeaderVersion = '5';
       header.replaceChildren();
 
       const menuButton = document.createElement('button');
@@ -254,10 +254,36 @@
 
       const title = document.createElement('strong');
       title.className = 'cloud-mobile-tree-screen-title';
-      title.textContent = 'フォルダツリー / BETA';
+      title.textContent = 'フォルダ';
+
+      const modeSwitch = document.createElement('div');
+      modeSwitch.className = 'cloud-mobile-tree-mode-switch';
+      modeSwitch.setAttribute('role', 'group');
+      modeSwitch.setAttribute('aria-label', 'フォルダ表示の切り替え');
+      const treeModeButton = _mobileTreeModeButton('ツリー', 'tree', true);
+      const panelModeButton = _mobileTreeModeButton('フォルダ', 'panel', false);
+      _bindMobileControlActivation(treeModeButton, (event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+      });
+      _bindMobileControlActivation(panelModeButton, () => {
+        _openSelectedFolderPanelFromTree();
+      });
+      modeSwitch.appendChild(treeModeButton);
+      modeSwitch.appendChild(panelModeButton);
 
       const actions = document.createElement('div');
       actions.className = 'cloud-mobile-tree-actions';
+
+      const addButton = document.createElement('button');
+      addButton.type = 'button';
+      addButton.className = 'cloud-mobile-tree-add';
+      addButton.title = '新規作成';
+      addButton.setAttribute('aria-label', '新規作成');
+      addButton.innerHTML = _iconHtml('plus', 20, '+');
+      _bindMobileControlActivation(addButton, (event) => {
+        _openMobileTreeCreateMenu(event, addButton);
+      });
 
       const refreshButton = document.createElement('button');
       refreshButton.type = 'button';
@@ -270,12 +296,138 @@
         if (typeof refreshOutliner === 'function') return refreshOutliner();
       });
 
+      actions.appendChild(addButton);
       actions.appendChild(refreshButton);
       header.appendChild(menuButton);
       header.appendChild(title);
+      header.appendChild(modeSwitch);
       header.appendChild(actions);
     }
     _ensureSidebarDismissHandle(sidebar);
+  }
+
+  function _mobileTreeModeButton(label, mode, active) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cloud-mobile-tree-mode';
+    button.dataset.mode = mode;
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.textContent = label;
+    return button;
+  }
+
+  function _activeTreeNodeData() {
+    const selectors = [
+      '#sidebar .tree-node-row.active',
+      '#sidebar .tree-node-row.selected',
+      '#sidebar .tree-node-row[data-active-workspace="true"]',
+    ];
+    for (const selector of selectors) {
+      const row = document.querySelector(selector);
+      const node = row?.closest?.('.tree-node');
+      if (node?._nodeData) return { node, data: node._nodeData };
+    }
+    const firstRoot = document.querySelector('#outliner-tree > .tree-node');
+    return firstRoot?._nodeData ? { node: firstRoot, data: firstRoot._nodeData } : null;
+  }
+
+  function _treeNodeCanActAsContainer(data, includeDatabase = false) {
+    const type = String(data?.type || '').toLowerCase();
+    return !!data?.path && (data._isRoot || type === 'folder' || (includeDatabase && type === 'database'));
+  }
+
+  function _treeNodeTargetFromData(data) {
+    return { path: data.path, name: data.name || data.path.split(/[\\/]/).pop() || 'フォルダ' };
+  }
+
+  function _selectedFolderPathForTreeAction(options = {}) {
+    const includeDatabase = options.includeDatabase === true;
+    const active = _activeTreeNodeData();
+    const data = active?.data || null;
+    if (_treeNodeCanActAsContainer(data, includeDatabase)) {
+      return _treeNodeTargetFromData(data);
+    }
+    let parent = active?.node?.parentElement?.closest?.('.tree-node') || null;
+    while (parent) {
+      const parentData = parent._nodeData || null;
+      if (_treeNodeCanActAsContainer(parentData, includeDatabase)) {
+        return _treeNodeTargetFromData(parentData);
+      }
+      parent = parent.parentElement?.closest?.('.tree-node') || null;
+    }
+    try {
+      if (typeof _folderPath !== 'undefined' && _folderPath) {
+        return { path: _folderPath, name: _folderPath.split(/[\\/]/).pop() || 'フォルダ' };
+      }
+    } catch {}
+    const firstRoot = document.querySelector('#outliner-tree > .tree-node');
+    if (firstRoot?._nodeData?.path) {
+      const rootData = firstRoot._nodeData;
+      return { path: rootData.path, name: rootData.name || rootData.path.split(/[\\/]/).pop() || 'フォルダ' };
+    }
+    return { path: '', name: '' };
+  }
+
+  function _openSelectedFolderPanelFromTree() {
+    const target = _selectedFolderPathForTreeAction();
+    if (!target.path || typeof openFolder !== 'function') {
+      if (typeof showStatus === 'function') showStatus('表示するフォルダを選択してください', true);
+      return false;
+    }
+    openFolder(target.name, target.path, { fromExplorer: true, noScrollHighlight: true });
+    closeSidebarDrawer();
+    return true;
+  }
+
+  function _openMobileTreeCreateMenu(event, anchor) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    document.querySelectorAll('.cloud-mobile-tree-create-menu').forEach(menu => menu.remove());
+    const target = _selectedFolderPathForTreeAction({ includeDatabase: true });
+    if (!target.path) {
+      if (typeof showStatus === 'function') showStatus('作成先フォルダを選択してください', true);
+      return false;
+    }
+    const items = [
+      ['フォルダ', 'folder', 'folder'],
+      ['ノート', 'page', 'fileText'],
+      ['シナリオ', 'scriptnote', 'bookOpenText'],
+      ['シート', 'database', 'table2'],
+      ['ボード', 'board', 'presentation'],
+      ['スマートシート', 'smart-db', 'database'],
+    ];
+    const filtered = window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(items) || items;
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu cloud-mobile-tree-create-menu';
+    menu.setAttribute('role', 'menu');
+    filtered.forEach(([label, type, icon]) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'gb-context-menu-item cloud-mobile-tree-create-item';
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = '<span class="menu-icon">' + _iconHtml(icon, 14, '') + '</span><span>' + label + '</span>';
+      item.addEventListener('click', async () => {
+        menu.remove();
+        if (typeof addItemAt === 'function') await addItemAt(target.path, type);
+      });
+      menu.appendChild(item);
+    });
+    document.body.appendChild(menu);
+    const rect = anchor?.getBoundingClientRect?.() || { left: 12, bottom: 54 };
+    const z = parseFloat(document.documentElement.style.zoom) || 1;
+    menu.style.left = (rect.left / z) + 'px';
+    menu.style.top = (rect.bottom / z + 4) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    setTimeout(() => {
+      const closer = (ev) => {
+        if (!menu.contains(ev.target) && ev.target !== anchor) {
+          menu.remove();
+          document.removeEventListener('pointerdown', closer, true);
+        }
+      };
+      document.addEventListener('pointerdown', closer, true);
+    }, 0);
+    return true;
   }
 
   function _ensurePaneTreeBackButtons() {
