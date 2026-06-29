@@ -900,11 +900,23 @@ function _perfTargetLabelFromPath(path) {
   }
 }
 
+const _apiFetchObservedGetEndpoints = new Set([
+  '/outliner-roots',
+  '/db-metadata',
+  '/pivot',
+  '/browse',
+  '/check-type',
+  '/file',
+  '/file-meta',
+  '/smart-db',
+  '/global-index',
+]);
+
 function _apiFetchPerfInfo(path) {
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
     const endpoint = url.pathname || '';
-    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return null;
+    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return null;
     return {
       endpoint,
       label: 'api' + endpoint,
@@ -918,11 +930,14 @@ function _apiFetchPerfInfo(path) {
 const _apiFetchInFlightGets = new Map();
 
 function _apiFetchInFlightKey(path, opts) {
-  if (opts && Object.keys(opts).length > 0) return '';
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (method !== 'GET') return '';
+  const nonBenignKeys = Object.keys(opts || {}).filter(key => key !== 'silentError');
+  if (nonBenignKeys.length > 0) return '';
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
     const endpoint = url.pathname || '';
-    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return '';
+    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return '';
     return endpoint + '?' + url.searchParams.toString();
   } catch {
     return '';

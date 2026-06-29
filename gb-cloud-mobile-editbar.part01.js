@@ -65,6 +65,7 @@
     { label: 'シナリオ', icon: 'bookPlus', type: 'scriptnote' },
     { label: 'シート', icon: 'tableProperties', type: 'database' },
     { label: 'ボード', icon: 'presentation', type: 'board' },
+    { label: 'スマートシート', icon: 'database', type: 'smart-db' },
     { label: 'カレンダー', icon: 'calendarPlus', type: 'calendar' },
   ];
   const EDITBAR_ITEMS = [
@@ -137,6 +138,11 @@
   let _savedRange = null;
   let _refreshTimer = 0;
   let _viewportState = {};
+
+  function _mobileWriteBlocked() {
+    const dataset = document.body?.dataset || {};
+    return dataset.cloudReadonly === '1' || dataset.cloudQuotaBlocked === '1';
+  }
 
   function _isEnabled() {
     return !!window.MeldexCloudMobile?.isMobileEditingUiEnabled?.()
@@ -858,7 +864,9 @@
 
     if (LAYOUT_ITEMS.length) _appendSheetSection(sheet, 'レイアウト', LAYOUT_ITEMS);
     _appendSheetSection(sheet, 'パネル', PANEL_ITEMS);
-    _appendSheetSection(sheet, 'ツール', TOOL_ITEMS);
+    _appendSheetSection(sheet, 'ツール', _mobileWriteBlocked()
+      ? TOOL_ITEMS.filter(item => item.label !== '新規作成')
+      : TOOL_ITEMS);
 
     _menuOverlay.appendChild(sheet);
     _menuOverlay.addEventListener('pointerdown', (event) => {

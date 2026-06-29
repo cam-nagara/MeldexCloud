@@ -74,7 +74,8 @@
   function _normalizeVaultPath(path) {
     const normalized = String(path || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/');
     if (!normalized) return '';
-    return normalized.startsWith('/') ? normalized : ('/' + normalized);
+    const withLeadingSlash = normalized.startsWith('/') ? normalized : ('/' + normalized);
+    return withLeadingSlash === '/' ? '/' : withLeadingSlash.replace(/\/+$/, '');
   }
 
   function _readStorage(key, fallbackValue) {

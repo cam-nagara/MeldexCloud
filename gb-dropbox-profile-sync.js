@@ -66,6 +66,13 @@
     return name && name !== 'anonymous' ? name : '';
   }
 
+  function _hasLocalProfileData() {
+    return !!(_usableLocalDisplayName()
+      || _readStorage(LOCAL_AVATAR_KEY, '')
+      || _readStorage(LOCAL_AVATAR_SPEC_KEY, '')
+      || _readStorage(LOCAL_AVATAR_BG_KEY, ''));
+  }
+
   function _normalizeColor(value) {
     const text = String(value || '').trim();
     return /^#[0-9a-f]{6}$/i.test(text) ? text : '';
@@ -83,7 +90,7 @@
 
   function _normalizeProfile(account, value, at) {
     const accountId = String(value?.accountId || _accountId(account) || '').trim();
-    const displayName = String(value?.displayName || value?.name || '').trim();
+    const displayName = String(value?.displayName || value?.name || _accountDisplayName(account) || '').trim();
     return {
       accountId,
       displayName,
@@ -114,7 +121,7 @@
   function _isLocalProfileNewer(accountId, sharedUpdatedAt) {
     const localAccountId = _readStorage(LOCAL_ACCOUNT_KEY, '');
     if (!accountId || localAccountId !== accountId) return false;
-    if (!_usableLocalDisplayName()) return false;
+    if (!_hasLocalProfileData()) return false;
     const localTime = Date.parse(_readStorage(LOCAL_UPDATED_KEY, ''));
     const sharedTime = Date.parse(String(sharedUpdatedAt || ''));
     if (!Number.isFinite(localTime)) return false;
@@ -213,7 +220,8 @@
   }
 
   async function _shouldUseSharedProfile() {
-    return _hasDropboxBackedSourceFolder();
+    if (await _hasDropboxBackedSourceFolder()) return true;
+    return !!_accountId(await _getCurrentAccount(false));
   }
 
   async function _getCurrentAccount(refresh) {
@@ -342,8 +350,18 @@
     if (sharedRaw && typeof sharedRaw === 'object') {
       const shared = _normalizeProfile(account, sharedRaw);
       if (_isLocalProfileNewer(accountId, shared.updatedAt)) {
-        const saved = await saveCurrentProfile({ updatedAt: _readStorage(LOCAL_UPDATED_KEY, '') || _nowIso() });
-        return { ok: true, source: saved.ok ? 'local-newer' : 'local', profile: _localProfile(account) };
+        const updatedAt = _readStorage(LOCAL_UPDATED_KEY, '') || _nowIso();
+        const mergedLocal = _normalizeProfile(account, {
+          ...shared,
+          displayName: _usableLocalDisplayName() || shared.displayName || _accountDisplayName(account),
+          avatar: _readStorage(LOCAL_AVATAR_KEY, ''),
+          avatarSpec: _readStorage(LOCAL_AVATAR_SPEC_KEY, ''),
+          avatarBg: _readStorage(LOCAL_AVATAR_BG_KEY, ''),
+          updatedAt,
+        }, updatedAt);
+        const saved = await saveCurrentProfile(mergedLocal);
+        const applied = _applyProfileToLocal(saved.ok ? saved.profile : mergedLocal);
+        return { ok: true, source: saved.ok ? 'local-newer' : 'local', profile: applied };
       }
       const applied = _applyProfileToLocal(shared);
       return { ok: true, source: 'dropbox', profile: applied };
@@ -396,6 +414,7 @@
       normalizeStore: _normalizeStore,
       isLocalProfileNewer: _isLocalProfileNewer,
       shouldUseSharedProfile: _shouldUseSharedProfile,
+      hasLocalProfileData: _hasLocalProfileData,
     },
   };
 })();

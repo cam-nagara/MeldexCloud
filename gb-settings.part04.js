@@ -811,6 +811,7 @@ const _UI_STRUCTURED_KEYS = [
 const _UI_DYNAMIC_PREFIXES = [
   'dbViewConfig:', 'validationRules:', 'entityTemplates:', 'chat-model:', 'chat-models:', 'chat-custom-about:', 'chat-custom-instructions:',
 ];
+const _SETTINGS_PROFILE_KEYS = ['meldex-user', 'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg'];
 
 function _settingsDialogStorageKeys() {
   const keys = [..._UI_CONFIG_KEYS, ..._UI_STRUCTURED_KEYS];
@@ -840,7 +841,7 @@ function _restoreSettingsDialogStorageAfterHistory(keys) {
   if (keys.some(key => key === 'editor-theme' || key === 'editor-theme-name' || key.startsWith('meldex-theme-'))) {
     if (typeof loadColorSettings === 'function') loadColorSettings();
   }
-  if (keys.includes('meldex-user')) {
+  if (keys.some(key => _SETTINGS_PROFILE_KEYS.includes(key))) {
     if (typeof updateUserIcon === 'function') updateUserIcon();
     if (typeof updateLeftChromeUser === 'function') updateLeftChromeUser();
   }

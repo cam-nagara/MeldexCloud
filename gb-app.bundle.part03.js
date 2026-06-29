@@ -381,11 +381,23 @@ function _perfTargetLabelFromPath(path) {
   }
 }
 
+const _apiFetchObservedGetEndpoints = new Set([
+  '/outliner-roots',
+  '/db-metadata',
+  '/pivot',
+  '/browse',
+  '/check-type',
+  '/file',
+  '/file-meta',
+  '/smart-db',
+  '/global-index',
+]);
+
 function _apiFetchPerfInfo(path) {
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
     const endpoint = url.pathname || '';
-    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return null;
+    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return null;
     return {
       endpoint,
       label: 'api' + endpoint,
@@ -399,11 +411,14 @@ function _apiFetchPerfInfo(path) {
 const _apiFetchInFlightGets = new Map();
 
 function _apiFetchInFlightKey(path, opts) {
-  if (opts && Object.keys(opts).length > 0) return '';
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (method !== 'GET') return '';
+  const nonBenignKeys = Object.keys(opts || {}).filter(key => key !== 'silentError');
+  if (nonBenignKeys.length > 0) return '';
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
     const endpoint = url.pathname || '';
-    if (!['/outliner-roots', '/db-metadata', '/pivot'].includes(endpoint)) return '';
+    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return '';
     return endpoint + '?' + url.searchParams.toString();
   } catch {
     return '';
@@ -882,19 +897,3 @@ function getMyRoleForPath(filePath) {
   }
   return matchedRole || _myTeamRole;
 }
-
-// doLogin / ログイン画面は廃止（チーム方式に移行）
-
-// localStorage移行（旧CrossFolio → Meldex、一度だけ実行）
-(function migrateLocalStorage() {
-  if (localStorage.getItem('gb:migrated')) return;
-  const migrations = {
-    'crossfolio-auth-token': 'meldex-auth-token',
-    'crossfolio-user': 'meldex-user',
-    'crossfolio-recent': 'meldex-recent',
-    'crossfolio-theme-vars': 'meldex-theme-vars',
-    'crossfolio-favorites': 'meldex-favorites',
-    'cf-cal-start-day': 'gb-cal-start-day',
-  };
-  for (const [oldKey, newKey] of Object.entries(migrations)) {
-    const val = localStorage.getItem(oldKey);

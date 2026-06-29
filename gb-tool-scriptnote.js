@@ -1029,7 +1029,13 @@ class ScriptNoteComponent extends ToolComponent {
       }
       if (!options.skipStatus && typeof showStatus === 'function') showStatus('シナリオの読み込みに失敗: ' + err.message, true);
     } finally {
-      if (showGlobalLoading) hideLoading();
+      if (showGlobalLoading) {
+        hideLoading();
+        if (typeof hideLoadingMessage === 'function') {
+          hideLoadingMessage('シナリオを読み込み中...');
+          hideLoadingMessage('大きいシナリオを描画中...');
+        }
+      }
     }
   }
 }

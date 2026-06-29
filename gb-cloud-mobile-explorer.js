@@ -11,13 +11,14 @@
     ['スマートシート', 'smart-db', 'database'],
     ['カレンダー', 'calendar', 'calendarPlus'],
   ];
-  const CONTAINER_TYPES = new Set(['folder']);
+  const CONTAINER_TYPES = new Set(['folder', 'database']);
   const MODE_STORAGE_KEY = 'meldex-cloud-mobile-explorer-mode';
   let _mode = 'tree';
   let _currentFolder = null;
   let _listSeq = 0;
   let _treeClickBridgeInstalled = false;
   let _createOverlay = null;
+  let _itemMenuOverlay = null;
 
   function _isEnabled() {
     return !!window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
@@ -64,6 +65,33 @@
     };
   }
 
+  function _isWriteBlocked() {
+    const dataset = document.body?.dataset || {};
+    return dataset.cloudReadonly === '1' || dataset.cloudQuotaBlocked === '1';
+  }
+
+  function _writeBlockedMessage() {
+    return document.body?.dataset?.cloudQuotaBlocked === '1'
+      ? '保存容量を確認してください'
+      : 'この保存先は閲覧のみです';
+  }
+
+  function _isLockedPath(path) {
+    try {
+      return !!(path && typeof isItemLocked === 'function' && isItemLocked(path));
+    } catch {
+      return false;
+    }
+  }
+
+  function _canCreateIn(target) {
+    return !!target?.path && !_isWriteBlocked() && !_isLockedPath(target.path);
+  }
+
+  function _canMutateItem(item) {
+    return !!item?.path && !_isWriteBlocked() && !_isLockedPath(item.path);
+  }
+
   function _activeTreeNodeData() {
     const selectors = [
       '#sidebar .tree-node-row.active',
@@ -104,15 +132,13 @@
     return firstRoot?._nodeData?.path ? _targetFromData(firstRoot._nodeData) : null;
   }
 
+  function currentFolderTarget() {
+    return _currentFolder?.path ? { ..._currentFolder } : null;
+  }
+
   function _findTreeNodeByPath(path) {
     const normalized = _normalizePath(path);
     if (!normalized) return null;
-    try {
-      if (typeof _findTreeNodeByPath === 'function') {
-        const found = _findTreeNodeByPath(path);
-        if (found) return found;
-      }
-    } catch {}
     return Array.from(document.querySelectorAll('#sidebar .tree-node')).find((node) => {
       return _normalizePath(node._nodeData?.path || node.dataset.path || '') === normalized;
     }) || null;
@@ -191,6 +217,23 @@
     return button;
   }
 
+  function _syncCreateButtonState() {
+    const sidebar = _sidebar();
+    const button = sidebar?.querySelector('#cloud-mobile-explorer-create-button');
+    if (!button) return;
+    const target = _createTarget();
+    const blocked = _isWriteBlocked();
+    const disabled = blocked || !target?.path || _isLockedPath(target?.path);
+    button.hidden = blocked;
+    button.disabled = disabled;
+    button.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    button.title = blocked
+      ? _writeBlockedMessage()
+      : disabled
+        ? '作成先フォルダを選択してください'
+        : '新規作成';
+  }
+
   function ensure() {
     if (!_isEnabled()) return false;
     const sidebar = _sidebar();
@@ -199,6 +242,7 @@
     _ensureListPane(sidebar);
     _ensureFab(sidebar);
     _installTreeClickBridge();
+    _syncCreateButtonState();
     return true;
   }
 
@@ -311,6 +355,7 @@
       const target = selectedFolderTarget();
       if (target?.path) _currentFolder = target;
     }
+    _syncCreateButtonState();
     if (!_currentFolder?.path) {
       _syncListHeader(pane, { name: 'フォルダ', path: '' }, 0);
       _setListState(pane, 'empty', '表示するフォルダを選択してください');
@@ -340,7 +385,13 @@
     if (!items.length) {
       const empty = document.createElement('div');
       empty.className = 'cloud-mobile-explorer-empty';
-      empty.innerHTML = '<strong>このフォルダは空です</strong><span>右下の「＋」から作成できます。</span>';
+      const title = document.createElement('strong');
+      title.textContent = 'このフォルダは空です';
+      const detail = document.createElement('span');
+      detail.textContent = _isWriteBlocked()
+        ? _writeBlockedMessage()
+        : '右下の「＋」から作成できます。';
+      empty.append(title, detail);
       list.appendChild(empty);
       return;
     }
@@ -352,29 +403,49 @@
   function _itemRow(item) {
     const type = String(item?.type || '').toLowerCase();
     const isFolder = type === 'folder';
-    const row = document.createElement('button');
-    row.type = 'button';
+    const row = document.createElement('div');
     row.className = 'cloud-mobile-explorer-row';
     row.dataset.itemType = type;
     row.setAttribute('role', 'listitem');
-    row.innerHTML = [
+    const openButton = document.createElement('button');
+    openButton.type = 'button';
+    openButton.className = 'cloud-mobile-explorer-row-open';
+    openButton.setAttribute('aria-label', (item?.name || item?.label || '無題') + 'を開く');
+    openButton.innerHTML = [
       '<span class="cloud-mobile-explorer-row-icon" aria-hidden="true"></span>',
       '<span class="cloud-mobile-explorer-row-main">',
       '  <span class="cloud-mobile-explorer-row-title"></span>',
       '  <span class="cloud-mobile-explorer-row-meta"></span>',
       '</span>',
-      '<span class="cloud-mobile-explorer-row-next" aria-hidden="true"></span>',
     ].join('');
-    row.querySelector('.cloud-mobile-explorer-row-icon').innerHTML = _iconHtml(_itemIcon(item), 20, '');
-    row.querySelector('.cloud-mobile-explorer-row-title').textContent = item?.name || item?.label || '無題';
-    row.querySelector('.cloud-mobile-explorer-row-meta').textContent = _itemTypeLabel(item);
-    row.querySelector('.cloud-mobile-explorer-row-next').innerHTML = isFolder ? _iconHtml('chevronRight', 18, '>') : '';
-    row.addEventListener('click', (event) => {
+    openButton.querySelector('.cloud-mobile-explorer-row-icon').innerHTML = _iconHtml(_itemIcon(item), 20, '');
+    openButton.querySelector('.cloud-mobile-explorer-row-title').textContent = item?.name || item?.label || '無題';
+    openButton.querySelector('.cloud-mobile-explorer-row-meta').textContent = _itemTypeLabel(item);
+    openButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (isFolder) _openFolderInExplorer(item);
       else _openFileFromExplorer(item);
     });
+    row.appendChild(openButton);
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'cloud-mobile-explorer-row-menu';
+    if (_canMutateItem(item)) {
+      action.setAttribute('aria-label', (item?.name || item?.label || '無題') + 'の操作');
+      action.innerHTML = _iconHtml('moreHorizontal', 20, '…');
+      action.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        _openItemMenu(item);
+      });
+    } else {
+      action.classList.add('cloud-mobile-explorer-row-menu-placeholder');
+      action.setAttribute('aria-hidden', 'true');
+      action.tabIndex = -1;
+      action.innerHTML = isFolder ? _iconHtml('chevronRight', 18, '>') : '';
+    }
+    row.appendChild(action);
     return row;
   }
 
@@ -418,11 +489,194 @@
     return selectedFolderTarget();
   }
 
+  async function _refreshAfterMutation() {
+    const jobs = [];
+    if (typeof loadOutliner === 'function') jobs.push(Promise.resolve().then(() => loadOutliner()));
+    if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve().then(() => renderWorkspaceSidebar()));
+    await Promise.allSettled(jobs);
+    if (_mode === 'list') await renderCurrent({ force: true });
+    else _syncCreateButtonState();
+  }
+
+  async function _renameItem(item, newName) {
+    const oldPath = item?.path || '';
+    const oldName = item?.name || item?.label || oldPath.split(/[\\/]/).pop() || '無題';
+    const name = String(newName || '').trim();
+    if (!oldPath || !name || name === oldName) return;
+    const type = String(item?.type || 'page').toLowerCase();
+    const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: name, type });
+    if (!res?.new_path) throw new Error('名前の変更に失敗しました');
+    if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, res.new_name || name, res.file_id);
+    if (typeof renameAppPathReferences === 'function') {
+      renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || name, fileId: res.file_id, type });
+    }
+    if (_currentFolder?.path === oldPath) {
+      _currentFolder = { path: res.new_path, name: res.new_name || name };
+    }
+    await _refreshAfterMutation();
+    if (typeof showStatus === 'function') showStatus('名前を変更しました: ' + (res.new_name || name));
+  }
+
+  async function _deleteItem(item) {
+    const path = item?.path || '';
+    if (!path) return;
+    const name = item?.name || item?.label || path.split(/[\\/]/).pop() || 'この項目';
+    const confirmed = typeof cfConfirm === 'function'
+      ? await cfConfirm('「' + name + '」を削除しますか？')
+      : window.confirm('「' + name + '」を削除しますか？');
+    if (!confirmed) return;
+    const currentKey = _normalizePath(_currentFolder?.path || '');
+    const deleteKey = _normalizePath(path);
+    if (currentKey && (currentKey === deleteKey || currentKey.startsWith(deleteKey + '/'))) {
+      _currentFolder = _parentTargetForCurrent() || _currentFolder;
+    }
+    if (typeof deleteOutlinerItemsWithHistory === 'function') {
+      const result = await deleteOutlinerItemsWithHistory([{
+        path,
+        name,
+        type: item?.type || 'page',
+      }], {
+        label: '削除: ' + name,
+        refresh: _refreshAfterMutation,
+      });
+      await _refreshAfterMutation();
+      if (result?.failedCount > 0 && typeof showStatus === 'function') showStatus('削除に失敗しました', true);
+      return;
+    }
+    await apiPost('/outliner/delete', { path });
+    await _refreshAfterMutation();
+    if (typeof showStatus === 'function') showStatus('削除しました: ' + name);
+  }
+
+  function closeItemMenu() {
+    if (_itemMenuOverlay?.parentNode) _itemMenuOverlay.remove();
+    _itemMenuOverlay = null;
+  }
+
+  function _makeSheetButton(label, icon, className, handler) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className || 'cloud-mobile-explorer-action-item';
+    const iconEl = document.createElement('span');
+    iconEl.setAttribute('aria-hidden', 'true');
+    iconEl.innerHTML = _iconHtml(icon, 19, '');
+    const labelEl = document.createElement('strong');
+    labelEl.textContent = label;
+    button.append(iconEl, labelEl);
+    button.addEventListener('click', handler);
+    return button;
+  }
+
+  function _openItemMenu(item) {
+    if (!_canMutateItem(item)) return;
+    closeItemMenu();
+    const name = item?.name || item?.label || '無題';
+    const overlay = document.createElement('div');
+    overlay.className = 'cloud-mobile-explorer-item-overlay';
+    overlay.setAttribute('role', 'presentation');
+    const sheet = document.createElement('div');
+    sheet.className = 'cloud-mobile-explorer-action-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', name + 'の操作');
+    const header = document.createElement('div');
+    header.className = 'cloud-mobile-explorer-action-header';
+    const title = document.createElement('strong');
+    title.textContent = name;
+    const meta = document.createElement('span');
+    meta.textContent = _itemTypeLabel(item);
+    header.append(title, meta);
+    sheet.appendChild(header);
+    sheet.appendChild(_makeSheetButton('名前を変更', 'pencil', 'cloud-mobile-explorer-action-item', () => {
+      closeItemMenu();
+      _openRenameSheet(item);
+    }));
+    sheet.appendChild(_makeSheetButton('削除', 'trash2', 'cloud-mobile-explorer-action-item cloud-mobile-explorer-action-danger', async () => {
+      closeItemMenu();
+      try {
+        await _deleteItem(item);
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '削除に失敗しました', true);
+      }
+    }));
+    sheet.appendChild(_makeSheetButton('キャンセル', 'x', 'cloud-mobile-explorer-action-item', closeItemMenu));
+    overlay.appendChild(sheet);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closeItemMenu();
+    });
+    document.body.appendChild(overlay);
+    _itemMenuOverlay = overlay;
+    requestAnimationFrame(() => sheet.querySelector('button')?.focus?.({ preventScroll: true }));
+  }
+
+  function _openRenameSheet(item) {
+    closeItemMenu();
+    const oldName = item?.name || item?.label || '無題';
+    const overlay = document.createElement('div');
+    overlay.className = 'cloud-mobile-explorer-item-overlay';
+    overlay.setAttribute('role', 'presentation');
+    const sheet = document.createElement('form');
+    sheet.className = 'cloud-mobile-explorer-action-sheet cloud-mobile-explorer-rename-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', '名前を変更');
+    const header = document.createElement('div');
+    header.className = 'cloud-mobile-explorer-action-header';
+    const title = document.createElement('strong');
+    title.textContent = '名前を変更';
+    const meta = document.createElement('span');
+    meta.textContent = oldName;
+    header.append(title, meta);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldName;
+    input.autocomplete = 'off';
+    input.className = 'cloud-mobile-explorer-rename-input';
+    const actions = document.createElement('div');
+    actions.className = 'cloud-mobile-explorer-rename-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'キャンセル';
+    const save = document.createElement('button');
+    save.type = 'submit';
+    save.textContent = '変更';
+    save.className = 'primary';
+    actions.append(cancel, save);
+    sheet.append(header, input, actions);
+    cancel.addEventListener('click', closeItemMenu);
+    sheet.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      try {
+        await _renameItem(item, input.value);
+        closeItemMenu();
+      } catch (error) {
+        save.disabled = false;
+        if (typeof showStatus === 'function') showStatus(error?.message || '名前の変更に失敗しました', true);
+      }
+    });
+    overlay.appendChild(sheet);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closeItemMenu();
+    });
+    document.body.appendChild(overlay);
+    _itemMenuOverlay = overlay;
+    setTimeout(() => {
+      input.focus({ preventScroll: true });
+      input.select();
+    }, 0);
+  }
+
   function openCreateSheet(anchor) {
     if (!ensure()) return false;
     const target = _createTarget();
     if (!target?.path) {
       if (typeof showStatus === 'function') showStatus('作成先フォルダを選択してください', true);
+      return true;
+    }
+    if (!_canCreateIn(target)) {
+      if (typeof showStatus === 'function') showStatus(_writeBlockedMessage(), true);
       return true;
     }
     closeCreateSheet();
@@ -496,7 +750,10 @@
       _currentFolder = _targetFromData(node._nodeData);
     });
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeCreateSheet();
+      if (event.key === 'Escape') {
+        closeCreateSheet();
+        closeItemMenu();
+      }
     });
   }
 
@@ -518,6 +775,8 @@
     renderCurrent,
     openCreateSheet,
     closeCreateSheet,
+    closeItemMenu,
     selectedFolderTarget,
+    currentFolderTarget,
   };
 })();

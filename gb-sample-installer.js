@@ -6,6 +6,7 @@
   const DECISION_KEY_PREFIX = 'meldex-sample-install-decision-v1:';
   let _promptVisible = false;
   let _scheduled = false;
+  let _retryTimer = 0;
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -22,6 +23,24 @@
     } catch {
       return false;
     }
+  }
+
+  function _hasStartupDialogBlockingPrompt() {
+    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, [data-draft-recovery-dialog="1"]');
+  }
+
+  function _retryPromptAfterStartupDialog(context) {
+    if (_retryTimer) return;
+    _retryTimer = setTimeout(() => {
+      _retryTimer = 0;
+      if (_hasStartupDialogBlockingPrompt()) {
+        _retryPromptAfterStartupDialog(context);
+        return;
+      }
+      maybePromptAfterSetup(context).catch((error) => {
+        console.warn('[MeldexSampleInstaller] delayed prompt failed', error);
+      });
+    }, 700);
   }
 
   function _normalizePath(path) {
@@ -144,6 +163,10 @@
   async function openPrompt(context) {
     const ctx = context || {};
     if (_promptVisible || _isBypassMode()) return { ok: false, skipped: 'busy-or-bypass' };
+    if (!ctx.force && _hasStartupDialogBlockingPrompt()) {
+      _retryPromptAfterStartupDialog(ctx);
+      return { ok: false, skipped: 'blocked-dialog' };
+    }
     _promptVisible = true;
     return new Promise((resolve) => {
       const overlay = _modalShell();

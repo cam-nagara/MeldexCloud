@@ -557,6 +557,14 @@
     const header = _ensureHeader(modal);
     const footer = _ensureFooter(modal);
     _ensureBody(modal, header, footer);
+    if (overlay.dataset.mobileDialogSheetActive === '1' || modal.dataset.mobileDialogSheet === '1') {
+      modal.classList.remove('gb-modal-resizable');
+      modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
+      ['position', 'margin', 'left', 'top', 'height'].forEach(prop => {
+        modal.style[prop] = '';
+      });
+      return;
+    }
     _ensureResizeHandles(modal, header, footer);
     _bindDrag(header, modal, footer);
     _ensureGeometry(modal, header, footer);

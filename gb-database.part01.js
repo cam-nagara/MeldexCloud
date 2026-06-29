@@ -453,7 +453,13 @@ async function selectDatabase(dbPath, ctx, opts) {
         propertyCount,
       });
     }
-    if (loadingShown) hideLoading();
+    if (loadingShown) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('シートを読み込み中...');
+        hideLoadingMessage('大きいシートを描画中...');
+      }
+    }
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
     }

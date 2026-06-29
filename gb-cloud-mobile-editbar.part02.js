@@ -46,6 +46,10 @@
 
   function _openNewItemSheet() {
     if (!_isEnabled()) return;
+    if (_mobileWriteBlocked()) {
+      if (typeof showStatus === 'function') showStatus('この保存先は閲覧のみです', true);
+      return;
+    }
     _closeMenuSheet();
     _closeOverflowSheet();
     _overflowOverlay = document.createElement('div');
@@ -67,10 +71,11 @@
 
     const grid = document.createElement('div');
     grid.className = 'cloud-mobile-menu-grid';
-    NEW_ITEMS.forEach((item) => {
+    const items = window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(NEW_ITEMS) || NEW_ITEMS;
+    items.forEach((item) => {
       grid.appendChild(_button('cloud-mobile-menu-item', item.label, item.icon, () => {
         _closeOverflowSheet();
-        _callGlobal('showAddOutlinerItem', item.type);
+        _createNewItemFromMobileSheet(item.type);
       }));
     });
     sheet.appendChild(grid);
@@ -79,6 +84,23 @@
       if (event.target === _overflowOverlay) _closeOverflowSheet();
     });
     document.body.appendChild(_overflowOverlay);
+  }
+
+  async function _createNewItemFromMobileSheet(type) {
+    if (_mobileWriteBlocked()) {
+      if (typeof showStatus === 'function') showStatus('この保存先は閲覧のみです', true);
+      return;
+    }
+    const explorer = window.MeldexCloudMobileExplorer || null;
+    const target = explorer?.currentFolderTarget?.()
+      || explorer?.selectedFolderTarget?.()
+      || null;
+    if (target?.path && typeof addItemAt === 'function') {
+      await addItemAt(target.path, type);
+      if (explorer?.getMode?.() === 'list') explorer.renderCurrent?.({ force: true });
+      return;
+    }
+    _callGlobal('showAddOutlinerItem', type);
   }
 
   function _openBoardOverflowSheet() {

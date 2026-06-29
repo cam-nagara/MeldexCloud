@@ -328,7 +328,7 @@
       visible: root?.visible !== false,
     }));
     const registry = window.MeldexSourceFolderRegistry;
-    if (registry?.saveOutlinerRoots && clean.some((root) => root.provider === 'dropbox' || root.dropboxPath)) {
+    if (registry?.saveOutlinerRoots && (clean.length === 0 || clean.some((root) => root.provider === 'dropbox' || root.dropboxPath))) {
       await registry.saveOutlinerRoots(clean);
     }
     _safeWriteJson(PWA_ROOTS_KEY, clean);

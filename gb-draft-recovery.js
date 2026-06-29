@@ -7,6 +7,19 @@
   const MAX_DRAFTS = 100;
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
+  let recoveryRetryTimer = 0;
+
+  function _hasBlockingStartupDialog() {
+    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, .meldex-sample-install-overlay');
+  }
+
+  function _scheduleRecoveryRetry() {
+    if (recoveryRetryTimer) return;
+    recoveryRetryTimer = setTimeout(() => {
+      recoveryRetryTimer = 0;
+      showRecoveryDialog().catch(() => {});
+    }, 700);
+  }
 
   function _draftScope() {
     let mode = 'legacy';
@@ -218,6 +231,10 @@
   async function showRecoveryDialog() {
     const drafts = await listDrafts();
     if (!drafts.length || document.querySelector('[data-draft-recovery-dialog="1"]')) return;
+    if (_hasBlockingStartupDialog()) {
+      _scheduleRecoveryRetry();
+      return;
+    }
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.dataset.draftRecoveryDialog = '1';

@@ -124,12 +124,15 @@
   function _workspaceMember(member, fallbackName) {
     const name = String(member?.name || fallbackName || '').trim();
     if (!name) return null;
-    return {
+    const accountId = String(member?.accountId || member?.account_id || '').trim();
+    const row = {
       name,
       role: _workspaceRole(member?.role, 'member'),
       avatar: String(member?.avatar || ''),
       updatedAt: String(member?.updatedAt || member?.updated_at || _nowIso()),
     };
+    if (accountId) row.accountId = accountId;
+    return row;
   }
 
   function _localAvatar() {
@@ -222,6 +225,7 @@
       name,
       role: role || 'owner',
       avatar: body?.avatar || _localAvatar(),
+      accountId: body?.accountId || body?.account_id || '',
       updatedAt: _nowIso(),
     });
   }
@@ -287,7 +291,22 @@
     await _updateCloudWorkspaceStore(store => {
       const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
       if (!target) throw _httpError(404, 'ワークスペースが見つかりません');
-      const member = _workspaceMember({ name, role: body?.role || 'member', avatar: body?.avatar || '', updatedAt: _nowIso() }, name);
+      const targetName = String(name || '').trim();
+      const existingIndex = target.members.findIndex(item => item.name === targetName);
+      const existing = existingIndex >= 0 ? target.members[existingIndex] : {};
+      const accountId = String(body?.accountId || body?.account_id || existing?.accountId || '').trim();
+      const member = _workspaceMember({
+        ...existing,
+        name: targetName,
+        role: body?.role || existing?.role || 'member',
+        avatar: Object.prototype.hasOwnProperty.call(body || {}, 'avatar') ? body.avatar : (existing?.avatar || ''),
+        accountId,
+        updatedAt: _nowIso(),
+      }, targetName);
+      if (!member) throw _httpError(400, 'メンバー名を指定してください');
+      if (accountId) {
+        target.members = target.members.filter((item, index) => index === existingIndex || item?.accountId !== accountId);
+      }
       const index = target.members.findIndex(item => item.name === member.name);
       if (index >= 0) target.members[index] = { ...target.members[index], ...member };
       else target.members.push(member);
@@ -314,6 +333,7 @@
     return _cloudUpsertWorkspaceMember(id, String(body?.name || body?.user || (typeof getUsername === 'function' ? getUsername() : 'anonymous')), {
       role: body?.role || 'member',
       avatar: body?.avatar || _localAvatar(),
+      accountId: body?.accountId || body?.account_id || '',
     });
   }
 

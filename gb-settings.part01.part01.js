@@ -60,6 +60,15 @@ function isWebClipperDesktopSetupAvailable() {
   }
 }
 
+function _shouldUseSettingsMobileLayout() {
+  try {
+    if (window.MeldexCloudMobileState?.mobile === true) return true;
+    if (document.body?.dataset?.cloudMobile === '1' && window.innerWidth <= 1024) return true;
+    if (window.matchMedia?.('(max-width: 1024px), (pointer: coarse)')?.matches) return true;
+  } catch {}
+  return window.innerWidth <= 768;
+}
+
 function _normalizeAvatarBgColor(value) {
   const raw = String(value || '').trim();
   if (/^#[0-9a-f]{3}$/i.test(raw) || /^#[0-9a-f]{6}$/i.test(raw) || /^#[0-9a-f]{8}$/i.test(raw)) return raw;
@@ -108,6 +117,21 @@ async function showSettingsModal(opts) {
     'LLMコスト': 'AI使用量',
     'Discord Bot': 'Discord連携',
   };
+  const settingsTabDescriptions = {
+    '全般': '保存先、表示、履歴、レイアウト',
+    'テーマ': '色、外観、画面ごとの見た目',
+    'LLM': 'チャットAI、モデル、プロバイダ',
+    'LLMコスト': '利用量、上限、集計',
+    'Discord Bot': '通知とDiscord連携',
+    'ユーザー': '名前、アイコン、チーム情報',
+    'ワークスペース': '共有作業場所とメンバー',
+    '取り込み': 'サンプル、外部データ、拡張',
+    '拡張機能': '追加機能と連携モジュール',
+    'ショートカット': 'キーボード操作',
+    'ゴミ箱': '削除済み項目の確認',
+    'データベース': 'シートと内部データの保守',
+    'フィードバック': '診断、同意、送信設定',
+  };
   const settingsTabIcons = {
     '全般': 'settings',
     'テーマ': 'palette',
@@ -124,6 +148,7 @@ async function showSettingsModal(opts) {
     'フィードバック': 'messageSquareText',
   };
   const settingsTabLabel = (name) => settingsTabLabels[name] || name;
+  const settingsTabDescription = (name) => settingsTabDescriptions[name] || '';
   const settingsTabIcon = (name) => settingsTabIcons[name] || 'circle';
   const requestedPanel = _settingsCanonicalPanelName(opts.panel || '');
   _settingsThemeSetDirty(false);
@@ -143,15 +168,15 @@ async function showSettingsModal(opts) {
   const o = document.createElement('div');
   o.className = 'modal-overlay';
   o.dataset.settingsModal = '1';
-  const _isMobile = window.innerWidth <= 768;
+  const _isMobile = _shouldUseSettingsMobileLayout();
   const _settingsModalStyle = _isMobile
     ? 'box-sizing:border-box;width:min(560px, calc(100vw - 16px));max-width:calc(100vw - 16px);height:min(600px, calc(100vh - 16px));max-height:calc(100vh - 16px);'
     : 'box-sizing:border-box;width:min(980px, calc(100vw - 48px));max-width:calc(100vw - 48px);height:min(720px, calc(100vh - 64px));max-height:calc(100vh - 64px);';
   o.innerHTML = `<div class="modal settings-modal" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
-      ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:36px;height:36px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
+      ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
       <span id="settings-header-text" style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span class="ico ico-settings"></span><span>設定</span></span>
-      <button id="settings-modal-close" class="settings-modal-close" type="button" title="設定を閉じる" aria-label="設定を閉じる" style="margin-left:auto;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg);">
+      <button id="settings-modal-close" class="settings-modal-close" type="button" title="設定を閉じる" aria-label="設定を閉じる" style="margin-left:auto;width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);">
         ${lucide('x',16)}
       </button>
     </h3>
@@ -163,6 +188,9 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-sidebar-group-label{padding:10px 8px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;}
       .settings-modal .settings-sidebar-group:first-child .settings-sidebar-group-label{padding-top:0;}
       .settings-modal .settings-nav-group-label{padding:14px 12px 6px;color:var(--fg2);font-size:12px;font-weight:700;}
+      .settings-modal .settings-nav-item{width:100%;display:grid;gap:3px;margin:0 0 6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--fg);text-align:left;font:inherit;cursor:pointer;}
+      .settings-modal .settings-nav-item::after{content:attr(data-desc);display:block;color:var(--fg2);font-size:12px;line-height:1.25;}
+      .settings-modal .settings-nav-item:hover,.settings-modal .settings-nav-item:focus-visible{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, var(--bg2));outline:none;}
       .settings-modal .settings-panel.settings-panel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;align-content:start;}
       .settings-modal .settings-panel.settings-panel-grid[hidden]{display:none!important;}
       .settings-modal .settings-panel-grid .gb-section{margin:0;}
@@ -177,7 +205,7 @@ async function showSettingsModal(opts) {
       ${settingsTabGroups.map(group =>
         `<div class="settings-nav-group" data-settings-nav-group="${esc(group.label)}">
           <div class="settings-nav-group-label">${esc(group.label)}</div>
-          ${group.tabs.map(t => `<button type="button" class="settings-nav-item" data-target="${t}" data-e2e-id="settings-mobile-tab-${esc(t)}">${settingsTabLabel(t)}</button>`).join('')}
+          ${group.tabs.map(t => `<button type="button" class="settings-nav-item" data-target="${t}" data-desc="${esc(settingsTabDescription(t))}" data-e2e-id="settings-mobile-tab-${esc(t)}">${settingsTabLabel(t)}</button>`).join('')}
         </div>`
       ).join('')}
     </div>` : ''}

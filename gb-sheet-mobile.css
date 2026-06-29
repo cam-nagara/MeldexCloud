@@ -15,26 +15,51 @@
 }
 
 @media (pointer: coarse) {
+  #pivot-view,
+  #pivot-table,
+  .pivot-table,
+  .db-view-tabs,
+  .view-tabs {
+    font-size: var(--cloud-mobile-ui-font-size, 16px);
+    line-height: var(--cloud-mobile-ui-line-height, 1.28);
+  }
+
+  #pivot-table th,
+  #pivot-table td,
+  .pivot-table th,
+  .pivot-table td {
+    font-size: var(--cloud-mobile-ui-font-size, 16px);
+    line-height: 1.34;
+  }
+
+  #pivot-table .cell-value,
+  #pivot-table .entity-name-label,
+  .pivot-table .cell-value,
+  .pivot-table .entity-name-label {
+    font-size: var(--cloud-mobile-ui-font-size, 16px);
+    line-height: 1.36;
+  }
+
   .row-add-btn,
   .row-drag-handle,
   .row-select-cb {
     opacity: 1;
-    min-width: 36px;
-    min-height: 36px;
-    width: 36px;
-    height: 36px;
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
     margin-right: 0;
   }
 
   .row-drag-handle {
-    min-width: 36px;
-    width: 36px;
+    min-width: 44px;
+    width: 44px;
   }
 
   .row-select-cb {
     --gb-checkbox-size-override: 22px;
-    min-width: 36px;
-    width: 36px;
+    min-width: 44px;
+    width: 44px;
   }
 
   #pivot-table td.col-entity .entity-name-cell-main {
@@ -80,7 +105,34 @@
 
   .view-tab,
   .view-tab-add {
-    min-height: 36px;
+    min-height: 44px;
+    font-size: 15px;
+    line-height: 1.3;
+  }
+
+  .tl-settings,
+  .tl-settings label {
+    font-size: 15px;
+    line-height: 1.2;
+  }
+
+  .tl-settings label {
+    gap: 6px;
+  }
+
+  .tl-settings input,
+  .tl-settings select,
+  .tl-settings .gb-input,
+  .tl-settings .gb-select {
+    min-height: 44px;
+    font-size: var(--cloud-mobile-ui-font-size, 16px);
+    line-height: 1.3;
+  }
+
+  .tl-nav-btn {
+    min-height: 44px;
+    font-size: var(--cloud-mobile-ui-meta-font-size, 14px);
+    line-height: 1.3;
   }
 
   .modal,

@@ -432,7 +432,16 @@
 
   function _hasBlockingCloudStartupUi() {
     return !!document.querySelector?.(
-      '#meldex-cloud-home-first-overlay, #meldex-cloud-home-only, .meldex-cloud-setup-modal'
+      [
+        '#meldex-cloud-home-first-overlay',
+        '#meldex-cloud-home-only',
+        '.meldex-cloud-mode-overlay',
+        '.meldex-cloud-mode-modal',
+        '.meldex-cloud-setup-overlay',
+        '.meldex-cloud-setup-modal',
+        '.meldex-sample-install-overlay',
+        '[data-draft-recovery-dialog="1"]',
+      ].join(', ')
     );
   }
 
@@ -928,6 +937,47 @@
     observer.observe(target, { childList: true, subtree: true });
   }
 
+  function _applyConsentDialogResponsiveSizing(overlay, dialog) {
+    if (!overlay || !dialog) return;
+    dialog.style.minWidth = '0';
+    dialog.style.boxSizing = 'border-box';
+    dialog.style.maxWidth = 'min(620px, calc(100vw - 16px))';
+    if (window.innerWidth > 768) return;
+    const title = dialog.querySelector(':scope > h3');
+    const body = dialog.querySelector(':scope > .modal-body');
+    const footer = dialog.querySelector(':scope > .btn-row');
+    overlay.style.alignItems = 'flex-end';
+    overlay.style.justifyContent = 'center';
+    overlay.style.overflowX = 'hidden';
+    overlay.style.overflowY = 'auto';
+    overlay.style.padding = 'var(--gb-mobile-dialog-top-gap, 10px) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left))';
+    dialog.style.width = 'min(100%, calc(100vw - 16px))';
+    dialog.style.maxWidth = 'min(100%, calc(100vw - 16px))';
+    dialog.style.maxHeight = 'calc(100vh - var(--gb-mobile-dialog-top-gap, 10px))';
+    dialog.style.borderRadius = '16px 16px 0 0';
+    dialog.style.overflowX = 'hidden';
+    [title, body, footer].forEach(section => {
+      if (!section) return;
+      section.style.boxSizing = 'border-box';
+      section.style.width = '100%';
+      section.style.minWidth = '0';
+      section.style.maxWidth = '100%';
+      section.style.overflowX = 'hidden';
+    });
+    if (footer) {
+      footer.style.display = 'grid';
+      footer.style.gridTemplateColumns = 'minmax(0, 1fr)';
+      footer.style.justifyContent = 'stretch';
+      footer.style.justifyItems = 'stretch';
+      footer.style.gap = '8px';
+      footer.querySelectorAll('button').forEach(button => {
+        button.style.width = '100%';
+        button.style.minWidth = '0';
+        button.style.whiteSpace = 'normal';
+      });
+    }
+  }
+
   function showConsentDialog(options) {
     options = options || {};
     if (!options.force && hasConsent()) return false;
@@ -998,6 +1048,7 @@
     dialog.appendChild(body);
     dialog.appendChild(buttons);
     overlay.appendChild(dialog);
+    _applyConsentDialogResponsiveSizing(overlay, dialog);
 
     const requiredInput = required.querySelector('input');
     const crashInput = crash.querySelector('input');

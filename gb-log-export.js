@@ -7,7 +7,9 @@
   const logs = [];
   const apiErrors = [];
   const operationLogs = [];
+  const startupNoticeQuietUntil = Date.now() + 8000;
   let lastError = null;
+  let userInteractedBeforeNotice = false;
 
   function _now() {
     return new Date().toISOString();
@@ -552,9 +554,52 @@
     return common + 'right:18px;bottom:34px;max-width:360px;';
   }
 
+  function _hasBlockingStartupDialogForNotice() {
+    try {
+      return !!document.querySelector([
+        '#meldex-beta-consent-overlay',
+        '#meldex-cloud-home-first-overlay',
+        '#meldex-cloud-home-only',
+        '.meldex-cloud-mode-overlay',
+        '.meldex-cloud-mode-modal',
+        '.meldex-cloud-setup-overlay',
+        '.meldex-cloud-setup-modal',
+        '.meldex-sample-install-overlay',
+        '[data-draft-recovery-dialog="1"]',
+      ].join(', '));
+    } catch {
+      return false;
+    }
+  }
+
+  function _installStartupNoticeInteractionWatch() {
+    const mark = () => { userInteractedBeforeNotice = true; };
+    ['pointerdown', 'keydown', 'touchstart'].forEach((eventName) => {
+      document.addEventListener(eventName, mark, { capture: true, once: true, passive: true });
+    });
+  }
+
+  function _isCloudStartupNoticeQuietPeriod() {
+    if (userInteractedBeforeNotice || Date.now() >= startupNoticeQuietUntil) return false;
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const cloudMode = document.body?.dataset?.cloudMode === 'dropbox' || params.get('dataAccessMode') === 'dropbox';
+      return cloudMode && _isCompactErrorNoticeViewport();
+    } catch {
+      return false;
+    }
+  }
+
   function showErrorNotice(error, context) {
     const friendly = window.MeldexErrorMessages?.translate?.(error, context) || null;
     if (!friendly) return;
+    if (_isCompactErrorNoticeViewport() && (_hasBlockingStartupDialogForNotice() || _isCloudStartupNoticeQuietPeriod())) {
+      setTimeout(() => {
+        if (!_hasBlockingStartupDialogForNotice() && !_isCloudStartupNoticeQuietPeriod()) showErrorNotice(error, context);
+        else if (_isCloudStartupNoticeQuietPeriod()) showErrorNotice(error, context);
+      }, 1200);
+      return;
+    }
     const old = document.getElementById('meldex-error-support-notice');
     if (old) old.remove();
     const notice = document.createElement('div');
@@ -591,6 +636,7 @@
 
   _installConsoleCapture();
   _installOperationCapture();
+  _installStartupNoticeInteractionWatch();
 
   window.MeldexDiagnostics = {
     rememberError,

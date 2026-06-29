@@ -403,7 +403,13 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
     }
     if (!openOpts.skipGlobalUi) showStatus('スマートシート読み込み失敗', true);
   } finally {
-    if (loadingShown) hideLoading();
+    if (loadingShown) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('スマートシートを読み込み中...');
+        hideLoadingMessage('大きいスマートシートを描画中...');
+      }
+    }
   }
 }
 

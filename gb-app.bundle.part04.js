@@ -1,3 +1,18 @@
+// doLogin / ログイン画面は廃止（チーム方式に移行）
+
+// localStorage移行（旧CrossFolio → Meldex、一度だけ実行）
+(function migrateLocalStorage() {
+  if (localStorage.getItem('gb:migrated')) return;
+  const migrations = {
+    'crossfolio-auth-token': 'meldex-auth-token',
+    'crossfolio-user': 'meldex-user',
+    'crossfolio-recent': 'meldex-recent',
+    'crossfolio-theme-vars': 'meldex-theme-vars',
+    'crossfolio-favorites': 'meldex-favorites',
+    'cf-cal-start-day': 'gb-cal-start-day',
+  };
+  for (const [oldKey, newKey] of Object.entries(migrations)) {
+    const val = localStorage.getItem(oldKey);
     if (val !== null && localStorage.getItem(newKey) === null) {
       localStorage.setItem(newKey, val);
     }
@@ -883,18 +898,3 @@ function _appShouldHandleStandaloneCalendarDrop() {
   });
   if (tv) tv.addEventListener('drop', (e) => {
     if (!_appShouldHandleStandaloneCalendarDrop()) return;
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    if (!cfData) return;
-    e.preventDefault();
-    try {
-      const { name, path } = JSON.parse(cfData);
-      // 詳細パネルにイベント編集を表示（タイトルにファイル名、リンク付き）
-      const now = new Date();
-      const startVal = _appLocalDateTimeInputValue(now);
-      const endH = new Date(now.getTime() + 3600000);
-      const endVal = _appLocalDateTimeInputValue(endH);
-      if (typeof _showCalEventInDetailPanel === 'function') {
-        _showCalEventInDetailPanel(
-          { title: name, description: '[[' + name + ']](' + path + ')' },
-          [], startVal, endVal, false
-        );

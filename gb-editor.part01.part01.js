@@ -522,7 +522,15 @@ async function openPage(label, path, opts) {
   // 詳細パネルにファイル情報を表示（メタ情報を渡して /file-meta 呼び出しを回避）
   const _fileMeta = _openPageFileData?.modified ? { created: _openPageFileData.created, modified: _openPageFileData.modified, size: _openPageFileData.size } : undefined;
   if (!openOpts.skipGlobalUi) _syncDetailPanel(label, path, 'page', { fileMeta: _fileMeta });
-  } finally { if (loadingShown) hideLoading(); }
+  } finally {
+    if (loadingShown) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('ノートを読み込み中...');
+        hideLoadingMessage('大きいノートを描画中...');
+      }
+    }
+  }
 }
 
 // ノート縦書き/横書き切替

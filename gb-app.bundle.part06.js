@@ -1,3 +1,54 @@
+try {
+  if (typeof applyStatusbarHidden === 'function') {
+    applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
+  }
+} catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
+
+function _detectOptimalScale() {
+  const w = window.screen.width;
+  const dpr = window.devicePixelRatio || 1;
+  const isTouch = navigator.maxTouchPoints > 0;
+
+  // スマホ（幅768px以下）: 100%のまま（レスポンシブCSSに任せる）
+  if (w <= 768) return 100;
+  // タブレット + タッチデバイス（幅769〜1366px）: タッチ操作のためやや拡大
+  if (w <= 1366 && isTouch) return 110;
+  // 高解像度デスクトップ（4K等、OS側のスケーリングが低い場合）
+  if (w >= 2560 && dpr <= 1.5) return 125;
+  // 通常デスクトップ
+  return 100;
+}
+
+// Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
+document.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  // キャンバス・フォルダビュー等の独自ズームが処理する場合はスキップ
+  const canvas = document.getElementById('bd-canvas');
+  if (canvas && canvas.contains(e.target)) return;
+  const folderGrid = document.getElementById('folder-grid');
+  if (folderGrid && folderGrid.contains(e.target)) return;
+  e.preventDefault();
+  const steps = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+  const cur = parseInt(localStorage.getItem('ui-scale') || '100', 10);
+  const idx = steps.indexOf(cur);
+  let newIdx;
+  if (idx === -1) {
+    // 現在値がステップ外の場合、最も近いステップを探す
+    newIdx = steps.reduce((best, v, i) => Math.abs(v - cur) < Math.abs(steps[best] - cur) ? i : best, 0);
+  } else {
+    newIdx = e.deltaY < 0 ? Math.min(idx + 1, steps.length - 1) : Math.max(idx - 1, 0);
+  }
+  if (steps[newIdx] !== cur) {
+    const applied = applyUIScale(steps[newIdx]);
+    if (applied !== cur) showStatus('表示サイズ: ' + applied + '%');
+  }
+}, { passive: false });
+
+// モバイルツールメニュー（トップバー折りたたみ時）
+function showMobileToolMenu(e) {
+  document.querySelectorAll('.mobile-tool-menu').forEach(el => el.remove());
+  const items = [
+    { label: 'フォルダ', action: () => openToolTab('folder') },
     { label: 'ノート', action: () => openToolTab('page') },
     { label: 'シート', action: () => openToolTab('database') },
     { label: 'スマートシート', action: () => openToolTab('smart-db') },
@@ -199,6 +250,21 @@ function hideLoading() {
     _loadingMessage = '';
     _hideLoadingUi();
   }
+}
+
+function hideLoadingMessage(msg) {
+  const expected = _loadingText(msg);
+  if (!_loadingVisible && !_loadingTimer) return false;
+  if (_loadingMessage && _loadingMessage !== expected) return false;
+  const floatingEl = document.getElementById('gb-global-loading');
+  const visibleText = (floatingEl?.textContent || '').trim();
+  if (visibleText && visibleText !== expected) return false;
+  _loadingCount = 0;
+  clearTimeout(_loadingTimer);
+  _loadingTimer = null;
+  _loadingMessage = '';
+  _hideLoadingUi();
+  return true;
 }
 
 function trackIframeLoading(iframe, msg, opts) {

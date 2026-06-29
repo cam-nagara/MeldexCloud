@@ -331,28 +331,28 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-inputbar-btn .cloud-mobile-label {
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-chatbar-btn .cloud-mobile-label {
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-boardbar-btn .cloud-mobile-label {
-    font-size: 11px;
-    line-height: 1.1;
-    max-width: 54px;
+    font-size: 13px;
+    line-height: 1.05;
+    max-width: 60px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-annotationbar-btn .cloud-mobile-label {
-    font-size: 11px;
-    line-height: 1.1;
-    max-width: 64px;
+    font-size: 13px;
+    line-height: 1.05;
+    max-width: 70px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -410,14 +410,15 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-menu-section {
-    padding: 8px 0 12px;
+    padding: 8px 0 10px;
     border-top: 1px solid var(--border, #333);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-menu-section h3 {
     margin: 0 0 8px;
     color: var(--fg2, #aaa);
-    font-size: 13px;
+    font-size: 14px;
+    line-height: 1.2;
     font-weight: 700;
   }
 
@@ -432,6 +433,8 @@
     justify-content: flex-start;
     padding: 0 12px;
     min-height: 48px;
+    font-size: 15px;
+    line-height: 1.2;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-sheet-close {

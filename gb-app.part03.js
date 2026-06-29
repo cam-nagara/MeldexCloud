@@ -452,7 +452,14 @@ async function openBoard(label, path, opts) {
     restorePreviousView();
     showStatus('ボード読み込みエラー: ' + (err.message || err), true);
     return false;
-  } finally { if (showOpenLoading) hideLoading(); }
+  } finally {
+    if (showOpenLoading) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('ボードを読み込み中...');
+      }
+    }
+  }
 }
 
 function openMedia(label, path, type, opts) {
@@ -621,6 +628,21 @@ function _gbModalMinSize(modal) {
   return { minWidth, minHeight };
 }
 
+function _gbIsMobileDialogSheetModal(modal) {
+  if (!modal) return false;
+  const overlay = modal.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay');
+  return overlay?.dataset?.mobileDialogSheetActive === '1'
+    || modal.dataset.mobileDialogSheet === '1'
+    || modal.classList?.contains('gb-mobile-dialog-sheet');
+}
+
+function _gbClearResizableModalState(modal) {
+  if (!modal) return;
+  if (modal.dataset?.gbResizableModal) delete modal.dataset.gbResizableModal;
+  modal.classList?.remove('gb-modal-resizable');
+  modal.querySelectorAll?.(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
+}
+
 function _gbStartModalResize(event, modal, direction) {
   if (!modal || (event.button != null && event.button !== 0)) return;
   event.preventDefault();
@@ -688,6 +710,10 @@ function _gbStartModalResize(event, modal, direction) {
 
 function _gbInstallModalResizeEdges(modal) {
   if (!modal || modal.dataset.gbResizableModal === '1') return;
+  if (_gbIsMobileDialogSheetModal(modal)) {
+    _gbClearResizableModalState(modal);
+    return;
+  }
   modal.dataset.gbResizableModal = '1';
   modal.classList.add('gb-modal-resizable');
   modal.style.boxSizing = 'border-box';
@@ -710,9 +736,17 @@ function _gbInstallModalResizeEdges(modal) {
 
 function _gbPrepareResizableModal(modal) {
   if (!modal || modal.dataset.gbResizableModal === '1') return;
+  if (_gbIsMobileDialogSheetModal(modal)) {
+    _gbClearResizableModalState(modal);
+    return;
+  }
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       if (!modal.isConnected || modal.dataset.gbResizableModal === '1') return;
+      if (_gbIsMobileDialogSheetModal(modal)) {
+        _gbClearResizableModalState(modal);
+        return;
+      }
       const rect = modal.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       const gap = 8;
@@ -731,8 +765,10 @@ function _gbPrepareResizableModal(modal) {
 
 function _gbFindResizableModals(node) {
   const result = [];
-  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR)) result.push(node);
-  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => result.push(modal));
+  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) && !_gbIsMobileDialogSheetModal(node)) result.push(node);
+  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => {
+    if (!_gbIsMobileDialogSheetModal(modal)) result.push(modal);
+  });
   return result;
 }
 
@@ -1135,6 +1171,21 @@ function hideLoading() {
     _loadingMessage = '';
     _hideLoadingUi();
   }
+}
+
+function hideLoadingMessage(msg) {
+  const expected = _loadingText(msg);
+  if (!_loadingVisible && !_loadingTimer) return false;
+  if (_loadingMessage && _loadingMessage !== expected) return false;
+  const floatingEl = document.getElementById('gb-global-loading');
+  const visibleText = (floatingEl?.textContent || '').trim();
+  if (visibleText && visibleText !== expected) return false;
+  _loadingCount = 0;
+  clearTimeout(_loadingTimer);
+  _loadingTimer = null;
+  _loadingMessage = '';
+  _hideLoadingUi();
+  return true;
 }
 
 function trackIframeLoading(iframe, msg, opts) {

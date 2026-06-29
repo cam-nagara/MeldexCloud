@@ -105,7 +105,13 @@ async function openFolder(label, path, opts) {
       showStatus('フォルダ読み込みエラー: ' + (e?.message || e), true);
     }
   } finally {
-    if (loadingShown) hideLoading();
+    if (loadingShown) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('フォルダを読み込み中...');
+        hideLoadingMessage('大きいフォルダを描画中...');
+      }
+    }
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');
 }

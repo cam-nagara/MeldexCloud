@@ -389,7 +389,7 @@
     _hideStartupSplashForBlockingCloudUi();
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
+      overlay.className = 'modal-overlay meldex-cloud-mode-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10020;padding:8px;box-sizing:border-box;';
       overlay.innerHTML = `<div class="meldex-cloud-mode-modal" role="dialog" aria-modal="true" style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
         <div style="font-size:22px;font-weight:700;margin-bottom:10px;">Meldexの保存先を選ぶ</div>
@@ -400,12 +400,12 @@
             <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
           </button>
           <button id="choose-legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">このPCに保存して始める</div>
+            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存して始める</div>
             <div style="font-size:12px;line-height:1.6;color:#969696;">この端末内のフォルダだけを使います。共有が必要になったら設定からDropboxへ切り替えられます。</div>
           </button>
         </div>
         <div style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
-          <div><strong>迷ったら:</strong> ほかの端末でも開く予定がある場合はDropbox、今すぐこの端末で試すだけならこのPCに保存を選んでください。</div>
+          <div><strong>迷ったら:</strong> ほかの端末でも開く予定がある場合はDropbox、今すぐこの端末で試すだけならこの端末に保存を選んでください。</div>
         </div>
       </div>`;
       document.body.appendChild(overlay);
@@ -481,7 +481,7 @@
       : 'まず「Dropboxに接続する」を押してください。接続後に共有フォルダや既存のソースフォルダを選べます。';
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
+      overlay.className = 'modal-overlay meldex-cloud-setup-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:20px;';
       overlay.innerHTML = `<div class="meldex-cloud-setup-modal" role="dialog" aria-modal="true" style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);">
         <div style="font-size:22px;font-weight:700;margin-bottom:8px;">DropboxでMeldexを始める</div>
@@ -490,7 +490,7 @@
           <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
             Dropboxに接続し、Meldexで使うフォルダを選ぶと、スマホ、タブレット、PCから同じソースフォルダを開けます。
           </div>
-          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">このPCだけで使う場合は、下の「このPCに保存して使う」に切り替えられます。</div>
+          <div style="font-size:12px;color:#969696;line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
         </div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:#bdbdbd;">
@@ -549,7 +549,7 @@
         </details>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在はこのPCに保存しています"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'このPCに保存中' : 'このPCに保存して使う'}</button>` : ''}
+          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在はこの端末に保存しています"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'この端末に保存中' : 'この端末に保存して使う'}</button>` : ''}
           <button id="cloud-continue" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">この設定で開始</button>
         </div>
       </div>`;
@@ -578,7 +578,9 @@
         _auth().setCustomAppKey(overlay.querySelector('#cloud-custom-app-key').value.trim());
         _auth().setVaultPath(overlay.querySelector('#cloud-vault-path').value.trim());
         overlay.querySelector('#cloud-vault-path').value = _auth().getVaultPath();
-        _auth().setRedirectOverride(overlay.querySelector('#cloud-redirect-override').value.trim());
+        if (mode === 'custom') {
+          _auth().setRedirectOverride(overlay.querySelector('#cloud-redirect-override').value.trim());
+        }
       }
 
       function updateSessionStatus(text, authenticated, helpText) {

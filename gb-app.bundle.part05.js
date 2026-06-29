@@ -1,3 +1,18 @@
+    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    if (!cfData) return;
+    e.preventDefault();
+    try {
+      const { name, path } = JSON.parse(cfData);
+      // 詳細パネルにイベント編集を表示（タイトルにファイル名、リンク付き）
+      const now = new Date();
+      const startVal = _appLocalDateTimeInputValue(now);
+      const endH = new Date(now.getTime() + 3600000);
+      const endVal = _appLocalDateTimeInputValue(endH);
+      if (typeof _showCalEventInDetailPanel === 'function') {
+        _showCalEventInDetailPanel(
+          { title: name, description: '[[' + name + ']](' + path + ')' },
+          [], startVal, endVal, false
+        );
       }
     } catch {}
   });
@@ -416,7 +431,14 @@ async function openBoard(label, path, opts) {
     restorePreviousView();
     showStatus('ボード読み込みエラー: ' + (err.message || err), true);
     return false;
-  } finally { if (showOpenLoading) hideLoading(); }
+  } finally {
+    if (showOpenLoading) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('ボードを読み込み中...');
+      }
+    }
+  }
 }
 
 function openMedia(label, path, type, opts) {
@@ -585,6 +607,21 @@ function _gbModalMinSize(modal) {
   return { minWidth, minHeight };
 }
 
+function _gbIsMobileDialogSheetModal(modal) {
+  if (!modal) return false;
+  const overlay = modal.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay');
+  return overlay?.dataset?.mobileDialogSheetActive === '1'
+    || modal.dataset.mobileDialogSheet === '1'
+    || modal.classList?.contains('gb-mobile-dialog-sheet');
+}
+
+function _gbClearResizableModalState(modal) {
+  if (!modal) return;
+  if (modal.dataset?.gbResizableModal) delete modal.dataset.gbResizableModal;
+  modal.classList?.remove('gb-modal-resizable');
+  modal.querySelectorAll?.(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
+}
+
 function _gbStartModalResize(event, modal, direction) {
   if (!modal || (event.button != null && event.button !== 0)) return;
   event.preventDefault();
@@ -652,6 +689,10 @@ function _gbStartModalResize(event, modal, direction) {
 
 function _gbInstallModalResizeEdges(modal) {
   if (!modal || modal.dataset.gbResizableModal === '1') return;
+  if (_gbIsMobileDialogSheetModal(modal)) {
+    _gbClearResizableModalState(modal);
+    return;
+  }
   modal.dataset.gbResizableModal = '1';
   modal.classList.add('gb-modal-resizable');
   modal.style.boxSizing = 'border-box';
@@ -674,9 +715,17 @@ function _gbInstallModalResizeEdges(modal) {
 
 function _gbPrepareResizableModal(modal) {
   if (!modal || modal.dataset.gbResizableModal === '1') return;
+  if (_gbIsMobileDialogSheetModal(modal)) {
+    _gbClearResizableModalState(modal);
+    return;
+  }
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       if (!modal.isConnected || modal.dataset.gbResizableModal === '1') return;
+      if (_gbIsMobileDialogSheetModal(modal)) {
+        _gbClearResizableModalState(modal);
+        return;
+      }
       const rect = modal.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       const gap = 8;
@@ -695,8 +744,10 @@ function _gbPrepareResizableModal(modal) {
 
 function _gbFindResizableModals(node) {
   const result = [];
-  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR)) result.push(node);
-  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => result.push(modal));
+  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) && !_gbIsMobileDialogSheetModal(node)) result.push(node);
+  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => {
+    if (!_gbIsMobileDialogSheetModal(modal)) result.push(modal);
+  });
   return result;
 }
 
@@ -847,54 +898,3 @@ document.documentElement.style.fontSize = ''; // 旧font-sizeスケーリング�
 }
 
 // ステータスバー表示状態復元
-try {
-  if (typeof applyStatusbarHidden === 'function') {
-    applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
-  }
-} catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
-
-function _detectOptimalScale() {
-  const w = window.screen.width;
-  const dpr = window.devicePixelRatio || 1;
-  const isTouch = navigator.maxTouchPoints > 0;
-
-  // スマホ（幅768px以下）: 100%のまま（レスポンシブCSSに任せる）
-  if (w <= 768) return 100;
-  // タブレット + タッチデバイス（幅769〜1366px）: タッチ操作のためやや拡大
-  if (w <= 1366 && isTouch) return 110;
-  // 高解像度デスクトップ（4K等、OS側のスケーリングが低い場合）
-  if (w >= 2560 && dpr <= 1.5) return 125;
-  // 通常デスクトップ
-  return 100;
-}
-
-// Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
-document.addEventListener('wheel', (e) => {
-  if (!e.ctrlKey) return;
-  // キャンバス・フォルダビュー等の独自ズームが処理する場合はスキップ
-  const canvas = document.getElementById('bd-canvas');
-  if (canvas && canvas.contains(e.target)) return;
-  const folderGrid = document.getElementById('folder-grid');
-  if (folderGrid && folderGrid.contains(e.target)) return;
-  e.preventDefault();
-  const steps = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
-  const cur = parseInt(localStorage.getItem('ui-scale') || '100', 10);
-  const idx = steps.indexOf(cur);
-  let newIdx;
-  if (idx === -1) {
-    // 現在値がステップ外の場合、最も近いステップを探す
-    newIdx = steps.reduce((best, v, i) => Math.abs(v - cur) < Math.abs(steps[best] - cur) ? i : best, 0);
-  } else {
-    newIdx = e.deltaY < 0 ? Math.min(idx + 1, steps.length - 1) : Math.max(idx - 1, 0);
-  }
-  if (steps[newIdx] !== cur) {
-    const applied = applyUIScale(steps[newIdx]);
-    if (applied !== cur) showStatus('表示サイズ: ' + applied + '%');
-  }
-}, { passive: false });
-
-// モバイルツールメニュー（トップバー折りたたみ時）
-function showMobileToolMenu(e) {
-  document.querySelectorAll('.mobile-tool-menu').forEach(el => el.remove());
-  const items = [
-    { label: 'フォルダ', action: () => openToolTab('folder') },
