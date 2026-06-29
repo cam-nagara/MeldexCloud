@@ -62,7 +62,11 @@ async function openFolder(label, path, opts) {
       if (isStaleFolderLoad()) return;
     }
     registerFileTypes(_folderItems);
-    renderFolderGrid();
+    const openSelectedPaths = [
+      ...(Array.isArray(openOpts.selectedPaths) ? openOpts.selectedPaths : []),
+      openOpts.selectedPath,
+    ].filter(Boolean);
+    renderFolderGrid({ preserveSelectedPaths: openSelectedPaths });
     const folderCountEl = document.getElementById('folder-item-count');
     if (folderCountEl) folderCountEl.textContent = _folderItems.length + ' 項目';
     if (!openOpts.skipGlobalUi) showStatus('フォルダ: ' + displayLabel);
@@ -106,10 +110,54 @@ async function openFolder(label, path, opts) {
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');
 }
 
+function renderFolderInitialPrompt() {
+  _folderPath = '';
+  _folderItems = [];
+  _folderVisibleItems = [];
+  _folderSelected = null;
+  _folderSelectedItems = [];
+  const titleEl = document.getElementById('folder-title');
+  if (titleEl) titleEl.textContent = 'フォルダ';
+  const currentTitleEl = document.getElementById('current-title');
+  if (currentTitleEl) currentTitleEl.textContent = 'フォルダ';
+  const countEl = document.getElementById('folder-item-count');
+  if (countEl) countEl.textContent = '0 項目';
+  if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
+  if (typeof applyFvPanelLayout === 'function') applyFvPanelLayout();
+
+  const grid = document.getElementById('folder-grid');
+  if (!grid) return;
+  const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
+  grid.className = layoutMap[_folderLayout] || 'grid-layout';
+  grid.innerHTML = '';
+  grid.scrollTop = 0;
+
+  const empty = document.createElement('div');
+  empty.className = 'gb-empty-state';
+  empty.style.cssText = 'min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--fg2);gap:10px;padding:32px;';
+  const icon = document.createElement('div');
+  icon.className = 'gb-empty-icon';
+  icon.style.color = 'var(--fg2)';
+  icon.innerHTML = typeof lucide === 'function' ? lucide('folderOpen', 48) : '';
+  const message = document.createElement('div');
+  message.className = 'gb-empty-message';
+  message.style.cssText = 'color:var(--fg);font-size:15px;';
+  message.textContent = 'フォルダツリーでフォルダかファイルを選択してください';
+  const hint = document.createElement('div');
+  hint.className = 'gb-empty-hint';
+  hint.style.cssText = 'font-size:13px;line-height:1.6;';
+  hint.textContent = '選択したフォルダ、または選択したファイルのあるフォルダをここに表示します。';
+  empty.appendChild(icon);
+  empty.appendChild(message);
+  empty.appendChild(hint);
+  grid.appendChild(empty);
+}
+
 function setFolderLayout(mode) {
   _folderLayout = mode;
   localStorage.setItem('folder-layout', mode);
-  document.getElementById('folder-layout-select').value = mode;
+  const select = document.getElementById('folder-layout-select');
+  if (select) select.value = mode;
   renderFolderGrid();
 }
 
@@ -399,7 +447,8 @@ function renderFolderGrid(opts) {
   const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
   container.className = layoutMap[_folderLayout] || 'grid-layout';
   _installFolderBlankContextMenu(container);
-  document.getElementById('folder-layout-select').value = _folderLayout;
+  const layoutSelect = document.getElementById('folder-layout-select');
+  if (layoutSelect) layoutSelect.value = _folderLayout;
   applyFolderZoom();
 
   _folderSelectedItems = [];

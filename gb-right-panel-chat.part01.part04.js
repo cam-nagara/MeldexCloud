@@ -258,7 +258,7 @@ async function chatSend(options = {}) {
     _chatLastSubmitFingerprint = submitFingerprint;
     _chatLastSubmitAt = now;
   }
-  if (window.MeldexOnlineStatus?.assertOnlineForLlm && !window.MeldexOnlineStatus.assertOnlineForLlm()) {
+  if (!_chatIsLocalLlmProvider(effectiveProvider) && window.MeldexOnlineStatus?.assertOnlineForLlm && !window.MeldexOnlineStatus.assertOnlineForLlm()) {
     if (!detachedScope) chatAddSystem(window.MeldexOnlineStatus.offlineMessage());
     return false;
   }
@@ -427,8 +427,7 @@ async function chatSend(options = {}) {
   const isCurrentStream = () => _chatState.streamToken === streamToken
     && _chatState.abortController === streamController;
   const streamVisibleInCurrentChat = () => _chatState.messages === streamMessages
-    && (_chatState.sessionId || '') === streamSessionId
-    && (_chatState.targetPath || '') === streamTargetPath;
+    && (_chatState.sessionId || '') === streamSessionId;
   const streamLiveContainer = () => streamVisibleInCurrentChat() ? _chatLiveMessagesContainer() : null;
   const scrollStreamContainer = () => {
     const liveContainer = streamLiveContainer();
@@ -443,6 +442,8 @@ async function chatSend(options = {}) {
   let responseUsage = null;
   let responseCodeExecBlocks = [];
   let responseToolEvents = [];
+  let responseThinking = '';
+  let liveThinkingTextEl = null;
   let _autoScroll = true;
   let streamError = null;
   let streamCompleted = false;
@@ -463,6 +464,21 @@ async function chatSend(options = {}) {
   const showLiveActivityLog = (label = '考え中...') => {
     showLiveActivity(label);
     activityLog.style.display = 'flex';
+  };
+  const appendLiveThinking = (chunk, label = '思考中...') => {
+    const text = String(chunk || '');
+    if (!text.trim()) return;
+    responseThinking += text;
+    showLiveActivityLog(label);
+    if (!liveThinkingTextEl || !liveThinkingTextEl.isConnected) {
+      liveThinkingTextEl = document.createElement('div');
+      liveThinkingTextEl.className = 'chat-live-thinking-text';
+      liveThinkingTextEl.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;max-width:100%;font-size:12px;color:var(--fg2);white-space:pre-wrap;word-break:break-word;line-height:1.55;';
+      activityLog.appendChild(liveThinkingTextEl);
+    }
+    liveThinkingTextEl.textContent = responseThinking.trim();
+    activityLog.scrollTop = activityLog.scrollHeight;
+    scrollStreamContainer();
   };
   const hideLiveActivity = () => spinnerWrapper.remove();
 

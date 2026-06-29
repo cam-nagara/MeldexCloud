@@ -215,6 +215,14 @@ function setTreeSearchIncludeEntities(checked) {
 
 function _isGlobalFilterEnabled() { return !!_globalFilter.enabled; }
 function _hasAllGlobalTypesSelected() { return !!_globalFilter.allTypes; }
+function _globalFilterHasTypeSelection(filter = _globalFilter) {
+  const data = _normalizeGlobalFilter(filter);
+  return data.allTypes || data.types.length > 0;
+}
+function _globalFilterShouldBackgroundScan(filter = _globalFilter) {
+  const data = _normalizeGlobalFilter(filter);
+  return data.enabled && _globalFilterHasTypeSelection(data);
+}
 function _showDatabaseByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilterHasType('database'); }
 function _showEntityByGlobalFilter() { return !_isGlobalFilterEnabled() || _hasAllGlobalTypesSelected() || _globalFilter.types.includes('entity') || _globalFilterHasType('database'); }
 function _showRegularNodeByGlobalFilter(item) { return !_isGlobalFilterEnabled() || matchesGlobalFilter(item); }
@@ -251,41 +259,82 @@ function _snapshotBaseTreeVisibility() {
   });
 }
 
-// 初回フィルタ表示時にルート直下をall_files=trueでスキャンしてタイプを収集
+// 必要時だけルート直下をall_files=trueでスキャンしてタイプを収集
+const OUTLINER_FILE_TYPE_SCAN_SUBFOLDER_LIMIT = 5;
 let _fileTypesScanned = false;
+let _fileTypesScanPromise = null;
+
+function _outlinerFilterScanYield() {
+  if (typeof _outlinerNextFrame === 'function') return _outlinerNextFrame();
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function _refreshGlobalFilterFromFileTypeScan() {
+  if (!document.getElementById('gf-chips')) return;
+  renderGlobalFilterUI();
+  if (_isGlobalFilterEnabled()) applyGlobalFilter();
+}
+
+async function _scanFileTypesForRoot(root) {
+  if (!root?.path) return;
+  const rootParam = '&root=' + encodeURIComponent(root.path);
+  const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + rootParam + '&all_files=true');
+  registerFileTypes(items);
+  _refreshGlobalFilterFromFileTypeScan();
+  const folders = (Array.isArray(items) ? items : [])
+    .filter(it => it?.type === 'folder' && it.path)
+    .slice(0, OUTLINER_FILE_TYPE_SCAN_SUBFOLDER_LIMIT);
+  for (const folder of folders) {
+    await _outlinerFilterScanYield();
+    try {
+      const sub = await apiFetch('/browse?path=' + encodeURIComponent(folder.path) + rootParam + '&all_files=true');
+      registerFileTypes(sub);
+      _refreshGlobalFilterFromFileTypeScan();
+    } catch(e) {}
+  }
+}
+
 async function scanFileTypesIfNeeded() {
   if (_fileTypesScanned) return;
+  if (_fileTypesScanPromise) return _fileTypesScanPromise;
+  _fileTypesScanPromise = (async () => {
+    try {
+      const roots = await apiFetch('/outliner-roots');
+      const visible = Array.isArray(roots) ? roots.filter(r => r?.visible && r.path) : [];
+      for (const root of visible) {
+        try {
+          await _scanFileTypesForRoot(root);
+        } catch(e) {}
+        await _outlinerFilterScanYield();
+      }
+      _fileTypesScanned = true;
+    } catch(e) {
+      _fileTypesScanned = false;
+    }
+  })();
   try {
-    const roots = await apiFetch('/outliner-roots');
-    const visible = roots.filter(r => r.visible);
-    // 各ルート直下のみスキャン（軽量）
-    await Promise.all(visible.map(async (root) => {
-      try {
-        const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&root=' + encodeURIComponent(root.path) + '&all_files=true');
-        registerFileTypes(items);
-        // 1階層下のフォルダも軽くスキャン
-        const folders = items.filter(it => it.type === 'folder');
-        await Promise.all(folders.slice(0, 20).map(async (f) => {
-          try {
-            const sub = await apiFetch('/browse?path=' + encodeURIComponent(f.path) + '&root=' + encodeURIComponent(root.path) + '&all_files=true');
-            registerFileTypes(sub);
-          } catch(e) {}
-        }));
-      } catch(e) {}
-    }));
-    _fileTypesScanned = true;
-  } catch(e) {
-    _fileTypesScanned = false;
+    return await _fileTypesScanPromise;
+  } finally {
+    _fileTypesScanPromise = null;
   }
+}
+
+function _refreshGlobalFilterAfterBackgroundScan(apply = false) {
+  renderGlobalFilterUI();
+  if (apply) applyGlobalFilter();
+  scanFileTypesIfNeeded().then(() => {
+    renderGlobalFilterUI();
+    if (apply) applyGlobalFilter();
+  }).catch(() => {});
 }
 
 function toggleGlobalFilter() {
   // フィルタバーは常時表示。この関数は互換性のため残す。
   // フィルタUIを更新する
-  scanFileTypesIfNeeded().then(() => renderGlobalFilterUI());
+  _refreshGlobalFilterAfterBackgroundScan(false);
 }
 
-// フィルタバー初期化（起動時にスキャン → UI描画）
+// フィルタバー初期化（UI描画を優先し、必要な時だけ後続スキャン）
 function toggleGlobalFilterBar() {
   const bar = document.getElementById('global-filter-bar');
   const btn = document.getElementById('btn-filter-toggle');
@@ -295,20 +344,19 @@ function toggleGlobalFilterBar() {
   if (btn) btn.style.color = hidden ? 'var(--accent)' : 'var(--fg2)';
   localStorage.setItem('gb:filter-bar-visible', hidden ? '1' : '0');
   saveCurrentLayoutFilterState();
+  if (hidden) setTimeout(() => _refreshGlobalFilterAfterBackgroundScan(false), 0);
 }
 
 function initGlobalFilterBar() {
-  const chips = document.getElementById('gf-chips');
   const state = _loadCurrentLayoutFilterState() || _legacyOutlinerFilterState();
   _setOutlinerFilterStateValues(state);
-  const shouldScan = !!state.filterBarVisible || !!state.globalFilter.enabled;
+  const shouldScan = _globalFilterShouldBackgroundScan(state.globalFilter);
+  renderGlobalFilterUI();
+  applyGlobalFilter();
   if (!shouldScan) {
-    renderGlobalFilterUI();
-    applyGlobalFilter();
     return;
   }
-  if (chips) chips.innerHTML = '<span style="color:var(--fg2);font-size:11px;">ファイル形式を読み込み中...</span>';
-  scanFileTypesIfNeeded().then(() => { renderGlobalFilterUI(); applyGlobalFilter(); });
+  setTimeout(() => _refreshGlobalFilterAfterBackgroundScan(true), 0);
 }
 
 // ファイルタイプキャッシュ（browseで読み込まれた全タイプを蓄積）
@@ -327,6 +375,10 @@ function renderGlobalFilterUI() {
 
   // キャッシュ + DOM + フォルダビューから収集
   const presentTypes = new Set(_knownFileTypes);
+  _globalFilter.types.forEach(type => {
+    const visibleType = _globalFilterVisibleType(type);
+    if (visibleType && visibleType !== 'folder' && visibleType !== 'entity') presentTypes.add(visibleType);
+  });
   document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
     const d = node._nodeData;
     const type = _globalFilterVisibleType(d?.type);
@@ -574,6 +626,9 @@ function toggleSidebarSection(name) {
   if (toggle) toggle.classList.toggle('expanded', !collapsed);
   _setSidebarSectionExpandedState(name, !collapsed);
   localStorage.setItem('sidebar-section-' + name, collapsed ? 'collapsed' : 'expanded');
+  if (name === 'home' && !collapsed && typeof renderHomeFolderTree === 'function') {
+    Promise.resolve().then(() => renderHomeFolderTree({ force: true, reason: 'section-open' })).catch(() => {});
+  }
 }
 
 function _setSidebarSectionExpandedState(name, expanded) {
@@ -680,7 +735,7 @@ function restoreSidebarSections() {
     const toggle = document.getElementById('toggle-' + name);
     if (!body) continue;
     const hasStoredFavorites = name === 'favorites' && typeof getFavorites === 'function' && getFavorites().length > 0;
-    if (state === 'expanded' || (state === null && (name === 'workspaces' || name === 'roots' || name === 'home' || hasStoredFavorites))) {
+    if (state === 'expanded' || (state === null && (name === 'workspaces' || name === 'roots' || hasStoredFavorites))) {
       body.classList.remove('collapsed');
       if (toggle) toggle.classList.add('expanded');
       _setSidebarSectionExpandedState(name, true);
@@ -762,6 +817,20 @@ function updateRecentItems() {
   // ツリークリックハンドラのガードが稼働中はそちらに任せ、ここでの復元をスキップする。
   const treeScroll = document.getElementById('tree-scroll-container');
   const lockActive = _treeClickScrollLock;
+  if (lockActive) {
+    if (container.dataset.recentRefreshDeferred !== '1') {
+      container.dataset.recentRefreshDeferred = '1';
+      setTimeout(() => {
+        container.dataset.recentRefreshDeferred = '';
+        updateRecentItems();
+      }, 1600);
+    }
+    if (typeof _treeScrollGuardRestore === 'function') {
+      _treeScrollGuardRestore();
+      requestAnimationFrame(_treeScrollGuardRestore);
+    }
+    return;
+  }
   const savedScrollTop = (!lockActive && treeScroll) ? treeScroll.scrollTop : 0;
   const recent = _outlinerReadStorageArray('meldex-recent').filter(item => item && typeof item === 'object').slice(0, 5);
   container.innerHTML = '';

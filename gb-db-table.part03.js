@@ -378,6 +378,80 @@ function autoFitCurrentSheetColumns(event) {
   if (typeof showStatus === 'function') showStatus('列幅を自動調整しました');
 }
 
+function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
+  const entitiesMap = data?.entities || {};
+  const propTypes = options.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {});
+  const advFilters = options.advFilters || (typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx }) : []);
+  const filterMode = options.filterMode ?? ctx?.filter ?? (typeof state !== 'undefined' ? state.filter : undefined) ?? 'disabled';
+  const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath, { ctx }) : getDbViewConfig(dbPath).sortConfig)
+    || { key: 'name', dir: 'asc' };
+  const manualOrder = typeof getDbManualOrder === 'function'
+    ? getDbManualOrder(dbPath, { ctx })
+    : getDbViewConfig(dbPath).manualOrder;
+  let entityNames = Object.keys(entitiesMap);
+  if (options.applyAdvancedFilters && Array.isArray(advFilters) && advFilters.length && typeof _dbEntityPassesAdvancedFilters === 'function') {
+    entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, filterMode));
+  }
+  if (sortCfg.key === 'manual' && manualOrder) {
+    const order = manualOrder;
+    entityNames.sort((a, b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      if (ia < 0 && ib < 0) return a.localeCompare(b);
+      if (ia < 0) return 1; if (ib < 0) return -1;
+      return ia - ib;
+    });
+  } else if (sortCfg.key === 'name') {
+    entityNames.sort((a, b) => sortCfg.dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
+  } else {
+    const sortPtc = propTypes?.[sortCfg.key] || {};
+    const sortType = sortPtc.type || 'text';
+    const adoptedStr = (v) => {
+      if (!Array.isArray(v)) return v == null ? '' : String(v);
+      const picked = v.find(x => x && (x.status === '採用' || x.status === '掲載済み'))
+                  || v.find(x => x && x.status === '案')
+                  || v[0];
+      return picked && picked.value != null ? String(picked.value) : '';
+    };
+    const sortValue = (entityName) => {
+      if (sortPtc.source || sortPtc.type === 'formula') {
+        return _dbTextForProp(entityName, sortCfg.key, data, propTypes, advFilters, dbPath, filterMode);
+      }
+      const entityData = entitiesMap[entityName] || {};
+      const rawValues = Object.prototype.hasOwnProperty.call(entityData, sortCfg.key) && Array.isArray(entityData[sortCfg.key])
+        ? entityData[sortCfg.key]
+        : [];
+      return adoptedStr(rawValues);
+    };
+    const toNum = (s) => { const n = parseFloat(s); return isNaN(n) ? null : n; };
+    const toDate = (s) => { const t = Date.parse(s); return isNaN(t) ? null : t; };
+    entityNames.sort((a, b) => {
+      const sa = sortValue(a);
+      const sb = sortValue(b);
+      if (!sa && !sb) return 0;
+      if (!sa) return 1;
+      if (!sb) return -1;
+      let cmp;
+      if (sortType === 'number' || sortType === 'formula') {
+        const na = toNum(sa), nb = toNum(sb);
+        if (na != null && nb != null) cmp = na - nb;
+        else if (na != null) cmp = -1;
+        else if (nb != null) cmp = 1;
+        else cmp = sa.localeCompare(sb);
+      } else if (sortType === 'date') {
+        const da = toDate(sa), db = toDate(sb);
+        if (da != null && db != null) cmp = da - db;
+        else if (da != null) cmp = -1;
+        else if (db != null) cmp = 1;
+        else cmp = sa.localeCompare(sb);
+      } else {
+        cmp = sa.localeCompare(sb);
+      }
+      return sortCfg.dir === 'desc' ? -cmp : cmp;
+    });
+  }
+  return entityNames;
+}
+
 function renderPivot(ctx) {
   const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || _currentPaneState());
@@ -411,72 +485,7 @@ function renderPivot(ctx) {
   const visibleProps = props.filter(p => !hiddenCols.includes(p));
 
   const entitiesMap = data.entities;
-  // エントリのソート（ソート設定に基づく）
-  // 互換テスト用: const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath) : getDbViewConfig(dbPath).sortConfig)
-  const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath, { ctx }) : getDbViewConfig(dbPath).sortConfig)
-    || { key: 'name', dir: 'asc' };
-  // 互換テスト用: const manualOrder = typeof getDbManualOrder === 'function' ? getDbManualOrder(dbPath) : getDbViewConfig(dbPath).manualOrder;
-  const manualOrder = typeof getDbManualOrder === 'function' ? getDbManualOrder(dbPath, { ctx }) : getDbViewConfig(dbPath).manualOrder;
-  let entityNames = Object.keys(entitiesMap);
-  if (sortCfg.key === 'manual' && manualOrder) {
-    const order = manualOrder;
-    entityNames.sort((a, b) => {
-      const ia = order.indexOf(a), ib = order.indexOf(b);
-      if (ia < 0 && ib < 0) return a.localeCompare(b);
-      if (ia < 0) return 1; if (ib < 0) return -1;
-      return ia - ib;
-    });
-  } else if (sortCfg.key === 'name') {
-    entityNames.sort((a, b) => sortCfg.dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
-  } else {
-    // プロパティ値でソート — 採用/掲載済み値を型に応じて比較
-    const sortPtc = propTypes?.[sortCfg.key] || {};
-    const sortType = sortPtc.type || 'text';
-    const _adoptedStr = (v) => {
-      if (!Array.isArray(v)) return v == null ? '' : String(v);
-      const picked = v.find(x => x && (x.status === '採用' || x.status === '掲載済み'))
-                  || v.find(x => x && x.status === '案')
-                  || v[0];
-      return picked && picked.value != null ? String(picked.value) : '';
-    };
-    const _sortValue = (entityName) => {
-      if (sortPtc.source || sortPtc.type === 'formula') {
-        return _dbTextForProp(entityName, sortCfg.key, data, propTypes, advFilters, dbPath, filterMode);
-      }
-      const entityData = entitiesMap[entityName] || {};
-      const rawValues = Object.prototype.hasOwnProperty.call(entityData, sortCfg.key) && Array.isArray(entityData[sortCfg.key])
-        ? entityData[sortCfg.key]
-        : [];
-      return _adoptedStr(rawValues);
-    };
-    const _toNum = (s) => { const n = parseFloat(s); return isNaN(n) ? null : n; };
-    const _toDate = (s) => { const t = Date.parse(s); return isNaN(t) ? null : t; };
-    entityNames.sort((a, b) => {
-      const sa = _sortValue(a);
-      const sb = _sortValue(b);
-      // 空値は常に末尾へ
-      if (!sa && !sb) return 0;
-      if (!sa) return 1;
-      if (!sb) return -1;
-      let cmp;
-      if (sortType === 'number' || sortType === 'formula') {
-        const na = _toNum(sa), nb = _toNum(sb);
-        if (na != null && nb != null) cmp = na - nb;
-        else if (na != null) cmp = -1;
-        else if (nb != null) cmp = 1;
-        else cmp = sa.localeCompare(sb);
-      } else if (sortType === 'date') {
-        const da = _toDate(sa), db = _toDate(sb);
-        if (da != null && db != null) cmp = da - db;
-        else if (da != null) cmp = -1;
-        else if (db != null) cmp = 1;
-        else cmp = sa.localeCompare(sb);
-      } else {
-        cmp = sa.localeCompare(sb);
-      }
-      return sortCfg.dir === 'desc' ? -cmp : cmp;
-    });
-  }
+  const entityNames = _dbSortedEntityNames(data, dbPath, ctx, { propTypes, advFilters, filterMode });
   // Step 2: チャンク分割中の D&D で manualOrder 初期化に使う (DOM 未完成時のフォールバック)
   ctx._lastEntityNames = entityNames;
   const renderRowLimit = _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps);

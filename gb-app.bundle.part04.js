@@ -1,3 +1,28 @@
+    if (val !== null && localStorage.getItem(newKey) === null) {
+      localStorage.setItem(newKey, val);
+    }
+  }
+  // cf-cal-mode-*, cf-cal-date-* のプレフィックス移行
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('cf-cal-')) {
+      const newKey = key.replace('cf-cal-', 'gb-cal-');
+      if (localStorage.getItem(newKey) === null) {
+        localStorage.setItem(newKey, localStorage.getItem(key));
+      }
+    }
+  }
+  localStorage.setItem('gb:migrated', '1');
+  if (typeof _refreshOutlinerStorageViewsAfterMigration === 'function') {
+    _refreshOutlinerStorageViewsAfterMigration();
+  }
+})();
+
+async function init() {
+  const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+  // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
+  _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
+
   try {
     const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
     const [vault, roots, homeRes] = await Promise.all([
@@ -873,28 +898,3 @@ function _appShouldHandleStandaloneCalendarDrop() {
           { title: name, description: '[[' + name + ']](' + path + ')' },
           [], startVal, endVal, false
         );
-      }
-    } catch {}
-  });
-}
-
-// main-viewsへのD&Dドロップ
-// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）
-// Ctrl+ドロップ: ファイルをそのパネルで開く
-{
-  const mv = document.getElementById('main-views');
-  if (mv) mv.addEventListener('dragover', (e) => {
-    if (e.dataTransfer.types.includes('application/x-meldex-node')) {
-      // Ctrl+ドラッグ時のみmain-viewsレベルで受け付け（ファイルを開く）
-      // 通常時は各ビュー固有のdragoverに委ねる
-      if (e.ctrlKey && state.view !== 'board') e.preventDefault();
-    }
-  });
-  if (mv) mv.addEventListener('drop', (e) => {
-    // Ctrl+ドロップ: ファイルをパネルで開く
-    if (!e.ctrlKey) return; // 通常ドロップは各ビュー固有ハンドラに委ねる
-    if (state.view === 'board') return;
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    if (!cfData) return;
-    e.preventDefault();
-    try {

@@ -270,6 +270,71 @@
     _wrapSelectionWithStyle(_clearStylePatch(styleProp));
   }
 
+  function _selectionClipboardButton(iconName, label, command) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'gb-fmt-btn gb-text-selection-clipboard-btn';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.innerHTML = typeof lucide === 'function' ? lucide(iconName, 14) : label;
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      _suppressUntil = Date.now() + 800;
+    });
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void _runClipboardCommand(command);
+    });
+    return btn;
+  }
+
+  function _selectionClipboardRow() {
+    const row = document.createElement('div');
+    row.className = 'gb-text-selection-clipboard-row';
+    row.append(
+      _selectionClipboardButton('copy', 'コピー', 'copy'),
+      _selectionClipboardButton('scissors', '切り取り', 'cut'),
+      _selectionClipboardButton('clipboardPaste', '貼り付け', 'paste'),
+    );
+    return row;
+  }
+
+  async function _runClipboardCommand(command) {
+    if (!_restoreSelection()) return;
+    const root = _savedRoot;
+    if (command === 'cut' || command === 'paste') _captureUndoBeforeFormat(root);
+    let changed = command === 'cut' || command === 'paste';
+    try {
+      if (command === 'paste') {
+        let text = '';
+        try {
+          if (navigator.clipboard?.readText) text = await navigator.clipboard.readText();
+        } catch {}
+        if (text) document.execCommand('insertText', false, text);
+        else document.execCommand('paste');
+      } else {
+        document.execCommand(command);
+      }
+    } catch (err) {
+      changed = false;
+      if (typeof showStatus === 'function') showStatus(labelForClipboardCommand(command) + 'できませんでした', true);
+    } finally {
+      const sel = window.getSelection();
+      if (sel?.rangeCount) _savedRange = sel.getRangeAt(0).cloneRange();
+      if (changed) root?.dispatchEvent?.(new Event('input', { bubbles: true }));
+      _suppressUntil = Date.now() + 250;
+    }
+  }
+
+  function labelForClipboardCommand(command) {
+    if (command === 'copy') return 'コピー';
+    if (command === 'cut') return '切り取り';
+    if (command === 'paste') return '貼り付け';
+    return '操作';
+  }
+
   function _openForSelection() {
     if (_isCloudMobileEditingUiActive()) {
       _closeSelectionPopup();
@@ -298,6 +363,7 @@
       className: POPUP_CLASS,
       closeOnOutside: true,
       avoidRect: _rangeAvoidRect(range),
+      extraRow2: [_selectionClipboardRow()],
       onChange(prop, value) {
         const normalized = prop === 'bold' ? 'fontWeight'
           : prop === 'italic' ? 'fontStyle'
@@ -330,6 +396,123 @@
     clearTimeout(_timer);
     _closeSelectionPopup();
   }, true);
+
+  function _contextSelectionText(target) {
+    const input = target?.closest?.('textarea,input[type="text"],input[type="search"],input[type="url"],input[type="email"]');
+    if (input && typeof input.selectionStart === 'number' && input.selectionEnd > input.selectionStart) {
+      return String(input.value || '').slice(input.selectionStart, input.selectionEnd).trim();
+    }
+    const sel = window.getSelection?.();
+    const text = String(sel?.toString?.() || '').trim();
+    if (!text || !sel?.rangeCount) return '';
+    const range = sel.getRangeAt(0);
+    return _rangeIntersectsNode(range, target) ? text : '';
+  }
+
+  function _contextImageUrl(target) {
+    const img = target?.closest?.('img');
+    if (img?.currentSrc || img?.src) {
+      try { return new URL(img.currentSrc || img.src, location.href).href; } catch { return img.currentSrc || img.src || ''; }
+    }
+    const el = _nodeElement(target);
+    const bg = _computedStyleFor(el)?.backgroundImage || '';
+    const match = bg.match(/url\(["']?(.+?)["']?\)/);
+    if (!match) return '';
+    try { return new URL(match[1], location.href).href; } catch { return match[1] || ''; }
+  }
+
+  function _openGoogleUrl(url) {
+    const win = window.open(url, '_blank', 'noopener');
+    if (win) win.opener = null;
+  }
+
+  function _googleContextActions(ev) {
+    const target = ev?.target;
+    const text = _contextSelectionText(target);
+    const imageUrl = _contextImageUrl(target);
+    const actions = [];
+    if (text) {
+      actions.push({
+        label: 'Googleで検索',
+        icon: 'search',
+        run: () => _openGoogleUrl('https://www.google.com/search?q=' + encodeURIComponent(text)),
+      });
+    }
+    if (imageUrl) {
+      actions.push({
+        label: 'Googleで画像検索',
+        icon: 'scanSearch',
+        run: () => _openGoogleUrl('https://www.google.com/searchbyimage?image_url=' + encodeURIComponent(imageUrl)),
+      });
+    }
+    return actions;
+  }
+
+  function _appendGoogleContextItems(menu, actions) {
+    if (!menu || menu.querySelector?.('[data-gb-google-context="1"]')) return;
+    if (menu.childElementCount) {
+      const sep = document.createElement('div');
+      sep.className = 'gb-context-menu-sep';
+      sep.dataset.gbGoogleContext = '1';
+      menu.appendChild(sep);
+    }
+    actions.forEach(action => {
+      const item = document.createElement('div');
+      item.className = 'gb-context-menu-item';
+      item.dataset.gbGoogleContext = '1';
+      item.innerHTML = (typeof lucide === 'function' ? lucide(action.icon, 14) + ' ' : '') + action.label;
+      item.addEventListener('click', (clickEv) => {
+        clickEv.preventDefault();
+        clickEv.stopPropagation();
+        document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+        action.run();
+      });
+      menu.appendChild(item);
+    });
+  }
+
+  function _showGoogleContextMenu(ev, actions) {
+    document.querySelectorAll('.gb-google-context-menu').forEach(el => el.remove());
+    if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu gb-google-context-menu';
+    _appendGoogleContextItems(menu, actions);
+    document.body.appendChild(menu);
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, { left: ev.clientX, right: ev.clientX, top: ev.clientY, bottom: ev.clientY });
+    } else {
+      const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+      menu.style.position = 'fixed';
+      menu.style.left = (ev.clientX / z) + 'px';
+      menu.style.top = (ev.clientY / z) + 'px';
+      if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    }
+    setTimeout(() => {
+      const closer = (downEv) => {
+        if (!menu.contains(downEv.target)) {
+          menu.remove();
+          document.removeEventListener('pointerdown', closer);
+        }
+      };
+      document.addEventListener('pointerdown', closer);
+    }, 0);
+  }
+
+  document.addEventListener('contextmenu', (ev) => {
+    const actions = _googleContextActions(ev);
+    if (!actions.length) return;
+    if (ev.defaultPrevented) {
+      setTimeout(() => {
+        const menus = Array.from(document.querySelectorAll('.gb-context-menu'))
+          .filter(menu => !menu.classList.contains('gb-google-context-menu') && menu.isConnected);
+        _appendGoogleContextItems(menus[menus.length - 1], actions);
+      }, 0);
+      return;
+    }
+    ev.preventDefault();
+    _showGoogleContextMenu(ev, actions);
+  });
 
   window.GBTextSelectionFormat = {
     openForSelection: _openForSelection,

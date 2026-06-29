@@ -679,6 +679,20 @@
   background: var(--ui-accent);
   color: var(--ui-fg-strong);
 }
+.gb-dock-icon[data-theme-rail-palette-index="0"] { --gb-rail-icon-color: var(--theme-palette-0); }
+.gb-dock-icon[data-theme-rail-palette-index="1"] { --gb-rail-icon-color: var(--theme-palette-1); }
+.gb-dock-icon[data-theme-rail-palette-index="2"] { --gb-rail-icon-color: var(--theme-palette-2); }
+.gb-dock-icon[data-theme-rail-palette-index="3"] { --gb-rail-icon-color: var(--theme-palette-3); }
+.gb-dock-icon[data-theme-rail-palette-index="4"] { --gb-rail-icon-color: var(--theme-palette-4); }
+.gb-dock-icon[data-theme-rail-palette-index="5"] { --gb-rail-icon-color: var(--theme-palette-5); }
+.gb-dock-icon[data-theme-rail-palette-index="6"] { --gb-rail-icon-color: var(--theme-palette-6); }
+.gb-dock-icon[data-theme-rail-palette-index="7"] { --gb-rail-icon-color: var(--theme-palette-7); }
+.gb-dock-icon[data-theme-rail-palette-index="8"] { --gb-rail-icon-color: var(--theme-palette-8); }
+.gb-dock-icon[data-theme-rail-palette-index="9"] { --gb-rail-icon-color: var(--theme-palette-9); }
+html[data-meldex-theme-id="builtin-pastel"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"],
+html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"] {
+  color: var(--gb-rail-icon-color, var(--ui-fg-default));
+}
 .gb-dock-icon.active::before {
   content: '';
   position: absolute;

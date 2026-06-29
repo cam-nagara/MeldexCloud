@@ -774,6 +774,7 @@ class ScriptNoteEditor {
 
     const scroll = document.createElement('div');
     scroll.className = 'sn2-scroll' + (viewMode === 'vertical' ? ' sn2-vertical' : '') + (wrapMode ? ' sn2-wrap' : '');
+    if (this.doc.editor?.pageBreakSpacing === false) scroll.classList.add('sn2-no-page-break-spacing');
     // 余白
     const marginRaw = this.doc.editor?.margin || '';
     const marginVal = marginRaw ? (/^\d+$/.test(marginRaw) ? marginRaw + 'px' : marginRaw) : '';

@@ -1058,6 +1058,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .chart-settings-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 12px; flex-wrap: wrap; }
 .chart-label { color: var(--fg2); }
 .chart-select { font-size: 12px; padding: 2px 4px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+.chart-color-input { width: 28px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: var(--bg3); cursor: pointer; }
 .chart-check { display: inline-flex; align-items: center; gap: 4px; color: var(--fg2); cursor: pointer; }
 .chart-check input { margin: 0; }
 .chart-area { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; overflow: auto; }

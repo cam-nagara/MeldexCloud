@@ -74,8 +74,82 @@ function _chatCurrentOpenTarget() {
   return { path: '', kind: '' };
 }
 
+function _chatTargetFromViewObject(view) {
+  if (!view || typeof view !== 'object') return { path: '', kind: '' };
+  const type = String(view.type || '');
+  if (type === 'folder') return { path: view.path || '', kind: 'folder' };
+  if (type === 'entity') return { path: view.entityPath || view.path || '', kind: 'file' };
+  if (type === 'pivot' || type === 'database') return { path: view.dbPath || view.path || '', kind: 'folder' };
+  if (type === 'board' || type === 'page' || type === 'scriptnote' || type === 'scenario' || type === 'media' || type === 'html' || type === 'csv' || type === 'smart-db') {
+    return { path: view.path || view.boardPath || view.pagePath || view.scenarioPath || view.scriptnotePath || view.smartDbPath || view.csvPath || '', kind: 'file' };
+  }
+  return { path: view.path || '', kind: view.path ? 'file' : '' };
+}
+
+function _chatAdoptSourceForTargetPath(path, options = {}) {
+  const clean = _chatNormalizePath(path);
+  if (!clean || typeof _chatSourceOptions !== 'function' || typeof _chatApplySourceContextValue !== 'function') return;
+  const current = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : '';
+  const optionsList = _chatSourceOptions();
+  let best = null;
+  let bestLength = -1;
+  optionsList.forEach(option => {
+    const root = _chatNormalizePath(option?.path || option?.value || '');
+    if (!root) return;
+    if (clean === root || clean.startsWith(root + '/')) {
+      if (root.length > bestLength) {
+        best = option;
+        bestLength = root.length;
+      }
+    }
+  });
+  if (!best) return;
+  const next = best.kind === 'workspace' ? _chatWorkspaceOptionValue(best.workspaceId || '') : (best.path || best.value || '');
+  if (next && next !== current) {
+    _chatApplySourceContextValue(next, { reason: options.reason || 'current-target', syncWorkspace: options.syncWorkspace !== false });
+  }
+}
+
+let _chatDeferredSourceAdoptSeq = 0;
+
+function _chatDeferSourceAdoption(path, options = {}) {
+  const clean = _chatNormalizePath(path);
+  const seq = ++_chatDeferredSourceAdoptSeq;
+  const run = () => {
+    if (seq !== _chatDeferredSourceAdoptSeq) return;
+    if (_chatState.currentTargetPath !== clean) return;
+    _chatAdoptSourceForTargetPath(clean, options);
+  };
+  if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
+    requestAnimationFrame(() => setTimeout(run, 0));
+    return;
+  }
+  setTimeout(run, 0);
+}
+
+function _chatSetCurrentTargetPath(path, kind = '', options = {}) {
+  const clean = _chatNormalizePath(path);
+  const nextKind = clean ? String(kind || '') : '';
+  const changed = _chatState.currentTargetPath !== clean || _chatState.currentTargetKind !== nextKind;
+  _chatState.currentTargetPath = clean;
+  _chatState.currentTargetKind = nextKind;
+  if (clean && options.adoptSource !== false && (changed || options.forceAdoptSource)) {
+    if (options.deferAdoptSource) _chatDeferSourceAdoption(clean, options);
+    else _chatAdoptSourceForTargetPath(clean, options);
+  }
+  _chatRefreshCurrentTargetDisplay();
+  return clean;
+}
+
+function _chatSetCurrentTargetFromView(view, options = {}) {
+  const target = _chatTargetFromViewObject(view);
+  if (!target.path) return '';
+  return _chatSetCurrentTargetPath(target.path, target.kind, options);
+}
+
 function _chatEffectiveTargetPath(options = {}) {
   if (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath')) return String(options.targetPath || '');
+  if (_chatState.currentTargetPath) return String(_chatState.currentTargetPath || '');
   if (_chatState.targetPath) return String(_chatState.targetPath || '');
   return _chatCurrentOpenTarget().path || '';
 }
@@ -104,3 +178,27 @@ function _chatEffectiveWorkFolder(targetPath = '', options = {}) {
   const kind = target && target === currentTarget.path ? currentTarget.kind : '';
   return _chatParentFolderForTarget(target, kind);
 }
+
+function _chatCurrentTargetLabel() {
+  const path = _chatEffectiveTargetPath();
+  if (path) return path;
+  const source = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
+  if (source) return source;
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (!workspaceId) return '';
+  if (typeof _chatSourceOptions === 'function') {
+    const workspace = _chatSourceOptions().find(item => item?.kind === 'workspace' && String(item.workspaceId || '') === workspaceId);
+    if (workspace?.path) return workspace.path;
+  }
+  return 'ワークスペース: ' + workspaceId;
+}
+
+function _chatRefreshCurrentTargetDisplay() {
+  if (typeof _showChatTargetBadge === 'function') _showChatTargetBadge(_chatCurrentTargetLabel());
+}
+
+window.MeldexChatCurrentTarget = {
+  setPath: _chatSetCurrentTargetPath,
+  setFromView: _chatSetCurrentTargetFromView,
+  refresh: _chatRefreshCurrentTargetDisplay,
+};

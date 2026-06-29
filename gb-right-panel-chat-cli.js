@@ -16,7 +16,10 @@
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
   const CLI_CHAT_CONTINUE_MARKER = '[MELDEX_CONTINUE_NEEDED]';
+  const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
+  const CLI_CHAT_SESSION_STATE_PREFIX = 'chat-cli-session-state:v1:';
   const CLI_CHAT_PROVIDER_KEYS = new Set(CLI_CHAT_PROVIDERS.map(provider => provider.key));
+  const CLI_CHAT_SESSION_CONTINUITY_SUPPORTED_KEYS = new Set(['codex', 'claude_code']);
   let cliChatConfig = null;
   let originalChatSend = null;
   let activeCliChatStream = null;
@@ -52,9 +55,126 @@
     return CLI_CHAT_PROVIDER_KEYS.has(String(provider || '').trim());
   }
 
+  function cliChatSessionContinuitySupported(provider) {
+    const key = String(provider || '').trim();
+    if (cliChatConfig?.providers?.[key]) return !!cliChatConfig.providers[key].session_continuity_supported;
+    return CLI_CHAT_SESSION_CONTINUITY_SUPPORTED_KEYS.has(key);
+  }
+
+  function cliChatSessionContinuitySettingEnabled() {
+    try {
+      return localStorage.getItem(CLI_CHAT_SESSION_CONTINUITY_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function cliChatSessionContinuityEnabled(provider) {
+    return isCliChatProvider(provider)
+      && cliChatSessionContinuitySupported(provider)
+      && cliChatSessionContinuitySettingEnabled();
+  }
+
   function cliChatModel(provider) {
     const configured = cliChatConfig?.providers?.[provider]?.model;
     return configured || cliChatMeta(provider)?.model || cliChatMeta(provider)?.label || 'CLI';
+  }
+
+  function cliChatSessionStorageKey(provider, sessionId) {
+    return CLI_CHAT_SESSION_STATE_PREFIX
+      + encodeURIComponent(String(provider || 'cli'))
+      + ':'
+      + encodeURIComponent(String(sessionId || 'current'));
+  }
+
+  function cliChatSessionScope(provider, sessionId, sourceFolder, workspaceId, targetPath, workFolder) {
+    return {
+      provider: String(provider || ''),
+      session_id: String(sessionId || ''),
+      source_folder: String(sourceFolder || ''),
+      workspace_id: String(workspaceId || ''),
+      target_path: String(targetPath || ''),
+      work_folder: String(workFolder || ''),
+    };
+  }
+
+  function cliChatSessionScopeKey(scope) {
+    return [
+      scope?.provider,
+      scope?.session_id,
+      scope?.workspace_id,
+      scope?.source_folder,
+      scope?.work_folder,
+      scope?.target_path,
+    ].map(value => String(value || '')).join('\n');
+  }
+
+  function cliChatSessionScopesMatch(left, right) {
+    return cliChatSessionScopeKey(left) === cliChatSessionScopeKey(right);
+  }
+
+  function randomCliSessionUuid() {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, marker => {
+      const value = Math.floor(Math.random() * 16);
+      const next = marker === 'x' ? value : ((value & 0x3) | 0x8);
+      return next.toString(16);
+    });
+  }
+
+  function readCliChatSessionState(scope) {
+    const key = cliChatSessionStorageKey(scope.provider, scope.session_id);
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+      if (!parsed || !cliChatSessionScopesMatch(parsed, scope) || !parsed.cli_session_id) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return parsed;
+    } catch {
+      try { localStorage.removeItem(key); } catch {}
+      return null;
+    }
+  }
+
+  function writeCliChatSessionState(scope, state) {
+    const key = cliChatSessionStorageKey(scope.provider, scope.session_id);
+    try {
+      localStorage.setItem(key, JSON.stringify({ ...scope, ...state, last_at: new Date().toISOString() }));
+    } catch {}
+  }
+
+  function cliChatSessionContinuityForRequest(scope) {
+    if (!cliChatSessionContinuityEnabled(scope.provider)) return { enabled: false };
+    let state = readCliChatSessionState(scope);
+    if (!state && scope.provider === 'claude_code') {
+      state = {
+        cli_session_id: randomCliSessionUuid(),
+        created_at: new Date().toISOString(),
+      };
+    }
+    if (state) writeCliChatSessionState(scope, state);
+    return {
+      enabled: true,
+      sessionId: state?.cli_session_id || '',
+      scopeKey: cliChatSessionScopeKey(scope),
+    };
+  }
+
+  function rememberCliChatSessionContinuity(scope, cliSessionId) {
+    const sessionId = String(cliSessionId || '').trim();
+    if (!sessionId || !cliChatSessionContinuityEnabled(scope.provider)) return;
+    const state = readCliChatSessionState(scope) || { created_at: new Date().toISOString() };
+    writeCliChatSessionState(scope, { ...state, cli_session_id: sessionId });
+  }
+
+  function resetSessionContinuityForCurrentChat(options = {}) {
+    const provider = String(options.provider || _chatState.provider || '').trim();
+    const sessionId = String(options.sessionId || _chatState.sessionId || '');
+    try {
+      localStorage.removeItem(cliChatSessionStorageKey(provider, sessionId));
+    } catch {}
+    if (!options.silent && typeof showStatus === 'function') showStatus('CLIの会話継続をリセットしました');
   }
 
   function ensureCliChatProviderOptions() {
@@ -646,6 +766,8 @@
       : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''));
     const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
     const streamModel = cliChatModel(provider);
+    const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
+    const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
     const streamVisibleInCurrentChat = () => _chatState.messages === streamMessages
       && (_chatState.sessionId || '') === streamSessionId;
@@ -690,6 +812,7 @@
     let assistantDiv = null;
     let fullText = '';
     let stderrText = '';
+    let cliThinkingText = '';
     let lastStatusText = 'CLIを起動中...';
     let lastCliOutputAt = 0;
     let lastCliTextAt = 0;
@@ -756,6 +879,17 @@
       lastCliOutputAt = Date.now();
       if (isText) lastCliTextAt = lastCliOutputAt;
     };
+    const appendCliThinking = (chunk, label = 'CLIの思考内容を受信中...') => {
+      const text = String(chunk || '').trimEnd();
+      if (!text.trim()) return;
+      cliThinkingText += (cliThinkingText && !cliThinkingText.endsWith('\n') ? '\n' : '') + text;
+      markCliOutput();
+      refreshActivityStatus(label);
+      if (streamVisibleInCurrentChat()) {
+        appendCliChatLog(activity.log, text);
+        ensureActivityVisible();
+      }
+    };
     const cliResponseIdleMs = () => Date.now() - (lastCliTextAt || streamStartedAt);
     const maybeAbortIdleCliStream = () => {
       if (!CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
@@ -814,6 +948,9 @@
           source_folder: streamSourceFolder,
           workspace_id: streamWorkspaceId,
           work_folder: streamWorkFolder,
+          cli_session_continuity: !!cliSessionContinuity.enabled,
+          cli_session_id: cliSessionContinuity.sessionId || '',
+          cli_session_scope: cliSessionContinuity.scopeKey || '',
           active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
           user: typeof getUsername === 'function' ? getUsername() : '',
           theme_context: typeof window.chatThemeContextSettings === 'function' ? window.chatThemeContextSettings() : {},
@@ -860,11 +997,12 @@
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
-            markCliOutput();
-            refreshActivityStatus('CLIの進行ログを受信中...');
-            if (streamVisibleInCurrentChat()) {
-              appendCliChatLog(activity.log, chunk);
-              ensureActivityVisible();
+            appendCliThinking(chunk, 'CLIの進行ログを受信中...');
+          } else if (data.type === 'thinking_delta') {
+            appendCliThinking(data.content, 'CLIの思考内容を受信中...');
+          } else if (data.type === 'cli_session_update') {
+            if (String(data.provider || provider) === provider && data.cli_session_id) {
+              rememberCliChatSessionContinuity(cliSessionScope, data.cli_session_id);
             }
           } else if (data.type === 'error') {
             const detail = summarizeCliChatErrorDetail(stderrText);
@@ -886,7 +1024,9 @@
       if (fullText.trim()) {
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(fullText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
+        if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
         const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
+        if (cliThinkingText.trim()) assistantMessage.thinking = cliThinkingText;
         streamMessages.push(assistantMessage);
         sendOk = true;
         if (cliChatTextRequestsContinuation(fullText)) {
@@ -903,6 +1043,7 @@
         if (!streamVisibleInCurrentChat()) assistantDiv = null;
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(abortedText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, []);
+        if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
         streamMessages.push({
           role: 'assistant',
           content: abortedText,
@@ -912,6 +1053,7 @@
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           aborted: !clientIdleAbortMessage,
           auto_stopped: !!clientIdleAbortMessage,
+          ...(cliThinkingText.trim() ? { thinking: cliThinkingText } : {}),
         });
         sendOk = true;
         saveStreamMessages().catch(() => {});
@@ -926,6 +1068,7 @@
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(errorText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, errorText, []);
         else if (assistantDiv) assistantDiv.textContent = errorText;
+        if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
         streamMessages.push({
           role: 'assistant',
           content: errorText,
@@ -935,6 +1078,7 @@
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           error: !autoContinuing,
           auto_continue: !!autoContinuing,
+          ...(cliThinkingText.trim() ? { thinking: cliThinkingText } : {}),
         });
         sendOk = true;
         try {
@@ -1065,6 +1209,9 @@
     applyImportVisibility: applyCliImportVisibility,
     ensurePanel: ensureCliPanel,
     isCliChatProvider,
+    sessionContinuitySupported: cliChatSessionContinuitySupported,
+    sessionContinuityEnabled: cliChatSessionContinuityEnabled,
+    resetSessionContinuityForCurrentChat,
     loadChatConfig: loadCliChatConfig,
     providerReadyStatus: cliChatProviderReadyStatus,
     sendCliChat,

@@ -296,7 +296,6 @@
         { label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
         { label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
         { label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
-        { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderPanelSettings') },
         { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
         { label: '設定', icon: 'settings', action: () => _openSettingsModal() },
       ];

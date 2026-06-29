@@ -25,6 +25,9 @@
     return value === true || value === 1 || value === '1' || String(value || '').toLowerCase() === 'true';
   }
 
+  const PROMPT_KNOWLEDGE_LIMIT = 18;
+  const PROMPT_KNOWLEDGE_BUDGET = { canon: 6, protected: 5, adjustable: 7 };
+
   function _policyMap(policies) {
     const map = new Map();
     (policies || []).forEach(policy => map.set(String(policy.status_value || ''), policy));
@@ -48,6 +51,31 @@
     if (_truthy(item?.is_canonical) || _truthy(policy.is_canonical)) return 'canon';
     if (_truthy(policy.override_protection)) return 'protected';
     return 'adjustable';
+  }
+
+  function _selectKnowledgeItems(items, policies) {
+    const buckets = { canon: [], protected: [], adjustable: [] };
+    (items || []).forEach(item => {
+      buckets[_knowledgeReliability(item, policies)].push(item);
+    });
+    const selected = [];
+    const seen = new Set();
+    ['canon', 'protected', 'adjustable'].forEach(bucket => {
+      buckets[bucket].slice(0, PROMPT_KNOWLEDGE_BUDGET[bucket] || 0).forEach(item => {
+        const key = String(item?.id || `${item?.subject || ''}:${item?.statement || ''}`);
+        if (seen.has(key)) return;
+        seen.add(key);
+        selected.push(item);
+      });
+    });
+    (items || []).forEach(item => {
+      if (selected.length >= PROMPT_KNOWLEDGE_LIMIT) return;
+      const key = String(item?.id || `${item?.subject || ''}:${item?.statement || ''}`);
+      if (seen.has(key)) return;
+      seen.add(key);
+      selected.push(item);
+    });
+    return selected.slice(0, PROMPT_KNOWLEDGE_LIMIT);
   }
 
   function _knowledgeSection(items, policies) {
@@ -101,7 +129,7 @@
     if (!store || !provider) return '';
     const query = _lastUserText(body);
     const [knowledge, rules, policies, tasteSettings, taste, memory] = await Promise.all([
-      store.searchKnowledgeItems(provider, query, 10).catch(() => ({ results: [] })),
+      store.searchKnowledgeItems(provider, query, 24).catch(() => ({ results: [] })),
       store.listChatRules(provider).catch(() => ({ rules: [] })),
       store.listStatusPolicies(provider).then(payload => ({ ...(payload || {}), policy_load_ok: true })).catch(() => ({ policies: [], policy_load_ok: false })),
       store.getTasteSettings(provider).catch(() => ({ settings: { enabled: false } })),
@@ -112,8 +140,9 @@
     const knowledgeItems = policies.policy_load_ok === true
       ? (knowledge.results || []).filter(item => _canUseKnowledge(item, policiesByStatus))
       : [];
+    const selectedKnowledgeItems = _selectKnowledgeItems(knowledgeItems, policiesByStatus);
     const sections = [
-      _knowledgeSection(knowledgeItems, policiesByStatus),
+      _knowledgeSection(selectedKnowledgeItems, policiesByStatus),
       _rulesSection(rules.rules || []),
       _tasteSection(tasteSettings.settings || tasteSettings, taste.items || []),
       _memorySection(memory.items || []),

@@ -21,6 +21,62 @@
   min-width: 0;
 }
 
+.knowledge-auto-simple-status {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  min-width: 0;
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-bg-panel);
+}
+
+.knowledge-auto-simple-title {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-13);
+  font-weight: var(--ui-weight-semibold);
+}
+
+.knowledge-auto-ai-toggle {
+  margin-top: var(--ui-space-4);
+}
+
+.knowledge-auto-ai-panel {
+  margin-top: var(--ui-space-3);
+}
+
+.knowledge-auto-details {
+  margin-top: var(--ui-space-4);
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-3);
+}
+
+.knowledge-auto-details summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+}
+
+.knowledge-auto-target-row {
+  min-width: 0;
+}
+
+.knowledge-auto-target-row .gb-section-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .knowledge-layer-view .gb-inner-tabs {
   display: flex;
   align-items: stretch;

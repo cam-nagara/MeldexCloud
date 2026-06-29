@@ -416,12 +416,12 @@ let _outlinerSuppressTreeRowClickNode = null;
 // render() 内の _saveAllScrollPositions で保護済みだが、念押しで非同期復元も行う。
 function _treeScrollGuardRestore() {
   const el = document.getElementById('tree-scroll-container');
-  if (!el || el.scrollTop > 0) return; // 既に正しい位置ならスキップ
+  if (!el) return;
   // scrollTop が 0 に落ちた場合のみ、保存値から復元を試みる
   const saved = el._savedScrollTop;
-  if (saved > 0) {
+  if (saved > 0 && (_treeClickScrollLock > 0 || el.scrollTop === 0) && Math.abs(el.scrollTop - saved) > 1) {
     el.scrollTop = saved;
-    requestAnimationFrame(() => { if (el.scrollTop === 0 && saved > 0) el.scrollTop = saved; });
+    requestAnimationFrame(() => { if (Math.abs(el.scrollTop - saved) > 1) el.scrollTop = saved; });
   }
 }
 // pointerdown 時にスクロール位置を保存（render() の保護と二重だが安全網）
@@ -1002,7 +1002,7 @@ function refreshOutlinerSettingsAfterHistory() {
   }
   if (typeof loadOutliner === 'function') loadOutliner();
   if (typeof renderFavorites === 'function') renderFavorites();
-  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree({ reason: 'settings-history' });
   if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
 }
 
@@ -1011,7 +1011,7 @@ async function refreshOutliner(options) {
   const refreshJobs = [];
   if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(opts)));
   if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
-  if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+  if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree({ reason: opts.reason || 'refresh-outliner' })));
   if (typeof renderWorkspaceSidebar === 'function') refreshJobs.push(Promise.resolve().then(() => renderWorkspaceSidebar()));
   return Promise.allSettled(refreshJobs);
 }

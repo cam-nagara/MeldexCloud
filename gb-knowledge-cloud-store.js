@@ -104,6 +104,53 @@
     });
   }
 
+  function _queryTerms(query) {
+    const seen = new Set();
+    return String(query || '').toLowerCase().match(/[a-z0-9_]{2,}|[一-龥ぁ-んァ-ヴー々〆ヵヶ]{2,}/g)?.filter(term => {
+      if (seen.has(term)) return false;
+      seen.add(term);
+      return !['これ', 'それ', 'こと', 'もの', 'ため', 'する', 'した', 'して', 'ナレッジ', '設定', '変更', '確認'].includes(term);
+    }).slice(0, 18) || [];
+  }
+
+  function _termHits(text, terms) {
+    const haystack = String(text || '').toLowerCase();
+    return (terms || []).filter(term => term && haystack.includes(term)).length;
+  }
+
+  function _knowledgeSearchScore(item, query) {
+    const q = String(query || '').trim().toLowerCase();
+    const terms = _queryTerms(q);
+    const hasQuery = !!(q || terms.length);
+    let score = 0;
+    if (_asBool(item?.is_canonical)) score += 14;
+    if (_asBool(item?.pinned) || _asBool(item?.user_pinned)) score += hasQuery ? 10 : 42;
+    if (['decision', 'fact', 'team_consensus'].includes(String(item?.type || ''))) score += 3;
+    if (String(item?.type || '') === 'preference') score += 1.5;
+    score += Math.min(8, Math.max(0, Number(item?.confidence || 0) * 8));
+    score += Math.min(4, Number(item?.use_count || 0) * 0.4);
+    const subject = String(item?.subject || '').toLowerCase();
+    const statement = String(item?.statement || '').toLowerCase();
+    const reasoning = String(item?.reasoning || '').toLowerCase();
+    if (hasQuery) {
+      if (q && subject.includes(q)) score += 55;
+      else if (q && statement.includes(q)) score += 45;
+      else if (q && reasoning.includes(q)) score += 25;
+      score += _termHits(subject, terms) * 18;
+      score += _termHits(statement, terms) * 12;
+      score += _termHits(reasoning, terms) * 6;
+    }
+    return score;
+  }
+
+  function _sortKnowledgeForQuery(items, query) {
+    return (items || []).slice().sort((a, b) => {
+      const scoreDelta = _knowledgeSearchScore(b, query) - _knowledgeSearchScore(a, query);
+      if (scoreDelta) return scoreDelta;
+      return String(b.updated || b.created || '').localeCompare(String(a.updated || a.created || '')) || Number(b.id || 0) - Number(a.id || 0);
+    });
+  }
+
   async function _readStore(provider, def) {
     const fallback = _clone(def.empty);
     const path = _storePath(def);
@@ -174,9 +221,21 @@
   }
 
   async function searchKnowledgeItems(provider, q = '', limit = 10) {
-    const payload = await listKnowledgeItems(provider, { q, include_superseded: false, include_deleted: false });
     const max = Math.max(1, Math.min(Number(limit || 10), 50));
-    return { results: payload.items.slice(0, max), count: Math.min(payload.items.length, max), verification: payload.verification };
+    const payload = await listKnowledgeItems(provider, { q, include_superseded: false, include_deleted: false });
+    const pinnedPayload = q
+      ? await listKnowledgeItems(provider, { include_superseded: false, include_deleted: false }).catch(() => ({ items: [] }))
+      : { items: [] };
+    const seen = new Set();
+    const combined = [];
+    [...(payload.items || []), ...(pinnedPayload.items || []).filter(item => item.pinned || item.user_pinned)].forEach(item => {
+      const key = String(item?.id || `${item?.subject || ''}:${item?.statement || ''}`);
+      if (seen.has(key)) return;
+      seen.add(key);
+      combined.push(item);
+    });
+    const results = _sortKnowledgeForQuery(combined, q).slice(0, max);
+    return { results, count: results.length, verification: payload.verification };
   }
 
   function _countBy(items, field) {

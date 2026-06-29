@@ -9,6 +9,7 @@ const CHART_PALETTES = {
   warm:    ['#d16969','#ce9178','#dcdcaa','#d7ba7d','#c586c0','#e06c75','#d19a66','#e5c07b','#f0a0a0','#cc7832','#e2b86b','#cf8e6d'],
   cool:    ['#569cd6','#4ec9b0','#9cdcfe','#6a9955','#b5cea8','#608b4e','#61afef','#56b6c2','#98c379','#7ec8e3','#5c6bc0','#00897b'],
 };
+const CHART_THEME_ACCENT_FALLBACK = '#569cd6';
 
 /* --- SVGプリミティブ --- */
 
@@ -62,7 +63,8 @@ function getChartConfig(dbPath, options = {}) {
     yProperty: null,
     showLabels: true,
     showLegend: true,
-    palette: 'default',
+    palette: 'single',
+    singleColor: '',
   };
 }
 
@@ -90,7 +92,8 @@ function _normalizeChartConfig(config, allProps, dbPath) {
   const propTypes = next.propertyTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {});
   next.showLabels = next.showLabels !== false;
   next.showLegend = next.showLegend !== false;
-  if (!CHART_PALETTES[next.palette]) next.palette = 'default';
+  if (next.palette !== 'single' && next.palette !== 'themeAccent' && !CHART_PALETTES[next.palette]) next.palette = 'single';
+  next.singleColor = _chartNormalizeHexColor(next.singleColor) || '';
   if (!allProps.includes(next.xProperty)) next.xProperty = allProps[0] || '';
   const numProps = _chartNumericProps(allProps, propTypes);
   const numericAggs = ['sum', 'average', 'min', 'max', 'median'];
@@ -107,6 +110,39 @@ function _normalizeChartConfig(config, allProps, dbPath) {
   }
   next.propertyTypes = propTypes;
   return next;
+}
+
+function _chartNormalizeHexColor(value) {
+  const text = String(value || '').trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text;
+  if (/^#[0-9a-f]{3}$/i.test(text)) {
+    return '#' + text.slice(1).split('').map(ch => ch + ch).join('');
+  }
+  return '';
+}
+
+function _chartColorToHex(value, fallback = CHART_THEME_ACCENT_FALLBACK) {
+  const hex = _chartNormalizeHexColor(value);
+  if (hex) return hex;
+  const match = String(value || '').match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
+  if (!match) return fallback;
+  const toHex = (n) => Math.max(0, Math.min(255, Number(n) || 0)).toString(16).padStart(2, '0');
+  return '#' + toHex(match[1]) + toHex(match[2]) + toHex(match[3]);
+}
+
+function _chartThemeAccentColor() {
+  try {
+    const cs = getComputedStyle(document.documentElement);
+    return _chartColorToHex(cs.getPropertyValue('--accent') || '', CHART_THEME_ACCENT_FALLBACK);
+  } catch {
+    return CHART_THEME_ACCENT_FALLBACK;
+  }
+}
+
+function _chartPaletteColors(chartConfig) {
+  if (chartConfig?.palette === 'single') return [_chartNormalizeHexColor(chartConfig.singleColor) || _chartThemeAccentColor()];
+  if (chartConfig?.palette === 'themeAccent') return [_chartThemeAccentColor()];
+  return CHART_PALETTES[chartConfig?.palette] || CHART_PALETTES.default;
 }
 
 /* --- データ準備 --- */
@@ -126,7 +162,7 @@ function prepareChartData(pivotData, chartConfig, dbPathOverride, options = {}) 
   chartConfig = _normalizeChartConfig(chartConfig, allProps, dbPath);
   const xProp = chartConfig.xProperty;
   const yAgg = chartConfig.yAggregation || 'count';
-  const palette = CHART_PALETTES[chartConfig.palette] || CHART_PALETTES.default;
+  const palette = _chartPaletteColors(chartConfig);
 
   if (!xProp) return { labels: [], values: [], colors: [], total: 0 };
 
@@ -180,7 +216,7 @@ async function prepareChartDataAsync(pivotData, chartConfig, dbPathOverride, opt
   const xProp = chartConfig.xProperty;
   const xPtc = propTypes?.[xProp] || null;
   const yAgg = chartConfig.yAggregation || 'count';
-  const palette = CHART_PALETTES[chartConfig.palette] || CHART_PALETTES.default;
+  const palette = _chartPaletteColors(chartConfig);
 
   if (!xProp) return { labels: [], values: [], colors: [], total: 0 };
 
@@ -826,16 +862,35 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
   // パレット選択
   bar.appendChild(_chartLabel('配色'));
   const paletteSelect = _chartSelect([
+    { key: 'single', label: '単色' },
+    { key: 'themeAccent', label: 'テーマカラー' },
     { key: 'default', label: 'デフォルト' },
     { key: 'warm', label: 'ウォーム' },
     { key: 'cool', label: 'クール' },
-  ], config.palette || 'default', chartScope + '-palette', 'チャート配色');
+  ], config.palette || 'single', chartScope + '-palette', 'チャート配色');
   paletteSelect.addEventListener('change', () => {
     config.palette = paletteSelect.value;
+    if (config.palette === 'single' && !_chartNormalizeHexColor(config.singleColor)) config.singleColor = _chartThemeAccentColor();
     setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: '配色' });
     _renderChartForDbPanels(dbPath, ctx);
   });
   bar.appendChild(paletteSelect);
+  if ((config.palette || 'single') === 'single') {
+    const singleColor = document.createElement('input');
+    singleColor.type = 'color';
+    singleColor.className = 'chart-color-input';
+    singleColor.value = _chartNormalizeHexColor(config.singleColor) || _chartThemeAccentColor();
+    singleColor.dataset.e2eId = chartScope + '-single-color';
+    singleColor.setAttribute('aria-label', 'チャート単色カラー');
+    singleColor.title = '単色カラー';
+    singleColor.addEventListener('change', () => {
+      config.palette = 'single';
+      config.singleColor = _chartNormalizeHexColor(singleColor.value) || _chartThemeAccentColor();
+      setChartConfig(dbPath, config, { ctx, label: 'シート表示: チャート設定', detail: '単色カラー' });
+      _renderChartForDbPanels(dbPath, ctx);
+    });
+    bar.appendChild(singleColor);
+  }
 
   const labelsToggle = _chartCheckbox('値ラベル', config.showLabels !== false, chartScope + '-show-labels', 'チャート値ラベル表示');
   labelsToggle.input.addEventListener('change', () => {

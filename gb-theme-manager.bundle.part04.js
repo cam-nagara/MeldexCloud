@@ -1,3 +1,4 @@
+    customThemes.push(next);
     saveCustomThemes(customThemes);
     setDefaultThemeId(next.id);
     cancelThemeColorSetCommit();

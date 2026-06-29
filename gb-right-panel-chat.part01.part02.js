@@ -1057,15 +1057,15 @@ function _chatWorkspaceIdValue() {
   return String(_chatState.workspaceId || '');
 }
 
-function _chatRequireSourceFolder(message = '対象ワークスペースまたはフォルダを選択してください') {
+function _chatRequireSourceFolder(message = 'フォルダツリーで対象フォルダまたはファイルを選択してください') {
   const sourceFolder = _chatSourceFolderValue();
   const workspaceId = _chatWorkspaceIdValue();
   if (workspaceId) return workspaceId;
   if (sourceFolder) return sourceFolder;
   if (typeof showStatus === 'function') showStatus(message, true);
-  const select = document.getElementById('chat-source-folder');
-  if (select && !select.disabled) {
-    try { select.focus(); } catch {}
+  const targetBar = document.getElementById('chat-current-target-bar');
+  if (targetBar) {
+    try { targetBar.scrollIntoView({ block: 'nearest' }); } catch {}
   }
   return '';
 }
@@ -1126,6 +1126,11 @@ function _chatProviderUnavailableSuffix(provider, status) {
     if (message.includes('読み込め') || message.includes('確認')) return '（確認不可）';
     return '（未設定）';
   }
+  if (_chatIsLocalLlmProvider(provider)) {
+    if (message.includes('接続先')) return '（接続先確認）';
+    if (message.includes('確認')) return '（確認不可）';
+    return '（未設定）';
+  }
   if (message.includes('確認')) return '（確認不可）';
   return '（APIキー未設定）';
 }
@@ -1133,7 +1138,7 @@ function _chatProviderUnavailableSuffix(provider, status) {
 function _chatApplyProviderOptionStatus(option, status) {
   if (!option) return;
   const provider = _chatProviderKey(option.value);
-  if (!option.dataset.baseLabel) option.dataset.baseLabel = option.textContent.replace(/（(?:APIキー未設定|未設定|無効|未検出|確認不可)）$/, '');
+  if (!option.dataset.baseLabel) option.dataset.baseLabel = option.textContent.replace(/（(?:APIキー未設定|未設定|無効|未検出|確認不可|接続先確認)）$/, '');
   const configured = _chatProviderStatusConfigured(status);
   option.disabled = !configured;
   option.setAttribute('aria-disabled', configured ? 'false' : 'true');
@@ -1161,6 +1166,7 @@ async function _chatRefreshProviderAvailability(seedStatuses = {}) {
 async function _chatProviderReadyStatus(provider) {
   const key = _chatProviderKey(provider);
   if (_chatIsCliProvider(key)) return _chatCliProviderReadyStatus(key);
+  if (_chatIsLocalLlmProvider(key)) return _chatLocalLlmReadyStatus();
   try {
     if (await window.MeldexLlmKeys?.hasProvider?.(key)) return { configured: true, message: '' };
   } catch {}
@@ -1175,6 +1181,27 @@ async function _chatProviderReadyStatus(provider) {
     return {
       configured: false,
       message: 'APIキー設定を確認できませんでした。Meldexを再起動してからもう一度試してください。',
+    };
+  }
+}
+
+function _chatLocalLlmReadyStatus() {
+  const baseUrl = typeof chatLocalLlmBaseUrl === 'function' ? chatLocalLlmBaseUrl() : '';
+  try {
+    const parsed = new URL(baseUrl);
+    const host = String(parsed.hostname || '').toLowerCase();
+    const localHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !localHosts.has(host)) {
+      return {
+        configured: false,
+        message: 'ローカルLLMの接続先URLは localhost / 127.0.0.1 / ::1 のOpenAI互換サーバーにしてください。',
+      };
+    }
+    return { configured: true, message: '' };
+  } catch {
+    return {
+      configured: false,
+      message: 'ローカルLLMの接続先URLを確認してください。',
     };
   }
 }

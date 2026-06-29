@@ -38,7 +38,7 @@
     return {
       version: 1,
       enabled: Object.prototype.hasOwnProperty.call(raw || {}, 'enabled') ? raw.enabled === true : true,
-      provider: String(raw?.provider || _defaultProvider()),
+      provider: String(raw?.provider || ''),
       model: String(raw?.model || ''),
       trigger: String(raw?.trigger || 'after_chat'),
       writePolicy: String(raw?.writePolicy || 'admin_auto'),
@@ -87,8 +87,22 @@
   }
 
   function _sourceEnabled(settings, path) {
-    if (!_hasSavedSettings()) return true;
+    if (!_hasSavedSettings() || !settings.targets.sources.length) return true;
     return settings.targets.sources.some(item => item.path === path && item.enabled);
+  }
+
+  function _aiExtractionEnabled(settings) {
+    return !!String(settings?.provider || '').trim();
+  }
+
+  function _selectedProvider(settings) {
+    return String(settings?.provider || _defaultProvider() || 'anthropic');
+  }
+
+  function _targetHomeChecked(settings) {
+    if (!_hasSavedSettings()) return true;
+    if (settings.targets.home.enabled) return true;
+    return !settings.targets.home.path && !settings.targets.sources.length;
   }
 
   function _renderTargetRows(container, settings, folders) {
@@ -96,7 +110,7 @@
     if (folders.homePath) {
       rows.push(`
         <label class="gb-check knowledge-auto-target-row">
-          <input type="checkbox" id="knowledge-auto-target-home" data-setting="knowledge-auto-target-home" data-knowledge-auto-target="home" data-path="${_esc(folders.homePath)}" ${(!_hasSavedSettings() || settings.targets.home.enabled) ? 'checked' : ''}>
+          <input type="checkbox" id="knowledge-auto-target-home" data-setting="knowledge-auto-target-home" data-knowledge-auto-target="home" data-path="${_esc(folders.homePath)}" ${_targetHomeChecked(settings) ? 'checked' : ''}>
           <span style="min-width:88px;">ホームフォルダ</span>
           <span class="gb-section-desc" title="${_esc(folders.homePath)}">${_esc(folders.homePath)}</span>
         </label>
@@ -122,42 +136,44 @@
   }
 
   function _buildPanel(settings) {
+    const aiEnabled = _aiExtractionEnabled(settings);
+    const selectedProvider = _selectedProvider(settings);
     return `
-      <label class="gb-check">
-        <input type="checkbox" id="knowledge-auto-enabled" data-setting="knowledge-auto-enabled" ${settings.enabled ? 'checked' : ''}>
-        <span>自動ナレッジ抽出を有効にする</span>
-      </label>
-      <label class="gb-field-row">
-        <span class="gb-label" style="min-width:140px;">実行LLM</span>
-        <select id="knowledge-auto-provider" class="gb-select" data-setting="knowledge-auto-provider" style="width:150px;">
-          <option value="anthropic" ${settings.provider === 'anthropic' ? 'selected' : ''}>Claude</option>
-          <option value="openai" ${settings.provider === 'openai' ? 'selected' : ''}>GPT</option>
-          <option value="gemini" ${settings.provider === 'gemini' ? 'selected' : ''}>Gemini</option>
-        </select>
-        <input id="knowledge-auto-model" type="text" class="gb-input" data-setting="knowledge-auto-model" style="flex:1;min-width:160px;" value="${_esc(settings.model)}" placeholder="未指定ならチャット設定に従う">
-      </label>
-      <label class="gb-field-row">
-        <span class="gb-label" style="min-width:140px;">実行タイミング</span>
-        <select id="knowledge-auto-trigger" class="gb-select" data-setting="knowledge-auto-trigger" style="flex:1;">
-          <option value="after_chat" ${settings.trigger === 'after_chat' ? 'selected' : ''}>チャット応答後</option>
-          <option value="manual_review" ${settings.trigger === 'manual_review' ? 'selected' : ''}>手動レビュー時</option>
-          <option value="idle" ${settings.trigger === 'idle' ? 'selected' : ''}>アイドル時</option>
-        </select>
-      </label>
-      <label class="gb-field-row">
-        <span class="gb-label" style="min-width:140px;">反映方法</span>
-        <select id="knowledge-auto-write-mode" class="gb-select" data-setting="knowledge-auto-write-mode" style="flex:1;">
-          <option value="admin_auto" ${settings.writePolicy === 'admin_auto' ? 'selected' : ''}>管理者端末で自動反映</option>
-          <option value="admin_approval" ${settings.writePolicy === 'admin_approval' ? 'selected' : ''}>管理者承認後</option>
-          <option value="draft_only" ${settings.writePolicy === 'draft_only' ? 'selected' : ''}>候補だけ作成</option>
-        </select>
-      </label>
-      <div class="gb-section-desc">自動抽出の対象を選択します。ソースフォルダごとの指定に加えて、ホームフォルダも対象にできます。</div>
-      <div id="knowledge-auto-target-list" style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
-        <div class="gb-section-desc">対象フォルダを読み込み中...</div>
+      <input type="hidden" id="knowledge-auto-enabled" data-setting="knowledge-auto-enabled" value="1">
+      <input type="hidden" id="knowledge-auto-trigger" data-setting="knowledge-auto-trigger" value="after_chat">
+      <input type="hidden" id="knowledge-auto-write-mode" data-setting="knowledge-auto-write-mode" value="admin_auto">
+      <div class="knowledge-auto-simple-status">
+        <div>
+          <div class="knowledge-auto-simple-title">${_icon('checkCircle2', 14)} 自動で記憶し、チャットで活用します</div>
+          <div class="gb-section-desc">通常は設定不要です。チャットの中で出た決定・好み・ルールは、次の相談や創作提案に自動で使われます。</div>
+        </div>
+        <span class="gb-pill">常時ON</span>
       </div>
+      <label class="gb-check knowledge-auto-ai-toggle">
+        <input type="checkbox" id="knowledge-auto-llm-enabled" data-setting="knowledge-auto-llm-enabled" ${aiEnabled ? 'checked' : ''}>
+        <span>AIで詳しく抽出する</span>
+      </label>
+      <div class="gb-section-desc">ONにした場合だけ、チャット内容を選んだAIへ送り、より細かい記憶候補を抽出します。OFFでも端末内の軽い抽出は動きます。</div>
+      <div class="knowledge-auto-ai-panel" data-knowledge-auto-ai-panel ${aiEnabled ? '' : 'hidden'}>
+        <label class="gb-field-row">
+          <span class="gb-label" style="min-width:140px;">使うAI</span>
+          <select id="knowledge-auto-provider" class="gb-select" data-setting="knowledge-auto-provider" style="width:150px;">
+            <option value="anthropic" ${selectedProvider === 'anthropic' ? 'selected' : ''}>Claude</option>
+            <option value="openai" ${selectedProvider === 'openai' ? 'selected' : ''}>GPT</option>
+            <option value="gemini" ${selectedProvider === 'gemini' ? 'selected' : ''}>Gemini</option>
+          </select>
+          <input id="knowledge-auto-model" type="text" class="gb-input" data-setting="knowledge-auto-model" style="flex:1;min-width:160px;" value="${_esc(settings.model)}" placeholder="空欄なら標準モデル">
+        </label>
+      </div>
+      <details class="knowledge-auto-details">
+        <summary>${_icon('slidersHorizontal', 14)} 対象フォルダを確認する</summary>
+        <div class="gb-section-desc">通常はすべて対象です。特定のフォルダだけ除外したい場合に変更します。</div>
+        <div id="knowledge-auto-target-list" style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+          <div class="gb-section-desc">対象フォルダを読み込み中...</div>
+        </div>
+      </details>
       <div class="gb-field-row" style="justify-content:flex-start;margin-top:8px;">
-        <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="knowledge-auto-open-view" data-knowledge-auto-open-view>${_icon('folderOpen', 14)} ナレッジフォルダを開く</button>
+        <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="knowledge-auto-open-view" data-knowledge-auto-open-view>${_icon('brain', 14)} 記憶一覧を開く</button>
       </div>
     `;
   }
@@ -172,6 +188,11 @@
     const folders = await _loadTargetFolders();
     if (!container.isConnected || !targetList) return;
     _renderTargetRows(targetList, settings, folders);
+    const aiToggle = container.querySelector('#knowledge-auto-llm-enabled');
+    const aiPanel = container.querySelector('[data-knowledge-auto-ai-panel]');
+    aiToggle?.addEventListener('change', () => {
+      if (aiPanel) aiPanel.hidden = aiToggle.checked !== true;
+    });
     container.querySelector('[data-knowledge-auto-open-view]')?.addEventListener('click', () => {
       if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('items');
     });
@@ -187,15 +208,16 @@
     const previous = loadKnowledgeAutomationSettings();
     const targetList = scope.querySelector('#knowledge-auto-target-list');
     const targetsLoaded = targetList?.dataset?.knowledgeAutoTargetsLoaded === '1';
+    const aiEnabled = scope.querySelector('#knowledge-auto-llm-enabled')?.checked === true;
     return {
-      enabled: scope.querySelector('#knowledge-auto-enabled')?.checked === true,
-      provider: scope.querySelector('#knowledge-auto-provider')?.value || _defaultProvider(),
-      model: scope.querySelector('#knowledge-auto-model')?.value?.trim() || '',
+      enabled: true,
+      provider: aiEnabled ? (scope.querySelector('#knowledge-auto-provider')?.value || _defaultProvider()) : '',
+      model: aiEnabled ? (scope.querySelector('#knowledge-auto-model')?.value?.trim() || '') : '',
       trigger: scope.querySelector('#knowledge-auto-trigger')?.value || 'after_chat',
-      writePolicy: scope.querySelector('#knowledge-auto-write-mode')?.value || 'admin_approval',
+      writePolicy: scope.querySelector('#knowledge-auto-write-mode')?.value || 'admin_auto',
       targets: {
         home: {
-          enabled: homeInput ? homeInput.checked === true : (!targetsLoaded && previous.targets.home.enabled === true),
+          enabled: homeInput ? homeInput.checked === true : (!targetsLoaded && _targetHomeChecked(previous)),
           path: homeInput?.dataset?.path || (!targetsLoaded ? previous.targets.home.path : ''),
         },
         sources: sourceInputs.length

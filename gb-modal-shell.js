@@ -4,6 +4,8 @@
   const OVERLAY_SELECTOR = '.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay';
   const MODAL_SELECTOR = ':scope > .modal, :scope > .gb-modal, :scope > .gb-cal-modal, :scope > .link-modal, :scope > .meldex-cloud-mode-modal, :scope > .meldex-cloud-setup-modal';
   const LIVE_DIALOG_SELECTOR = MODAL_SELECTOR + ', :scope > .gb-confirm';
+  const MOBILE_OVERLAY_CLASSES = ['modal-overlay', 'gb-modal-overlay', 'gb-cal-modal-overlay', 'link-modal-overlay'];
+  const MOBILE_SHEET_CLOSE_MS = 220;
   const RECOVERY_TARGET_SELECTOR = 'a, button, input, textarea, select, [data-action], .tree-node-row, .fav-item, .sidebar-item, [role="button"], [tabindex]';
   const VIEWPORT_PADDING = 12;
   const RESIZE_CLICK_SUPPRESS_MS = 350;
@@ -56,6 +58,121 @@
   function _directLiveDialog(overlay) {
     if (!overlay?.querySelector) return null;
     return overlay.querySelector(LIVE_DIALOG_SELECTOR);
+  }
+
+  function _isMobileSheetMode() {
+    return document.body?.dataset?.cloudMobile === '1'
+      || document.body?.dataset?.mobileUi === '1'
+      || window.MeldexCloudMobileState?.mobile === true;
+  }
+
+  function _isMobileSheetExcluded(overlay, dialog) {
+    return overlay?.dataset?.mobileDialogSheet === 'off'
+      || dialog?.dataset?.mobileDialogSheet === 'off'
+      || overlay?.classList?.contains('screenshot-region-overlay')
+      || overlay?.classList?.contains('cloud-conflict-resolver-overlay');
+  }
+
+  function _clearMobileSheet(overlay) {
+    const dialog = overlay?.querySelector?.('.gb-mobile-dialog-sheet');
+    overlay?.classList?.remove('gb-mobile-dialog-overlay', 'gb-mobile-dialog-overlay-open', 'gb-mobile-dialog-overlay-closing');
+    if (overlay?.style) {
+      overlay.style.transition = '';
+      overlay.style.opacity = '';
+    }
+    if (overlay?.dataset) delete overlay.dataset.mobileDialogSheetActive;
+    dialog?.classList?.remove('gb-mobile-dialog-sheet', 'gb-mobile-dialog-sheet-open', 'gb-mobile-dialog-sheet-closing');
+    if (dialog?.style) {
+      dialog.style.transition = '';
+      dialog.style.transform = '';
+    }
+    dialog?.removeAttribute?.('data-mobile-dialog-sheet');
+  }
+
+  function _patchMobileSheetRemove(overlay) {
+    if (!overlay || overlay.dataset.mobileDialogRemovePatched === '1') return;
+    const nativeRemove = HTMLElement.prototype.remove;
+    if (typeof nativeRemove !== 'function') return;
+    overlay.dataset.mobileDialogRemovePatched = '1';
+    try {
+      Object.defineProperty(overlay, 'remove', {
+        configurable: true,
+        value: function removeWithMobileSheetAnimation() {
+          if (
+            !_isMobileSheetMode()
+            || overlay.dataset.mobileDialogClosing === '1'
+            || !overlay.classList.contains('gb-mobile-dialog-overlay')
+          ) {
+            nativeRemove.call(overlay);
+            return;
+          }
+
+          overlay.dataset.mobileDialogClosing = '1';
+          overlay.setAttribute('aria-hidden', 'true');
+          overlay.style.pointerEvents = 'none';
+          overlay.style.zIndex = overlay.style.zIndex || getComputedStyle(overlay).zIndex || '';
+          overlay.style.transition = '';
+          overlay.style.opacity = '';
+          MOBILE_OVERLAY_CLASSES.forEach((className) => overlay.classList.remove(className));
+          overlay.classList.remove('gb-mobile-dialog-overlay-open');
+          overlay.classList.add('gb-mobile-dialog-overlay-closing');
+          const dialog = overlay.querySelector('.gb-mobile-dialog-sheet');
+          if (dialog) {
+            dialog.style.transition = '';
+            dialog.style.transform = '';
+          }
+          dialog?.classList?.remove('gb-mobile-dialog-sheet-open');
+          dialog?.classList?.add('gb-mobile-dialog-sheet-closing');
+
+          let finished = false;
+          const finish = () => {
+            if (finished) return;
+            finished = true;
+            nativeRemove.call(overlay);
+          };
+          dialog?.addEventListener?.('animationend', finish, { once: true });
+          dialog?.addEventListener?.('transitionend', finish, { once: true });
+          setTimeout(finish, MOBILE_SHEET_CLOSE_MS);
+        },
+      });
+    } catch {}
+  }
+
+  function _syncMobileSheet(overlay) {
+    if (!overlay?.matches?.(OVERLAY_SELECTOR)) return;
+    if (overlay.dataset?.mobileDialogClosing === '1') return;
+    const dialog = _directLiveDialog(overlay);
+    if (!_isMobileSheetMode() || !dialog || _isMobileSheetExcluded(overlay, dialog)) {
+      _clearMobileSheet(overlay);
+      return;
+    }
+    const wasActive = overlay.dataset.mobileDialogSheetActive === '1';
+    overlay.classList.add('gb-mobile-dialog-overlay');
+    overlay.dataset.mobileDialogSheetActive = '1';
+    dialog.classList.add('gb-mobile-dialog-sheet');
+    dialog.setAttribute('data-mobile-dialog-sheet', '1');
+    if (wasActive) {
+      overlay.classList.add('gb-mobile-dialog-overlay-open');
+      dialog.classList.add('gb-mobile-dialog-sheet-open');
+    } else {
+      overlay.classList.remove('gb-mobile-dialog-overlay-open');
+      dialog.classList.remove('gb-mobile-dialog-sheet-open');
+      const openSheet = (forceFinal) => {
+        if (!overlay.isConnected || !dialog.isConnected || overlay.dataset.mobileDialogSheetActive !== '1') return;
+        overlay.classList.add('gb-mobile-dialog-overlay-open');
+        dialog.classList.add('gb-mobile-dialog-sheet-open');
+        if (forceFinal) {
+          overlay.style.transition = 'none';
+          overlay.style.opacity = '1';
+          dialog.style.transition = 'none';
+          dialog.style.transform = 'translateY(0)';
+        }
+      };
+      requestAnimationFrame(() => openSheet(false));
+      setTimeout(() => openSheet(false), 40);
+      setTimeout(() => openSheet(true), 260);
+    }
+    _patchMobileSheetRemove(overlay);
   }
 
   function _hasVisibleDirectContent(overlay) {
@@ -413,13 +530,18 @@
   }
 
   function enhanceOverlay(overlay) {
-    if (!overlay || overlay.dataset.modalShellEnhanced === '1') return;
+    if (!overlay) return;
+    _syncMobileSheet(overlay);
+    if (overlay.dataset.modalShellEnhanced === '1' || overlay.dataset.modalShellEnhanced === 'skip') return;
     if (overlay.dataset.modalShell === 'off') {
       overlay.dataset.modalShellEnhanced = 'skip';
       return;
     }
     const modal = _directModal(overlay);
-    if (!modal) return;
+    if (!modal) {
+      if (_directLiveDialog(overlay)) overlay.dataset.modalShellEnhanced = 'skip';
+      return;
+    }
     if (modal.dataset.modalShell === 'off') {
       overlay.dataset.modalShellEnhanced = 'skip';
       return;
@@ -472,6 +594,8 @@
     }
     window.addEventListener('resize', () => {
       document.querySelectorAll(OVERLAY_SELECTOR).forEach((overlay) => {
+        _syncMobileSheet(overlay);
+        if (_isMobileSheetMode()) return;
         const modal = _directModal(overlay);
         if (!modal) return;
         if (_isShellDisabled(overlay, modal)) return;
@@ -480,6 +604,7 @@
         _clampModal(modal, header, footer);
       });
     });
+    document.addEventListener('meldex-cloud-mobile-viewport', enhanceAll);
     enhanceAll();
   }
 

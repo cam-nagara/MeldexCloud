@@ -533,3 +533,28 @@ input[type="number"]:focus-visible::-webkit-outer-spin-button,
 input[type="number"]:focus-visible::-webkit-inner-spin-button {
   opacity: 1;
 }
+
+.settings-theme-detail-entry-row {
+  display: flex; align-items: center; gap: var(--ui-space-3); flex-wrap: wrap; min-width: 0;
+}
+.settings-theme-detail-open-btn {
+  display: inline-flex; align-items: center; gap: var(--ui-space-2); min-height: var(--ui-h-sm); color: var(--ui-fg-default);
+}
+.settings-theme-detail-open-btn svg { width: 14px; height: 14px; flex: 0 0 14px; }
+.settings-theme-detail-shortcuts {
+  display: flex; align-items: center; gap: var(--ui-space-1); flex-wrap: wrap; min-width: 0;
+}
+.settings-theme-detail-shortcut { min-height: var(--ui-h-xs); }
+.settings-theme-detail-modal .gb-modal-body { padding: var(--ui-space-4); }
+.settings-theme-detail {
+  display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0;
+}
+.settings-theme-detail-tabs {
+  display: flex; align-items: center; gap: var(--ui-space-1); flex-wrap: wrap;
+  padding-bottom: var(--ui-space-2); border-bottom: 1px solid var(--ui-border);
+}
+.settings-theme-detail-panels { min-width: 0; }
+.settings-theme-detail-panel {
+  display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0;
+}
+.settings-theme-detail-panel[hidden] { display: none; }

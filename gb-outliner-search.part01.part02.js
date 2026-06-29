@@ -13,6 +13,8 @@ try { updateRecentItems(); } catch (e) { console.warn('updateRecentItems failed 
 // ==============================
 let _homeFolderPath = '';
 let _homeFolderRenderSeq = 0;
+let _homeFolderMetadataLoaded = false;
+let _homeFolderLoadPromise = null;
 const _HOME_FOLDER_BROWSE_RETRY_DELAYS = [250, 750];
 
 function _homeFolderRenderDelay(ms) {
@@ -21,6 +23,11 @@ function _homeFolderRenderDelay(ms) {
 
 function _isHomeFolderRenderCurrent(renderSeq, homePath) {
   return renderSeq === _homeFolderRenderSeq && homePath === _homeFolderPath;
+}
+
+function _homeFolderSectionExpanded() {
+  const body = document.getElementById('body-home');
+  return !!body && !body.classList.contains('collapsed');
 }
 
 async function _browseHomeFolderChildren(homePath, renderSeq) {
@@ -40,26 +47,46 @@ async function _browseHomeFolderChildren(homePath, renderSeq) {
   throw lastError;
 }
 
-async function loadHomeFolder() {
+async function loadHomeFolder(options = {}) {
+  if (_homeFolderLoadPromise) return _homeFolderLoadPromise;
+  _homeFolderLoadPromise = (async () => {
+    try {
+      const res = await apiFetch('/home-folder');
+      _homeFolderPath = res.path || '';
+      _homeFolderMetadataLoaded = true;
+      if (typeof setSystemLockedItems === 'function') {
+        setSystemLockedItems(res.locked_paths || []);
+      }
+      if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
+      if (options.render === true || _homeFolderSectionExpanded()) {
+        await renderHomeFolderTree({ force: options.force === true, reason: options.reason || 'home-folder-load', skipMetadataLoad: true });
+      }
+      if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
+    } catch {}
+  })();
   try {
-    const res = await apiFetch('/home-folder');
-    _homeFolderPath = res.path || '';
-    if (typeof setSystemLockedItems === 'function') {
-      setSystemLockedItems(res.locked_paths || []);
-    }
-    if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
-    renderHomeFolderTree();
-    if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
-  } catch {}
+    return await _homeFolderLoadPromise;
+  } finally {
+    _homeFolderLoadPromise = null;
+  }
 }
 
-async function renderHomeFolderTree() {
+async function renderHomeFolderTree(options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
   const container = document.getElementById('body-home');
   if (!container) return;
   const renderSeq = ++_homeFolderRenderSeq;
   const homePath = _homeFolderPath;
   if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
   container.innerHTML = '';
+  if (!opts.force && !_homeFolderSectionExpanded()) {
+    container.dataset.loaded = 'false';
+    return { skipped: true, reason: 'collapsed' };
+  }
+  if (!homePath && !_homeFolderMetadataLoaded && opts.skipMetadataLoad !== true) {
+    await loadHomeFolder({ render: true, force: opts.force === true, reason: opts.reason || 'render-home-folder' });
+    return { rendered: !!_homeFolderPath };
+  }
   if (!homePath) return;
   container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">読み込み中...</div>';
   try {
@@ -75,10 +102,12 @@ async function renderHomeFolderTree() {
     });
     if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
     if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
+    container.dataset.loaded = 'true';
   } catch {
     if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return;
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
     container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">読み込みエラー</div>';
+    container.dataset.loaded = 'false';
   }
 }
 
@@ -117,7 +146,7 @@ loadHomeFolder();
         movedCount++;
       } catch { skippedCount++; showStatus('移動に失敗', true); }
     }
-    await renderHomeFolderTree();
+    await renderHomeFolderTree({ force: true, reason: 'home-drop' });
     await loadOutliner();
     const statusText = skippedCount
       ? movedCount + ' 件をホームフォルダに移動しました。' + skippedCount + ' 件は移動できませんでした'

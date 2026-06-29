@@ -134,7 +134,7 @@
   }
 
   function _allowsTarget(settings, sourceFolder) {
-    if (!_isObject(settings)) return { allowed: false, reason: 'knowledge_automation_not_configured' };
+    if (!_isObject(settings)) return { allowed: true, reason: '' };
     if (_asBool(settings.enabled, false) !== true) return { allowed: false, reason: 'knowledge_automation_disabled' };
 
     const targets = _isObject(settings.targets) ? settings.targets : {};
@@ -159,6 +159,7 @@
   }
 
   function _automationWriteGate(settings) {
+    if (!_isObject(settings)) return { allowed: true, reason: '' };
     const trigger = String(settings?.trigger || 'after_chat').trim() || 'after_chat';
     if (trigger !== 'after_chat') return { allowed: false, reason: 'knowledge_automation_trigger_not_after_chat' };
     const writePolicy = String(settings?.writePolicy || settings?.write_policy || 'admin_auto').trim() || 'admin_auto';
@@ -353,14 +354,16 @@
   }
 
   function _automationProviderAndModel(settings) {
-    if (!_isObject(settings)) return { provider: 'anthropic', model: EXTRACTION_MODEL };
-    let provider = String(settings.provider || 'anthropic').trim().toLowerCase();
+    if (!_isObject(settings)) return { provider: '', model: '' };
+    let provider = String(settings.provider || '').trim().toLowerCase();
+    if (!provider) return { provider: '', model: '' };
     if (!EXTRACTION_DEFAULT_MODELS[provider]) provider = 'anthropic';
     const model = String(settings.model || '').trim() || EXTRACTION_DEFAULT_MODELS[provider];
     return { provider, model };
   }
 
   async function _apiKeyForProvider(provider, settings) {
+    if (!provider) return '';
     const keyName = PROVIDER_KEY_NAMES[provider] || PROVIDER_KEY_NAMES.anthropic;
     const inlineKey = _isObject(settings?.api_keys) ? String(settings.api_keys[keyName] || '').trim() : '';
     if (inlineKey) return inlineKey;
@@ -655,8 +658,10 @@
     let items = [];
     let fallbackError = '';
     try {
-      items = await _extractWithProvider(providerName, apiKey, messages, model);
-      if (items.length) mode = providerName;
+      if (providerName && apiKey) {
+        items = await _extractWithProvider(providerName, apiKey, messages, model);
+        if (items.length) mode = providerName;
+      }
     } catch (error) {
       fallbackError = error?.message || String(error);
       items = [];

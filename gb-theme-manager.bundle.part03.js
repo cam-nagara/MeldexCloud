@@ -391,6 +391,7 @@
       if (root.style.getPropertyValue(key)) root.style.removeProperty(key);
       _appliedThemeVarKeys.delete(key);
     });
+    if (root.dataset) root.dataset.meldexThemeId = themeDef.id || '';
     root.classList.toggle('light-theme', isThemeLight(themeDef));
     const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true });
     applyThemeStandardPaletteAdjustFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredStandardPalette === true });
@@ -897,4 +898,3 @@
     next.id = newCustomThemeId('custom-legacy-palette');
     next.name = '旧テーマカラー';
     setThemeColorSetOnTheme(next, storedPalette);
-    customThemes.push(next);

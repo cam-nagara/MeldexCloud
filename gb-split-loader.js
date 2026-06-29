@@ -2,8 +2,8 @@
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
     'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '41af8efc03dc', parts: { 'meldex-core.bundle.part01.js': 'b479e8c46e5d', 'meldex-core.bundle.part02.js': 'ea22b8343b8b', 'meldex-core.bundle.part03.js': '8bfbe75b3bd7', 'meldex-core.bundle.part04.js': '759e058086d6' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '8cc879292b49', parts: { 'gb-app.bundle.part01.js': '89dfe7b080ee', 'gb-app.bundle.part02.js': '10304a751deb', 'gb-app.bundle.part03.js': 'b24fcc3739cd', 'gb-app.bundle.part04.js': 'c5cb7be4dbfe', 'gb-app.bundle.part05.js': 'bb0d0e0e7909', 'gb-app.bundle.part06.js': '5186c09c881e' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '011506acd66e', parts: { 'gb-theme-manager.bundle.part01.js': 'b27937ac630b', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': 'fb85674b6b41', 'gb-theme-manager.bundle.part04.js': 'd2dac753b53b' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'beb2afe050e8', parts: { 'gb-app.bundle.part01.js': '89dfe7b080ee', 'gb-app.bundle.part02.js': '10304a751deb', 'gb-app.bundle.part03.js': '5280acaf4f32', 'gb-app.bundle.part04.js': '2df288381f42', 'gb-app.bundle.part05.js': '86adf971fb89', 'gb-app.bundle.part06.js': '05dfecdd67d0' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'be556b9ef132', parts: { 'gb-theme-manager.bundle.part01.js': 'b27937ac630b', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': '287af8d88185', 'gb-theme-manager.bundle.part04.js': 'fd95778f4ad8' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {

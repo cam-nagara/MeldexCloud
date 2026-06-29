@@ -379,6 +379,9 @@ function showEntityColMenu(e) {
   }
 
   const pinnedColsList = getPinnedCols(dbPath, { ctx });
+  const entityPinned = typeof getEntityColumnPinned === 'function'
+    ? getEntityColumnPinned(dbPath, { ctx })
+    : true;
   const items = [
     { type: 'submenu', label: '並び替え', children: _makeDbGlobalSortMenuItems(dbPath, ctx) },
     // 互換テスト用: showUnifiedFilterModal()
@@ -388,12 +391,25 @@ function showEntityColMenu(e) {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });
     } },
     { type: 'sep' },
-    { label: lucide('listChecks', 14) + ' 列の表示と順序...', action: () => showColumnDisplayOrderModal(ctx) },
-    {
-      type: 'submenu',
-      label: lucide('eye', 14) + ' 非表示列を表示',
-      children: _makeHiddenColumnMenuItems(dbPath, ctx),
-    },
+    { type: 'submenu', label: lucide('columns', 14) + ' 列操作', children: [
+      { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal('__entity__', ctx || dbPath) },
+      { label: lucide('listChecks', 14) + ' 列の表示と順序...', action: () => showColumnDisplayOrderModal(ctx) },
+      { type: 'submenu', label: '列を固定', children: [
+        { label: (entityPinned ? radioMark(true) : '　') + '固定する', action: () => {
+          if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, true, { ctx });
+          if (typeof renderPivot === 'function') renderPivot(ctx);
+        }},
+        { label: (!entityPinned ? radioMark(true) : '　') + '固定しない', action: () => {
+          if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, false, { ctx });
+          if (typeof renderPivot === 'function') renderPivot(ctx);
+        }},
+      ]},
+      {
+        type: 'submenu',
+        label: lucide('eye', 14) + ' 非表示列を表示',
+        children: _makeHiddenColumnMenuItems(dbPath, ctx),
+      },
+    ] },
     { label: '+ 依存関係プロパティ', action: () => _addDependencyPairProps(dbPath, ctx) },
     ...(pinnedColsList.length > 0 ? [{
       type: 'sep'

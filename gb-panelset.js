@@ -673,6 +673,15 @@
     dockBar.appendChild(sep);
   }
 
+  function _assignRailIconPaletteIndexes(dockBar) {
+    if (!dockBar) return;
+    const buttons = [...dockBar.querySelectorAll('.gb-dock-icon')];
+    buttons.forEach((btn, index) => {
+      btn.dataset.themeRailIcon = 'palette';
+      btn.dataset.themeRailPaletteIndex = String(index % 10);
+    });
+  }
+
   function _railButton(className, iconName, title, onClick) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1130,6 +1139,7 @@
     if (active?.root && typeof GBLayout?.renderNode === 'function') {
       body.appendChild(GBLayout.renderNode(active.root, depth));
     }
+    if (fixedSide) _assignRailIconPaletteIndexes(dockBar);
     if (fixedSide === 'left') col.appendChild(dockBar);
     col.appendChild(body);
     // ドックバーは右側に配置（body を先に、dockBar を後に追加）。

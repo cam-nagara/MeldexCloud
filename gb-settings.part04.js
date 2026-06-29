@@ -79,6 +79,23 @@
     if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
   }
 
+  const localLlmBaseUrl = document.getElementById('modal-local-llm-base-url')?.value?.trim() || '';
+  if (localLlmBaseUrl) localStorage.setItem('chat-local-llm-base-url', localLlmBaseUrl);
+  else localStorage.removeItem('chat-local-llm-base-url');
+  const localLlmModel = document.getElementById('modal-local-llm-model')?.value?.trim() || '';
+  if (localLlmModel) {
+    localStorage.setItem('chat-local-llm-model', localLlmModel);
+    localStorage.setItem('chat-model:local_llm', localLlmModel);
+  } else {
+    localStorage.removeItem('chat-local-llm-model');
+  }
+  const localLlmMcpEnabled = document.getElementById('modal-local-llm-mcp-enabled');
+  if (localLlmMcpEnabled) localStorage.setItem('chat-local-llm-mcp-enabled', localLlmMcpEnabled.checked ? '1' : '0');
+  if (typeof loadProviderModels === 'function') {
+    loadProviderModels('local_llm', { force: true }).catch(() => {});
+  }
+  if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
+
   if (typeof saveCliChatSettingsFromSettingsDialog === 'function') {
     const cliChatSaveOk = await saveCliChatSettingsFromSettingsDialog(settingsOverlay, { silent: true, skipReload: true, backgroundChatRefresh: true });
     if (cliChatSaveOk === false) return;
@@ -771,7 +788,7 @@ const _UI_CONFIG_KEYS = [
   'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
   // カレンダー / チャット
-  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'meldex-wheel-speed',
+  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
   'meldex-knowledge-automation-settings-v1',
   // カスタマイズ
   'meldex-custom-shortcuts', 'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set', 'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',

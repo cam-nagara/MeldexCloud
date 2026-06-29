@@ -783,6 +783,9 @@ const GBPaneBridge = (() => {
       }
     }
     if (!path) {
+      if (viewName === 'folder' && typeof renderFolderInitialPrompt === 'function') {
+        renderFolderInitialPrompt();
+      }
       _scheduleLegacyStateRestore(tab, viewName, containerId);
       return;
     }
@@ -800,6 +803,12 @@ const GBPaneBridge = (() => {
     const token = {};
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
+    if (viewName === 'folder' && tab.state?.selectedPath) {
+      scopedBridgeOpts.selectedPath = tab.state.selectedPath;
+    }
+    if (viewName === 'folder' && Array.isArray(tab.state?.selectedPaths)) {
+      scopedBridgeOpts.selectedPaths = tab.state.selectedPaths;
+    }
     const run = async () => {
       try {
         const prevView = state.view;

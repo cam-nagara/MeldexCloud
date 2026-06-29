@@ -779,6 +779,9 @@ const STATUS_LIST = ['案', '採用', 'ボツ', '掲載済み'];
 
 // esc() は meldex-core.js で定義済み
 function saveLastView(obj) {
+  try {
+    if (typeof _chatSetCurrentTargetFromView === 'function') _chatSetCurrentTargetFromView(obj, { reason: 'last-view', deferAdoptSource: true });
+  } catch {}
   // 単一タブポップアウト窓では元ウィンドウの lastView を汚染しないよう常にスキップ
   if (window._skipLastViewSave || window._gbSingleWindow) return;
   // file_id を付与

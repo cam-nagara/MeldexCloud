@@ -32,7 +32,9 @@ function _sn2ExpandDefaultFileStyle(parsed) {
 }
 
 const SN2_TEMPLATE_STORAGE_KEY = 'sn2-templates';
+const SN2_TEMPLATE_ORDER_STORAGE_KEY = 'sn2-templates-order';
 const SN2_FILTER_PRESETS_STORAGE_KEY = 'sn2-filter-presets';
+const SN2_FILTER_PRESETS_ORDER_STORAGE_KEY = 'sn2-filter-presets-order';
 const SN2_TOOL_STORAGE_HISTORY_SCOPE = 'settings:scriptnote';
 
 function _snToolStorageHistoryKeys(keys) {
@@ -50,7 +52,9 @@ function _snToolCaptureStorageHistory(keys) {
 function _snToolStorageHistoryDetail(keys) {
   const labels = {
     [SN2_TEMPLATE_STORAGE_KEY]: 'テンプレート',
+    [SN2_TEMPLATE_ORDER_STORAGE_KEY]: 'テンプレートの並び順',
     [SN2_FILTER_PRESETS_STORAGE_KEY]: 'フィルタプリセット',
+    [SN2_FILTER_PRESETS_ORDER_STORAGE_KEY]: 'フィルタプリセットの並び順',
   };
   return _snToolStorageHistoryKeys(keys).map(key => labels[key] || key).join(' / ');
 }
@@ -60,8 +64,10 @@ function _snToolRefreshStorageAfterHistory(keys) {
   if (typeof forEachComponent !== 'function') return;
   forEachComponent(component => {
     if (!component || typeof component._refreshTemplateSelect !== 'function') return;
-    if (changed.has(SN2_TEMPLATE_STORAGE_KEY)) component._refreshTemplateSelect();
-    if (changed.has(SN2_FILTER_PRESETS_STORAGE_KEY) && typeof component._refreshFilterPresets === 'function') {
+    const templateChanged = changed.has(SN2_TEMPLATE_STORAGE_KEY) || changed.has(SN2_TEMPLATE_ORDER_STORAGE_KEY);
+    const filterChanged = changed.has(SN2_FILTER_PRESETS_STORAGE_KEY) || changed.has(SN2_FILTER_PRESETS_ORDER_STORAGE_KEY);
+    if (templateChanged) component._refreshTemplateSelect();
+    if (filterChanged && typeof component._refreshFilterPresets === 'function') {
       component._refreshFilterPresets();
     }
   });
@@ -89,6 +95,48 @@ function _snToolPushStorageHistory(label, beforeSnapshot, keys, detail) {
     detail || _snToolStorageHistoryDetail(keyList)
   );
   return true;
+}
+
+function _snToolReadJsonObject(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+function _snToolReadJsonArray(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(value) ? value.filter(item => typeof item === 'string' && item) : [];
+  } catch { return []; }
+}
+
+function _snToolPresetNames(storageKey, orderKey) {
+  const data = _snToolReadJsonObject(storageKey);
+  const keys = Object.keys(data);
+  const ordered = _snToolReadJsonArray(orderKey).filter(name => Object.prototype.hasOwnProperty.call(data, name));
+  return [...ordered, ...keys.filter(name => !ordered.includes(name))];
+}
+
+function _snToolWritePresetOrder(orderKey, names, data) {
+  const seen = new Set();
+  const filtered = names.filter(name => typeof name === 'string' && name
+    && (!data || Object.prototype.hasOwnProperty.call(data, name))
+    && !seen.has(name) && seen.add(name));
+  localStorage.setItem(orderKey, JSON.stringify(filtered));
+}
+
+function _snToolClone(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function _snToolUniquePresetName(base, names) {
+  const existing = new Set(names);
+  let name = `${base || 'プリセット'} のコピー`;
+  let index = 2;
+  while (existing.has(name)) name = `${base || 'プリセット'} のコピー${index++}`;
+  return name;
 }
 
 class ScriptNoteComponent extends ToolComponent {
@@ -120,6 +168,7 @@ class ScriptNoteComponent extends ToolComponent {
     <option value="stage">舞台シナリオ</option>
   </select>
   <button class="tb-icon-btn" data-sn-action="saveTemplate" title="現在の設定をテンプレートとして登録"><span class="ico ico-save"></span></button>
+  <button class="tb-icon-btn" data-sn-action="manageTemplates" title="テンプレートを管理"><span class="ico ico-listChecks"></span></button>
   <div class="sep"></div>
   <button class="tb-icon-btn active" data-sn-action="horizontal" id="btn-horizontal" title="横書き"><span class="ico ico-textAlignStart"></span></button>
   <button class="tb-icon-btn" data-sn-action="vertical" id="btn-vertical" title="縦書き"><span class="ico ico-kanban"></span></button>
@@ -132,6 +181,7 @@ class ScriptNoteComponent extends ToolComponent {
   <select id="sn-filter-preset" class="tb-select" style="max-width:140px;" title="フィルタプリセット"><option value="__all__">すべて表示</option></select>
   <div class="sep"></div>
   <button class="tb-icon-btn" data-sn-action="saveFilter" title="現在のフィルタを登録"><span class="ico ico-save"></span></button>
+  <button class="tb-icon-btn" data-sn-action="manageFilters" title="フィルタプリセットを管理"><span class="ico ico-listChecks"></span></button>
   <button class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
   <button class="tb-icon-btn" data-sn-action="search" title="テキスト列を検索・置換"><span class="ico ico-search"></span></button>
   <button class="tb-icon-btn gb-toolbar-option-panel-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
@@ -364,16 +414,12 @@ class ScriptNoteComponent extends ToolComponent {
     if (!sel) return;
     // 既存のカスタムオプションを除去
     sel.querySelectorAll('option[value^="custom:"]').forEach(o => o.remove());
-    // localStorageからカスタムテンプレートを読み込んで追加
-    try {
-      const templates = JSON.parse(localStorage.getItem(SN2_TEMPLATE_STORAGE_KEY)) || {};
-      Object.keys(templates).forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = 'custom:' + name;
-        opt.textContent = name;
-        sel.appendChild(opt);
-      });
-    } catch {}
+    _snToolPresetNames(SN2_TEMPLATE_STORAGE_KEY, SN2_TEMPLATE_ORDER_STORAGE_KEY).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = 'custom:' + name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
     // 現在のlayoutModeに合わせて選択
     if (this._editor?.doc?.layoutMode) sel.value = this._editor.doc.layoutMode;
   }
@@ -455,97 +501,19 @@ class ScriptNoteComponent extends ToolComponent {
         return;
       }
       if (action === 'saveFilter') {
-        if (!this._editor) return;
-        const filterRoles = this._editor._filterRoles;
-        const hideRoles = this._editor._hideRoles;
-        const filterStatuses = this._editor._filterStatuses;
-        const hideStatuses = this._editor._hideStatuses;
-        const hasFilter = !!filterRoles;
-        const hasHide = !!(hideRoles && hideRoles.size);
-        const hasStatusFilter = !!filterStatuses;
-        const hasStatusHide = !!(hideStatuses && hideStatuses.size);
-        if (!hasFilter && !hasHide && !hasStatusFilter && !hasStatusHide) { if (typeof showStatus === 'function') showStatus('フィルタが未設定です'); return; }
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `<div class="modal" style="min-width:280px;"><h3>フィルタプリセット登録</h3>
-          <div class="modal-body" style="padding:12px 16px;"><label>プリセット名<input type="text" id="sn2-fp-name" style="width:100%;padding:4px 6px;margin-top:4px;" placeholder="キャラのみ"></label></div>
-          <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
-            <button type="button" class="cancel-btn">キャンセル</button><button type="button" class="primary ok-btn">登録</button>
-          </div></div>`;
-        const doSaveFp = () => {
-          const name = overlay.querySelector('#sn2-fp-name').value.trim();
-          if (!name) return;
-          // 予約名は登録不可（組み込みプリセット「すべて表示」と衝突するため）
-          if (name === '__delete__' || name === '__all__' || name === 'すべて表示') {
-            if (typeof showStatus === 'function') showStatus('この名前は予約済みです', true);
-            return;
-          }
-          overlay.remove();
-          const beforeStorage = _snToolCaptureStorageHistory([SN2_FILTER_PRESETS_STORAGE_KEY]);
-          const presets = JSON.parse(localStorage.getItem(SN2_FILTER_PRESETS_STORAGE_KEY) || '{}');
-          // 新形式: { visible: [...] | null, hidden: [...] }
-          // visible が null なら whitelist 未設定 (全タイプ表示)、hidden は blacklist
-          presets[name] = {
-            visible: hasFilter ? [...filterRoles] : null,
-            hidden: hasHide ? [...hideRoles] : [],
-            visibleStatuses: hasStatusFilter ? [...filterStatuses] : null,
-            hiddenStatuses: hasStatusHide ? [...hideStatuses] : [],
-          };
-          localStorage.setItem(SN2_FILTER_PRESETS_STORAGE_KEY, JSON.stringify(presets));
-          _snToolPushStorageHistory(
-            'シナリオ: フィルタプリセット登録',
-            beforeStorage,
-            [SN2_FILTER_PRESETS_STORAGE_KEY],
-            name
-          );
-          this._refreshFilterPresets();
-          if (typeof showStatus === 'function') showStatus(`フィルタプリセット「${name}」を登録しました`);
-        };
-        overlay.querySelector('.ok-btn').addEventListener('click', doSaveFp);
-        overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
-        overlay.querySelector('#sn2-fp-name').addEventListener('keydown', ev => { if (ev.key === 'Enter') doSaveFp(); });
-        document.body.appendChild(overlay);
-        overlay.querySelector('#sn2-fp-name').focus();
+        this._addFilterPreset({ allowOverwrite: true });
+        return;
+      }
+      if (action === 'manageFilters') {
+        this._showPresetManager('filter');
         return;
       }
       if (action === 'saveTemplate') {
-        if (!this._editor?.doc) return;
-        // テンプレート名入力（モーダル）
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `<div class="modal" style="min-width:320px;"><h3>テンプレート登録</h3>
-          <div class="modal-body" style="padding:12px 16px;"><label>テンプレート名<input type="text" id="sn2-tpl-name" style="width:100%;padding:4px 6px;margin-top:4px;" placeholder="マイテンプレート"></label></div>
-          <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
-            <button type="button" class="cancel-btn">キャンセル</button><button type="button" class="primary ok-btn">登録</button>
-          </div></div>`;
-        const doSave = () => {
-          const name = overlay.querySelector('#sn2-tpl-name').value.trim();
-          if (!name) return;
-          overlay.remove();
-          const key = SN2_TEMPLATE_STORAGE_KEY;
-          const beforeStorage = _snToolCaptureStorageHistory([key]);
-          let templates = {};
-          try { templates = JSON.parse(localStorage.getItem(key)) || {}; } catch {}
-          templates[name] = {
-            layoutMode: this._editor.doc.layoutMode,
-            editor: JSON.parse(JSON.stringify(this._editor.doc.editor || {})),
-            characters: JSON.parse(JSON.stringify(this._editor.doc.characters || [])),
-          };
-          localStorage.setItem(key, JSON.stringify(templates));
-          _snToolPushStorageHistory(
-            'シナリオ: テンプレート登録',
-            beforeStorage,
-            [key],
-            name
-          );
-          this._refreshTemplateSelect();
-          if (typeof showStatus === 'function') showStatus(`テンプレート「${name}」を登録しました`);
-        };
-        overlay.querySelector('.ok-btn').addEventListener('click', doSave);
-        overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
-        overlay.querySelector('#sn2-tpl-name').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') doSave(); });
-        document.body.appendChild(overlay);
-        overlay.querySelector('#sn2-tpl-name').focus();
+        this._addTemplatePreset({ allowOverwrite: true });
+        return;
+      }
+      if (action === 'manageTemplates') {
+        this._showPresetManager('template');
         return;
       }
     });
@@ -559,9 +527,8 @@ class ScriptNoteComponent extends ToolComponent {
         this._editor._pushUndo('レイアウト変更');
         if (val.startsWith('custom:')) {
           // カスタムテンプレート適用
-          const key = SN2_TEMPLATE_STORAGE_KEY;
           try {
-            const templates = JSON.parse(localStorage.getItem(key)) || {};
+            const templates = _snToolReadJsonObject(SN2_TEMPLATE_STORAGE_KEY);
             const tpl = templates[val.slice(7)];
             if (tpl) {
               if (tpl.layoutMode) this._editor.doc.layoutMode = tpl.layoutMode;
@@ -622,12 +589,6 @@ class ScriptNoteComponent extends ToolComponent {
       filterPresetSel.addEventListener('change', () => {
         const val = filterPresetSel.value;
         if (!this._editor) { filterPresetSel.value = '__all__'; return; }
-        if (val === '__delete__') {
-          // 削除メニューを開く前に選択を元に戻す（削除不可のすべて表示にフォールバック）
-          filterPresetSel.value = this._activeFilterPreset || '__all__';
-          this._showDeleteFilterPresetMenu(filterPresetSel);
-          return;
-        }
         if (val === '__all__') {
           // フィルタ解除（すべて表示）
           this._editor._filterRoles = null;
@@ -640,7 +601,7 @@ class ScriptNoteComponent extends ToolComponent {
           filterPresetSel.value = '__all__';
           return;
         }
-        const presets = JSON.parse(localStorage.getItem(SN2_FILTER_PRESETS_STORAGE_KEY) || '{}');
+        const presets = _snToolReadJsonObject(SN2_FILTER_PRESETS_STORAGE_KEY);
         const preset = presets[val];
         if (preset) {
           // 新形式: { visible: [...]|null, hidden: [...] }、旧形式: [...] (whitelist のみ)
@@ -674,61 +635,285 @@ class ScriptNoteComponent extends ToolComponent {
     }
   }
 
+  _showNameModal({ title, label, placeholder, value = '', okText = '登録', onSubmit }) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal" style="min-width:320px;"><h3>${esc(title)}</h3>
+      <div class="modal-body" style="padding:12px 16px;"><label>${esc(label)}<input type="text" class="sn2-preset-name" style="width:100%;padding:4px 6px;margin-top:4px;" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label></div>
+      <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
+        <button type="button" class="cancel-btn">キャンセル</button><button type="button" class="primary ok-btn">${esc(okText)}</button>
+      </div></div>`;
+    const input = overlay.querySelector('.sn2-preset-name');
+    const submit = () => {
+      const name = input.value.trim();
+      if (!name || onSubmit?.(name) === false) return;
+      overlay.remove();
+    };
+    overlay.querySelector('.ok-btn').addEventListener('click', submit);
+    overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
+    input.addEventListener('keydown', ev => { if (ev.key === 'Enter') submit(); });
+    document.body.appendChild(overlay);
+    input.focus();
+    input.select();
+  }
+
+  _managedPresetConfig(kind) {
+    const template = kind === 'template';
+    return {
+      kind,
+      storageKey: template ? SN2_TEMPLATE_STORAGE_KEY : SN2_FILTER_PRESETS_STORAGE_KEY,
+      orderKey: template ? SN2_TEMPLATE_ORDER_STORAGE_KEY : SN2_FILTER_PRESETS_ORDER_STORAGE_KEY,
+      title: template ? 'テンプレート管理' : 'フィルタプリセット管理',
+      itemLabel: template ? 'テンプレート' : 'フィルタプリセット',
+      emptyText: template ? '登録済みテンプレートはありません' : '登録済みフィルタプリセットはありません',
+    };
+  }
+
+  _reservedPresetName(kind, name) {
+    if (kind === 'template') return name.startsWith('custom:') || ['manga', 'drama', 'afureko', 'stage'].includes(name);
+    return name === '__all__' || name === '__delete__' || name === '__custom__' || name === 'すべて表示';
+  }
+
+  _currentFilterPresetValue() {
+    if (!this._editor) return null;
+    const filterRoles = this._editor._filterRoles;
+    const hideRoles = this._editor._hideRoles;
+    const filterStatuses = this._editor._filterStatuses;
+    const hideStatuses = this._editor._hideStatuses;
+    const hasFilter = !!filterRoles;
+    const hasHide = !!(hideRoles && hideRoles.size);
+    const hasStatusFilter = !!filterStatuses;
+    const hasStatusHide = !!(hideStatuses && hideStatuses.size);
+    if (!hasFilter && !hasHide && !hasStatusFilter && !hasStatusHide) return null;
+    return {
+      visible: hasFilter ? [...filterRoles] : null,
+      hidden: hasHide ? [...hideRoles] : [],
+      visibleStatuses: hasStatusFilter ? [...filterStatuses] : null,
+      hiddenStatuses: hasStatusHide ? [...hideStatuses] : [],
+    };
+  }
+
+  _savePresetValue(kind, name, value, { allowOverwrite = false, label, onSaved } = {}) {
+    const cfg = this._managedPresetConfig(kind);
+    const data = _snToolReadJsonObject(cfg.storageKey);
+    if (this._reservedPresetName(kind, name)) { if (typeof showStatus === 'function') showStatus('この名前は予約済みです', true); return false; }
+    if (!allowOverwrite && Object.prototype.hasOwnProperty.call(data, name)) { if (typeof showStatus === 'function') showStatus('同じ名前がすでにあります', true); return false; }
+    const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
+    data[name] = _snToolClone(value);
+    localStorage.setItem(cfg.storageKey, JSON.stringify(data));
+    const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
+    if (!order.includes(name)) order.push(name);
+    _snToolWritePresetOrder(cfg.orderKey, order, data);
+    _snToolPushStorageHistory(label, beforeStorage, [cfg.storageKey, cfg.orderKey], name);
+    this._refreshManagedPresetUi(kind);
+    onSaved?.();
+    return true;
+  }
+
+  _addTemplatePreset(options = {}) {
+    if (!this._editor?.doc) return;
+    this._showNameModal({
+      title: options.title || 'テンプレート登録',
+      label: 'テンプレート名',
+      placeholder: 'マイテンプレート',
+      okText: options.okText || '登録',
+      onSubmit: name => {
+        const value = {
+          layoutMode: this._editor.doc.layoutMode,
+          editor: _snToolClone(this._editor.doc.editor || {}),
+          characters: _snToolClone(this._editor.doc.characters || []),
+        };
+        const saved = this._savePresetValue('template', name, value, {
+          allowOverwrite: options.allowOverwrite,
+          label: 'シナリオ: テンプレート登録',
+          onSaved: options.onSaved,
+        });
+        if (saved && typeof showStatus === 'function') showStatus(`テンプレート「${name}」を登録しました`);
+        return saved;
+      },
+    });
+  }
+
+  _addFilterPreset(options = {}) {
+    const value = this._currentFilterPresetValue();
+    if (!value) { if (typeof showStatus === 'function') showStatus('フィルタが未設定です'); return; }
+    this._showNameModal({
+      title: options.title || 'フィルタプリセット登録',
+      label: 'プリセット名',
+      placeholder: 'キャラのみ',
+      okText: options.okText || '登録',
+      onSubmit: name => {
+        const saved = this._savePresetValue('filter', name, value, {
+          allowOverwrite: options.allowOverwrite,
+          label: 'シナリオ: フィルタプリセット登録',
+          onSaved: options.onSaved,
+        });
+        if (saved && typeof showStatus === 'function') showStatus(`フィルタプリセット「${name}」を登録しました`);
+        return saved;
+      },
+    });
+  }
+
+  _showPresetManager(kind) {
+    const cfg = this._managedPresetConfig(kind);
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal" style="min-width:420px;max-width:min(92vw,520px);"><h3>${esc(cfg.title)}</h3>
+      <div class="modal-body" style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
+        <button type="button" class="tb-text-btn" data-pm-add><span class="ico ico-plus"></span>追加</button>
+        <div data-pm-list style="display:flex;flex-direction:column;gap:6px;max-height:min(54vh,420px);overflow:auto;"></div>
+      </div>
+      <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;"><button type="button" class="cancel-btn">閉じる</button></div></div>`;
+    const list = overlay.querySelector('[data-pm-list]');
+    const render = () => {
+      const names = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
+      list.innerHTML = '';
+      if (!names.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:12px;color:var(--fg2);font-size:12px;border:1px solid var(--border);border-radius:6px;';
+        empty.textContent = cfg.emptyText;
+        list.appendChild(empty);
+        return;
+      }
+      names.forEach((name, index) => {
+        const row = document.createElement('div');
+        row.dataset.pmName = name;
+        row.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--border);border-radius:6px;';
+        const title = document.createElement('div');
+        title.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        title.textContent = name;
+        const tools = document.createElement('div');
+        tools.style.cssText = 'display:flex;gap:4px;';
+        [['copy', '複製', 'ico-copy'], ['up', '上へ', 'ico-arrowUp'], ['down', '下へ', 'ico-arrowDown'], ['delete', '削除', 'ico-trash2']].forEach(([action, titleText, icon]) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'tb-icon-btn';
+          btn.dataset.pmAction = action;
+          btn.title = titleText;
+          btn.disabled = (action === 'up' && index === 0) || (action === 'down' && index === names.length - 1);
+          btn.innerHTML = `<span class="ico ${icon}"></span>`;
+          tools.appendChild(btn);
+        });
+        row.append(title, tools);
+        list.appendChild(row);
+      });
+      if (typeof replaceIcons === 'function') replaceIcons(list);
+    };
+    overlay.querySelector('[data-pm-add]').addEventListener('click', () => {
+      const opts = { allowOverwrite: false, okText: '追加', onSaved: render, title: cfg.itemLabel + '追加' };
+      if (kind === 'template') this._addTemplatePreset(opts);
+      else this._addFilterPreset(opts);
+    });
+    list.addEventListener('click', event => {
+      const btn = event.target.closest('[data-pm-action]');
+      const name = btn?.closest('[data-pm-name]')?.dataset.pmName;
+      if (!btn || !name) return;
+      const action = btn.dataset.pmAction;
+      if (action === 'copy') this._duplicateManagedPreset(kind, name, render);
+      if (action === 'up') this._moveManagedPreset(kind, name, -1, render);
+      if (action === 'down') this._moveManagedPreset(kind, name, 1, render);
+      if (action === 'delete') this._deleteManagedPreset(kind, name, render);
+    });
+    overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
+    document.body.appendChild(overlay);
+    render();
+    if (typeof replaceIcons === 'function') replaceIcons(overlay);
+  }
+
+  _duplicateManagedPreset(kind, name, onSaved) {
+    const cfg = this._managedPresetConfig(kind);
+    const data = _snToolReadJsonObject(cfg.storageKey);
+    if (!Object.prototype.hasOwnProperty.call(data, name)) return;
+    this._showNameModal({
+      title: cfg.itemLabel + '複製',
+      label: cfg.itemLabel + '名',
+      placeholder: name,
+      value: _snToolUniquePresetName(name, Object.keys(data)),
+      okText: '複製',
+      onSubmit: copyName => {
+        const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
+        const nextData = _snToolReadJsonObject(cfg.storageKey);
+        if (!Object.prototype.hasOwnProperty.call(nextData, name)) return false;
+        if (this._reservedPresetName(kind, copyName) || Object.prototype.hasOwnProperty.call(nextData, copyName)) {
+          if (typeof showStatus === 'function') showStatus('この名前は使えません', true);
+          return false;
+        }
+        nextData[copyName] = _snToolClone(nextData[name]);
+        localStorage.setItem(cfg.storageKey, JSON.stringify(nextData));
+        const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey).filter(item => item !== copyName);
+        order.splice(Math.max(0, order.indexOf(name)) + 1, 0, copyName);
+        _snToolWritePresetOrder(cfg.orderKey, order, nextData);
+        _snToolPushStorageHistory('シナリオ: ' + cfg.itemLabel + '複製', beforeStorage, [cfg.storageKey, cfg.orderKey], copyName);
+        this._refreshManagedPresetUi(kind);
+        onSaved?.();
+        if (typeof showStatus === 'function') showStatus(`${cfg.itemLabel}「${copyName}」を複製しました`);
+        return true;
+      },
+    });
+  }
+
+  _moveManagedPreset(kind, name, dir, onSaved) {
+    const cfg = this._managedPresetConfig(kind);
+    const data = _snToolReadJsonObject(cfg.storageKey);
+    const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
+    const index = order.indexOf(name);
+    const nextIndex = index + dir;
+    if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+    const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
+    [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+    _snToolWritePresetOrder(cfg.orderKey, order, data);
+    _snToolPushStorageHistory('シナリオ: ' + cfg.itemLabel + '並べ替え', beforeStorage, [cfg.storageKey, cfg.orderKey], name);
+    this._refreshManagedPresetUi(kind);
+    onSaved?.();
+  }
+
+  async _deleteManagedPreset(kind, name, onSaved) {
+    const cfg = this._managedPresetConfig(kind);
+    const data = _snToolReadJsonObject(cfg.storageKey);
+    if (!Object.prototype.hasOwnProperty.call(data, name)) return;
+    if (typeof cfConfirm === 'function' && !await cfConfirm(`プリセット「${name}」を削除しますか？`)) return;
+    if (typeof cfConfirm !== 'function' && typeof confirm === 'function' && !confirm(`プリセット「${name}」を削除しますか？`)) return;
+    const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
+    delete data[name];
+    localStorage.setItem(cfg.storageKey, JSON.stringify(data));
+    _snToolWritePresetOrder(cfg.orderKey, _snToolPresetNames(cfg.storageKey, cfg.orderKey), data);
+    if (kind === 'filter' && this._activeFilterPreset === name) this._clearActiveFilterPreset();
+    const deleteLabel = kind === 'template' ? 'シナリオ: テンプレート削除' : 'シナリオ: フィルタプリセット削除';
+    _snToolPushStorageHistory(deleteLabel, beforeStorage, [cfg.storageKey, cfg.orderKey], name);
+    this._refreshManagedPresetUi(kind);
+    onSaved?.();
+    if (typeof showStatus === 'function') showStatus(`${cfg.itemLabel}「${name}」を削除しました`);
+  }
+
+  _clearActiveFilterPreset() {
+    if (!this._editor) return;
+    this._editor._filterRoles = null;
+    this._editor._hideRoles = null;
+    this._editor._filterStatuses = null;
+    this._editor._hideStatuses = null;
+    this._editor._render();
+    this.el?.querySelector('#btn-filter')?.classList.remove('active');
+    this._activeFilterPreset = '__all__';
+  }
+
+  _refreshManagedPresetUi(kind) {
+    if (kind === 'template') this._refreshTemplateSelect();
+    else this._refreshFilterPresets();
+  }
+
   _refreshFilterPresets() {
     const sel = this.el?.querySelector('#sn-filter-preset');
     if (!sel) return;
-    const presets = JSON.parse(localStorage.getItem(SN2_FILTER_PRESETS_STORAGE_KEY) || '{}');
-    // 既存オプションを除去（最初のplaceholderは残す）
+    const presets = _snToolReadJsonObject(SN2_FILTER_PRESETS_STORAGE_KEY);
     while (sel.options.length > 1) sel.remove(1);
-    Object.keys(presets).forEach(name => {
+    _snToolPresetNames(SN2_FILTER_PRESETS_STORAGE_KEY, SN2_FILTER_PRESETS_ORDER_STORAGE_KEY).forEach(name => {
       const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = name;
       sel.appendChild(opt);
     });
-    if (Object.keys(presets).length) {
-      const delOpt = document.createElement('option');
-      delOpt.value = '__delete__';
-      delOpt.textContent = '── プリセット削除 ──';
-      delOpt.style.color = 'var(--red, #c44)';
-      sel.appendChild(delOpt);
-    }
-  }
-
-  _showDeleteFilterPresetMenu(anchor) {
-    const presets = JSON.parse(localStorage.getItem(SN2_FILTER_PRESETS_STORAGE_KEY) || '{}');
-    const names = Object.keys(presets);
-    if (!names.length) return;
-    const popup = document.createElement('div');
-    popup.className = 'sn2-header-popup';
-    popup.style.cssText = 'position:fixed;z-index:10000;min-width:140px;max-height:300px;overflow-y:auto;';
-    names.forEach(name => {
-      const btn = document.createElement('button');
-      btn.className = 'sn2-header-popup-btn';
-      btn.textContent = '✕ ' + name;
-      btn.style.cssText = 'display:block;width:100%;text-align:left;padding:4px 8px;border:none;background:none;color:var(--fg);cursor:pointer;font-size:12px;';
-      btn.addEventListener('click', async () => {
-        if (typeof cfConfirm === 'function' && !await cfConfirm(`プリセット「${name}」を削除しますか？`)) return;
-        const beforeStorage = _snToolCaptureStorageHistory([SN2_FILTER_PRESETS_STORAGE_KEY]);
-        delete presets[name];
-        localStorage.setItem(SN2_FILTER_PRESETS_STORAGE_KEY, JSON.stringify(presets));
-        _snToolPushStorageHistory(
-          'シナリオ: フィルタプリセット削除',
-          beforeStorage,
-          [SN2_FILTER_PRESETS_STORAGE_KEY],
-          name
-        );
-        this._refreshFilterPresets();
-        btn.remove();
-        if (!popup.querySelector('button')) popup.remove();
-        if (typeof showStatus === 'function') showStatus(`プリセット「${name}」を削除しました`);
-      });
-      popup.appendChild(btn);
-    });
-    document.body.appendChild(popup);
-    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect());
-    const close = (ev) => { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('pointerdown', close); } };
-    setTimeout(() => document.addEventListener('pointerdown', close), 0);
+    if (this._activeFilterPreset && Object.prototype.hasOwnProperty.call(presets, this._activeFilterPreset)) sel.value = this._activeFilterPreset;
+    else sel.value = '__all__';
   }
 
   _syncTabStateFromScenario() {

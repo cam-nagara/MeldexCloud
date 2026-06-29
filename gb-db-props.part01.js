@@ -177,7 +177,8 @@ function _applyDbSortConfigForView(dbPath, sortConfig, detail, ctx) {
     c.sortConfig = { ...sortConfig };
     saveDbViewConfig(dbPath, c, { historyLabel: 'シート表示: 並び替え', historyDetail: detail || '' });
   }
-  renderPivot(ctx);
+  if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+  else renderPivot(ctx);
 }
 
 function _makeDbGlobalSortMenuItems(dbPath, ctx) {
@@ -192,10 +193,14 @@ function _makeDbGlobalSortMenuItems(dbPath, ctx) {
   if (pivotData?.properties?.length) {
     items.push({ type: 'sep' });
     pivotData.properties.forEach(p => {
-      items.push({ label: (sc.key === p ? radioMark(true) : '　') + esc(p), action: () => {
-        const dir = sc.key === p && sc.dir === 'asc' ? 'desc' : 'asc';
-        _applyDbSortConfigForView(dbPath, { key: p, dir }, p + ' ' + (dir === 'asc' ? '昇順' : '降順'), ctx);
-      }});
+      items.push({
+        type: 'submenu',
+        label: (sc.key === p ? radioMark(true) : '　') + esc(p),
+        children: [
+          { label: (sc.key === p && sc.dir === 'asc' ? radioMark(true) : '　') + '昇順', action: () => _applyDbSortConfigForView(dbPath, { key: p, dir: 'asc' }, p + ' 昇順', ctx) },
+          { label: (sc.key === p && sc.dir === 'desc' ? radioMark(true) : '　') + '降順', action: () => _applyDbSortConfigForView(dbPath, { key: p, dir: 'desc' }, p + ' 降順', ctx) },
+        ],
+      });
     });
   }
   return items;

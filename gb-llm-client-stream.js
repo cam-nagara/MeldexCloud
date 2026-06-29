@@ -8,6 +8,15 @@
   function _friendlyProviderErrorMessage(value) {
     const text = String(value || '').trim();
     const lower = text.toLowerCase();
+    if (
+      lower.includes('invalid authentication') ||
+      lower.includes('invalid api key') ||
+      lower.includes('incorrect api key') ||
+      lower.includes('api key is invalid') ||
+      (lower.includes('401') && (lower.includes('auth') || lower.includes('unauthorized')))
+    ) {
+      return 'APIキーが無効、またはこのモデルを使う権限がありません。設定 > LLMで該当APIキーを保存し直し、モデルを選び直してから再送信してください。';
+    }
     if (lower.includes('insufficient_quota') || lower.includes('exceeded your current quota')) {
       return 'OpenAI APIの利用枠または請求設定の上限に達しています。Meldex内の使用額表示とは別に、OpenAI Platform側のクレジット・請求設定・利用上限を確認してください。';
     }

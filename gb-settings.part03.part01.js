@@ -452,8 +452,9 @@ function bindThemeUiApplicationEditor(root) {
       MeldexThemeManager.resetThemeUiApplications();
     }
     if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
-    const panel = root.closest('.settings-panel') || root;
-    if (typeof _refreshSettingsThemePanel === 'function') _refreshSettingsThemePanel();
+    const settingsPanel = root.closest('.settings-panel');
+    const panel = settingsPanel || root;
+    if (settingsPanel && typeof _refreshSettingsThemePanel === 'function') _refreshSettingsThemePanel();
     else {
       panel.querySelectorAll('[data-theme-ui-setting]').forEach(select => {
         select.value = 'none';

@@ -105,10 +105,66 @@
   margin-top: 2px;
 }
 
+.llm-review-details {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.llm-review-details summary {
+  cursor: pointer;
+  color: var(--fg2);
+  font-size: 12px;
+  user-select: none;
+}
+
 .llm-review-results {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.llm-review-summary {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.llm-review-summary-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.llm-review-summary-chips,
+.llm-review-issue-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.llm-review-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.llm-review-pill-label {
+  color: var(--fg2);
 }
 
 .llm-review-bulk-actions {
@@ -150,6 +206,38 @@
 .llm-review-issue-title {
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.llm-review-issue-note {
+  display: grid;
+  gap: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.llm-review-issue-note-label,
+.llm-review-source-title {
+  color: var(--fg2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.llm-review-source-refs {
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.llm-review-source-ref {
+  color: var(--fg2);
+  font-size: 11px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }

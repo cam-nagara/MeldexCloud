@@ -83,7 +83,7 @@ function _chatResetCurrentSession(options = {}) {
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
-  _showChatTargetBadge(_chatState.targetPath);
+  _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : _chatState.targetPath);
 }
 
 function _chatAddSourceOption(options, seen, option) {
@@ -108,6 +108,29 @@ function _chatWorkspaceOptionValue(workspaceId) {
 
 function _chatTargetSelectorValue() {
   return _chatState.workspaceId ? _chatWorkspaceOptionValue(_chatState.workspaceId) : _chatSourceFolderValue();
+}
+
+function _chatApplySourceContextValue(sourceValue, options = {}) {
+  const rawNext = String(sourceValue || '');
+  const nextWorkspaceId = rawNext.startsWith('workspace:') ? rawNext.slice('workspace:'.length) : '';
+  const next = nextWorkspaceId ? '' : rawNext;
+  _chatState.workspaceId = nextWorkspaceId;
+  _chatState.sourceFolder = next;
+  if (options.persist !== false) {
+    if (nextWorkspaceId) {
+      localStorage.setItem(_CHAT_WORKSPACE_STORAGE_KEY, nextWorkspaceId);
+      localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
+    } else {
+      localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
+      if (next) localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, next);
+      else localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
+    }
+  }
+  if (options.syncWorkspace !== false && nextWorkspaceId) {
+    window.MeldexWorkspaces?.setActiveId?.(nextWorkspaceId, { reason: options.reason || 'chat' });
+  }
+  _syncChatSourceFolderUi();
+  _refreshChatDebugAvailability();
 }
 
 function _chatSourceOptions() {
@@ -170,6 +193,7 @@ function _syncChatSourceFolderUi() {
     badge.style.background = hasSource && selected ? 'rgba(78,201,176,0.12)' : 'var(--bg2)';
     badge.style.border = '1px solid ' + (hasSource && selected ? 'var(--green, #4ec9b0)' : 'var(--border)');
   }
+  if (typeof _chatRefreshCurrentTargetDisplay === 'function') _chatRefreshCurrentTargetDisplay();
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
 }
 
@@ -195,7 +219,6 @@ async function _refreshChatDebugAvailability() {
 
 async function _initChatSourceFolderSelector() {
   const select = document.getElementById('chat-source-folder');
-  if (!select) return;
   try { _chatVaultInfo = await apiFetch('/vault'); } catch { _chatVaultInfo = { path: '', name: '' }; }
   try {
     const vaultsPayload = await apiFetch('/vaults');
@@ -227,28 +250,16 @@ async function _initChatSourceFolderSelector() {
     }]);
     selected = _chatFindSourceOption(preserved, options);
   }
-  const placeholder = options.length
-    ? '<option value="" disabled>対象を選択</option>'
-    : '<option value="" disabled>対象がありません</option>';
-  select.innerHTML = placeholder + options.map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
+  if (select) {
+    const placeholder = options.length
+      ? '<option value="" disabled>対象を選択</option>'
+      : '<option value="" disabled>対象がありません</option>';
+    select.innerHTML = placeholder + options.map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
+  }
   if (selected) {
-    if (selected.kind === 'workspace') {
-      _chatState.workspaceId = selected.workspaceId || '';
-      _chatState.sourceFolder = '';
-      localStorage.setItem(_CHAT_WORKSPACE_STORAGE_KEY, _chatState.workspaceId);
-      localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
-      window.MeldexWorkspaces?.setActiveId?.(_chatState.workspaceId, { reason: 'chat-init' });
-    } else {
-      _chatState.workspaceId = '';
-      _chatState.sourceFolder = selected.value;
-      localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
-      localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, selected.value);
-    }
+    _chatApplySourceContextValue(selected.kind === 'workspace' ? _chatWorkspaceOptionValue(selected.workspaceId || '') : selected.value, { reason: 'chat-init' });
   } else {
-    _chatState.workspaceId = '';
-    _chatState.sourceFolder = '';
-    localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
-    localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
+    _chatApplySourceContextValue('', { reason: 'chat-init' });
   }
   _syncChatSourceFolderUi();
   _refreshChatDebugAvailability();
@@ -295,17 +306,7 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
       return false;
     }
   }
-  _chatState.workspaceId = nextWorkspaceId;
-  _chatState.sourceFolder = next;
-  if (nextWorkspaceId) {
-    localStorage.setItem(_CHAT_WORKSPACE_STORAGE_KEY, nextWorkspaceId);
-    localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
-    window.MeldexWorkspaces?.setActiveId?.(nextWorkspaceId, { reason: 'chat' });
-  } else {
-    localStorage.removeItem(_CHAT_WORKSPACE_STORAGE_KEY);
-    if (next) localStorage.setItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY, next);
-    else localStorage.removeItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY);
-  }
+  _chatApplySourceContextValue(rawNext, { reason: 'chat' });
   _chatResetCurrentSession();
   _teamCurrentRoom = '';
   _teamLastTimestamp = '';
@@ -418,7 +419,7 @@ function _chatSessionScopeSnapshot() {
   return {
     messages: _chatState.messages,
     sessionId: String(_chatState.sessionId || ''),
-    targetPath: String(_chatState.targetPath || _chatState.lastImplicitTargetPath || ''),
+    targetPath: String(typeof _chatEffectiveTargetPath === 'function' ? (_chatEffectiveTargetPath() || '') : (_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || '')),
     workspaceId: typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
     sourceFolder: typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
     mode: typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''),

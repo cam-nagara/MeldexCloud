@@ -283,6 +283,9 @@
     // skipHighlight: クリック側で既に active クラスを付け終えているので、
     // open* 関数内の highlightOutlinerNode → scrollIntoView は不要かつスクロールジャンプ源。
     const _expOpts = { fromExplorer: true, skipHighlight: true };
+    if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
+      _chatSetCurrentTargetPath(item.path, isFolder || isDB ? 'folder' : 'file', { reason: 'tree-click', deferAdoptSource: true });
+    }
     if (isDB) {
       selectDatabase(item.path, null, _expOpts);
     } else if (item.type === 'entity') {

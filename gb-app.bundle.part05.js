@@ -1,3 +1,28 @@
+      }
+    } catch {}
+  });
+}
+
+// main-viewsへのD&Dドロップ
+// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）
+// Ctrl+ドロップ: ファイルをそのパネルで開く
+{
+  const mv = document.getElementById('main-views');
+  if (mv) mv.addEventListener('dragover', (e) => {
+    if (e.dataTransfer.types.includes('application/x-meldex-node')) {
+      // Ctrl+ドラッグ時のみmain-viewsレベルで受け付け（ファイルを開く）
+      // 通常時は各ビュー固有のdragoverに委ねる
+      if (e.ctrlKey && state.view !== 'board') e.preventDefault();
+    }
+  });
+  if (mv) mv.addEventListener('drop', (e) => {
+    // Ctrl+ドロップ: ファイルをパネルで開く
+    if (!e.ctrlKey) return; // 通常ドロップは各ビュー固有ハンドラに委ねる
+    if (state.view === 'board') return;
+    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    if (!cfData) return;
+    e.preventDefault();
+    try {
       const { name, path, type } = JSON.parse(cfData);
       const navType = typeof _normalizeOpenTypeForNav === 'function'
         ? _normalizeOpenTypeForNav(type)
@@ -873,28 +898,3 @@ function showMobileToolMenu(e) {
   document.querySelectorAll('.mobile-tool-menu').forEach(el => el.remove());
   const items = [
     { label: 'フォルダ', action: () => openToolTab('folder') },
-    { label: 'ノート', action: () => openToolTab('page') },
-    { label: 'シート', action: () => openToolTab('database') },
-    { label: 'スマートシート', action: () => openToolTab('smart-db') },
-    { label: 'ボード', action: () => openToolTab('board') },
-    null,
-    { label: 'ビューワー', action: () => toggleRightPanelTab('preview') },
-    { label: 'オプション', action: () => toggleOptionPanel() },
-    null,
-    { label: '注釈ツール', action: () => toggleAnnotationToolbar() },
-    { label: 'オーバーレイ', action: () => toggleOverlayVisibility() },
-  ];
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu mobile-tool-menu';
-  menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
-  items.forEach(it => {
-    if (!it) { const sep = document.createElement('div'); sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0;'; menu.appendChild(sep); return; }
-    const row = document.createElement('div');
-    row.className = 'gb-context-menu-item';
-    row.textContent = it.label;
-    row.addEventListener('click', () => { menu.remove(); try { it.action(); } catch {} });
-    menu.appendChild(row);
-  });
-  document.body.appendChild(menu);
-  const btn = e.target.closest('button') || e.target;
-  const br = btn.getBoundingClientRect();

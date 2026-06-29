@@ -636,7 +636,7 @@
     function close() {
       if (typeof opts.onClose === 'function') opts.onClose();
       if (opts.closeOnEsc !== false) document.removeEventListener('keydown', onEscKey);
-      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (overlay.parentNode) overlay.remove();
     }
     function onEscKey(ev) {
       if (ev.key !== 'Escape') return;

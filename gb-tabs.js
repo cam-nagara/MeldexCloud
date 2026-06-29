@@ -92,6 +92,73 @@ const GBTabs = (() => {
     return null;
   }
 
+  function _cleanTreePath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function _pathTailLabel(path, fallback) {
+    const clean = _cleanTreePath(path);
+    return clean.split('/').filter(Boolean).pop() || fallback || 'フォルダ';
+  }
+
+  function _parentFolderPath(path) {
+    const clean = _cleanTreePath(path);
+    const index = clean.lastIndexOf('/');
+    return index > 0 ? clean.slice(0, index) : '';
+  }
+
+  function _selectedOutlinerNodeData() {
+    if (typeof document === 'undefined') return null;
+    const activeSelector = '#outliner-tree .tree-node-row.active, #body-home .tree-node-row.active, #body-workspaces .tree-node-row.active';
+    const selectedSelector = '#outliner-tree .tree-node-row.selected, #body-home .tree-node-row.selected, #body-workspaces .tree-node-row.selected';
+    const rows = Array.from(document.querySelectorAll(activeSelector));
+    const fallbackRows = rows.length ? rows : Array.from(document.querySelectorAll(selectedSelector));
+    const row = fallbackRows[fallbackRows.length - 1] || null;
+    const node = row?.closest?.('.tree-node') || null;
+    return node?._nodeData || null;
+  }
+
+  function _folderFallbackTargetFromSelection() {
+    const data = _selectedOutlinerNodeData();
+    const path = _cleanTreePath(data?.path || '');
+    if (!path) return null;
+    const type = data?.type || '';
+    if (data?._isRoot || type === 'folder' || type === 'database') {
+      return {
+        label: data?.name || _pathTailLabel(path, 'フォルダ'),
+        path,
+        selectedPath: path,
+      };
+    }
+    const parentPath = _parentFolderPath(path);
+    if (!parentPath) return null;
+    return {
+      label: _pathTailLabel(parentPath, 'フォルダ'),
+      path: parentPath,
+      selectedPath: path,
+    };
+  }
+
+  function _isMainWorkPane(pane, allPanes) {
+    if (!pane) return false;
+    if ((allPanes || []).length <= 1) return true;
+    return pane.meldexRole === 'main' || pane.id === 'pane-main';
+  }
+
+  function _restoreFolderFallbackTab(pane) {
+    if (!pane || (pane.tabs || []).length > 0) return false;
+    const target = _folderFallbackTargetFromSelection();
+    const tab = createTab(
+      target?.label || 'フォルダ',
+      'folder',
+      target?.path || '',
+      target ? { folderPath: target.path, selectedPath: target.selectedPath } : { initialFolderPrompt: true }
+    );
+    pane.tabs = [tab];
+    pane.activeTabIndex = 0;
+    return true;
+  }
+
   // ペインにタブを追加
   function addTab(paneId, label, type, path, state, options) {
     const opts = options || {};
@@ -285,7 +352,7 @@ const GBTabs = (() => {
     // ペインが空になった場合
     if (pane.tabs.length === 0) {
       const allPanes = GBLayout.getAllPanes(GBLayout.root);
-      if (allPanes.length > 1) {
+      if (!_isMainWorkPane(pane, allPanes) && allPanes.length > 1) {
         // 複数ペインがある場合、空ペインを除去
         GBLayout.removePane(paneId, { skipHistory: true });
         if (before && typeof GBLayout.pushLayoutHistory === 'function') {
@@ -298,8 +365,10 @@ const GBTabs = (() => {
         }
         return;
       }
-      // 最後の1ペインなら空のまま維持
-      pane.activeTabIndex = -1;
+      if (!_restoreFolderFallbackTab(pane)) {
+        // 最後の1ペインなら空のまま維持
+        pane.activeTabIndex = -1;
+      }
     }
 
     const fastClosed = _refreshPaneTabsFast(paneId);

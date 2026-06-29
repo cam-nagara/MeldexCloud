@@ -376,6 +376,23 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('server',14)} ローカルLLM</div>
+        <div class="gb-section-desc">Ollama / LM Studio などのOpenAI互換ローカルサーバーを使います。APIキーは使わず、接続先は localhost / 127.0.0.1 / ::1 のみに制限されます。</div>
+        <label class="gb-field-row">
+          <span class="gb-label" style="min-width:140px;">接続先URL</span>
+          <input id="modal-local-llm-base-url" type="text" class="gb-input" style="flex:1;min-width:220px;" value="${esc(localStorage.getItem('chat-local-llm-base-url') || 'http://127.0.0.1:11434/v1')}" placeholder="http://127.0.0.1:11434/v1">
+        </label>
+        <label class="gb-field-row">
+          <span class="gb-label" style="min-width:140px;">既定モデル</span>
+          <input id="modal-local-llm-model" type="text" class="gb-input" style="flex:1;min-width:220px;" value="${esc(localStorage.getItem('chat-local-llm-model') || localStorage.getItem('chat-model:local_llm') || 'llama3.1')}" placeholder="llama3.1">
+        </label>
+        <label class="gb-field-row" style="align-items:center;">
+          <span class="gb-label" style="min-width:140px;">Meldex操作</span>
+          <input id="modal-local-llm-mcp-enabled" type="checkbox" ${localStorage.getItem('chat-local-llm-mcp-enabled') === '0' ? '' : 'checked'}>
+          <span class="gb-section-desc">チャットからMeldex内の読み取り・作成・更新ツールを使えるようにします。</span>
+        </label>
+      </section>
+      <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('terminal',14)} CLIチャット</div>
         <div class="gb-section-desc">PCに入っている Codex CLI / Claude Code / Gemini CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください。</div>
         <div id="settings-cli-chat-container">
@@ -388,9 +405,10 @@ async function showSettingsModal(opts) {
         <button type="button" class="gb-btn gb-btn-sm" data-action="ensureChatCustomInstructionSheet()">${lucide('clipboardList',14)} 入力フォームを開く</button>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('brain',14)} 自動ナレッジ</div>
+        <div class="gb-section-title">${lucide('brain',14)} ナレッジ</div>
+        <div class="gb-section-desc">チャットの内容から記憶を作り、アイデア出しやプロット相談で自動的に活用します。通常は設定不要です。</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="openKnowledgeHomeView('items')">${lucide('brain',14)} 記憶継承を開く</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="openKnowledgeHomeView('items')">${lucide('brain',14)} 記憶一覧を開く</button>
         </div>
         <div id="knowledge-automation-settings-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>

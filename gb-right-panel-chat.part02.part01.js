@@ -1,7 +1,9 @@
       body: JSON.stringify({
         provider: streamProvider,
         model: streamModel || undefined,
-        client_api_keys: typeof _chatClientApiKeysForRequest === 'function' ? await _chatClientApiKeysForRequest() : {},
+        ...(_chatIsLocalLlmProvider(streamProvider)
+          ? { local_llm: typeof chatLocalLlmSettings === 'function' ? chatLocalLlmSettings() : {} }
+          : { client_api_keys: typeof _chatClientApiKeysForRequest === 'function' ? await _chatClientApiKeysForRequest() : {} }),
         messages: _ensureChatMessageIds(streamMessages),
         system_prompt: streamSystemPrompt,
         session_id: streamSessionId,
@@ -66,8 +68,9 @@
           if (data.type === 'text_delta') {
             const chunk = data.content == null ? '' : String(data.content);
             if (!chunk) continue;
-            // テキストが来たら実況用の一時表示を消してフキダシへ集約する。
-            hideLiveActivity();
+            // 思考内容がない場合は一時表示を消し、ある場合は完了までライブ欄を残す。
+            if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
+            else hideLiveActivity();
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
             if (!assistantDiv || !assistantDiv.isConnected) {
               assistantDiv = addAssistantToVisibleStream('', _assistantRenderOptions());
@@ -77,8 +80,7 @@
             else if (assistantDiv) { let s = esc(fullText); s = s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code style="background:var(--bg2);padding:1px 4px;border-radius:3px;">$1</code>').replace(/\n/g,'<br>'); assistantDiv.innerHTML = s; }
             scrollStreamContainer();
           } else if (data.type === 'thinking_delta') {
-            showLiveActivity('考え中...');
-            scrollStreamContainer();
+            appendLiveThinking(data.content, '思考中...');
           } else if (data.type === 'citation') {
             if (data.citation) responseCitations.push(data.citation);
             hideLiveActivity();
@@ -158,12 +160,15 @@
       if (!assistantDiv || !assistantDiv.isConnected) {
         const renderOptions = _assistantRenderOptions();
         if (auditWarning) renderOptions.tool_audit_warning = auditWarning;
+        if (responseThinking.trim()) renderOptions.thinking = responseThinking;
         assistantDiv = addAssistantToVisibleStream(fullText || '[コード実行結果]', renderOptions);
       }
+      if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, responseThinking);
       const assistantMessage = { role: 'assistant', content: fullText || '[コード実行結果]', msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp() };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
       if (responseCodeExecBlocks.length > 0) assistantMessage.code_exec_blocks = responseCodeExecBlocks;
+      if (responseThinking.trim()) assistantMessage.thinking = responseThinking;
       if (auditWarning) assistantMessage.tool_audit_warning = auditWarning;
       streamMessages.push(assistantMessage);
       sendOk = true;
@@ -189,10 +194,12 @@
       }
       if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, responseCitations);
       else if (assistantDiv) assistantDiv.textContent = abortedText;
+      if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, responseThinking);
       const assistantMessage = { role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp(), aborted: true };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
       if (responseCodeExecBlocks.length > 0) assistantMessage.code_exec_blocks = responseCodeExecBlocks;
+      if (responseThinking.trim()) assistantMessage.thinking = responseThinking;
       streamMessages.push(assistantMessage);
       sendOk = true;
       chatAutoSave({
@@ -284,7 +291,7 @@ async function _chatHandleClientToolRequest(data, activityLog) {
 function _buildSystemPrompt(options = {}) {
   const promptTargetPath = Object.prototype.hasOwnProperty.call(options || {}, 'targetPath')
     ? String(options.targetPath || '')
-    : (_chatState.targetPath || '');
+    : (typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : (_chatState.currentTargetPath || _chatState.targetPath || ''));
   const intro = window.MeldexI18n?.t?.(
     'chat.systemPromptIntro',
     'あなたはMeldexで動作する創作支援アシスタントです。日本語で応答してください。'
@@ -563,6 +570,7 @@ async function openFileChat(targetPath) {
     if (!switched) return false;
     if (!restoreStillCurrent()) return false;
   }
+  if (typeof _chatSetCurrentTargetPath === 'function') _chatSetCurrentTargetPath(targetPath, 'file', { reason: 'open-file-chat' });
   openRightPanelTab('chat');
   if (restoreGuard && typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.runInternal === 'function') {
     GBChatRestore.runInternal(() => switchChatMode('llm'));
@@ -698,6 +706,7 @@ function _createFileChat(targetPath) {
   _chatState.sessionId = '';
   _chatState.targetPath = targetPath;
   _chatState.lastImplicitTargetPath = '';
+  if (typeof _chatSetCurrentTargetPath === 'function') _chatSetCurrentTargetPath(targetPath, 'file', { reason: 'create-file-chat' });
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
   } else {
@@ -713,23 +722,33 @@ function _createFileChat(targetPath) {
 }
 
 function _showChatTargetBadge(targetPath) {
-  let badge = _chatLiveElement('chat-target-badge');
-  if (!badge) {
-    badge = document.createElement('div');
-    badge.id = 'chat-target-badge';
-    badge.style.cssText = 'padding:3px 8px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;color:var(--fg2);display:flex;align-items:center;gap:4px;flex-shrink:0;';
-    // chat-llm-panelの先頭に挿入
-    const panel = _chatLiveElement('chat-llm-panel');
-    if (panel && panel.children.length > 1) {
-      panel.insertBefore(badge, panel.children[1]);
+  const badge = _chatLiveElement('chat-target-badge', { allowHidden: true });
+  if (!badge) return;
+  const label = badge.querySelector('#chat-current-target-path') || badge.querySelector('[data-chat-current-target-path]');
+  const icon = badge.querySelector('[data-chat-current-target-icon]');
+  const pathText = String(targetPath || '').trim();
+  if (pathText) {
+    const normalized = typeof _chatNormalizePath === 'function' ? _chatNormalizePath(pathText) : pathText;
+    const targetKind = _chatState.currentTargetKind || (_chatState.targetPath ? 'file' : '');
+    if (icon) icon.innerHTML = typeof lucide === 'function' ? lucide(targetKind === 'file' ? 'fileText' : 'folder', 12) : '';
+    if (label) {
+      label.textContent = normalized;
+      label.title = normalized;
+    } else {
+      badge.textContent = normalized;
     }
-  }
-  if (targetPath) {
-    const name = targetPath.split('/').pop();
-    badge.innerHTML = `${lucide('fileText', 12)} <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(targetPath)}">${esc(name)}</span><button data-action="chatClear()" style="background:none;border:none;color:var(--fg2);cursor:pointer;font-size:10px;">${lucide('x', 10)}</button>`;
+    badge.dataset.empty = '0';
     badge.style.display = 'flex';
   } else {
-    badge.style.display = 'none';
+    if (icon) icon.innerHTML = typeof lucide === 'function' ? lucide('folder', 12) : '';
+    if (label) {
+      label.textContent = '未選択';
+      label.title = 'フォルダツリーで対象を選択してください';
+    } else {
+      badge.textContent = '未選択';
+    }
+    badge.dataset.empty = '1';
+    badge.style.display = 'flex';
   }
 }
 
@@ -869,6 +888,9 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   _chatState.sessionId = fname;
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
+  if (_chatState.targetPath && typeof _chatSetCurrentTargetPath === 'function') {
+    _chatSetCurrentTargetPath(_chatState.targetPath, 'file', { reason: 'open-saved-chat' });
+  }
   _setChatSessionTitle(data.frontmatter?.title || '');
   if (data.frontmatter?.provider) {
     _chatState.provider = data.frontmatter.provider;
@@ -912,9 +934,7 @@ function chatClear() {
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
-  // ファイル紐づき表示をクリア
-  const badge = _chatLiveElement('chat-target-badge');
-  if (badge) badge.style.display = 'none';
+  _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '');
   chatAddSystem('新しいチャットを開始しました');
   renderChatHistory();
 }
@@ -947,13 +967,13 @@ async function chatAutoSave(options = {}) {
   if (messages.length === 0 && options?.allowEmpty && !sid) return false;
   if (!sid) return false;
   const sessionTitle = hasSessionTitle ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
-  const targetPath = hasTargetPath ? String(options.targetPath || '') : String(_chatState.targetPath || _chatState.lastImplicitTargetPath || (typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '') || '');
+  const targetPath = hasTargetPath ? String(options.targetPath || '') : String((typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '') || _chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || '');
   const provider = hasProvider ? options.provider : _chatState.provider;
   const model = hasModel ? options.model : _chatState.model;
   const sourceFolder = hasSourceFolder ? String(options.sourceFolder || '') : _chatSourceFolderValue();
   const workspaceId = hasWorkspaceId ? String(options.workspaceId || '') : (hasSourceFolder ? '' : (typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : ''));
   if (!sourceFolder && !workspaceId) {
-    if (!silent) throw new Error('対象ワークスペースまたはフォルダを選択してください');
+    if (!silent) throw new Error('フォルダツリーで対象フォルダまたはファイルを選択してください');
     return false;
   }
   // 全チャットを _chat/llm/ に統一保存（ファイル紐づきもセッションの一つ）

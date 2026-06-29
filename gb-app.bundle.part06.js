@@ -1,3 +1,28 @@
+    { label: 'ノート', action: () => openToolTab('page') },
+    { label: 'シート', action: () => openToolTab('database') },
+    { label: 'スマートシート', action: () => openToolTab('smart-db') },
+    { label: 'ボード', action: () => openToolTab('board') },
+    null,
+    { label: 'ビューワー', action: () => toggleRightPanelTab('preview') },
+    { label: 'オプション', action: () => toggleOptionPanel() },
+    null,
+    { label: '注釈ツール', action: () => toggleAnnotationToolbar() },
+    { label: 'オーバーレイ', action: () => toggleOverlayVisibility() },
+  ];
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu mobile-tool-menu';
+  menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
+  items.forEach(it => {
+    if (!it) { const sep = document.createElement('div'); sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0;'; menu.appendChild(sep); return; }
+    const row = document.createElement('div');
+    row.className = 'gb-context-menu-item';
+    row.textContent = it.label;
+    row.addEventListener('click', () => { menu.remove(); try { it.action(); } catch {} });
+    menu.appendChild(row);
+  });
+  document.body.appendChild(menu);
+  const btn = e.target.closest('button') || e.target;
+  const br = btn.getBoundingClientRect();
   { const z = _getZoom(); menu.style.left = Math.max(4, Math.min(br.left / z, window.innerWidth / z - menu.offsetWidth - 4)) + 'px'; menu.style.top = (br.bottom / z + 2) + 'px'; }
   setTimeout(() => { document.addEventListener('pointerdown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', cl); } }); }, 0);
 }

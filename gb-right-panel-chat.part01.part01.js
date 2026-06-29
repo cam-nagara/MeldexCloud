@@ -11,7 +11,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-max-tokens',
   'chat-top-p',
 ];
-const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, stopSerial: 0 };
+const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, stopSerial: 0 };
 let _chatMode = localStorage.getItem('chat-mode') || 'team';
 if (_chatMode === 'cli') _chatMode = 'history';
 let _teamCurrentRoom = '';
@@ -137,6 +137,7 @@ const CHAT_DEFAULT_MODELS = {
   gemini: ['gemini-2.5-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-3.1-flash-lite-preview'],
   anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
   openai: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-nano'],
+  local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: ['Codex CLI'],
   claude_code: ['Claude Code'],
   gemini_cli: ['Gemini CLI'],
@@ -145,10 +146,12 @@ const CHAT_PROVIDER_META = {
   gemini: { label: 'Gemini', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
   anthropic: { label: 'Claude', iconColor: '#d97745', iconBg: 'rgba(217,119,69,0.14)', iconBorder: 'rgba(217,119,69,0.48)' },
   openai: { label: 'ChatGPT', iconColor: '#10a37f', iconBg: 'rgba(16,163,127,0.14)', iconBorder: 'rgba(16,163,127,0.48)' },
+  local_llm: { label: 'ローカルLLM', iconColor: '#23c55e', iconBg: 'rgba(35,197,94,0.14)', iconBorder: 'rgba(35,197,94,0.48)' },
   codex: { label: 'Codex CLI', iconColor: '#10a37f', iconBg: 'rgba(16,163,127,0.14)', iconBorder: 'rgba(16,163,127,0.48)' },
   claude_code: { label: 'Claude Code', iconColor: '#d97745', iconBg: 'rgba(217,119,69,0.14)', iconBorder: 'rgba(217,119,69,0.48)' },
   gemini_cli: { label: 'Gemini CLI', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
 };
+const CHAT_LOCAL_LLM_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const CHAT_CLI_PROVIDERS = {
   codex: { label: 'Codex CLI', command: 'codex' },
   claude_code: { label: 'Claude Code', command: 'claude' },
@@ -183,13 +186,32 @@ function _chatIsCliProvider(provider) {
   return Object.prototype.hasOwnProperty.call(CHAT_CLI_PROVIDERS, _chatProviderKey(provider));
 }
 
+function _chatIsLocalLlmProvider(provider) {
+  return _chatProviderKey(provider) === 'local_llm';
+}
+
+function chatLocalLlmBaseUrl() {
+  return String(localStorage.getItem('chat-local-llm-base-url') || CHAT_LOCAL_LLM_DEFAULT_BASE_URL).trim() || CHAT_LOCAL_LLM_DEFAULT_BASE_URL;
+}
+
+function chatLocalLlmSettings() {
+  const model = localStorage.getItem('chat-model:local_llm') || localStorage.getItem('chat-local-llm-model') || _chatDefaultModel('local_llm');
+  return {
+    base_url: chatLocalLlmBaseUrl(),
+    model: String(model || _chatDefaultModel('local_llm')).trim() || _chatDefaultModel('local_llm'),
+    mcp_enabled: localStorage.getItem('chat-local-llm-mcp-enabled') !== '0',
+  };
+}
+
 function _chatDefaultModel(provider) {
   const list = CHAT_DEFAULT_MODELS[_chatProviderKey(provider)] || [];
   return list[0] || '';
 }
 
 function _chatModelCacheKey(provider) {
-  return 'chat-models:' + _chatProviderKey(provider);
+  const key = _chatProviderKey(provider);
+  if (key === 'local_llm') return 'chat-models:local_llm:' + encodeURIComponent(chatLocalLlmBaseUrl());
+  return 'chat-models:' + key;
 }
 
 function _chatRoomSettingsSourceFolder(sourceFolder) {
@@ -369,6 +391,19 @@ function chatGenerationSettings() {
 function _chatRenderThinking(el, text) {
   if (!el) return;
   el.querySelectorAll(':scope > .chat-thinking-process').forEach(details => details.remove());
+  const value = String(text || '').trim();
+  if (!value) return;
+  const details = document.createElement('details');
+  details.className = 'chat-thinking-process';
+  details.style.cssText = 'margin-top:8px;border-top:1px solid var(--border);padding-top:6px;color:var(--fg2);font-size:12px;white-space:normal;';
+  const summary = document.createElement('summary');
+  summary.textContent = '思考内容';
+  summary.style.cssText = 'cursor:pointer;user-select:none;font-weight:700;';
+  const body = document.createElement('div');
+  body.textContent = value;
+  body.style.cssText = 'margin-top:6px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;line-height:1.55;';
+  details.append(summary, body);
+  el.appendChild(details);
 }
 
 function _chatUsageTokens(usage) {
@@ -630,7 +665,8 @@ async function loadProviderModels(provider, options = {}) {
     } catch {}
   }
   try {
-    const data = await apiFetch('/chat/models?provider=' + encodeURIComponent(key) + '&refresh=' + (force ? 'true' : 'false'));
+    const localQuery = key === 'local_llm' ? '&local_base_url=' + encodeURIComponent(chatLocalLlmBaseUrl()) : '';
+    const data = await apiFetch('/chat/models?provider=' + encodeURIComponent(key) + '&refresh=' + (force ? 'true' : 'false') + localQuery);
     const models = _chatNormalizeModels(data?.models, key);
     _chatState.modelsByProvider[key] = models;
     if (!data?.fallback) {

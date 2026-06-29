@@ -651,7 +651,8 @@
   max-height: calc(100vh - 48px);
 }
 .db-config-modal-body {
-  padding-right: 4px;
+  padding: 12px 20px 16px;
+  box-sizing: border-box;
 }
 .dbcfg-display-grid {
   display: grid;

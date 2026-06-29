@@ -138,8 +138,8 @@ function computeThemeColorSetFromSlots(adjust, slots) {
   });
 }
 
-function renderSettingsThemePaletteEditor() {
-  const editorId = 'settings-theme-palette-editor';
+function renderSettingsThemePaletteEditor(options = {}) {
+  const editorId = options.id || 'settings-theme-palette-editor';
   const rowsHtml = `<div class="cs-theme-palette-matrix" data-theme-palette-matrix></div>`;
   const slider = (key, label, min, max) => `
     <label class="cs-theme-palette-slider-row" data-theme-palette-slider-row="${key}">
@@ -420,9 +420,10 @@ function syncThemeOsAccentToggle(root) {
 }
 
 function _settingsThemePaletteMatrixRender(root) {
-  const container = root?.querySelector?.('[data-theme-palette-matrix]');
-  if (!container) return;
-  container.innerHTML = '';
+  const containers = root?.matches?.('[data-theme-palette-matrix]')
+    ? [root]
+    : Array.from(root?.querySelectorAll?.('[data-theme-palette-matrix]') || []);
+  if (!containers.length) return;
   const adjust = typeof getStandardPaletteAdjust === 'function' ? getStandardPaletteAdjust() : null;
   const swatches = typeof getStandardPaletteSwatches === 'function' ? getStandardPaletteSwatches(adjust) : [];
   const themeColors = computeThemeColorSetFromSlots(adjust);
@@ -434,64 +435,67 @@ function _settingsThemePaletteMatrixRender(root) {
     { row: 3, label: 'テーマカラー' },
     { row: 4, label: '自動（暗）' },
   ];
-  rowDefs.forEach(def => {
-    const items = def.row === 3
-      ? themeColors.map((color, index) => ({ color, title: color, row: 3, index, themeSlot: true }))
-      : swatches.filter(s => s.row === def.row);
-    if (def.row !== 1 && !items.length) return;
-    const rowEl = document.createElement('div');
-    rowEl.className = 'cs-theme-palette-row';
-    const labelEl = document.createElement('span');
-    labelEl.className = 'cs-theme-palette-row-label';
-    labelEl.textContent = def.label;
-    rowEl.appendChild(labelEl);
-    const swatchesEl = document.createElement('div');
-    swatchesEl.className = 'cs-theme-palette-row-swatches';
-    if (def.row === 1) {
-      const transBtn = document.createElement('button');
-      transBtn.type = 'button';
-      transBtn.className = 'cs-theme-palette-swatch is-transparent';
-      transBtn.dataset.color = 'transparent';
-      transBtn.dataset.e2eId = 'settings-theme-palette-row-1-col-0';
-      transBtn.dataset.paletteRow = '1';
-      transBtn.dataset.paletteCol = '0';
-      transBtn.title = '透明';
-      swatchesEl.appendChild(transBtn);
-    }
-    items.forEach((info) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'cs-theme-palette-swatch';
-      btn.dataset.paletteRow = String(def.row);
-      if (info.themeSlot) {
-        // 行3: 既存のテーマカラースロット (0-7)
-        const slot = slotSettings[info.index];
-        btn.dataset.themePaletteSlot = String(info.index);
-        btn.dataset.paletteCol = String(info.index);
-        btn.dataset.e2eId = `settings-theme-palette-row-3-slot-${info.index}`;
-        btn.dataset.color = info.color;
-        btn.classList.toggle('is-custom', !!slot);
-        btn.classList.toggle('is-adjust-disabled', !!slot && slot.applyAdjust === false);
-        btn.title = `テーマカラー ${info.index + 1}: ${info.color}${slot ? (slot.applyAdjust === false ? ' / 色調整なし' : ' / 色調整あり') : ''}`;
-        btn.style.background = info.color;
-      } else {
-        // 行1・2・4: 拡張スロット (色上書きのみ)
-        // getStandardPaletteSwatches で行1/2/4 は info.index を持つ (行1 は col=1..7, 行2/4 は 0..7)
-        const actualCol = Number.isInteger(info.index) ? info.index : 0;
-        const override = _getExtraSlotOverride(def.row, actualCol);
-        const displayColor = override || info.color;
-        btn.dataset.paletteCol = String(actualCol);
-        btn.dataset.themePaletteExtraSlot = `${def.row}-${actualCol}`;
-        btn.dataset.e2eId = `settings-theme-palette-row-${def.row}-col-${actualCol}`;
-        btn.dataset.color = displayColor;
-        btn.classList.toggle('is-custom', !!override);
-        btn.title = `${info.title || info.color}${override ? ` / カスタム: ${override}` : ''}`;
-        btn.style.background = displayColor;
+  containers.forEach(container => {
+    container.innerHTML = '';
+    rowDefs.forEach(def => {
+      const items = def.row === 3
+        ? themeColors.map((color, index) => ({ color, title: color, row: 3, index, themeSlot: true }))
+        : swatches.filter(s => s.row === def.row);
+      if (def.row !== 1 && !items.length) return;
+      const rowEl = document.createElement('div');
+      rowEl.className = 'cs-theme-palette-row';
+      const labelEl = document.createElement('span');
+      labelEl.className = 'cs-theme-palette-row-label';
+      labelEl.textContent = def.label;
+      rowEl.appendChild(labelEl);
+      const swatchesEl = document.createElement('div');
+      swatchesEl.className = 'cs-theme-palette-row-swatches';
+      if (def.row === 1) {
+        const transBtn = document.createElement('button');
+        transBtn.type = 'button';
+        transBtn.className = 'cs-theme-palette-swatch is-transparent';
+        transBtn.dataset.color = 'transparent';
+        transBtn.dataset.e2eId = 'settings-theme-palette-row-1-col-0';
+        transBtn.dataset.paletteRow = '1';
+        transBtn.dataset.paletteCol = '0';
+        transBtn.title = '透明';
+        swatchesEl.appendChild(transBtn);
       }
-      swatchesEl.appendChild(btn);
+      items.forEach((info) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cs-theme-palette-swatch';
+        btn.dataset.paletteRow = String(def.row);
+        if (info.themeSlot) {
+          // 行3: 既存のテーマカラースロット (0-7)
+          const slot = slotSettings[info.index];
+          btn.dataset.themePaletteSlot = String(info.index);
+          btn.dataset.paletteCol = String(info.index);
+          btn.dataset.e2eId = `settings-theme-palette-row-3-slot-${info.index}`;
+          btn.dataset.color = info.color;
+          btn.classList.toggle('is-custom', !!slot);
+          btn.classList.toggle('is-adjust-disabled', !!slot && slot.applyAdjust === false);
+          btn.title = `テーマカラー ${info.index + 1}: ${info.color}${slot ? (slot.applyAdjust === false ? ' / 色調整なし' : ' / 色調整あり') : ''}`;
+          btn.style.background = info.color;
+        } else {
+          // 行1・2・4: 拡張スロット (色上書きのみ)
+          // getStandardPaletteSwatches で行1/2/4 は info.index を持つ (行1 は col=1..7, 行2/4 は 0..7)
+          const actualCol = Number.isInteger(info.index) ? info.index : 0;
+          const override = _getExtraSlotOverride(def.row, actualCol);
+          const displayColor = override || info.color;
+          btn.dataset.paletteCol = String(actualCol);
+          btn.dataset.themePaletteExtraSlot = `${def.row}-${actualCol}`;
+          btn.dataset.e2eId = `settings-theme-palette-row-${def.row}-col-${actualCol}`;
+          btn.dataset.color = displayColor;
+          btn.classList.toggle('is-custom', !!override);
+          btn.title = `${info.title || info.color}${override ? ` / カスタム: ${override}` : ''}`;
+          btn.style.background = displayColor;
+        }
+        swatchesEl.appendChild(btn);
+      });
+      rowEl.appendChild(swatchesEl);
+      container.appendChild(rowEl);
     });
-    rowEl.appendChild(swatchesEl);
-    container.appendChild(rowEl);
   });
 }
 

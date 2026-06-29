@@ -241,6 +241,7 @@
   function _setResolveButtonState(detail, busy = false) {
     const keepOriginal = _overlay?.querySelector?.('[data-conflict-action="keep_original"]');
     const keepConflict = _overlay?.querySelector?.('[data-conflict-action="keep_conflict"]');
+    const mergeSqlite = _overlay?.querySelector?.('[data-conflict-action="merge_sqlite_sheet"]');
     const loading = !detail;
     if (keepOriginal) {
       keepOriginal.disabled = busy || loading || detail?.original?.exists === false;
@@ -249,6 +250,10 @@
     if (keepConflict) {
       keepConflict.disabled = busy || loading || detail?.conflict?.exists === false;
       keepConflict.title = '';
+    }
+    if (mergeSqlite) {
+      mergeSqlite.disabled = busy || loading || !detail?.sqlite_sheet_mergeable || detail?.conflict?.exists === false;
+      mergeSqlite.title = detail?.sqlite_sheet_mergeable ? 'SQLiteシートを行単位でマージします' : 'SQLiteシートの競合コピーでのみ使えます';
     }
   }
 
@@ -307,7 +312,7 @@
     const targetPath = _selectedPath;
     const button = _overlay?.querySelector?.(`[data-conflict-action="${action}"]`);
     if (button?.disabled) return;
-    const label = action === 'keep_original' ? '元ファイル' : '競合コピー';
+    const label = action === 'keep_original' ? '元ファイル' : (action === 'merge_sqlite_sheet' ? 'シートのマージ結果' : '競合コピー');
     const ok = confirm(`${label}を残して競合を解消します。解消前のファイルは _meldex/conflict-backups に保存されます。続行しますか？`);
     if (!ok) return;
     _setStatus('解消中...');
@@ -404,12 +409,17 @@
     keepOriginalBtn.type = 'button';
     keepOriginalBtn.dataset.conflictAction = 'keep_original';
     keepOriginalBtn.addEventListener('click', () => _resolve('keep_original'));
+    const mergeSqliteBtn = _el('button', 'cloud-conflict-btn', 'シートをマージ');
+    mergeSqliteBtn.type = 'button';
+    mergeSqliteBtn.dataset.conflictAction = 'merge_sqlite_sheet';
+    mergeSqliteBtn.addEventListener('click', () => _resolve('merge_sqlite_sheet'));
     const keepConflictBtn = _el('button', 'cloud-conflict-btn primary', '競合コピーを残す');
     keepConflictBtn.type = 'button';
     keepConflictBtn.dataset.conflictAction = 'keep_conflict';
     keepConflictBtn.addEventListener('click', () => _resolve('keep_conflict'));
     footer.appendChild(deferBtn);
     footer.appendChild(keepOriginalBtn);
+    footer.appendChild(mergeSqliteBtn);
     footer.appendChild(keepConflictBtn);
 
     dialog.appendChild(header);

@@ -280,9 +280,11 @@ function renderGallery(ctx) {
   const propTypes = getPropertyTypes(dbPath);
   const colOrder = getColOrder(dbPath, { ctx });
   const entitiesMap = data.entities;
-  const entityNames = Object.keys(entitiesMap)
-    .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
-    .sort();
+  const entityNames = typeof _dbSortedEntityNames === 'function'
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, propTypes })
+    : Object.keys(entitiesMap)
+      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
+      .sort();
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
       _dbRenderEmptyStateWithCreate(container, 'image', 'エントリがありません', 'エントリを追加して開始してください', ctx);
@@ -436,6 +438,109 @@ function setKanbanGroupBy(dbPath, prop, options = {}) {
   });
 }
 
+function _getKanbanConfig(dbPath, ctx) {
+  const cfg = getCurrentDbViewTypeSpecific(dbPath, 'kanban', { ctx }) || {};
+  return {
+    groupBy: cfg.groupBy || '_status',
+    showEntryName: cfg.showEntryName !== false,
+    cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
+  };
+}
+
+function _setKanbanDisplayProps(dbPath, cfg, options = {}) {
+  const next = {
+    ...cfg,
+    cardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : [],
+    showEntryName: cfg.showEntryName !== false,
+  };
+  setCurrentDbViewTypeSpecific(dbPath, 'kanban', next, {
+    ctx: options.ctx || null,
+    historyLabel: options.label || 'シート表示: カンバン表示プロパティ',
+    detail: options.detail || '',
+    skipHistory: options.skipHistory === true,
+  });
+}
+
+function _kanbanDefaultCardProps(visibleProps, groupByProp) {
+  return (visibleProps || []).filter(propName => propName !== groupByProp).slice(0, 3);
+}
+
+function _renderKanbanCardProps(root, card, propNames, ctx) {
+  propNames.forEach(propName => {
+    const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
+    if (vals.length === 0) return;
+    const propRow = document.createElement('div');
+    propRow.className = 'kanban-card-prop';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'kanban-card-prop-name';
+    nameSpan.textContent = propName + ': ';
+    propRow.appendChild(nameSpan);
+    if (typeof _dbRichAppendValuePreview === 'function') {
+      _dbRichAppendValuePreview(propRow, vals);
+    } else {
+      propRow.appendChild(document.createTextNode(vals.map(v => v.value).join(', ')));
+    }
+    root.appendChild(propRow);
+  });
+}
+
+function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
+  document.querySelectorAll('.kanban-card-props-menu').forEach(el => el.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu tl-card-props-menu kanban-card-props-menu';
+  menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
+  let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
+  let showEntryName = cfg.showEntryName !== false;
+  const save = (detail) => {
+    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName }, { ctx, detail });
+    renderKanban(ctx);
+  };
+  if (typeof _appendDbDisplayPropOption === 'function') {
+    _appendDbDisplayPropOption(menu, 'エントリ名', showEntryName, {
+      onToggle(checked) {
+        showEntryName = checked;
+        save('エントリ名');
+      },
+    });
+    props.forEach(prop => {
+      _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
+        canMoveUp: ordered.indexOf(prop) > 0,
+        canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
+        onToggle(checked) {
+          ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
+          save(prop);
+        },
+        onMove(delta) {
+          const idx = ordered.indexOf(prop);
+          const nextIdx = idx + delta;
+          if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
+          [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
+          save(prop);
+        },
+      });
+    });
+  }
+  document.body.appendChild(menu);
+  if (typeof attachMeldexDropdownCloseButton === 'function') {
+    attachMeldexDropdownCloseButton(menu, {
+      trigger: anchor,
+      className: 'kanban-card-props-menu-close',
+      attr: 'data-kanban-card-props-close',
+    });
+  }
+  if (typeof _positionTimelineCardPropsMenu === 'function') _positionTimelineCardPropsMenu(menu, anchor);
+  else if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
+  setTimeout(() => {
+    const closer = (ev) => {
+      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
+        menu.remove();
+        document.removeEventListener('pointerdown', closer);
+      }
+    };
+    document.addEventListener('pointerdown', closer);
+  }, 0);
+}
+
 function renderKanban(ctx) {
   ctx = ctx || _currentPaneState();
   const data = ctx.pivotData || state.pivotData;
@@ -450,9 +555,12 @@ function renderKanban(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const entitiesMap = data.entities;
   const advFilters = getAdvancedFilters(dbPath, { ctx });
-  const entityNames = Object.keys(entitiesMap)
-    .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
-    .sort();
+  const propTypes = getPropertyTypes(dbPath);
+  const entityNames = typeof _dbSortedEntityNames === 'function'
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, propTypes })
+    : Object.keys(entitiesMap)
+      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
+      .sort();
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
       _dbRenderEmptyStateWithCreate(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください', ctx);
@@ -467,10 +575,11 @@ function renderKanban(ctx) {
   data.properties.forEach(p => { if (!orderedProps.includes(p)) orderedProps.push(p); });
   if (typeof filterDeletedDbProperties === 'function') orderedProps = filterDeletedDbProperties(dbPath, orderedProps);
   const visibleProps = orderedProps.filter(p => !hiddenCols.includes(p));
-  let groupByProp = getKanbanGroupBy(dbPath, ctx);
+  const kanbanCfg = _getKanbanConfig(dbPath, ctx);
+  let groupByProp = kanbanCfg.groupBy || getKanbanGroupBy(dbPath, ctx);
   if (groupByProp !== '_status' && !_isKanbanGroupableProperty(dbPath, groupByProp)) {
     groupByProp = '_status';
-    setKanbanGroupBy(dbPath, groupByProp, { skipHistory: true });
+    setKanbanGroupBy(dbPath, groupByProp, { ctx, skipHistory: true });
   }
 
   // グループ化: ステータスまたはSelect型プロパティで分類
@@ -500,7 +609,7 @@ function renderKanban(ctx) {
 
   // ヘッダー: グループ化プロパティ選択
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-shrink:0;';
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-shrink:0;align-self:flex-start;';
   const label = document.createElement('span');
   label.style.cssText = 'font-size:12px;color:var(--fg2);';
   label.textContent = 'グループ化:';
@@ -522,6 +631,18 @@ function renderKanban(ctx) {
   });
   sel.onchange = () => { setKanbanGroupBy(dbPath, sel.value, { ctx }); renderKanban(ctx); };
   header.appendChild(sel);
+  const displayPropsBtn = document.createElement('button');
+  displayPropsBtn.type = 'button';
+  displayPropsBtn.className = 'tl-nav-btn';
+  displayPropsBtn.title = 'カードに表示するプロパティ';
+  const activeCardProps = Array.isArray(kanbanCfg.cardProps) ? kanbanCfg.cardProps : _kanbanDefaultCardProps(visibleProps, groupByProp);
+  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示プロパティ' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
+  displayPropsBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    _showKanbanDisplayPropsMenu(ev.currentTarget, dbPath, { ...kanbanCfg, groupBy: groupByProp, cardProps: activeCardProps }, visibleProps.filter(p => p !== groupByProp), ctx);
+  });
+  header.appendChild(displayPropsBtn);
 
   // ボード描画
   const board = document.createElement('div');
@@ -715,35 +836,19 @@ function renderKanban(ctx) {
       cardEl.style.position = 'relative';
       cardEl.appendChild(moreBtn);
 
-      // タイトル
-      const title = document.createElement('div');
-      title.className = 'kanban-card-title';
-      title.textContent = card.name;
-      cardEl.appendChild(title);
+      if (kanbanCfg.showEntryName !== false) {
+        const title = document.createElement('div');
+        title.className = 'kanban-card-title';
+        title.textContent = card.name;
+        cardEl.appendChild(title);
+      }
 
-      // プロパティプレビュー（先頭3件）
       const propsDiv = document.createElement('div');
       propsDiv.className = 'kanban-card-props';
-      let shown = 0;
-      for (const propName of visibleProps) {
-        if (shown >= 3) break;
-        if (propName === groupByProp) continue; // グループ化プロパティは表示不要
-        const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
-        if (vals.length === 0) continue;
-        const propRow = document.createElement('div');
-        propRow.className = 'kanban-card-prop';
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'kanban-card-prop-name';
-        nameSpan.textContent = propName + ': ';
-        propRow.appendChild(nameSpan);
-        if (typeof _dbRichAppendValuePreview === 'function') {
-          _dbRichAppendValuePreview(propRow, vals);
-        } else {
-          propRow.appendChild(document.createTextNode(vals.map(v => v.value).join(', ')));
-        }
-        propsDiv.appendChild(propRow);
-        shown++;
-      }
+      const cardPropNames = Array.isArray(kanbanCfg.cardProps)
+        ? kanbanCfg.cardProps.filter(propName => visibleProps.includes(propName) && propName !== groupByProp)
+        : _kanbanDefaultCardProps(visibleProps, groupByProp);
+      _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx);
       cardEl.appendChild(propsDiv);
 
       colBody.appendChild(cardEl);

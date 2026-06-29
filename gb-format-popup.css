@@ -37,6 +37,9 @@
   max-height: 80vh;
   overflow-y: auto;
 }
+.gb-text-selection-fmt {
+  z-index: 10060;
+}
 
 .gb-fmt-popup-row {
   display: flex;
@@ -47,6 +50,13 @@
 .gb-fmt-popup-row--specific {
   border-top: 1px solid var(--border);
   padding-top: var(--ui-space-3);
+}
+
+.gb-text-selection-clipboard-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ui-space-3);
+  width: 100%;
 }
 
 .gb-fmt-popup-row--wrap {

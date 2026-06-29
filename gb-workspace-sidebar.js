@@ -39,6 +39,14 @@
     };
   }
 
+  function _markActiveWorkspaceRow(row, workspace, activeId) {
+    if (!row) return;
+    const isActiveWorkspace = !!workspace?.id && workspace.id === activeId;
+    row.dataset.activeWorkspace = isActiveWorkspace ? 'true' : 'false';
+    if (isActiveWorkspace) row.setAttribute('aria-current', 'true');
+    else row.removeAttribute('aria-current');
+  }
+
   function _row(workspace, activeId) {
     if (workspace?.folder && typeof createTreeNodeFromBrowse === 'function') {
       const node = createTreeNodeFromBrowse(_workspaceTreeItem(workspace), workspace.folder);
@@ -46,7 +54,7 @@
       node.dataset.workspaceId = workspace.id || '';
       const row = node.querySelector(':scope > .tree-node-row');
       if (row) {
-        row.classList.toggle('selected', workspace.id === activeId);
+        _markActiveWorkspaceRow(row, workspace, activeId);
         row.title = workspace.folder || workspace.name || '';
         row.dataset.workspaceId = workspace.id || '';
         row.addEventListener('click', (event) => {
@@ -54,8 +62,11 @@
           if (event.ctrlKey || event.metaKey || event.shiftKey) return;
           if (!workspace.id) return;
           window.MeldexWorkspaces?.setActiveId?.(workspace.id, { reason: 'sidebar', silent: true });
-          _body()?.querySelectorAll?.('.tree-node-row.selected')?.forEach(item => item.classList.remove('selected'));
-          row.classList.add('selected');
+          _body()?.querySelectorAll?.('.tree-node-row[data-active-workspace="true"]')?.forEach(item => {
+            item.dataset.activeWorkspace = 'false';
+            item.removeAttribute('aria-current');
+          });
+          _markActiveWorkspaceRow(row, workspace, workspace.id);
           if (typeof _initChatSourceFolderSelector === 'function') _initChatSourceFolderSelector();
         }, { capture: true });
       }
@@ -65,7 +76,7 @@
     const row = document.createElement('div');
     row.className = 'tree-node workspace-sidebar-row';
     row.dataset.workspaceId = workspace.id || '';
-    row.classList.toggle('selected', workspace.id === activeId);
+    _markActiveWorkspaceRow(row, workspace, activeId);
     row.title = workspace.folder || workspace.name || '';
     row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 8px;margin:1px 6px;border-radius:4px;cursor:pointer;min-width:0;';
 

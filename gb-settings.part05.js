@@ -23,12 +23,131 @@ function _renderSettingsThemeCommonFontSection() {
   </section>`;
 }
 
+const SETTINGS_THEME_DETAIL_TABS = Object.freeze([
+  { id: 'surface', label: '基本の面' },
+  { id: 'text', label: '文字' },
+  { id: 'state', label: '操作状態' },
+  { id: 'sequence', label: '連番配色' },
+  { id: 'apps', label: 'アプリ別' },
+  { id: 'ornament', label: '装飾' },
+]);
+
+const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
+  surface: [
+    ['共通', ['共通本文背景色', 'アプリ基礎背景色', 'サブ背景色', '強調背景色', 'ポップアップ', 'パネルタブバー', 'パネルタブ選択背景', '折りたたみ/ドックバー', 'パネル内タブバー', 'パネル内タブ 通常', 'パネル内タブ 選択']],
+    ['フォルダ', ['カード', 'カード枠線']],
+    ['ノート', ['引用ブロック']],
+    ['シート', ['ヘッダー', 'エントリ列', 'セル']],
+    ['ボード', ['ボード背景']],
+    ['スケジューラー', ['全体', 'ツールバー', 'サイドバー', 'コンテンツ', '右サイドバー', 'セル']],
+    ['補助パネル', ['フォルダツリー', 'ビューワーカード', 'チャット入力']],
+  ],
+  text: [
+    ['共通', ['通常文字', 'サブテキスト', 'ヘッダー', 'ツールバー', '強調文字', 'リンク', 'エラー・警告']],
+    ['ノート', ['タイトル', '見出し H1', '見出し H2', '見出し H3', '見出し H4', '見出し H5', '見出し H6', '本文', '引用ブロック']],
+    ['シナリオ', ['基本テキスト']],
+    ['シート', ['ヘッダー', 'エントリ列', 'セル']],
+    ['スケジューラー', ['見出し', '土曜', '日曜', '時刻', '補助表示']],
+    ['補助パネル', ['チャット本文', 'タイマー']],
+  ],
+  state: [
+    ['共通', ['ボタン', 'ボタンホバー', 'ボタン選択', 'ホバー', '選択', 'カーソル', 'フォーカス枠', 'スライダー']],
+    ['フォルダ', ['ホバー', '選択']],
+    ['シナリオ', ['ホバー', 'テキスト選択', 'ドラッグ選択', 'ドロップ', 'カーソル']],
+    ['シート', ['選択', 'アクティブセル枠']],
+    ['ボード', ['選択', '矩形選択', 'カーソル']],
+    ['スケジューラー', ['セルホバー', '今日', 'イベント', '現在時刻バー', '入力欄', '操作ボタン', 'アクセント', 'ミニカレンダー選択']],
+    ['補助パネル', ['補助パネルアクセント']],
+  ],
+  ornament: [
+    ['共通', ['ツールチップ', 'ツールチップ枠線', 'スクロールバー背景', 'スクロールバーつまみ', 'スクロールバーホバー', 'パネル内タブ 選択背景濃度', 'パネル内タブ サイズ', 'アクセント', 'ボーダー']],
+    ['ノート', ['引用線']],
+    ['シナリオ', ['枠線', '見開き区切り', 'ルビ']],
+    ['シート', ['テーブル罫線', '採用ステータス', 'ソースバッジ 1', 'ソースバッジ 2', 'ソースバッジ 3', 'ソースバッジ 4']],
+    ['ボード', ['影', 'グループ', 'アンカー', 'カード隙間']],
+    ['スケジューラー', ['罫線', 'イベント配置', 'ToDo列', 'ToDo見出し', 'ToDo', '優先度: 緊急', '優先度: 高', '優先度: 中', '打刻']],
+  ],
+});
+
+function _settingsThemeDetailTabIds() {
+  return SETTINGS_THEME_DETAIL_TABS.map(tab => tab.id);
+}
+
+function _settingsThemeDetailTab(id) {
+  return SETTINGS_THEME_DETAIL_TABS.find(tab => tab.id === id) || SETTINGS_THEME_DETAIL_TABS[0];
+}
+
+function _settingsThemeDetailRows(section, labels) {
+  const wanted = new Set(labels || []);
+  return (UI_STYLE_SECTIONS?.[section] || []).filter(def => wanted.has(String(def?.label || '')));
+}
+
+function _renderSettingsThemeDetailStyleGroups(groupId) {
+  const groups = SETTINGS_THEME_DETAIL_STYLE_GROUPS[groupId] || [];
+  return groups.map(([section, labels]) => {
+    const rows = _settingsThemeDetailRows(section, labels);
+    if (!rows.length) return '';
+    return _settingsThemeSubsection(section, rows.map(def => renderStyleRow(def)).join(''));
+  }).join('');
+}
+
+function _renderSettingsThemeDetailTabButton(tab, activeId) {
+  const active = tab.id === activeId;
+  return `<button type="button" role="tab" class="gb-inner-tab${active ? ' gb-inner-tab-active' : ''}" data-action="switchSettingsThemeDetailTab" data-args='["${esc(tab.id)}"]' data-settings-theme-detail-tab-btn="${esc(tab.id)}" aria-selected="${active ? 'true' : 'false'}">${esc(tab.label)}</button>`;
+}
+
+function _renderSettingsThemeDetailPanel(tabId, options = {}) {
+  if (tabId === 'sequence') {
+    return _settingsThemeSubsection('テーマカラー', typeof renderSettingsThemePaletteEditor === 'function'
+      ? renderSettingsThemePaletteEditor({ id: 'settings-theme-detail-palette-editor' })
+      : renderThemeColorSetEditor(null, { hideLabel: true }))
+      + _settingsThemeSubsection('自動色の強さ', typeof renderThemeUiAutoToneControls === 'function' ? renderThemeUiAutoToneControls() : '')
+      + _settingsThemeSubsection('テーマカラーの自動適用設定', renderThemeUiApplicationEditor({ hideLabel: true }));
+  }
+  if (tabId === 'apps') {
+    return renderSettingsThemeEditor(options.activeStyleTab, {
+      deferStyleRows: options.deferStyleRows,
+      renderedStyleTab: options.renderedStyleTab,
+    });
+  }
+  if (tabId === 'state') {
+    return _settingsThemeSubsection('自動色の強さ', typeof renderThemeUiAutoToneControls === 'function' ? renderThemeUiAutoToneControls() : '')
+      + _renderSettingsThemeDetailStyleGroups(tabId);
+  }
+  return _renderSettingsThemeDetailStyleGroups(tabId);
+}
+
+function renderSettingsThemeDetailDialog(activeTab, options = {}) {
+  const activeId = _settingsThemeDetailTabIds().includes(activeTab) ? activeTab : 'surface';
+  const tabButtons = SETTINGS_THEME_DETAIL_TABS.map(tab => _renderSettingsThemeDetailTabButton(tab, activeId)).join('');
+  const panels = SETTINGS_THEME_DETAIL_TABS.map(tab => `<div class="settings-theme-detail-panel" data-settings-theme-detail-panel="${esc(tab.id)}"${tab.id === activeId ? '' : ' hidden'}>
+    ${_renderSettingsThemeDetailPanel(tab.id, options)}
+  </div>`).join('');
+  return `<div class="settings-theme-detail" data-settings-theme-detail-root="1" data-settings-theme-detail-active-tab="${esc(activeId)}">
+    <div class="settings-theme-detail-tabs" role="tablist">${tabButtons}</div>
+    <div class="settings-theme-detail-panels">${panels}</div>
+  </div>`;
+}
+
+function _renderSettingsThemeDetailEntrySection() {
+  const shortcuts = SETTINGS_THEME_DETAIL_TABS.map(tab =>
+    `<button type="button" class="cs-toggle settings-theme-detail-shortcut" data-action="openSettingsThemeDetailDialog" data-args='["${esc(tab.id)}"]'>${esc(tab.label)}</button>`
+  ).join('');
+  return `<section class="gb-section gb-section--boxed settings-theme-detail-entry">
+    <div class="gb-section-title">テーマ詳細設定</div>
+    <div class="settings-theme-detail-entry-row">
+      <button type="button" class="cs-toggle settings-theme-detail-open-btn" data-action="openSettingsThemeDetailDialog" data-args='["surface"]'>${typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : ''}<span>テーマ詳細設定を開く</span></button>
+      <div class="settings-theme-detail-shortcuts">${shortcuts}</div>
+    </div>
+  </section>`;
+}
+
 function renderSettingsAppearancePanel(currentTheme, options = {}) {
   const themeOptions = typeof MeldexThemeManager !== 'undefined'
     ? MeldexThemeManager.themeOptionsHtml(currentTheme)
     : Object.keys(THEME_PRESETS).map(n => '<option value="' + esc(n) + '"' + (n === currentTheme ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
   return `
-    <section class="gb-section gb-section--boxed">
+    <section class="gb-section gb-section--boxed" data-settings-theme-summary="1">
       <div class="gb-section-title">${lucide('palette', 14)} テーマ</div>
       <div class="gb-field-row" style="align-items:center;">
         <select id="modal-theme-preset" data-onchange="settingsThemeSelect(this.value)" class="gb-select" style="flex:1;min-width:180px;">
@@ -49,15 +168,9 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
     </section>
     <section class="gb-section gb-section--boxed">
       <div class="gb-section-title">テーマカラー</div>
-      ${typeof renderSettingsThemePaletteEditor === 'function' ? renderSettingsThemePaletteEditor() : renderThemeColorSetEditor(null, { hideLabel: true })}
+      ${typeof renderSettingsThemePaletteEditor === 'function' ? renderSettingsThemePaletteEditor({ id: 'settings-theme-palette-editor' }) : renderThemeColorSetEditor(null, { hideLabel: true })}
     </section>
-    <section class="gb-section gb-section--boxed">
-      <div class="gb-section-title">テーマ設定</div>
-      ${renderSettingsThemeEditor(options.activeStyleTab, {
-        deferStyleRows: options.deferStyleRows,
-        renderedStyleTab: options.renderedStyleTab,
-      })}
-    </section>`;
+    ${_renderSettingsThemeDetailEntrySection()}`;
 }
 
 function ensureSettingsThemePanel(panel, options = {}) {
@@ -74,7 +187,7 @@ function ensureSettingsThemePanel(panel, options = {}) {
   const hasDeferStyleRows = Object.prototype.hasOwnProperty.call(options, 'deferStyleRows');
   const deferStyleRows = options.deferStyleRows === true
     || (!hasDeferStyleRows && root.dataset.settingsThemeRendered !== '1' && !renderedStyleTab);
-  if (options.force !== true && root.dataset.settingsThemeRendered === '1' && root.querySelector('#settings-theme-editor')) return;
+  if (options.force !== true && root.dataset.settingsThemeRendered === '1' && root.querySelector('[data-settings-theme-summary="1"]')) return;
   root.innerHTML = renderSettingsAppearancePanel(selectedId, {
     activeStyleTab,
     deferStyleRows,
@@ -445,15 +558,77 @@ function _bindSettingsThemeStylePanel(root) {
 function bindSettingsThemePanel(root) {
   const panel = root || document;
   const editor = panel.querySelector?.('#settings-theme-editor');
-  if (!editor) return;
-  const activeStylePanel = editor.querySelector('[data-settings-theme-style-panel]:not([hidden])');
-  syncCsSwatches(editor);
+  const activeStylePanel = editor?.querySelector?.('[data-settings-theme-style-panel]:not([hidden])');
+  syncCsSwatches(editor || panel);
   syncThemeColorSetSwatches(panel);
   if (typeof syncThemeOsAccentToggle === 'function') syncThemeOsAccentToggle(panel);
   // テーマカラーセクションはテーマ設定エディタの外側にあるため panel 単位でバインドする
   bindThemeColorSetEditor(panel);
   if (activeStylePanel) _bindSettingsThemeStylePanel(activeStylePanel);
   _settingsThemeRefreshActionStates(panel);
+}
+
+function bindSettingsThemeDetailDialog(root) {
+  if (!root) return;
+  syncCsSwatches(root);
+  syncThemeColorSetSwatches(root);
+  if (typeof syncThemeOsAccentToggle === 'function') syncThemeOsAccentToggle(root);
+  const alreadyBound = root.dataset?.settingsThemeDetailBound === '1';
+  if (!alreadyBound) {
+    bindThemeColorSetEditor(root);
+    bindThemeUiApplicationEditor(root);
+    root.querySelectorAll?.('[data-settings-theme-style-panel]').forEach(panel => _bindSettingsThemeStylePanel(panel));
+    if (root.dataset) root.dataset.settingsThemeDetailBound = '1';
+    root.querySelectorAll?.('[data-settings-theme-detail-panel]').forEach(panel => { panel.dataset.settingsThemeDetailBound = '1'; });
+  }
+  syncThemeUiApplicationSelectors(root);
+  if (typeof replaceIcons === 'function') replaceIcons(root);
+  globalThis.GBUI?.refreshRangeFills?.(root);
+}
+
+function openSettingsThemeDetailDialog(activeTab) {
+  const activeId = _settingsThemeDetailTabIds().includes(activeTab) ? activeTab : 'surface';
+  const settingsPanel = document.querySelector('.settings-panel[data-panel="テーマ"]') || document;
+  const activeStyleTab = settingsPanel.dataset?.settingsThemeActiveStyleTab || _settingsThemeActiveStyleTab(settingsPanel);
+  const body = document.createElement('div');
+  body.innerHTML = renderSettingsThemeDetailDialog(activeId, { activeStyleTab });
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn';
+  closeBtn.textContent = '閉じる';
+  const api = globalThis.GBUI?.createModal?.({
+    title: 'テーマ詳細設定',
+    body,
+    footer: closeBtn,
+    closeOnOverlay: false,
+    minWidth: 'min(920px, calc(100vw - 32px))',
+    extraClass: 'settings-theme-detail-modal',
+  });
+  if (!api) {
+    if (typeof showStatus === 'function') showStatus('テーマ詳細設定を開けませんでした', true);
+    return;
+  }
+  api.modal.style.width = 'min(980px, calc(100vw - 32px))';
+  api.modal.style.maxHeight = 'min(860px, calc(100vh - 32px))';
+  closeBtn.addEventListener('click', api.close);
+  document.body.appendChild(api.overlay);
+  bindSettingsThemeDetailDialog(body);
+}
+
+function switchSettingsThemeDetailTab(tabId, event) {
+  const id = _settingsThemeDetailTabIds().includes(tabId) ? tabId : 'surface';
+  const root = event?.target?.closest?.('[data-settings-theme-detail-root]');
+  if (!root) return;
+  root.dataset.settingsThemeDetailActiveTab = id;
+  root.querySelectorAll('[data-settings-theme-detail-tab-btn]').forEach(btn => {
+    const active = btn.dataset.settingsThemeDetailTabBtn === id;
+    btn.classList.toggle('gb-inner-tab-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  root.querySelectorAll('[data-settings-theme-detail-panel]').forEach(panel => {
+    panel.hidden = panel.dataset.settingsThemeDetailPanel !== id;
+  });
+  bindSettingsThemeDetailDialog(root.querySelector(`[data-settings-theme-detail-panel="${CSS.escape(id)}"]`) || root);
 }
 
 function settingsThemeApplyCommonFont(value, options = {}) {

@@ -377,6 +377,64 @@
       .filter(Boolean);
   }
 
+  function _severityLabel(value) {
+    return { high: '高', medium: '中', low: '低' }[String(value || '').toLowerCase()] || String(value || '中');
+  }
+
+  function _confidenceLabel(value) {
+    return { high: '高信頼', medium: '中信頼', low: '低信頼' }[String(value || '').toLowerCase()] || '中信頼';
+  }
+
+  function _pill(label, value, className) {
+    const node = _el('span', className || 'llm-review-pill');
+    node.append(_el('span', 'llm-review-pill-label', label), _el('span', '', String(value || '')));
+    return node;
+  }
+
+  function _renderSummary(summary) {
+    const data = summary || {};
+    const wrap = _el('div', 'llm-review-summary');
+    wrap.appendChild(_el('div', 'llm-review-summary-title', data.headline || 'レビュー結果'));
+    const chips = _el('div', 'llm-review-summary-chips');
+    [
+      ['高', data.high || 0, 'high'],
+      ['中', data.medium || 0, 'medium'],
+      ['低', data.low || 0, 'low'],
+      ['合計', data.total || 0, 'total'],
+      ['正本注意', data.canonical_conflict || 0, 'canonical'],
+      ['根拠不足', data.evidence_missing || 0, 'evidence'],
+      ['伸びしろ', data.creative_opportunity || 0, 'creative'],
+    ].forEach(([label, value, kind]) => {
+      const chip = _pill(label, value, 'llm-review-pill');
+      chip.dataset.kind = kind;
+      chips.appendChild(chip);
+    });
+    wrap.appendChild(chips);
+    return wrap;
+  }
+
+  function _renderIssueText(label, text) {
+    const value = String(text || '').trim();
+    if (!value) return null;
+    const node = _el('div', 'llm-review-issue-note');
+    node.append(_el('div', 'llm-review-issue-note-label', label), _el('div', '', value));
+    return node;
+  }
+
+  function _renderSourceRefs(refs) {
+    const items = Array.isArray(refs) ? refs.filter(Boolean).slice(0, 6) : [];
+    if (!items.length) return null;
+    const wrap = _el('div', 'llm-review-source-refs');
+    wrap.appendChild(_el('div', 'llm-review-source-title', '根拠'));
+    items.forEach(ref => {
+      const label = String(ref.label || '').trim() || String(ref.path || '').split(/[\\/]/).pop() || '参照';
+      const path = String(ref.path || '').trim();
+      const feature = String(ref.feature || '').trim();
+      wrap.appendChild(_el('div', 'llm-review-source-ref', [label, feature, path].filter(Boolean).join(' / ')));
+    });
+    return wrap;
+  }
+
   function _feedbackEventId(prefix = 'evt') {
     return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
   }
@@ -454,7 +512,7 @@
     resultPane.textContent = '';
     const summary = run?.merged?.summary || {};
     const canPersist = run?.options?.save_results !== false;
-    resultPane.appendChild(_el('div', 'llm-review-meta', `重要度: 高 ${summary.high || 0} / 中 ${summary.medium || 0} / 低 ${summary.low || 0} / 合計 ${summary.total || 0}`));
+    resultPane.appendChild(_renderSummary(summary));
     if (!canPersist) {
       resultPane.appendChild(_el('div', 'llm-review-meta', '保存しない設定のため、採用状態と改稿案はこの画面では保存されません。'));
     }
@@ -473,8 +531,21 @@
   function _renderIssue(run, issue, status, onStateChange) {
     const card = _el('div', 'llm-review-issue');
     card.dataset.severity = issue.severity || 'medium';
-    card.appendChild(_el('div', 'llm-review-issue-title', `[${issue.severity || 'medium'}] ${issue.issue || ''}`));
+    card.appendChild(_el('div', 'llm-review-issue-title', `[${_severityLabel(issue.severity)}] ${issue.issue || ''}`));
+    const meta = _el('div', 'llm-review-issue-meta');
+    meta.append(
+      _pill('観点', issue.category || 'review'),
+      _pill('担当', issue.reviewer_id || ''),
+      _pill('信頼', _confidenceLabel(issue.confidence))
+    );
+    card.appendChild(meta);
     card.appendChild(_el('div', 'llm-review-meta', issue.suggestion || ''));
+    const impact = _renderIssueText('影響', issue.impact);
+    const opportunity = _renderIssueText('伸ばせる点', issue.creative_opportunity);
+    const biasNotes = _renderIssueText('注意した偏り', Array.isArray(issue.bias_notes) ? issue.bias_notes.join(' / ') : issue.bias_notes);
+    [impact, opportunity, biasNotes, _renderSourceRefs(issue.source_refs)].forEach(node => {
+      if (node) card.appendChild(node);
+    });
     if ((issue.warnings || []).length) {
       card.appendChild(_el('div', 'llm-review-meta', '警告: ' + issue.warnings.join(' / ')));
     }
@@ -536,25 +607,37 @@
     const workFolderMeta = _el('div', 'llm-review-meta', `作品フォルダ: ${workFolder || '未設定'}`);
     controls.appendChild(targetMeta);
     controls.appendChild(workFolderMeta);
+    const presetLabel = _el('label', 'llm-review-label');
+    presetLabel.appendChild(_el('span', '', 'レビュー内容'));
     const presetSelect = _el('select', 'llm-review-select');
-    controls.appendChild(presetSelect);
-    const reviewerBox = _el('div', '');
-    controls.appendChild(reviewerBox);
+    presetLabel.appendChild(presetSelect);
+    controls.appendChild(presetLabel);
+    const priorityLabel = _el('label', 'llm-review-label');
+    priorityLabel.appendChild(_el('span', '', '今回の重点'));
     const priority = _el('textarea', 'llm-review-textarea');
-    priority.placeholder = '今回の最優先指示';
-    controls.appendChild(priority);
+    priority.placeholder = '特に見てほしい点';
+    priorityLabel.appendChild(priority);
+    controls.appendChild(priorityLabel);
+    const details = document.createElement('details');
+    details.className = 'llm-review-details';
+    const detailsSummary = document.createElement('summary');
+    detailsSummary.textContent = '詳細設定';
+    details.appendChild(detailsSummary);
+    const reviewerBox = _el('div', '');
+    details.appendChild(reviewerBox);
     const saveLabel = _el('label', 'llm-review-check');
     const saveInput = document.createElement('input');
     saveInput.type = 'checkbox';
     saveInput.checked = true;
     saveLabel.append(saveInput, _el('span', '', 'レビュー結果を保存'));
-    controls.appendChild(saveLabel);
+    details.appendChild(saveLabel);
     const providerLabel = _el('label', 'llm-review-label');
     providerLabel.appendChild(_el('span', '', '実行エンジン'));
     const executionProvider = _el('select', 'llm-review-select');
     _fillExecutionProviderSelect(executionProvider);
     providerLabel.appendChild(executionProvider);
-    controls.appendChild(providerLabel);
+    details.appendChild(providerLabel);
+    controls.appendChild(details);
     const resultPane = _el('div', 'llm-review-section');
     resultPane.appendChild(_el('h3', '', 'レビュー結果'));
     resultPane.appendChild(_el('div', 'llm-review-meta', '実行するとここに指摘が表示されます。'));

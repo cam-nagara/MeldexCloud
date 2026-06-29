@@ -268,6 +268,10 @@ function _markDbAutoVersionDirty(dbPath) {
 async function _apiPutValue(valObj, updates) {
   const body = { ...updates };
   delete body.__source;
+  const currentRevision = Number(valObj?.entry_revision ?? valObj?.revision ?? valObj?._revision);
+  if (Number.isInteger(currentRevision) && currentRevision >= 0 && body.baseRevision == null) {
+    body.baseRevision = currentRevision;
+  }
   if (valObj.candidate_index != null) {
     body.property = valObj.property;
     body.candidate_index = valObj.candidate_index;
@@ -277,6 +281,7 @@ async function _apiPutValue(valObj, updates) {
   if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
   if (res?.property) valObj.property = res.property;
   if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
+  if (res?.revision != null) valObj.entry_revision = Number(res.revision);
   const entityPath = _resolveEntityPathFromValObj(valObj);
   const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
   const nextValue = updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
@@ -320,6 +325,8 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     if (Array.isArray(extra.relations)) body.relations = extra.relations;
     if (Array.isArray(extra.published_in)) body.published_in = extra.published_in;
     if (extra.created) body.created = extra.created;
+    const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
+    if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;
   }
   const res = await apiPost('/value', body);
   _dbApplyAutoTaskRenameResult(res);

@@ -348,6 +348,18 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
   const modal = overlay?.querySelector?.('.modal') || root?.closest?.('.modal');
   if (!modal || modal.dataset[key] === '1') return;
   modal.dataset[key] = '1';
+  const retryPanelInitialization = () => {
+    if (!modal.isConnected) return;
+    const retryKey = key + 'RetryCount';
+    const count = parseInt(modal.dataset[retryKey] || '0', 10) || 0;
+    if (count > 60) return;
+    modal.dataset[retryKey] = String(count + 1);
+    delete modal.dataset[key];
+    setTimeout(() => _scheduleSettingsPanelInitialization(canonical, modal, options), 120);
+  };
+  const clearPanelInitializationRetry = () => {
+    delete modal.dataset[key + 'RetryCount'];
+  };
   const run = () => {
     if (!modal.isConnected) return;
     if (canonical === '全般') {
@@ -403,7 +415,22 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
     }
     if (canonical === 'ショートカット') {
       const container = modal.querySelector('#shortcut-settings-container');
-      if (container && typeof renderShortcutSettings === 'function') renderShortcutSettings(container);
+      if (!container || typeof renderShortcutSettings !== 'function' || typeof _getEffectiveShortcuts !== 'function') {
+        retryPanelInitialization();
+        return;
+      }
+      try {
+        renderShortcutSettings(container);
+      } catch (error) {
+        try { console.warn('[settings] shortcut panel initialization retry', error); } catch {}
+        retryPanelInitialization();
+        return;
+      }
+      if (!container.querySelector('.shortcut-row')) {
+        retryPanelInitialization();
+        return;
+      }
+      clearPanelInitializationRetry();
       return;
     }
     if (canonical === 'ゴミ箱') {
@@ -419,10 +446,18 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
     run();
     return;
   }
-  const defer = typeof requestAnimationFrame === 'function'
-    ? requestAnimationFrame
-    : (fn) => setTimeout(fn, 0);
-  defer(() => setTimeout(run, 0));
+  let queued = false;
+  const queueRun = () => {
+    if (queued) return;
+    queued = true;
+    setTimeout(run, 0);
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(queueRun);
+    setTimeout(queueRun, 50);
+  } else {
+    queueRun();
+  }
 }
 
 function switchSettingsTab(el) {
@@ -474,7 +509,7 @@ function _openSettingsSection(panelName, root) {
   });
   _ensureSettingsThemePanelVisible(panelName, modal);
   _syncSettingsModalOverlayForPanel(modal, panelName);
-  _scheduleSettingsPanelInitialization(panelName, modal);
+  _scheduleSettingsPanelInitialization(panelName, modal, { immediate: true });
   const btnRow = modal.querySelector('.btn-row');
   if (btnRow) btnRow.hidden = false;
   const backBtn = modal.querySelector('#settings-back-btn');

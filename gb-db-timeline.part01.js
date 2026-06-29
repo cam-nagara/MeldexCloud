@@ -186,18 +186,52 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
   });
 }
 
-function _appendTimelineCardPropsOption(menu, text, checked, onChange) {
+function _appendDbDisplayPropOption(menu, text, checked, options = {}) {
   const label = document.createElement('label');
   label.className = 'tl-card-prop-option';
   label.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;';
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = !!checked;
-  cb.addEventListener('change', () => onChange(cb.checked));
+  cb.addEventListener('change', () => options.onToggle?.(cb.checked));
+  const textEl = document.createElement('span');
+  textEl.textContent = text;
+  textEl.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
   label.appendChild(cb);
-  label.appendChild(document.createTextNode(text));
+  label.appendChild(textEl);
+  if (options.onMove) {
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.className = 'tl-card-prop-move';
+    up.title = '上へ移動';
+    up.setAttribute('aria-label', text + 'を上へ移動');
+    up.disabled = !options.canMoveUp;
+    up.innerHTML = typeof lucide === 'function' ? lucide('arrowUp', 12) : '↑';
+    up.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      options.onMove(-1);
+    });
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.className = 'tl-card-prop-move';
+    down.title = '下へ移動';
+    down.setAttribute('aria-label', text + 'を下へ移動');
+    down.disabled = !options.canMoveDown;
+    down.innerHTML = typeof lucide === 'function' ? lucide('arrowDown', 12) : '↓';
+    down.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      options.onMove(1);
+    });
+    label.append(up, down);
+  }
   menu.appendChild(label);
   return cb;
+}
+
+function _appendTimelineCardPropsOption(menu, text, checked, onChange) {
+  return _appendDbDisplayPropOption(menu, text, checked, { onToggle: onChange });
 }
 
 function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
@@ -205,25 +239,37 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu tl-card-props-menu';
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
-  const selected = new Set(Array.isArray(cfg.cardProps) ? cfg.cardProps : []);
+  let ordered = Array.isArray(cfg.cardProps) ? cfg.cardProps.filter(prop => props.includes(prop)) : [];
   let showEntryName = _timelineShowsEntryName(cfg);
   const saveCardProps = (detail) => {
-    setTimelineConfig(dbPath, { ...cfg, cardProps: Array.from(selected), showEntryName }, {
-      label: 'シート表示: タイムラインカード表示',
+    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName }, {
+      label: 'シート表示: タイムライン表示プロパティ',
       detail,
       ctx,
     });
     renderTimeline(ctx);
   };
-  _appendTimelineCardPropsOption(menu, 'エントリ名', showEntryName, (checked) => {
-    showEntryName = checked;
-    saveCardProps('エントリ名');
+  _appendDbDisplayPropOption(menu, 'エントリ名', showEntryName, {
+    onToggle(checked) {
+      showEntryName = checked;
+      saveCardProps('エントリ名');
+    },
   });
   props.forEach(prop => {
-    _appendTimelineCardPropsOption(menu, prop, selected.has(prop), (checked) => {
-      if (checked) selected.add(prop);
-      else selected.delete(prop);
-      saveCardProps(prop);
+    _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
+      canMoveUp: ordered.indexOf(prop) > 0,
+      canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
+      onToggle(checked) {
+        ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
+        saveCardProps(prop);
+      },
+      onMove(delta) {
+        const idx = ordered.indexOf(prop);
+        const nextIdx = idx + delta;
+        if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
+        [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
+        saveCardProps(prop);
+      },
     });
   });
   document.body.appendChild(menu);
@@ -527,6 +573,14 @@ function renderTimeline(ctx) {
   const propTypes = getPropertyTypes(dbPath);
   const schemaProps = Object.keys(propTypes || {});
   const timelineProps = Array.from(new Set([...props, ...schemaProps, cfg.timeProp, cfg.endProp, cfg.rowProp].filter(p => p && p !== '_entity')));
+  const dateProps = timelineProps.filter(p => (propTypes?.[p]?.type || '') === 'date');
+  if (cfg.timeProp && !dateProps.includes(cfg.timeProp)) cfg = { ...cfg, timeProp: '' };
+  if (cfg.endProp && !dateProps.includes(cfg.endProp)) cfg = { ...cfg, endProp: '' };
+  const timePropOptions = dateProps.length
+    ? `<option value="" ${!cfg.timeProp?'selected':''}>(未設定)</option>`
+      + dateProps.map(p => `<option value="${esc(p)}" ${cfg.timeProp===p?'selected':''}>${esc(p)}</option>`).join('')
+    : '<option value="">(日時プロパティなし)</option>';
+  const endPropOptions = dateProps.map(p => `<option value="${esc(p)}" ${cfg.endProp===p?'selected':''}>${esc(p)}</option>`).join('');
 
   container.innerHTML = '';
 
@@ -548,10 +602,10 @@ function renderTimeline(ctx) {
 
   // 時間軸プロパティ
   settings.innerHTML = `
-    <label>開始日: <select id="tl-time-prop" class="gb-select">${timelineProps.map(p => `<option value="${esc(p)}" ${cfg.timeProp===p?'selected':''}>${esc(p)}</option>`).join('')}</select></label>
-    <label>終了日: <select id="tl-end-prop" class="gb-select">
+    <label>開始日時: <select id="tl-time-prop" class="gb-select">${timePropOptions}</select></label>
+    <label>終了日時: <select id="tl-end-prop" class="gb-select">
       <option value="" ${!cfg.endProp?'selected':''}>(なし)</option>
-      ${timelineProps.map(p => `<option value="${esc(p)}" ${cfg.endProp===p?'selected':''}>${esc(p)}</option>`).join('')}
+      ${endPropOptions}
     </select></label>
     <label>行/列軸: <select id="tl-row-prop" class="gb-select">
       <option value="_entity" ${cfg.rowProp==='_entity'?'selected':''}>エントリ名</option>
@@ -566,7 +620,7 @@ function renderTimeline(ctx) {
       <option value="horizontal" ${cfg.direction==='horizontal'?'selected':''}>→ 横方向（時間が右）</option>
       <option value="vertical" ${cfg.direction==='vertical'?'selected':''}>↓ 縦方向（時間が下）</option>
     </select></label>
-    <button type="button" id="tl-card-props" class="tl-nav-btn" title="カードに表示するプロパティ">${lucide('listPlus', 12)} カード表示 ${Array.isArray(cfg.cardProps) && cfg.cardProps.length ? '(' + cfg.cardProps.length + ')' : ''}</button>
+    <button type="button" id="tl-card-props" class="tl-nav-btn" title="カードに表示するプロパティ">${lucide('listPlus', 12)} 表示プロパティ ${Array.isArray(cfg.cardProps) && cfg.cardProps.length ? '(' + cfg.cardProps.length + ')' : ''}</button>
   `;
   container.appendChild(settings);
   settings.querySelector('#tl-card-props')?.addEventListener('click', (ev) => {

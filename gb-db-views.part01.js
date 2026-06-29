@@ -746,7 +746,7 @@ function _initDbViewTypeSpecific(viewMode, dbPath, pivotData) {
         ? _normalizeDbTimelineTypeSpecific({})
         : { timeProp: '', endProp: '', rowProp: '_entity', scale: 'day', direction: 'horizontal', colWidths: {}, rowHeights: {}, cardProps: [] };
     case 'chart':
-      return { chartType: 'bar', xProperty: '', yAggregation: 'count', yProperty: null, showLabels: true, showLegend: true, palette: 'default' };
+      return { chartType: 'bar', xProperty: '', yAggregation: 'count', yProperty: null, showLabels: true, showLegend: true, palette: 'single', singleColor: '' };
     case 'graph':
       return { colorProperty: '', showExternalNodes: true, layout: 'force', showLabels: true, showEdgeLabels: false };
     case 'form':

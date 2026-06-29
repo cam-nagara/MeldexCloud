@@ -910,4 +910,7 @@
 .sn2-scroll.sn2-vertical .sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
   margin-right: 0;
 }
-
+.sn2-scroll.sn2-no-page-break-spacing .sn2-row[data-kind="break"] {
+  margin-top: 0;
+  margin-right: 0;
+}

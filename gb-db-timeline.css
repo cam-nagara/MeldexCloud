@@ -189,6 +189,25 @@
   gap: 4px;
 }
 
+.tl-card-prop-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg3);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.tl-card-prop-move:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
 .tl-calendar-date-controls {
   display: grid;
   grid-template-columns: 64px minmax(96px, 1fr) 54px;

@@ -195,65 +195,7 @@ function showFolderPreview(item) {
 // パネル配置設定ドロップダウン
 function showFolderPanelSettings() {
   document.querySelectorAll('.fv-panel-dropdown').forEach(el => el.remove());
-  const cfg = _getFvPanelCfg();
-  const menu = document.createElement('div');
-  menu.className = 'fv-panel-dropdown gb-context-menu';
-  const sides = [{v:'right',l:'右'},{v:'left',l:'左'},{v:'top',l:'上'},{v:'bottom',l:'下'}];
-
-  // プレビュー表示/位置
-  const pH = document.createElement('div');
-  pH.style.cssText = 'padding:6px 14px;font-size:12px;font-weight:bold;color:var(--accent);';
-  pH.textContent = 'プレビュー';
-  menu.appendChild(pH);
-  const pVis = cfg.previewVisible ?? true;
-  const pVisItem = document.createElement('div');
-  pVisItem.className = 'gb-context-menu-item';
-  pVisItem.innerHTML = (pVis ? lucide('checkSquare', 12) + ' ' : '　') + '表示';
-  pVisItem.addEventListener('click', () => { cfg.previewVisible = !pVis; _saveFvPanelCfg(cfg); showFolderPanelSettings(); if (_folderSelected) showFolderPreview(_folderSelected); });
-  menu.appendChild(pVisItem);
-  sides.forEach(s => {
-    const it = document.createElement('div');
-    it.className = 'gb-context-menu-item';
-    it.innerHTML = radioMark((cfg.previewPos || 'right') === s.v) + s.l;
-    it.addEventListener('click', () => { cfg.previewPos = s.v; _saveFvPanelCfg(cfg); menu.remove(); if (_folderSelected) showFolderPreview(_folderSelected); });
-    menu.appendChild(it);
-  });
-
-  // 区切り
-  const sep = document.createElement('div');
-  sep.className = 'gb-context-menu-sep';
-  menu.appendChild(sep);
-
-  // 詳細表示/位置
-  const dH = document.createElement('div');
-  dH.style.cssText = 'padding:6px 14px;font-size:12px;font-weight:bold;color:var(--accent);';
-  dH.textContent = 'オプション';
-  menu.appendChild(dH);
-  const dVis = cfg.detailVisible ?? true;
-  const dVisItem = document.createElement('div');
-  dVisItem.className = 'gb-context-menu-item';
-  dVisItem.innerHTML = (dVis ? lucide('checkSquare', 12) + ' ' : '　') + '表示';
-  dVisItem.addEventListener('click', () => { cfg.detailVisible = !dVis; _saveFvPanelCfg(cfg); showFolderPanelSettings(); if (_folderSelected) showFolderPreview(_folderSelected); });
-  menu.appendChild(dVisItem);
-  sides.forEach(s => {
-    const it = document.createElement('div');
-    it.className = 'gb-context-menu-item';
-    it.innerHTML = radioMark((cfg.detailPos || 'right') === s.v) + s.l;
-    it.addEventListener('click', () => { cfg.detailPos = s.v; _saveFvPanelCfg(cfg); menu.remove(); if (_folderSelected) showFolderPreview(_folderSelected); });
-    menu.appendChild(it);
-  });
-
-  // 位置: ボタンの下に表示（v5.0: ボタンが廃止されている場合はマウス位置にフォールバック）
-  const btn = document.querySelector('[data-action="showFolderPanelSettings()"]');
-  const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth / 2, bottom: window.innerHeight / 2 };
-  menu.style.position = 'fixed';
-  { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 2) + 'px'; }
-  document.body.appendChild(menu);
-  clampPopupToViewport(menu);
-  setTimeout(() => {
-    const closer = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  if (typeof showFolderDisplaySettings === 'function') showFolderDisplaySettings();
 }
 
 function _bindFolderPanelSettingsButton() {
@@ -761,7 +703,7 @@ function showFolderDisplaySettings() {
 
   const cfg = getFolderDisplayConfig();
   const btn = document.querySelector('[data-action="showFolderDisplaySettings()"]');
-  const rect = btn.getBoundingClientRect();
+  const rect = btn?.getBoundingClientRect?.() || { left: window.innerWidth / 2, bottom: window.innerHeight / 2 };
 
   const menu = document.createElement('div');
   menu.className = 'fd-dropdown gb-context-menu';
@@ -770,6 +712,31 @@ function showFolderDisplaySettings() {
   menu.style.maxHeight = 'min(78vh, 680px)';
   menu.style.overflowY = 'auto';
   { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 2) + 'px'; }
+
+  const layoutItems = [
+    { key: 'list', label: 'リスト', icon: 'list' },
+    { key: 'grid', label: 'グリッド', icon: 'grid3x3' },
+    { key: 'waterfall', label: 'ウォーターフォール', icon: 'layoutGrid' },
+    { key: 'hflow', label: '横並び', icon: 'galleryHorizontal' },
+  ];
+  _fdSection(menu, '表示形式');
+  layoutItems.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'gb-context-menu-item';
+    row.innerHTML = radioMark(_folderLayout === item.key) + (typeof lucide === 'function' ? lucide(item.icon, 14) + ' ' : '') + item.label;
+    row.addEventListener('click', () => {
+      if (typeof setFolderLayout === 'function') setFolderLayout(item.key);
+      else {
+        _folderLayout = item.key;
+        localStorage.setItem('folder-layout', item.key);
+        renderFolderGrid();
+      }
+      menu.remove();
+    });
+    menu.appendChild(row);
+  });
+
+  _fdSep(menu);
 
   const visibilityItems = [
     {key: 'showThumb', label: 'サムネイル'},

@@ -214,7 +214,7 @@ async function renderChatHistory() {
   const listEl = document.getElementById('chat-history-list');
   if (!listEl) return;
   if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
-    listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">対象ワークスペースまたはフォルダを選択してください</div>';
+    listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">フォルダツリーで対象フォルダまたはファイルを選択してください</div>';
     return;
   }
   listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">読み込み中...</div>';
@@ -369,7 +369,7 @@ function _chatSearch() {
     if (!results) return;
     results.style.display = 'block';
     if (!_chatSourceFolderValue() && !(typeof _chatWorkspaceIdValue === 'function' && _chatWorkspaceIdValue())) {
-      results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">対象ワークスペースまたはフォルダを選択してください</div>';
+      results.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:8px;">フォルダツリーで対象フォルダまたはファイルを選択してください</div>';
       if (countEl) countEl.textContent = '0件';
       return;
     }
@@ -705,7 +705,7 @@ async function showChatHistoryDropdown(event) {
       popup.innerHTML = '';
       const empty = document.createElement('div');
       empty.style.cssText = 'padding:8px;color:var(--fg2);text-align:center;';
-      empty.textContent = '対象ワークスペースまたはフォルダを選択してください';
+      empty.textContent = 'フォルダツリーで対象フォルダまたはファイルを選択してください';
       popup.appendChild(empty);
       return;
     }

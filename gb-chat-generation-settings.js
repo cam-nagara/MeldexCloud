@@ -42,6 +42,28 @@ function _chatGenerationSettingsRow(label, controlHtml) {
   </label>`;
 }
 
+function _chatGenerationCurrentProvider() {
+  try {
+    return typeof _chatState !== 'undefined' ? String(_chatState.provider || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function _chatGenerationCliSessionControlsHtml() {
+  const provider = _chatGenerationCurrentProvider();
+  const cli = window.GBChatCli;
+  if (!cli?.isCliChatProvider?.(provider) || !cli?.sessionContinuitySupported?.(provider)) return '';
+  const checked = localStorage.getItem('chat-cli-session-continuity') === '1' ? 'checked' : '';
+  const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 13) : '';
+  return `
+    <div data-chat-cli-session-controls style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <label class="gb-check" style="margin:0;min-width:0;"><input id="chat-menu-cli-session-continuity" type="checkbox" ${checked}><span>CLIの会話を継続</span></label>
+      <button type="button" data-chat-cli-session-reset title="このチャットのCLI会話継続をリセット" style="display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--fg);font-size:12px;cursor:pointer;white-space:nowrap;">${resetIcon}<span>リセット</span></button>
+    </div>
+  `;
+}
+
 function _repositionChatGenerationSettingsMenu(menu, anchor) {
   if (!menu || !menu.isConnected) return;
   menu.style.maxHeight = '';
@@ -73,6 +95,8 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (web) localStorage.setItem('chat-allow-web-search', web.checked ? '1' : '0');
   const compress = menu.querySelector('#chat-menu-auto-compress');
   if (compress) localStorage.setItem('chat-auto-compress', compress.checked ? '1' : '0');
+  const cliSession = menu.querySelector('#chat-menu-cli-session-continuity');
+  if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
   const code = menu.querySelector('#chat-menu-allow-code-execution');
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
   const reasoning = menu.querySelector('#chat-menu-reasoning-level');
@@ -106,6 +130,7 @@ function showChatGenerationSettingsMenu(event) {
     <div style="font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">LLM設定</div>
     <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-web-search" type="checkbox" ${localStorage.getItem('chat-allow-web-search') !== '0' ? 'checked' : ''}><span>Web検索を許可</span></label>
     <label class="gb-check" style="margin:0;"><input id="chat-menu-auto-compress" type="checkbox" ${localStorage.getItem('chat-auto-compress') === '1' ? 'checked' : ''}><span>長い会話を自動要約</span></label>
+    ${_chatGenerationCliSessionControlsHtml()}
     <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-code-execution" type="checkbox" ${localStorage.getItem('chat-allow-code-execution') === '1' ? 'checked' : ''}><span>コード実行を許可</span></label>
     ${_chatGenerationSettingsRow('思考の深さ', `<select id="chat-menu-reasoning-level" class="gb-input" style="max-width:130px;">
       ${['off','standard','max'].map(v => `<option value="${v}" ${_chatGenerationSettingValue('chat-reasoning-level', 'off') === v ? 'selected' : ''}>${v === 'off' ? 'オフ' : v === 'standard' ? '標準' : '最大'}</option>`).join('')}
@@ -145,6 +170,11 @@ function showChatGenerationSettingsMenu(event) {
     menu.style.bottom = '96px';
   }
   if (typeof replaceIcons === 'function') replaceIcons(menu);
+  menu.querySelector('[data-chat-cli-session-reset]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.GBChatCli?.resetSessionContinuityForCurrentChat?.();
+    _scheduleChatGenerationSettingsReposition(menu, anchor);
+  });
   menu.querySelector('[data-chat-generation-details]')?.addEventListener('toggle', () => {
     _scheduleChatGenerationSettingsReposition(menu, anchor);
   });

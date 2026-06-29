@@ -508,6 +508,7 @@
     const borderWidthValue = Number.isFinite(parsedBorderWidth) ? String(parsedBorderWidth) : '';
     const editorMargin = this.doc.editor?.margin || '';
     const mergeDisp = !!this.doc.editor?.mergeDisplay;
+    const pageBreakSpacing = this.doc.editor?.pageBreakSpacing !== false;
     const rawWheelSpeed = parseFloat(localStorage.getItem('meldex-wheel-speed'));
     const wheelSpeed = Number.isFinite(rawWheelSpeed) && rawWheelSpeed > 0
       ? Math.max(0.5, Math.min(5, rawWheelSpeed))
@@ -542,6 +543,9 @@
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
           <input type="checkbox" data-setting="mergeDisplay"${mergeDisp ? ' checked' : ''}> まとめ表示
+        </label>
+        <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
+          <input type="checkbox" data-setting="pageBreakSpacing" data-e2e-id="scriptnote-theme-page-break-spacing" title="区切り行の前に1行分の余白を表示" aria-label="ページ間を空ける" ${pageBreakSpacing ? ' checked' : ''}> ページ間を空ける
         </label>
       </div>
       <div class="sn2-detail-settings-row" style="flex-wrap:nowrap;">
@@ -632,6 +636,9 @@
         this._render();
         // ツールバーのボタン状態も同期
         document.querySelectorAll('#btn-merge-display').forEach(btn => btn.classList.toggle('active', el.checked));
+      } else if (key === 'pageBreakSpacing') {
+        this.doc.editor.pageBreakSpacing = el.checked;
+        this._render();
       } else if (key === 'spreadBorderEnabled') {
         if (!this.doc.editor.spreadBorder) this.doc.editor.spreadBorder = {};
         this.doc.editor.spreadBorder.enabled = el.checked;
