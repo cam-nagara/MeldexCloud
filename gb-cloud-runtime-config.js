@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.6.163",
+    "semver": "0.6.164",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "",
@@ -16,7 +16,7 @@
     "pageUrl": ""
   },
   "desktop": {
-    "currentVersion": "0.6.163",
+    "currentVersion": "0.6.164",
     "downloadUrl": "",
     "releasesUrl": "",
     "versions": []

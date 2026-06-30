@@ -457,6 +457,7 @@ function _folderRenderListHeader(container) {
     button.draggable = true;
     button.dataset.folderListSort = column.key;
     button.dataset.folderListColumn = column.key;
+    button.dataset.e2eId = 'folder-list-header-' + column.key;
     button.setAttribute('role', 'columnheader');
     button.setAttribute('aria-sort', sort.key === column.key ? (sort.order === 'asc' ? 'ascending' : 'descending') : 'none');
     const label = Object.assign(document.createElement('span'), { className: 'fv-list-header-label', textContent: column.label });

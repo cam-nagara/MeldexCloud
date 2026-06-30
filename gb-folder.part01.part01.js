@@ -164,6 +164,7 @@ function setFolderLayout(mode) {
   localStorage.setItem('folder-layout', mode);
   const select = document.getElementById('folder-layout-select');
   if (select) select.value = mode;
+  window.MeldexCloudMobileExplorer?.syncLayoutFromFolder?.(mode);
   renderFolderGrid();
 }
 

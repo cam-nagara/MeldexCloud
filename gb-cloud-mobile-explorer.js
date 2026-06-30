@@ -13,8 +13,17 @@
   ];
   const CONTAINER_TYPES = new Set(['folder', 'database']);
   const MODE_STORAGE_KEY = 'meldex-cloud-mobile-explorer-mode';
+  const LAYOUT_STORAGE_KEY = 'folder-layout';
+  const LAYOUT_ITEMS = [
+    ['リスト', 'list', 'list'],
+    ['グリッド', 'grid', 'grid3x3'],
+    ['ウォーターフォール', 'waterfall', 'layoutGrid'],
+    ['横並び', 'hflow', 'galleryHorizontal'],
+  ];
   let _mode = 'tree';
+  let _layout = _normalizeLayout(_readLayoutStorage());
   let _currentFolder = null;
+  let _currentItems = [];
   let _listSeq = 0;
   let _treeClickBridgeInstalled = false;
   let _createOverlay = null;
@@ -37,6 +46,16 @@
 
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function _readLayoutStorage() {
+    try { return localStorage.getItem(LAYOUT_STORAGE_KEY) || 'waterfall'; } catch {}
+    return 'waterfall';
+  }
+
+  function _normalizeLayout(mode) {
+    const value = String(mode || '').trim();
+    return LAYOUT_ITEMS.some(item => item[1] === value) ? value : 'waterfall';
   }
 
   function _e2eIdPart(value) {
@@ -186,6 +205,7 @@
       '  </div>',
       '  <button type="button" class="cloud-mobile-explorer-refresh" aria-label="一覧を更新"></button>',
       '</div>',
+      '<div class="cloud-mobile-explorer-layout-switch" role="group" aria-label="フォルダ一覧の表示形式"></div>',
       '<div class="cloud-mobile-explorer-list" role="list"></div>',
     ].join('');
     const upButton = pane.querySelector('.cloud-mobile-explorer-up');
@@ -194,6 +214,7 @@
     refreshButton.dataset.e2eId = 'cloud-mobile-explorer-refresh';
     upButton.innerHTML = _iconHtml('chevronLeft', 20, '<');
     refreshButton.innerHTML = _iconHtml('refreshCw', 18, '↻');
+    _fillLayoutSwitch(pane.querySelector('.cloud-mobile-explorer-layout-switch'));
     upButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -208,6 +229,28 @@
     if (treeScroll) treeScroll.insertAdjacentElement('afterend', pane);
     else sidebar.appendChild(pane);
     return pane;
+  }
+
+  function _fillLayoutSwitch(switcher) {
+    if (!switcher || switcher.dataset.ready === '1') return;
+    switcher.dataset.ready = '1';
+    LAYOUT_ITEMS.forEach(([label, key, icon]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'cloud-mobile-explorer-layout-button';
+      button.dataset.layout = key;
+      button.dataset.e2eId = `cloud-mobile-explorer-layout-${key}`;
+      button.setAttribute('aria-label', label + '表示');
+      button.innerHTML = `<span aria-hidden="true">${_iconHtml(icon, 17, '')}</span><strong></strong>`;
+      button.querySelector('strong').textContent = label;
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setLayout(key);
+      });
+      switcher.appendChild(button);
+    });
+    _syncLayoutButtons();
   }
 
   function _ensureFab(sidebar) {
@@ -263,6 +306,48 @@
       const mode = button.dataset.mode === 'panel' ? 'list' : button.dataset.mode;
       button.setAttribute('aria-pressed', mode === _mode ? 'true' : 'false');
     });
+  }
+
+  function _syncLayoutButtons() {
+    document.querySelectorAll('#sidebar .cloud-mobile-explorer-layout-button').forEach((button) => {
+      button.setAttribute('aria-pressed', button.dataset.layout === _layout ? 'true' : 'false');
+    });
+    const select = document.getElementById('folder-layout-select');
+    if (select) select.value = _layout;
+  }
+
+  function syncLayoutFromFolder(mode) {
+    _layout = _normalizeLayout(mode);
+    _syncLayoutButtons();
+    const sidebar = _sidebar();
+    const list = sidebar?.querySelector('#cloud-mobile-explorer-list-pane .cloud-mobile-explorer-list');
+    if (list) list.dataset.layout = _layout;
+    if (_mode === 'list' && _currentItems.length) {
+      const pane = sidebar?.querySelector('#cloud-mobile-explorer-list-pane');
+      if (pane) _renderItems(pane, _currentItems);
+    }
+  }
+
+  function _syncFolderPanelLayoutState() {
+    try {
+      if (typeof _folderLayout !== 'undefined') _folderLayout = _layout;
+    } catch {}
+    const select = document.getElementById('folder-layout-select');
+    if (select) select.value = _layout;
+  }
+
+  function setLayout(mode, options = {}) {
+    _layout = _normalizeLayout(mode);
+    try { localStorage.setItem(LAYOUT_STORAGE_KEY, _layout); } catch {}
+    _syncLayoutButtons();
+    if (options.syncFolderPanel !== false) _syncFolderPanelLayoutState();
+    const sidebar = _sidebar();
+    const pane = sidebar?.querySelector('#cloud-mobile-explorer-list-pane');
+    if (pane && _mode === 'list') {
+      if (_currentItems.length) _renderItems(pane, _currentItems);
+      else renderCurrent({ force: false });
+    }
+    return true;
   }
 
   function setMode(mode, options = {}) {
@@ -342,6 +427,7 @@
   function _setListState(pane, state, message) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
     if (!list) return;
+    list.dataset.layout = _layout;
     list.dataset.state = state;
     list.replaceChildren();
     const empty = document.createElement('div');
@@ -369,6 +455,7 @@
     }
     _syncCreateButtonState();
     if (!_currentFolder?.path) {
+      _currentItems = [];
       _syncListHeader(pane, { name: 'フォルダ', path: '' }, 0);
       _setListState(pane, 'empty', '表示するフォルダを選択してください');
       return false;
@@ -379,11 +466,13 @@
     try {
       const items = _sortItemsForMobile(await _fetchFolderItems(_currentFolder.path));
       if (seq !== _listSeq) return false;
+      _currentItems = items;
       _syncListHeader(pane, _currentFolder, items.length);
       _renderItems(pane, items);
       return true;
     } catch (error) {
       if (seq !== _listSeq) return false;
+      _currentItems = [];
       _setListState(pane, 'error', '読み込みに失敗しました');
       if (typeof showStatus === 'function') showStatus((error && error.message) || 'フォルダ一覧の読み込みに失敗しました', true);
       return false;
@@ -393,6 +482,7 @@
   function _renderItems(pane, items) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
     list.replaceChildren();
+    list.dataset.layout = _layout;
     list.dataset.state = items.length ? 'ready' : 'empty';
     if (!items.length) {
       const empty = document.createElement('div');
@@ -410,6 +500,34 @@
     const fragment = document.createDocumentFragment();
     items.forEach(item => fragment.appendChild(_itemRow(item)));
     list.appendChild(fragment);
+  }
+
+  function _fillItemVisual(el, item) {
+    if (!el) return;
+    const type = String(item?.type || '').toLowerCase();
+    const canThumb = (type === 'image' || type === 'video') && item?.path && _layout !== 'list';
+    if (!canThumb) {
+      el.innerHTML = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      return;
+    }
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = typeof _folderItemRawUrl === 'function'
+      ? _folderItemRawUrl(item)
+      : '/api/file-raw?path=' + encodeURIComponent(item.path);
+    img.onerror = () => {
+      if (!img.dataset.thumbFallback && typeof _folderItemThumbnailUrl === 'function') {
+        img.dataset.thumbFallback = '1';
+        img.src = _folderItemThumbnailUrl(item, 384);
+        return;
+      }
+      const fallback = document.createElement('span');
+      fallback.className = 'cloud-mobile-explorer-row-fallback-icon';
+      fallback.innerHTML = _iconHtml(_itemIcon(item), 28, '');
+      img.replaceWith(fallback);
+    };
+    el.replaceChildren(img);
   }
 
   function _itemRow(item) {
@@ -432,7 +550,7 @@
       '  <span class="cloud-mobile-explorer-row-meta"></span>',
       '</span>',
     ].join('');
-    openButton.querySelector('.cloud-mobile-explorer-row-icon').innerHTML = _iconHtml(_itemIcon(item), 20, '');
+    _fillItemVisual(openButton.querySelector('.cloud-mobile-explorer-row-icon'), item);
     openButton.querySelector('.cloud-mobile-explorer-row-title').textContent = item?.name || item?.label || '無題';
     openButton.querySelector('.cloud-mobile-explorer-row-meta').textContent = _itemTypeLabel(item);
     openButton.addEventListener('click', (event) => {
@@ -789,6 +907,7 @@
       const saved = localStorage.getItem(MODE_STORAGE_KEY);
       if (saved === 'list' || saved === 'tree') _mode = saved;
     } catch {}
+    _layout = _normalizeLayout(_readLayoutStorage());
     ensure();
   }
 
@@ -799,6 +918,9 @@
     ensure,
     setMode,
     getMode: () => _mode,
+    setLayout,
+    getLayout: () => _layout,
+    syncLayoutFromFolder,
     renderCurrent,
     openCreateSheet,
     closeCreateSheet,
