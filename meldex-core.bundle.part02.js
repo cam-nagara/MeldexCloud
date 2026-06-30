@@ -1,3 +1,65 @@
+    else if (cls.includes('ico-chevronDown')) name = 'chevronDown';
+    else if (cls.includes('ico-chevronRight')) name = 'chevronRight';
+    else if (cls.includes('ico-chevronLeft')) name = 'chevronLeft';
+    else if (cls.includes('ico-lightbulb')) name = 'lightbulb';
+    else if (cls.includes('ico-menu')) name = 'menu';
+    else if (cls.includes('ico-checkSquare')) name = 'checkSquare';
+    else if (cls.includes('ico-unlock')) name = 'unlock';
+    else if (cls.includes('ico-lock')) name = 'lock';
+    else if (cls.includes('ico-alignLeft')) name = 'alignLeft';
+    else if (cls.includes('ico-helpCircle')) name = 'helpCircle';
+    // ツールバー統一 v0.5.131 (toolbar-unification-plan §4-2)
+    else if (cls.includes('ico-bold')) name = 'bold';
+    else if (cls.includes('ico-italic')) name = 'italic';
+    else if (cls.includes('ico-underline')) name = 'underline';
+    else if (cls.includes('ico-strikethrough')) name = 'strikethrough';
+    else if (cls.includes('ico-listOrdered')) name = 'listOrdered';
+    else if (cls.includes('ico-list')) name = 'list';
+    else if (cls.includes('ico-quote')) name = 'quote';
+    else if (cls.includes('ico-heading')) name = 'heading';
+    else if (cls.includes('ico-wrapText')) name = 'wrapText';
+    else if (cls.includes('ico-listChecks')) name = 'listChecks';
+    else if (cls.includes('ico-zoomIn')) name = 'zoomIn';
+    else if (cls.includes('ico-zoomOut')) name = 'zoomOut';
+    else if (cls.includes('ico-maximize')) name = 'maximize';
+    else if (cls.includes('ico-timer')) name = 'timer';
+    else if (cls.includes('ico-layoutTemplate')) name = 'layoutTemplate';
+    else if (cls.includes('ico-rows3')) name = 'rows3';
+    else if (cls.includes('ico-bookmarkPlus')) name = 'bookmarkPlus';
+    else if (cls.includes('ico-bookmark')) name = 'bookmark';
+    else if (cls.includes('ico-clipboardCheck')) name = 'clipboardCheck';
+    else if (cls.includes('ico-disc')) name = 'disc';
+    else if (cls.includes('ico-funnel')) name = 'funnel';
+    else if (cls.includes('ico-type')) name = 'type';
+    else if (cls.includes('ico-table')) name = 'table';
+    // v0.5.147 書字方向・インデント・引用
+    else if (cls.includes('ico-textAlignStart')) name = 'textAlignStart';
+    else if (cls.includes('ico-kanban')) name = 'kanban';
+    else if (cls.includes('ico-indentIncrease')) name = 'indentIncrease';
+    else if (cls.includes('ico-textQuote')) name = 'textQuote';
+    if (name) {
+      // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
+      const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');
+      const iconSize = inToolbar ? 16 : 18;
+      el.innerHTML = lucide(name, iconSize);
+      // ツールバー外の旧互換アイコンだけインラインサイズを補完する
+      if (!inToolbar) {
+        el.style.width = '18px';
+        el.style.height = '18px';
+        el.style.display = 'inline-block';
+      }
+    }
+  });
+}
+
+// ============================================================
+// テーマ
+// ============================================================
+
+// 親ウィンドウ（Meldex）からテーマを継承
+function inheritParentTheme() {
+  try {
+    const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
     const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
@@ -836,65 +898,3 @@ function initIframeMarkup(scrollContainer) {
       deleteItem.innerHTML = (typeof window.lucide === 'function' ? window.lucide('trash2', 14) : '') + ' 削除';
       deleteItem.onmouseenter = () => { deleteItem.style.background = 'var(--bg4)'; };
       deleteItem.onmouseleave = () => { deleteItem.style.background = ''; };
-      deleteItem.addEventListener('click', () => {
-        menu.remove();
-        _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
-      });
-      menu.appendChild(deleteItem);
-      document.body.appendChild(menu);
-      if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(menu);
-      setTimeout(() => document.addEventListener('pointerdown', function h(e2) {
-        const inAny = [...document.querySelectorAll('._note-ctx-menu')].some(m => m.contains(e2.target));
-        if (!inAny) document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
-        else document.addEventListener('pointerdown', h, { once: true });
-      }, { once: true }), 0);
-    }
-    note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
-    if (typeof window.addLongPressHandler === 'function') {
-      window.addLongPressHandler(note, _showEmbeddedNoteContextMenu);
-    }
-
-    notesLayer.appendChild(note);
-    return note;
-  }
-
-  // ポインターイベント
-  svg.addEventListener('pointerdown', (e) => {
-    if (!_ann.active) return;
-    if (boardMode && e.button !== 0) return;
-    _updateSize();
-    if (_ann.tool === 'sticky') {
-      const pt = _toLocalCoords(e.clientX, e.clientY);
-      const annClientId = 'pending-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
-      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '', html: '', user: _annotationUser() };
-      let item = null;
-      let note = null;
-      if (_saveBoardAnnotation({
-        target_path: _ann.targetPath,
-        type: 'comment',
-        shape: 'sticky',
-        data: noteData,
-        color: _ann.color,
-        opacity: _ann.opacity,
-        user: _annotationUser(),
-      }, (res) => {
-        if (!item || !note) return;
-        item.id = res?.id || item.id;
-        note.dataset.annId = item.id || '';
-        if (item._pendingData && item.id) _updateBoardAnnotation(item.id, { data: item._pendingData });
-      }, () => { note?.remove(); })) {
-        item = {
-          id: annClientId,
-          type: 'comment',
-          shape: 'sticky',
-          color: _ann.color,
-          opacity: _ann.opacity,
-          user: _annotationUser(),
-          created: new Date().toISOString(),
-        };
-        note = _renderNote(item, noteData);
-        return;
-      }
-      _postToParent({ type: 'ann-create-note', x: pt.x, y: pt.y, color: _ann.color, targetPath: _ann.targetPath, annClientId });
-      return;
-    }

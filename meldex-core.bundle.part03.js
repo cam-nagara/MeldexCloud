@@ -1,3 +1,65 @@
+      deleteItem.addEventListener('click', () => {
+        menu.remove();
+        _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
+      });
+      menu.appendChild(deleteItem);
+      document.body.appendChild(menu);
+      if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(menu);
+      setTimeout(() => document.addEventListener('pointerdown', function h(e2) {
+        const inAny = [...document.querySelectorAll('._note-ctx-menu')].some(m => m.contains(e2.target));
+        if (!inAny) document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
+        else document.addEventListener('pointerdown', h, { once: true });
+      }, { once: true }), 0);
+    }
+    note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
+    if (typeof window.addLongPressHandler === 'function') {
+      window.addLongPressHandler(note, _showEmbeddedNoteContextMenu);
+    }
+
+    notesLayer.appendChild(note);
+    return note;
+  }
+
+  // ポインターイベント
+  svg.addEventListener('pointerdown', (e) => {
+    if (!_ann.active) return;
+    if (boardMode && e.button !== 0) return;
+    _updateSize();
+    if (_ann.tool === 'sticky') {
+      const pt = _toLocalCoords(e.clientX, e.clientY);
+      const annClientId = 'pending-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '', html: '', user: _annotationUser() };
+      let item = null;
+      let note = null;
+      if (_saveBoardAnnotation({
+        target_path: _ann.targetPath,
+        type: 'comment',
+        shape: 'sticky',
+        data: noteData,
+        color: _ann.color,
+        opacity: _ann.opacity,
+        user: _annotationUser(),
+      }, (res) => {
+        if (!item || !note) return;
+        item.id = res?.id || item.id;
+        note.dataset.annId = item.id || '';
+        if (item._pendingData && item.id) _updateBoardAnnotation(item.id, { data: item._pendingData });
+      }, () => { note?.remove(); })) {
+        item = {
+          id: annClientId,
+          type: 'comment',
+          shape: 'sticky',
+          color: _ann.color,
+          opacity: _ann.opacity,
+          user: _annotationUser(),
+          created: new Date().toISOString(),
+        };
+        note = _renderNote(item, noteData);
+        return;
+      }
+      _postToParent({ type: 'ann-create-note', x: pt.x, y: pt.y, color: _ann.color, targetPath: _ann.targetPath, annClientId });
+      return;
+    }
     if (_ann.tool === 'eraser') {
       const pt = _toLocalCoords(e.clientX, e.clientY);
       const x = pt.x;
@@ -836,65 +898,3 @@ function addLongPressHandler(el, handler, opts = {}) {
     fired = false;
     startX = e.clientX;
     startY = e.clientY;
-    touchStartEv = e;
-    timer = setTimeout(() => {
-      timer = null;
-      fired = true;
-      handler({
-        clientX: startX,
-        clientY: startY,
-        target: touchStartEv?.target || el,
-        currentTarget: el,
-        pointerType: touchStartEv?.pointerType || 'touch',
-        preventDefault: () => {},
-        stopPropagation: () => {},
-      });
-    }, DURATION);
-  });
-
-  el.addEventListener('pointermove', (e) => {
-    if (!timer) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    if (dx * dx + dy * dy > MOVE_THRESHOLD * MOVE_THRESHOLD) cancel();
-  });
-
-  ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => {
-    el.addEventListener(ev, cancel);
-  });
-
-  // 長押し発火後の click / contextmenu は同ノードの他リスナーも含めて抑止
-  // （stopPropagation だと同ノードの bubble リスナーが走る可能性があるため
-  //  stopImmediatePropagation を使う）
-  el.addEventListener('click', (e) => {
-    if (fired) { e.stopImmediatePropagation(); e.preventDefault(); fired = false; }
-  }, true);
-  el.addEventListener('contextmenu', (e) => {
-    if (fired) { e.stopImmediatePropagation(); e.preventDefault(); fired = false; }
-  }, true);
-}
-
-function _isNativeContextMenuSurface(target) {
-  if (!target || typeof target.closest !== 'function') return false;
-  return !!target.closest('#html-view, #html-iframe');
-}
-
-// Meldex 全域でブラウザ標準右クリックメニューを抑止（input / textarea / HTMLビューワー は除外）。
-// 旧 gb-editor.part04.js のルビハンドラ冒頭にあった同処理をここへ移管（capture phase）。
-document.addEventListener('contextmenu', (e) => {
-  if (_isNativeContextMenuSurface(e.target)) return;
-  if (!e.target.matches('input, textarea')) e.preventDefault();
-}, true);
-
-// ============================================================
-// 確認ダイアログ（モーダル）
-// ============================================================
-function showConfirmDialog(message, onOk, onCancel) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:320px;max-width:480px;">
-    <div class="modal-body" style="padding:16px 20px;font-size:13px;white-space:pre-wrap;color:var(--fg);">${typeof esc === 'function' ? esc(message) : message}</div>
-    <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
-      <button type="button" class="cancel-btn">キャンセル</button>
-      <button type="button" class="primary ok-btn">OK</button>
-    </div>

@@ -1,9 +1,12 @@
 /* gb-split-loader.js: split script loader */
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '330b2dcab763', parts: { 'meldex-core.bundle.part01.js': '9f82950235ea', 'meldex-core.bundle.part02.js': '45b156f248ed', 'meldex-core.bundle.part03.js': '4dbc3c4aaabd', 'meldex-core.bundle.part04.js': '5b38c343cfd0' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'b590f5656759', parts: { 'meldex-core.bundle.part01.js': '9747e98fcefe', 'meldex-core.bundle.part02.js': '7b0b46dd9fe3', 'meldex-core.bundle.part03.js': '6e2e70cd5e48', 'meldex-core.bundle.part04.js': '78821bbe4ada' } },
     'gb-app.js': { file: 'gb-app.bundle.js', hash: 'f622ee28d8a9', parts: { 'gb-app.bundle.part01.js': '89dfe7b080ee', 'gb-app.bundle.part02.js': '10304a751deb', 'gb-app.bundle.part03.js': 'a1153edf81a3', 'gb-app.bundle.part04.js': '6d23a80b6ffa', 'gb-app.bundle.part05.js': '3ef3cbc49e56', 'gb-app.bundle.part06.js': '54ad238d9091' } },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'be556b9ef132', parts: { 'gb-theme-manager.bundle.part01.js': 'b27937ac630b', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': '287af8d88185', 'gb-theme-manager.bundle.part04.js': 'fd95778f4ad8' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '9bb0102d1650', parts: { 'gb-outliner.bundle.part01.js': '45ed11b4308f', 'gb-outliner.bundle.part02.js': 'b6fc0f18c3b3', 'gb-outliner.bundle.part03.js': '3ac97b8bd0a1', 'gb-outliner.bundle.part04.js': '41aa8815c58a', 'gb-outliner.bundle.part05.js': '6eff1c37fe5f' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'c770ff449954', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '4ec57fcbfecd', 'gb-data-access-dropbox-fileops.bundle.part02.js': 'aea4c7558f3a', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'ffc9856ef37a' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '78b730f77919', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '9915594ec013', 'gb-cloud-mobile-editbar.bundle.part02.js': '7d366445f4a4' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {

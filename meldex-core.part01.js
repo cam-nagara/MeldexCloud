@@ -12,15 +12,77 @@
 // API通信
 // ============================================================
 const API_BASE = '/api';
+const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const _apiFetchBrowseCache = new Map();
+const _apiFetchBrowseInFlight = new Map();
+let _apiFetchBrowseCacheGeneration = 0;
+
+function _apiFetchMethod(opts) {
+  return String(opts?.method || 'GET').toUpperCase();
+}
+
+function _apiFetchClonePayload(payload) {
+  if (typeof structuredClone === 'function') {
+    try { return structuredClone(payload); } catch {}
+  }
+  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
+}
+
+function _apiFetchBrowseCacheKey(path, opts) {
+  if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  try {
+    const url = new URL(API_BASE + path, window.location.origin || 'http://localhost');
+    if (url.pathname !== API_BASE + '/browse') return '';
+    const params = [...url.searchParams.entries()]
+      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
+    return url.pathname + '?' + params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+  } catch {
+    return '';
+  }
+}
+
+function _apiFetchInvalidateBrowseCache() {
+  _apiFetchBrowseCacheGeneration += 1;
+  _apiFetchBrowseCache.clear();
+  _apiFetchBrowseInFlight.clear();
+}
 
 async function apiFetch(path, opts) {
+  const cacheKey = _apiFetchBrowseCacheKey(path, opts);
+  const cacheGeneration = _apiFetchBrowseCacheGeneration;
+  if (!cacheKey && _apiFetchMethod(opts) !== 'GET') _apiFetchInvalidateBrowseCache();
+  if (cacheKey) {
+    const cached = _apiFetchBrowseCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < API_FETCH_BROWSE_CACHE_TTL_MS) {
+      return _apiFetchClonePayload(cached.payload);
+    }
+    _apiFetchBrowseCache.delete(cacheKey);
+    const inFlight = _apiFetchBrowseInFlight.get(cacheKey);
+    if (inFlight) return _apiFetchClonePayload(await inFlight);
+  }
+  let requestPromise = null;
   try {
-    const res = await fetch(API_BASE + path, opts);
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    return await res.json();
+    requestPromise = (async () => {
+      const res = await fetch(API_BASE + path, opts);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      return await res.json();
+    })();
+    if (cacheKey) _apiFetchBrowseInFlight.set(cacheKey, requestPromise);
+    const payload = await requestPromise;
+    if (cacheKey && cacheGeneration === _apiFetchBrowseCacheGeneration) {
+      _apiFetchBrowseCache.set(cacheKey, { at: Date.now(), payload: _apiFetchClonePayload(payload) });
+      while (_apiFetchBrowseCache.size > 80) {
+        const firstKey = _apiFetchBrowseCache.keys().next().value;
+        if (!firstKey) break;
+        _apiFetchBrowseCache.delete(firstKey);
+      }
+    }
+    return _apiFetchClonePayload(payload);
   } catch (e) {
     if (!opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
     throw e;
+  } finally {
+    if (cacheKey && _apiFetchBrowseInFlight.get(cacheKey) === requestPromise) _apiFetchBrowseInFlight.delete(cacheKey);
   }
 }
 

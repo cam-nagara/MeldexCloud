@@ -177,6 +177,8 @@
   const DROPBOX_FILE_CACHE_TTL_MS = 20 * 1000;
   const DROPBOX_FILE_CACHE_MAX_ENTRIES = 24;
   const DROPBOX_FILE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+  const DROPBOX_LIST_CACHE_TTL_MS = 3500;
+  const DROPBOX_LIST_CACHE_MAX_ENTRIES = 80;
 
   function _apiUrl(path, query) {
     if (_resource()?.apiUrl) return _resource().apiUrl(path, query);
@@ -370,6 +372,9 @@
       this._metaCache = new Map();
       this._fileCache = new Map();
       this._fileDownloadInFlight = new Map();
+      this._listCache = new Map();
+      this._listInFlight = new Map();
+      this._listCacheGeneration = 0;
       this._recentConflictCopies = new Map();
     }
 
@@ -485,10 +490,64 @@
       });
     }
 
+    _cloneListEntries(entries) {
+      return (Array.isArray(entries) ? entries : []).map(entry => ({ ...entry }));
+    }
+
+    _rememberListEntries(relativePath, entries) {
+      const normalized = _normalizeRelativePath(relativePath);
+      this._listCache.delete(normalized);
+      this._listCache.set(normalized, {
+        at: Date.now(),
+        entries: this._cloneListEntries(entries),
+      });
+      while (this._listCache.size > DROPBOX_LIST_CACHE_MAX_ENTRIES) {
+        const firstKey = this._listCache.keys().next().value;
+        if (firstKey == null) break;
+        this._listCache.delete(firstKey);
+      }
+    }
+
+    _cachedListEntries(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const cached = this._listCache.get(normalized);
+      if (!cached) return null;
+      if (Date.now() - Number(cached.at || 0) > DROPBOX_LIST_CACHE_TTL_MS) {
+        this._listCache.delete(normalized);
+        return null;
+      }
+      this._listCache.delete(normalized);
+      this._listCache.set(normalized, { ...cached, at: Date.now() });
+      return this._cloneListEntries(cached.entries);
+    }
+
+    _forgetListCache(relativePath) {
+      this._listCacheGeneration += 1;
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) {
+        this._listCache.clear();
+        this._listInFlight.clear();
+        return;
+      }
+      const parent = _dirname(normalized);
+      this._listCache.delete(normalized);
+      this._listInFlight.delete(normalized);
+      this._listCache.delete(parent);
+      this._listInFlight.delete(parent);
+      const prefix = normalized + '/';
+      [...this._listCache.keys()].forEach((key) => {
+        if (key.startsWith(prefix)) this._listCache.delete(key);
+      });
+      [...this._listInFlight.keys()].forEach((key) => {
+        if (key.startsWith(prefix)) this._listInFlight.delete(key);
+      });
+    }
+
     _forgetMeta(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       this._metaCache.delete(normalized);
       this._forgetFileCache(normalized);
+      this._forgetListCache(normalized);
       const prefix = normalized ? (normalized + '/') : '';
       [...this._metaCache.keys()].forEach((key) => {
         if (prefix && key.startsWith(prefix)) this._metaCache.delete(key);
@@ -532,6 +591,7 @@
       this._metaCache.clear();
       this._fileCache.clear();
       this._fileDownloadInFlight.clear();
+      this._forgetListCache('');
       this._recentConflictCopies.clear();
     }
 
@@ -781,34 +841,50 @@
 
     async listEntries(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      const cached = this._cachedListEntries(normalized);
+      if (cached) return cached;
+      const inFlight = this._listInFlight.get(normalized);
+      if (inFlight) return this._cloneListEntries(await inFlight);
       const sourceId = _sourceRegistry()?.parseSourcePath?.(normalized)?.sourceId || '';
-      const entries = [];
-      let payload = await this._rpc('files/list_folder', {
-        path: this._dropboxPath(normalized),
-        recursive: false,
-        include_deleted: false,
-        include_has_explicit_shared_members: false,
-        include_mounted_folders: true,
-      });
-      while (true) {
-        (payload.entries || []).forEach((entry) => {
-          if (entry['.tag'] !== 'file' && entry['.tag'] !== 'folder') return;
-          const rel = this._relativeFromDropboxPath(entry.path_display || entry.path_lower || '', sourceId);
-          this._rememberMeta(rel, entry);
-          entries.push({
-            name: entry.name,
-            path: rel,
-            sourceId: sourceId || undefined,
-            kind: entry['.tag'] === 'folder' ? 'directory' : 'file',
-            size: Number(entry.size || 0),
-            modified: entry.server_modified || entry.client_modified || '',
-          });
+      const cacheGeneration = this._listCacheGeneration;
+      const promise = (async () => {
+        const entries = [];
+        let payload = await this._rpc('files/list_folder', {
+          path: this._dropboxPath(normalized),
+          recursive: false,
+          include_deleted: false,
+          include_has_explicit_shared_members: false,
+          include_mounted_folders: true,
         });
-        if (!payload.has_more || !payload.cursor) break;
-        payload = await this._rpc('files/list_folder/continue', { cursor: payload.cursor });
+        while (true) {
+          (payload.entries || []).forEach((entry) => {
+            if (entry['.tag'] !== 'file' && entry['.tag'] !== 'folder') return;
+            const rel = this._relativeFromDropboxPath(entry.path_display || entry.path_lower || '', sourceId);
+            this._rememberMeta(rel, entry);
+            entries.push({
+              name: entry.name,
+              path: rel,
+              sourceId: sourceId || undefined,
+              kind: entry['.tag'] === 'folder' ? 'directory' : 'file',
+              size: Number(entry.size || 0),
+              modified: entry.server_modified || entry.client_modified || '',
+            });
+          });
+          if (!payload.has_more || !payload.cursor) break;
+          payload = await this._rpc('files/list_folder/continue', { cursor: payload.cursor });
+        }
+        entries.sort((a, b) => a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' }));
+        if (cacheGeneration === this._listCacheGeneration) {
+          this._rememberListEntries(normalized, entries);
+        }
+        return entries;
+      })();
+      this._listInFlight.set(normalized, promise);
+      try {
+        return this._cloneListEntries(await promise);
+      } finally {
+        if (this._listInFlight.get(normalized) === promise) this._listInFlight.delete(normalized);
       }
-      entries.sort((a, b) => a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' }));
-      return entries;
     }
 
     async downloadAsFile(relativePath) {
@@ -876,6 +952,7 @@
         type: _mimeFromPath(normalized),
         lastModified: _jsonDate(meta.server_modified || meta.client_modified || ''),
       }), meta);
+      this._forgetListCache(_dirname(normalized));
       return meta;
     }
 
@@ -1013,6 +1090,7 @@
       });
       this._forgetMeta(source);
       this._rememberMeta(target, payload.metadata || null);
+      this._forgetListCache(_dirname(target));
       return payload;
     }
 
@@ -1028,6 +1106,7 @@
         autorename: false,
       });
       this._rememberMeta(target, payload.metadata || null);
+      this._forgetListCache(_dirname(target));
       return payload;
     }
 
@@ -1035,6 +1114,7 @@
       this._metaCache.clear();
       this._fileCache.clear();
       this._fileDownloadInFlight.clear();
+      this._forgetListCache('');
       const vaultPath = this.getVaultPath();
       if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
       const mountInfo = await this.findMountedFolderByPath();

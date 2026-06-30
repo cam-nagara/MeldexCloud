@@ -16,15 +16,77 @@
 // API通信
 // ============================================================
 const API_BASE = '/api';
+const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const _apiFetchBrowseCache = new Map();
+const _apiFetchBrowseInFlight = new Map();
+let _apiFetchBrowseCacheGeneration = 0;
+
+function _apiFetchMethod(opts) {
+  return String(opts?.method || 'GET').toUpperCase();
+}
+
+function _apiFetchClonePayload(payload) {
+  if (typeof structuredClone === 'function') {
+    try { return structuredClone(payload); } catch {}
+  }
+  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
+}
+
+function _apiFetchBrowseCacheKey(path, opts) {
+  if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  try {
+    const url = new URL(API_BASE + path, window.location.origin || 'http://localhost');
+    if (url.pathname !== API_BASE + '/browse') return '';
+    const params = [...url.searchParams.entries()]
+      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
+    return url.pathname + '?' + params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+  } catch {
+    return '';
+  }
+}
+
+function _apiFetchInvalidateBrowseCache() {
+  _apiFetchBrowseCacheGeneration += 1;
+  _apiFetchBrowseCache.clear();
+  _apiFetchBrowseInFlight.clear();
+}
 
 async function apiFetch(path, opts) {
+  const cacheKey = _apiFetchBrowseCacheKey(path, opts);
+  const cacheGeneration = _apiFetchBrowseCacheGeneration;
+  if (!cacheKey && _apiFetchMethod(opts) !== 'GET') _apiFetchInvalidateBrowseCache();
+  if (cacheKey) {
+    const cached = _apiFetchBrowseCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < API_FETCH_BROWSE_CACHE_TTL_MS) {
+      return _apiFetchClonePayload(cached.payload);
+    }
+    _apiFetchBrowseCache.delete(cacheKey);
+    const inFlight = _apiFetchBrowseInFlight.get(cacheKey);
+    if (inFlight) return _apiFetchClonePayload(await inFlight);
+  }
+  let requestPromise = null;
   try {
-    const res = await fetch(API_BASE + path, opts);
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    return await res.json();
+    requestPromise = (async () => {
+      const res = await fetch(API_BASE + path, opts);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      return await res.json();
+    })();
+    if (cacheKey) _apiFetchBrowseInFlight.set(cacheKey, requestPromise);
+    const payload = await requestPromise;
+    if (cacheKey && cacheGeneration === _apiFetchBrowseCacheGeneration) {
+      _apiFetchBrowseCache.set(cacheKey, { at: Date.now(), payload: _apiFetchClonePayload(payload) });
+      while (_apiFetchBrowseCache.size > 80) {
+        const firstKey = _apiFetchBrowseCache.keys().next().value;
+        if (!firstKey) break;
+        _apiFetchBrowseCache.delete(firstKey);
+      }
+    }
+    return _apiFetchClonePayload(payload);
   } catch (e) {
     if (!opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
     throw e;
+  } finally {
+    if (cacheKey && _apiFetchBrowseInFlight.get(cacheKey) === requestPromise) _apiFetchBrowseInFlight.delete(cacheKey);
   }
 }
 
@@ -836,65 +898,3 @@ function replaceIcons(root) {
     else if (cls.includes('ico-gitBranch')) name = 'gitBranch';
     else if (cls.includes('ico-history')) name = 'history';
     else if (cls.includes('ico-x')) name = 'x';
-    else if (cls.includes('ico-chevronDown')) name = 'chevronDown';
-    else if (cls.includes('ico-chevronRight')) name = 'chevronRight';
-    else if (cls.includes('ico-chevronLeft')) name = 'chevronLeft';
-    else if (cls.includes('ico-lightbulb')) name = 'lightbulb';
-    else if (cls.includes('ico-menu')) name = 'menu';
-    else if (cls.includes('ico-checkSquare')) name = 'checkSquare';
-    else if (cls.includes('ico-unlock')) name = 'unlock';
-    else if (cls.includes('ico-lock')) name = 'lock';
-    else if (cls.includes('ico-alignLeft')) name = 'alignLeft';
-    else if (cls.includes('ico-helpCircle')) name = 'helpCircle';
-    // ツールバー統一 v0.5.131 (toolbar-unification-plan §4-2)
-    else if (cls.includes('ico-bold')) name = 'bold';
-    else if (cls.includes('ico-italic')) name = 'italic';
-    else if (cls.includes('ico-underline')) name = 'underline';
-    else if (cls.includes('ico-strikethrough')) name = 'strikethrough';
-    else if (cls.includes('ico-listOrdered')) name = 'listOrdered';
-    else if (cls.includes('ico-list')) name = 'list';
-    else if (cls.includes('ico-quote')) name = 'quote';
-    else if (cls.includes('ico-heading')) name = 'heading';
-    else if (cls.includes('ico-wrapText')) name = 'wrapText';
-    else if (cls.includes('ico-listChecks')) name = 'listChecks';
-    else if (cls.includes('ico-zoomIn')) name = 'zoomIn';
-    else if (cls.includes('ico-zoomOut')) name = 'zoomOut';
-    else if (cls.includes('ico-maximize')) name = 'maximize';
-    else if (cls.includes('ico-timer')) name = 'timer';
-    else if (cls.includes('ico-layoutTemplate')) name = 'layoutTemplate';
-    else if (cls.includes('ico-rows3')) name = 'rows3';
-    else if (cls.includes('ico-bookmarkPlus')) name = 'bookmarkPlus';
-    else if (cls.includes('ico-bookmark')) name = 'bookmark';
-    else if (cls.includes('ico-clipboardCheck')) name = 'clipboardCheck';
-    else if (cls.includes('ico-disc')) name = 'disc';
-    else if (cls.includes('ico-funnel')) name = 'funnel';
-    else if (cls.includes('ico-type')) name = 'type';
-    else if (cls.includes('ico-table')) name = 'table';
-    // v0.5.147 書字方向・インデント・引用
-    else if (cls.includes('ico-textAlignStart')) name = 'textAlignStart';
-    else if (cls.includes('ico-kanban')) name = 'kanban';
-    else if (cls.includes('ico-indentIncrease')) name = 'indentIncrease';
-    else if (cls.includes('ico-textQuote')) name = 'textQuote';
-    if (name) {
-      // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
-      const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');
-      const iconSize = inToolbar ? 16 : 18;
-      el.innerHTML = lucide(name, iconSize);
-      // ツールバー外の旧互換アイコンだけインラインサイズを補完する
-      if (!inToolbar) {
-        el.style.width = '18px';
-        el.style.height = '18px';
-        el.style.display = 'inline-block';
-      }
-    }
-  });
-}
-
-// ============================================================
-// テーマ
-// ============================================================
-
-// 親ウィンドウ（Meldex）からテーマを継承
-function inheritParentTheme() {
-  try {
-    const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
