@@ -1,3 +1,6 @@
+  </div>`;
+  overlay.querySelector('.ok-btn').addEventListener('click', () => { overlay.remove(); if (onOk) onOk(); });
+  overlay.querySelector('.cancel-btn').addEventListener('click', () => { overlay.remove(); if (onCancel) onCancel(); });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); if (onCancel) onCancel(); } });
   document.body.appendChild(overlay);
   overlay.querySelector('.ok-btn').focus();

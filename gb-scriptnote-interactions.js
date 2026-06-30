@@ -89,6 +89,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _runDeselectAllShortcut() {
     if (this._rowSelection?.size) this._clearRowSelection();
+    if (this._roleCellSelection?.size) this._clearRoleCellSelection();
     this._lastSelectedIdx = -1;
     const sel = window.getSelection();
     if (sel?.rangeCount && !sel.isCollapsed) sel.collapseToStart();
@@ -246,6 +247,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.querySelectorAll('.sn2-header-popup, .sn2-header-sub-popup, .gb-fmt-popup--bulk-edit').forEach(el => el.remove());
     if (typeof this._closeRoleMenu === 'function') this._closeRoleMenu();
     if (this._rowSelection?.size) this._clearRowSelection();
+    if (this._roleCellSelection?.size) this._clearRoleCellSelection();
     return true;
   },
 
@@ -253,6 +255,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._bindWheelScroll(host);
     this._bindDragSelection(host);
     this._bindRowSelectionCopy();
+    if (typeof this._bindRowCheckDragToggle === 'function') this._bindRowCheckDragToggle(host);
+    if (typeof this._bindRoleCellSelection === 'function') this._bindRoleCellSelection(host);
     this._bindRightDragPan(host);
   },
 

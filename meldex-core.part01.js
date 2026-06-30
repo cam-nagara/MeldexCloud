@@ -790,7 +790,10 @@ function replaceIcons(root) {
     else if (cls.includes('ico-layoutList')) name = 'layoutList';
     else if (cls.includes('ico-externalLink')) name = 'externalLink';
     else if (cls.includes('ico-filter')) name = 'filter';
+    else if (cls.includes('ico-copy')) name = 'copy';
     else if (cls.includes('ico-arrowUpDown')) name = 'arrowUpDown';
+    else if (cls.includes('ico-arrowUp')) name = 'arrowUp';
+    else if (cls.includes('ico-arrowDown')) name = 'arrowDown';
     else if (cls.includes('ico-play')) name = 'play';
     else if (cls.includes('ico-refreshCw')) name = 'refreshCw';
     else if (cls.includes('ico-minus')) name = 'minus';

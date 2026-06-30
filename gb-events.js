@@ -138,21 +138,21 @@
 
   // === change イベント委譲 ===
   document.addEventListener('change', (e) => {
-    const target = e.target.closest('[data-onchange]');
+    const target = _eventElementTarget(e)?.closest('[data-onchange]');
     if (!target) return;
     executeRawHandler(target.dataset.onchange, target, e);
   });
 
   // === input イベント委譲 ===
   document.addEventListener('input', (e) => {
-    const target = e.target.closest('[data-oninput]');
+    const target = _eventElementTarget(e)?.closest('[data-oninput]');
     if (!target) return;
     executeRawHandler(target.dataset.oninput, target, e);
   });
 
   // === keydown イベント委譲 ===
   document.addEventListener('keydown', (e) => {
-    const target = e.target.closest('[data-onkeydown]');
+    const target = _eventElementTarget(e)?.closest('[data-onkeydown]');
     if (!target) return;
     if (e.isComposing || e.keyCode === 229) return;
     // data-onkeydown は複雑な条件式が多い（if文等）
@@ -168,7 +168,7 @@
 
   // === focus イベント委譲 ===
   document.addEventListener('focus', (e) => {
-    const target = e.target.closest('[data-onfocus]');
+    const target = _eventElementTarget(e)?.closest('[data-onfocus]');
     if (!target) return;
     const handler = target.dataset.onfocus;
     if (handler) {
@@ -250,13 +250,13 @@
   }
 
   document.addEventListener('pointerover', (e) => {
-    const el = e.target.closest('[title]');
+    const el = _eventElementTarget(e)?.closest('[title]');
     if (!el || el === _tipTarget) return;
     _queueTip(el, e);
   });
   document.addEventListener('pointermove', (e) => {
     if (!_tipTarget && !_tipTimer) return;
-    const next = e.target.closest('[data-_title], [title]');
+    const next = _eventElementTarget(e)?.closest('[data-_title], [title]');
     if (_tipEl && _tipEl.classList.contains('visible')) {
       _hideTip(false, true);
       if (next) _queueTip(next, e);
@@ -275,7 +275,7 @@
     if (_tipSuppressedTarget && (!(e.relatedTarget instanceof Node) || !_tipSuppressedTarget.contains(e.relatedTarget))) {
       _clearTipSuppression();
     }
-    const el = e.target.closest('[data-_title]');
+    const el = _eventElementTarget(e)?.closest('[data-_title]');
     if (el && el !== _tipSuppressedTarget) _restoreTipTitle(el);
     _hideTip();
   });

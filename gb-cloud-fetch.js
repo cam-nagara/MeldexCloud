@@ -175,7 +175,7 @@
       }
       return jsonResponse(data);
     } catch (err) {
-      const status = Math.max(400, Math.min(599, Number(err?.status || err?.status_code || 500) || 500));
+      const status = Math.max(400, Math.min(599, Number(err?.status || err?.status_code || 501) || 501));
       const detail = {
         message: err?.message || String(err),
         code: err?.code || '',

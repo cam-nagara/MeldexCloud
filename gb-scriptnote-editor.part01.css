@@ -669,6 +669,15 @@
 .sn2-scroll.sn2-vertical .sn2-custom-cell[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 
 .sn2-role-btn:hover { background: var(--bg3); color: var(--fg); }
+.sn2-role-btn.sn2-role-cell-selected {
+  outline: 2px solid var(--accent, #4a90d9);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22);
+  color: var(--fg);
+}
+.sn2-role-btn.sn2-role-cell-selected:not([style*="background"]) {
+  background: color-mix(in srgb, var(--accent, #4a90d9) 18%, transparent);
+}
 
 /* テキスト（contenteditable） */
 .sn2-text {
@@ -875,12 +884,13 @@
 /* 縦書きモードでは上下方向での揃えになる */
 .sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty) {
   padding-left: 6px;
-  padding-top: calc(6px + 1em);
+  padding-top: 6px;
+  text-indent: 0;
 }
 .sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty)::before {
-  display: inline-block;
+  display: inline;
   width: auto;
-  height: 1em;
+  height: auto;
 }
 .sn2-text[data-after]:not(:empty)::after {
   content: attr(data-after);

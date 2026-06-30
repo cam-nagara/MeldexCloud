@@ -45,6 +45,7 @@
 
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;
+      const isVertical = this.doc.editor?.viewMode === 'vertical';
 
       if (e.key === 'Enter' && !e.shiftKey && !(e.ctrlKey || e.metaKey)) {
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.addRow', e)) return;
@@ -98,6 +99,7 @@
         // 高さ自動調整のためリフロートリガー
         text.style.height = 'auto';
         this._syncRowFromDom(text, { skipUndo: true });
+        this._scheduleTextCellLiveResize?.(text);
         // スクロール追従とカスタムキャレット再描画
         requestAnimationFrame(() => {
           const r2 = sel.getRangeAt(0);
@@ -138,10 +140,24 @@
         return;
       }
 
+      const roleFocusKey = isVertical ? 'ArrowUp' : 'ArrowLeft';
+      if (e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.key === roleFocusKey) {
+        e.preventDefault();
+        const row = text.closest('.sn2-row');
+        const roleBtn = row?.querySelector('.sn2-role-btn');
+        const rowId = row?.dataset.rowId || '';
+        const idx = this.doc.rows.findIndex(r => r.id === rowId);
+        if (roleBtn && idx >= 0) {
+          this._selectRoleCell?.(rowId, idx);
+          roleBtn.focus();
+          roleBtn.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+        }
+        return;
+      }
+
       // 行間移動: 横書き=ArrowUp/Down、縦書き=ArrowLeft/Right
       // 非Shift: 2段階移動 (1) セル内で先頭/末尾へ移動 → (2) 既に境界なら隣のセルへ
       // Shift押下時: セル境界に達したら行選択を拡張、それ以外はブラウザのデフォルト
-      const isVertical = this.doc.editor?.viewMode === 'vertical';
       const prevKey = isVertical ? 'ArrowRight' : 'ArrowUp';
       const nextKey = isVertical ? 'ArrowLeft' : 'ArrowDown';
       if (e.key === prevKey || e.key === nextKey) {
@@ -421,6 +437,7 @@
         sel.removeAllRanges();
         sel.addRange(range);
         this._syncRowFromDom(textEl, { skipUndo: true });
+        this._scheduleTextCellLiveResize?.(textEl);
         return;
       }
       // 複数行: 現在行にカーソル前後のテキストを分割し、残りの行を新規追加
@@ -500,9 +517,32 @@
         return;
       }
       const roleBtn = e.target.closest?.('.sn2-role-btn');
-      if (roleBtn) { e.preventDefault(); this._showRoleMenu(roleBtn); return; }
+      if (roleBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        this._handleRoleCellClick?.(roleBtn, e);
+        return;
+      }
       // ハンドルクリック時はD&Dのみ（クリックは何もしない）
     });
+
+    host.addEventListener('dblclick', (e) => {
+      const roleBtn = e.target.closest?.('.sn2-role-btn');
+      if (!roleBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._showRoleMenu(roleBtn);
+    });
+
+    // テキスト列の右クリックメニュー（＋長押しでも同メニュー）
+    const _onScriptnoteRoleCtx = (e) => {
+      const roleBtn = e.target.closest?.('.sn2-role-btn');
+      if (!roleBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._showRoleCellContextMenu?.(roleBtn, e);
+    };
+    host.addEventListener('contextmenu', _onScriptnoteRoleCtx);
 
     // テキスト列の右クリックメニュー（＋長押しでも同メニュー）
     const _onScriptnoteTextCtx = (e) => {

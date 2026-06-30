@@ -141,6 +141,11 @@
       // pointer events ベースの自前ドラッグ (_bind 内) で移動を実装する。
       handle.title = 'ドラッグで移動';
       handle.addEventListener('click', (ev) => {
+        if (this._suppressRowCheckClick) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
         ev.stopPropagation();
         this._toggleRowSelection(rowId, idx, ev.shiftKey, ev.ctrlKey || ev.metaKey);
       });
@@ -152,6 +157,11 @@
       cb.title = '行を選択（Shift+クリックで範囲選択）';
       cb.setAttribute('aria-label', `行を選択: ${idx + 1}`);
       cb.addEventListener('click', (ev) => {
+        if (this._suppressRowCheckClick) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
         ev.stopPropagation();
         this._toggleRowSelection(rowId, idx, ev.shiftKey, ev.ctrlKey || ev.metaKey);
       });
@@ -226,7 +236,8 @@
       roleBtn.className = 'sn2-role-btn';
       roleBtn.type = 'button';
       roleBtn.textContent = mergeRole ? '' : (row.role || '');
-      roleBtn.title = 'クリックで行タイプ/キャラ名を変更';
+      roleBtn.title = 'クリックで選択、ダブルクリックでタイプ変更';
+      roleBtn.tabIndex = 0;
       roleBtn.dataset.rowId = row.id;
       roleBtn.dataset.e2eId = `sn-row-${row.id}-role`;
       const roleSt = getColSettings('_role');
@@ -774,7 +785,10 @@
       this._imeComposing = false;
       // 変換確定後にデバウンスなしで 1 度再適用
       const text = e.target.closest?.('.sn2-text');
-      if (text) this._scheduleAutoDecorate(text, 0);
+      if (text) {
+        this._scheduleTextCellLiveResize?.(text);
+        this._scheduleAutoDecorate(text, 0);
+      }
     });
 
     host.addEventListener('beforeinput', (e) => {
@@ -791,6 +805,7 @@
       this._scheduleSave();
       // 編集のたびに自動ルビ/自動リンク/縦中横を再適用 (デバウンス)
       // IME 変換中はスキップ (compositionend 側で拾う)
+      this._scheduleTextCellLiveResize?.(text);
       if (!this._imeComposing) this._scheduleAutoDecorate(text);
       // カーソルが見えるようスクロール追従（改行時にのみ重い処理を実行）
       if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
@@ -827,6 +842,8 @@
 
     host.addEventListener('keydown', (e) => {
       if (e.isComposing) return;
+      const roleKeyTarget = e.target.closest?.('.sn2-role-btn');
+      if (roleKeyTarget && typeof this._handleRoleCellKeydown === 'function' && this._handleRoleCellKeydown(roleKeyTarget, e)) return;
 
       // Ctrl+Z / Ctrl+Y (undo/redo) — テキスト内外どちらでも動作
       const lk = e.key.toLowerCase();

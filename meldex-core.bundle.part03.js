@@ -1,3 +1,6 @@
+    if (_ann.tool === 'eraser') {
+      const pt = _toLocalCoords(e.clientX, e.clientY);
+      const x = pt.x;
       const y = pt.y;
       // ヒットテスト
       const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
@@ -895,6 +898,3 @@ function showConfirmDialog(message, onOk, onCancel) {
       <button type="button" class="cancel-btn">キャンセル</button>
       <button type="button" class="primary ok-btn">OK</button>
     </div>
-  </div>`;
-  overlay.querySelector('.ok-btn').addEventListener('click', () => { overlay.remove(); if (onOk) onOk(); });
-  overlay.querySelector('.cancel-btn').addEventListener('click', () => { overlay.remove(); if (onCancel) onCancel(); });

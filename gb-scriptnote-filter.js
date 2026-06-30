@@ -76,7 +76,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._render();
       updateFilterActive();
       setPresetSelection('__all__');
-      close();
+      allCb.checked = !hasAnyFilter();
     });
     allLbl.appendChild(allCb);
     allLbl.appendChild(document.createTextNode('すべて表示'));

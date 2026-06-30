@@ -92,6 +92,7 @@
       handle = document.createElement('button');
       handle.type = 'button';
       handle.className = 'cloud-mobile-drawer-handle cloud-mobile-left-drawer-handle';
+      handle.dataset.e2eId = 'cloud-mobile-tree-dismiss';
       handle.title = 'フォルダツリーを左へ閉じる';
       handle.setAttribute('aria-label', 'フォルダツリーを左へ閉じる');
       handle.innerHTML = _iconHtml('chevronsLeft', 20, '‹');
@@ -248,6 +249,7 @@
       const menuButton = document.createElement('button');
       menuButton.type = 'button';
       menuButton.className = 'cloud-mobile-tree-menu';
+      menuButton.dataset.e2eId = 'cloud-mobile-tree-menu';
       menuButton.title = 'メニュー';
       menuButton.setAttribute('aria-label', 'メニューを開く');
       menuButton.innerHTML = _iconHtml('menu', 20, '≡');
@@ -280,6 +282,7 @@
       const addButton = document.createElement('button');
       addButton.type = 'button';
       addButton.className = 'cloud-mobile-tree-add';
+      addButton.dataset.e2eId = 'cloud-mobile-tree-add';
       addButton.title = '新規作成';
       addButton.setAttribute('aria-label', '新規作成');
       addButton.innerHTML = _iconHtml('plus', 20, '+');
@@ -291,6 +294,7 @@
       const refreshButton = document.createElement('button');
       refreshButton.type = 'button';
       refreshButton.className = 'cloud-mobile-tree-refresh';
+      refreshButton.dataset.e2eId = 'cloud-mobile-tree-refresh';
       refreshButton.title = 'フォルダツリーを更新';
       refreshButton.setAttribute('aria-label', 'フォルダツリーを更新');
       refreshButton.innerHTML = _iconHtml('refreshCw', 20, '↻');
@@ -314,6 +318,7 @@
     button.type = 'button';
     button.className = 'cloud-mobile-tree-mode';
     button.dataset.mode = mode;
+    button.dataset.e2eId = `cloud-mobile-tree-mode-${mode}`;
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
     button.textContent = label;
     return button;
@@ -674,7 +679,10 @@
     if (_sanitizingLayout) return;
     _sanitizingLayout = true;
     try {
-      const keepSidebarOpen = document.getElementById('sidebar')?.classList?.contains('open');
+      const sidebar = document.getElementById('sidebar');
+      const keepSidebarOpen = sidebar?.classList?.contains('open');
+      const currentExplorerMode = sidebar?.dataset?.cloudMobileExplorerMode || window.MeldexCloudMobileExplorer?.getMode?.() || '';
+      const keepFolderView = currentExplorerMode === 'list' || currentExplorerMode === 'panel';
       const result = _collapseOutlinerColumns();
       if (
         result.nextActivePaneId &&
@@ -686,7 +694,7 @@
       } else if (result.changed && typeof GBLayout !== 'undefined') {
         GBLayout.render?.();
       }
-      if (keepSidebarOpen) openSidebarDrawer(false);
+      if (keepSidebarOpen) openSidebarDrawer(keepFolderView);
     } finally {
       _sanitizingLayout = false;
     }

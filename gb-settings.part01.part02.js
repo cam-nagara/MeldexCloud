@@ -676,9 +676,14 @@ function isDesktopInteractionRecoveryMode() {
 function applyUIScale(pct) {
   let next = parseInt(pct, 10) || 100;
   next = Math.max(67, Math.min(200, next));
-  if (next === 100) document.documentElement.style.removeProperty('zoom');
-  else document.documentElement.style.zoom = (next / 100);
-  document.documentElement.style.fontSize = ''; // font-sizeスケーリングの残骸をクリア
+  const rootStyle = document.documentElement?.style;
+  if (rootStyle?.setProperty) rootStyle.setProperty('--meldex-ui-zoom', String(next / 100));
+  else if (rootStyle) rootStyle['--meldex-ui-zoom'] = String(next / 100);
+  if (next === 100) {
+    if (rootStyle?.removeProperty) rootStyle.removeProperty('zoom');
+    else if (rootStyle) rootStyle.zoom = '';
+  } else if (rootStyle) rootStyle.zoom = (next / 100);
+  if (rootStyle) rootStyle.fontSize = ''; // font-sizeスケーリングの残骸をクリア
   if (typeof updateMeldexViewportSize === 'function') updateMeldexViewportSize();
   localStorage.setItem('ui-scale', String(next));
   return next;

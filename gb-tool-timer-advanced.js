@@ -338,7 +338,6 @@
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay gb-timer-settings-overlay';
     overlay.dataset.timerSettingsModal = '1';
-    overlay.dataset.modalShell = 'off';
     overlay.innerHTML = `
       <div class="modal gb-timer-settings-modal" role="dialog" aria-modal="true" aria-label="タイマー設定" tabindex="-1" data-gb-tooltip-disabled="true" style="outline:none!important;box-shadow:none!important;">
         <div class="gb-timer-settings-header">

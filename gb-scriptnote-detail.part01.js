@@ -1049,6 +1049,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const isTextCol = colId === '_text';
     const isRoleCol = colId === '_role';
     const needsLegacySync = isTextCol;
+    const fields = [
+      'textColor', 'fontSize', 'fontFamily',
+      'bold', 'italic', 'textStrokeColor', 'textStrokeWidth',
+      'bgColor', 'leftAccent', 'underline', 'accentColor',
+      ...(isTextCol ? ['textBefore', 'textAfter'] : []),
+      'textAlign', 'textValign', 'textOverflow',
+    ];
     const refreshItem = () => { const item = anchorEl.closest('.sn2-detail-item'); if (item?._applyPreview) item._applyPreview(); };
     const ec = this._resolveCharaColors(chara, colId) || {};
     const pick = (primary, fallback) => (primary != null && primary !== '' ? primary : fallback);
@@ -1092,6 +1099,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
     openFormatPopup(anchorEl, {
       values,
+      fields,
       className: 'gb-fmt-popup--cell-style',
       positionAnchor: this._detailMultiSelectionPositionAnchor(anchorEl, panelContainer),
       extraRow2: this._buildCountConfigFormatControls(colId, panelContainer),

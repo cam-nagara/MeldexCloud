@@ -260,4 +260,364 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
   },
 
+  _setRowSelectionState(rowId, idx, selected) {
+    if (!this._rowSelection) this._rowSelection = new Set();
+    if (selected) this._rowSelection.add(rowId);
+    else this._rowSelection.delete(rowId);
+    this._lastSelectedIdx = idx;
+    this._updateRowSelectionUI();
+  },
+
+  _bindRowCheckDragToggle(host) {
+    let active = false;
+    let mode = false;
+    let pointerId = 0;
+    const seen = new Set();
+    const apply = (target) => {
+      const cb = target?.closest?.('.sn2-row-check');
+      const rowEl = cb?.closest?.('.sn2-row');
+      const rowId = rowEl?.dataset.rowId || '';
+      if (!rowId || seen.has(rowId)) return;
+      const idx = this.doc.rows.findIndex(row => row.id === rowId);
+      if (idx < 0) return;
+      seen.add(rowId);
+      this._setRowSelectionState(rowId, idx, mode);
+    };
+    host.addEventListener('pointerdown', (e) => {
+      const cb = e.target.closest?.('.sn2-row-check');
+      if (!cb || e.button !== 0) return;
+      const rowId = cb.closest?.('.sn2-row')?.dataset.rowId || '';
+      if (!rowId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      active = true;
+      pointerId = e.pointerId;
+      seen.clear();
+      mode = !(this._rowSelection?.has(rowId));
+      this._suppressRowCheckClick = true;
+      try { host.setPointerCapture(pointerId); } catch {}
+      apply(cb);
+    });
+    host.addEventListener('pointermove', (e) => {
+      if (!active) return;
+      apply(document.elementFromPoint(e.clientX, e.clientY));
+    });
+    const end = () => {
+      if (!active) return;
+      active = false;
+      try { host.releasePointerCapture(pointerId); } catch {}
+      setTimeout(() => { this._suppressRowCheckClick = false; }, 0);
+    };
+    host.addEventListener('pointerup', end);
+    host.addEventListener('pointercancel', end);
+    host.addEventListener('lostpointercapture', end);
+  },
+
+  _syncTextCellLiveSize(textEl) {
+    if (!textEl?.isConnected) return;
+    const rowEl = textEl.closest?.('.sn2-row');
+    const scrollEl = textEl.closest?.('.sn2-scroll');
+    if (!rowEl || !scrollEl) return;
+    const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
+    const isVertical = scrollEl.classList.contains('sn2-vertical');
+    if (isVertical) {
+      const currentWidth = rowEl.getBoundingClientRect().width / z;
+      const nextWidth = Math.max(24, Math.ceil(textEl.scrollWidth || currentWidth || 0));
+      rowEl.style.minWidth = `${nextWidth}px`;
+      return;
+    }
+    const currentHeight = rowEl.getBoundingClientRect().height / z;
+    const nextHeight = Math.max(28, Math.ceil(textEl.scrollHeight || currentHeight || 0));
+    rowEl.style.minHeight = `${nextHeight}px`;
+    if (textEl.dataset.overflow && textEl.dataset.overflow !== 'wrap') {
+      const currentTextWidth = textEl.getBoundingClientRect().width / z;
+      const nextTextWidth = Math.max(60, Math.ceil(textEl.scrollWidth || currentTextWidth || 0));
+      textEl.style.minWidth = `${nextTextWidth}px`;
+    }
+  },
+
+  _scheduleTextCellLiveResize(textEl) {
+    if (!textEl?.isConnected) return;
+    if (this._textCellLiveResizeRaf) cancelAnimationFrame(this._textCellLiveResizeRaf);
+    this._textCellLiveResizeRaf = requestAnimationFrame(() => {
+      this._textCellLiveResizeRaf = 0;
+      this._syncTextCellLiveSize(textEl);
+    });
+  },
+
+  _sanitizeRoleCellSelection() {
+    if (!this._roleCellSelection || !this.doc?.rows) return;
+    const visible = new Set(this.doc.rows.filter(row => this._isRoleVisible(row.role || '', row.status || '')).map(row => row.id));
+    for (const rowId of [...this._roleCellSelection]) {
+      if (!visible.has(rowId)) this._roleCellSelection.delete(rowId);
+    }
+  },
+
+  _roleCellRows(fallbackRowId = '') {
+    this._sanitizeRoleCellSelection();
+    const ids = new Set(this._roleCellSelection || []);
+    if (!ids.size && fallbackRowId) ids.add(fallbackRowId);
+    return this.doc.rows.filter(row => ids.has(row.id));
+  },
+
+  _roleButtonByRowId(rowId) {
+    return [...(this.host?.querySelectorAll('.sn2-role-btn') || [])].find(btn => btn.dataset.rowId === rowId) || null;
+  },
+
+  _updateRoleCellSelectionUI() {
+    this._sanitizeRoleCellSelection();
+    this.host?.querySelectorAll('.sn2-role-btn').forEach((btn) => {
+      const selected = !!this._roleCellSelection?.has(btn.dataset.rowId);
+      btn.classList.toggle('sn2-role-cell-selected', selected);
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+  },
+
+  _clearRoleCellSelection() {
+    if (this._roleCellSelection) this._roleCellSelection.clear();
+    this._lastRoleCellIdx = -1;
+    this._updateRoleCellSelectionUI();
+  },
+
+  _setRoleCellRange(fromIdx, toIdx, baseSet = null) {
+    if (this._rowSelection?.size) this._clearRowSelection();
+    if (!this._roleCellSelection) this._roleCellSelection = new Set();
+    const next = new Set(baseSet || []);
+    const from = Math.max(0, Math.min(fromIdx, toIdx));
+    const to = Math.min(this.doc.rows.length - 1, Math.max(fromIdx, toIdx));
+    for (let i = from; i <= to; i++) {
+      const row = this.doc.rows[i];
+      if (row && this._isRoleVisible(row.role || '', row.status || '')) next.add(row.id);
+    }
+    this._roleCellSelection = next;
+    this._updateRoleCellSelectionUI();
+  },
+
+  _selectRoleCell(rowId, idx, options = {}) {
+    if (!rowId || idx < 0) return;
+    if (this._rowSelection?.size) this._clearRowSelection();
+    if (!this._roleCellSelection) this._roleCellSelection = new Set();
+    const ctrl = !!options.ctrl;
+    if (options.shift && this._lastRoleCellIdx >= 0) {
+      this._setRoleCellRange(this._lastRoleCellIdx, idx, ctrl ? this._roleCellSelection : null);
+    } else if (ctrl) {
+      if (this._roleCellSelection.has(rowId)) this._roleCellSelection.delete(rowId);
+      else this._roleCellSelection.add(rowId);
+      this._lastRoleCellIdx = idx;
+      this._updateRoleCellSelectionUI();
+    } else {
+      this._roleCellSelection.clear();
+      this._roleCellSelection.add(rowId);
+      this._lastRoleCellIdx = idx;
+      this._updateRoleCellSelectionUI();
+    }
+  },
+
+  _handleRoleCellClick(roleBtn, e) {
+    if (!roleBtn) return false;
+    if (this._suppressRoleCellClick) { this._suppressRoleCellClick = false; return true; }
+    const rowId = roleBtn.dataset.rowId || '';
+    const idx = this.doc.rows.findIndex(row => row.id === rowId);
+    this._selectRoleCell(rowId, idx, { shift: e?.shiftKey, ctrl: e?.ctrlKey || e?.metaKey });
+    roleBtn.focus();
+    return true;
+  },
+
+  _nextVisibleRoleIndex(idx, dir) {
+    let next = idx + dir;
+    while (next >= 0 && next < this.doc.rows.length) {
+      const row = this.doc.rows[next];
+      if (this._isRoleVisible(row.role || '', row.status || '')) return next;
+      next += dir;
+    }
+    return -1;
+  },
+
+  _writeRoleClipboard(text) {
+    const value = String(text || '');
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(value).catch(() => this._writeRoleClipboardFallback(value));
+      return;
+    }
+    this._writeRoleClipboardFallback(value);
+  },
+
+  _writeRoleClipboardFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    ta.remove();
+  },
+
+  _copyRoleCellSelection(fallbackRowId = '') {
+    const rows = this._roleCellRows(fallbackRowId);
+    if (!rows.length) return false;
+    this._writeRoleClipboard(rows.map(row => row.role || '').join('\n'));
+    return true;
+  },
+
+  _applyRoleValuesToSelection(text, fallbackRowId = '', undoLabel = 'タイプ貼り付け') {
+    const rows = this._roleCellRows(fallbackRowId);
+    if (!rows.length) return false;
+    const values = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    this._pushUndo(undoLabel);
+    let needsRender = false;
+    rows.forEach((row, i) => {
+      const idx = this.doc.rows.indexOf(row);
+      const value = (values.length === 1 ? values[0] : (values[i] ?? values[values.length - 1] ?? '')).trim();
+      const rowEl = this._roleButtonByRowId(row.id)?.closest?.('.sn2-row') || null;
+      if (rowEl && typeof this._setRowRole === 'function') this._setRowRole(idx, rowEl, value);
+      else { row.role = value; needsRender = true; }
+    });
+    if (needsRender) this._render();
+    this._markDirty({ skipUndo: true });
+    this._updateRoleCellSelectionUI();
+    return true;
+  },
+
+  async _pasteRoleCellSelectionFromClipboard(fallbackRowId = '') {
+    try {
+      const text = await navigator.clipboard?.readText?.();
+      if (text == null) return false;
+      return this._applyRoleValuesToSelection(text, fallbackRowId);
+    } catch {
+      if (typeof showStatus === 'function') showStatus('クリップボードを読み取れませんでした', true);
+      return false;
+    }
+  },
+
+  _clearSelectedRoleCells(fallbackRowId = '') {
+    return this._applyRoleValuesToSelection('', fallbackRowId, 'タイプ削除');
+  },
+
+  _handleRoleCellKeydown(roleBtn, e) {
+    const rowId = roleBtn?.dataset.rowId || '';
+    const idx = this.doc.rows.findIndex(row => row.id === rowId);
+    if (!rowId || idx < 0) return false;
+    const key = e.key;
+    const lk = String(key || '').toLowerCase();
+    const mod = e.ctrlKey || e.metaKey;
+    if (key === 'Enter' && !mod) {
+      e.preventDefault(); e.stopPropagation();
+      this._selectRoleCell(rowId, idx);
+      this._showRoleMenu(roleBtn);
+      return true;
+    }
+    if (mod && !e.shiftKey && (lk === 'c' || lk === 'x')) {
+      e.preventDefault(); e.stopPropagation();
+      this._copyRoleCellSelection(rowId);
+      if (lk === 'x') this._clearSelectedRoleCells(rowId);
+      return true;
+    }
+    if (mod && !e.shiftKey && lk === 'v') {
+      e.preventDefault(); e.stopPropagation();
+      this._pasteRoleCellSelectionFromClipboard(rowId);
+      return true;
+    }
+    if ((key === 'Delete' || key === 'Backspace') && !mod) {
+      e.preventDefault(); e.stopPropagation();
+      this._clearSelectedRoleCells(rowId);
+      return true;
+    }
+    const isVertical = this.doc.editor?.viewMode === 'vertical';
+    const dir = key === (isVertical ? 'ArrowRight' : 'ArrowUp') ? -1 : key === (isVertical ? 'ArrowLeft' : 'ArrowDown') ? 1 : 0;
+    if (dir) {
+      const nextIdx = this._nextVisibleRoleIndex(idx, dir);
+      if (nextIdx < 0) return false;
+      e.preventDefault(); e.stopPropagation();
+      const nextRow = this.doc.rows[nextIdx];
+      this._selectRoleCell(nextRow.id, nextIdx, { shift: e.shiftKey, ctrl: mod });
+      const nextBtn = this._roleButtonByRowId(nextRow.id);
+      if (nextBtn) {
+        nextBtn.focus();
+        nextBtn.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+      }
+      return true;
+    }
+    return false;
+  },
+
+  _bindRoleCellSelection(host) {
+    let pending = false;
+    let dragging = false;
+    let startIdx = -1;
+    let startX = 0;
+    let startY = 0;
+    let pointerId = 0;
+    let baseSet = null;
+    const threshold = 4;
+    host.addEventListener('pointerdown', (e) => {
+      const btn = e.target.closest?.('.sn2-role-btn');
+      if (!btn || e.button !== 0) return;
+      pending = true;
+      dragging = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      pointerId = e.pointerId;
+      startIdx = this.doc.rows.findIndex(row => row.id === btn.dataset.rowId);
+      baseSet = (e.ctrlKey || e.metaKey) ? new Set(this._roleCellSelection || []) : new Set();
+      try { host.setPointerCapture(pointerId); } catch {}
+    });
+    host.addEventListener('pointermove', (e) => {
+      if (!pending) return;
+      if (!dragging && Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < threshold) return;
+      dragging = true;
+      const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('.sn2-role-btn');
+      const overIdx = this.doc.rows.findIndex(row => row.id === over?.dataset.rowId);
+      if (startIdx >= 0 && overIdx >= 0) this._setRoleCellRange(startIdx, overIdx, baseSet);
+    });
+    const end = () => {
+      if (dragging) {
+        this._suppressRoleCellClick = true;
+        setTimeout(() => { this._suppressRoleCellClick = false; }, 0);
+      }
+      try { if (pointerId) host.releasePointerCapture(pointerId); } catch {}
+      pending = false;
+      dragging = false;
+      pointerId = 0;
+    };
+    host.addEventListener('pointerup', end);
+    host.addEventListener('pointercancel', end);
+    host.addEventListener('lostpointercapture', end);
+  },
+
+  _showRoleCellContextMenu(roleBtn, e) {
+    if (!roleBtn) return false;
+    const rowId = roleBtn.dataset.rowId || '';
+    const idx = this.doc.rows.findIndex(row => row.id === rowId);
+    if (!this._roleCellSelection?.has(rowId)) this._selectRoleCell(rowId, idx);
+    document.querySelectorAll('.sn2-role-cell-menu').forEach(el => el.remove());
+    const menu = document.createElement('div');
+    menu.className = 'sn2-role-cell-menu sn2-header-popup';
+    const mk = (label, fn) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'sn2-header-popup-item';
+      btn.textContent = label;
+      btn.addEventListener('click', () => { menu.remove(); fn(); });
+      return btn;
+    };
+    menu.appendChild(mk('コピー', () => this._copyRoleCellSelection(rowId)));
+    menu.appendChild(mk('貼り付け', () => this._pasteRoleCellSelectionFromClipboard(rowId)));
+    menu.appendChild(mk('削除', () => this._clearSelectedRoleCells(rowId)));
+    menu.style.cssText = 'position:fixed;z-index:10000;min-width:140px;';
+    document.body.appendChild(menu);
+    const rect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+    if (typeof positionPopup === 'function') positionPopup(menu, rect);
+    setTimeout(() => {
+      const close = (ev) => {
+        if (!menu.contains(ev.target)) {
+          menu.remove();
+          document.removeEventListener('pointerdown', close);
+        }
+      };
+      document.addEventListener('pointerdown', close);
+    }, 0);
+    return true;
+  },
+
 });

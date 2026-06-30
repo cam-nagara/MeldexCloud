@@ -157,8 +157,8 @@ function _validateRangeCheck(rule, entitiesMap, entityNames, dbPath, propTypes) 
   const ptc2 = propTypes?.[compareProperty];
 
   entityNames.forEach(en => {
-    const vals1 = _validationValues(entitiesMap[en][property] || []);
-    const vals2 = _validationValues(entitiesMap[en][compareProperty] || []);
+    const vals1 = _validationValues(entitiesMap[en][property] || [], { allStatuses: true });
+    const vals2 = _validationValues(entitiesMap[en][compareProperty] || [], { allStatuses: true });
     if (vals1.length === 0 || vals2.length === 0) return;
     vals1.forEach(val1 => {
       vals2.forEach(val2 => {

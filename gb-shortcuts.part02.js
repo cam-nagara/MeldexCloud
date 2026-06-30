@@ -252,7 +252,7 @@ document.addEventListener('keydown', (e) => {
   // モーダルダイアログが開いている場合はスキップ（ダイアログ自身が処理する）
   if (document.querySelector('.modal-overlay')) return;
 
-  const scopes = _resolveShortcutScope();
+  const scopes = _resolveShortcutScope(e);
   const shortcuts = _getEffectiveShortcuts();
 
   // ツール固有スコープを先に、globalを後にマッチ

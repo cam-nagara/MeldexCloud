@@ -1,12 +1,12 @@
 {
   "type": "meldex-cloud-beta-static",
-  "generatedAt": "2026-06-29T20:21:53.970954+00:00",
-  "semver": "0.6.161",
+  "generatedAt": "2026-06-30T16:10:21.988685+00:00",
+  "semver": "0.6.163",
   "variant": "cloud-beta",
   "externalValueSources": {
     "cloudPublicUrl": {
       "source": "MELDEX_CLOUD_PUBLIC_URL",
-      "present": true,
+      "present": false,
       "valueIncluded": false
     },
     "cloudBackupUrl": {
@@ -20,7 +20,7 @@
     "manifest.json": "e678db01adf50a58d4a6b5ae8a5d69305561bfe1d310e55ba27e8fcf957e085a",
     "sw.js": "d8e927701c55926e98dd4bce6c14a0d52f449ce4c05410073853f5cc410488b8",
     "gb-config.js": "3d175466b8ae55c5d708accb6a6f96a387bf953d55510fd208ec4bc278f0e996",
-    "gb-cloud-runtime-config.js": "3e7d4968c04c2f4302ecb12571f2aee09cb688600111d40b7fd3c5ccc18d79dd",
-    "cloud-samples/manifest.json": "3e3767743df69b5e128d9596445ab07cd1965abbaf65adfc1a7e9f0073fdba2c"
+    "gb-cloud-runtime-config.js": "97b97973b58ea2ac35f207d0431c9177658e57a926493693e1acda215e528263",
+    "cloud-samples/manifest.json": "c0ee511da927c91b0d02d94f44a1a9faf75fc1df1fa0155907cf018613d8d400"
   }
 }

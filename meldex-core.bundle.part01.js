@@ -794,7 +794,10 @@ function replaceIcons(root) {
     else if (cls.includes('ico-layoutList')) name = 'layoutList';
     else if (cls.includes('ico-externalLink')) name = 'externalLink';
     else if (cls.includes('ico-filter')) name = 'filter';
+    else if (cls.includes('ico-copy')) name = 'copy';
     else if (cls.includes('ico-arrowUpDown')) name = 'arrowUpDown';
+    else if (cls.includes('ico-arrowUp')) name = 'arrowUp';
+    else if (cls.includes('ico-arrowDown')) name = 'arrowDown';
     else if (cls.includes('ico-play')) name = 'play';
     else if (cls.includes('ico-refreshCw')) name = 'refreshCw';
     else if (cls.includes('ico-minus')) name = 'minus';
@@ -895,6 +898,3 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
-    themeVars.forEach(v => {
-      const val = parentComputed.getPropertyValue(v).trim();

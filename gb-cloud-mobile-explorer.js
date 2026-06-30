@@ -39,6 +39,14 @@
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
   }
 
+  function _e2eIdPart(value) {
+    return String(value || 'item')
+      .replace(/\\/g, '/')
+      .replace(/[^a-zA-Z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'item';
+  }
+
   function _displayName(target) {
     const name = String(target?.name || '').trim();
     if (name) return name;
@@ -180,14 +188,18 @@
       '</div>',
       '<div class="cloud-mobile-explorer-list" role="list"></div>',
     ].join('');
-    pane.querySelector('.cloud-mobile-explorer-up').innerHTML = _iconHtml('chevronLeft', 20, '<');
-    pane.querySelector('.cloud-mobile-explorer-refresh').innerHTML = _iconHtml('refreshCw', 18, '↻');
-    pane.querySelector('.cloud-mobile-explorer-up').addEventListener('click', (event) => {
+    const upButton = pane.querySelector('.cloud-mobile-explorer-up');
+    const refreshButton = pane.querySelector('.cloud-mobile-explorer-refresh');
+    upButton.dataset.e2eId = 'cloud-mobile-explorer-up';
+    refreshButton.dataset.e2eId = 'cloud-mobile-explorer-refresh';
+    upButton.innerHTML = _iconHtml('chevronLeft', 20, '<');
+    refreshButton.innerHTML = _iconHtml('refreshCw', 18, '↻');
+    upButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       _openParentFolder();
     });
-    pane.querySelector('.cloud-mobile-explorer-refresh').addEventListener('click', (event) => {
+    refreshButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       renderCurrent({ force: true });
@@ -403,6 +415,7 @@
   function _itemRow(item) {
     const type = String(item?.type || '').toLowerCase();
     const isFolder = type === 'folder';
+    const itemE2EId = _e2eIdPart(item?.path || item?.name || item?.label);
     const row = document.createElement('div');
     row.className = 'cloud-mobile-explorer-row';
     row.dataset.itemType = type;
@@ -410,6 +423,7 @@
     const openButton = document.createElement('button');
     openButton.type = 'button';
     openButton.className = 'cloud-mobile-explorer-row-open';
+    openButton.dataset.e2eId = `cloud-mobile-explorer-open-${itemE2EId}`;
     openButton.setAttribute('aria-label', (item?.name || item?.label || '無題') + 'を開く');
     openButton.innerHTML = [
       '<span class="cloud-mobile-explorer-row-icon" aria-hidden="true"></span>',
@@ -432,6 +446,7 @@
     action.type = 'button';
     action.className = 'cloud-mobile-explorer-row-menu';
     if (_canMutateItem(item)) {
+      action.dataset.e2eId = `cloud-mobile-explorer-menu-${itemE2EId}`;
       action.setAttribute('aria-label', (item?.name || item?.label || '無題') + 'の操作');
       action.innerHTML = _iconHtml('moreHorizontal', 20, '…');
       action.addEventListener('click', (event) => {
@@ -440,6 +455,7 @@
         _openItemMenu(item);
       });
     } else {
+      action.dataset.e2eId = `cloud-mobile-explorer-placeholder-${itemE2EId}`;
       action.classList.add('cloud-mobile-explorer-row-menu-placeholder');
       action.setAttribute('aria-hidden', 'true');
       action.tabIndex = -1;
@@ -588,6 +604,11 @@
     meta.textContent = _itemTypeLabel(item);
     header.append(title, meta);
     sheet.appendChild(header);
+    sheet.appendChild(_makeSheetButton('開く', String(item?.type || '').toLowerCase() === 'folder' ? 'folderOpen' : 'externalLink', 'cloud-mobile-explorer-action-item', () => {
+      closeItemMenu();
+      if (String(item?.type || '').toLowerCase() === 'folder') _openFolderInExplorer(item);
+      else _openFileFromExplorer(item);
+    }));
     sheet.appendChild(_makeSheetButton('名前を変更', 'pencil', 'cloud-mobile-explorer-action-item', () => {
       closeItemMenu();
       _openRenameSheet(item);
@@ -714,8 +735,14 @@
         closeCreateSheet();
         if (typeof addItemAt === 'function') {
           await addItemAt(target.path, type);
-          if (type === 'folder' || _mode === 'list') renderCurrent({ force: true });
-          if (type !== 'folder') setTimeout(() => window.MeldexCloudMobile?.closeSidebar?.(), 80);
+          if (type === 'folder') {
+            window.MeldexCloudMobile?.openSidebar?.(true);
+            setMode('list', { syncFromTree: true, force: true });
+            await renderCurrent({ force: true });
+          } else {
+            if (_mode === 'list') await renderCurrent({ force: true });
+            setTimeout(() => window.MeldexCloudMobile?.closeSidebar?.(), 80);
+          }
         }
       });
       grid.appendChild(button);

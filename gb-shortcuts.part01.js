@@ -177,24 +177,26 @@ function _viewToScope(view) {
   return map[view] || 'global';
 }
 
-function _resolveShortcutScope() {
+function _resolveShortcutScope(e) {
   const ae = document.activeElement;
-  const isEditing = ae && ae.isConnected !== false && (
-    ae.contentEditable === 'true' ||
-    ae.tagName === 'INPUT' ||
-    ae.tagName === 'TEXTAREA' ||
-    ae.tagName === 'SELECT'
-  );
+  const target = e?.target?.nodeType === 1 ? e.target : e?.target?.parentElement;
+  const editEl = [target, ae].map(el => el?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable="plaintext-only"],[role="textbox"],.chat-rich-input') || el)
+    .find(el => el && el.isConnected !== false && (el.isContentEditable || el.contentEditable === 'true' || el.contentEditable === 'plaintext-only' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.getAttribute?.('role') === 'textbox'));
+  const isEditing = !!editEl;
 
   const rightPanel = document.getElementById('right-panel');
-  const inRightPanel = rightPanel && rightPanel.contains(ae);
+  const inRightPanel = !!(rightPanel && (
+    (editEl && rightPanel.contains(editEl)) ||
+    (ae && rightPanel.contains(ae)) ||
+    (target && rightPanel.contains(target))
+  ));
 
   if (inRightPanel && isEditing) return ['global'];
   if (inRightPanel) return ['global', _viewToScope(state.view)];
 
   if (isEditing) {
     const scope = _viewToScope(state.view);
-    if (scope === 'note' && ae?.closest?.('#page-content, #entity-freetext, #dp-editable')) return ['global', 'note'];
+    if (scope === 'note' && editEl?.closest?.('#page-content, #entity-freetext, #dp-editable')) return ['global', 'note'];
     if (scope === 'scenario') return ['global', 'scenario'];
     return ['global'];
   }

@@ -489,26 +489,31 @@
       if (fields.has('textBefore')) {
         const lbl = _makeLabel('前');
         const inp = _makeTextInput(values.textBefore || '', '「', (v) => emit('textBefore', v));
+        lbl.title = inp.title = 'テキスト列の先頭に表示する文字を設定します';
         row4.appendChild(_makeGroup([lbl, inp]));
       }
       if (fields.has('textAfter')) {
         const lbl = _makeLabel('後');
         const inp = _makeTextInput(values.textAfter || '', '」', (v) => emit('textAfter', v));
+        lbl.title = inp.title = 'テキスト列の末尾に表示する文字を設定します';
         row4.appendChild(_makeGroup([lbl, inp]));
       }
       if (fields.has('textAlign')) {
         const lbl = _makeLabel('水平');
         const sel = _makeSelect(ALIGN_H_OPTS, values.textAlign || '', (v) => emit('textAlign', v));
+        lbl.title = sel.title = 'セル内の文字を左右方向に揃えます';
         row4.appendChild(_makeGroup([lbl, sel]));
       }
       if (fields.has('textValign')) {
         const lbl = _makeLabel('垂直');
         const sel = _makeSelect(ALIGN_V_OPTS, values.textValign || '', (v) => emit('textValign', v));
+        lbl.title = sel.title = 'セル内の文字を上下方向に揃えます';
         row4.appendChild(_makeGroup([lbl, sel]));
       }
       if (fields.has('textOverflow')) {
         const lbl = _makeLabel('折返');
         const sel = _makeSelect(OVERFLOW_OPTS, values.textOverflow || '', (v) => emit('textOverflow', v));
+        lbl.title = sel.title = '長いテキストを折り返すか、はみ出し表示や切り詰めにするかを選びます';
         row4.appendChild(_makeGroup([lbl, sel]));
       }
 
