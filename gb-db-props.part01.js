@@ -112,7 +112,7 @@ function _renderColMenuItems(container, itemList) {
       el.setAttribute('aria-disabled', 'true');
     }
     if (item.danger) el.classList.add('danger');
-    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); item.action(); });
+    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); item.action(ev, el); });
     container.appendChild(el);
   });
 }
@@ -345,7 +345,7 @@ function showColHeaderMenu(e, propName, colIndex) {
         },
       ]
     },
-    { label: '条件付きカラー...', action: () => showConditionalColorModal(propName, dbPath, ctx) },
+    { label: '条件付きカラー...', action: (_ev, triggerEl) => showConditionalColorModal(propName, dbPath, ctx, triggerEl) },
   ];
 
   // 編集制限サブメニュー

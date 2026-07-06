@@ -113,11 +113,24 @@
     return null;
   }
 
+  function _isDisabledActionTarget(element) {
+    if (!element) return false;
+    return element.disabled === true
+      || element.hasAttribute('disabled')
+      || element.getAttribute('aria-disabled') === 'true'
+      || element.getAttribute('data-cloud-disabled') === '1';
+  }
+
   // === click イベント委譲 ===
   document.addEventListener('click', (e) => {
     const baseTarget = _eventElementTarget(e);
     const target = baseTarget?.closest('[data-action]');
     if (!target) return;
+    if (_isDisabledActionTarget(target)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     const action = target.dataset.action;
     if (action) {
       executeAction(action, target, e);
@@ -181,10 +194,36 @@
 
   // === カスタムツールチップ（ネイティブtitle属性を置換） ===
   let _tipEl = null, _tipTimer = null, _tipTarget = null, _tipSuppressedTarget = null;
+
+  function _hasSharedTooltip() {
+    return !!(window.GBTooltip
+      && typeof window.GBTooltip.showFor === 'function'
+      && typeof window.GBTooltip.hide === 'function');
+  }
+
+  function _sharedTooltipVisible() {
+    const tip = document.getElementById('gb-tooltip');
+    return !!(tip && !tip.hidden && tip.classList.contains('is-visible'));
+  }
+
   function _showTip(el, text, e) {
-    if (!_tipEl) { _tipEl = document.createElement('div'); _tipEl.className = 'gb-tooltip'; document.body.appendChild(_tipEl); }
+    if (_hasSharedTooltip()) {
+      window.GBTooltip.showFor(el, text);
+      return;
+    }
+    if (!_tipEl) {
+      _tipEl = document.createElement('div');
+      _tipEl.className = 'gb-tooltip';
+      _tipEl.setAttribute('role', 'tooltip');
+      _tipEl.setAttribute('aria-hidden', 'true');
+      _tipEl.hidden = true;
+      document.body.appendChild(_tipEl);
+    }
     _tipEl.textContent = text;
     _tipEl.classList.remove('visible');
+    _tipEl.classList.remove('is-visible');
+    _tipEl.hidden = false;
+    _tipEl.setAttribute('aria-hidden', 'false');
     const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
     const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
     const x = Math.max(4, Math.min(e.clientX / z + 12, vw - _tipEl.offsetWidth - 8));
@@ -193,6 +232,7 @@
     _tipEl.style.top = Math.max(4, y + 24 > vh ? e.clientY / z - 28 : y) + 'px';
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(_tipEl);
     _tipEl.classList.add('visible');
+    _tipEl.classList.add('is-visible');
   }
 
   function _restoreTipTitle(el) {
@@ -219,10 +259,16 @@
 
   function _hideTip(restoreTitle = false, suppressUntilLeave = false) {
     const prev = _tipTarget;
-    const visible = !!(_tipEl && _tipEl.classList.contains('visible'));
+    const visible = !!(_tipEl && _tipEl.classList.contains('visible')) || _sharedTooltipVisible();
     clearTimeout(_tipTimer);
     _tipTimer = null;
-    if (_tipEl) _tipEl.classList.remove('visible');
+    if (_hasSharedTooltip()) window.GBTooltip.hide();
+    if (_tipEl) {
+      _tipEl.classList.remove('visible');
+      _tipEl.classList.remove('is-visible');
+      _tipEl.hidden = true;
+      _tipEl.setAttribute('aria-hidden', 'true');
+    }
     if (suppressUntilLeave && visible && prev && document.documentElement.contains(prev)) {
       if (_tipSuppressedTarget && _tipSuppressedTarget !== prev) _restoreTipTitle(_tipSuppressedTarget);
       _tipSuppressedTarget = prev;

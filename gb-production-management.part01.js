@@ -119,6 +119,15 @@
     else console[error ? 'error' : 'log'](message);
   }
 
+  function _pmIcon(name, size = 14) {
+    return typeof lucide === 'function' ? lucide(name, size) : '';
+  }
+
+  function _pmRestoreFocus(target) {
+    if (!target?.isConnected || typeof target.focus !== 'function') return;
+    try { target.focus({ preventScroll: true }); } catch { try { target.focus(); } catch {} }
+  }
+
   function _pmRecoveryText(base, result) {
     return result?.recovered_count ? `${base}（不足していた制作管理ファイルを自動復旧しました）` : base;
   }
@@ -142,15 +151,16 @@
   function _pmButton(label, primary) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = primary ? 'btn btn-primary' : 'btn';
+    button.className = primary ? 'gb-btn gb-btn-sm gb-btn-primary' : 'gb-btn gb-btn-sm';
     button.textContent = label;
     return button;
   }
 
   function _pmField(labelText, input) {
     const field = document.createElement('label');
-    field.className = 'field';
+    field.className = 'field gb-production-field';
     const label = document.createElement('span');
+    label.className = 'gb-production-field-label';
     label.textContent = labelText;
     field.append(label, input);
     return field;
@@ -161,12 +171,13 @@
     input.type = 'text';
     input.value = value || '';
     input.placeholder = placeholder || '';
-    input.style.width = '100%';
+    input.className = 'gb-input gb-input-sm gb-production-input';
     return input;
   }
 
   function _pmSelect(options, value) {
     const select = document.createElement('select');
+    select.className = 'gb-select gb-select-sm gb-production-input';
     options.forEach((item) => {
       const option = document.createElement('option');
       option.value = item;
@@ -177,38 +188,74 @@
     return select;
   }
 
-  function _pmModal(title) {
+  function _pmModal(title, options = {}) {
+    const focusSource = options.trigger || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    overlay.className = 'modal-overlay gb-production-modal-overlay';
+    overlay.dataset.e2eId = options.e2eId || 'production-dialog-overlay';
     const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.style.minWidth = '420px';
-    modal.style.maxWidth = '720px';
+    modal.className = 'modal gb-production-modal';
+    modal.style.setProperty('--gb-production-modal-width', options.width || '720px');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.tabIndex = -1;
+    modal.dataset.e2eId = options.dialogE2eId || 'production-dialog';
+    const titleId = `${modal.dataset.e2eId}-title`;
+    modal.setAttribute('aria-labelledby', titleId);
+    const header = document.createElement('div');
+    header.className = 'gb-modal-header gb-production-modal-header';
     const heading = document.createElement('h3');
+    heading.id = titleId;
+    heading.className = 'gb-production-title';
     heading.textContent = title;
-    modal.appendChild(heading);
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'gb-modal-close gb-production-modal-close';
+    closeButton.setAttribute('aria-label', `${title}を閉じる`);
+    closeButton.dataset.e2eId = `${modal.dataset.e2eId}-close`;
+    closeButton.innerHTML = _pmIcon('x', 14) || '×';
+    header.append(heading, closeButton);
+    const body = document.createElement('div');
+    body.className = 'gb-modal-body gb-production-modal-body';
+    modal.append(header, body);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+    const close = () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      overlay.remove();
+      _pmRestoreFocus(focusSource);
+      window.requestAnimationFrame?.(() => _pmRestoreFocus(focusSource));
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      close();
+    };
     overlay.addEventListener('click', (event) => {
-      if (event.target === overlay) overlay.remove();
+      if (event.target === overlay) close();
     });
-    return { overlay, modal };
+    closeButton.addEventListener('click', close);
+    document.addEventListener('keydown', onKeyDown, true);
+    window.GBModalShell?.enhanceOverlay?.(overlay);
+    window.requestAnimationFrame(() => {
+      const focusTarget = body.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])') || modal;
+      _pmRestoreFocus(focusTarget);
+    });
+    return { overlay, modal, body, close };
   }
 
-  function _pmFooter(overlay, okLabel, onOk) {
+  function _pmFooter(closeModal, okLabel, onOk) {
     const footer = document.createElement('div');
-    footer.className = 'modal-footer';
-    footer.style.display = 'flex';
-    footer.style.justifyContent = 'flex-end';
-    footer.style.gap = '8px';
+    footer.className = 'gb-modal-footer gb-production-modal-footer';
+    footer.dataset.modalFooter = '1';
     const cancel = _pmButton('キャンセル');
     const ok = _pmButton(okLabel, true);
-    cancel.addEventListener('click', () => overlay.remove());
+    cancel.addEventListener('click', closeModal);
     ok.addEventListener('click', async () => {
       ok.disabled = true;
       try {
         await onOk();
-        overlay.remove();
+        closeModal();
       } catch (err) {
         _pmShowStatus(err?.message || String(err), true);
       } finally {
@@ -225,21 +272,34 @@
   }
 
   function openProductionTaskCreate() {
-    const { overlay, modal } = _pmModal('タスクを作成');
+    const { body, close } = _pmModal('タスクを作成', {
+      e2eId: 'production-task-create-overlay',
+      dialogE2eId: 'production-task-create-dialog',
+    });
     const title = _pmInput('', '作品タイトル_話数');
+    title.dataset.e2eId = 'production-task-create-title';
     const preset = _pmSelect(['汎用', 'マンガ'], '汎用');
+    preset.dataset.e2eId = 'production-task-create-preset';
     const hierarchyCount = _pmInput('1', '1〜5');
+    hierarchyCount.dataset.e2eId = 'production-task-create-hierarchy-count';
     const hierarchyLabels = _pmInput('項目', '機能,画面,部品');
+    hierarchyLabels.dataset.e2eId = 'production-task-create-hierarchy-labels';
     const hierarchyCounts = _pmInput('1', '1,3,2');
+    hierarchyCounts.dataset.e2eId = 'production-task-create-hierarchy-counts';
     const hierarchyPaths = document.createElement('textarea');
     hierarchyPaths.placeholder = '項目A\n項目B';
     hierarchyPaths.rows = 3;
-    hierarchyPaths.style.width = '100%';
+    hierarchyPaths.className = 'gb-textarea gb-textarea-sm gb-production-input';
+    hierarchyPaths.dataset.e2eId = 'production-task-create-hierarchy-paths';
     const targets = _pmInput('全体', '全体,背景作画');
+    targets.dataset.e2eId = 'production-task-create-targets';
     const contents = _pmInput('制作', '企画,制作,確認');
+    contents.dataset.e2eId = 'production-task-create-contents';
     const scales = _pmInput('標準', '小,標準,大');
+    scales.dataset.e2eId = 'production-task-create-scales';
     const granularity = _pmSelect(['階層単位', 'ページ単位', 'コマ単位'], '階層単位');
-    modal.append(
+    granularity.dataset.e2eId = 'production-task-create-granularity';
+    body.append(
       _pmField('作品タイトル_話数', title),
       _pmField('プリセット種別', preset),
       _pmField('階層数', hierarchyCount),
@@ -250,7 +310,7 @@
       _pmField('作業対象', targets),
       _pmField('作業内容', contents),
       _pmField('作業規模', scales),
-      _pmFooter(overlay, '作成', async () => {
+      _pmFooter(close, '作成', async () => {
         const body = {
           work_title: title.value.trim() || '無題作品',
           preset: preset.value,
@@ -267,18 +327,21 @@
         _pmShowStatus(_pmRecoveryText(`タスクを作成しました: ${result.created || 0}件`, result));
       })
     );
-    title.focus();
   }
 
   function openProductionShiftImport() {
-    const { overlay, modal } = _pmModal('シフト表を取り込む');
+    const { body, close } = _pmModal('シフト表を取り込む', {
+      e2eId: 'production-shift-import-overlay',
+      dialogE2eId: 'production-shift-import-dialog',
+    });
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.accept = '.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
+    fileInput.className = 'gb-input gb-input-sm gb-production-input';
+    fileInput.dataset.e2eId = 'production-shift-import-file';
     const preview = document.createElement('div');
-    preview.style.maxHeight = '240px';
-    preview.style.overflow = 'auto';
-    preview.style.marginTop = '8px';
+    preview.className = 'gb-production-result-box gb-production-shift-preview';
+    preview.dataset.e2eId = 'production-shift-import-preview';
     let parsedRows = [];
     fileInput.addEventListener('change', async () => {
       try {
@@ -290,7 +353,7 @@
         _pmShowStatus(preview.textContent, true);
       }
     });
-    modal.append(_pmField('Excel / CSV', fileInput), preview, _pmFooter(overlay, '取り込む', async () => {
+    body.append(_pmField('Excel / CSV', fileInput), preview, _pmFooter(close, '取り込む', async () => {
       if (!parsedRows.length) throw new Error('取り込む行がありません');
       const result = await _pmRequest('/production-management/shifts/apply', { method: 'POST', body: { rows: parsedRows, source_file: fileInput.files?.[0]?.name || '' } });
       _pmShowStatus(_pmRecoveryText(`シフトを取り込みました: ${result.count || 0}件`, result));
@@ -299,8 +362,10 @@
 
   function _pmRenderPreview(container, rows) {
     container.replaceChildren();
+    const wrap = document.createElement('div');
+    wrap.className = 'gb-production-preview-table-wrap';
     const table = document.createElement('table');
-    table.className = 'db-table';
+    table.className = 'db-table gb-production-preview-table';
     const head = document.createElement('tr');
     ['担当者', '日付', '開始', '終了', '種別'].forEach((label) => {
       const th = document.createElement('th');
@@ -315,9 +380,10 @@
         td.textContent = value || '';
         tr.appendChild(td);
       });
-      table.appendChild(tr);
-    });
-    container.appendChild(table);
+        table.appendChild(tr);
+      });
+    wrap.appendChild(table);
+    container.appendChild(wrap);
   }
 
   async function runProductionAssignment() {
@@ -355,17 +421,24 @@
   }
 
   function openProductionExport() {
-    const { overlay, modal } = _pmModal('シフト、実績、作業予定を書き出す');
+    const { body, close } = _pmModal('シフト、実績、作業予定を書き出す', {
+      e2eId: 'production-export-overlay',
+      dialogE2eId: 'production-export-dialog',
+    });
     const kind = _pmSelect(['all', 'shifts', 'attendance', 'work'], 'all');
+    kind.dataset.e2eId = 'production-export-kind';
     const format = _pmSelect(['csv', 'xlsx'], 'csv');
+    format.dataset.e2eId = 'production-export-format';
     const from = _pmInput('', '2026-05-01');
+    from.dataset.e2eId = 'production-export-from';
     const to = _pmInput('', '2026-05-31');
-    modal.append(
+    to.dataset.e2eId = 'production-export-to';
+    body.append(
       _pmField('対象', kind),
       _pmField('形式', format),
       _pmField('開始日', from),
       _pmField('終了日', to),
-      _pmFooter(overlay, '保存', async () => {
+      _pmFooter(close, '保存', async () => {
         await _pmSaveExport(kind.value, format.value, from.value, to.value);
       })
     );

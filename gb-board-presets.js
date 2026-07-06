@@ -435,32 +435,32 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
   const idFor = (base) => idSuffix ? `${base}-${idSuffix}` : base;
   return `
     <div class="gb-toolbar gb-toolbar-board" data-bd-role="toolbar-top">
-      <button type="button" class="tb-icon-btn tool-menu-btn bd-toolbar-btn bd-toolbar-icon-btn" title="メニュー" data-action="showToolMenu(event,'board')">${_bdIcon('menu', 16)}</button>
-      <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
+      <button type="button" class="tb-icon-btn tool-menu-btn bd-toolbar-btn bd-toolbar-icon-btn" title="メニュー" aria-label="ボードメニュー" data-action="showToolMenu(event,'board')">${_bdIcon('menu', 16)}</button>
+      <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
       <span id="${idFor('bd-title')}" class="tb-title tb-file-title bd-toolbar-title" data-bd-control="title"></span>
       <div class="sep"></div>
-      <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
+      <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
-      <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="カード追加">${_bdIcon('credit-card', 16)}</button>
-      <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="カードスタイル">
+      <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="カード追加" aria-label="カード追加">${_bdIcon('credit-card', 16)}</button>
+      <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="カードスタイル" aria-label="カードスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
-      <button type="button" data-bd-action="manage-card-styles" class="tb-icon-btn bd-toolbar-btn" title="カードスタイル管理">${_bdIcon('settings2', 16)}</button>
+      <button type="button" data-bd-action="manage-card-styles" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="カードスタイル管理" aria-label="カードスタイル管理">${_bdIcon('settings2', 16)}</button>
       <div class="sep"></div>
-      <button type="button" data-bd-tool="add-line" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="ライン追加">${_bdIcon('spline', 16)}</button>
-      <button type="button" id="${idFor('bd-line-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="line-style-select" data-bd-action="pick-line-style" title="ラインスタイル">
+      <button type="button" data-bd-tool="add-line" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="ライン追加" aria-label="ライン追加">${_bdIcon('spline', 16)}</button>
+      <button type="button" id="${idFor('bd-line-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="line-style-select" data-bd-action="pick-line-style" title="ラインスタイル" aria-label="ラインスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-line-style-preview')}" class="bd-style-preview bd-style-preview-line" data-bd-control="line-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
-      <button type="button" data-bd-action="manage-line-styles" class="tb-icon-btn bd-toolbar-btn" title="ラインスタイル管理">${_bdIcon('settings2', 16)}</button>
+      <button type="button" data-bd-action="manage-line-styles" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="ラインスタイル管理" aria-label="ラインスタイル管理">${_bdIcon('settings2', 16)}</button>
       <div class="sep"></div>
-      <button type="button" data-bd-tool="erase" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="消しゴム">${_bdIcon('eraser', 16)}</button>
+      <button type="button" data-bd-tool="erase" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="消しゴム" aria-label="消しゴム">${_bdIcon('eraser', 16)}</button>
       <div class="tb-spacer"></div>
-      <button type="button" data-bd-action="filters" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フィルタ" style="position:relative;">${_bdIcon('funnel', 16)}<span id="${idFor('bd-filter-badge')}" class="bd-filter-badge tb-badge" data-bd-control="filter-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
-      <button type="button" data-bd-action="reload" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="再読み込み">${_bdIcon('refreshCw', 16)}</button>
-      <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換">${_bdIcon('search', 16)}</button>
-      <button type="button" data-bd-action="detail" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く">${_bdIcon('slidersHorizontal', 16)}</button>
+      <button type="button" data-bd-action="filters" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フィルタ" aria-label="フィルタ" aria-haspopup="menu" aria-expanded="false" style="position:relative;">${_bdIcon('funnel', 16)}<span id="${idFor('bd-filter-badge')}" class="bd-filter-badge tb-badge" data-bd-control="filter-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
+      <button type="button" data-bd-action="reload" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="再読み込み" aria-label="再読み込み">${_bdIcon('refreshCw', 16)}</button>
+      <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換" aria-label="検索と置換">${_bdIcon('search', 16)}</button>
+      <button type="button" data-bd-action="detail" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く">${_bdIcon('slidersHorizontal', 16)}</button>
     </div>
     <div id="${idFor('bd-canvas')}" data-bd-role="canvas" data-gb-tooltip-disabled="true" tabindex="0" aria-label="ボードキャンバス" title="ボードキャンバス" style="position:relative;flex:1;overflow:hidden;outline:none;background:var(--bd-bg,var(--content-bg,var(--bg)));" oncontextmenu="return false;">
       <div id="${idFor('bd-world')}" data-bd-role="world" style="position:absolute;transform-origin:0 0;">
@@ -471,18 +471,18 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
     </div>
     <div class="gb-toolbar gb-toolbar-board bd-toolbar-bottom" data-bd-role="toolbar-bottom">
       <div class="bd-toolbar-group">
-        <input id="${idFor('bd-zoom-slider')}" class="tb-range bd-toolbar-range" data-bd-control="zoom-slider" type="range" min="10" max="500" value="100" title="ズーム">
-        <span id="${idFor('bd-zoom-label')}" class="tb-range-label bd-toolbar-meta" data-bd-control="zoom-label" data-bd-action="zoom-select" title="表示倍率を選択">100%</span>
-        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="zoom-out" title="縮小">${_bdIcon('zoomOut', 16)}</button>
-        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="zoom-in" title="拡大">${_bdIcon('zoomIn', 16)}</button>
-        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="zoom-100" title="100%">${_bdIcon('square', 16)}</button>
-        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="fit" title="全体表示">${_bdIcon('maximize', 16)}</button>
+        <input id="${idFor('bd-zoom-slider')}" class="tb-range bd-toolbar-range" data-bd-control="zoom-slider" type="range" min="10" max="500" value="100" title="ズーム" aria-label="ズーム">
+        <button type="button" id="${idFor('bd-zoom-label')}" class="tb-range-label bd-toolbar-meta bd-toolbar-meta-btn" data-bd-control="zoom-label" data-bd-action="zoom-select" title="表示倍率を選択" aria-label="表示倍率を選択" aria-haspopup="menu" aria-expanded="false">100%</button>
+        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="zoom-out" title="縮小" aria-label="縮小">${_bdIcon('zoomOut', 16)}</button>
+        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="zoom-in" title="拡大" aria-label="拡大">${_bdIcon('zoomIn', 16)}</button>
+        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="zoom-100" title="100%" aria-label="100%">${_bdIcon('square', 16)}</button>
+        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="fit" title="全体表示" aria-label="全体表示">${_bdIcon('maximize', 16)}</button>
       </div>
       <div class="sep"></div>
       <div class="bd-toolbar-group">
-        <input id="${idFor('bd-rot-slider')}" class="tb-range bd-toolbar-range bd-toolbar-range-rot" data-bd-control="rot-slider" type="range" min="-180" max="180" value="0" title="回転">
-        <span id="${idFor('bd-rot-label')}" class="tb-range-label bd-toolbar-meta" data-bd-control="rot-label">0°</span>
-        <button type="button" class="tb-icon-btn bd-toolbar-btn" data-bd-action="reset-rotation" title="回転をリセット">${_bdIcon('disc', 16)}</button>
+        <input id="${idFor('bd-rot-slider')}" class="tb-range bd-toolbar-range bd-toolbar-range-rot" data-bd-control="rot-slider" type="range" min="-180" max="180" value="0" title="回転" aria-label="回転">
+        <span id="${idFor('bd-rot-label')}" class="tb-range-label bd-toolbar-meta" data-bd-control="rot-label" aria-label="現在の回転">0°</span>
+        <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" data-bd-action="reset-rotation" title="回転をリセット" aria-label="回転をリセット">${_bdIcon('disc', 16)}</button>
       </div>
     </div>`;
 }

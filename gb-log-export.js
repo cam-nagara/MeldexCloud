@@ -10,6 +10,7 @@
   const startupNoticeQuietUntil = Date.now() + 8000;
   let lastError = null;
   let userInteractedBeforeNotice = false;
+  let supportDialogSeq = 0;
 
   function _now() {
     return new Date().toISOString();
@@ -474,38 +475,78 @@
     const remembered = rememberError(error || lastError, context || {});
     const friendly = remembered.friendly || window.MeldexErrorMessages?.translate?.(error, context) || {};
     const activitySummary = buildSupportActivitySummary();
+    document.querySelectorAll('.modal-overlay[data-support-dialog="1"]').forEach(existing => {
+      existing.dispatchEvent(new CustomEvent('meldex-support-dialog-close'));
+      if (existing.isConnected) existing.remove();
+    });
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialogSeq = ++supportDialogSeq;
+    const titleId = `meldex-support-title-${dialogSeq}`;
+    const descId = `meldex-support-desc-${dialogSeq}`;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
+    overlay.dataset.supportDialog = '1';
     overlay.style.zIndex = '100070';
-    overlay.innerHTML = `<div class="modal meldex-support-dialog" style="width:min(440px,calc(100vw - 32px));min-width:0;max-width:440px;height:min(760px,calc(100vh - 32px));max-height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;">
-      <h3 style="display:flex;align-items:center;gap:8px;">${lucide('lifeBuoy',16)} サポートに送信</h3>
-      <div style="display:flex;flex-direction:column;gap:10px;min-height:0;flex:1;overflow:auto;padding-right:2px;">
+    overlay.innerHTML = `<div class="modal meldex-support-dialog" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="meldex-support-dialog">
+      <h3 id="${titleId}" class="meldex-support-dialog-title">${lucide('lifeBuoy',16)} サポートに送信</h3>
+      <div id="${descId}" class="meldex-support-dialog-body">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${esc(friendly.title || '操作に失敗しました')}</div>
           <div class="gb-section-desc">${esc(friendly.message || '')}</div>
           <div class="gb-section-desc">${esc(friendly.action || '')}</div>
         </section>
-        <label class="gb-field" style="gap:6px;">
+        <label class="gb-field meldex-support-field">
           <span class="gb-label">直前の操作（自動入力）</span>
-          <textarea id="meldex-support-activity" class="gb-input" rows="7" readonly style="min-height:118px;resize:vertical;">${esc(activitySummary)}</textarea>
+          <textarea id="meldex-support-activity" class="gb-input meldex-support-textarea meldex-support-textarea--activity" rows="7" readonly aria-label="直前の操作（自動入力）">${esc(activitySummary)}</textarea>
         </label>
-        <label class="gb-field" style="gap:6px;">
+        <label class="gb-field meldex-support-field">
           <span class="gb-label">補足コメント</span>
-          <textarea id="meldex-support-comment" class="gb-input" rows="8" style="min-height:132px;resize:vertical;" placeholder="再現条件、発生頻度、補足事項など"></textarea>
+          <textarea id="meldex-support-comment" class="gb-input meldex-support-textarea meldex-support-textarea--comment" rows="8" aria-label="補足コメント" placeholder="再現条件、発生頻度、補足事項など"></textarea>
         </label>
-        <details style="margin-top:2px;">
+        <details class="meldex-support-details" data-e2e-id="meldex-support-technical-details">
           <summary>技術的詳細</summary>
-          <pre style="white-space:pre-wrap;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--border);padding:8px;">${esc(_supportTechnicalSummary(remembered))}</pre>
+          <pre class="meldex-support-technical">${esc(_supportTechnicalSummary(remembered))}</pre>
         </details>
       </div>
-      <div class="btn-row" style="margin-top:12px;flex-shrink:0;">
-        <button data-support-action="export">診断情報を保存</button>
-        <button class="primary" data-support-action="send">送信 / 保存</button>
-        <button data-support-action="close">閉じる</button>
+      <div class="btn-row meldex-support-actions" data-modal-footer>
+        <button type="button" class="gb-btn gb-btn-sm" data-support-action="export" data-e2e-id="meldex-support-export" aria-label="診断情報を保存">診断情報を保存</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-support-action="send" data-e2e-id="meldex-support-send" aria-label="サポート情報を送信または保存">送信 / 保存</button>
+        <button type="button" class="gb-btn gb-btn-sm" data-support-action="close" data-e2e-id="meldex-support-close" aria-label="サポート送信を閉じる">閉じる</button>
       </div>
     </div>`;
     document.body.appendChild(overlay);
     replaceIcons(overlay);
+    const dialog = overlay.querySelector('.meldex-support-dialog');
+    window.GBModalShell?.enhanceOverlay?.(overlay);
+    if (dialog) {
+      window.GBModalShell?.clamp?.(
+        dialog,
+        dialog.querySelector(':scope > .gb-modal-shell-header, :scope > .gb-modal-header'),
+        dialog.querySelector(':scope > .gb-modal-shell-footer, :scope > .gb-modal-footer, :scope > .btn-row')
+      );
+    }
+    function closeDialog() {
+      document.removeEventListener('keydown', onKeydown, true);
+      overlay.removeEventListener('meldex-support-dialog-close', closeDialog);
+      overlay.remove();
+      if (opener?.isConnected && typeof opener.focus === 'function') {
+        try { opener.focus({ preventScroll: true }); } catch { opener.focus(); }
+      }
+    }
+    function onKeydown(event) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeDialog();
+    }
+    overlay.addEventListener('meldex-support-dialog-close', closeDialog);
+    overlay.addEventListener('pointerdown', event => {
+      if (event.target === overlay) closeDialog();
+    });
+    document.addEventListener('keydown', onKeydown, true);
+    setTimeout(() => {
+      const focusTarget = overlay.querySelector('#meldex-support-comment') || overlay.querySelector('.meldex-support-dialog');
+      try { focusTarget?.focus?.({ preventScroll: true }); } catch { focusTarget?.focus?.(); }
+    }, 0);
     const buildSupportPayload = () => {
       const comment = overlay.querySelector('#meldex-support-comment')?.value || '';
       const activity = overlay.querySelector('#meldex-support-activity')?.value || activitySummary;
@@ -527,13 +568,13 @@
         try {
           await window.MeldexBetaFeedback.sendGoogle('crash', payload);
           if (typeof showStatus === 'function') showStatus('サポート情報を送信しました');
-          overlay.remove();
+          closeDialog();
           return;
         } catch (_) {}
       }
       await exportDiagnostics({ error: payload });
       if (typeof showStatus === 'function') showStatus('送信先が未設定のため、診断情報を保存しました');
-      overlay.remove();
+      closeDialog();
     });
   }
 
@@ -607,16 +648,18 @@
     notice.id = 'meldex-error-support-notice';
     notice.setAttribute('role', 'alertdialog');
     notice.setAttribute('aria-live', 'assertive');
+    notice.setAttribute('aria-labelledby', 'meldex-error-support-title');
+    notice.setAttribute('aria-describedby', 'meldex-error-support-desc');
+    if (compact) notice.dataset.compact = '1';
     notice.style.cssText = _errorNoticeStyle(compact);
-    const buttonFlex = compact ? 'flex:1 1 0;min-width:0;' : '';
-    notice.innerHTML = `<div style="display:flex;align-items:flex-start;gap:8px;">
-        <div style="font-weight:700;min-width:0;flex:1;">${esc(friendly.title)}</div>
-        <button class="gb-btn gb-btn-sm" type="button" data-error-action="close" data-e2e-id="error-support-close" aria-label="閉じる" style="padding:2px 8px;line-height:1.2;">×</button>
+    notice.innerHTML = `<div class="meldex-error-notice-head">
+        <div id="meldex-error-support-title" class="meldex-error-notice-title">${esc(friendly.title)}</div>
+        <button class="gb-btn gb-btn-sm meldex-error-notice-close" type="button" data-error-action="close" data-e2e-id="error-support-close" aria-label="閉じる">×</button>
       </div>
-      <div style="color:var(--fg2);line-height:1.5;">${esc(friendly.action)}</div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-        <button class="gb-btn gb-btn-sm" type="button" data-error-action="details" data-e2e-id="error-support-details" style="${buttonFlex}">詳細</button>
-        <button class="gb-btn gb-btn-sm gb-btn-primary" type="button" data-error-action="support" data-e2e-id="error-support-send" style="${buttonFlex}">報告画面を開く</button>
+      <div id="meldex-error-support-desc" class="meldex-error-notice-action">${esc(friendly.action)}</div>
+      <div class="meldex-error-notice-actions">
+        <button class="gb-btn gb-btn-sm" type="button" data-error-action="details" data-e2e-id="error-support-details" aria-label="技術的詳細を開く">詳細</button>
+        <button class="gb-btn gb-btn-sm gb-btn-primary" type="button" data-error-action="support" data-e2e-id="error-support-send" aria-label="報告画面を開く">報告画面を開く</button>
       </div>`;
     document.body.appendChild(notice);
     let autoDismissTimer = 0;

@@ -1,3 +1,43 @@
+    else if (cls.includes('ico-arrowUp')) name = 'arrowUp';
+    else if (cls.includes('ico-arrowDown')) name = 'arrowDown';
+    else if (cls.includes('ico-play')) name = 'play';
+    else if (cls.includes('ico-refreshCw')) name = 'refreshCw';
+    else if (cls.includes('ico-minus')) name = 'minus';
+    else if (cls.includes('ico-columns3') || cls.includes('ico-columns')) name = 'columns';
+    else if (cls.includes('ico-clock')) name = 'clock';
+    else if (cls.includes('ico-arrowLeftS')) name = 'arrowLeftS';
+    else if (cls.includes('ico-arrowRightS')) name = 'arrowRightS';
+    else if (cls.includes('ico-pencil')) name = 'pencil';
+    else if (cls.includes('ico-highlighter')) name = 'highlighter';
+    else if (cls.includes('ico-lasso')) name = 'lasso';
+    else if (cls.includes('ico-square')) name = 'square';
+    else if (cls.includes('ico-eraser')) name = 'eraser';
+    else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
+    else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
+    else if (cls.includes('ico-trash2')) name = 'trash2';
+    else if (cls.includes('ico-crosshair')) name = 'crosshair';
+    else if (cls.includes('ico-save')) name = 'save';
+    else if (cls.includes('ico-bot')) name = 'bot';
+    else if (cls.includes('ico-users')) name = 'users';
+    else if (cls.includes('ico-user')) name = 'user';
+    else if (cls.includes('ico-messagesSquare') || cls.includes('ico-messageSquare')) name = 'messagesSquare';
+    else if (cls.includes('ico-paperclip')) name = 'paperclip';
+    else if (cls.includes('ico-mic')) name = 'mic';
+    else if (cls.includes('ico-fileText')) name = 'fileText';
+    else if (cls.includes('ico-calendarPlus')) name = 'calendarPlus';
+    else if (cls.includes('ico-calendarDays')) name = 'calendarDays';
+    else if (cls.includes('ico-calendarRange')) name = 'calendarRange';
+    else if (cls.includes('ico-calendar')) name = 'calendar';
+    else if (cls.includes('ico-arrowRight')) name = 'arrowRight';
+    else if (cls.includes('ico-arrowLeft')) name = 'arrowLeft';
+    else if (cls.includes('ico-filePlus')) name = 'filePlus';
+    else if (cls.includes('ico-plus')) name = 'plus';
+    else if (cls.includes('ico-eyeOff')) name = 'eyeOff';
+    else if (cls.includes('ico-eye')) name = 'eye';
+    else if (cls.includes('ico-camera')) name = 'camera';
+    else if (cls.includes('ico-gitBranch')) name = 'gitBranch';
+    else if (cls.includes('ico-history')) name = 'history';
+    else if (cls.includes('ico-x')) name = 'x';
     else if (cls.includes('ico-chevronDown')) name = 'chevronDown';
     else if (cls.includes('ico-chevronRight')) name = 'chevronRight';
     else if (cls.includes('ico-chevronLeft')) name = 'chevronLeft';
@@ -497,6 +537,17 @@ function initIframeMarkup(scrollContainer) {
     if (typeof window.confirm !== 'function' || window.confirm(message)) onOk?.();
   }
 
+  function _normalizeEmbeddedNoteIcon(button, size) {
+    const svgIcon = button?.querySelector?.('svg');
+    if (!svgIcon) return;
+    svgIcon.setAttribute('width', String(size));
+    svgIcon.setAttribute('height', String(size));
+    svgIcon.style.width = size + 'px';
+    svgIcon.style.height = size + 'px';
+    svgIcon.style.display = 'block';
+    svgIcon.style.flex = '0 0 ' + size + 'px';
+  }
+
   function _createNoteEditor(data, scheduleSave, noteId) {
     const editor = document.createElement('div');
     editor.className = 'ann-note-editor';
@@ -563,6 +614,9 @@ function initIframeMarkup(scrollContainer) {
       fontFamily: computed?.fontFamily || '',
       fontWeight: queryState('bold') || fontWeight === 'bold' || Number(fontWeight) >= 600 ? 'bold' : '',
       fontStyle: queryState('italic') || computed?.fontStyle === 'italic' ? 'italic' : '',
+      bgColor: computed && !/rgba?\(0,\s*0,\s*0,\s*0\)|transparent/i.test(computed.backgroundColor || '') ? computed.backgroundColor : '',
+      leftAccent: /inset/i.test(computed?.boxShadow || ''),
+      accentColor: computed?.textDecorationColor || '',
       underline: queryState('underline') || /underline/.test(computed?.textDecorationLine || computed?.textDecoration || ''),
       strike: queryState('strikeThrough') || /line-through/.test(computed?.textDecorationLine || computed?.textDecoration || ''),
     };
@@ -579,10 +633,13 @@ function initIframeMarkup(scrollContainer) {
     const selection = window.getSelection?.();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
     const range = selection.getRangeAt(0);
+    const entries = Object.entries(styles || {});
+    const clearKeys = entries.filter(([, value]) => value === '').map(([key]) => key);
+    if (clearKeys.length) _clearNoteSelectionStyles(range, clearKeys);
+    const setEntries = entries.filter(([, value]) => value != null && value !== '');
+    if (!setEntries.length) return;
     const span = document.createElement('span');
-    Object.entries(styles || {}).forEach(([key, value]) => {
-      if (value != null && value !== '') span.style[key] = value;
-    });
+    setEntries.forEach(([key, value]) => { span.style[key] = value; });
     if (!span.getAttribute('style')) return;
     try {
       range.surroundContents(span);
@@ -597,6 +654,34 @@ function initIframeMarkup(scrollContainer) {
     selection.addRange(nextRange);
   }
 
+  function _clearNoteSelectionStyles(range, styleKeys) {
+    if (!range || !styleKeys?.length) return;
+    const roots = new Set();
+    const addElement = (node) => {
+      const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+      if (el) roots.add(el);
+    };
+    addElement(range.startContainer);
+    addElement(range.endContainer);
+    const common = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer?.parentElement;
+    if (common) {
+      const walker = document.createTreeWalker(common, NodeFilter.SHOW_ELEMENT);
+      for (let el = walker.currentNode; el; el = walker.nextNode()) {
+        try {
+          if (range.intersectsNode(el)) roots.add(el);
+        } catch {}
+      }
+    }
+    roots.forEach(el => {
+      styleKeys.forEach(key => {
+        try { el.style[key] = ''; } catch {}
+      });
+      if (!el.getAttribute('style')) el.removeAttribute('style');
+    });
+  }
+
   function _applyNoteSelectionFormat(range, prop, value) {
     _restoreNoteSelection(range);
     if (prop === 'fontWeight') _setNoteCommandState('bold', value === 'bold');
@@ -604,6 +689,9 @@ function initIframeMarkup(scrollContainer) {
     else if (prop === 'underline') _setNoteCommandState('underline', !!value);
     else if (prop === 'strike') _setNoteCommandState('strikeThrough', !!value);
     else if (prop === 'textColor') { try { document.execCommand('foreColor', false, value || '#333333'); } catch {} }
+    else if (prop === 'bgColor') _wrapNoteSelectionStyle({ backgroundColor: value || '' });
+    else if (prop === 'leftAccent') _wrapNoteSelectionStyle(value ? { boxShadow: 'inset 3px 0 0 currentColor', paddingLeft: '6px' } : { boxShadow: '', paddingLeft: '' });
+    else if (prop === 'accentColor') _wrapNoteSelectionStyle({ textDecorationColor: value || '' });
     else if (prop === 'fontSize') {
       const size = Number(value);
       if (Number.isFinite(size) && size > 0) _wrapNoteSelectionStyle({ fontSize: Math.max(8, Math.min(96, size)) + 'px' });
@@ -631,7 +719,7 @@ function initIframeMarkup(scrollContainer) {
     openFormatPopup(anchor, {
       positionAnchor: anchor,
       className: 'gb-fmt-popup--annotation-note',
-      fields: ['textColor', 'fontSize', 'fontFamily', 'bold', 'italic', 'strike', 'underline'],
+      fields: ['textColor', 'fontSize', 'fontFamily', 'bold', 'italic', 'bgColor', 'leftAccent', 'accentColor', 'strike', 'underline'],
       values,
       onChange(prop, value) {
         _applyNoteSelectionFormat(savedRange, prop, value);
@@ -723,7 +811,29 @@ function initIframeMarkup(scrollContainer) {
     header.className = 'ann-note-header';
     const dateStr = item.created ? String(item.created).substring(0, 16).replace('T', ' ') : '';
     const displayUser = (item.user && item.user !== 'anonymous') ? item.user : (data.user || (typeof getUsername === 'function' ? getUsername() : item.user || 'anonymous'));
-    header.innerHTML = `<span class="ann-note-user"><span class="ann-user-icon">${_userIconHtml(displayUser)}</span><span class="ann-user-name">${esc(displayUser || '')}${dateStr ? ' ' + esc(dateStr) : ''}</span></span><span data-ann-more style="cursor:pointer;margin-left:auto;padding:0 4px;">${lucide('moreHorizontal', 12)}</span><span data-ann-delete style="cursor:pointer;">${lucide('x', 12)}</span>`;
+    const headerLabel = document.createElement('span');
+    headerLabel.className = 'ann-note-user';
+    const userIcon = document.createElement('span');
+    userIcon.className = 'ann-user-icon';
+    userIcon.innerHTML = _userIconHtml(displayUser);
+    const userText = document.createElement('span');
+    userText.className = 'ann-user-name';
+    userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'ann-note-delete-btn';
+    deleteBtn.dataset.annDelete = '1';
+    deleteBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-delete`;
+    deleteBtn.setAttribute('aria-label', '注釈を削除');
+    deleteBtn.title = '削除';
+    deleteBtn.innerHTML = lucide('x', 12);
+    _normalizeEmbeddedNoteIcon(deleteBtn, 12);
+    headerLabel.appendChild(userIcon);
+    headerLabel.appendChild(userText);
+    header.appendChild(headerLabel);
+    header.appendChild(deleteBtn);
+    note.tabIndex = -1;
+    note.setAttribute('aria-haspopup', 'menu');
     note.appendChild(header);
 
     let saveTimer = null;
@@ -764,7 +874,7 @@ function initIframeMarkup(scrollContainer) {
     };
     header.addEventListener('pointerdown', (e) => {
       // 削除 (x) / メニュー (…) ボタン上ではドラッグ開始しない
-      if (!_ann.active || e.target.closest('[data-ann-delete],[data-ann-more]')) return;
+      if (!_ann.active || e.target.closest('[data-ann-delete],button,.ann-note-resize-handle,.gb-fmt-popup')) return;
       e.preventDefault();
       e.stopPropagation();
       const pt = _toLocalCoords(e.clientX, e.clientY);
@@ -788,113 +898,3 @@ function initIframeMarkup(scrollContainer) {
         return;
       }
       if (_updateBoardAnnotation(item.id, { data: payload }, () => note.remove())) return;
-      note.remove();
-      _postToParent({ type: 'ann-delete-note', annId: item.id, data: payload });
-    };
-
-    header.querySelector('[data-ann-delete]')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
-    });
-
-    // ヘッダー右端の「…」ボタン: 右クリックと同じメニューを開く
-    const moreBtn = header.querySelector('[data-ann-more]');
-    if (moreBtn) {
-      // pointerdown も止めて、ボード側のハンドラに左クリックが伝播しないようにする
-      moreBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
-      moreBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        _showEmbeddedNoteContextMenu(e);
-      });
-    }
-
-    // 右クリックメニュー (色変更 / フキダシしっぽ / 削除)
-    function _showEmbeddedNoteContextMenu(ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
-      const menu = document.createElement('div');
-      menu.className = '_note-ctx-menu';
-      menu.style.cssText = 'position:fixed;z-index:210;background:var(--ui-popup-bg, var(--bg2));border:1px solid var(--border);border-radius:6px;padding:4px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4);min-width:120px;';
-      const z = (typeof window._getZoom === 'function') ? window._getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
-      menu.style.left = (ev.clientX / z) + 'px';
-      menu.style.top = (ev.clientY / z) + 'px';
-      const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
-      const colorItem = document.createElement('div');
-      colorItem.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-      colorItem.innerHTML = (typeof window.lucide === 'function' ? window.lucide('palette', 14) : '') + ' 色を変更';
-      colorItem.onmouseenter = () => { colorItem.style.background = 'var(--bg4)'; };
-      colorItem.onmouseleave = () => { colorItem.style.background = ''; };
-      colorItem.addEventListener('click', () => {
-        menu.remove();
-        if (typeof window.openColorPalette === 'function') {
-          window.openColorPalette(note, item.color || '', (newColor) => {
-            item.color = newColor || item.color;
-            _applyNoteColor(note, item.color);
-            if (boardMode && String(item.id || '').startsWith('pending-note-')) return;
-            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
-            _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
-          });
-        }
-      });
-      menu.appendChild(colorItem);
-      const tailItem = document.createElement('div');
-      tailItem.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-      tailItem.innerHTML = (typeof window.lucide === 'function' ? window.lucide('messageSquare', 14) : '') + (hasTail ? ' しっぽを削除' : ' しっぽを追加');
-      tailItem.onmouseenter = () => { tailItem.style.background = 'var(--bg4)'; };
-      tailItem.onmouseleave = () => { tailItem.style.background = ''; };
-      tailItem.addEventListener('click', () => {
-        menu.remove();
-        const hasTailMod = (typeof AnnotationStickyTail !== 'undefined');
-        if (hasTail) {
-          // しっぽ削除: data から消し、DOM からも消す
-          if (hasTailMod && note._annTailCtx) {
-            delete note._annTailCtx.data.tail;
-            delete note._annTailCtx.data.tailX;
-            delete note._annTailCtx.data.tailY;
-          }
-          note.querySelectorAll(':scope > .ann-tail, :scope > .ann-tail-line, :scope > .ann-tail-shape, :scope > .ann-tail-handle').forEach(el => el.remove());
-          delete data.tail;
-          delete data.tailX;
-          delete data.tailY;
-        } else if (hasTailMod) {
-          // しっぽ追加: data.tail を設定、SVG/ハンドル描画
-          const w = note.offsetWidth || data.width || 180;
-          const h = note.offsetHeight || data.height || 100;
-          const newTail = {
-            startX: w / 2,
-            startY: h / 2,
-            endX: w / 2,
-            endY: h + 40,
-            target: null,
-          };
-          data.tail = newTail;
-          delete data.tailX;
-          delete data.tailY;
-          // install 済みコンテキストの data も同じ参照なので追加は届くが、念のため同期
-          if (note._annTailCtx) {
-            note._annTailCtx.data.tail = newTail;
-            delete note._annTailCtx.data.tailX;
-            delete note._annTailCtx.data.tailY;
-          }
-          AnnotationStickyTail.setTail(note, newTail, null);
-        }
-        // バックエンドへ保存 (現在の data 全体を送る)
-        const payload = _notePayload(data, editor, note);
-        if (item.id && !String(item.id).startsWith('pending-note-') && typeof apiPut === 'function') {
-          if (!_updateBoardAnnotation(item.id, { data: payload })) {
-            apiPut('/annotations/' + encodeURIComponent(item.id), { data: payload })
-              .catch(error => _reportMarkupSaveFailure(error));
-          }
-        } else {
-          item._pendingData = payload;
-        }
-      });
-      menu.appendChild(tailItem);
-      const deleteItem = document.createElement('div');
-      deleteItem.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;color:var(--red);display:flex;align-items:center;gap:6px;';
-      deleteItem.innerHTML = (typeof window.lucide === 'function' ? window.lucide('trash2', 14) : '') + ' 削除';
-      deleteItem.onmouseenter = () => { deleteItem.style.background = 'var(--bg4)'; };
-      deleteItem.onmouseleave = () => { deleteItem.style.background = ''; };

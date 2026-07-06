@@ -411,7 +411,7 @@
     const allowed = this._allowedClockActions(state);
     this._clockBtnsEl.innerHTML = CLOCK_ACTIONS.map(action => {
       const enabled = allowed.has(action.type) && !this._clockBusy && !this._clockStateUnknown;
-      return `<button class="gb-cal-clock-icon-btn ${enabled ? '' : 'is-disabled'}" data-clock="${action.type}" title="${action.label}" aria-label="${action.label}" ${enabled ? '' : 'disabled'}>${_calAttIcon(action.icon, 18)}</button>`;
+      return `<button type="button" class="gb-cal-clock-icon-btn ${enabled ? '' : 'is-disabled'}" data-clock="${action.type}" title="${action.label}" aria-label="${action.label}" ${enabled ? '' : 'disabled'}>${_calAttIcon(action.icon, 18)}</button>`;
     }).join('');
   };
 
@@ -517,6 +517,7 @@
     header.type = 'button';
     header.className = 'gb-cal-section-header';
     header.dataset.calSectionHeader = id;
+    header.setAttribute('aria-label', `${title}を開閉`);
     header.innerHTML = `<span class="gb-cal-section-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-section-title">${_calAttIcon(icon, 14)}<span>${_calAttEsc(title)}</span></span>`;
     const body = document.createElement('div');
     body.className = 'gb-cal-section-body';
@@ -543,10 +544,12 @@
     const isOpen = localStorage.getItem(key) !== 'false';
     section.classList.toggle('is-collapsed', !isOpen);
     if (body) body.hidden = !isOpen;
+    header?.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
     header?.addEventListener('click', () => {
       const nextOpen = section.classList.contains('is-collapsed');
       section.classList.toggle('is-collapsed', !nextOpen);
       if (body) body.hidden = !nextOpen;
+      header.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
       localStorage.setItem(key, nextOpen ? 'true' : 'false');
     });
   };
@@ -645,6 +648,8 @@
         header.type = 'button';
         header.className = 'gb-cal-attendance-folder-header';
         header.dataset.calAttendanceFolder = folderKey || group.label || 'default';
+        header.setAttribute('aria-label', `${group.label}の出退勤状況を開閉`);
+        header.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
         header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(group.label)}</span><span class="gb-cal-folder-count">${group.rows.length}</span>`;
         const body = document.createElement('div');
         body.className = 'gb-cal-attendance-folder-body';
@@ -653,6 +658,7 @@
           const nextOpen = groupEl.classList.contains('is-collapsed');
           groupEl.classList.toggle('is-collapsed', !nextOpen);
           body.hidden = !nextOpen;
+          header.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
           localStorage.setItem(storageKey, nextOpen ? 'true' : 'false');
         });
         group.rows.forEach(row => body.appendChild(buildUserRow(row)));
@@ -695,6 +701,8 @@
       header.type = 'button';
       header.className = 'gb-cal-calendar-folder-header';
       header.dataset.calCalendarFolder = folder || 'default';
+      header.setAttribute('aria-label', `${section.label}のカレンダーを開閉`);
+      header.setAttribute('aria-expanded', open ? 'true' : 'false');
       header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(section.label)}</span><span class="gb-cal-folder-count">${calendars.length}</span>`;
       const body = document.createElement('div');
       body.className = 'gb-cal-calendar-folder-body';
@@ -703,6 +711,7 @@
         const nextOpen = group.classList.contains('is-collapsed');
         group.classList.toggle('is-collapsed', !nextOpen);
         body.hidden = !nextOpen;
+        header.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
         localStorage.setItem(key, nextOpen ? 'true' : 'false');
       });
       group.appendChild(header);
@@ -717,7 +726,9 @@
     row.className = 'gb-cal-calendar-row';
     row.dataset.calendarId = cal.id;
     row.tabIndex = 0;
+    row.setAttribute('aria-label', 'カレンダーを選択: ' + (cal.name || '無題'));
     row.classList.toggle('is-selected', this._selectedCalendarId === cal.id);
+    row.setAttribute('aria-selected', this._selectedCalendarId === cal.id ? 'true' : 'false');
     row.addEventListener('click', (e) => {
       if (e.target.closest('input,button,select,label')) return;
       this._selectCalendar?.(cal.id);
@@ -730,6 +741,7 @@
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.title = '表示切り替え: ' + (cal.name || '無題');
+    cb.setAttribute('aria-label', cb.title);
     cb.dataset.calCalendarVisible = cal.id || '';
     cb.checked = this._visibleCalIds.has(cal.id);
     cb.disabled = !this._calUserCanEditCalendar(cal);
@@ -790,6 +802,9 @@
     menu.style.zIndex = '10002';
     const canEdit = this._calUserCanEditCalendar(cal);
     const canDelete = this._calUserCanDeleteCalendar(cal);
+    const calendarE2eKey = _calAttCalendarE2eKey(this, cal);
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-label', 'カレンダー操作: ' + (cal.name || '無題'));
 
     const title = document.createElement('div');
     title.className = 'gb-cal-calendar-menu-title';
@@ -804,11 +819,13 @@
     colorSwatch.type = 'button';
     colorSwatch.className = 'gb-color-swatch gb-color-swatch--field';
     colorSwatch.title = 'カレンダーの色';
+    colorSwatch.setAttribute('aria-label', 'カレンダーの色');
     const currentColor = cal.color || _calAttPaletteColorAt(0);
     if (typeof setColorSwatchValue === 'function') setColorSwatchValue(colorSwatch, currentColor);
     else { colorSwatch.dataset.color = currentColor; colorSwatch.style.background = currentColor; }
     colorSwatch.disabled = !canEdit;
     colorSwatch.title = canEdit ? 'カレンダーの色' : '編集権限がありません';
+    colorSwatch.setAttribute('aria-label', colorSwatch.title);
     if (canEdit && typeof bindColorSwatch === 'function') {
       bindColorSwatch(colorSwatch,
         () => (typeof getColorSwatchValue === 'function' ? getColorSwatchValue(colorSwatch, currentColor) : (colorSwatch.dataset.color || currentColor)),
@@ -830,13 +847,22 @@
       folderLabel.textContent = 'フォルダ';
       folderInput = document.createElement('input');
       folderInput.type = 'text';
+      folderInput.className = 'gb-cal-calendar-folder-input';
       folderInput.value = _calAttDefaultFolder(cal);
       folderInput.placeholder = DEFAULT_CALENDAR_FOLDER;
       folderInput.disabled = !canEdit;
+      folderInput.title = canEdit ? 'フォルダ' : '編集権限がありません';
+      folderInput.setAttribute('aria-label', 'フォルダ');
+      folderInput.dataset.e2eId = 'calendar-folder-input-' + calendarE2eKey;
+      folderInput.dataset.calCalendarFolderInput = cal.id || '';
       const folderSave = document.createElement('button');
       folderSave.type = 'button';
+      folderSave.className = 'gb-cal-calendar-folder-save';
       folderSave.disabled = !canEdit;
       folderSave.title = canEdit ? 'フォルダ名変更' : '編集権限がありません';
+      folderSave.setAttribute('aria-label', folderSave.title);
+      folderSave.dataset.e2eId = 'calendar-folder-save-' + calendarE2eKey;
+      folderSave.dataset.calCalendarFolderSave = cal.id || '';
       folderSave.innerHTML = _calAttIcon('folderPen', 14);
       folderSave.addEventListener('click', async () => {
         await this._setCalendarFolder(cal, folderInput.value);
@@ -871,6 +897,7 @@
     roleSelect.value = cal.edit_role || 'owner';
     roleSelect.disabled = !this._calUserIsAdmin();
     roleSelect.title = roleSelect.disabled ? '管理者のみ変更できます' : '編集権限';
+    roleSelect.setAttribute('aria-label', '編集権限');
     roleSelect.addEventListener('change', () => this._setCalendarRole(cal, roleSelect.value));
     roleRow.append(roleLabel, roleSelect);
     menu.appendChild(roleRow);
@@ -883,6 +910,7 @@
     deleteBtn.className = 'gb-cal-calendar-menu-delete';
     deleteBtn.disabled = !canDelete;
     deleteBtn.title = canDelete ? 'このカレンダーを削除' : '削除権限がありません';
+    deleteBtn.setAttribute('aria-label', deleteBtn.title);
     deleteBtn.innerHTML = `<span>${_calAttIcon('trash2', 14)}</span><span>このカレンダーを削除</span>`;
     deleteBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -898,13 +926,36 @@
     menu.style.top = (rect.top / z) + 'px';
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
     setTimeout(() => {
+      const cleanup = () => {
+        menu.remove();
+        document.removeEventListener('pointerdown', close, true);
+        document.removeEventListener('keydown', closeKey, true);
+      };
       const close = (ev) => {
         if (!menu.contains(ev.target) && ev.target !== anchor) {
-          menu.remove();
-          document.removeEventListener('pointerdown', close, true);
+          cleanup();
         }
       };
+      const closeKey = (ev) => {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        cleanup();
+        const restored = anchor?.isConnected
+          ? anchor
+          : [...document.querySelectorAll('[data-cal-calendar-action]')]
+            .find(btn => btn?.dataset?.calCalendarAction === 'menu:' + String(cal.id || ''));
+        const focusRestored = () => {
+          if (!restored?.isConnected) return;
+          try { restored.focus({ preventScroll: true }); }
+          catch { restored.focus?.(); }
+        };
+        focusRestored();
+        setTimeout(() => {
+          if (document.activeElement !== restored) focusRestored();
+        }, 0);
+      };
       document.addEventListener('pointerdown', close, true);
+      document.addEventListener('keydown', closeKey, true);
     }, 0);
   };
 
@@ -963,6 +1014,7 @@
     const select = document.createElement('select');
     select.className = 'gb-cal-calendar-team-folder';
     select.innerHTML = '<option value="">読み込み中...</option>';
+    select.setAttribute('aria-label', 'ワークスペース');
     const canEdit = this._calUserCanEditCalendar(cal);
     select.disabled = !canEdit;
     select.title = canEdit ? 'ワークスペース' : '編集権限がありません';

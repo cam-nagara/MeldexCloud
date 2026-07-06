@@ -13,6 +13,31 @@ let tooltipCache = {};
 
 let _tooltipLink = null; // 現在ツールチップ表示中のリンク要素
 let _tooltipSuppressedLink = null;
+let _tooltipDescribedLink = null;
+let _tooltipDescribedId = '';
+let _tooltipIdSeq = 0;
+
+function _clearAutoLinkTooltipDescription() {
+  if (_tooltipDescribedLink && _tooltipDescribedId && document.documentElement.contains(_tooltipDescribedLink)) {
+    const ids = (_tooltipDescribedLink.getAttribute('aria-describedby') || '')
+      .split(/\s+/)
+      .filter(id => id && id !== _tooltipDescribedId);
+    if (ids.length) _tooltipDescribedLink.setAttribute('aria-describedby', ids.join(' '));
+    else _tooltipDescribedLink.removeAttribute('aria-describedby');
+  }
+  _tooltipDescribedLink = null;
+  _tooltipDescribedId = '';
+}
+
+function _attachAutoLinkTooltipDescription(link, tip) {
+  _clearAutoLinkTooltipDescription();
+  if (!link || !tip?.id) return;
+  const ids = (link.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+  if (!ids.includes(tip.id)) ids.push(tip.id);
+  link.setAttribute('aria-describedby', ids.join(' '));
+  _tooltipDescribedLink = link;
+  _tooltipDescribedId = tip.id;
+}
 
 function _isAutoLinkTooltipSuppressed(link) {
   if (!_tooltipSuppressedLink) return false;
@@ -117,16 +142,34 @@ function _queueAutoLinkTooltip(linkOrTarget) {
     removeTooltip();
     tooltipEl = document.createElement('div');
     tooltipEl.className = 'link-tooltip';
-    let ttHtml = `<div class="lt-title">${_linkIcon(path)} ${esc(info.title)}</div>`;
-    if (info.img) ttHtml += `<img src="${info.img}" style="max-width:200px;max-height:120px;border-radius:4px;margin-top:4px;">`;
-    else if (info.props) ttHtml += `<div class="lt-props">${esc(info.props).replace(/\n/g, '<br>')}</div>`;
-    tooltipEl.innerHTML = ttHtml;
+    tooltipEl.id = 'link-tooltip-' + (++_tooltipIdSeq);
+    tooltipEl.setAttribute('role', 'tooltip');
+    tooltipEl.setAttribute('aria-hidden', 'false');
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'lt-title';
+    titleEl.innerHTML = `${_linkIcon(path)} ${esc(info.title)}`;
+    tooltipEl.appendChild(titleEl);
+
+    if (info.img) {
+      const preview = document.createElement('img');
+      preview.className = 'lt-preview';
+      preview.src = info.img;
+      preview.alt = info.title || path.split(/[/\\]/).pop() || 'preview';
+      tooltipEl.appendChild(preview);
+    } else if (info.props) {
+      const propsEl = document.createElement('div');
+      propsEl.className = 'lt-props';
+      propsEl.innerHTML = esc(info.props).replace(/\n/g, '<br>');
+      tooltipEl.appendChild(propsEl);
+    }
 
     const rect = link.getBoundingClientRect();
     const z = _getZoom();
     tooltipEl.style.left = (rect.left / z) + 'px';
     tooltipEl.style.top = (rect.bottom / z + 4) + 'px';
     document.body.appendChild(tooltipEl);
+    _attachAutoLinkTooltipDescription(link, tooltipEl);
 
     if (typeof clampPopupToViewport === 'function') {
       clampPopupToViewport(tooltipEl);
@@ -182,6 +225,9 @@ document.addEventListener('mouseout', (e) => {
 // スクロールやクリック時にもツールチップを消す
 document.addEventListener('scroll', removeTooltip, true);
 document.addEventListener('click', removeTooltip, true);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && (tooltipEl || tooltipTimer)) removeTooltip({ suppressLink: _tooltipLink });
+}, true);
 
 function removeTooltip(options = {}) {
   const suppressLink = options.suppressLink || null;
@@ -190,6 +236,7 @@ function removeTooltip(options = {}) {
   if (suppressLink && document.documentElement.contains(suppressLink)) {
     _tooltipSuppressedLink = suppressLink;
   }
+  _clearAutoLinkTooltipDescription();
   _tooltipLink = null;
   if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
 }

@@ -167,13 +167,38 @@
 }
 
 .tl-color-modal {
-  min-width: 360px;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 24px));
+  min-width: 0;
+  max-width: 420px;
+}
+
+.tl-color-header {
+  gap: 12px;
+}
+
+.tl-color-header h3 {
+  margin: 0;
+}
+
+.tl-color-close {
+  margin-left: auto;
+}
+
+.tl-color-body {
+  display: grid;
+  gap: 12px;
 }
 
 .tl-color-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  align-items: flex-end;
+  align-items: end;
+}
+
+.tl-color-row .field {
+  min-width: 0;
 }
 
 .tl-color-target {
@@ -499,5 +524,27 @@ input.tl-number-input:focus::-webkit-inner-spin-button {
 
   .tl-calendar-date-time {
     grid-column: auto;
+  }
+
+  .tl-header-more-btn {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  .tl-color-modal {
+    width: min(520px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+  }
+
+  .tl-color-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tl-color-row .gb-fmt-swatch-bg,
+  .tl-color-row .gb-fmt-swatch-fg,
+  .tl-color-modal button {
+    min-width: 44px;
+    min-height: 44px;
   }
 }

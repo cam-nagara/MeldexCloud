@@ -11,6 +11,7 @@
 */
 (function() {
   'use strict';
+  let modalIdSeq = 0;
 
   // ============================================================
   // 内部ユーティリティ
@@ -57,7 +58,7 @@
   // Button
   // ============================================================
   // opts: { label, icon, size: 'xs'|'sm'|'md'|'lg', variant: 'primary'|'danger'|'quiet'|'ghost',
-  //         iconOnly, title, onClick, disabled, type: 'button'|'submit', extraClass }
+  //         iconOnly, title, ariaLabel, onClick, disabled, type: 'button'|'submit', extraClass }
   function createButton(opts) {
     opts = opts || {};
     const btn = el('button', {
@@ -68,6 +69,10 @@
     btn.classList.add('gb-btn-' + (opts.size || 'md'));
     if (opts.variant) btn.classList.add('gb-btn-' + opts.variant);
     if (opts.iconOnly || (opts.icon && !opts.label)) btn.classList.add('gb-btn-icon');
+    const buttonLabel = opts.ariaLabel || opts.label || opts.title || '';
+    if ((opts.iconOnly || (opts.icon && !opts.label)) && buttonLabel) {
+      btn.setAttribute('aria-label', buttonLabel);
+    }
     if (opts.extraClass) btn.classList.add(opts.extraClass);
     if (opts.disabled) btn.disabled = true;
 
@@ -386,7 +391,7 @@
   // ============================================================
   // Color Swatch (Phase 1 緊急実装と対)
   // ============================================================
-  // opts: { variant: 'toolbar'|'field'|'inline'|'detail', color, transparent, onClick, title, isOverridden }
+  // opts: { variant: 'toolbar'|'field'|'inline'|'detail', color, transparent, onClick, title, ariaLabel, isOverridden }
   function createColorSwatch(opts) {
     opts = opts || {};
     const sw = el('button', {
@@ -394,6 +399,8 @@
       title: opts.title || '',
       attrs: { type: 'button' }
     });
+    const label = opts.ariaLabel || opts.title || '';
+    if (label) sw.setAttribute('aria-label', label);
     if (opts.variant) sw.classList.add('gb-color-swatch--' + opts.variant);
     if (opts.isOverridden) sw.classList.add('is-overridden');
     applySwatchColor(sw, opts.color, opts.transparent);
@@ -440,6 +447,7 @@
       text: '\u21BA',  // ↺
       attrs: { type: 'button' }
     });
+    btn.setAttribute('aria-label', opts.ariaLabel || opts.title || 'リセット');
     if (typeof opts.onClick === 'function') btn.addEventListener('click', opts.onClick);
     return btn;
   }
@@ -447,7 +455,7 @@
   // ============================================================
   // Format Button (.gb-fmt-btn)
   // ============================================================
-  // opts: { label, icon, active, title, onClick }
+  // opts: { label, icon, active, title, ariaLabel, onClick }
   function createFmtBtn(opts) {
     opts = opts || {};
     const btn = el('button', {
@@ -455,7 +463,14 @@
       title: opts.title || '',
       attrs: { type: 'button' }
     });
-    if (opts.active) btn.classList.add('active');
+    const label = opts.ariaLabel || opts.label || opts.title || '';
+    if (label) btn.setAttribute('aria-label', label);
+    if (opts.active) {
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+    } else {
+      btn.setAttribute('aria-pressed', 'false');
+    }
     if (opts.icon) {
       if (typeof opts.icon === 'string') {
         btn.appendChild(el('span', { cls: ['ico', 'ico-' + opts.icon] }));
@@ -492,9 +507,11 @@
     const caret = el('span', { cls: ['caret'], text: '\u25BE' });
     const btn = el('button', {
       cls: ['gb-style-trigger'],
-      attrs: { type: 'button' },
+      attrs: { type: 'button', 'aria-haspopup': 'dialog' },
       children: [previewBox, labelBox, caret]
     });
+    const label = opts.ariaLabel || opts.title || opts.name || '';
+    if (label) btn.setAttribute('aria-label', label);
     if (typeof opts.onClick === 'function') btn.addEventListener('click', opts.onClick);
     return btn;
   }
@@ -571,6 +588,13 @@
         }
         if (typeof opts.onRowClick === 'function') {
           tr.addEventListener('click', (ev) => opts.onRowClick(row, ev));
+          tr.tabIndex = 0;
+          tr.setAttribute('role', 'button');
+          tr.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter' && ev.key !== ' ') return;
+            ev.preventDefault();
+            opts.onRowClick(row, ev);
+          });
         }
         tbody.appendChild(tr);
       }
@@ -599,18 +623,32 @@
   function createModal(opts) {
     opts = opts || {};
     const overlay = el('div', { cls: ['gb-modal-overlay'] });
-    const modal = el('div', { cls: ['gb-modal'] });
+    const modalId = opts.id || ('gb-ui-modal-' + (++modalIdSeq));
+    const titleId = opts.titleId || (modalId + '-title');
+    const modal = el('div', {
+      cls: ['gb-modal'],
+      attrs: {
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-labelledby': titleId,
+        tabindex: '-1'
+      }
+    });
     if (opts.extraClass) modal.classList.add(opts.extraClass);
     if (opts.minWidth) modal.style.minWidth = (typeof opts.minWidth === 'number' ? opts.minWidth + 'px' : opts.minWidth);
 
     // header
     const header = el('div', { cls: ['gb-modal-header'] });
-    header.appendChild(el('div', { cls: ['gb-modal-title'], text: opts.title || '' }));
+    header.appendChild(el('div', {
+      cls: ['gb-modal-title'],
+      text: opts.title || '',
+      attrs: { id: titleId }
+    }));
     const closeBtn = el('button', {
       cls: ['gb-modal-close'],
       title: '閉じる',
       text: '\u00D7',
-      attrs: { type: 'button' }
+      attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる' }
     });
     header.appendChild(closeBtn);
 
@@ -673,7 +711,11 @@
     const cls = inner ? 'gb-inner-tab' : 'gb-panel-tab';
     const tab = el('button', {
       cls: [cls],
-      attrs: { type: 'button' }
+      attrs: {
+        type: 'button',
+        role: 'tab',
+        'aria-selected': opts.active ? 'true' : 'false'
+      }
     });
     if (opts.active) tab.classList.add(inner ? 'gb-inner-tab-active' : 'gb-panel-tab-active');
 
@@ -692,8 +734,19 @@
       tab.appendChild(el('span', { cls: [labelCls], text: opts.label }));
     }
     if (opts.closable && !inner) {
-      const close = el('span', { cls: ['gb-panel-tab-close'], text: '\u00D7' });
+      const close = el('span', {
+        cls: ['gb-panel-tab-close'],
+        text: '\u00D7',
+        title: '閉じる',
+        attrs: { role: 'button', tabindex: '0', 'aria-label': (opts.label ? opts.label + 'を閉じる' : 'タブを閉じる') }
+      });
       close.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (typeof opts.onClose === 'function') opts.onClose(ev);
+      });
+      close.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
         ev.stopPropagation();
         if (typeof opts.onClose === 'function') opts.onClose(ev);
       });

@@ -345,15 +345,61 @@
   padding: 4px;
   z-index: 10000;
 }
+.sn2-ruby-popup {
+  box-sizing: border-box;
+  min-width: 240px;
+  padding: 8px 12px;
+}
+.sn2-ruby-popup-title {
+  margin-bottom: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+.sn2-ruby-popup-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.sn2-ruby-popup-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  font-size: 13px;
+}
+.sn2-ruby-popup-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.sn2-ruby-popup-check {
+  min-width: 0;
+}
+.sn2-ruby-popup-check span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sn2-ruby-popup-auto {
+  margin-left: auto;
+}
 .sn2-header-popup-sep { border-top: 1px solid var(--border); margin: 2px 0; }
 .sn2-header-popup-label { padding: 4px 8px 2px; font-size: 10px; color: var(--fg2); font-weight: 600; }
 .sn2-header-popup-item {
   display: block; width: 100%; padding: 5px 12px;
-  border: none; background: transparent; color: var(--fg);
-  font-size: 12px; text-align: left; cursor: pointer; border-radius: 4px;
+  appearance: none; border: none; background: transparent; color: var(--fg);
+  font-family: inherit; font-size: 12px; line-height: 1.2; text-align: left; cursor: pointer; border-radius: 4px;
 }
 .sn2-header-popup-item:hover { background: var(--bg4); }
 .sn2-header-popup-item.active { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 28%, transparent); }
+.sn2-header-popup-item:disabled {
+  background: transparent;
+  color: var(--fg2);
+  cursor: default;
+}
+.sn2-header-popup-item:disabled:hover { background: transparent; }
 /* サブメニュートリガー */
 .sn2-header-popup-sub-trigger {
   display: flex !important; align-items: center; justify-content: space-between;
@@ -362,6 +408,65 @@
 .sn2-header-popup-arrow { color: var(--fg2); font-size: 10px; margin-left: 8px; }
 /* サブメニューポップアップ */
 .sn2-header-sub-popup { min-width: 120px; }
+.sn2-filter-all-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sn2-filter-grid-header {
+  display: grid;
+  grid-template-columns: 36px 36px minmax(0, 1fr);
+  gap: 0;
+  padding: 2px 8px 4px;
+  font-size: 10px;
+  color: var(--fg2);
+  font-weight: 600;
+  text-align: center;
+}
+.sn2-filter-grid-label {
+  text-align: left;
+  padding-left: 4px;
+}
+.sn2-filter-row {
+  display: grid;
+  grid-template-columns: 36px 36px minmax(0, 1fr);
+  gap: 0;
+  align-items: center;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: default;
+  border-radius: 4px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .sn2-filter-row:hover {
+    background: var(--ui-bg-control-hover, var(--bg4));
+  }
+}
+.sn2-filter-checkbox {
+  justify-self: center;
+  margin: 0;
+  cursor: pointer;
+}
+.sn2-filter-checkbox-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  cursor: pointer;
+}
+.sn2-filter-item-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* 配置設定 */
 .sn2-text[data-align="left"] { text-align: left; }
@@ -412,6 +517,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sn2-header-cell[role="button"]:focus-visible,
+.sn2-col-resizer:focus-visible {
+  outline: 1px solid var(--ui-focus, var(--blue, #4a90d9));
+  outline-offset: -1px;
+}
 /* テキスト列(ヘッダー): 固定幅未設定時はデフォルト幅。リサイズ後はCSS変数で制御 */
 .sn2-header-flex { width: var(--sn2-col-_text, 300px); flex: 0 0 auto; }
 .sn2-col-resizer {
@@ -423,6 +533,7 @@
   transition: background 0.15s;
   position: relative;
   z-index: 1;
+  touch-action: none;
 }
 .sn2-col-resizer:hover,
 .sn2-col-resizer:active {

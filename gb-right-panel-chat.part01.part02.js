@@ -30,13 +30,32 @@ function _teamMarkdownImageAlt(name) {
   return String(name || 'image').replace(/[\r\n]+/g, ' ').replace(/\\/g, '\\\\').replace(/\]/g, '\\]');
 }
 
+function _teamIsVisibleElement(el) {
+  if (!el || !(el instanceof Element)) return false;
+  const style = getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+}
+
+function _teamChatRoot() {
+  const roots = [...document.querySelectorAll('[id="rp-chat"]')]
+    .filter(root => !root.closest('[data-gb-snapshot="true"]'));
+  return roots.find(_teamIsVisibleElement) || roots[0] || document.getElementById('rp-chat');
+}
+
+function _teamElementById(id) {
+  const root = _teamChatRoot();
+  const scoped = root?.querySelector?.(`[id="${id}"]`);
+  return scoped || document.getElementById(id);
+}
+
 function _teamSendButton() {
-  return document.getElementById('team-send-btn')
+  return _teamElementById('team-send-btn')
     || document.querySelector('[data-action="teamSend()"], [onclick="teamSend()"]');
 }
 
 function _syncTeamRoomSelect(rooms) {
-  const select = document.getElementById('team-room-select');
+  const select = _teamElementById('team-room-select');
   if (!select) return;
   const current = _teamCurrentRoom;
   const visibleRooms = (rooms || []).filter(room => !_isBuiltInGeneralRoom(room));
@@ -138,6 +157,7 @@ function _renderTeamRoomTitle(room) {
 
   const deleteBtn = document.createElement('button');
   deleteBtn.type = 'button';
+  deleteBtn.dataset.e2eId = 'team-room-delete-button';
   deleteBtn.title = _teamRoomDeleteLabel(room);
   deleteBtn.setAttribute('aria-label', _teamRoomDeleteLabel(room));
   deleteBtn.innerHTML = lucide('trash2', 13);
@@ -155,12 +175,19 @@ function _beginTeamRoomTitleEdit(room) {
   if (!title) return;
   const input = document.createElement('input');
   input.type = 'text';
+  input.id = 'team-room-title-input';
+  input.className = 'team-room-title-input';
+  input.dataset.e2eId = 'team-room-title-input';
+  input.setAttribute('aria-label', 'ルーム名');
+  input.title = 'ルーム名';
   input.value = room.name || _roomDisplayName(room) || '';
   input.style.cssText = 'flex:1;min-width:0;font:inherit;font-weight:bold;background:var(--bg);color:var(--fg);border:1px solid var(--accent);border-radius:3px;padding:2px 6px;';
   title.innerHTML = '';
   title.appendChild(input);
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
+  cancelBtn.className = 'team-room-title-cancel-btn';
+  cancelBtn.dataset.e2eId = 'team-room-title-cancel-button';
   cancelBtn.title = '編集をキャンセル';
   cancelBtn.setAttribute('aria-label', '編集をキャンセル');
   cancelBtn.innerHTML = lucide('x', 13);
@@ -231,36 +258,94 @@ async function _renameTeamRoom(room, newName) {
   }
 }
 
-// ルーム右クリックメニュー
-function showTeamRoomContextMenu(e, room) {
+function _chatContextMenuCanRestoreFocus(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.tabIndex >= 0) return true;
+  return /^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/i.test(el.tagName);
+}
+
+function _chatContextMenuTrigger(e) {
+  const trigger = e?.currentTarget || e?.target || document.activeElement;
+  return _chatContextMenuCanRestoreFocus(trigger) ? trigger : null;
+}
+
+function _chatAppendContextMenuItem(menu, { icon, label, danger, action }) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'gb-context-menu-item' + (danger ? ' danger' : '');
+  item.setAttribute('role', 'menuitem');
+  item.innerHTML = lucide(icon, 14) + ' ' + esc(label);
+  item.addEventListener('click', async () => {
+    const close = menu.__chatContextMenuClose;
+    if (typeof close === 'function') close(true);
+    else menu.remove();
+    await action?.();
+  });
+  menu.appendChild(item);
+  return item;
+}
+
+function _showChatContextMenu(e, ariaLabel, buildItems) {
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
-  if (room.type !== 'dm') {
-    const renameItem = document.createElement('div');
-    renameItem.className = 'gb-context-menu-item';
-    renameItem.innerHTML = lucide('pencil', 14) + ' リネーム';
-    renameItem.addEventListener('click', () => { menu.remove(); _doRenameTeamRoom(room); });
-    menu.appendChild(renameItem);
-  }
-  const delItem = document.createElement('div');
-  delItem.className = 'gb-context-menu-item';
-  delItem.style.color = 'var(--red)';
-  delItem.innerHTML = lucide('trash2', 14) + (room.type === 'dm' ? ' DMを閉じる' : ' ルームを削除');
-  delItem.addEventListener('click', async () => {
-    menu.remove();
-    await _deleteTeamRoom(room);
-  });
-  menu.appendChild(delItem);
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', ariaLabel);
+  buildItems(menu);
   document.body.appendChild(menu);
+  const trigger = _chatContextMenuTrigger(e);
   const _z = (typeof _getZoom === 'function') ? _getZoom() : 1;
-  menu.style.left = (e.clientX / _z) + 'px';
-  menu.style.top = (e.clientY / _z) + 'px';
+  menu.style.left = ((Number(e?.clientX) || 0) / _z) + 'px';
+  menu.style.top = ((Number(e?.clientY) || 0) / _z) + 'px';
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+
+  let closeMenu;
+  const restoreFocus = () => {
+    if (!trigger || !trigger.isConnected) return;
+    try { trigger.focus({ preventScroll: true }); } catch {}
+  };
+  const pointerHandler = (ev) => {
+    if (!menu.contains(ev.target)) closeMenu(true);
+  };
+  const keyHandler = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeMenu(true);
+  };
+  closeMenu = (restore = false) => {
+    if (!menu.isConnected) return;
+    menu.remove();
+    document.removeEventListener('pointerdown', pointerHandler, true);
+    document.removeEventListener('keydown', keyHandler, true);
+    if (restore) restoreFocus();
+  };
+  menu.__chatContextMenuClose = closeMenu;
+  document.addEventListener('keydown', keyHandler, true);
   setTimeout(() => {
-    const closer = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } };
-    document.addEventListener('pointerdown', closer);
+    document.addEventListener('pointerdown', pointerHandler, true);
+    menu.querySelector('.gb-context-menu-item:not(:disabled)')?.focus?.({ preventScroll: true });
   }, 0);
+  return menu;
+}
+
+// ルーム右クリックメニュー
+function showTeamRoomContextMenu(e, room) {
+  _showChatContextMenu(e, 'ルームメニュー', (menu) => {
+    if (room.type !== 'dm') {
+      _chatAppendContextMenuItem(menu, {
+        icon: 'pencil',
+        label: 'リネーム',
+        action: () => _doRenameTeamRoom(room),
+      });
+    }
+    _chatAppendContextMenuItem(menu, {
+      icon: 'trash2',
+      label: room.type === 'dm' ? 'DMを閉じる' : 'ルームを削除',
+      danger: true,
+      action: () => _deleteTeamRoom(room),
+    });
+  });
 }
 
 async function _doRenameTeamRoom(room) {
@@ -347,8 +432,9 @@ async function showDirectMessageModal() {
   }
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:320px;">
-    <h3>ダイレクトメッセージ</h3>
+  overlay.dataset.chatDmModal = '1';
+  overlay.innerHTML = `<div class="modal chat-dm-modal" role="dialog" aria-modal="true" aria-labelledby="team-dm-title" style="min-width:320px;">
+    <h3 id="team-dm-title">ダイレクトメッセージ</h3>
     <div class="field">
       <label>相手</label>
       <select id="team-dm-user" style="width:100%;padding:6px 8px;">
@@ -356,8 +442,8 @@ async function showDirectMessageModal() {
       </select>
     </div>
     <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="team-dm-open">開く</button>
+      <button type="button" data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
+      <button type="button" class="primary" id="team-dm-open">開く</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
@@ -464,29 +550,13 @@ function _buildTeamMessageRow(m, me) {
 
 // メッセージ右クリックメニュー
 function _showChatMessageMenu(e, m) {
-  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
   const items = [
     { icon: 'copy', label: 'テキストをコピー', action: () => _chatCopyText(m.text, 'テキストをコピーしました') },
     { icon: 'copy', label: '名前+テキストをコピー', action: () => _chatCopyText(m.from + ': ' + m.text, '名前とテキストをコピーしました') },
   ];
-  items.forEach(it => {
-    const el = document.createElement('div');
-    el.className = 'gb-context-menu-item';
-    el.innerHTML = lucide(it.icon, 14) + ' ' + it.label;
-    el.addEventListener('click', () => { menu.remove(); it.action(); });
-    menu.appendChild(el);
+  _showChatContextMenu(e, 'メッセージメニュー', (menu) => {
+    items.forEach(it => _chatAppendContextMenuItem(menu, it));
   });
-  document.body.appendChild(menu);
-  const _z = (typeof _getZoom === 'function') ? _getZoom() : 1;
-  menu.style.left = (e.clientX / _z) + 'px';
-  menu.style.top = (e.clientY / _z) + 'px';
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  setTimeout(() => {
-    const closer = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
 }
 
 async function loadTeamMessages() {
@@ -602,7 +672,7 @@ async function teamSend() {
 // ===== チーム/DM: 画像添付（マルチモーダル） =====
 function teamAttachmentPick() {
   if (!_teamCurrentRoom) { showStatus('ルームを選択してください', true); return; }
-  const fileInput = document.getElementById('team-attachment-file');
+  const fileInput = _teamElementById('team-attachment-file');
   if (!fileInput) return;
   fileInput.value = '';
   fileInput.onchange = async () => {

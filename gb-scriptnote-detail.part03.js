@@ -4,8 +4,7 @@
     wrap.appendChild(settings);
     const statusEnabled = !!this.doc.editor?.statusEnabled;
     const statusSection = document.createElement('div');
-    statusSection.className = 'sn2-detail-settings';
-    statusSection.style.marginTop = '8px';
+    statusSection.className = 'sn2-detail-settings sn2-detail-settings--spaced';
     const statusTitle = document.createElement('div');
     statusTitle.className = 'sn2-detail-ac-title';
     statusTitle.textContent = '採用状況';
@@ -27,14 +26,13 @@
     statusBar.appendChild(addBtn);
     statusSection.appendChild(statusBar);
     const statusListWrap = document.createElement('div');
-    statusListWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+    statusListWrap.className = 'sn2-detail-status-list';
     (this._getStatusList ? this._getStatusList() : []).forEach((item, index) => {
       const row = document.createElement('div');
-      row.className = 'sn2-detail-settings-row';
-      row.style.alignItems = 'center';
+      row.className = 'sn2-detail-settings-row sn2-detail-settings-row--center';
       row.innerHTML = `
         <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg gb-fmt-swatch--xs" data-status-color="${index}" title="色"></button>
-        <input type="text" class="sn2-detail-settings-input" style="width:96px;" data-status-name="${index}" value="${typeof esc === 'function' ? esc(item.name) : item.name}" placeholder="名称"${statusEnabled ? '' : ' disabled'}>
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--status-name" data-status-name="${index}" value="${typeof esc === 'function' ? esc(item.name) : item.name}" placeholder="名称"${statusEnabled ? '' : ' disabled'}>
         <button type="button" class="sn2-detail-add-btn" data-status-delete="${index}"${statusEnabled ? '' : ' disabled'}>削除</button>`;
       statusListWrap.appendChild(row);
       const sw = row.querySelector('[data-status-color]');
@@ -154,6 +152,10 @@
           cb.dataset.columnBorderLeft = col.id;
           cb.dataset.columnBorderRight = allCols[i + 1].id;
           cb.className = 'sn2-detail-colborder-cb';
+          const hit = document.createElement('label');
+          hit.className = 'sn2-detail-colborder-hit';
+          hit.title = cb.title;
+          hit.setAttribute('aria-label', cb.title);
           cb.addEventListener('change', () => {
             this._pushUndo('列間枠線変更');
             const newSet = this._getColumnBorderSet();
@@ -162,7 +164,8 @@
             this._markDirty();
             this._render();
           });
-          colBorderUI.appendChild(cb);
+          hit.appendChild(cb);
+          colBorderUI.appendChild(hit);
         }
       });
     }

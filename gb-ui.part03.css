@@ -489,6 +489,22 @@ input[type="range"]::-moz-range-thumb {
   box-sizing: border-box;
 }
 
+@media (max-width: 640px) {
+  .gb-confirm {
+    width: min(100% - 24px, 450px);
+    min-width: 0;
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    overflow: auto;
+    padding: var(--ui-space-5);
+  }
+  .gb-confirm-actions { gap: var(--ui-space-3); }
+  .gb-confirm-actions .gb-btn {
+    min-width: 96px;
+    min-height: 44px;
+  }
+  .gb-confirm-input { min-height: 44px; }
+}
+
 /* ------------------------------------------------------------
    Context Menu / Badge / Empty State / Loading は Phase 2 範囲外
    理由:

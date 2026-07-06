@@ -60,7 +60,9 @@
   }
 
   function boardState() {
-    return global.bd && Array.isArray(global.bd.nodes) ? global.bd : null;
+    if (global.bd && Array.isArray(global.bd.nodes)) return global.bd;
+    if (typeof bd !== 'undefined' && bd && Array.isArray(bd.nodes)) return bd;
+    return null;
   }
 
   function imageNodes() {
@@ -104,7 +106,7 @@
   }
 
   function fileRawUrl(path) {
-    const base = typeof global.API_BASE === 'string' ? global.API_BASE : '';
+    const base = typeof global.API_BASE === 'string' ? global.API_BASE : (isStandaloneBoardApp() ? '/api' : '');
     return base + '/file-raw?path=' + encodeURIComponent(String(path || '').replace(/\\/g, '/'));
   }
 

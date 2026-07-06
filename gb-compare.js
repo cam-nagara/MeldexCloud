@@ -565,14 +565,34 @@ function _renderInlineDiff(elA, elB, textA, textB) {
  * @param {string} [preselectedPath] - 1つ目のファイルが既に選択されている場合
  */
 function showCompareModal(preselectedPath) {
+  const restoreFocusEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
+  overlay.className = 'modal-overlay compare-modal-overlay';
 
   const modal = document.createElement('div');
-  modal.className = 'modal';
+  modal.className = 'modal compare-file-modal';
   modal.style.cssText = 'width:500px;max-width:90vw;';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  const modalId = 'compare-file-modal-' + Date.now().toString(36);
+  const titleId = modalId + '-title';
+  const hintId = modalId + '-hint';
+  modal.setAttribute('aria-labelledby', titleId);
+  modal.setAttribute('aria-describedby', hintId);
+
+  const closeModal = () => {
+    document.removeEventListener('keydown', onKeydown, true);
+    overlay.remove();
+    if (restoreFocusEl?.isConnected) restoreFocusEl.focus?.({ preventScroll: true });
+  };
+  const onKeydown = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    closeModal();
+  };
 
   const h3 = document.createElement('h3');
+  h3.id = titleId;
   h3.textContent = 'ファイル比較';
   h3.style.margin = '0 0 12px 0';
   modal.appendChild(h3);
@@ -580,8 +600,14 @@ function showCompareModal(preselectedPath) {
   // ファイルA
   const fieldA = document.createElement('div');
   fieldA.className = 'field';
-  fieldA.innerHTML = '<label>ファイルA（左側）</label>';
+  const inputAId = modalId + '-a';
+  const labelA = document.createElement('label');
+  labelA.htmlFor = inputAId;
+  labelA.textContent = 'ファイルA（左側）';
+  fieldA.appendChild(labelA);
   const inputA = document.createElement('input');
+  inputA.id = inputAId;
+  inputA.className = 'gb-input';
   inputA.type = 'text';
   inputA.value = preselectedPath || '';
   inputA.placeholder = 'パスを入力（例: プロット/第1話/候補A.md）';
@@ -591,26 +617,35 @@ function showCompareModal(preselectedPath) {
   // ファイルB
   const fieldB = document.createElement('div');
   fieldB.className = 'field';
-  fieldB.innerHTML = '<label>ファイルB（右側）</label>';
+  const inputBId = modalId + '-b';
+  const labelB = document.createElement('label');
+  labelB.htmlFor = inputBId;
+  labelB.textContent = 'ファイルB（右側）';
+  fieldB.appendChild(labelB);
   const inputB = document.createElement('input');
+  inputB.id = inputBId;
+  inputB.className = 'gb-input';
   inputB.type = 'text';
   inputB.placeholder = 'パスを入力（例: プロット/第1話/候補B.md）';
   fieldB.appendChild(inputB);
   modal.appendChild(fieldB);
 
   const hint = document.createElement('div');
+  hint.id = hintId;
   hint.style.cssText = 'font-size:11px;color:var(--fg2);margin-bottom:12px;';
   hint.textContent = 'フォルダツリーのファイルメニューから「比較...」を選んでも開けます。非テキスト形式はメタデータと先頭バイトで比較します。';
   modal.appendChild(hint);
 
   // ボタン
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;';
+  btnRow.className = 'btn-row';
   const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
   cancelBtn.textContent = 'キャンセル';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', closeModal);
   btnRow.appendChild(cancelBtn);
   const compareBtn = document.createElement('button');
+  compareBtn.type = 'button';
   compareBtn.textContent = '比較';
   compareBtn.className = 'primary';
   compareBtn.addEventListener('click', async () => {
@@ -620,7 +655,7 @@ function showCompareModal(preselectedPath) {
     compareBtn.disabled = true;
     try {
       const ok = await openCompareView(a, b);
-      if (ok) overlay.remove();
+      if (ok) closeModal();
       else showStatus('比較に失敗しました。パスを確認してください', true);
     } finally {
       compareBtn.disabled = false;
@@ -630,7 +665,8 @@ function showCompareModal(preselectedPath) {
   modal.appendChild(btnRow);
 
   overlay.appendChild(modal);
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
   document.body.appendChild(overlay);
+  document.addEventListener('keydown', onKeydown, true);
   setTimeout(() => (preselectedPath ? inputB : inputA).focus(), 50);
 }

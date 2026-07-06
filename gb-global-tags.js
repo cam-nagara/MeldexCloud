@@ -81,6 +81,38 @@
   }
 
   // ============================================================
+  // API ラッパー (タグプリセット / 自動タグ付け)
+  // ============================================================
+  async function loadPresets() {
+    if (typeof apiFetch !== 'function') return { presets: [] };
+    return apiFetch('/global-tag-presets', { silentError: true });
+  }
+
+  async function createPreset(payload) {
+    return apiPost('/global-tag-presets', payload || {}, { silentError: true });
+  }
+
+  async function duplicatePreset(presetId, payload) {
+    return apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/duplicate', payload || {}, { silentError: true });
+  }
+
+  async function deletePreset(presetId) {
+    return apiFetch('/global-tag-presets/' + encodeURIComponent(presetId), { method: 'DELETE', silentError: true });
+  }
+
+  async function saveCurrentPreset(presetId, payload) {
+    return apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/save-current', payload || {}, { silentError: true });
+  }
+
+  async function loadPreset(presetId, payload) {
+    return apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/load', payload || {}, { silentError: true });
+  }
+
+  async function autoTag(payload) {
+    return apiPost('/global-tags/auto-tag', payload || {}, { silentError: true });
+  }
+
+  // ============================================================
   // API ラッパー (対象ファイル別タグ)
   // ============================================================
   function normalizeTargetPath(path) {
@@ -91,18 +123,32 @@
     return '/global-tags/target?path=' + encodeURIComponent(normalizeTargetPath(path));
   }
 
+  function notifyTargetTagsChanged(path) {
+    try {
+      if (typeof _folderInvalidateTagsForPath === 'function') _folderInvalidateTagsForPath(path);
+      const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
+      if (typeof _folderHasActiveTagFilter === 'function' && _folderHasActiveTagFilter(cfg) && typeof _folderEnsureTags === 'function') {
+        _folderEnsureTags(typeof _folderItems !== 'undefined' ? _folderItems : [], { rerender: true });
+      }
+    } catch (_) {}
+  }
+
   async function loadTargetTags(path) {
     if (typeof apiFetch !== 'function') return { tags: [] };
     return apiFetch(targetTagsUrl(path), { silentError: true });
   }
 
   async function addTargetTag(path, name) {
-    return apiPost('/global-tags/target', { path: normalizeTargetPath(path), name: String(name || '').trim() }, { silentError: true });
+    const result = await apiPost('/global-tags/target', { path: normalizeTargetPath(path), name: String(name || '').trim() }, { silentError: true });
+    notifyTargetTagsChanged(path);
+    return result;
   }
 
   async function removeTargetTag(path, tag) {
     const tagKey = tag?.id || tag?.name || tag || '';
-    return apiFetch(targetTagsUrl(path) + '&tag=' + encodeURIComponent(tagKey), { method: 'DELETE', silentError: true });
+    const result = await apiFetch(targetTagsUrl(path) + '&tag=' + encodeURIComponent(tagKey), { method: 'DELETE', silentError: true });
+    notifyTargetTagsChanged(path);
+    return result;
   }
 
   async function searchByTag(tag) {
@@ -143,6 +189,7 @@
   function buildTargetTagEditorUi(container, options) {
     const section = document.createElement('div');
     section.className = options?.boxed === false ? '' : 'gb-section gb-section--boxed';
+    section.classList.add('gb-global-tags-target-editor');
     section.style.marginTop = options?.compact ? '8px' : '12px';
 
     const title = document.createElement('div');
@@ -166,6 +213,7 @@
     input.style.flex = '1';
     input.dataset.e2eId = editorId + '-input';
     input.dataset.globalTagsRole = 'target-input';
+    input.setAttribute('aria-label', 'タグ名');
     const datalist = document.createElement('datalist');
     datalist.id = editorId + '-options';
     input.setAttribute('list', datalist.id);
@@ -174,6 +222,7 @@
     add.className = 'gb-btn gb-btn-sm';
     add.dataset.e2eId = editorId + '-add';
     add.dataset.globalTagsRole = 'target-add';
+    add.setAttribute('aria-label', 'タグを追加');
     add.innerHTML = icon('plus', 14) + ' 追加';
     row.append(input, add);
     section.appendChild(row);
@@ -258,8 +307,10 @@
     name.type = 'button';
     name.className = 'gb-btn gb-btn-xs gb-btn-quiet';
     name.style.padding = '0';
-    name.textContent = tag.name || '';
+    const displayName = tag.name || '';
+    name.textContent = displayName;
     name.title = 'このタグの項目を検索';
+    name.setAttribute('aria-label', (displayName || 'タグ') + 'の項目を検索');
     const targetKey = normalizeTargetPath(path);
     const tagKey = String(tag?.id || tag?.name || 'tag');
     name.dataset.e2eId = `global-tags-target-search:${targetKey}:${tagKey}`;
@@ -277,6 +328,7 @@
     remove.className = 'gb-btn gb-btn-xs gb-btn-quiet';
     remove.style.padding = '0 2px';
     remove.title = 'タグを外す';
+    remove.setAttribute('aria-label', (displayName || 'タグ') + 'を外す');
     remove.dataset.e2eId = `global-tags-target-remove:${targetKey}:${tagKey}`;
     remove.dataset.globalTagsRole = 'target-remove';
     remove.innerHTML = icon('x', 12) || '×';
@@ -320,6 +372,14 @@
     createGroup,
     updateGroup,
     deleteGroup,
+    // プリセット / 自動タグ
+    loadPresets,
+    createPreset,
+    duplicatePreset,
+    deletePreset,
+    saveCurrentPreset,
+    loadPreset,
+    autoTag,
     // 対象ファイル別
     loadTargetTags,
     addTargetTag,

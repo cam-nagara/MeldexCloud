@@ -204,6 +204,10 @@ function sn2CopyForClipStudio() {
     };
     const fallbackCopy = () => {
       const ta = document.createElement('textarea');
+      ta.className = 'sn2-clipstudio-copy-buffer';
+      ta.setAttribute('aria-hidden', 'true');
+      ta.tabIndex = -1;
+      ta.readOnly = true;
       ta.value = out;
       document.body.appendChild(ta);
       ta.select();
@@ -223,41 +227,44 @@ function _sn2ShowSepDialog(editor) {
   const hasSelection = selectedRows.length > 0 && selectedRows.length < doc.rows.length;
   const allChecked = hasSelection ? '' : ' checked';
   const selectedOption = hasSelection
-    ? `<label style="cursor:pointer;font-size:13px;"><input type="radio" name="sn2-sep-range" value="selected" checked> 選択範囲（${selectedRows.length}行）</label>`
+    ? `<label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="selected" checked> 選択範囲（${selectedRows.length}行）</label>`
     : '';
   const o = document.createElement('div');
   o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:350px;"><h3>クリスタへ送信</h3>
-    <div class="field"><label>送信範囲</label><div style="display:flex;gap:8px;margin:4px 0;">
-      <label style="cursor:pointer;font-size:13px;"><input type="radio" name="sn2-sep-range" value="all"${allChecked}> 全行（${doc.rows.length}行）</label>${selectedOption}</div></div>
-    <div class="field"><label style="cursor:pointer;font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="sn2-sep-include-affix"> テキストの前後設定（「」（）等）を含める</label></div>
-    <div class="field"><label style="cursor:pointer;font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="sn2-sep-include-summary"> プロット行も出力する</label></div>
-    <div class="field"><label style="cursor:pointer;font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="sn2-sep-include-break-text"> 区切り行のテキストも出力する</label></div>
-    <div class="field"><label style="cursor:pointer;font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="sn2-sep-skip-blank"> 空白行を出力しない</label></div>
+  o.dataset.sn2Dialog = 'clipstudio-send';
+  o.innerHTML = `<div class="modal sn2-sep-modal" role="dialog" aria-modal="true" aria-labelledby="sn2-sep-title"><h3 id="sn2-sep-title">クリスタへ送信</h3>
+    <div class="field"><label>送信範囲</label><div class="sn2-sep-range-row">
+      <label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="all"${allChecked}> 全行（${doc.rows.length}行）</label>${selectedOption}</div></div>
+    <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-affix"> テキストの前後設定（「」（）等）を含める</label></div>
+    <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-summary"> プロット行も出力する</label></div>
+    <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-break-text"> 区切り行のテキストも出力する</label></div>
+    <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-skip-blank"> 空白行を出力しない</label></div>
     <div id="sn2-sep-countdown-slot"></div>
     <div id="sn2-sep-break-wait-slot"></div>
-    <p id="sn2-sep-help" style="color:var(--fg2);font-size:13px;margin:8px 0;">「送信」を押した後、カウントダウン中にクリスタのストーリーエディタをクリックしてください。</p>
-    <div id="sn2-sep-status" style="display:none;margin:8px 0;padding:8px;background:var(--bg2,rgba(0,0,0,0.05));border-radius:4px;font-size:13px;color:var(--fg1);min-height:1.4em;"></div>
-    <div class="btn-row"><button data-sn2-role="cancel" data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-    <button data-sn2-role="stop" data-action="_sn2StopSep()" style="background:var(--red);color:var(--ui-fg-strong);border-color:var(--red);">中断</button>
-    <button class="primary" data-sn2-role="send" data-action="_sn2StartSep()">送信</button></div></div>`;
+    <p id="sn2-sep-help" class="sn2-sep-help">「送信」を押した後、カウントダウン中にクリスタのストーリーエディタをクリックしてください。</p>
+    <div id="sn2-sep-status" class="sn2-sep-status"></div>
+    <div class="btn-row"><button type="button" class="cancel-btn" data-sn2-role="cancel">キャンセル</button>
+    <button type="button" class="sn2-sep-stop-btn" data-sn2-role="stop">中断</button>
+    <button type="button" class="primary ok-btn" data-sn2-role="send">送信</button></div></div>`;
   document.body.appendChild(o);
   const slot = o.querySelector('#sn2-sep-countdown-slot');
   if (slot && window.GBUI && typeof window.GBUI.buildNumInput === 'function') {
-    slot.replaceWith(window.GBUI.buildNumInput({
+    const control = window.GBUI.buildNumInput({
       label: 'カウントダウン',
       value: 5,
       unit: '秒',
       min: 1,
       max: 60,
       attrs: { id: 'sn2-sep-countdown' }
-    }));
+    });
+    control?.classList?.add('sn2-sep-field');
+    slot.replaceWith(control);
   } else if (slot) {
-    slot.outerHTML = '<div class="field"><label>カウントダウン（秒）</label><input id="sn2-sep-countdown" type="number" min="1" max="60" value="5"></div>';
+    slot.outerHTML = '<div class="field sn2-sep-field"><label for="sn2-sep-countdown">カウントダウン（秒）</label><input id="sn2-sep-countdown" class="sn2-sep-number" type="number" min="1" max="60" value="5"></div>';
   }
   const breakWaitSlot = o.querySelector('#sn2-sep-break-wait-slot');
   if (breakWaitSlot && window.GBUI && typeof window.GBUI.buildNumInput === 'function') {
-    breakWaitSlot.replaceWith(window.GBUI.buildNumInput({
+    const control = window.GBUI.buildNumInput({
       label: 'ページ送り後の待機',
       value: 1.0,
       unit: '秒',
@@ -265,11 +272,17 @@ function _sn2ShowSepDialog(editor) {
       max: 10,
       step: 0.1,
       attrs: { id: 'sn2-sep-break-wait' }
-    }));
+    });
+    control?.classList?.add('sn2-sep-field');
+    breakWaitSlot.replaceWith(control);
   } else if (breakWaitSlot) {
-    breakWaitSlot.outerHTML = '<div class="field"><label>ページ送り後の待機（秒）</label><input id="sn2-sep-break-wait" type="number" min="0" max="10" step="0.1" value="1.0"></div>';
+    breakWaitSlot.outerHTML = '<div class="field sn2-sep-field"><label for="sn2-sep-break-wait">ページ送り後の待機（秒）</label><input id="sn2-sep-break-wait" class="sn2-sep-number" type="number" min="0" max="10" step="0.1" value="1.0"></div>';
   }
   o._sn2Editor = editor;
+  o.querySelector('[data-sn2-role="cancel"]')?.addEventListener('click', () => { o.remove(); });
+  o.querySelector('[data-sn2-role="stop"]')?.addEventListener('click', () => { _sn2StopSep(); });
+  o.querySelector('[data-sn2-role="send"]')?.addEventListener('click', () => { _sn2StartSep(); });
+  window.GBModalShell?.enhanceOverlay?.(o);
 }
 
 function _sn2GetTextAffix(editor, role) {
@@ -283,7 +296,7 @@ function _sn2GetTextAffix(editor, role) {
 }
 
 function _sn2StartSep() {
-  const overlay = document.querySelector('.modal-overlay');
+  const overlay = document.querySelector('.modal-overlay[data-sn2-dialog="clipstudio-send"]') || document.querySelector('.modal-overlay');
   const editor = overlay?._sn2Editor || _sn2GetActiveEditor();
   if (!editor?.doc) return;
   if (typeof editor._syncAllFromDom === 'function') editor._syncAllFromDom();
@@ -388,52 +401,32 @@ function _sn2EnterRunningMode(dialogOverlay) {
   if (ov) return ov;
   ov = document.createElement('div');
   ov.id = 'sn2-sep-running-overlay';
-  Object.assign(ov.style, {
-    position: 'fixed',
-    inset: '0',
-    background: 'rgba(0,0,0,0.78)',
-    color: 'var(--ui-fg-strong,#fff)',
-    zIndex: '99999',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    pointerEvents: 'auto',
-  });
+  ov.className = 'sn2-sep-running-overlay';
+  ov.setAttribute('role', 'dialog');
+  ov.setAttribute('aria-modal', 'true');
+  ov.setAttribute('aria-labelledby', 'sn2-sep-running-title');
   const box = document.createElement('div');
-  Object.assign(box.style, {
-    minWidth: '340px',
-    maxWidth: '560px',
-    padding: '28px 32px',
-    background: 'var(--bg1,#222)',
-    border: '2px solid var(--red,#d44)',
-    borderRadius: '8px',
-    boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-    textAlign: 'center',
-    color: 'var(--fg1,#fff)',
-  });
+  box.className = 'sn2-sep-running-box';
   const title = document.createElement('div');
+  title.id = 'sn2-sep-running-title';
+  title.className = 'sn2-sep-running-title';
   title.textContent = 'クリスタへ送信中';
-  Object.assign(title.style, { fontSize: '18px', fontWeight: 'bold', marginBottom: '8px', color: 'var(--red,#f66)' });
   box.appendChild(title);
   const warn = document.createElement('div');
+  warn.className = 'sn2-sep-running-warning';
   warn.textContent = 'ペーストが完了するまで、マウス・キーボード・他ウィンドウ等、一切の操作をしないでください。';
-  Object.assign(warn.style, { fontSize: '14px', lineHeight: '1.5', margin: '4px 0 16px', color: 'var(--fg1,#fff)' });
   box.appendChild(warn);
   const status = document.createElement('div');
   status.id = 'sn2-sep-running-status';
+  status.className = 'sn2-sep-running-status';
   status.textContent = '送信準備中...';
-  Object.assign(status.style, { fontSize: '14px', margin: '16px 0', padding: '10px', background: 'rgba(255,255,255,0.08)', borderRadius: '4px', minHeight: '1.4em' });
   box.appendChild(status);
   const btnRow = document.createElement('div');
-  Object.assign(btnRow.style, { display: 'flex', justifyContent: 'center', marginTop: '8px' });
+  btnRow.className = 'sn2-sep-running-actions';
   const stopBtn = document.createElement('button');
   stopBtn.type = 'button';
+  stopBtn.className = 'sn2-sep-running-stop';
   stopBtn.textContent = '中断';
-  Object.assign(stopBtn.style, {
-    background: 'var(--red,#d44)', color: 'var(--ui-fg-strong,#fff)',
-    border: '1px solid var(--red,#d44)', padding: '8px 24px', borderRadius: '4px',
-    fontSize: '14px', fontWeight: 'bold', cursor: 'pointer',
-  });
   stopBtn.addEventListener('click', () => { _sn2StopSep(); });
   btnRow.appendChild(stopBtn);
   box.appendChild(btnRow);
@@ -470,5 +463,5 @@ function _sn2StopSep() {
     return;
   }
   // 送信前のキャンセル: 送信ダイアログを閉じる
-  document.querySelector('.modal-overlay')?.remove();
+  document.querySelector('.modal-overlay[data-sn2-dialog="clipstudio-send"]')?.remove();
 }

@@ -88,6 +88,11 @@
     currentPaneEl.className = renderedPane.className;
     currentPaneEl.dataset.paneId = renderedPane.dataset.paneId || paneId;
     currentPaneEl.dataset.paneLocked = renderedPane.dataset.paneLocked || (node.locked ? '1' : '0');
+    if (renderedPane.dataset.meldexRole) {
+      currentPaneEl.dataset.meldexRole = renderedPane.dataset.meldexRole;
+    } else {
+      delete currentPaneEl.dataset.meldexRole;
+    }
     oldTabBar.replaceWith(newTabBar);
     _paneMap[paneId] = {
       ...renderedInfo,

@@ -2,16 +2,36 @@
 
 .entry-prop-values > .cell-add-btn {
   position: static;
-  display: none;
-  width: fit-content;
-  min-width: 0;
-  min-height: 0;
-  padding: 2px 6px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--gb-control-radius-sm, 4px);
+  background: transparent;
+  color: var(--fg2);
+  appearance: none;
 }
-.entry-prop-values:hover > .cell-add-btn { display: inline-flex; }
+.entry-prop-values > .cell-add-btn:hover,
+.entry-prop-values > .cell-add-btn:focus-visible {
+  color: var(--ui-hover-fg);
+  background: var(--ui-hover-bg);
+  border-color: var(--border);
+}
 @media (pointer: coarse) {
-  .entry-prop-values > .cell-add-btn { display: inline-flex; }
+  .entry-prop-values > .cell-add-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    background: var(--bg2);
+    border-color: var(--border);
+  }
 }
 
 @media (pointer: coarse) {
@@ -149,6 +169,39 @@
     max-width: calc(100vw - 16px) !important;
     flex-wrap: wrap !important;
     justify-content: center !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .tl-settings,
+  .tl-settings label {
+    font-size: 15px;
+    line-height: 1.2;
+  }
+
+  .tl-settings label {
+    gap: 6px;
+  }
+
+  .tl-settings input,
+  .tl-settings select,
+  .tl-settings .gb-input,
+  .tl-settings .gb-select {
+    min-height: 44px !important;
+    font-size: var(--cloud-mobile-ui-font-size, 16px) !important;
+    line-height: 1.3 !important;
+  }
+
+  .tl-nav-btn {
+    min-width: 44px !important;
+    min-height: 44px !important;
+    font-size: var(--cloud-mobile-ui-meta-font-size, 14px) !important;
+    line-height: 1.3 !important;
+  }
+
+  .cal-day-event > .cal-event-resize-handle {
+    min-height: 18px;
+    touch-action: none;
   }
 }
 

@@ -90,6 +90,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _renderRowStatusButton(button, row) {
     if (!button || !row) return;
     const status = String(row.status || '').trim();
+    const labelText = status || '未設定';
     button.innerHTML = '';
     button.classList.toggle('is-empty', !status);
     button.dataset.status = status;
@@ -98,10 +99,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (status) dot.style.background = this._getStatusColor(status);
     const label = document.createElement('span');
     label.className = 'sn2-status-label';
-    label.textContent = status || '未設定';
+    label.textContent = labelText;
     button.appendChild(dot);
     button.appendChild(label);
     button.title = status ? `採用状況: ${status}` : 'クリックで採用状況を設定';
+    button.setAttribute('aria-label', `採用状況: ${labelText}`);
   },
 
   _showRowStatusMenu(anchorBtn, row, rowEl = null) {
@@ -115,11 +117,16 @@ Object.assign(ScriptNoteEditor.prototype, {
       ...this._getStatusList().map(item => ({ label: item.name, value: item.name, color: item.color })),
     ];
     let closeHandler = null;
+    let escapeHandler = null;
     const closePopup = (restoreFocus = false) => {
       popup.remove();
       if (closeHandler) {
-        document.removeEventListener('pointerdown', closeHandler);
+        document.removeEventListener('pointerdown', closeHandler, true);
         closeHandler = null;
+      }
+      if (escapeHandler) {
+        document.removeEventListener('keydown', escapeHandler, true);
+        escapeHandler = null;
       }
       if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorBtn);
     };
@@ -165,7 +172,20 @@ Object.assign(ScriptNoteEditor.prototype, {
       popup.appendChild(mkItem(item.label, item.value, item.color));
     });
     document.body.appendChild(popup);
+    if (typeof attachMeldexDropdownCloseButton === 'function') {
+      attachMeldexDropdownCloseButton(popup, {
+        trigger: anchorBtn,
+        close: () => closePopup(true),
+      });
+    }
     positionPopup(popup, anchorBtn.getBoundingClientRect());
+    escapeHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePopup(true);
+    };
+    document.addEventListener('keydown', escapeHandler, true);
     if (typeof bindMeldexDropdownKeySwitch === 'function') {
       bindMeldexDropdownKeySwitch(anchorBtn, {
         getItems: () => items.map(item => ({ value: item.value, item })),
@@ -182,7 +202,9 @@ Object.assign(ScriptNoteEditor.prototype, {
         closePopup(false);
       }
     };
-    setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
+    setTimeout(() => {
+      if (popup.isConnected) document.addEventListener('pointerdown', closeHandler, true);
+    }, 0);
   },
 
 });

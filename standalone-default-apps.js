@@ -6,6 +6,7 @@
   const PROMPT_KEY_PREFIX = 'meldex-standalone-default-app-prompt-v1:';
   let statusCache = null;
   let styleInstalled = false;
+  let dialogSeq = 0;
 
   function isNativeStandalone() {
     return new URLSearchParams(location.search).get('native') === '1';
@@ -102,11 +103,11 @@
 .sa-default-apps-dialog{width:min(560px,calc(100vw - 24px));max-height:min(760px,88vh);overflow:auto;background:var(--bg2,#1c2028);border:1px solid var(--border,rgba(255,255,255,.16));border-radius:8px;box-shadow:0 18px 54px rgba(0,0,0,.52)}
 .sa-default-apps-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 18px 10px;border-bottom:1px solid var(--border,rgba(255,255,255,.12))}
 .sa-default-apps-title{font-size:16px;font-weight:650;line-height:1.35}
-.sa-default-apps-close{border:1px solid var(--border,rgba(255,255,255,.16));background:transparent;color:inherit;border-radius:6px;width:30px;height:30px;cursor:pointer}
+.sa-default-apps-close{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border,rgba(255,255,255,.16));background:transparent;color:inherit;border-radius:6px;width:32px;height:32px;cursor:pointer}
 .sa-default-apps-body{padding:14px 18px 16px}
 .sa-default-apps-desc{font-size:13px;line-height:1.65;color:var(--fg2,#a9b0bd);margin:0 0 12px}
 .sa-default-apps-list{display:grid;gap:8px;margin:10px 0 12px}
-.sa-default-apps-row{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border,rgba(255,255,255,.14));background:rgba(255,255,255,.035);border-radius:7px;padding:10px 11px;cursor:pointer}
+.sa-default-apps-row{display:flex;gap:10px;align-items:flex-start;min-height:44px;box-sizing:border-box;border:1px solid var(--border,rgba(255,255,255,.14));background:rgba(255,255,255,.035);border-radius:7px;padding:10px 11px;cursor:pointer}
 .sa-default-apps-row input{margin-top:3px;accent-color:var(--accent,#00c2a8)}
 .sa-default-apps-row-main{display:grid;gap:3px;min-width:0}
 .sa-default-apps-row-title{font-size:13px;font-weight:600}
@@ -115,16 +116,19 @@
 .sa-default-apps-message{font-size:12px;line-height:1.55;margin-top:10px;color:var(--fg2,#a9b0bd);white-space:pre-wrap}
 .sa-default-apps-message.error{color:var(--red,#ff6b6b)}
 .sa-default-apps-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
-.sa-default-apps-actions button{border:1px solid var(--border,rgba(255,255,255,.16));background:var(--bg3,#2a303a);color:inherit;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer}
+.sa-default-apps-actions button{min-height:34px;border:1px solid var(--border,rgba(255,255,255,.16));background:var(--bg3,#2a303a);color:inherit;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer}
 .sa-default-apps-actions button.primary{background:var(--accent,#00c2a8);border-color:var(--accent,#00c2a8);color:#07110f;font-weight:650}
 .sa-default-apps-actions button:disabled{opacity:.55;cursor:not-allowed}
-@media(max-width:520px){.sa-default-apps-overlay{align-items:flex-end;padding:8px}.sa-default-apps-dialog{width:100%;max-height:92vh}.sa-default-apps-actions button{flex:1 1 auto}}
+@media(max-width:520px){.sa-default-apps-overlay{align-items:flex-end;padding:8px}.sa-default-apps-dialog{width:100%;max-height:92vh}.sa-default-apps-close{width:44px;height:44px}.sa-default-apps-row{min-height:44px}.sa-default-apps-row input{min-width:20px;min-height:20px}.sa-default-apps-actions button{flex:1 1 auto;min-height:44px}}
 `;
     document.head.appendChild(style);
   }
 
-  function closeExisting() {
-    document.querySelectorAll('.sa-default-apps-overlay').forEach(el => el.remove());
+  function closeExisting(options = {}) {
+    document.querySelectorAll('.sa-default-apps-overlay').forEach(el => {
+      if (typeof el._saDefaultAppsClose === 'function') el._saDefaultAppsClose(options);
+      else el.remove();
+    });
   }
 
   function shouldPrecheck(app, row) {
@@ -152,20 +156,20 @@
     return button;
   }
 
-  function renderStatusOnly(dialog, status, message) {
+  function renderStatusOnly(dialog, status, message, closeDialog, descId) {
     const body = dialog.querySelector('.sa-default-apps-body');
     if (!body) return;
     body.textContent = '';
     const desc = document.createElement('p');
     desc.className = 'sa-default-apps-desc';
+    if (descId) desc.id = descId;
     desc.textContent = message;
     body.appendChild(desc);
     const actions = document.createElement('div');
     actions.className = 'sa-default-apps-actions';
     const close = makeButton('閉じる');
     close.addEventListener('click', () => {
-      markPromptSeen(status);
-      closeExisting();
+      closeDialog?.();
     });
     actions.appendChild(close);
     body.appendChild(actions);
@@ -213,32 +217,28 @@
 
   function buildDialog(status, opts = {}) {
     installStyle();
-    closeExisting();
+    closeExisting({ markSeen: false, restore: false });
     const app = status?.app || {};
+    const idBase = 'sa-default-apps-' + (++dialogSeq);
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overlay = document.createElement('div');
     overlay.className = 'sa-default-apps-overlay';
-    overlay.setAttribute('role', 'dialog');
-    overlay.setAttribute('aria-modal', 'true');
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) {
-        markPromptSeen(status);
-        closeExisting();
-      }
-    });
 
     const dialog = document.createElement('div');
     dialog.className = 'sa-default-apps-dialog';
+    dialog.id = idBase + '-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', idBase + '-title');
+    dialog.setAttribute('aria-describedby', idBase + '-desc');
     const head = document.createElement('div');
     head.className = 'sa-default-apps-head';
     const title = document.createElement('div');
     title.className = 'sa-default-apps-title';
+    title.id = idBase + '-title';
     title.textContent = opts.firstRun ? 'ファイルの開き方を設定しますか？' : '既定アプリに設定';
     const close = makeButton('×', 'sa-default-apps-close');
     close.setAttribute('aria-label', '閉じる');
-    close.addEventListener('click', () => {
-      markPromptSeen(status);
-      closeExisting();
-    });
     head.append(title, close);
     dialog.appendChild(head);
 
@@ -247,20 +247,45 @@
     dialog.appendChild(body);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    let done = false;
+    const closeDialog = (options = {}) => {
+      if (done) return;
+      done = true;
+      if (options.markSeen !== false) markPromptSeen(status);
+      document.removeEventListener('keydown', onKeydown, true);
+      overlay.remove();
+      if (options.restore !== false && restoreFocusTo?.isConnected) {
+        const restoreFocus = () => restoreFocusTo.focus?.();
+        restoreFocus();
+        setTimeout(restoreFocus, 0);
+      }
+    };
+    function onKeydown(event) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeDialog();
+    }
+    overlay._saDefaultAppsClose = closeDialog;
+    close.addEventListener('click', () => closeDialog());
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) closeDialog();
+    });
+    document.addEventListener('keydown', onKeydown, true);
 
     if (!status?.supported) {
-      renderStatusOnly(dialog, status, 'Windows版の単独アプリでのみ設定できます。');
+      renderStatusOnly(dialog, status, 'Windows版の単独アプリでのみ設定できます。', closeDialog, idBase + '-desc');
       close.focus();
       return overlay;
     }
     if (!app?.target_exists) {
-      renderStatusOnly(dialog, status, (app?.label || '単独アプリ') + ' の実行ファイルが見つかりません。');
+      renderStatusOnly(dialog, status, (app?.label || '単独アプリ') + ' の実行ファイルが見つかりません。', closeDialog, idBase + '-desc');
       close.focus();
       return overlay;
     }
 
     const desc = document.createElement('p');
     desc.className = 'sa-default-apps-desc';
+    desc.id = idBase + '-desc';
     desc.textContent = (app.label || 'このアプリ') + ' で開きたいファイル形式を選びます。チェックを外しても、現在の既定アプリへ戻す操作は行いません。';
     body.appendChild(desc);
 
@@ -314,8 +339,7 @@
     actions.className = 'sa-default-apps-actions';
     const later = makeButton(opts.firstRun ? '今はしない' : '閉じる');
     later.addEventListener('click', () => {
-      markPromptSeen(status);
-      closeExisting();
+      closeDialog();
     });
     const primary = makeButton('選択した形式を既定にする', 'primary');
     primary.setAttribute('data-default-apps-submit', '1');

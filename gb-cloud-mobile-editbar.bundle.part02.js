@@ -1,9 +1,252 @@
-    title.textContent = _toolMenuTitle(toolType);
+    openColorPalette(anchor, anchor?.dataset?.color || '', (color) => {
+      const next = color || fallback;
+      if (anchor?.dataset) anchor.dataset.color = next;
+      _execTextCommand(command, next);
+    });
+  }
+
+  function _normalizeSafeMobileUrl(rawUrl) {
+    const raw = String(rawUrl || '').trim();
+    if (!raw) return null;
+    let candidate = raw;
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
+      if (!/^[^\s/@]+\.[^\s/]{2,}([/?#].*)?$/i.test(candidate)) return null;
+      candidate = 'https://' + candidate;
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (!['http:', 'https:', 'mailto:', 'tel:'].includes(parsed.protocol)) return null;
+      return candidate;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function _createLink() {
+    _restoreSelection();
+    const url = window.prompt?.('リンク先URL');
+    if (!url) return;
+    const safeUrl = _normalizeSafeMobileUrl(url);
+    if (!safeUrl) {
+      if (typeof showStatus === 'function') showStatus('安全なURLを入力してください', true);
+      return;
+    }
+    _execTextCommand('createLink', safeUrl);
+  }
+
+  function _insertCalloutFromMobile() {
+    _restoreSelection();
+    if (typeof insertCallout === 'function') {
+      insertCallout();
+      _saveSelection();
+      return true;
+    }
+    if (typeof showStatus === 'function') showStatus('コールアウトを挿入できませんでした', true);
+    return false;
+  }
+
+  function _ensureMainButton() {
+    if (_mainButton?.isConnected) return _mainButton;
+    if (!document.body) return null;
+    const existing = document.getElementById('cloud-mobile-main-button');
+    if (existing) {
+      _mainButton = existing;
+      return _mainButton;
+    }
+    _mainButton = document.createElement('button');
+    _mainButton.type = 'button';
+    _mainButton.id = 'cloud-mobile-main-button';
+    _mainButton.className = 'cloud-mobile-main-button';
+    _mainButton.title = 'メニュー';
+    _mainButton.setAttribute('aria-label', 'メニューを開く');
+    _mainButton.appendChild(_icon('menu', 20));
+    const label = document.createElement('span');
+    label.className = 'cloud-mobile-label';
+    label.textContent = 'メニュー';
+    _mainButton.appendChild(label);
+    _mainButton.hidden = true;
+    _bindPressAction(_mainButton, _openMenuSheet);
+    document.body.appendChild(_mainButton);
+    return _mainButton;
+  }
+
+  function _stableItemId(item, index) {
+    return String(item?.id || item?.type || `item-${index + 1}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || `item-${index + 1}`;
+  }
+
+  function _appendSheetSection(sheet, title, items, sectionId) {
+    const section = document.createElement('section');
+    section.className = 'cloud-mobile-menu-section';
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    section.appendChild(heading);
+    const grid = document.createElement('div');
+    grid.className = 'cloud-mobile-menu-grid';
+    items.forEach((item, index) => {
+      if (!item || item.separator) return;
+      const itemId = _stableItemId(item, index);
+      const button = _button('cloud-mobile-menu-item', item.label, item.icon, () => {
+        _closeMenuSheet();
+        if (item.submenu) _openToolSubmenuSheet(item.label, item.submenu, `${sectionId || 'section'}-${itemId}`);
+        else item.action?.();
+      });
+      if (item.submenu) button.setAttribute('aria-haspopup', 'dialog');
+      if (item.disabled) {
+        button.disabled = true;
+        button.setAttribute('aria-disabled', 'true');
+      }
+      button.dataset.cloudMobileMenuAction = itemId;
+      button.dataset.e2eId = `cloud-mobile-menu-${sectionId || 'section'}-${itemId}`;
+      grid.appendChild(button);
+    });
+    section.appendChild(grid);
+    sheet.appendChild(section);
+  }
+
+  function _openToolSubmenuSheet(titleText, items, sectionId) {
+    if (!items?.length) return false;
+    _closeOverflowSheet();
+    _closeMenuSheet();
+    _menuOverlay = document.createElement('div');
+    _menuOverlay.className = 'cloud-mobile-menu-overlay';
+    _fitOverlayToVisualViewport(_menuOverlay);
+    _menuOverlay.setAttribute('role', 'presentation');
+
+    const sheet = document.createElement('div');
+    sheet.className = 'cloud-mobile-menu-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', titleText || 'サブメニュー');
+    _applySheetViewportLimit(sheet, _menuOverlay);
+
+    const header = document.createElement('div');
+    header.className = 'cloud-mobile-sheet-header';
+    const title = document.createElement('strong');
+    title.textContent = titleText || 'メニュー';
     header.appendChild(title);
-    header.appendChild(_button('cloud-mobile-sheet-close', '閉じる', 'x', _closeMenuSheet));
+    const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeMenuSheet);
+    closeButton.dataset.cloudMobileMenuAction = 'close';
+    closeButton.dataset.e2eId = 'cloud-mobile-tool-submenu-close';
+    header.appendChild(closeButton);
     sheet.appendChild(header);
 
-    _appendSheetSection(sheet, '操作', toolItems);
+    _appendSheetSection(sheet, titleText || 'メニュー', items, sectionId || 'tool-submenu');
+    _menuOverlay.appendChild(sheet);
+    _menuOverlay.addEventListener('pointerdown', (event) => {
+      if (event.target === _menuOverlay) _closeMenuSheet();
+    });
+    document.body.appendChild(_menuOverlay);
+    return true;
+  }
+
+  function _fitOverlayToVisualViewport(overlay) {
+    if (!overlay?.style) return;
+    const vv = window.visualViewport;
+    const heights = [
+      Number(window.innerHeight || 0),
+      Number(document.documentElement?.clientHeight || 0),
+      Number(vv?.height || 0),
+    ].filter(value => Number.isFinite(value) && value > 0);
+    const viewportHeight = Math.max(1, Math.min(...(heights.length ? heights : [window.innerHeight || 1])));
+    const top = Math.max(0, Math.min(Number(vv?.offsetTop || 0) || 0, viewportHeight - 1));
+    const zoomRaw = getComputedStyle(document.documentElement).getPropertyValue('--meldex-ui-zoom')
+      || document.documentElement.style.zoom
+      || '1';
+    const zoomValue = Number.parseFloat(String(zoomRaw).trim());
+    const zoom = Number.isFinite(zoomValue) && zoomValue > 0 ? zoomValue : 1;
+    const height = Math.max(1, (viewportHeight - top) / zoom);
+    overlay.style.boxSizing = 'border-box';
+    overlay.style.top = top + 'px';
+    overlay.style.height = height + 'px';
+    overlay.style.maxHeight = height + 'px';
+    overlay.style.setProperty('--cloud-mobile-sheet-max-height', Math.max(1, height - 20) + 'px');
+  }
+
+  function _applySheetViewportLimit(sheet, overlay) {
+    if (!sheet?.style) return;
+    const maxHeight = overlay?.style?.getPropertyValue('--cloud-mobile-sheet-max-height') || '';
+    if (!maxHeight) return;
+    sheet.style.boxSizing = 'border-box';
+    sheet.style.maxHeight = maxHeight;
+    sheet.style.overflow = 'auto';
+  }
+
+  function _openMenuSheet() {
+    if (!_isEnabled() || _hasBlockingModal()) return;
+    _closeOverflowSheet();
+    _closeMenuSheet();
+    _menuOverlay = document.createElement('div');
+    _menuOverlay.className = 'cloud-mobile-menu-overlay';
+    _fitOverlayToVisualViewport(_menuOverlay);
+    _menuOverlay.setAttribute('role', 'presentation');
+
+    const sheet = document.createElement('div');
+    sheet.className = 'cloud-mobile-menu-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', 'スマホ用メニュー');
+    _applySheetViewportLimit(sheet, _menuOverlay);
+
+    const header = document.createElement('div');
+    header.className = 'cloud-mobile-sheet-header';
+    const title = document.createElement('strong');
+    title.textContent = 'メニュー';
+    header.appendChild(title);
+    const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeMenuSheet);
+    closeButton.dataset.cloudMobileMenuAction = 'close';
+    closeButton.dataset.e2eId = 'cloud-mobile-menu-close';
+    header.appendChild(closeButton);
+    sheet.appendChild(header);
+
+    const activeToolType = _activeToolType();
+    const activeToolItems = _toolMenuItems(activeToolType);
+    if (activeToolItems.length) _appendSheetSection(sheet, _toolMenuTitle(activeToolType), activeToolItems, `active-${activeToolType}`);
+    if (LAYOUT_ITEMS.length) _appendSheetSection(sheet, 'レイアウト', LAYOUT_ITEMS, 'layout');
+    _appendSheetSection(sheet, 'パネル', PANEL_ITEMS, 'panel');
+    _appendSheetSection(sheet, 'ツール', _mobileWriteBlocked()
+      ? TOOL_ITEMS.filter(item => item.label !== '新規作成')
+      : TOOL_ITEMS, 'tool');
+
+    _menuOverlay.appendChild(sheet);
+    _menuOverlay.addEventListener('pointerdown', (event) => {
+      if (event.target === _menuOverlay) _closeMenuSheet();
+    });
+    document.body.appendChild(_menuOverlay);
+  }
+
+  function _openToolMenuSheet(toolType) {
+    if (!_isEnabled() || _hasBlockingModal()) return false;
+    const toolItems = _toolMenuItems(toolType);
+    if (!toolItems.length) return false;
+    _closeOverflowSheet();
+    _closeMenuSheet();
+    _menuOverlay = document.createElement('div');
+    _menuOverlay.className = 'cloud-mobile-menu-overlay';
+    _fitOverlayToVisualViewport(_menuOverlay);
+    _menuOverlay.setAttribute('role', 'presentation');
+
+    const sheet = document.createElement('div');
+    sheet.className = 'cloud-mobile-menu-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', `${_toolMenuTitle(toolType)}メニュー`);
+    _applySheetViewportLimit(sheet, _menuOverlay);
+
+    const header = document.createElement('div');
+    header.className = 'cloud-mobile-sheet-header';
+    const title = document.createElement('strong');
+    title.textContent = _toolMenuTitle(toolType);
+    header.appendChild(title);
+    const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeMenuSheet);
+    closeButton.dataset.cloudMobileMenuAction = 'close';
+    closeButton.dataset.e2eId = 'cloud-mobile-tool-menu-close';
+    header.appendChild(closeButton);
+    sheet.appendChild(header);
+
+    _appendSheetSection(sheet, '操作', toolItems, `tool-${toolType || 'current'}`);
     _menuOverlay.appendChild(sheet);
     _menuOverlay.addEventListener('pointerdown', (event) => {
       if (event.target === _menuOverlay) _closeMenuSheet();
@@ -143,28 +386,37 @@
     _closeOverflowSheet();
     _overflowOverlay = document.createElement('div');
     _overflowOverlay.className = 'cloud-mobile-overflow-overlay';
+    _fitOverlayToVisualViewport(_overflowOverlay);
     _overflowOverlay.setAttribute('role', 'presentation');
     const sheet = document.createElement('div');
     sheet.className = 'cloud-mobile-overflow-sheet';
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');
     sheet.setAttribute('aria-label', '書式メニュー');
+    _applySheetViewportLimit(sheet, _overflowOverlay);
 
     const header = document.createElement('div');
     header.className = 'cloud-mobile-sheet-header';
     const title = document.createElement('strong');
     title.textContent = '書式';
     header.appendChild(title);
-    header.appendChild(_button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet));
+    const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet);
+    closeButton.dataset.cloudMobileMenuAction = 'close';
+    closeButton.dataset.e2eId = 'cloud-mobile-overflow-close';
+    header.appendChild(closeButton);
     sheet.appendChild(header);
 
     const grid = document.createElement('div');
     grid.className = 'cloud-mobile-menu-grid';
-    OVERFLOW_ITEMS.forEach((item) => {
-      grid.appendChild(_button('cloud-mobile-menu-item', item.label, item.icon, () => {
+    OVERFLOW_ITEMS.forEach((item, index) => {
+      const itemId = _stableItemId(item, index);
+      const button = _button('cloud-mobile-menu-item', item.label, item.icon, () => {
         _closeOverflowSheet();
         item.action?.();
-      }));
+      });
+      button.dataset.cloudMobileMenuAction = itemId;
+      button.dataset.e2eId = `cloud-mobile-overflow-${itemId}`;
+      grid.appendChild(button);
     });
     sheet.appendChild(grid);
     _overflowOverlay.appendChild(sheet);
@@ -184,29 +436,38 @@
     _closeOverflowSheet();
     _overflowOverlay = document.createElement('div');
     _overflowOverlay.className = 'cloud-mobile-overflow-overlay';
+    _fitOverlayToVisualViewport(_overflowOverlay);
     _overflowOverlay.setAttribute('role', 'presentation');
     const sheet = document.createElement('div');
     sheet.className = 'cloud-mobile-overflow-sheet';
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');
     sheet.setAttribute('aria-label', '新規作成メニュー');
+    _applySheetViewportLimit(sheet, _overflowOverlay);
 
     const header = document.createElement('div');
     header.className = 'cloud-mobile-sheet-header';
     const title = document.createElement('strong');
     title.textContent = '新規作成';
     header.appendChild(title);
-    header.appendChild(_button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet));
+    const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet);
+    closeButton.dataset.cloudMobileMenuAction = 'close';
+    closeButton.dataset.e2eId = 'cloud-mobile-new-item-close';
+    header.appendChild(closeButton);
     sheet.appendChild(header);
 
     const grid = document.createElement('div');
     grid.className = 'cloud-mobile-menu-grid';
     const items = window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(NEW_ITEMS) || NEW_ITEMS;
-    items.forEach((item) => {
-      grid.appendChild(_button('cloud-mobile-menu-item', item.label, item.icon, () => {
+    items.forEach((item, index) => {
+      const itemId = _stableItemId(item, index);
+      const button = _button('cloud-mobile-menu-item', item.label, item.icon, () => {
         _closeOverflowSheet();
         _createNewItemFromMobileSheet(item.type);
-      }));
+      });
+      button.dataset.cloudMobileMenuAction = itemId;
+      button.dataset.e2eId = `cloud-mobile-new-item-${itemId}`;
+      grid.appendChild(button);
     });
     sheet.appendChild(grid);
     _overflowOverlay.appendChild(sheet);
@@ -239,28 +500,37 @@
     _closeOverflowSheet();
     _overflowOverlay = document.createElement('div');
     _overflowOverlay.className = 'cloud-mobile-overflow-overlay';
+    _fitOverlayToVisualViewport(_overflowOverlay);
     _overflowOverlay.setAttribute('role', 'presentation');
     const sheet = document.createElement('div');
     sheet.className = 'cloud-mobile-overflow-sheet';
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');
     sheet.setAttribute('aria-label', 'ボード操作メニュー');
+    _applySheetViewportLimit(sheet, _overflowOverlay);
 
     const header = document.createElement('div');
     header.className = 'cloud-mobile-sheet-header';
     const title = document.createElement('strong');
     title.textContent = 'ボード';
     header.appendChild(title);
-    header.appendChild(_button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet));
+    const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet);
+    closeButton.dataset.cloudMobileMenuAction = 'close';
+    closeButton.dataset.e2eId = 'cloud-mobile-board-overflow-close';
+    header.appendChild(closeButton);
     sheet.appendChild(header);
 
     const grid = document.createElement('div');
     grid.className = 'cloud-mobile-menu-grid';
-    BOARD_OVERFLOW_ITEMS.forEach((item) => {
-      grid.appendChild(_button('cloud-mobile-menu-item', item.label, item.icon, () => {
+    BOARD_OVERFLOW_ITEMS.forEach((item, index) => {
+      const itemId = _stableItemId(item, index);
+      const button = _button('cloud-mobile-menu-item', item.label, item.icon, () => {
         _closeOverflowSheet();
         item.action?.();
-      }));
+      });
+      button.dataset.cloudMobileMenuAction = itemId;
+      button.dataset.e2eId = `cloud-mobile-board-overflow-${itemId}`;
+      grid.appendChild(button);
     });
     sheet.appendChild(grid);
     _overflowOverlay.appendChild(sheet);

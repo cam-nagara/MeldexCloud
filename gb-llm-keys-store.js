@@ -314,7 +314,7 @@
 
   async function deleteCloudFromSettings() {
     try {
-      if (typeof cfConfirm === 'function' && !await cfConfirm('Cloud保存APIキーを削除しますか？')) return { ok: false, cancelled: true };
+      if (typeof cfConfirm === 'function' && !await cfConfirm('Cloud保存APIキーを削除しますか？', { danger: true, okLabel: '削除' })) return { ok: false, cancelled: true };
       const result = await deleteCloudEncrypted();
       if (typeof showStatus === 'function') showStatus('Cloud保存APIキーを削除しました');
       return result;

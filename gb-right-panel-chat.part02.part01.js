@@ -685,7 +685,7 @@ async function openFileChat(targetPath) {
       label.textContent = `「${fileName}」のチャットはまだありません`;
       const createBtn = document.createElement('button');
       createBtn.type = 'button';
-      createBtn.style.cssText = 'padding:6px 16px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;font-size:13px;';
+      createBtn.style.cssText = 'min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:6px 16px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;font-size:13px;';
       createBtn.innerHTML = (typeof lucide === 'function' ? lucide('messagesSquare', 14) : '') + ' チャットを作成';
       createBtn.addEventListener('click', () => _createFileChat(targetPath));
       placeholder.append(label, createBtn);

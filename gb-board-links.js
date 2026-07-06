@@ -44,6 +44,26 @@ function _bdIsExternalActionUrl(path) {
   return /^(mailto:|tel:)/i.test(String(path || '').trim());
 }
 
+function _bdIsExternalBrowserUrl(path) {
+  return /^https?:\/\//i.test(String(path || '').trim());
+}
+
+function _bdOpenExternalBrowserUrl(path) {
+  const url = String(path || '').trim();
+  if (!_bdIsExternalBrowserUrl(url)) return false;
+  if (typeof openExternalBrowserUrl === 'function') {
+    openExternalBrowserUrl(url);
+    return true;
+  }
+  if (typeof apiPost === 'function') {
+    apiPost('/open-external-url', { url }, { silentError: true })
+      .catch(() => window.open?.(url, '_blank', 'noopener'));
+    return true;
+  }
+  window.open?.(url, '_blank', 'noopener');
+  return true;
+}
+
 function _bdOpenExternalActionUrl(path) {
   const url = String(path || '').trim();
   if (!_bdIsExternalActionUrl(url)) return false;
@@ -547,7 +567,8 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   e?.stopPropagation?.();
   document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
   const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
+  menu.className = 'gb-context-menu gb-linked-open-target-menu';
+  menu.style.zIndex = '10080';
   const closeMenu = () => menu.remove();
   const addItem = (labelText, icon, action, disabled) => {
     const item = document.createElement('div');
@@ -569,6 +590,9 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   addItem('サブパネルで開く', 'layers-2', () => openLinkedPathInSubPanel(targetPath, label, opts));
   addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
   addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightPane(targetPath, label, opts));
+  if (_bdIsExternalBrowserUrl(targetPath)) {
+    addItem('既定のブラウザで開く', 'externalLink', () => _bdOpenExternalBrowserUrl(targetPath));
+  }
   addItem('単独アプリで開く', 'externalLink', () => openLinkedPathStandalone(targetPath, label, opts), !canOpenLinkedPathStandalone(targetPath, opts.linkType));
   document.body.appendChild(menu);
   if (e?.currentTarget && typeof positionPopup === 'function') {

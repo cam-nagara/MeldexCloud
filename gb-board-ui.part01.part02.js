@@ -75,6 +75,8 @@ let _bdStylePickerAnchor = null;
 
 function bdCloseStylePicker(options) {
   const focusTarget = options?.focusTarget || null;
+  const anchor = _bdStylePickerAnchor;
+  if (anchor?.setAttribute) anchor.setAttribute('aria-expanded', 'false');
   _bdStylePickerMenu?.remove();
   _bdStylePickerMenu = null;
   _bdStylePickerAnchor = null;
@@ -118,19 +120,25 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   const activeId = opts.currentId !== undefined ? opts.currentId : (kind === 'card' ? bd.activeCardStyle : bd.activeLineStyle);
   const menu = document.createElement('div');
   menu.className = 'ab-dropdown tool-menu-dropdown bd-style-picker-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', kind === 'card' ? 'カードスタイル' : 'ラインスタイル');
   menu.innerHTML = styles.map(style => `
-    <button type="button" class="bd-style-picker-item${style.id === activeId ? ' active' : ''}" data-bd-style-pick="${_bdEscAttr(style.id)}">
+    <button type="button" class="bd-style-picker-item${style.id === activeId ? ' active' : ''}" role="menuitemradio" aria-checked="${style.id === activeId ? 'true' : 'false'}" aria-label="${_bdEscAttr(style.name)}" data-bd-style-pick="${_bdEscAttr(style.id)}">
       <span class="bd-style-picker-preview">${_bdStylePickerPreview(kind, style)}</span>
       <span class="bd-style-picker-label">${esc(style.name)}</span>
     </button>`).join('');
   document.body.appendChild(menu);
   _bdStylePickerMenu = menu;
   _bdStylePickerAnchor = anchorEl;
+  anchorEl.setAttribute('aria-haspopup', 'menu');
+  anchorEl.setAttribute('aria-expanded', 'true');
   const rect = anchorEl.getBoundingClientRect();
-  { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 4) + 'px'; }
-  const box = menu.getBoundingClientRect();
-  { const z = _getZoom(); if (box.right > window.innerWidth) menu.style.left = Math.max(4, (window.innerWidth - box.width - 4) / z) + 'px';
-  if (box.bottom > window.innerHeight) menu.style.top = Math.max(4, (rect.top - box.height - 4) / z) + 'px'; }
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, rect, { prefer: 'below', gap: 4 });
+  } else {
+    { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 4) + 'px'; }
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
   const getFreshTrigger = () => (typeof opts.refreshAnchor === 'function' ? opts.refreshAnchor() : null) || (anchorEl.isConnected ? anchorEl : null);
   const applyPick = (styleId, closeMenu) => {
     opts.currentId = styleId;
@@ -141,7 +149,7 @@ function bdOpenStylePicker(kind, anchorEl, options) {
     if (closeMenu) bdCloseStylePicker({ focusTarget: getFreshTrigger });
     if (typeof opts.onAfterPick === 'function') opts.onAfterPick(styleId);
     if (typeof bindMeldexDropdownKeySwitch === 'function') bindStyleKeySwitch(getFreshTrigger());
-    if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(getFreshTrigger);
+    if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(getFreshTrigger());
     showStatus(`${kind === 'card' ? 'カード' : 'ライン'}スタイルを選択: ${styles.find(style => style.id === styleId)?.name || ''}`);
   };
   const bindStyleKeySwitch = trigger => {
@@ -156,6 +164,30 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   bindStyleKeySwitch(anchorEl);
   menu.querySelectorAll('[data-bd-style-pick]').forEach(btn => {
     btn.addEventListener('click', () => applyPick(btn.dataset.bdStylePick || '', true));
+  });
+  menu.addEventListener('keydown', event => {
+    const items = [...menu.querySelectorAll('[data-bd-style-pick]')];
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      bdCloseStylePicker({ focusTarget: getFreshTrigger });
+      return;
+    }
+    if (!items.length) return;
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowDown') nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    else if (event.key === 'ArrowUp') nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    else return;
+    event.preventDefault();
+    items[nextIndex]?.focus();
+  });
+  requestAnimationFrame(() => {
+    if (!_bdStylePickerMenu) return;
+    const current = menu.querySelector('[aria-checked="true"]') || menu.querySelector('[data-bd-style-pick]');
+    current?.focus?.();
   });
   setTimeout(() => {
     _bdStylePickerCloseHandler = event => {

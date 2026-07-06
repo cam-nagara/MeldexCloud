@@ -164,6 +164,12 @@
     return (String(name || '?').trim().charAt(0).toUpperCase() || '?');
   }
 
+  function _clockStableIdSuffix(value, fallback) {
+    const raw = String(value ?? fallback ?? '').trim();
+    const normalized = raw.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+    return normalized || String(fallback || 'item');
+  }
+
   function _clockDateLabel(date) {
     const days = ['日', '月', '火', '水', '木', '金', '土'];
     return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${days[date.getDay()]}）`;
@@ -408,17 +414,18 @@
       const titleRadius = _clockClamp(slice.midRadius, slice.inner + 4, slice.outer - 4);
       const selectPoint = _clockPoint(Math.min(slice.endAngle - 0.5, slice.startAngle + selectAnglePad), Math.max(slice.inner + 7, slice.outer - 7));
       const avatarPoint = avatarRadius ? _clockPoint(avatarAngle, Math.min(slice.outer - avatarRadius - 2, slice.inner + avatarRadius + 2)) : null;
-      html += `<g class="gb-cal-clock-event" data-clock-event-id="${_clockEsc(slice.ev.id)}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" data-clock-start-min="${_clockEsc(slice.start)}" data-clock-end-min="${_clockEsc(slice.end)}" role="button" tabindex="0" aria-label="${_clockEsc(_clockEventTitle(slice.ev))}">`;
+      const eventE2eId = `calendar-clock-event-${_clockStableIdSuffix(slice.ev?.id, index)}-${index}`;
+      html += `<g class="gb-cal-clock-event" data-e2e-id="${_clockEsc(eventE2eId)}" data-clock-event-id="${_clockEsc(slice.ev.id)}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" data-clock-start-min="${_clockEsc(slice.start)}" data-clock-end-min="${_clockEsc(slice.end)}" role="button" tabindex="0" aria-label="${_clockEsc(_clockEventTitle(slice.ev))}">`;
       html += `<clipPath id="${_clockEsc(clipId)}"><path d="${slice.path}"></path></clipPath>`;
       if (avatarPoint) html += `<clipPath id="${_clockEsc(avatarClipId)}"><circle cx="${avatarPoint.x.toFixed(2)}" cy="${avatarPoint.y.toFixed(2)}" r="${avatarRadius.toFixed(2)}"></circle></clipPath>`;
       html += `<path id="${_clockEsc(titlePathId)}" class="gb-cal-clock-event-label-path" d="${_clockArcPath(slice.startAngle + selectAnglePad * 1.8, Math.max(slice.startAngle + selectAnglePad * 2.2, slice.endAngle - avatarAnglePad * 2), titleRadius)}"></path>`;
-      html += `<path class="gb-cal-clock-event-slice" d="${slice.path}" fill="${_clockEsc(slice.color)}" fill-rule="evenodd" data-event-id="${_clockEsc(slice.ev.id)}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" data-clock-card-width="${slice.thickness.toFixed(2)}"><title>${_clockEsc(_clockEventTitle(slice.ev))}</title></path>`;
+      html += `<path class="gb-cal-clock-event-slice" data-e2e-id="${_clockEsc(eventE2eId)}-slice" d="${slice.path}" fill="${_clockEsc(slice.color)}" fill-rule="evenodd" data-event-id="${_clockEsc(slice.ev.id)}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" data-clock-card-width="${slice.thickness.toFixed(2)}"><title>${_clockEsc(_clockEventTitle(slice.ev))}</title></path>`;
       html += `<g class="gb-cal-clock-event-text" clip-path="url(#${_clockEsc(clipId)})"><text class="gb-cal-clock-event-label"><textPath href="#${_clockEsc(titlePathId)}" startOffset="50%" text-anchor="middle">${_clockEsc(title)}</textPath></text>`;
       if (avatarPoint) html += `<g class="gb-cal-clock-event-avatar" data-clock-avatar-position="end-center" transform="translate(${avatarPoint.x.toFixed(2)} ${avatarPoint.y.toFixed(2)})"><circle class="gb-cal-clock-event-avatar-bg" r="${avatarRadius.toFixed(2)}"></circle><text class="gb-cal-clock-event-avatar-initial" y="0.25">${_clockEsc(_clockAvatarInitial(userName))}</text><image href="${_clockEsc(_clockAvatarUrl(userName))}" x="${(-avatarRadius).toFixed(2)}" y="${(-avatarRadius).toFixed(2)}" width="${(avatarRadius * 2).toFixed(2)}" height="${(avatarRadius * 2).toFixed(2)}" clip-path="url(#${_clockEsc(avatarClipId)})"></image></g>`;
       html += `</g>`;
-      html += `<g class="gb-cal-clock-select-check" data-clock-select="1" data-clock-select-position="start-outer" role="checkbox" aria-label="選択" aria-checked="false" transform="translate(${(selectPoint.x - CLOCK_EVENT_CHECK_SIZE / 2).toFixed(2)} ${(selectPoint.y - CLOCK_EVENT_CHECK_SIZE / 2).toFixed(2)})"><rect class="gb-cal-clock-select-box" width="${CLOCK_EVENT_CHECK_SIZE}" height="${CLOCK_EVENT_CHECK_SIZE}" rx="1.5"></rect><path class="gb-cal-clock-select-mark" d="M2 4.1 L3.5 5.6 L6.2 2.5"></path></g>`;
-      html += `<path class="gb-cal-clock-resize-edge start" data-clock-resize="start" d="${_clockRadialPath(slice.startAngle, slice.inner, slice.outer)}"></path>`;
-      html += `<path class="gb-cal-clock-resize-edge end" data-clock-resize="end" d="${_clockRadialPath(slice.endAngle, slice.inner, slice.outer)}"></path>`;
+      html += `<g class="gb-cal-clock-select-check" data-e2e-id="${_clockEsc(eventE2eId)}-select" data-clock-select="1" data-clock-select-position="start-outer" role="checkbox" aria-label="選択" aria-checked="false" transform="translate(${(selectPoint.x - CLOCK_EVENT_CHECK_SIZE / 2).toFixed(2)} ${(selectPoint.y - CLOCK_EVENT_CHECK_SIZE / 2).toFixed(2)})"><rect class="gb-cal-clock-select-box" width="${CLOCK_EVENT_CHECK_SIZE}" height="${CLOCK_EVENT_CHECK_SIZE}" rx="1.5"></rect><path class="gb-cal-clock-select-mark" d="M2 4.1 L3.5 5.6 L6.2 2.5"></path></g>`;
+      html += `<path class="gb-cal-clock-resize-edge start" data-e2e-id="${_clockEsc(eventE2eId)}-resize-start" data-clock-resize="start" d="${_clockRadialPath(slice.startAngle, slice.inner, slice.outer)}"></path>`;
+      html += `<path class="gb-cal-clock-resize-edge end" data-e2e-id="${_clockEsc(eventE2eId)}-resize-end" data-clock-resize="end" d="${_clockRadialPath(slice.endAngle, slice.inner, slice.outer)}"></path>`;
       html += `</g>`;
     });
     return html;
@@ -431,19 +438,19 @@
     const dateLabel = _clockDateLabel(this._date);
     const activeHalf = this._clockActiveHalf();
     const halfToggle = mode === 12 ? `
-          <div class="gb-cal-clock-half-toggle" role="group" aria-label="午前午後切替">
-            <button type="button" data-clock-half="0" aria-pressed="${activeHalf === 0 ? 'true' : 'false'}">午前</button>
-            <button type="button" data-clock-half="1" aria-pressed="${activeHalf === 1 ? 'true' : 'false'}">午後</button>
+          <div class="gb-cal-clock-half-toggle" data-e2e-id="calendar-clock-half-toggle" role="group" aria-label="午前午後切替">
+            <button type="button" data-e2e-id="calendar-clock-half-am" data-clock-half="0" aria-label="午前を表示" aria-pressed="${activeHalf === 0 ? 'true' : 'false'}">午前</button>
+            <button type="button" data-e2e-id="calendar-clock-half-pm" data-clock-half="1" aria-label="午後を表示" aria-pressed="${activeHalf === 1 ? 'true' : 'false'}">午後</button>
           </div>` : '';
     this._contentEl.innerHTML = `
-      <div class="gb-cal-clock-view" data-clock-mode="${mode}">
+      <div class="gb-cal-clock-view" data-e2e-id="calendar-clock-view" data-clock-mode="${mode}">
         <div class="gb-cal-clock-view-meta">
           <span>${_clockEsc(dateStr)}</span>
           <span>選択中: ${_clockEsc(selected?.name || 'なし')}</span>
         </div>
-        <div class="gb-cal-clock-stage">
+        <div class="gb-cal-clock-stage" data-e2e-id="calendar-clock-stage">
           ${halfToggle}
-          <svg class="gb-cal-clock-svg" viewBox="0 0 ${SIZE} ${SIZE}" role="img" aria-label="アナログ時計 ${mode}時間">
+          <svg class="gb-cal-clock-svg" data-e2e-id="calendar-clock-create-surface" viewBox="0 0 ${SIZE} ${SIZE}" role="img" aria-label="アナログ時計 ${mode}時間。空いている時間をドラッグして予定を作成">
             <circle class="gb-cal-clock-face" cx="${CX}" cy="${CY}" r="${OUTER_R}"></circle>
             <text class="gb-cal-clock-date-label" x="24" y="34">${_clockEsc(dateLabel)}</text>
             <g class="gb-cal-clock-events">${this._clockEventSlicesSvg(mode, dateStr)}</g>
@@ -454,7 +461,7 @@
             <line class="gb-cal-clock-hand gb-cal-clock-second" data-clock-hand="second" x1="${CX}" y1="${CY + 18}" x2="${CX}" y2="54"></line>
             <circle class="gb-cal-clock-pin" cx="${CX}" cy="${CY}" r="5"></circle>
           </svg>
-          <div class="gb-cal-clock-hover-card" hidden></div>
+          <div class="gb-cal-clock-hover-card" data-e2e-id="calendar-clock-hover-card" hidden></div>
         </div>
       </div>`;
     this._bindAnalogClockInteractions(mode, dateStr);

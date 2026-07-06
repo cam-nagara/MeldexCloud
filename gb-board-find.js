@@ -44,16 +44,16 @@ function _bdCreateFindBar() {
   bar.className = 'bd-find-bar';
   bar.innerHTML = `
     <div class="bd-find-bar-row">
-      <input type="text" id="bd-find-q" class="bd-find-input" placeholder="検索">
+      <input type="text" id="bd-find-q" class="bd-find-input" placeholder="検索" aria-label="検索">
       <span id="bd-find-count" class="bd-find-count">0 件</span>
-      <button type="button" id="bd-find-prev" class="bd-find-btn" title="前へ (Shift+Enter)">&#x25B2;</button>
-      <button type="button" id="bd-find-next" class="bd-find-btn" title="次へ (Enter)">&#x25BC;</button>
-      <button type="button" id="bd-find-close" class="bd-find-btn" title="閉じる (Esc)">&#x2715;</button>
+      <button type="button" id="bd-find-prev" class="bd-find-btn" title="前へ (Shift+Enter)" aria-label="前へ">&#x25B2;</button>
+      <button type="button" id="bd-find-next" class="bd-find-btn" title="次へ (Enter)" aria-label="次へ">&#x25BC;</button>
+      <button type="button" id="bd-find-close" class="bd-find-btn" title="閉じる (Esc)" aria-label="閉じる">&#x2715;</button>
     </div>
     <div class="bd-find-bar-row bd-find-replace-row" style="display:none;">
-      <input type="text" id="bd-find-r" class="bd-find-input" placeholder="置換">
-      <button type="button" id="bd-find-replace-one" class="bd-find-btn" title="現在の項目を置換">置換</button>
-      <button type="button" id="bd-find-replace-all" class="bd-find-btn" title="全て置換">全置換</button>
+      <input type="text" id="bd-find-r" class="bd-find-input" placeholder="置換" aria-label="置換">
+      <button type="button" id="bd-find-replace-one" class="bd-find-btn" title="現在の項目を置換" aria-label="現在の項目を置換">置換</button>
+      <button type="button" id="bd-find-replace-all" class="bd-find-btn" title="全て置換" aria-label="全て置換">全置換</button>
     </div>
   `;
   const host = document.getElementById('bd-canvas') || document.body;

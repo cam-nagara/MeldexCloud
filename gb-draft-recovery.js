@@ -228,6 +228,14 @@
     return true;
   }
 
+  async function _confirmDiscard(message) {
+    if (typeof cfConfirm === 'function') {
+      return !!await cfConfirm(message, { danger: true, okLabel: '破棄', cancelLabel: 'キャンセル' });
+    }
+    if (typeof window.confirm === 'function') return window.confirm(message);
+    return false;
+  }
+
   async function showRecoveryDialog() {
     const drafts = await listDrafts();
     if (!drafts.length || document.querySelector('[data-draft-recovery-dialog="1"]')) return;
@@ -235,36 +243,46 @@
       _scheduleRecoveryRetry();
       return;
     }
+    window.GBTooltip?.hide?.({ suppressUntilLeave: true });
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.dataset.draftRecoveryDialog = '1';
     const rows = drafts.map((item, index) => `
-      <div style="display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;">
-        <div style="flex:1;min-width:0;">
-          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(_fileLabel(item.path))}</div>
-          <div style="font-size:12px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(item.path)} / ${esc(item.savedAt || '')}</div>
+      <div class="draft-recovery-row" data-draft-row data-draft-index="${index}">
+        <div class="draft-recovery-info">
+          <div class="draft-recovery-name" title="${esc(_fileLabel(item.path))}">${esc(_fileLabel(item.path))}</div>
+          <div class="draft-recovery-meta" title="${esc(item.path)}">${esc(item.path)} / ${esc(item.savedAt || '')}</div>
         </div>
-        <button data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
-        <button data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
-        <button data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard">破棄</button>
+        <div class="draft-recovery-actions">
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} のドラフトを破棄">破棄</button>
+        </div>
       </div>`).join('');
-    overlay.innerHTML = `<div class="modal" style="width:560px;max-width:calc(100vw - 32px);">
-      <h3>未保存の編集があります</h3>
+    overlay.innerHTML = `<div class="modal gb-mobile-dialog-sheet gb-mobile-dialog-sheet-open" role="dialog" aria-modal="true" aria-labelledby="draft-recovery-title" data-e2e-id="draft-recovery-dialog">
+      <h3 id="draft-recovery-title">未保存の編集があります</h3>
       <div class="gb-section-desc">前回終了時に保存前だった編集を復元できます。</div>
-      <div style="max-height:360px;overflow:auto;">${rows}</div>
-      <div class="btn-row" style="margin-top:12px;"><button data-draft-action="discard-all" data-e2e-id="draft-recovery-discard-all">すべて破棄</button><span style="flex:1;"></span><button data-draft-action="close" data-e2e-id="draft-recovery-close">閉じる</button></div>
+      <div class="draft-recovery-list">${rows}</div>
+      <div class="btn-row draft-recovery-footer">
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard-all" data-e2e-id="draft-recovery-discard-all">すべて破棄</button>
+        <span class="draft-recovery-spacer" aria-hidden="true"></span>
+        <button type="button" class="gb-btn gb-btn-sm" data-draft-action="close" data-e2e-id="draft-recovery-close">閉じる</button>
+      </div>
     </div>`;
     overlay.addEventListener('click', async (event) => {
-      const action = event.target?.dataset?.draftAction;
+      const button = event.target?.closest?.('[data-draft-action]');
+      if (!button || !overlay.contains(button)) return;
+      const action = button.dataset.draftAction;
       if (!action) return;
       if (action === 'close') { overlay.remove(); return; }
       if (action === 'discard-all') {
+        if (!await _confirmDiscard('未保存ドラフトをすべて破棄しますか？')) return;
         await clearAllDrafts();
         overlay.remove();
         if (typeof showStatus === 'function') showStatus('未保存ドラフトをすべて破棄しました');
         return;
       }
-      const item = drafts[Number(event.target.dataset.draftIndex)];
+      const item = drafts[Number(button.dataset.draftIndex)];
       if (!item) return;
       if (action === 'overwrite') {
         await _overwriteDraft(item);
@@ -273,8 +291,10 @@
         const saved = await _saveDraftAs(item);
         if (saved) overlay.remove();
       } else if (action === 'discard') {
+        if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
         await clearDraft(item.path);
-        event.target.closest('div')?.remove();
+        button.closest('[data-draft-row]')?.remove();
+        if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
       }
     });
     document.body.appendChild(overlay);

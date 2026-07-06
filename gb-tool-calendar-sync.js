@@ -12,13 +12,13 @@
   }
 
   function _syncStatusLabel(connected, available = true) {
-    if (!available) return '<span style="color:var(--red);">利用不可</span>';
-    return connected ? '<span style="color:var(--green);">接続済み</span>' : '未接続';
+    if (!available) return '<span class="gb-cal-sync-status-unavailable">利用不可</span>';
+    return connected ? '<span class="gb-cal-sync-status-connected">接続済み</span>' : '未接続';
   }
 
   function _syncCard(title, body) {
-    return `<div class="gb-cal-sync-card" style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">${title}</div>
+    return `<div class="gb-cal-sync-card">
+      <div class="gb-cal-sync-card-title">${title}</div>
       ${body}
     </div>`;
   }
@@ -36,6 +36,11 @@
     catch { return window.location.origin + '/api/cal/sync/google/tasks/callback'; }
   }
 
+  function _closeSyncOverlay(o) {
+    if (typeof o?._gbCloseSyncModal === 'function') o._gbCloseSyncModal();
+    else o?.remove?.();
+  }
+
   CalendarComponent.prototype._showSyncModal = async function() {
     let syncStatus = {};
     try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
@@ -44,54 +49,67 @@
     const microsoft = syncStatus.microsoft || {};
     const o = document.createElement('div');
     o.className = 'gb-cal-modal-overlay';
-    o.innerHTML = `<div class="gb-cal-modal" style="min-width:min(560px,96vw);max-height:85vh;overflow-y:auto;">
+    o.innerHTML = `<div class="gb-cal-modal gb-cal-sync-modal">
       <h3>カレンダー同期</h3>
       ${_syncCard('Google Calendar', `
-        <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">ステータス: ${_syncStatusLabel(!!google.connected, !!google.available)}</div>
+        <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!google.connected, !!google.available)}</div>
         ${!google.connected && google.available ? `
           <div class="field"><label>Client ID</label><input class="sync-gcal-id" type="text" placeholder="Google Cloud Console で取得"></div>
           <div class="field"><label>Client Secret</label><input class="sync-gcal-secret" type="password"></div>
-          <button class="sync-gcal-auth" type="button" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Googleにログイン</button>` : ''}
-        ${google.connected ? '<div style="display:flex;gap:4px;flex-wrap:wrap;"><button class="sync-gcal-pull" type="button" style="font-size:12px;padding:4px 12px;">Googleから取得</button><button class="sync-gcal-push" type="button" style="font-size:12px;padding:4px 12px;">Googleに送信</button></div>' : ''}
+          <button class="sync-gcal-auth gb-cal-sync-action primary" type="button">Googleにログイン</button>` : ''}
+        ${google.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gcal-pull gb-cal-sync-action" type="button">Googleから取得</button><button class="sync-gcal-push gb-cal-sync-action" type="button">Googleに送信</button></div>' : ''}
       `)}
       ${_syncCard('Google ToDo', `
-        <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
+        <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
         ${!googleTasks.connected && googleTasks.available !== false ? `
           <div class="field"><label>Client ID</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
-          <button class="sync-gtask-auth" type="button" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Google ToDoにログイン</button>
-          <div class="sync-gtask-auth-status" style="font-size:12px;color:var(--fg2);margin-top:8px;"></div>` : ''}
-        ${googleTasks.connected ? '<div style="display:flex;gap:4px;flex-wrap:wrap;"><button class="sync-gtask-sync" type="button" style="font-size:12px;padding:4px 12px;">Google ToDoと同期</button></div>' : ''}
+          <button class="sync-gtask-auth gb-cal-sync-action primary" type="button">Google ToDoにログイン</button>
+          <div class="sync-gtask-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>` : ''}
+        ${googleTasks.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gtask-sync gb-cal-sync-action" type="button">Google ToDoと同期</button></div>' : ''}
       `)}
       ${_syncCard('Microsoft Calendar', `
-        <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
+        <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
         ${!microsoft.connected && microsoft.available ? `
           <div class="field"><label>Application (client) ID</label><input class="sync-ms-id" type="text" placeholder="Microsoft Entra のアプリID"></div>
           <div class="field"><label>Tenant</label><input class="sync-ms-tenant" type="text" value="${_calSyncEsc(microsoft.tenant || 'common')}"></div>
-          <button class="sync-ms-auth" type="button" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Microsoftにログイン</button>
-          <div class="sync-ms-auth-status" style="font-size:12px;color:var(--fg2);margin-top:8px;"></div>` : ''}
-        ${microsoft.connected ? '<div style="display:flex;gap:4px;flex-wrap:wrap;"><button class="sync-ms-pull" type="button" style="font-size:12px;padding:4px 12px;">Microsoftから取得</button><button class="sync-ms-push" type="button" style="font-size:12px;padding:4px 12px;">Microsoftに送信</button></div>' : ''}
+          <button class="sync-ms-auth gb-cal-sync-action primary" type="button">Microsoftにログイン</button>
+          <div class="sync-ms-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>` : ''}
+        ${microsoft.connected ? '<div class="gb-cal-sync-actions"><button class="sync-ms-pull gb-cal-sync-action" type="button">Microsoftから取得</button><button class="sync-ms-push gb-cal-sync-action" type="button">Microsoftに送信</button></div>' : ''}
       `)}
       ${_syncCard('iCal / .ics', `
-        <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">.icsファイル、またはBasic認証付きのiCal URLから取り込めます。</div>
+        <div class="gb-cal-sync-status">.icsファイル、またはBasic認証付きのiCal URLから取り込めます。</div>
         <div class="field"><label>iCal URL</label><input class="sync-ical-url" type="url" placeholder="https://example.com/calendar.ics"></div>
-        <div style="display:flex;gap:8px;">
-          <div class="field" style="flex:1;"><label>ユーザー名</label><input class="sync-ical-user" type="text"></div>
-          <div class="field" style="flex:1;"><label>パスワード</label><input class="sync-ical-pass" type="password"></div>
+        <div class="gb-cal-sync-split">
+          <div class="field"><label>ユーザー名</label><input class="sync-ical-user" type="text"></div>
+          <div class="field"><label>パスワード</label><input class="sync-ical-pass" type="password"></div>
         </div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap;">
-          <button class="sync-ical-url-import" type="button" style="font-size:12px;padding:4px 12px;">URLから取得</button>
-          <button class="sync-ical-import" type="button" style="font-size:12px;padding:4px 12px;">.icsインポート</button>
-          <button class="sync-ical-export" type="button" style="font-size:12px;padding:4px 12px;">.icsエクスポート</button>
+        <div class="gb-cal-sync-actions">
+          <button class="sync-ical-url-import gb-cal-sync-action" type="button">URLから取得</button>
+          <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
+          <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
         </div>
       `)}
-      <div class="btn-row"><button class="sync-close" type="button">閉じる</button></div>
+      <div class="btn-row"><button class="sync-close gb-cal-sync-action" type="button">閉じる</button></div>
     </div>`;
     document.body.appendChild(o);
-    o.querySelector('.sync-close').addEventListener('click', () => {
+    const close = () => {
       if (o._msPollTimer) clearTimeout(o._msPollTimer);
       if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
+      document.removeEventListener('keydown', onKeyDown, true);
       o.remove();
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape' || !document.body.contains(o)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    o._gbCloseSyncModal = close;
+    o.querySelector('.sync-close').addEventListener('click', close);
+    o.addEventListener('pointerdown', (event) => {
+      if (event.target === o) close();
     });
+    document.addEventListener('keydown', onKeyDown, true);
     o.querySelector('.sync-gcal-auth')?.addEventListener('click', () => this._googleCalAuth(o));
     o.querySelector('.sync-gcal-pull')?.addEventListener('click', () => this._googleCalPull(o));
     o.querySelector('.sync-gcal-push')?.addEventListener('click', () => this._googleCalPush());
@@ -112,7 +130,7 @@
     try {
       const res = await apiPost('/cal/sync/google/auth', { client_id: id, client_secret: secret });
       this._showStatus(res.message || 'Google認証成功');
-      o.remove();
+      _closeSyncOverlay(o);
       this._showSyncModal();
     } catch (e) {
       this._showStatus('Google認証失敗: ' + e.message, true);
@@ -169,7 +187,7 @@
         const status = await apiFetch('/cal/sync/status');
         if (status?.googleTasks?.connected) {
           this._showStatus('Google ToDo認証成功');
-          o.remove();
+          _closeSyncOverlay(o);
           this._showSyncModal();
           return;
         }
@@ -259,7 +277,7 @@
           return;
         }
         this._showStatus('Microsoft認証成功');
-        o.remove();
+        _closeSyncOverlay(o);
         this._showSyncModal();
       } catch (e) {
         this._showStatus('Microsoft認証失敗: ' + e.message, true);
@@ -326,11 +344,13 @@
   };
 
   CalendarComponent.prototype._icalExport = async function() {
-    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
+    const exportSave = window.MeldexExportSave || (typeof MeldexExportSave !== 'undefined' ? MeldexExportSave : null);
+    const apiBase = typeof API_BASE !== 'undefined' ? API_BASE : '/api';
+    if (!exportSave || typeof exportSave.saveUrl !== 'function') {
       this._showStatus('保存ダイアログを初期化できませんでした', true);
       return;
     }
-    await MeldexExportSave.saveUrl(API_BASE + '/cal/sync/ical/export?user=' + encodeURIComponent(this._getUser()), {
+    await exportSave.saveUrl(apiBase + '/cal/sync/ical/export?user=' + encodeURIComponent(this._getUser()), {
       filename: `calendar-${this._localDateStr(new Date())}.ics`,
       extension: '.ics',
       dialogTitle: 'iCal として保存',

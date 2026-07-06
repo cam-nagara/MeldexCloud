@@ -130,16 +130,33 @@ function _handleTabBarContextmenu(e) {
   const tab = _tabs[idx];
   if (!tab) return;
 
+  document.querySelectorAll('.tab-context-menu').forEach(el => el.remove());
   const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
+  menu.className = 'gb-context-menu tab-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'タブ操作');
+  if (!tabEl.hasAttribute('tabindex')) tabEl.tabIndex = -1;
+  let menuClosed = false;
+  let closeOnPointer = null;
+  let closeOnKey = null;
+  function closeMenu(restoreFocus = false) {
+    if (menuClosed) return;
+    menuClosed = true;
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    menu.remove();
+    if (restoreFocus && typeof tabEl.focus === 'function') {
+      try { tabEl.focus({ preventScroll: true }); } catch { tabEl.focus(); }
+    }
+  }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
   function addMI(label, fn) {
-    const mi = document.createElement('div');
+    const mi = document.createElement('button');
+    mi.type = 'button';
+    mi.className = 'gb-context-menu-item';
+    mi.setAttribute('role', 'menuitem');
     mi.textContent = label;
-    mi.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-    mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; };
-    mi.onmouseleave = () => { mi.style.background = ''; };
-    mi.addEventListener('click', () => { menu.remove(); fn(); });
+    mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
   }
   addMI('新しいウィンドウで開く', () => {

@@ -501,8 +501,10 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     if (chatPaths.length === 0) {
       // チャットなし: ＋ボタンのみ
       const addBtn = document.createElement('button');
+      addBtn.type = 'button';
       addBtn.className = 'db-chat-add-btn';
       addBtn.dataset.e2eId = _typedCellControlE2eId('chat-add', entityPath, propName);
+      addBtn.setAttribute('aria-label', 'チャットを追加');
       addBtn.innerHTML = lucide('plus', 12) + ' チャット';
       addBtn.style.cssText = 'display:inline-flex;align-items:center;gap:2px;padding:2px 8px;font-size:11px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
       addBtn.addEventListener('click', (e) => {
@@ -530,10 +532,14 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
         container.appendChild(link);
       });
       // ＋ボタン
-      const addMore = document.createElement('span');
-      addMore.style.cssText = 'cursor:pointer;color:var(--fg2);padding:0 2px;';
+      const addMore = document.createElement('button');
+      addMore.type = 'button';
+      addMore.className = 'db-chat-add-btn db-chat-add-more-btn';
+      addMore.dataset.e2eId = _typedCellControlE2eId('chat-add-more', entityPath, propName);
+      addMore.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg2);min-width:24px;height:24px;padding:0 6px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;';
       addMore.innerHTML = lucide('plus', 12);
       addMore.title = 'チャットを追加';
+      addMore.setAttribute('aria-label', 'チャットを追加');
       addMore.addEventListener('click', (e) => {
         e.stopPropagation();
         const lockMsg = _valueEditorLockMessage(dbPath, propName);

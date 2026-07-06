@@ -110,19 +110,24 @@ function toggleRightPanelTab(tabName) {
 
 // 右アクティブバーのボタンのactive状態を更新
 function _updateRabActiveState(activeTab) {
-  document.querySelectorAll('#activity-bar-right button').forEach(btn => btn.classList.remove('active'));
-  if (activeTab === 'calendar') document.getElementById('rab-calendar')?.classList.add('active');
-  else if (activeTab === 'detail') document.getElementById('rab-detail')?.classList.add('active');
-  else if (activeTab === 'chat') document.getElementById('rab-chat')?.classList.add('active');
-  else if (activeTab === 'annotation') document.getElementById('rab-annotation')?.classList.add('active');
-  else if (activeTab === 'history') document.getElementById('rab-history')?.classList.add('active');
+  document.querySelectorAll('#activity-bar-right button').forEach(btn => {
+    btn.classList.remove('active');
+    btn.setAttribute('aria-pressed', 'false');
+  });
+  const target = activeTab ? document.getElementById('rab-' + activeTab) : null;
+  if (target) {
+    target.classList.add('active');
+    target.setAttribute('aria-pressed', 'true');
+  }
 }
 
 function switchRightTab(tabName) {
   if (tabName === 'sticky') tabName = 'annotation';
   // タブ切り替え
   document.querySelectorAll('.rp-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.rpTab === tabName);
+    const active = t.dataset.rpTab === tabName;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   document.querySelectorAll('.rp-content').forEach(c => {
     c.classList.toggle('active', c.id === 'rp-' + tabName);
@@ -163,7 +168,9 @@ function switchRightTab(tabName) {
     // Phase C: CalendarComponentを直接マウント
     const rpCal = document.getElementById('rp-calendar');
     if (rpCal && !rpCal._calComponent) {
-      const comp = new CalendarComponent('rp-calendar', 'rp-cal-tab');
+      const CalendarCtor = window.CalendarComponent || (typeof CalendarComponent !== 'undefined' ? CalendarComponent : null);
+      if (!CalendarCtor) return;
+      const comp = new CalendarCtor('rp-calendar', 'rp-cal-tab');
       comp.create();
       comp.mount(rpCal);
       comp.activate();
@@ -173,6 +180,9 @@ function switchRightTab(tabName) {
     }
   } else if (tabName === 'annotation') {
     loadRpAnnotationList();
+  } else if (tabName === 'tags') {
+    const tagsPanel = document.getElementById('rp-tags');
+    if (tagsPanel && typeof renderTagManagementTab === 'function') renderTagManagementTab(tagsPanel);
   } else if (tabName === 'history') {
     renderHistoryList();
   } else if (tabName === 'detail') {
@@ -403,7 +413,10 @@ function _renderRpAnnotationEmptyState(list, options = {}) {
 
   const btn = document.createElement('button');
   btn.type = 'button';
+  btn.className = 'rp-ann-empty-all-btn';
   btn.textContent = '全ファイル・全状態で表示';
+  btn.setAttribute('aria-label', '全ファイル・全状態で表示');
+  btn.dataset.e2eId = 'rp-ann-empty-all';
   btn.style.cssText = 'align-self:flex-start;padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--fg);cursor:pointer;';
   btn.addEventListener('click', () => {
     const scope = document.getElementById('rp-ann-scope');
@@ -674,9 +687,21 @@ function _rpAnnotationActionButton(icon, title) {
   btn.type = 'button';
   btn.className = 'rp-ann-action-btn';
   btn.title = title;
+  btn.setAttribute('aria-label', title);
   btn.innerHTML = typeof lucide === 'function' ? lucide(icon, 12) : '';
   return btn;
 }
+
+(function installRightPanelTabKeyboardActivation() {
+  document.addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const tab = event.target?.closest?.('.rp-tab[role="tab"][data-action]');
+    if (!tab) return;
+    event.preventDefault();
+    tab.click();
+  });
+})();
 
 function _rpAnnotationCenter(a) {
   const data = a?.data || {};
@@ -793,6 +818,7 @@ function _renderCommentGroups(container, comments) {
     const grp = document.createElement('div');
     grp.style.cssText = 'margin-bottom:10px;border:1px solid var(--border);border-radius:4px;overflow:hidden;background:var(--bg2);';
     const header = document.createElement('div');
+    header.className = 'rp-ann-group-header';
     header.style.cssText = 'padding:6px 8px;background:var(--bg3);font-size:11px;color:var(--fg2);display:flex;align-items:center;gap:6px;cursor:pointer;';
     header.innerHTML = `<span style="flex:1;color:var(--fg);">${esc(g.label)}</span><span>${g.items.length}件</span>`;
     header.addEventListener('click', () => _jumpToCommentTarget(g.items[0]));
@@ -865,9 +891,9 @@ function _buildCommentItem(c) {
     <div style="color:var(--fg);white-space:pre-wrap;margin-bottom:4px;">${bodyHtml}</div>
     <div style="display:flex;align-items:center;gap:6px;color:var(--fg2);font-size:10px;">
       <span style="flex:1;">${esc(c.user || '')} · ${time}${c.resolved ? ' · 解決済み' : ''}${c.orphan ? ' · 孤児' : ''}${c.deleted ? ' · 削除済み' : ''}</span>
-      <button class="rp-ann-edit" title="編集" style="background:transparent;border:none;cursor:pointer;color:var(--fg2);padding:2px;"><span class="ico ico-pencil" style="width:12px;height:12px;"></span></button>
-      <button class="rp-ann-resolve" title="${c.resolved ? '未解決に戻す' : '解決にする'}" style="background:transparent;border:none;cursor:pointer;color:var(--fg2);padding:2px;"><span class="ico ico-check" style="width:12px;height:12px;"></span></button>
-      <button class="rp-ann-delete" title="${canDelete ? '削除' : 'ソースフォルダの管理者だけが削除できます'}" ${canDelete ? '' : 'disabled'} style="background:transparent;border:none;cursor:${canDelete ? 'pointer' : 'not-allowed'};color:var(--fg2);padding:2px;opacity:${canDelete ? '1' : '0.45'};"><span class="ico ico-trash2" style="width:12px;height:12px;"></span></button>
+      <button class="rp-ann-edit" data-rp-ann-action="inline-edit" data-e2e-id="rp-ann-inline-edit-${esc(c.id || 'unknown')}" title="編集" aria-label="編集" style="background:transparent;border:none;cursor:pointer;color:var(--fg2);padding:2px;"><span class="ico ico-pencil" style="width:12px;height:12px;"></span></button>
+      <button class="rp-ann-resolve" data-rp-ann-action="inline-resolve" data-e2e-id="rp-ann-inline-resolve-${esc(c.id || 'unknown')}" title="${c.resolved ? '未解決に戻す' : '解決にする'}" aria-label="${c.resolved ? '未解決に戻す' : '解決にする'}" style="background:transparent;border:none;cursor:pointer;color:var(--fg2);padding:2px;"><span class="ico ico-check" style="width:12px;height:12px;"></span></button>
+      <button class="rp-ann-delete" data-rp-ann-action="inline-delete" data-e2e-id="rp-ann-inline-delete-${esc(c.id || 'unknown')}" title="${canDelete ? '削除' : 'ソースフォルダの管理者だけが削除できます'}" aria-label="${canDelete ? '削除' : 'ソースフォルダの管理者だけが削除できます'}" ${canDelete ? '' : 'disabled'} style="background:transparent;border:none;cursor:${canDelete ? 'pointer' : 'not-allowed'};color:var(--fg2);padding:2px;opacity:${canDelete ? '1' : '0.45'};"><span class="ico ico-trash2" style="width:12px;height:12px;"></span></button>
     </div>`;
   el.querySelector('.rp-ann-edit').addEventListener('click', (ev) => { ev.stopPropagation(); _editCommentInline(el, c); });
   el.querySelector('.rp-ann-resolve').addEventListener('click', (ev) => { ev.stopPropagation(); _toggleResolveComment(c); });
@@ -884,12 +910,14 @@ function _rpCanDeleteAnnotation(c) {
 function _editCommentInline(el, c) {
   const curBody = c.body || '';
   const ta = document.createElement('textarea');
+  ta.className = 'rp-ann-inline-edit-textarea';
   ta.value = curBody;
   ta.style.cssText = 'width:100%;min-height:60px;padding:4px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;resize:vertical;font-family:inherit;box-sizing:border-box;';
   const bar = document.createElement('div');
+  bar.className = 'rp-ann-inline-edit-actions';
   bar.style.cssText = 'display:flex;gap:4px;margin-top:4px;justify-content:flex-end;';
-  bar.innerHTML = `<button class="rp-ann-cancel" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">キャンセル</button>
-    <button class="rp-ann-save" style="font-size:11px;padding:2px 8px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:3px;cursor:pointer;">保存</button>`;
+  bar.innerHTML = `<button class="rp-ann-cancel" data-rp-ann-inline-action="cancel" data-e2e-id="rp-ann-inline-cancel-${esc(c.id || 'unknown')}" aria-label="キャンセル" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">キャンセル</button>
+    <button class="rp-ann-save" data-rp-ann-inline-action="save" data-e2e-id="rp-ann-inline-save-${esc(c.id || 'unknown')}" aria-label="保存" style="font-size:11px;padding:2px 8px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:3px;cursor:pointer;">保存</button>`;
   el.innerHTML = '';
   el.appendChild(ta);
   el.appendChild(bar);

@@ -49,6 +49,7 @@
     btn.dataset.type = 'os-accent';
     btn.dataset.osAccentTone = info.tone;
     btn.dataset.osAccentLabel = info.label;
+    btn.dataset.e2eId = `color-palette-os-accent-${info.tone}`;
     btn.setAttribute('data-palette-os-accent-swatch', info.tone);
     btn.setAttribute('aria-label', `${info.label}カラーを設定`);
     btn.style.background = info.color || info.fallback || 'var(--theme-os-accent, AccentColor)';
@@ -100,7 +101,9 @@
   closeRow.className = 'gb-palette-close-row';
   const closeBtn = document.createElement('button');
   closeBtn.className = 'gb-btn-close'; closeBtn.textContent = '閉じる';
+  closeBtn.dataset.e2eId = 'color-palette-close';
   closeBtn.title = 'カラーパレットを閉じる';
+  closeBtn.setAttribute('aria-label', 'カラーパレットを閉じる');
   closeBtn.addEventListener('click', () => { if (typeof onClose === 'function') onClose(); });
   closeRow.appendChild(closeBtn);
   palette.appendChild(closeRow);

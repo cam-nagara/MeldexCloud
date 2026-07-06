@@ -175,7 +175,9 @@
     });
     state.dirty = false;
     setStatus('新規メモ');
-    flushPendingQueue();
+    flushPendingQueue().then((ok) => {
+      if (ok) setStatus('新規メモ');
+    });
     focusEditorSoon();
   }
 
@@ -419,6 +421,7 @@
     canvas.addEventListener('pointerup', endDraw);
     canvas.addEventListener('pointercancel', endDraw);
     setDrawTool('pen');
+    syncDrawModeUi();
   }
 
   function resizeCanvas() {
@@ -498,9 +501,13 @@
 
   function toggleDrawMode() {
     state.drawMode = !state.drawMode;
+    syncDrawModeUi();
+    setStatus(state.drawMode ? 'ペン入力' : 'テキスト入力');
+  }
+
+  function syncDrawModeUi() {
     els.drawToggleBtn.classList.toggle('is-active', state.drawMode);
     els.drawingCanvas.style.pointerEvents = state.drawMode ? 'auto' : 'none';
-    setStatus(state.drawMode ? 'ペン入力' : 'テキスト入力');
   }
 
   function clearDrawing() {

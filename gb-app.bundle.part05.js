@@ -1,3 +1,373 @@
+
+async function captureScreenshot(mode) {
+  let stream = null;
+  let hideState = null;
+  try {
+    const hideFirst = mode.includes('hide');
+    if (hideFirst) hideState = await _hideMeldexWindowForScreenshot();
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'monitor' } });
+    const video = document.createElement('video');
+    const loaded = new Promise((resolve, reject) => {
+      video.onloadeddata = resolve;
+      video.onerror = () => reject(new Error('画面キャプチャ映像を読み込めませんでした'));
+    });
+    video.srcObject = stream;
+    await video.play();
+    await loaded;
+    await new Promise(r => setTimeout(r, 200));
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+    if (hideFirst) {
+      await _restoreMeldexWindowForScreenshot(hideState);
+      hideState = null;
+    }
+    let outputCanvas = canvas;
+    if (_screenshotModeIsRegion(mode)) {
+      const region = await _selectScreenshotRegionFromCanvas(canvas);
+      if (!region) return;
+      outputCanvas = _cropScreenshotCanvas(canvas, region);
+    }
+    const b64 = outputCanvas.toDataURL('image/png');
+    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: '_screenshots' });
+    if (res.path) {
+      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
+      const viewerUrl = window.MeldexResourceUrl?.viewer
+        ? window.MeldexResourceUrl.viewer({ file: res.path, markup: 1 })
+        : ('/viewer?file=' + encodeURIComponent(res.path) + '&markup=1');
+      window.open(viewerUrl, '_blank');
+    }
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
+  } finally {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
+  }
+}
+
+// モバイル: スワイプでサイドバー開閉
+(function() {
+  let touchStartX = 0, touchStartY = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (window.innerWidth > 768) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
+      // 左端から右スワイプ → サイドバー開く
+      sidebar.classList.add('open');
+      if (backdrop) {
+        backdrop.classList.add('open');
+        backdrop.style.setProperty('display', 'block', 'important');
+      }
+    } else if (dx < 0 && sidebar.classList.contains('open')) {
+      // 左スワイプ → サイドバー閉じる
+      sidebar.classList.remove('open');
+      if (backdrop) {
+        backdrop.classList.remove('open');
+        backdrop.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }, { passive: true });
+})();
+
+/* ==============================
+   ステータスバー
+   ============================== */
+// メッセージ先頭行をタイトル、残りを本文として HTML を組み立てる。
+// 単一行メッセージは従来通り本文 div のみ表示し、複数行のみタイトル化する。
+function _buildCfDialogBody(message) {
+  const text = String(message ?? '');
+  if (!text) return '';
+  // v0.5.250: .gb-confirm-message クラスに統一 (CSS で line-height / white-space / word-break を一括指定)。
+  // 複数行メッセージでは先頭行を強調表示 (font-weight) し、以降を本文として扱う。
+  const lines = text.split('\n');
+  if (lines.length < 2) {
+    return `<div class="gb-confirm-message">${esc(text)}</div>`;
+  }
+  const title = (lines.shift() || '').trim();
+  const body = lines.join('\n').trim();
+  let html = '';
+  if (title) html += `<div class="gb-confirm-message" style="font-weight:600;">${esc(title)}</div>`;
+  if (body) html += `<div class="gb-confirm-message" style="color:var(--ui-fg-muted);">${esc(body)}</div>`;
+  return html;
+}
+
+// v0.5.250: cf ダイアログは .modal (大型殻) から .gb-confirm (コンパクト殻) に統一。
+// - ヘッダー / フッター分割なし (短い問いかけ専用)
+// - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
+// - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
+function _cfIsDeleteMessage(text) {
+  // 破壊的操作を示唆するキーワード。
+  // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
+  // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。
+  return /削除|破棄|除去|消去|初期化|リセット|を空に|デフォルト.{0,8}戻/.test(String(text || ''));
+}
+
+let _cfDialogSeq = 0;
+function _cfRestoreFocusTarget() {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function _enhanceCfDialog(overlay, kind, label) {
+  const dialog = overlay?.querySelector?.('.gb-confirm');
+  if (!dialog) return null;
+  const idBase = `gb-${kind}-${++_cfDialogSeq}`;
+  overlay.dataset.e2eId = `${kind}-overlay`;
+  dialog.dataset.e2eId = `${kind}-dialog`;
+  dialog.id = dialog.id || `${idBase}-dialog`;
+  dialog.setAttribute('aria-label', label);
+  const messages = [...dialog.querySelectorAll('.gb-confirm-message')];
+  messages.forEach((message, index) => { message.id = message.id || `${idBase}-message-${index}`; });
+  if (messages.length) dialog.setAttribute('aria-describedby', messages.map(message => message.id).join(' '));
+  return dialog;
+}
+
+function _restoreCfDialogFocus(target, overlay) {
+  if (target?.isConnected && !overlay?.contains?.(target)) target.focus?.();
+}
+
+// カスタムalertダイアログ（alert()の代替、画面中央モーダル）
+function cfAlert(message, options) {
+  const opts = options || {};
+  const okLabel = opts.okLabel || 'OK';
+  const showSupport = opts.support !== false && /HTTP\s+\d{3}|Error|エラー|失敗|例外/.test(String(message || ''));
+  const supportButton = showSupport
+    ? '<button id="_gb-support" class="gb-btn gb-btn-sm">サポートに送信</button>'
+    : '';
+  return new Promise(resolve => {
+    const restoreFocusTo = _cfRestoreFocusTarget();
+    const o = document.createElement('div');
+    o.className = 'modal-overlay';
+    o.style.zIndex = '300';
+    o.innerHTML = `<div class="gb-confirm" role="alertdialog" aria-modal="true">
+      ${_buildCfDialogBody(message)}
+      <div class="gb-confirm-actions">
+        ${supportButton}
+        <button id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(o);
+    _enhanceCfDialog(o, 'cf-alert', 'お知らせ');
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      o.remove();
+      document.removeEventListener('keydown', kh);
+      _restoreCfDialogFocus(restoreFocusTo, o);
+      resolve();
+    };
+    function kh(e) {
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        e.preventDefault();
+        cleanup();
+      }
+    }
+    o.querySelector('#_gb-ok').addEventListener('click', cleanup);
+    o.querySelector('#_gb-support')?.addEventListener('click', () => {
+      window.MeldexDiagnostics?.showSupportDialog?.(new Error(String(message || '')), { kind: 'cfAlert' });
+    });
+    o.addEventListener('click', (e) => { if (e.target === o) cleanup(); });
+    document.addEventListener('keydown', kh);
+    o.querySelector('#_gb-ok').focus();
+  });
+}
+
+// カスタムconfirmダイアログ（confirm()の代替、画面中央モーダル）
+// options: { danger?: boolean, okLabel?: string, cancelLabel?: string }
+function cfConfirm(message, options) {
+  const opts = options || {};
+  const autoDanger = _cfIsDeleteMessage(message);
+  const isDanger = opts.danger !== undefined ? !!opts.danger : autoDanger;
+  const defaultOk = isDanger ? (autoDanger && /削除/.test(String(message)) ? '削除' : '実行') : '決定';
+  const okLabel = opts.okLabel || defaultOk;
+  const cancelLabel = opts.cancelLabel || 'キャンセル';
+  const okVariant = isDanger ? 'gb-btn-danger' : 'gb-btn-primary';
+  return new Promise(resolve => {
+    const restoreFocusTo = _cfRestoreFocusTarget();
+    const o = document.createElement('div');
+    o.className = 'modal-overlay';
+    o.style.zIndex = '300';
+    o.innerHTML = `<div class="gb-confirm" role="alertdialog" aria-modal="true">
+      ${_buildCfDialogBody(message)}
+      <div class="gb-confirm-actions">
+        <button id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
+        <button id="_gb-ok" class="gb-btn gb-btn-sm ${okVariant}">${esc(okLabel)}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(o);
+    _enhanceCfDialog(o, 'cf-confirm', '確認');
+    let done = false;
+    const cleanup = (val) => {
+      if (done) return;
+      done = true;
+      o.remove();
+      document.removeEventListener('keydown', kh);
+      _restoreCfDialogFocus(restoreFocusTo, o);
+      resolve(val);
+    };
+    function kh(e) {
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(false); return; }
+      // 通常モードは Enter = OK のショートカット。
+      // danger モードは誤操作防止のため Enter のショートカットを無効化し、
+      // フォーカスされたボタン (初期は cancel) の自然な Enter 起動に任せる。
+      if (e.key === 'Enter' && !isDanger) {
+        const active = document.activeElement;
+        if (active?.id === '_gb-cancel' || active?.id === '_gb-ok') return;
+        e.preventDefault();
+        cleanup(true);
+      }
+    }
+    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(true));
+    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(false));
+    o.addEventListener('click', (e) => { if (e.target === o) cleanup(false); });
+    document.addEventListener('keydown', kh);
+    // danger 時は誤操作防止のため cancel に初期フォーカス、それ以外は ok
+    o.querySelector(isDanger ? '#_gb-cancel' : '#_gb-ok').focus();
+  });
+}
+
+// カスタムpromptダイアログ（prompt()の代替）
+function cfPrompt(message, defaultValue, options) {
+  const opts = options || {};
+  const okLabel = opts.okLabel || '決定';
+  const cancelLabel = opts.cancelLabel || 'キャンセル';
+  return new Promise(resolve => {
+    const restoreFocusTo = _cfRestoreFocusTarget();
+    const o = document.createElement('div');
+    o.className = 'modal-overlay';
+    o.style.zIndex = '300';
+    o.innerHTML = `<div class="gb-confirm" role="dialog" aria-modal="true">
+      ${_buildCfDialogBody(message)}
+      <input type="text" id="_gb-prompt-input" class="gb-confirm-input" value="${esc(defaultValue ?? '')}">
+      <div class="gb-confirm-actions">
+        <button type="button" id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
+        <button type="button" id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(o);
+    _enhanceCfDialog(o, 'cf-prompt', '入力');
+    const input = o.querySelector('#_gb-prompt-input');
+    let done = false;
+    const cleanup = (val) => {
+      if (done) return;
+      done = true;
+      o.remove();
+      document.removeEventListener('keydown', kh);
+      _restoreCfDialogFocus(restoreFocusTo, o);
+      resolve(val);
+    };
+    function kh(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cleanup(null);
+      }
+    }
+    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(input.value));
+    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(null));
+    o.addEventListener('click', (e) => { if (e.target === o) cleanup(null); });
+    document.addEventListener('keydown', kh);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); cleanup(input.value); }
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(null); }
+    });
+    input.focus();
+    input.select();
+  });
+}
+
+// showStatus() は meldex-core.js で定義済み（nullチェック付き）
+
+// xlsx取込: ファイル選択 → 新規台本作成 → 台本エディタで開く
+function importXlsxToOutliner() {
+  document.getElementById('xlsx-import-input').click();
+}
+
+function _readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleXlsxImportToOutliner(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  if (!/\.xlsx$/i.test(file.name)) {
+    showStatus('xlsx取込は .xlsx ファイルを選択してください', true);
+    return;
+  }
+
+  // ファイル名（拡張子なし）を台本名にする
+  const baseName = file.name.replace(/\.xlsx$/i, '');
+
+  try {
+    const data = await _readFileAsDataUrl(file);
+    const res = await apiPost('/import-xlsx-scriptnote', {
+      filename: file.name,
+      title: baseName,
+      data,
+    });
+    const scriptnotePath = res.path || res.node?.path;
+    const label = res.label || baseName;
+
+    // 台本エディタで開く
+    if (scriptnotePath && typeof openScenarioInScriptNote === 'function') {
+      openScenarioInScriptNote(scriptnotePath, label);
+    }
+
+    // フォルダツリーをリロード
+    await loadOutliner();
+    showStatus(`xlsx取込: ${label}`);
+  } catch (err) {
+    showStatus('xlsx取込に失敗しました: ' + err.message, true);
+  }
+}
+
+// Phase C: ボードエンジンはgb-canvas-engine.js + gb-canvas-features.js + gb-canvas-interact.js に移行済み
+// bd オブジェクトは gb-canvas-engine.js で定義
+
+// グローバルdrop防止（未処理エリアへのドロップでブラウザがファイルを開くのを防ぐ）
+document.addEventListener('dragover', (e) => { e.preventDefault(); }, false);
+document.addEventListener('drop', (e) => {
+  // 個別ハンドラでpreventDefaultされていない場合のみ（フォールバック）
+  if (!e.defaultPrevented) e.preventDefault();
+}, false);
+
+/* === gb-app.part03.js === */
+// timeline-view(カレンダー)へのD&Dドロップ（ファイルから新規イベント作成）
+function _appLocalDateTimeInputValue(date) {
+  if (typeof formatLocalDateTime === 'function') return formatLocalDateTime(date);
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function _appShouldHandleStandaloneCalendarDrop() {
+  return state.view === 'timeline'
+    && !state.currentDbPath
+    && typeof _showCalEventInDetailPanel === 'function';
+}
+
+{
+  const tv = document.getElementById('timeline-view');
+  if (tv) tv.addEventListener('dragover', (e) => {
+    if (e.dataTransfer.types.includes('application/x-meldex-node') && _appShouldHandleStandaloneCalendarDrop()) e.preventDefault();
+  });
+  if (tv) tv.addEventListener('drop', (e) => {
+    if (!_appShouldHandleStandaloneCalendarDrop()) return;
     const cfData = e.dataTransfer.getData('application/x-meldex-node');
     if (!cfData) return;
     e.preventDefault();
@@ -527,374 +897,3 @@ function _gbHtmlIframeSandboxForUrl(rawUrl) {
   } catch {}
   return _GB_UNTRUSTED_IFRAME_SANDBOX;
 }
-
-function _gbPrepareUntrustedIframe(iframe, rawUrl) {
-  if (!iframe) return null;
-  iframe.setAttribute('sandbox', _gbHtmlIframeSandboxForUrl(rawUrl || iframe.getAttribute('src') || iframe.src || ''));
-  iframe.setAttribute('referrerpolicy', 'no-referrer');
-  return iframe;
-}
-
-function _gbNormalizeHtmlViewerUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return '';
-  try {
-    const parsed = new URL(text, window.location.origin);
-    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
-    return parsed.href;
-  } catch {
-    return '';
-  }
-}
-
-function _gbSetHtmlViewerSrc(rawUrl) {
-  const url = _gbNormalizeHtmlViewerUrl(rawUrl);
-  if (!url) {
-    if (typeof showStatus === 'function') showStatus('HTMLビューワーで開けないURLです', true);
-    return false;
-  }
-  const iframe = _gbPrepareUntrustedIframe(document.getElementById('html-iframe'), url);
-  if (iframe) iframe.src = url;
-  const urlBar = document.getElementById('html-url-bar');
-  if (urlBar) urlBar.value = url;
-  return true;
-}
-
-_gbPrepareUntrustedIframe(document.getElementById('html-iframe'));
-
-function openHtmlFile(label, path, opts) {
-  const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('html');
-  else if (!openOpts.skipStateView) state.view = 'html';
-  state.currentPagePath = path;
-  const currentTitleEl = document.getElementById('current-title');
-  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-  if (!openOpts.skipSaveLastView) saveLastView({type:'html', label, path});
-  if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'html', label, path};
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(label, path, 'html');
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
-  if (typeof trackIframeLoading === 'function') {
-    trackIframeLoading(document.getElementById('html-iframe'), 'HTMLを読み込み中...', openOpts);
-  }
-  _gbSetHtmlViewerSrc(url);
-  if (!openOpts.skipGlobalUi) showStatus('HTML: ' + label);
-}
-/* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
-function getUsername() {
-  try { const cfg = JSON.parse(localStorage.getItem('meldex-user') || '{}'); return cfg.name || 'anonymous'; } catch { return 'anonymous'; }
-}
-
-// ビュー切り替え時のアノテーション再読み込みは showView 本体 (720-731行) で処理済み
-
-// replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
-
-const _GB_RESIZABLE_MODAL_SELECTOR = '.modal, .gb-modal, .link-modal, .gb-cal-modal';
-const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
-
-function _gbClampModalValue(value, min, max) {
-  if (max < min) return min;
-  return Math.max(min, Math.min(max, value));
-}
-
-function _gbModalMinSize(modal) {
-  const cs = getComputedStyle(modal);
-  const minWidth = Math.max(240, parseFloat(cs.minWidth) || 0);
-  const minHeight = Math.max(160, parseFloat(cs.minHeight) || 0);
-  return { minWidth, minHeight };
-}
-
-function _gbIsMobileDialogSheetModal(modal) {
-  if (!modal) return false;
-  const overlay = modal.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay');
-  return overlay?.dataset?.mobileDialogSheetActive === '1'
-    || modal.dataset.mobileDialogSheet === '1'
-    || modal.classList?.contains('gb-mobile-dialog-sheet');
-}
-
-function _gbClearResizableModalState(modal) {
-  if (!modal) return;
-  if (modal.dataset?.gbResizableModal) delete modal.dataset.gbResizableModal;
-  modal.classList?.remove('gb-modal-resizable');
-  modal.querySelectorAll?.(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
-}
-
-function _gbStartModalResize(event, modal, direction) {
-  if (!modal || (event.button != null && event.button !== 0)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const handle = event.currentTarget;
-  try { handle?.setPointerCapture?.(event.pointerId); } catch (_) {}
-
-  const rect = modal.getBoundingClientRect();
-  const start = {
-    x: event.clientX,
-    y: event.clientY,
-    left: rect.left,
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
-    width: rect.width,
-    height: rect.height,
-  };
-  const { minWidth, minHeight } = _gbModalMinSize(modal);
-  const gap = 8;
-  document.body.classList.add('gb-modal-resizing');
-
-  function onMove(moveEvent) {
-    moveEvent.preventDefault();
-    const dx = moveEvent.clientX - start.x;
-    const dy = moveEvent.clientY - start.y;
-    const viewportW = window.innerWidth;
-    const viewportH = window.innerHeight;
-    let left = start.left;
-    let top = start.top;
-    let right = start.right;
-    let bottom = start.bottom;
-
-    if (direction.includes('e')) {
-      right = _gbClampModalValue(start.right + dx, start.left + minWidth, viewportW - gap);
-    }
-    if (direction.includes('w')) {
-      left = _gbClampModalValue(start.left + dx, gap, start.right - minWidth);
-    }
-    if (direction.includes('s')) {
-      bottom = _gbClampModalValue(start.bottom + dy, start.top + minHeight, viewportH - gap);
-    }
-    if (direction.includes('n')) {
-      top = _gbClampModalValue(start.top + dy, gap, start.bottom - minHeight);
-    }
-
-    modal.style.left = left + 'px';
-    modal.style.top = top + 'px';
-    modal.style.width = Math.max(minWidth, right - left) + 'px';
-    modal.style.height = Math.max(minHeight, bottom - top) + 'px';
-  }
-
-  function onUp() {
-    try { handle?.releasePointerCapture?.(event.pointerId); } catch (_) {}
-    document.removeEventListener('pointermove', onMove, true);
-    document.removeEventListener('pointerup', onUp, true);
-    document.removeEventListener('pointercancel', onUp, true);
-    document.body.classList.remove('gb-modal-resizing');
-  }
-
-  document.addEventListener('pointermove', onMove, true);
-  document.addEventListener('pointerup', onUp, true);
-  document.addEventListener('pointercancel', onUp, true);
-}
-
-function _gbInstallModalResizeEdges(modal) {
-  if (!modal || modal.dataset.gbResizableModal === '1') return;
-  if (_gbIsMobileDialogSheetModal(modal)) {
-    _gbClearResizableModalState(modal);
-    return;
-  }
-  modal.dataset.gbResizableModal = '1';
-  modal.classList.add('gb-modal-resizable');
-  modal.style.boxSizing = 'border-box';
-  modal.style.position = 'absolute';
-  modal.style.right = 'auto';
-  modal.style.bottom = 'auto';
-  modal.style.margin = '0';
-  modal.style.transform = 'none';
-  modal.style.maxWidth = 'calc(100vw - 16px)';
-  modal.style.maxHeight = 'calc(100vh - 16px)';
-
-  _GB_MODAL_RESIZE_DIRECTIONS.forEach(direction => {
-    const edge = document.createElement('div');
-    edge.className = `gb-modal-shell-edge gb-modal-shell-edge-${direction}`;
-    edge.dataset.modalResize = direction;
-    edge.addEventListener('pointerdown', event => _gbStartModalResize(event, modal, direction));
-    modal.appendChild(edge);
-  });
-}
-
-function _gbPrepareResizableModal(modal) {
-  if (!modal || modal.dataset.gbResizableModal === '1') return;
-  if (_gbIsMobileDialogSheetModal(modal)) {
-    _gbClearResizableModalState(modal);
-    return;
-  }
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!modal.isConnected || modal.dataset.gbResizableModal === '1') return;
-      if (_gbIsMobileDialogSheetModal(modal)) {
-        _gbClearResizableModalState(modal);
-        return;
-      }
-      const rect = modal.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      const gap = 8;
-      const width = Math.min(rect.width, window.innerWidth - gap * 2);
-      const height = Math.min(rect.height, window.innerHeight - gap * 2);
-      const left = _gbClampModalValue(rect.left, gap, window.innerWidth - width - gap);
-      const top = _gbClampModalValue(rect.top, gap, window.innerHeight - height - gap);
-      modal.style.left = left + 'px';
-      modal.style.top = top + 'px';
-      modal.style.width = width + 'px';
-      modal.style.height = height + 'px';
-      _gbInstallModalResizeEdges(modal);
-    });
-  });
-}
-
-function _gbFindResizableModals(node) {
-  const result = [];
-  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) && !_gbIsMobileDialogSheetModal(node)) result.push(node);
-  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => {
-    if (!_gbIsMobileDialogSheetModal(modal)) result.push(modal);
-  });
-  return result;
-}
-
-// モーダル表示後にサイズを固定し、4辺+4隅でリサイズできるようにする
-function _gbResizableModalMutationFilter(mutation) {
-  return Array.from(mutation.addedNodes || []).some(node => {
-    if (node?.nodeType !== 1) return false;
-    return node.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) || !!node.querySelector?.(_GB_RESIZABLE_MODAL_SELECTOR);
-  });
-}
-function _gbResizableModalMutationCallback(mutations) {
-  for (const m of mutations) {
-    for (const node of m.addedNodes) {
-      if (node.nodeType !== 1) continue;
-      _gbFindResizableModals(node).forEach(_gbPrepareResizableModal);
-    }
-  }
-}
-if (window.GBMutationBus) {
-  window.GBMutationBus.subscribe('gb-app-resizable-modals', {
-    filter: _gbResizableModalMutationFilter,
-    callback: _gbResizableModalMutationCallback,
-    throttle: 30,
-  });
-} else {
-  new MutationObserver(_gbResizableModalMutationCallback).observe(document.body, { childList: true, subtree: true });
-}
-/* ==============================
-   起動
-   ============================== */
-replaceIcons();
-loadColorSettings();
-updateColorScheme();
-updateUserIcon();
-// UIスケール復元
-// ページ離脱時の未保存データ保護
-function _sendUnloadJson(url, method, body) {
-  let requestMethod = method || 'POST';
-  let requestBody = body || {};
-  if (requestMethod === 'PUT' && String(url || '').includes('/value?')) {
-    requestMethod = 'POST';
-    requestBody = { ...requestBody, _unload_update: true };
-  }
-  const payload = JSON.stringify(requestBody);
-  const blob = new Blob([payload], { type: 'application/json' });
-  if (requestMethod === 'POST' && navigator.sendBeacon) {
-    try {
-      if (navigator.sendBeacon(url, blob)) return true;
-    } catch {}
-  }
-  try {
-    fetch(url, {
-      method: requestMethod,
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-      keepalive: true,
-    }).catch(() => {});
-    return payload.length <= 60000;
-  } catch {}
-  return false;
-}
-
-window.addEventListener('beforeunload', (e) => {
-  let unloadSaveQueued = true;
-  // ノート: 未保存の自動保存タイマーが残っている場合、即座に保存
-  if (window._noteAutoSaveTimer) {
-    clearTimeout(window._noteAutoSaveTimer);
-    window._noteAutoSaveTimer = null;
-    const pc = document.getElementById('page-content');
-    const currentPath = pc?.dataset?.path;
-    if (currentPath) {
-      const md = htmlToMd(pc?.innerHTML || '');
-      const fm = pc.dataset.frontmatter || '';
-      const full = fm ? fm + md : md;
-      const body = typeof _noteSavePayload === 'function'
-        ? _noteSavePayload(pc, full)
-        : { content: full, if_match_etag: pc?.dataset?.lastSavedEtag || '', skip_if_missing: true };
-      const noteSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
-      unloadSaveQueued = noteSaveQueued && unloadSaveQueued;
-      if (!noteSaveQueued) {
-        window._noteAutoSaveTimer = setTimeout(() => {
-          if (typeof flushPendingEditorAutosave === 'function') flushPendingEditorAutosave();
-        }, 500);
-      }
-    }
-  }
-  // entity-freetext: 未保存タイマーが残っている場合
-  if (window._ftAutoSaveTimer) {
-    clearTimeout(window._ftAutoSaveTimer);
-    const ft = document.getElementById('entity-freetext');
-    const ep = ft?.dataset?.entityPath;
-    if (ep) {
-      const md = htmlToMd(ft?.innerHTML || '');
-      const isEntry = ep.endsWith('.md');
-      const url = isEntry
-        ? API_BASE + '/value?path=' + encodeURIComponent(ep)
-        : API_BASE + '/file?path=' + encodeURIComponent(ep + '/_freetext.md');
-      const body = isEntry ? { new_body: md, skip_if_missing: true } : { content: md, skip_if_missing: true };
-      unloadSaveQueued = _sendUnloadJson(url, isEntry ? 'PUT' : 'POST', body) && unloadSaveQueued;
-    }
-  }
-  // キャンバス: 未保存タイマーが残っている場合
-  if (window._bdTimer && typeof bd !== 'undefined' && bd.dirty && bd.path && typeof bdToMd === 'function') {
-    const canSaveBoardPath = typeof _bdCanSaveCurrentBoardPath !== 'function' || _bdCanSaveCurrentBoardPath(bd.path);
-    if (!canSaveBoardPath) {
-      unloadSaveQueued = false;
-    } else {
-      clearTimeout(window._bdTimer);
-      const boardSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(bd.path), 'POST', { content: bdToMd(), skip_if_missing: true });
-      unloadSaveQueued = boardSaveQueued && unloadSaveQueued;
-      if (!boardSaveQueued) window._bdTimer = setTimeout(bdSave, 500);
-    }
-  }
-  if (!unloadSaveQueued) {
-    e.preventDefault();
-    e.returnValue = '';
-  }
-});
-
-// ノート縦書き復元
-if (localStorage.getItem('note-vertical') === '1') {
-  document.getElementById('page-content')?.classList.add('vertical-writing');
-  const btn = document.getElementById('btn-note-vertical');
-  if (btn) {
-    // 上の replaceIcons() は既に実行済みなので、ここで lucide() を直接呼んで SVG を埋め込む
-    btn.innerHTML = (typeof lucide === 'function') ? lucide('textAlignStart', 16) : '<span class="ico ico-textAlignStart"></span>';
-    btn.title = '横書きに戻す';
-    btn.classList.add('active');
-  }
-}
-// ノート余白復元
-if (typeof applyNoteMargin === 'function') applyNoteMargin();
-if (typeof applyNoteContentMaxWidth === 'function') applyNoteContentMaxWidth();
-// UIスケール復元
-document.documentElement.style.fontSize = ''; // 旧font-sizeスケーリングをクリア
-{
-  const saved = localStorage.getItem('ui-scale');
-  if (saved !== null) {
-    // ユーザーが手動設定済み（または前回の自動設定値） → そのまま適用
-    const s = parseInt(saved, 10) || 100;
-    applyUIScale(s);
-  } else {
-    // 初回起動: 画面サイズから最適スケールを自動決定
-    const autoScale = _detectOptimalScale();
-    applyUIScale(autoScale);
-    localStorage.setItem('ui-scale', String(autoScale));
-  }
-}
-
-// ステータスバー表示状態復元

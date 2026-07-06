@@ -145,24 +145,27 @@
     overlay.dataset.sampleInstallPrompt = '1';
     overlay.style.zIndex = '100070';
     const icon = typeof lucide === 'function' ? lucide('archive', 18) : '';
-    overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="meldex-sample-install-title" style="width:min(520px, calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;">
+    overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="meldex-sample-install-title" aria-describedby="meldex-sample-install-description" style="width:min(520px, calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;">
       <h2 id="meldex-sample-install-title" style="display:flex;align-items:center;gap:8px;margin:0 0 10px;">${icon}<span>サンプルファイルを追加しますか？</span></h2>
-      <p style="line-height:1.7;color:var(--fg2);margin:0 0 12px;">ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
-      <p style="line-height:1.7;color:var(--fg2);margin:0 0 16px;">あとから設定の「サンプルデータ」でも追加できます。</p>
-      <div class="gb-section-desc" data-sample-install-status style="min-height:1.4em;margin-bottom:12px;"></div>
+      <div id="meldex-sample-install-description">
+        <p style="line-height:1.7;color:var(--fg2);margin:0 0 12px;">ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
+        <p style="line-height:1.7;color:var(--fg2);margin:0 0 16px;">あとから設定の「サンプルデータ」でも追加できます。</p>
+      </div>
+      <div class="gb-section-desc" data-sample-install-status role="status" aria-live="polite" style="min-height:1.4em;margin-bottom:12px;"></div>
       <div class="btn-row" style="justify-content:flex-end;">
-        <button type="button" data-sample-action="later">あとで</button>
-        <button type="button" class="primary" data-sample-action="install">はい、追加する</button>
+        <button type="button" data-sample-action="later" data-e2e-id="sample-install-later">あとで</button>
+        <button type="button" class="primary" data-sample-action="install" data-e2e-id="sample-install-confirm">はい、追加する</button>
       </div>
     </div>`;
     document.body.appendChild(overlay);
+    window.GBModalShell?.enhanceOverlay?.(overlay);
     if (typeof replaceIcons === 'function') replaceIcons(overlay);
     return overlay;
   }
 
   async function openPrompt(context) {
     const ctx = context || {};
-    if (_promptVisible || _isBypassMode()) return { ok: false, skipped: 'busy-or-bypass' };
+    if (_promptVisible || (!ctx.force && _isBypassMode())) return { ok: false, skipped: 'busy-or-bypass' };
     if (!ctx.force && _hasStartupDialogBlockingPrompt()) {
       _retryPromptAfterStartupDialog(ctx);
       return { ok: false, skipped: 'blocked-dialog' };
@@ -173,15 +176,24 @@
       const status = overlay.querySelector('[data-sample-install-status]');
       const installButton = overlay.querySelector('[data-sample-action="install"]');
       const laterButton = overlay.querySelector('[data-sample-action="later"]');
+      const decline = () => {
+        _writeDecision(ctx, 'declined');
+        close({ ok: true, declined: true });
+      };
+      const onKeydown = (ev) => {
+        if (ev.key !== 'Escape' || installButton.disabled) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        decline();
+      };
       const close = (result) => {
         _promptVisible = false;
+        document.removeEventListener('keydown', onKeydown, true);
         overlay.remove();
         resolve(result || { ok: true });
       };
-      laterButton.addEventListener('click', () => {
-        _writeDecision(ctx, 'declined');
-        close({ ok: true, declined: true });
-      });
+      document.addEventListener('keydown', onKeydown, true);
+      laterButton.addEventListener('click', decline);
       installButton.addEventListener('click', async () => {
         installButton.disabled = true;
         laterButton.disabled = true;

@@ -15,8 +15,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     return true;
   },
 
-  _showFilterMenu(anchorBtn) {
+  _showFilterMenu(anchorBtn, positionAnchor = null) {
     document.querySelectorAll('.sn2-filter-popup').forEach((el) => el.remove());
+    const anchorForPosition = positionAnchor || anchorBtn;
     const roles = new Set();
     this.doc.rows.forEach((row) => { if (row.role) roles.add(row.role); });
     const statusEnabled = !!this.doc.editor?.statusEnabled;
@@ -33,7 +34,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       || !!(this._hideStatuses && this._hideStatuses.size);
 
     const updateFilterActive = () => {
-      anchorBtn.classList.toggle('active', hasAnyFilter());
+      anchorBtn?.classList?.toggle('active', hasAnyFilter());
     };
 
     const setPresetSelection = (value) => {
@@ -55,16 +56,25 @@ Object.assign(ScriptNoteEditor.prototype, {
     const markCustomFilter = () => setPresetSelection('__custom__');
 
     let closeHandler;
+    let keyHandler;
     const close = () => {
       popup.remove();
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler);
+      if (keyHandler) document.removeEventListener('keydown', keyHandler);
     };
     closeHandler = (ev) => {
-      if (!popup.contains(ev.target) && ev.target !== anchorBtn) close();
+      if (!popup.contains(ev.target) && ev.target !== anchorBtn && ev.target !== anchorForPosition) close();
+    };
+    keyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+      if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorForPosition);
     };
 
     const allLbl = document.createElement('label');
-    allLbl.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:12px;cursor:pointer;';
+    allLbl.className = 'sn2-filter-all-row';
     const allCb = document.createElement('input');
     allCb.type = 'checkbox';
     allCb.checked = !hasAnyFilter();
@@ -94,14 +104,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       popup.appendChild(titleEl);
 
       const headerRow = document.createElement('div');
-      headerRow.style.cssText = 'display:grid;grid-template-columns:36px 36px 1fr;gap:0;padding:2px 8px 4px;font-size:10px;color:var(--fg2);font-weight:600;text-align:center;';
+      headerRow.className = 'sn2-filter-grid-header';
       const showHead = document.createElement('div');
       showHead.textContent = '表示';
       const hideHead = document.createElement('div');
       hideHead.textContent = '非表示';
       const typeHead = document.createElement('div');
-      typeHead.style.textAlign = 'left';
-      typeHead.style.paddingLeft = '4px';
+      typeHead.className = 'sn2-filter-grid-label';
       typeHead.textContent = title;
       headerRow.appendChild(showHead);
       headerRow.appendChild(hideHead);
@@ -111,13 +120,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       const visibleSet = this[visibleProp] || new Set(items.map((item) => item.key));
       items.forEach((item) => {
         const row = document.createElement('div');
-        row.style.cssText = 'display:grid;grid-template-columns:36px 36px 1fr;gap:0;align-items:center;padding:3px 8px;font-size:12px;cursor:default;';
-        row.addEventListener('mouseenter', () => { row.style.background = 'var(--bg4)'; });
-        row.addEventListener('mouseleave', () => { row.style.background = ''; });
+        row.className = 'sn2-filter-row';
 
         const showCb = document.createElement('input');
         showCb.type = 'checkbox';
-        showCb.style.cssText = 'justify-self:center;margin:0;cursor:pointer;';
+        showCb.className = 'sn2-filter-checkbox';
         showCb.checked = visibleSet.has(item.key);
         showCb.addEventListener('click', (ev) => {
           if (ev.altKey) {
@@ -158,7 +165,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
         const hideCb = document.createElement('input');
         hideCb.type = 'checkbox';
-        hideCb.style.cssText = 'justify-self:center;margin:0;cursor:pointer;';
+        hideCb.className = 'sn2-filter-checkbox';
         hideCb.checked = !!(this[hiddenProp] && this[hiddenProp].has(item.key));
         hideCb.title = 'チェックすると常に非表示';
         hideCb.dataset.filterHiddenProp = hiddenProp;
@@ -180,7 +187,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         });
 
         const labelEl = document.createElement('span');
-        labelEl.style.cssText = 'display:flex;align-items:center;gap:6px;padding-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        labelEl.className = 'sn2-filter-item-label';
         if (item.color) {
           const dot = document.createElement('span');
           dot.className = 'sn2-status-dot';
@@ -191,8 +198,18 @@ Object.assign(ScriptNoteEditor.prototype, {
         text.textContent = item.label;
         labelEl.appendChild(text);
 
-        row.appendChild(showCb);
-        row.appendChild(hideCb);
+        const showCell = document.createElement('label');
+        showCell.className = 'sn2-filter-checkbox-cell';
+        showCell.title = `表示: ${item.label}`;
+        showCell.appendChild(showCb);
+
+        const hideCell = document.createElement('label');
+        hideCell.className = 'sn2-filter-checkbox-cell';
+        hideCell.title = `非表示: ${item.label}`;
+        hideCell.appendChild(hideCb);
+
+        row.appendChild(showCell);
+        row.appendChild(hideCell);
         row.appendChild(labelEl);
         popup.appendChild(row);
       });
@@ -217,14 +234,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
-        trigger: anchorBtn,
+        trigger: anchorForPosition,
         close,
       });
     }
 
     popup.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:420px;overflow-y:auto;';
-    positionPopup(popup, anchorBtn.getBoundingClientRect());
-    setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
+    positionPopup(popup, anchorForPosition.getBoundingClientRect());
+    setTimeout(() => {
+      document.addEventListener('pointerdown', closeHandler);
+      document.addEventListener('keydown', keyHandler);
+    }, 0);
   },
 
 });

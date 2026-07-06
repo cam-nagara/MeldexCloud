@@ -19,6 +19,13 @@
   display: none;
 }
 
+.gb-subpanel ~ .gb-context-menu,
+.gb-subpanel ~ .ab-dropdown,
+.gb-subpanel ~ .bd-style-picker-menu,
+.gb-subpanel ~ #chat-title-dropdown {
+  z-index: 10080 !important;
+}
+
 .gb-subpanel-titlebar {
   height: 34px;
   flex: 0 0 34px;

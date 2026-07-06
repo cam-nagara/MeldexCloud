@@ -1,6 +1,56 @@
-    wfWrap.appendChild(wfTrigger);
-    wfWrap.appendChild(wfPanel);
-    menu.appendChild(wfWrap);
+    addMenuItem('名前を変更...', async () => {
+      closeTreeContextMenu();
+      const roots = await apiFetch('/outliner-roots');
+      const root = roots.find(r => r.path === nodeData.path);
+      if (!root) return;
+      const newName = await cfPrompt('表示名を入力:', root.name);
+      if (!newName) return;
+      root.name = newName;
+      await apiPut('/outliner-roots', { roots });
+      await loadOutliner();
+      showStatus('名前を変更しました');
+    }, null, 'pencil');
+    addMenuItem('チーム管理...', async () => {
+      closeTreeContextMenu();
+      showSettingsModal({ panel: 'ユーザー', teamFolder: nodeData.path });
+    }, null, 'users');
+    addSep();
+    addMenuItem('このソースフォルダを削除', async () => {
+      closeTreeContextMenu();
+      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」をフォルダツリーから削除しますか？\n（ファイルは削除されません）')) return;
+      const roots = await apiFetch('/outliner-roots');
+      const newRoots = roots.filter(r => r.path !== nodeData.path);
+      await apiPut('/outliner-roots', { roots: newRoots });
+      await loadOutliner();
+      showStatus('ソースフォルダを削除しました');
+    }, null, 'trash2');
+  }
+
+  // --- 作品フォルダ設定（フォルダのみ） ---
+  if (isFolder && !isMulti) {
+    const curWork = getWorkFolder();
+    const isWork = curWork === nodeData.path;
+    const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
+    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folder', wfPanel);
+    [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
+      _outlinerAppendMenuItem(wfPanel, {
+        html: radioMark(isWork === setIt) + '<span>' + _outlinerEscHtml(label) + '</span>',
+        checked: isWork === setIt,
+        action: async () => {
+        closeTreeContextMenu();
+        if (setIt) {
+          setWorkFolder(nodeData.path);
+          showStatus(`「${nodeData.name}」を作品フォルダに設定しました`);
+        } else {
+          setWorkFolder('');
+          showStatus('作品フォルダの設定を解除しました');
+        }
+        await loadLinkDict();
+        tooltipCache = {};
+        await loadOutliner();
+        },
+      });
+    });
   }
 
   // --- 並び替え（フォルダ・DB） ---
@@ -8,16 +58,8 @@
     const sortPath = nodeData.path;
     const curSort = getSortForFolder(sortPath);
     // サブメニュー風: 1項目でクリック→展開
-    const sortWrap = document.createElement('div');
-    sortWrap.style.position = 'relative';
-    const sortTrigger = document.createElement('div');
-    sortTrigger.className = 'tree-ctx-item';
-    sortTrigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide('arrowUpDown', 14) + '</span>並び替え' + submenuArrow();
-    sortTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;';
-    const sortPanel = document.createElement('div');
-    sortPanel.className = 'gb-context-menu';
-    sortPanel.style.cssText = 'display:none;min-width:140px;';
-    attachHoverSubmenu(sortTrigger, sortPanel);
+    const sortPanel = _outlinerCreateSubmenu('並び替え');
+    _outlinerAppendSubmenu(menu, '並び替え', 'arrowUpDown', sortPanel);
     const sortOpts = [
       { label: 'マニュアル', sort: 'manual', order: 'asc' },
       { label: '名前 ↑', sort: 'name', order: 'asc' },
@@ -29,12 +71,10 @@
     ];
     sortOpts.forEach(o => {
       const active = curSort.sort === o.sort && curSort.order === o.order;
-      const si = document.createElement('div');
-      si.innerHTML = radioMark(active) + o.label;
-      si.style.cssText = 'padding:4px 12px;cursor:pointer;' + (active ? 'color:var(--accent);' : '');
-      si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-      si.onmouseleave = () => { si.style.background = ''; };
-      si.addEventListener('click', async () => {
+      _outlinerAppendMenuItem(sortPanel, {
+        html: radioMark(active) + '<span>' + _outlinerEscHtml(o.label) + '</span>',
+        checked: active,
+        action: async () => {
         closeTreeContextMenu();
         const before = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY]);
         setSortSetting(sortPath, o.sort, o.order);
@@ -54,13 +94,10 @@
         if (toggle && toggle.dataset.expanded === 'true') {
           toggle.dataset.expanded = 'false'; toggle.click();
         }
+        },
       });
-      sortPanel.appendChild(si);
     });
-    sortWrap.appendChild(sortTrigger);
-    sortWrap.appendChild(sortPanel);
     addSep();
-    menu.appendChild(sortWrap);
   }
 
   // --- 削除（エントリ以外、ロック中は無効） ---
@@ -116,23 +153,12 @@
     }
   }
 
-  document.body.appendChild(menu);
-  { const rect = menu.getBoundingClientRect(); const z = _getZoom();
-  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px'; }
+  _outlinerPlaceContextMenu(menu);
 
   // OSシェルメニュー項目を非同期追加
   if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    appendShellVerbsToMenu(menu, nodeData.path);
+    appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked });
   }
-
-  setTimeout(() => {
-    document.addEventListener('pointerdown', function closer(e) {
-      // body 直下に分離したサブメニューも考慮
-      const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(e.target));
-      if (!inAnyMenu) { closeTreeContextMenu(); document.removeEventListener('pointerdown', closer); }
-    });
-  }, 0);
 }
 
 // 追加先の親パスを決定
@@ -872,29 +898,3 @@ function _handleOutlinerTreeKeydown(event) {
     if (selectionMode === 'replace') treeSelection.clear();
     updateSelection(_outlinerLassoRectForEvent(event));
   };
-
-  const endLasso = () => {
-    if (!tracking && !active) return;
-    const wasActive = active;
-    const hadCandidateRow = !!candidateRow;
-    const suppressClickNode = candidateRow?.closest?.('.tree-node') || null;
-    active = false;
-    tracking = false;
-    removeDocumentPointerEndHandlers();
-    box?.remove();
-    box = null;
-    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
-      try { scroller.releasePointerCapture(pointerId); } catch {}
-    }
-    pointerId = null;
-    pointerCaptured = false;
-    if (candidateRow) {
-      candidateRow.draggable = candidateRowDraggable;
-      candidateRow = null;
-      candidateRowDraggable = null;
-    }
-    // pointerdown で設定した inline position を元に戻す
-    if (_savedScrollerPosition !== null) {
-      scroller.style.position = _savedScrollerPosition;
-      _savedScrollerPosition = null;
-    }

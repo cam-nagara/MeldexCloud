@@ -113,6 +113,9 @@ function _showConnActionBtn(conn, anchorPoint) {
   btn.className = 'bd-conn-action-btn';
   btn.textContent = '...';
   btn.title = 'ラインメニュー';
+  btn.setAttribute('aria-label', 'ラインメニュー');
+  btn.setAttribute('aria-haspopup', 'menu');
+  btn.setAttribute('aria-expanded', 'false');
   btn.style.left = anchorPoint.x + 'px';
   btn.style.top = anchorPoint.y + 'px';
   btn.addEventListener('pointerenter', () => clearTimeout(_bdConnActionBtnHideTimer));
@@ -131,6 +134,7 @@ function _showConnActionBtn(conn, anchorPoint) {
     bdConnContextMenu({
       clientX: rect.left + rect.width / 2,
       clientY: rect.bottom,
+      trigger: btn,
       preventDefault() {},
       stopPropagation() {},
     }, conn);

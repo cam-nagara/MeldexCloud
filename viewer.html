@@ -2,6 +2,7 @@
 <html lang="ja" spellcheck="false">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
 <title>Meldex ビューワー</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='18' x='3' y='3' rx='2'/><circle cx='9' cy='9' r='2'/><path d='m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'/></svg>">
@@ -56,12 +57,12 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg);
 
 /* 右クリックメニュー */
 .viewer-ctx { position: fixed; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; min-width: 200px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
-.viewer-ctx-item { padding: 5px 16px; font-size: 13px; color: var(--fg); cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; position: relative; }
-.viewer-ctx-item:hover { background: rgba(255,255,255,0.08); }
+.viewer-ctx-item { width: 100%; border: 0; background: transparent; padding: 5px 16px; font: inherit; font-size: 13px; color: var(--fg); cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; position: relative; text-align: left; }
+.viewer-ctx-item:hover, .viewer-ctx-item:focus-visible { background: rgba(255,255,255,0.08); outline: none; }
 .viewer-ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
 .viewer-ctx-item .ctx-key { margin-left: auto; font-size: 11px; color: var(--fg2); }
 .viewer-ctx-sub { display: none; position: absolute; left: 100%; top: -4px; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; min-width: 160px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
-.viewer-ctx-item:hover > .viewer-ctx-sub { display: block; }
+.viewer-ctx-item:hover > .viewer-ctx-sub, .viewer-ctx-item:focus-within > .viewer-ctx-sub { display: block; }
 
 /* ドラッグ移動 */
 #display.panning { cursor: grab; }
@@ -90,8 +91,17 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg);
 #controls .zoom-label, #controls .speed-label { min-width: 28px; }
 /* 狭い時に優先度の低い要素を非表示 */
 @media (max-width: 700px) {
+  #controls { min-height: 56px; padding: 6px; gap: 6px; overflow-x: auto; overflow-y: hidden; }
+  #controls button, #controls select { min-width: 44px; min-height: 44px; padding: 0 10px; }
+  #controls #seek-bar { flex: 0 0 92px; min-width: 92px; height: 44px !important; }
+  #counter { flex: 0 0 auto; }
   #controls #sel-mode, #controls label, #controls .zoom-label, #controls .speed-label { display: none; }
   #controls #btn-bg, #controls #btn-hud { display: none; }
+  .viewer-ctx { max-width: calc(100vw - 16px); max-height: 70vh; overflow: auto; }
+  .viewer-ctx-item { min-height: 44px; padding: 10px 14px; }
+  .viewer-ctx-item[aria-haspopup="menu"] { flex-wrap: wrap; }
+  .viewer-ctx-sub { position: static; flex-basis: 100%; min-width: 0; max-width: 100%; max-height: calc(100vh - 24px); margin-top: 6px; overflow: auto; box-shadow: none; background: rgba(255,255,255,0.04); }
+  .nav-area { width: 44px; }
 }
 @media (max-width: 500px) {
   #controls #btn-flip-h, #controls #btn-flip-v, #controls #btn-rotate, #controls #btn-original { display: none; }
@@ -1122,31 +1132,45 @@ document.getElementById('display').addEventListener('contextmenu', e => {
   document.querySelectorAll('.viewer-ctx').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'viewer-ctx';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ビューワーメニュー');
+  menu.tabIndex = -1;
+  let closeMenu = () => {
+    menu.remove();
+  };
 
   function addItem(label, fn, key) {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'viewer-ctx-item';
+    item.setAttribute('role', 'menuitem');
     item.innerHTML = label + (key ? `<span class="ctx-key">${key}</span>` : '');
-    item.onclick = () => { menu.remove(); fn(); };
+    item.onclick = () => { closeMenu(); fn(); };
     menu.appendChild(item);
   }
-  function addSep() { const s = document.createElement('div'); s.className = 'viewer-ctx-sep'; menu.appendChild(s); }
+  function addSep() { const s = document.createElement('div'); s.className = 'viewer-ctx-sep'; s.setAttribute('role', 'separator'); menu.appendChild(s); }
 
   function addSub(label) {
     const item = document.createElement('div');
     item.className = 'viewer-ctx-item';
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('aria-haspopup', 'menu');
+    item.tabIndex = 0;
     item.innerHTML = label + ' <span class="ctx-key">▸</span>';
     const sub = document.createElement('div');
     sub.className = 'viewer-ctx-sub';
+    sub.setAttribute('role', 'menu');
     item.appendChild(sub);
     menu.appendChild(item);
     return sub;
   }
   function addSubItem(sub, label, fn, key) {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'viewer-ctx-item';
+    item.setAttribute('role', 'menuitem');
     item.innerHTML = label + (key ? `<span class="ctx-key">${key}</span>` : '');
-    item.onclick = () => { menu.remove(); fn(); };
+    item.onclick = () => { closeMenu(); fn(); };
     sub.appendChild(item);
   }
 
@@ -1184,6 +1208,8 @@ document.getElementById('display').addEventListener('contextmenu', e => {
   // 再生速度（スライダー）
   const speedItem = document.createElement('div');
   speedItem.className = 'viewer-ctx-item';
+  speedItem.setAttribute('role', 'menuitem');
+  speedItem.tabIndex = 0;
   speedItem.append('再生速度: ');
   const speedInput = document.createElement('input');
   speedInput.type = 'range';
@@ -1211,6 +1237,8 @@ document.getElementById('display').addEventListener('contextmenu', e => {
   // フェード時間（スライダー）
   const fadeItem = document.createElement('div');
   fadeItem.className = 'viewer-ctx-item';
+  fadeItem.setAttribute('role', 'menuitem');
+  fadeItem.tabIndex = 0;
   fadeItem.append('フェード: ');
   const fadeInput = document.createElement('input');
   fadeInput.type = 'range';
@@ -1247,11 +1275,13 @@ document.getElementById('display').addEventListener('contextmenu', e => {
   }
 
   document.body.appendChild(menu);
-  menu.style.left = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4) + 'px';
-  menu.style.top = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 4) + 'px';
+  menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4)) + 'px';
+  menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 4)) + 'px';
+  menu.focus({ preventScroll: true });
   // サブメニューが画面端でオーバーフローしないよう調整
   menu.querySelectorAll('.viewer-ctx-sub').forEach(sub => {
     sub.parentElement.addEventListener('mouseenter', () => {
+      if (getComputedStyle(sub).position === 'static') return;
       sub.style.left = ''; sub.style.right = '';
       const pr = sub.parentElement.getBoundingClientRect();
       if (pr.right + sub.offsetWidth > window.innerWidth) { sub.style.left = 'auto'; sub.style.right = '100%'; }
@@ -1263,9 +1293,29 @@ document.getElementById('display').addEventListener('contextmenu', e => {
       });
     });
   });
-  setTimeout(() => {
-    document.addEventListener('mousedown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', cl); } });
-  }, 0);
+  closeMenu = () => {
+    menu.remove();
+    document.removeEventListener('mousedown', onMouseDown, true);
+    window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('keyup', onKeyDown, true);
+    menu.removeEventListener('keydown', onKeyDown, true);
+    menu.removeEventListener('keyup', onKeyDown, true);
+  };
+  function onMouseDown(ev) { if (!menu.contains(ev.target)) closeMenu(); }
+  function onKeyDown(ev) {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    closeMenu();
+  }
+  window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('keyup', onKeyDown, true);
+  document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('keyup', onKeyDown, true);
+  menu.addEventListener('keydown', onKeyDown, true);
+  menu.addEventListener('keyup', onKeyDown, true);
+  document.addEventListener('mousedown', onMouseDown, true);
 });
 
 // fadeMsの初期反映

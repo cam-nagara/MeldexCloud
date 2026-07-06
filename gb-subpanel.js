@@ -556,6 +556,7 @@ const GBSubPanel = (() => {
     chatBtn.type = 'button';
     chatBtn.className = 'gb-subpanel-button';
     chatBtn.dataset.gbSubpanelContextAction = 'entity-chat';
+    chatBtn.dataset.e2eId = 'gb-subpanel-entity-chat';
     chatBtn.dataset.testid = 'gb-subpanel-entity-chat';
     chatBtn.title = 'チャットを開く';
     chatBtn.setAttribute('aria-label', 'チャットを開く');
@@ -672,6 +673,7 @@ const GBSubPanel = (() => {
     panel.className = 'gb-subpanel';
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'false');
+    panel.setAttribute('aria-labelledby', 'gb-subpanel-title-label');
 
     const titlebar = document.createElement('div');
     titlebar.className = 'gb-subpanel-titlebar';
@@ -685,6 +687,7 @@ const GBSubPanel = (() => {
     _titleIconEl = document.createElement('span');
     _titleIconEl.className = 'gb-subpanel-title-icon';
     _titleTextEl = document.createElement('span');
+    _titleTextEl.id = 'gb-subpanel-title-label';
     _titleTextEl.className = 'gb-subpanel-title-text';
     title.appendChild(_titleIconEl);
     title.appendChild(_titleTextEl);

@@ -1,3 +1,218 @@
+  if (v.hiddenCols == null) v.hiddenCols = _cloneDbViewArray(cfg.hiddenCols);
+  else v.hiddenCols = _cloneDbViewArray(v.hiddenCols);
+  if (v.pinnedCols == null) v.pinnedCols = _cloneDbViewArray(cfg.pinnedCols);
+  else v.pinnedCols = _cloneDbViewArray(v.pinnedCols);
+  if (v.colOrder == null) v.colOrder = cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null);
+  else v.colOrder = _cloneDbViewValue(v.colOrder, null);
+  if (v.advancedFilters == null) v.advancedFilters = _cloneDbViewArray(cfg.advancedFilters);
+  else v.advancedFilters = _cloneDbViewArray(v.advancedFilters);
+  if (v.conditionalFormat == null) v.conditionalFormat = !!cfg.conditionalFormat;
+  else v.conditionalFormat = !!v.conditionalFormat;
+  if (v.conditionalColors == null) v.conditionalColors = _cloneDbViewObject(cfg.conditionalColors);
+  else v.conditionalColors = _cloneDbViewObject(v.conditionalColors);
+  if (v.filter == null) v.filter = 'disabled';
+  if (v.sortConfig == null) v.sortConfig = cfg.sortConfig == null ? null : _cloneDbViewValue(cfg.sortConfig, null);
+  else v.sortConfig = _cloneDbViewValue(v.sortConfig, null);
+  if (v.manualOrder == null) v.manualOrder = cfg.manualOrder == null ? null : _cloneDbViewValue(cfg.manualOrder, null);
+  else v.manualOrder = _cloneDbViewValue(v.manualOrder, null);
+  if (v.showFooter == null) v.showFooter = !!cfg.showFooter;
+  else v.showFooter = !!v.showFooter;
+  if (v.entityColumnPinned == null) v.entityColumnPinned = cfg.entityColumnPinned !== false;
+  else v.entityColumnPinned = v.entityColumnPinned !== false;
+  if (v.countTypes == null) v.countTypes = _cloneDbViewObject(cfg.countTypes);
+  else v.countTypes = _cloneDbViewObject(v.countTypes);
+  if (v.colWidths == null) v.colWidths = _cloneDbViewObject(cfg.colWidths);
+  else v.colWidths = _cloneDbViewObject(v.colWidths);
+  if (v.thumbnailSize == null) v.thumbnailSize = cfg.thumbnailSize || 'small';
+  _ensureDbViewTypeSpecific(v, cfg);
+  return v;
+}
+function _hasLegacyDbViewState(cfg) {
+  return _hasDbViewArrayState(cfg.hiddenCols)
+    || _hasDbViewArrayState(cfg.pinnedCols)
+    || _hasDbViewArrayState(cfg.colOrder)
+    || _hasDbViewArrayState(cfg.advancedFilters)
+    || _hasDbViewObjectState(cfg.conditionalColors)
+    || _hasDbViewObjectState(cfg.countTypes)
+    || _hasDbViewObjectState(cfg.colWidths)
+    || !!cfg.conditionalFormat
+    || !!cfg.groupBy
+    || !!cfg.kanbanGroupBy
+    || !!cfg.chartConfig
+    || !!cfg.graphConfig
+    || !!cfg.timeline
+    || !!cfg.formConfig
+    || !!cfg.calendarMapping
+    || !!cfg.sortConfig
+    || !!cfg.manualOrder
+    || cfg.showFooter === true
+    || cfg.entityColumnPinned === false
+    || (cfg.thumbnailSize && cfg.thumbnailSize !== 'small')
+    || (cfg.currentViewMode && cfg.currentViewMode !== 'pivot');
+}
+function _hasDbViewMeaningfulValue(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (_isDbViewPlainObject(value)) return Object.values(value).some(_hasDbViewMeaningfulValue);
+  return value !== null && value !== undefined && value !== '' && value !== false;
+}
+function _hasMeaningfulDbTimelineState(timeline) {
+  if (!_isDbViewPlainObject(timeline)) return false;
+  if (String(timeline.timeProp || '')) return true;
+  if (String(timeline.endProp || '')) return true;
+  if (String(timeline.rowProp || '_entity') !== '_entity') return true;
+  if (String(timeline.scale || 'day') !== 'day') return true;
+  if (String(timeline.direction || 'horizontal') !== 'horizontal') return true;
+  if (String(timeline.displayStart || '')) return true;
+  if (String(timeline.displayEnd || '')) return true;
+  if (Math.max(1, Math.round(Number(timeline.timeStepMinutes || 1) || 1)) !== 1) return true;
+  if (String(timeline.calendarSystemId || 'gregorian') !== 'gregorian') return true;
+  if (_hasDbViewObjectState(timeline.colWidths)) return true;
+  if (_hasDbViewObjectState(timeline.rowHeights)) return true;
+  if (_hasDbViewArrayState(timeline.cardProps)) return true;
+  if (_hasDbViewArrayState(timeline.calendarSystems)) return true;
+  const defaults = new Set([
+    'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
+    'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
+  ]);
+  return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
+}
+function _hasMeaningfulDbSavedViewState(view, index) {
+  if (!_isDbViewPlainObject(view)) return false;
+  const viewMode = _normalizeDbViewModeValue(view.viewMode || 'pivot');
+  if (viewMode !== 'pivot') return true;
+  const defaultName = typeof _defaultDbSavedViewName === 'function'
+    ? _defaultDbSavedViewName(viewMode, index)
+    : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
+  const name = String(view.name || '').trim();
+  if (name && name !== defaultName) return true;
+  if (_hasDbViewArrayState(view.hiddenCols) || _hasDbViewArrayState(view.pinnedCols)) return true;
+  if (_hasDbViewArrayState(view.colOrder) || _hasDbViewObjectState(view.colOrder)) return true;
+  if (_hasDbViewArrayState(view.advancedFilters)) return true;
+  if (view.conditionalFormat === true || _hasDbViewObjectState(view.conditionalColors)) return true;
+  if (view.filter && view.filter !== 'disabled') return true;
+  if (_hasDbViewMeaningfulValue(view.sortConfig) || _hasDbViewMeaningfulValue(view.manualOrder)) return true;
+  if (view.showFooter === true || view.entityColumnPinned === false) return true;
+  if (_hasDbViewObjectState(view.countTypes) || _hasDbViewObjectState(view.colWidths)) return true;
+  if (view.thumbnailSize && view.thumbnailSize !== 'small') return true;
+  const typeSpecific = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
+  if (typeSpecific.pivot?.groupBy) return true;
+  if (typeSpecific.kanban?.groupBy && typeSpecific.kanban.groupBy !== '_status') return true;
+  if (_hasDbViewObjectState(typeSpecific.calendar?.mapping)) return true;
+  if (_hasMeaningfulDbTimelineState(typeSpecific.timeline)) return true;
+  if (_hasDbViewObjectState(typeSpecific.chart) || _hasDbViewObjectState(typeSpecific.graph)) return true;
+  return typeSpecific.form?.formConfig != null;
+}
+function _hasMeaningfulDbViewConfigState(cfg) {
+  if (!_isDbViewPlainObject(cfg)) return false;
+  if (_hasDbViewArrayState(cfg.deletedProps)) return true;
+  if (_hasLegacyDbViewState(cfg)) return true;
+  const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
+  if (views.length > 1) return true;
+  if (Number.isInteger(cfg.currentViewIdx) && cfg.currentViewIdx > 0) return true;
+  return views.some((view, index) => _hasMeaningfulDbSavedViewState(view, index));
+}
+function _migrateLegacyViewConfig(dbPath, cfg) {
+  const config = _isDbViewPlainObject(cfg) ? cfg : {};
+  if (!dbPath) return { cfg: config, changed: false };
+  if (config._viewMigrationV2Done === true) {
+    if (!Array.isArray(config.savedViews)) config.savedViews = [];
+    if (config.savedViews.length > 0
+      && (!Number.isInteger(config.currentViewIdx)
+        || config.currentViewIdx < 0
+        || config.currentViewIdx >= config.savedViews.length)) {
+      config.currentViewIdx = 0;
+      return { cfg: config, changed: true };
+    }
+    return { cfg: config, changed: false };
+  }
+
+  const legacyView = _makeLegacyDbSavedView(config);
+  const existingViews = Array.isArray(config.savedViews) ? config.savedViews : [];
+  config.savedViews = existingViews.map((view, index) => _normalizeSavedDbViewForV2(view, config, index));
+  if (config.savedViews.length === 0) {
+    config.savedViews.push(legacyView);
+    config.currentViewIdx = 0;
+  } else {
+    if (_hasLegacyDbViewState(config) && config.currentViewIdx === -1) {
+      config.savedViews.unshift(legacyView);
+      config.currentViewIdx = 0;
+    } else if (config.currentViewIdx === -1 || config.currentViewIdx == null) {
+      config.currentViewIdx = 0;
+    }
+    if (config.currentViewIdx < 0 || config.currentViewIdx >= config.savedViews.length) {
+      config.currentViewIdx = 0;
+    }
+  }
+  config._viewMigrationV2Done = true;
+  return { cfg: config, changed: true };
+}
+function _persistMigratedDbViewConfig(dbPath, cfg) {
+  try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
+}
+function _sanitizeDbViewConfigForBackend(cfg) {
+  const cleaned = _cloneDbViewObject(cfg);
+  // プロパティ型は property_types として別保存される。重複保存すると新旧形式がずれやすい。
+  if (Object.prototype.hasOwnProperty.call(cleaned, 'propertyTypes')) delete cleaned.propertyTypes;
+  return cleaned;
+}
+function _hasLocalDbViewConfigCache(dbPath) {
+  const fileId = _pathToFileId(dbPath);
+  const keys = [];
+  if (fileId) keys.push('dbViewConfig:' + fileId);
+  keys.push('dbViewConfig:' + (dbPath || ''));
+  return [...new Set(keys)].some((key) => {
+    try {
+      const value = localStorage.getItem(key);
+      if (value == null || String(value).trim() === '') return false;
+      return _hasMeaningfulDbViewConfigState(JSON.parse(value));
+    } catch {
+      return false;
+    }
+  });
+}
+function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
+  if (!dbPath || typeof apiPut !== 'function') return Promise.resolve(false);
+  const payload = _sanitizeDbViewConfigForBackend(cfg);
+  const key = String(dbPath || '');
+  const run = () => apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
+    .then(() => true)
+    .catch((error) => {
+      console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+      return false;
+    });
+  if (_dbViewConfigBackendSaveTimers.has(key)) {
+    clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
+    _dbViewConfigBackendSaveTimers.delete(key);
+  }
+  if (options.immediate === true) return run();
+  const timer = setTimeout(() => {
+    _dbViewConfigBackendSaveTimers.delete(key);
+    run();
+  }, 180);
+  _dbViewConfigBackendSaveTimers.set(key, timer);
+  return Promise.resolve(true);
+}
+function _hasPendingDbViewConfigBackendSave(dbPath) {
+  return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
+}
+function getDbViewConfig(dbPath) {
+  const fileId = _pathToFileId(dbPath);
+  let cfg = {};
+  if (fileId) {
+    try { const v = localStorage.getItem('dbViewConfig:' + fileId); if (v) cfg = JSON.parse(v) || {}; } catch { cfg = {}; }
+  }
+  if (!fileId || Object.keys(cfg).length === 0) {
+    try {
+      const v = localStorage.getItem('dbViewConfig:' + (dbPath || ''));
+      if (v) cfg = JSON.parse(v) || {};
+    } catch {}
+  }
+  const migrated = _migrateLegacyViewConfig(dbPath, cfg);
+  if (migrated.changed) _persistMigratedDbViewConfig(dbPath, migrated.cfg);
+  return migrated.cfg;
+}
+function _dbViewConfigHistoryScope(dbPath) {
+  const fileId = _pathToFileId(dbPath);
   if (fileId) return 'db:' + fileId;
   if (dbPath) return 'db:' + String(dbPath).replace(/\\/g, '/');
   return (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
@@ -683,217 +898,3 @@ apiFetch = async function(path, opts) {
 };
 
 // チームプロフィール同期（起動時に全ソースフォルダの _Meldex_team.json に自分を登録）
-// フォルダ別ロールを保持（DB列ロック等で参照）
-let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
-const _myTeamRoles = {};     // { folderPath: role }
-
-async function _syncMyTeamProfile() {
-  try { await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(); } catch {}
-  const name = getUsername();
-  if (!name || name === 'anonymous') return;
-  const avatar = localStorage.getItem('meldex-avatar') || '';
-  const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
-  const syncWorkspaceProfiles = async () => {
-    try {
-      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
-        ? await window.MeldexWorkspaces.load({ force: true })
-        : [];
-      for (const workspace of workspaces || []) {
-        if (!workspace?.id) continue;
-        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
-      }
-      await window.MeldexWorkspaces?.load?.({ force: true });
-    } catch {}
-  };
-  // 全ソースフォルダに同期
-  try {
-    const roots = await apiFetch('/outliner-roots').catch(() => []);
-    const visibleRoots = roots.filter(r => r.visible && r.path);
-    if (visibleRoots.length === 0) {
-      // ソースフォルダなし → デフォルトvaultに同期
-      try {
-        await apiPost('/team/sync', teamPayload());
-        const members = await apiFetch('/team');
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRole = me.role || 'editor';
-      } catch {}
-      await syncWorkspaceProfiles();
-      return;
-    }
-    for (const root of visibleRoots) {
-      try {
-        await apiPost('/team/sync', teamPayload({ folder: root.path }));
-        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRoles[root.path] = me.role || 'editor';
-      } catch {}
-    }
-    // デフォルトロール = 最初の可視ソースフォルダのロール
-    const firstRole = _myTeamRoles[visibleRoots[0].path];
-    if (firstRole) _myTeamRole = firstRole;
-    await syncWorkspaceProfiles();
-  } catch {}
-}
-
-let _startupSplashHidden = false;
-function _hideStartupSplash() {
-  if (_startupSplashHidden) return;
-  _startupSplashHidden = true;
-  const splash = document.getElementById('gb-splash');
-  if (!splash) return;
-  splash.style.pointerEvents = 'none';
-  splash.style.transition = 'opacity 0.3s';
-  splash.style.opacity = '0';
-  setTimeout(() => splash.remove(), 300);
-}
-
-function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
-  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
-  if (!timeout) return Promise.resolve(promise);
-  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
-      }
-      if (typeof _sendLog === 'function') {
-        _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
-      }
-      resolve(fallbackValue);
-    }, timeout);
-    Promise.resolve(promise).then((value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
-      }
-      resolve(value);
-    }).catch((error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.error.' + label, startedAt, {
-          timeoutMs: timeout,
-          error: error?.message || String(error),
-        });
-      }
-      reject(error);
-    });
-  });
-}
-
-function _runStartupBackground(label, promise, onReady) {
-  Promise.resolve(promise)
-    .then((value) => {
-      if (typeof onReady === 'function') onReady(value);
-      return value;
-    })
-    .catch((error) => {
-      console.warn(`[Meldex] startup background task failed: ${label}`, error);
-      if (typeof _sendLog === 'function') {
-        _sendLog('warn', {
-          message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
-          stack: error?.stack || '',
-        });
-      }
-      return null;
-    });
-}
-
-function _refreshOutlinerAfterStartupReady() {
-  try {
-    const outlinerOptions = {
-      coalesce: true,
-      skipIfRecentlyLoaded: true,
-      reason: 'startup-ready',
-    };
-    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
-    const refreshJobs = [];
-    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
-    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
-    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
-    return Promise.allSettled(refreshJobs);
-  } catch (error) {
-    console.warn('[Meldex] startup outliner refresh failed:', error);
-    return Promise.resolve(null);
-  }
-}
-
-function _highlightLastOutlinerNodeAfterStartup() {
-  setTimeout(() => {
-    const last = _readLastViewFromStorage();
-    if (!last) return;
-    const p = last.path || last.dbPath || last.entityPath || '';
-    if (p) highlightOutlinerNode(p);
-  }, 500);
-}
-
-function _readLastViewFromStorage() {
-  try {
-    return JSON.parse(localStorage.getItem('lastView') || 'null');
-  } catch {
-    localStorage.removeItem('lastView');
-    return null;
-  }
-}
-
-function _repairStartupDatabaseViewTabs() {
-  try {
-    if (!state.currentDbPath || typeof _renderDbViewTabsSafely !== 'function') return;
-    const tabs = document.getElementById('db-view-tabs') || document.querySelector('.db-view-tabs');
-    if (!tabs) return;
-    if (tabs.querySelector('[data-e2e-id^="db-view-add-"]')) return;
-    _renderDbViewTabsSafely(typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-  } catch {}
-}
-
-function _scheduleStartupDatabaseViewTabsRepair() {
-  [0, 80, 250].forEach(delay => setTimeout(_repairStartupDatabaseViewTabs, delay));
-}
-
-async function _restoreStartupBoardView(label, path, opts) {
-  const openOpts = opts || {};
-  const boardLabel = label || String(path || '').split(/[\\/]/).pop() || '';
-  if (typeof GBPaneBridge !== 'undefined'
-    && GBPaneBridge?.initialized
-    && typeof GBLayout !== 'undefined'
-    && typeof GBTabs !== 'undefined'
-    && typeof navPush === 'function') {
-    state.view = 'board';
-    state.currentBoardPath = path;
-    navPush({ type: 'board', label: boardLabel, path });
-    if (typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
-      GBPaneBridge.refreshPaneAfterTabSwitch(GBLayout.activePane, { force: true });
-    }
-    if (!openOpts.skipSaveLastView) saveLastView({ type: 'board', label: boardLabel, path });
-    if (!openOpts.skipRecent && typeof addRecent === 'function') addRecent(boardLabel, path, 'board');
-    if (!openOpts.skipHighlight && typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
-    if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
-    return true;
-  }
-  const opened = typeof openBoard === 'function' ? await openBoard(boardLabel, path, openOpts) : false;
-  return opened !== false;
-}
-
-// 特定フォルダ内のパスに対するロールを取得
-function getMyRoleForPath(filePath) {
-  if (!filePath) return _myTeamRole;
-  const normFile = String(filePath).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  let matchedRole = '';
-  let matchedLength = -1;
-  for (const [folder, role] of Object.entries(_myTeamRoles)) {
-    const norm = String(folder || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    if (!norm) continue;
-    if ((normFile === norm || normFile.startsWith(norm + '/')) && norm.length > matchedLength) {
-      matchedRole = role;
-      matchedLength = norm.length;
-    }
-  }
-  return matchedRole || _myTeamRole;
-}

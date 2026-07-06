@@ -1,9 +1,10 @@
 (function () {
   const MODE_KEY = 'meldex-data-access-mode';
+  const SERVER_CONNECTION_KEY = 'meldex-shared-server-connection';
   const SAFE_MODE_KEY = 'meldex-safe-mode-once';
   const WORKSPACE_STATE_KEY = 'meldex-cloud-workspace-state';
   const COMPARE_LOG_KEY = 'meldex-cloud-compare-log';
-  const MODES = new Set(['legacy', 'dropbox']);
+  const MODES = new Set(['legacy', 'dropbox', 'server']);
   const MAX_COMPARE_LOGS = 100;
 
   function _baseUrl() {
@@ -12,6 +13,24 @@
 
   function _normalizeMode(mode) {
     return MODES.has(mode) ? mode : 'legacy';
+  }
+
+  function _normalizeServerUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      const url = new URL(raw);
+      if (!['http:', 'https:'].includes(url.protocol)) return '';
+      url.hash = '';
+      url.search = '';
+      if (/\/api\/?$/i.test(url.pathname)) {
+        url.pathname = url.pathname.replace(/\/api\/?$/i, '/');
+      }
+      if (!url.pathname.endsWith('/')) url.pathname += '/';
+      return url.toString();
+    } catch {
+      return '';
+    }
   }
 
   function _isLocalAppHost() {
@@ -89,17 +108,18 @@
   }
 
   function getMode() {
+    const storedMode = _normalizeMode(_safeGetItem(MODE_KEY));
     try {
       const params = new URLSearchParams(window.location.search);
       const requestedMode = params.get('dataAccessMode');
       if (MODES.has(requestedMode)) return requestedMode;
       if (params.get('safeMode') === '1') return 'legacy';
-      if (_isHostedCloudLaunch(params)) return 'dropbox';
+      if (_isHostedCloudLaunch(params)) return storedMode === 'server' ? 'server' : 'dropbox';
     } catch {}
     try {
       if (sessionStorage.getItem(SAFE_MODE_KEY) === '1') return 'legacy';
     } catch {}
-    return _normalizeMode(_safeGetItem(MODE_KEY));
+    return storedMode;
   }
 
   function hasStoredMode() {
@@ -120,8 +140,12 @@
     return getMode() === 'dropbox';
   }
 
+  function isServerMode() {
+    return getMode() === 'server';
+  }
+
   function isPwaMode() {
-    return isDropboxMode();
+    return isDropboxMode() || isServerMode();
   }
 
   function resolveAppUrl(path, query) {
@@ -143,11 +167,60 @@
   }
 
   function getApiBaseUrl() {
+    if (isServerMode()) {
+      const apiBase = getServerApiBaseUrl();
+      if (apiBase) return apiBase;
+    }
     return resolveAppUrl('api');
   }
 
   function getApiBasePath() {
-    return resolveAppPath('api');
+    const apiBase = getApiBaseUrl();
+    try {
+      const url = new URL(apiBase, document.baseURI || window.location.href);
+      if (url.origin !== window.location.origin) return url.toString().replace(/\/+$/, '');
+      return url.pathname.replace(/\/+$/, '') + url.search + url.hash;
+    } catch {
+      return resolveAppPath('api');
+    }
+  }
+
+  function getServerConnection() {
+    const data = _safeReadJson(SERVER_CONNECTION_KEY, null);
+    const url = _normalizeServerUrl(data?.url || data?.baseUrl || data?.serverUrl || '');
+    if (!url) return null;
+    return {
+      url,
+      apiBaseUrl: getServerApiBaseUrl(url),
+      savedAt: data?.savedAt || '',
+    };
+  }
+
+  function setServerConnection(config) {
+    const url = _normalizeServerUrl(config?.url || config?.baseUrl || config?.serverUrl || config || '');
+    if (!url) throw new Error('Meldex共有サーバーのURLを確認してください');
+    _safeWriteJson(SERVER_CONNECTION_KEY, {
+      url,
+      savedAt: new Date().toISOString(),
+    });
+    _notifyModeChanged('server-connection');
+    return getServerConnection();
+  }
+
+  function clearServerConnection() {
+    _safeRemoveItem(SERVER_CONNECTION_KEY);
+    _notifyModeChanged('server-connection');
+  }
+
+  function getServerBaseUrl() {
+    return getServerConnection()?.url || '';
+  }
+
+  function getServerApiBaseUrl(urlOverride) {
+    const base = _normalizeServerUrl(urlOverride || _safeReadJson(SERVER_CONNECTION_KEY, null)?.url || '');
+    if (!base) return '';
+    const url = new URL('api/', base);
+    return url.toString().replace(/\/+$/, '');
   }
 
   function getWorkspaceState() {
@@ -208,11 +281,17 @@
     setMode,
     clearMode,
     isDropboxMode,
+    isServerMode,
     isPwaMode,
     getBaseUrl,
     getBasePath,
     getApiBaseUrl,
     getApiBasePath,
+    getServerConnection,
+    setServerConnection,
+    clearServerConnection,
+    getServerBaseUrl,
+    getServerApiBaseUrl,
     resolveAppUrl,
     resolveAppPath,
     getWorkspaceState,

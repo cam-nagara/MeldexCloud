@@ -41,7 +41,7 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   const startValue = shiftType === 'work' ? (existing?.start_time || '09:00') : '';
   const endValue = shiftType === 'work' ? (existing?.end_time || '18:00') : '';
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
-  o.innerHTML = `<div class="gb-cal-modal" style="min-width:350px;"><h3>${existing?'シフト編集':'新規シフト'}</h3>
+  o.innerHTML = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(350)}"><h3>${existing?'シフト編集':'新規シフト'}</h3>
 <div class="field"><label>ユーザー</label><input class="sh-user" value="${esc(user||existing?.user||this._getUser())}"></div>
 <div class="field"><label>日付</label><input class="sh-date" type="date" value="${shiftDate}"></div>
 <div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>開始</label><input class="sh-start" type="time" value="${startValue}"></div>
@@ -154,7 +154,7 @@ CalendarComponent.prototype._showSyncModal = async function() {
   try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
   const gC = syncStatus.google?.connected, gA = syncStatus.google?.available;
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
-  o.innerHTML = `<div class="gb-cal-modal" style="min-width:450px;"><h3>カレンダー同期</h3>
+  o.innerHTML = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(450, null, { forceHeight: true })}"><h3>カレンダー同期</h3>
 <div style="padding:10px;background:var(--cal-panel-bg, var(--bg));border:1px solid var(--cal-grid-line, var(--border));border-radius:4px;margin-bottom:10px;">
   <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">Google Calendar</div>
   <div style="font-size:12px;color:var(--cal-muted-fg, var(--fg2));margin-bottom:8px;">ステータス: ${gC?'<span style="color:var(--green);">接続済み</span>':gA?'未接続':'<span style="color:var(--red);">パッケージ未インストール</span>'}</div>
@@ -176,11 +176,13 @@ CalendarComponent.prototype._showSyncModal = async function() {
   o.querySelector('.sync-gcal-push')?.addEventListener('click', () => this._googleCalPush());
   o.querySelector('.sync-ical-import').addEventListener('click', () => this._icalImport());
   o.querySelector('.sync-ical-export').addEventListener('click', async () => {
-    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
+    const exportSave = window.MeldexExportSave || (typeof MeldexExportSave !== 'undefined' ? MeldexExportSave : null);
+    const apiBase = typeof API_BASE !== 'undefined' ? API_BASE : '/api';
+    if (!exportSave || typeof exportSave.saveUrl !== 'function') {
       this._showStatus('保存ダイアログを初期化できませんでした', true);
       return;
     }
-    await MeldexExportSave.saveUrl(API_BASE + '/cal/sync/ical/export', {
+    await exportSave.saveUrl(apiBase + '/cal/sync/ical/export', {
       filename: `calendar-${this._localDateStr(new Date())}.ics`,
       extension: '.ics',
       dialogTitle: 'iCal として保存',
@@ -236,7 +238,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function() {
     return String(Math.floor(((t % 1440) + 1440) % 1440 / 60)).padStart(2,'0')+':'+String(((t % 60) + 60) % 60).padStart(2,'0');
   };
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
-  let html = '<div class="gb-cal-modal" style="min-width:600px;max-height:80vh;overflow-y:auto;"><h3>週間テンプレート</h3><div class="tmpl-list">';
+  let html = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(600)}"><h3>週間テンプレート</h3><div class="tmpl-list">`;
   if (!templates.length) html += '<div style="color:var(--cal-muted-fg, var(--fg2));font-size:12px;padding:8px;">テンプレートがありません</div>';
   templates.forEach(t => {
     html += `<div style="border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-panel-bg, transparent);border-radius:4px;padding:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>${esc(t.name)}</strong><div>`;
@@ -283,7 +285,7 @@ CalendarComponent.prototype._editTemplate = async function(tid) {
     <input type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
     <button class="tmpl-entry-del" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
   let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');
-  o.innerHTML = `<div class="gb-cal-modal" style="min-width:550px;max-height:80vh;overflow-y:auto;">
+  o.innerHTML = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(550)}">
     <h3>テンプレート編集: ${esc(t.name)}</h3>
     <div class="field"><label>名前</label><input class="tmpl-name" type="text" value="${esc(t.name)}"></div>
     <div style="font-size:12px;color:var(--cal-muted-fg, var(--fg2));margin-bottom:4px;">エントリ（1週間分）</div>

@@ -249,7 +249,7 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
     b.dataset.e2eId = `prop-layout-${slug}-${scopeId}`;
     b.setAttribute('aria-label', label);
     b.innerHTML = (typeof lucide === 'function' ? lucide(icon, 13) + ' ' : '') + label;
-    b.addEventListener('click', action);
+    b.addEventListener('click', (event) => action(event, b));
     return b;
   };
   toolbar.appendChild(btn(editMode ? '完了' : '並べ替え', editMode ? 'check' : 'listOrdered', () => {
@@ -278,13 +278,13 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
       }
       showStatus('レイアウトテンプレートを保存しました');
     }));
-    toolbar.appendChild(btn('テンプレート適用', 'layoutTemplate', async () => {
+    toolbar.appendChild(btn('テンプレート適用', 'layoutTemplate', async (event, button) => {
       await _loadPropertyLayoutMetadata(dbPath, { force: !_propertyLayoutIsCurrentDb(dbPath) });
       const sheet = _sheetPropertyLayoutTemplates(dbPath).map(t => ({ ...t, scope: 'sheet' }));
       const global = (await _loadGlobalPropertyLayoutTemplates()).map(t => ({ ...t, scope: 'global' }));
       const templates = sheet.concat(global);
       if (!templates.length) { showStatus('テンプレートがありません'); return; }
-      showPropertyLayoutTemplateMenu(toolbar, templates, async (tmpl) => {
+      showPropertyLayoutTemplateMenu(button || toolbar, templates, async (tmpl) => {
         if (!await savePropertyLayout(dbPath, tmpl)) return;
         renderEntityPropsGridInto(grid, data, entityPath, opts);
         showStatus('レイアウトテンプレートを適用しました');
@@ -298,21 +298,97 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
   grid.appendChild(toolbar);
 }
 
+function _focusPropertyLayoutMenuAnchor(anchor) {
+  if (!anchor || typeof anchor.focus !== 'function' || !anchor.isConnected) return;
+  try {
+    anchor.focus({ preventScroll: true });
+  } catch {
+    try { anchor.focus(); } catch {}
+  }
+}
+
 function showPropertyLayoutTemplateMenu(anchor, templates, onSelect) {
   document.querySelectorAll('.gb-prop-layout-template-menu').forEach(el => el.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu gb-prop-layout-template-menu';
-  templates.forEach(tmpl => {
-    const item = document.createElement('div');
+  menu.dataset.e2eId = 'prop-layout-template-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'レイアウトテンプレート');
+  menu.tabIndex = -1;
+  const closeMenu = (restoreFocus = true) => {
+    cleanup();
+    menu.remove();
+    if (restoreFocus) _focusPropertyLayoutMenuAnchor(anchor);
+  };
+  const focusItem = (index) => {
+    const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+    if (!items.length) return;
+    items[(index + items.length) % items.length]?.focus?.({ preventScroll: true });
+  };
+  const onPointerDown = (event) => {
+    if (menu.contains(event.target) || anchor?.contains?.(event.target)) return;
+    closeMenu(true);
+  };
+  const onKeyDown = (event) => {
+    if (!menu.isConnected) return;
+    const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+    const current = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu(true);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusItem(current + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusItem(current - 1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      focusItem(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      focusItem(items.length - 1);
+    }
+  };
+  function cleanup() {
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+  }
+  templates.forEach((tmpl, index) => {
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'gb-context-menu-item';
+    item.dataset.e2eId = 'prop-layout-template-menu-item';
+    item.setAttribute('role', 'menuitem');
     item.textContent = (tmpl.scope === 'global' ? '全体: ' : 'シート: ') + (tmpl.name || '無題');
-    item.addEventListener('click', () => { menu.remove(); onSelect(tmpl); });
+    item.addEventListener('click', () => {
+      closeMenu(false);
+      onSelect(tmpl);
+    });
+    item.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      closeMenu(false);
+      onSelect(tmpl);
+    });
+    if (index === 0) item.dataset.first = '1';
     menu.appendChild(item);
   });
   const rect = anchor.getBoundingClientRect();
   const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-  menu.style.left = (rect.left / z) + 'px';
-  menu.style.top = (rect.bottom / z + 2) + 'px';
   document.body.appendChild(menu);
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, rect, { prefer: 'bottom', gap: 2 });
+  } else {
+    menu.style.left = (rect.left / z) + 'px';
+    menu.style.top = (rect.bottom / z + 2) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('keydown', onKeyDown, true);
+  requestAnimationFrame(() => {
+    const first = menu.querySelector('[data-first="1"]');
+    try { first?.focus?.({ preventScroll: true }); } catch { first?.focus?.(); }
+  });
 }

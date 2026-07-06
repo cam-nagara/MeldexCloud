@@ -369,6 +369,18 @@ function registerFileTypes(items) {
   });
 }
 
+function _createGlobalFilterButton(label, className, onClick, options = {}) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.textContent = label;
+  if (options.e2eId) button.dataset.e2eId = options.e2eId;
+  if (options.type) button.dataset.gfType = options.type;
+  if (options.pressed !== undefined) button.setAttribute('aria-pressed', options.pressed ? 'true' : 'false');
+  button.addEventListener('click', onClick);
+  return button;
+}
+
 function renderGlobalFilterUI() {
   const container = document.getElementById('gf-chips');
   container.innerHTML = '';
@@ -397,12 +409,12 @@ function renderGlobalFilterUI() {
     return a.localeCompare(b);
   });
   sortedTypes.forEach(typeVal => {
-    const chip = document.createElement('span');
     const active = _hasAllGlobalTypesSelected() || _globalFilter.types.includes(typeVal);
     const label = GF_TYPE_LABELS[typeVal] || typeVal;
-    chip.style.cssText = `padding:1px 6px;border-radius:8px;cursor:pointer;font-size:11px;border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:${active ? 'var(--accent)' : 'transparent'};color:${active ? 'var(--ui-fg-strong)' : 'var(--fg2)'};${_isGlobalFilterEnabled() ? '' : 'opacity:0.6;'}`;
-    chip.textContent = label;
-    chip.addEventListener('click', () => {
+    const classes = ['gf-chip', 'gf-type-chip'];
+    if (active) classes.push('is-active');
+    if (!_isGlobalFilterEnabled()) classes.push('is-muted');
+    const chip = _createGlobalFilterButton(label, classes.join(' '), () => {
       if (_hasAllGlobalTypesSelected()) {
         _globalFilter.allTypes = false;
         _globalFilter.types = sortedTypes.filter(t => t !== typeVal);
@@ -414,18 +426,23 @@ function renderGlobalFilterUI() {
       _globalFilter.enabled = true;
       saveGlobalFilter();
       renderGlobalFilterUI();
+    }, {
+      e2eId: 'global-filter-type-' + typeVal,
+      type: typeVal,
+      pressed: active,
     });
     container.appendChild(chip);
   });
 
   const sep = document.createElement('span');
-  sep.style.cssText = 'width:1px;height:16px;background:var(--border);margin:0 4px;';
+  sep.className = 'gf-separator';
+  sep.setAttribute('aria-hidden', 'true');
   container.appendChild(sep);
 
   const dateSelect = document.createElement('select');
   dateSelect.id = 'gf-modified-days';
   dateSelect.dataset.e2eId = 'global-filter-modified-days';
-  dateSelect.style.cssText = 'font-size:11px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:1px 4px;';
+  dateSelect.setAttribute('aria-label', '更新日時フィルタ');
   [
     { v: 0, l: '更新日時: 指定なし' },
     { v: 1, l: '1日以内' },
@@ -445,41 +462,37 @@ function renderGlobalFilterUI() {
   };
   container.appendChild(dateSelect);
 
-  const filterToggle = document.createElement('span');
-  filterToggle.style.cssText = `padding:1px 6px;border-radius:8px;cursor:pointer;font-size:11px;border:1px solid ${_isGlobalFilterEnabled() ? 'var(--accent)' : 'var(--border)'};color:${_isGlobalFilterEnabled() ? 'var(--accent)' : 'var(--fg2)'};`;
-  filterToggle.textContent = _isGlobalFilterEnabled() ? 'フィルタOFF' : 'フィルタON';
-  filterToggle.addEventListener('click', () => {
-    _globalFilter.enabled = !_isGlobalFilterEnabled();
-    saveGlobalFilter();
-    renderGlobalFilterUI();
-  });
+  const filterToggle = _createGlobalFilterButton(
+    _isGlobalFilterEnabled() ? 'フィルタOFF' : 'フィルタON',
+    'gf-chip gf-filter-toggle' + (_isGlobalFilterEnabled() ? ' is-active' : ''),
+    () => {
+      _globalFilter.enabled = !_isGlobalFilterEnabled();
+      saveGlobalFilter();
+      renderGlobalFilterUI();
+    },
+    { e2eId: 'global-filter-enabled-toggle', pressed: _isGlobalFilterEnabled() }
+  );
   container.appendChild(filterToggle);
 
   const allTypes = sortedTypes;
   if (!_hasAllGlobalTypesSelected()) {
-    const allOn = document.createElement('span');
-    allOn.style.cssText = 'padding:1px 6px;border-radius:8px;cursor:pointer;font-size:11px;color:var(--accent);border:1px solid var(--accent);';
-    allOn.textContent = 'すべて選択';
-    allOn.addEventListener('click', () => {
+    const allOn = _createGlobalFilterButton('すべて選択', 'gf-chip gf-command gf-all-on', () => {
       _globalFilter.allTypes = true;
       _globalFilter.types = [...allTypes];
       _globalFilter.enabled = true;
       saveGlobalFilter();
       renderGlobalFilterUI();
-    });
+    }, { e2eId: 'global-filter-all-on' });
     container.appendChild(allOn);
   }
 
-  const allOff = document.createElement('span');
-  allOff.style.cssText = 'padding:1px 6px;border-radius:8px;cursor:pointer;font-size:11px;color:var(--fg2);border:1px solid var(--border);';
-  allOff.textContent = 'すべてオフ';
-  allOff.addEventListener('click', () => {
+  const allOff = _createGlobalFilterButton('すべてオフ', 'gf-chip gf-command gf-all-off', () => {
     _globalFilter.allTypes = false;
     _globalFilter.types = [];
     _globalFilter.enabled = true;
     saveGlobalFilter();
     renderGlobalFilterUI();
-  });
+  }, { e2eId: 'global-filter-all-off' });
   container.appendChild(allOff);
 }
 

@@ -280,9 +280,18 @@
     let visibleLimit = pageSize;
     let renderToken = 0;
     document.querySelectorAll('.gb-icon-picker').forEach((picker) => picker.remove());
+    const restoreTarget = options.restoreFocusEl || options.anchorEl || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const restoreFocus = () => {
+      if (!restoreTarget || typeof restoreTarget.focus !== 'function' || !restoreTarget.isConnected) return;
+      try { restoreTarget.focus({ preventScroll: true }); } catch { restoreTarget.focus(); }
+    };
 
     const picker = document.createElement('div');
+    const pickerId = 'gb-icon-picker-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
     picker.className = 'gb-icon-picker gb-context-menu' + (options.className ? ' ' + options.className : '');
+    picker.dataset.e2eId = 'icon-picker-popup';
+    picker.setAttribute('role', 'dialog');
+    picker.setAttribute('aria-modal', 'false');
     picker.style.position = 'fixed';
     picker.style.zIndex = String(options.zIndex || 10004);
     let closeHandler = null;
@@ -294,17 +303,22 @@
       if (keydownHandler) document.removeEventListener('keydown', keydownHandler, true);
       closeHandler = null;
       keydownHandler = null;
+      setTimeout(restoreFocus, 0);
     };
 
     const header = document.createElement('div');
     header.className = 'gb-icon-picker-header';
     const title = document.createElement('div');
+    title.id = pickerId + '-title';
     title.className = 'gb-icon-picker-title';
     title.textContent = options.title || 'アイコン';
+    picker.setAttribute('aria-labelledby', title.id);
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'gb-icon-picker-close';
+    closeBtn.dataset.e2eId = 'icon-picker-close';
     closeBtn.title = '閉じる';
+    closeBtn.setAttribute('aria-label', 'アイコンピッカーを閉じる');
     closeBtn.innerHTML = typeof global.lucide === 'function' ? global.lucide('x', 14) : 'x';
     closeBtn.addEventListener('click', removePicker);
     header.append(title, closeBtn);
@@ -323,7 +337,10 @@
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gb-icon-picker-preset';
+        btn.dataset.e2eId = 'icon-picker-preset';
         btn.title = item.label;
+        btn.setAttribute('aria-label', item.label + 'を選択');
+        btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
         if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
         const previewColor = item.color ? ` style="color:${_escAttr(item.color)};"` : '';
         btn.innerHTML = `<span class="gb-icon-picker-preset-icon"${previewColor}>${render(item.spec, 18)}</span><span>${_esc(item.label)}</span>`;
@@ -336,18 +353,24 @@
     if (sourceDefs.length > 1) {
       const tabs = document.createElement('div');
       tabs.className = 'gb-icon-picker-tabs';
+      tabs.setAttribute('role', 'tablist');
+      tabs.setAttribute('aria-label', 'アイコンの種類');
       sourceDefs.forEach((sourceDef) => {
         const tab = document.createElement('button');
         tab.type = 'button';
         tab.className = 'gb-icon-picker-tab';
         tab.textContent = sourceDef.label;
         tab.dataset.source = sourceDef.id;
+        tab.dataset.e2eId = 'icon-picker-tab-' + sourceDef.id;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', sourceDef.id === activeSource ? 'true' : 'false');
         if (sourceDef.description) tab.title = sourceDef.description;
         if (sourceDef.id === activeSource) tab.classList.add('active');
         tab.addEventListener('click', () => {
           activeSource = sourceDef.id;
           visibleLimit = pageSize;
           tabs.querySelectorAll('.gb-icon-picker-tab').forEach((el) => el.classList.toggle('active', el === tab));
+          tabs.querySelectorAll('.gb-icon-picker-tab').forEach((el) => el.setAttribute('aria-selected', el === tab ? 'true' : 'false'));
           renderGrid();
         });
         tabs.appendChild(tab);
@@ -358,11 +381,16 @@
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'gb-input gb-icon-picker-search';
+    search.dataset.e2eId = 'icon-picker-search';
     search.placeholder = options.placeholder || '検索';
+    search.setAttribute('aria-label', options.searchLabel || 'アイコンを検索');
     picker.appendChild(search);
 
     const grid = document.createElement('div');
     grid.className = 'gb-icon-picker-grid';
+    grid.dataset.e2eId = 'icon-picker-grid';
+    grid.setAttribute('role', 'list');
+    grid.setAttribute('aria-label', 'アイコン一覧');
     const loading = document.createElement('div');
     loading.className = 'gb-icon-picker-empty';
     loading.textContent = options.loadingLabel || '読み込み中';
@@ -387,7 +415,9 @@
       const reset = document.createElement('button');
       reset.type = 'button';
       reset.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+      reset.dataset.e2eId = 'icon-picker-reset';
       reset.textContent = options.resetLabel || 'リセット';
+      reset.setAttribute('aria-label', reset.textContent);
       reset.addEventListener('click', () => {
         if (typeof options.onReset === 'function') options.onReset();
         removePicker();
@@ -397,7 +427,9 @@
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+    cancel.dataset.e2eId = 'icon-picker-cancel';
     cancel.textContent = 'キャンセル';
+    cancel.setAttribute('aria-label', 'アイコン選択をキャンセル');
     cancel.addEventListener('click', removePicker);
     actions.appendChild(cancel);
     footer.append(credit, actions);
@@ -430,7 +462,10 @@
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gb-icon-picker-cell';
+        btn.dataset.e2eId = 'icon-picker-cell';
         btn.title = item.label || item.spec;
+        btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
+        btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
         if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
         btn.innerHTML = render(item.spec, options.itemSize || 22);
         btn.addEventListener('click', () => selectItem(item));
@@ -446,7 +481,9 @@
         const more = document.createElement('button');
         more.type = 'button';
         more.className = 'gb-icon-picker-more';
+        more.dataset.e2eId = 'icon-picker-more';
         more.textContent = 'さらに表示（残り' + (filtered.length - visibleLimit) + '件）';
+        more.setAttribute('aria-label', more.textContent);
         more.addEventListener('click', () => {
           visibleLimit += pageSize;
           renderGrid();
@@ -491,6 +528,8 @@
     };
     keydownHandler = (ev) => {
       if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
         removePicker();
       }
     };

@@ -171,6 +171,39 @@
   });
 
   const bridge = { svg, layer, notesLayer, ann: _ann, handleMessage: _handleMessage, updateSize: _updateSize };
+  const e2eBridgeEnabled = (() => {
+    if (typeof window === 'undefined') return false;
+    if (window.GBE2EActions) return true;
+    try {
+      const params = new URLSearchParams(window.location?.search || '');
+      return params.get('smoke') === '1' || params.get('e2e') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  if (e2eBridgeEnabled) {
+    bridge.renderEmbeddedNoteForE2E = (options = {}) => {
+      const item = {
+        id: options.id || ('e2e-embedded-note-' + Date.now().toString(36)),
+        type: 'comment',
+        shape: 'sticky',
+        color: options.color || _ann.color || '#c48080',
+        opacity: options.opacity ?? _ann.opacity ?? 1,
+        user: options.user || _annotationUser(),
+        created: options.created || new Date().toISOString(),
+      };
+      const data = {
+        x: Number(options.x) || 120,
+        y: Number(options.y) || 120,
+        width: Number(options.width) || 180,
+        height: Number(options.height) || 100,
+        text: options.text || '',
+        html: options.html || '',
+        user: item.user,
+      };
+      return _renderNote(item, data);
+    };
+  }
   wrapper._annBridge = bridge;
   if (host !== wrapper) host._annBridge = bridge;
   return bridge;

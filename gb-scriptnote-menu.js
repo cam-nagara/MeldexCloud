@@ -14,6 +14,8 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     const menu = document.createElement('div');
     menu.className = 'sn2-role-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'タイプを選択');
     menu.tabIndex = -1;
 
     const pageSettings = typeof PAGE_SETTINGS !== 'undefined' && Array.isArray(PAGE_SETTINGS)
@@ -61,6 +63,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const catBtn = document.createElement('button');
         catBtn.className = 'sn2-role-cat';
         catBtn.type = 'button';
+        catBtn.setAttribute('role', 'menuitem');
         catBtn.textContent = cat.label;
         if (cat.items.length > 1 || cat.directToInput) {
           const arrow = document.createElement('span');
@@ -75,11 +78,14 @@ Object.assign(ScriptNoteEditor.prototype, {
           if (openSub) { const prev = openSub; closeSub(); if (prev._catLabel === cat.label) return; }
           const sub = document.createElement('div');
           sub.className = 'sn2-role-sub-popup';
+          sub.setAttribute('role', 'menu');
+          sub.setAttribute('aria-label', `${cat.label}のタイプ`);
           sub._catLabel = cat.label;
           cat.items.forEach(t => {
             const btn = document.createElement('button');
             btn.className = 'sn2-role-item' + (t === currentRole ? ' active' : '');
             btn.type = 'button';
+            btn.setAttribute('role', 'menuitem');
             btn.textContent = t;
             const style = this._getCharaStyle(t);
             if (style) btn.style.cssText = style;
@@ -90,7 +96,11 @@ Object.assign(ScriptNoteEditor.prototype, {
           const menuRect = menu.getBoundingClientRect();
           const catRect = catBtn.getBoundingClientRect();
           sub.style.cssText = 'position:fixed;z-index:10100;';
+          document.body.appendChild(sub);
           positionPopup(sub, { left: menuRect.right, right: menuRect.right + 2, top: catRect.top, bottom: catRect.bottom }, { prefer: 'right' });
+          if (typeof requestAnimationFrame === 'function' && typeof clampPopupToViewport === 'function') {
+            requestAnimationFrame(() => { if (sub.isConnected) clampPopupToViewport(sub); });
+          }
           openSub = sub;
         });
         menu.appendChild(catBtn);
@@ -104,6 +114,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const btn = document.createElement('button');
         btn.className = 'sn2-role-item' + (t === currentRole || (t === '（なし）' && !currentRole) ? ' active' : '');
         btn.type = 'button';
+        btn.setAttribute('role', 'menuitem');
         btn.textContent = t;
         const style = this._getCharaStyle(t);
         if (style) btn.style.cssText = style;
@@ -124,14 +135,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     input.type = 'text';
     input.className = 'sn2-role-input';
     input.placeholder = 'キャラ名を入力';
+    input.setAttribute('aria-label', 'タイプ名を入力');
     input.value = currentRole;
     inputWrap.appendChild(input);
     menu.appendChild(inputWrap);
     const linkBtn = document.createElement('button');
     linkBtn.type = 'button';
-    linkBtn.className = 'sn2-role-item';
+    linkBtn.className = 'sn2-role-item sn2-role-link';
+    linkBtn.setAttribute('role', 'menuitem');
     linkBtn.textContent = 'リンクを設定...';
-    linkBtn.style.marginTop = '6px';
     linkBtn.addEventListener('click', () => {
       const textEl = rowEl.querySelector('.sn2-text');
       this._closeRoleMenu();
@@ -279,7 +291,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     // 位置決め
     const rect = roleBtn.getBoundingClientRect();
     menu.style.cssText = 'position:fixed;z-index:10100;';
+    document.body.appendChild(menu);
     positionPopup(menu, rect);
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
 
     this._roleMenu = menu;
     this._roleMenuRow = rowId;
@@ -289,7 +303,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (!menu.contains(ev.target) && ev.target !== roleBtn && !ev.target.closest?.('.sn2-role-sub-popup')) this._closeRoleMenu();
       };
       this._roleMenuCloseHandler = close;
-      document.addEventListener('pointerdown', close);
+      document.addEventListener('pointerdown', close, true);
     }, 0);
     input.focus();
     input.select();
@@ -297,7 +311,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _closeRoleMenu() {
     if (this._roleMenuCloseHandler) {
-      document.removeEventListener('pointerdown', this._roleMenuCloseHandler);
+      document.removeEventListener('pointerdown', this._roleMenuCloseHandler, true);
       this._roleMenuCloseHandler = null;
     }
     if (this._roleMenuKeyHandler) {

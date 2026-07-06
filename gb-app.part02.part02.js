@@ -556,25 +556,106 @@ function showView(viewName, ctx) {
 }
 // スクリーンショットメニュー
 function showScreenshotMenu(e) {
+  const btn = e?.target?.closest?.('button') || e?.target;
   const existing = document.querySelector('.ab-dropdown.ss-menu');
-  if (existing) { existing.remove(); return; }
+  if (existing) {
+    existing.remove();
+    btn?.setAttribute?.('aria-expanded', 'false');
+    return;
+  }
   const menu = document.createElement('div');
   menu.className = 'ab-dropdown ss-menu';
-  function addItem(label, fn) { const item = document.createElement('div'); item.className = 'ab-dropdown-item'; item.textContent = label; item.addEventListener('click', () => { menu.remove(); fn(); }); menu.appendChild(item); }
-  function addSep() { const s = document.createElement('div'); s.className = 'ab-dropdown-sep'; menu.appendChild(s); }
-  addItem('全画面キャプチャ', () => captureScreenshot('full'));
-  addItem('範囲選択キャプチャ', () => captureScreenshot('region'));
+  menu.id = 'screenshot-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スクリーンショット');
+  if (btn?.setAttribute) {
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'true');
+    btn.setAttribute('aria-controls', menu.id);
+  }
+  let closed = false;
+  let pointerCloser = null;
+  let keyCloser = null;
+  const closeMenu = (restoreFocus = false) => {
+    if (closed) return;
+    closed = true;
+    if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
+    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
+    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
+    menu.remove();
+    if (restoreFocus) btn?.focus?.();
+  };
+  function addItem(label, fn, mode) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
+    if (mode) item.dataset.screenshotMode = mode;
+    item.textContent = label;
+    item.addEventListener('click', () => { closeMenu(false); fn(); });
+    menu.appendChild(item);
+  }
+  function addSep() {
+    const s = document.createElement('div');
+    s.className = 'ab-dropdown-sep';
+    s.setAttribute('role', 'separator');
+    menu.appendChild(s);
+  }
+  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
+  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
   addSep();
-  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'));
-  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'));
+  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
+  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
   addSep();
   addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
   document.body.appendChild(menu);
-  const btn = e.target.closest('button') || e.target;
-  const rect = btn.getBoundingClientRect();
-  { const z = _getZoom(); menu.style.left = (rect.right / z + 4) + 'px'; menu.style.top = (rect.top / z) + 'px'; }
-  requestAnimationFrame(() => { const z = _getZoom(); const mr = menu.getBoundingClientRect(); if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px'; if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px'; });
-  setTimeout(() => { document.addEventListener('pointerdown', function closer(ev) { if (!menu.contains(ev.target) && !btn.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } }); }, 0);
+  const placeMenu = () => {
+    if (!btn?.getBoundingClientRect) return;
+    const rect = btn.getBoundingClientRect();
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
+      return;
+    }
+    const z = _getZoom();
+    menu.style.left = (rect.right / z + 4) + 'px';
+    menu.style.top = (rect.top / z) + 'px';
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
+      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
+    });
+  };
+  placeMenu();
+  menu.addEventListener('keydown', (ev) => {
+    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
+    const index = items.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const delta = ev.key === 'ArrowDown' ? 1 : -1;
+      items[(index + delta + items.length) % items.length]?.focus();
+    } else if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0]?.focus();
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items.at(-1)?.focus();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  });
+  pointerCloser = (ev) => {
+    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
+  };
+  keyCloser = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  };
+  document.addEventListener('pointerdown', pointerCloser, true);
+  document.addEventListener('keydown', keyCloser, true);
+  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
 }
 
 function _screenshotModeIsRegion(mode) {
@@ -628,32 +709,31 @@ function _cropScreenshotCanvas(canvas, region) {
 
 function _selectScreenshotRegionFromCanvas(canvas) {
   return new Promise(resolve => {
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay screenshot-region-overlay';
+    overlay.dataset.modalShell = 'off';
+    overlay.dataset.e2eId = 'screenshot-region-overlay';
     overlay.style.zIndex = '5000';
-    overlay.style.background = 'rgba(0,0,0,0.68)';
-    overlay.style.display = 'flex';
-    overlay.style.alignItems = 'center';
-    overlay.style.justifyContent = 'center';
 
     const shell = document.createElement('div');
     shell.className = 'screenshot-region-shell';
-    shell.style.display = 'flex';
-    shell.style.flexDirection = 'column';
-    shell.style.gap = '8px';
-    shell.style.maxWidth = '94vw';
-    shell.style.maxHeight = '92vh';
+    shell.dataset.e2eId = 'screenshot-region-shell';
+    shell.tabIndex = -1;
+    shell.setAttribute('role', 'dialog');
+    shell.setAttribute('aria-modal', 'true');
+    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
 
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
-    stage.style.position = 'relative';
-    stage.style.overflow = 'hidden';
-    stage.style.background = '#111';
-    stage.style.border = '1px solid rgba(255,255,255,0.35)';
-    stage.style.cursor = 'crosshair';
-    stage.style.touchAction = 'none';
+    stage.dataset.e2eId = 'screenshot-region-stage';
+    stage.tabIndex = 0;
+    stage.setAttribute('role', 'group');
+    stage.setAttribute('aria-label', '保存する範囲');
 
     const preview = document.createElement('canvas');
+    preview.className = 'screenshot-region-preview';
+    preview.setAttribute('aria-hidden', 'true');
     preview.width = canvas.width;
     preview.height = canvas.height;
     preview.getContext('2d').drawImage(canvas, 0, 0);
@@ -662,30 +742,26 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
     preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
     preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
-    preview.style.display = 'block';
 
     const selection = document.createElement('div');
     selection.className = 'screenshot-region-selection';
-    selection.style.position = 'absolute';
-    selection.style.border = '2px solid #fff';
-    selection.style.boxShadow = '0 0 0 9999px rgba(0,0,0,0.35)';
-    selection.style.pointerEvents = 'none';
+    selection.setAttribute('aria-hidden', 'true');
     selection.style.display = 'none';
 
     const actions = document.createElement('div');
     actions.className = 'screenshot-region-actions';
-    actions.style.display = 'flex';
-    actions.style.justifyContent = 'flex-end';
-    actions.style.gap = '8px';
+    actions.setAttribute('aria-label', '範囲選択の操作');
 
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'screenshot-region-cancel';
     cancel.textContent = 'キャンセル';
 
     const ok = document.createElement('button');
     ok.type = 'button';
     ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.dataset.e2eId = 'screenshot-region-save';
     ok.textContent = '保存';
 
     actions.append(cancel, ok);
@@ -697,10 +773,16 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     let start = null;
     let current = null;
     let activePointerId = null;
+    let cleaned = false;
 
     const cleanup = (value) => {
+      if (cleaned) return;
+      cleaned = true;
       overlay.remove();
       document.removeEventListener('keydown', onKeyDown);
+      if (restoreFocusTo?.isConnected && !restoreFocusTo.closest?.('.screenshot-region-overlay')) {
+        restoreFocusTo.focus?.();
+      }
       resolve(value);
     };
     const pointFromEvent = (ev) => {
@@ -747,16 +829,20 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       };
     };
     function onKeyDown(ev) {
-      if (ev.key === 'Escape') cleanup(null);
-      if (ev.key === 'Enter') {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        cleanup(null);
+      } else if (ev.key === 'Enter') {
         const region = canvasRegion();
         if (region) cleanup(region);
       }
     }
     stage.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
+      ev.preventDefault();
+      stage.focus?.();
       activePointerId = ev.pointerId;
-      stage.setPointerCapture?.(ev.pointerId);
+      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
       start = pointFromEvent(ev);
       current = start;
       updateSelection();
@@ -769,7 +855,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     stage.addEventListener('pointerup', (ev) => {
       if (activePointerId == null || ev.pointerId !== activePointerId) return;
       current = pointFromEvent(ev);
-      stage.releasePointerCapture?.(ev.pointerId);
+      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
       activePointerId = null;
       updateSelection();
     });
@@ -786,7 +872,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       cleanup(region);
     });
     document.addEventListener('keydown', onKeyDown);
-    ok.focus();
+    shell.focus();
   });
 }
 
@@ -903,6 +989,29 @@ function _cfIsDeleteMessage(text) {
   return /削除|破棄|除去|消去|初期化|リセット|を空に|デフォルト.{0,8}戻/.test(String(text || ''));
 }
 
+let _cfDialogSeq = 0;
+function _cfRestoreFocusTarget() {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function _enhanceCfDialog(overlay, kind, label) {
+  const dialog = overlay?.querySelector?.('.gb-confirm');
+  if (!dialog) return null;
+  const idBase = `gb-${kind}-${++_cfDialogSeq}`;
+  overlay.dataset.e2eId = `${kind}-overlay`;
+  dialog.dataset.e2eId = `${kind}-dialog`;
+  dialog.id = dialog.id || `${idBase}-dialog`;
+  dialog.setAttribute('aria-label', label);
+  const messages = [...dialog.querySelectorAll('.gb-confirm-message')];
+  messages.forEach((message, index) => { message.id = message.id || `${idBase}-message-${index}`; });
+  if (messages.length) dialog.setAttribute('aria-describedby', messages.map(message => message.id).join(' '));
+  return dialog;
+}
+
+function _restoreCfDialogFocus(target, overlay) {
+  if (target?.isConnected && !overlay?.contains?.(target)) target.focus?.();
+}
+
 // カスタムalertダイアログ（alert()の代替、画面中央モーダル）
 function cfAlert(message, options) {
   const opts = options || {};
@@ -912,6 +1021,7 @@ function cfAlert(message, options) {
     ? '<button id="_gb-support" class="gb-btn gb-btn-sm">サポートに送信</button>'
     : '';
   return new Promise(resolve => {
+    const restoreFocusTo = _cfRestoreFocusTarget();
     const o = document.createElement('div');
     o.className = 'modal-overlay';
     o.style.zIndex = '300';
@@ -923,8 +1033,22 @@ function cfAlert(message, options) {
       </div>
     </div>`;
     document.body.appendChild(o);
-    const cleanup = () => { o.remove(); document.removeEventListener('keydown', kh); resolve(); };
-    function kh(e) { if (e.key === 'Enter' || e.key === 'Escape') cleanup(); }
+    _enhanceCfDialog(o, 'cf-alert', 'お知らせ');
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      o.remove();
+      document.removeEventListener('keydown', kh);
+      _restoreCfDialogFocus(restoreFocusTo, o);
+      resolve();
+    };
+    function kh(e) {
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        e.preventDefault();
+        cleanup();
+      }
+    }
     o.querySelector('#_gb-ok').addEventListener('click', cleanup);
     o.querySelector('#_gb-support')?.addEventListener('click', () => {
       window.MeldexDiagnostics?.showSupportDialog?.(new Error(String(message || '')), { kind: 'cfAlert' });
@@ -946,6 +1070,7 @@ function cfConfirm(message, options) {
   const cancelLabel = opts.cancelLabel || 'キャンセル';
   const okVariant = isDanger ? 'gb-btn-danger' : 'gb-btn-primary';
   return new Promise(resolve => {
+    const restoreFocusTo = _cfRestoreFocusTarget();
     const o = document.createElement('div');
     o.className = 'modal-overlay';
     o.style.zIndex = '300';
@@ -957,9 +1082,18 @@ function cfConfirm(message, options) {
       </div>
     </div>`;
     document.body.appendChild(o);
-    const cleanup = (val) => { o.remove(); document.removeEventListener('keydown', kh); resolve(val); };
+    _enhanceCfDialog(o, 'cf-confirm', '確認');
+    let done = false;
+    const cleanup = (val) => {
+      if (done) return;
+      done = true;
+      o.remove();
+      document.removeEventListener('keydown', kh);
+      _restoreCfDialogFocus(restoreFocusTo, o);
+      resolve(val);
+    };
     function kh(e) {
-      if (e.key === 'Escape') { cleanup(false); return; }
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(false); return; }
       // 通常モードは Enter = OK のショートカット。
       // danger モードは誤操作防止のため Enter のショートカットを無効化し、
       // フォーカスされたボタン (初期は cancel) の自然な Enter 起動に任せる。

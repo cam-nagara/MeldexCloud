@@ -35,6 +35,20 @@
   font-weight: 700;
 }
 
+.llm-review-close {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.llm-review-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.llm-review-modal:focus {
+  outline: none;
+}
+
 .llm-review-body {
   flex: 1;
   min-height: 0;
@@ -99,10 +113,12 @@
   gap: 8px;
   color: var(--fg);
   font-size: 12px;
+  line-height: 1.45;
 }
 
 .llm-review-check input {
   margin-top: 2px;
+  flex: 0 0 auto;
 }
 
 .llm-review-details {
@@ -311,5 +327,41 @@
   .llm-review-body {
     grid-template-columns: 1fr;
     padding: 10px;
+    gap: 10px;
+  }
+
+  .llm-review-input,
+  .llm-review-select,
+  .llm-review-textarea {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .llm-review-check {
+    min-height: 44px;
+    align-items: center;
+    padding: 6px 0;
+  }
+
+  .llm-review-check input {
+    width: 18px;
+    height: 18px;
+    margin-top: 0;
+  }
+
+  .llm-review-details summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  .llm-review-footer .gb-btn,
+  .llm-review-state-btn {
+    min-height: 44px;
+  }
+
+  .llm-review-close.gb-btn-icon {
+    width: 44px;
+    min-width: 44px;
   }
 }

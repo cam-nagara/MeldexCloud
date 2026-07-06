@@ -5,7 +5,10 @@ function _fsShortLabel(field, rowLabel) {
   if (!rowLabel) return field.label;
   if (field.label === rowLabel) return '';
   if (field.label.startsWith(rowLabel + ' ')) return field.label.slice(rowLabel.length + 1);
-  if (field.label.startsWith(rowLabel)) return field.label.slice(rowLabel.length);
+  if (field.label.startsWith(rowLabel)) {
+    const short = field.label.slice(rowLabel.length).trimStart().replace(/^[をの]\s*/, '');
+    return short || field.label;
+  }
   return field.label;
 }
 
@@ -261,9 +264,34 @@ function _fsThemeOptionsHtml(currentId, ctx) {
   return inherit + localCustom + MeldexThemeManager.themeOptionsHtml(cur || '__file-theme-inherit__', { includeSystem: true });
 }
 
-function _fsThemeAction(iconName, fallback, label, action, danger) {
+function _fsThemeAction(iconName, fallback, label, action, ctx, danger) {
   const icon = typeof lucide === 'function' ? lucide(iconName, 14) : fallback;
-  return `<button type="button" class="bd-detail-style-action${danger ? ' bd-detail-style-action--danger' : ''}" data-action="${action}" title="${esc(label)}" aria-label="${esc(label)}">${icon}</button>`;
+  return `<button type="button" class="bd-detail-style-action${danger ? ' bd-detail-style-action--danger' : ''}" data-fs-theme-action="${esc(action)}" data-e2e-id="file-style-theme-action-${esc(ctx)}-${esc(action)}" title="${esc(label)}" aria-label="${esc(label)}">${icon}</button>`;
+}
+
+function _fsRunThemeAction(ctx, action) {
+  const handlers = {
+    create: fileThemeCreate,
+    duplicate: fileThemeDuplicate,
+    rename: fileThemeRename,
+    reset: fileThemeReset,
+    save: fileThemeSave,
+    delete: fileThemeDelete,
+  };
+  const handler = handlers[action];
+  if (typeof handler !== 'function') return;
+  try {
+    const result = handler(ctx);
+    if (result && typeof result.catch === 'function') {
+      result.catch(error => {
+        console.error(error);
+        if (typeof showStatus === 'function') showStatus('テーマ操作に失敗しました', true);
+      });
+    }
+  } catch (error) {
+    console.error(error);
+    if (typeof showStatus === 'function') showStatus('テーマ操作に失敗しました', true);
+  }
 }
 
 function _fsThemePanelId(ctx) {
@@ -570,17 +598,17 @@ function _fsRenderThemeControlSection(ctx, adapter) {
   return `
     <section class="gb-section gb-section--boxed fs-theme-management" data-file-theme-panel="${esc(ctx)}">
       <div class="gb-section-title">${typeof lucide === 'function' ? lucide('palette', 14) : ''} テーマ</div>
-      <div class="gb-field-row" style="align-items:center;">
-        <select class="gb-select fs-theme-select" data-onchange="fileThemeSelect('${ctx}', this.value)" style="flex:1;min-width:160px;">
+      <div class="gb-field-row fs-theme-row">
+        <select class="gb-select fs-theme-select" data-fs-theme-select data-e2e-id="file-style-theme-select-${esc(ctx)}" aria-label="テーマ">
           ${_fsThemeOptionsHtml(current, ctx)}
         </select>
-        <span class="bd-detail-style-row" style="width:auto;flex:0 0 auto;">
-          ${_fsThemeAction('plus', '+', '新規カスタムテーマを作成', `fileThemeCreate('${ctx}')`)}
-          ${_fsThemeAction('copy', '複製', '選択中テーマを複製', `fileThemeDuplicate('${ctx}')`)}
-          ${_fsThemeAction('pencil', '名前', 'テーマ名を変更', `fileThemeRename('${ctx}')`)}
-          ${_fsThemeAction('rotateCcw', '戻す', 'デフォルトに戻す', `fileThemeReset('${ctx}')`)}
-          ${_fsThemeAction('save', '保存', 'デフォルトとして保存', `fileThemeSave('${ctx}')`)}
-          ${_fsThemeAction('trash2', '削除', 'カスタムテーマを削除', `fileThemeDelete('${ctx}')`, true)}
+        <span class="bd-detail-style-row fs-theme-actions">
+          ${_fsThemeAction('plus', '+', '新規カスタムテーマを作成', 'create', ctx)}
+          ${_fsThemeAction('copy', '複製', '選択中テーマを複製', 'duplicate', ctx)}
+          ${_fsThemeAction('pencil', '名前', 'テーマ名を変更', 'rename', ctx)}
+          ${_fsThemeAction('rotateCcw', '戻す', 'デフォルトに戻す', 'reset', ctx)}
+          ${_fsThemeAction('save', '保存', 'デフォルトとして保存', 'save', ctx)}
+          ${_fsThemeAction('trash2', '削除', 'カスタムテーマを削除', 'delete', ctx, true)}
         </span>
       </div>
       ${typeof renderThemeColorSetEditor === 'function' ? renderThemeColorSetEditor(colorSet, { osAccent: useOsAccent, osAccentColor }) : ''}
@@ -593,6 +621,14 @@ function _fsBindThemePanel(root, ctx) {
   if (!section) return;
   const adapter = _fsGetAdapter(ctx);
   if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
+  const select = section.querySelector('[data-fs-theme-select]');
+  select?.addEventListener('change', () => fileThemeSelect(ctx, select.value));
+  section.querySelectorAll('[data-fs-theme-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      _fsRunThemeAction(ctx, btn.dataset.fsThemeAction || '');
+    });
+  });
   _fsBindThemeColorSetEditor(section, ctx);
   _fsRefreshThemeActionStates(root, ctx);
   _fsEnsureThemePanelGlobalSync();
@@ -676,8 +712,8 @@ function _fsRefreshThemeActionStates(root, ctx) {
   const adapter = _fsGetAdapter(ctx);
   const id = _fsCurrentThemeId(ctx, adapter);
   const isCustom = _fsIsLocalCustomThemeId(id) || !!(id && typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getCustomThemes().some(t => t.id === id));
-  ['fileThemeRename', 'fileThemeSave', 'fileThemeDelete'].forEach(name => {
-    (root || document).querySelectorAll(`[data-action^="${name}('${ctx}')"]`).forEach(btn => { btn.disabled = !isCustom; });
+  ['rename', 'save', 'delete'].forEach(action => {
+    (root || document).querySelectorAll(`[data-fs-theme-action="${action}"]`).forEach(btn => { btn.disabled = !isCustom; });
   });
 }
 

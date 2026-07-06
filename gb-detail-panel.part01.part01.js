@@ -65,7 +65,13 @@ function switchDetailTab(tab) {
   const bar = document.getElementById('detail-tab-bar');
   if (!bar) return;
   bar.querySelectorAll('.gb-inner-tab, .detail-tab').forEach(t => {
+    const tabId = t.dataset.detailTab || '';
     const active = !t.hidden && t.dataset.detailTab === tab;
+    if (tabId) {
+      t.setAttribute('role', 'tab');
+      t.setAttribute('aria-controls', _detailTabPanelId(tabId));
+      if (!t.dataset.e2eId) t.dataset.e2eId = 'detail-tab-' + tabId;
+    }
     t.classList.toggle('gb-inner-tab-active', active);
     t.classList.toggle('active', active);
     t.setAttribute('aria-selected', active ? 'true' : 'false');
@@ -118,24 +124,32 @@ function _saveDetailPanelCfg(cfg) {
 
 function _detailPanelEl(pos) { return document.getElementById('detail-panel-' + pos); }
 
+function _detailTabPanelId(tab) {
+  return tab && String(tab).startsWith('sn2-') ? 'detail-tab-sn2-main' : 'detail-tab-' + tab;
+}
+
+function _detailTabButtonHtml(tab, className, label) {
+  return `<button type="button" role="tab" class="gb-inner-tab detail-tab ${className}" data-detail-tab="${tab}" hidden data-e2e-id="detail-tab-${tab}" aria-selected="false" aria-controls="${_detailTabPanelId(tab)}" data-action="switchDetailTab('${tab}')">${label}</button>`;
+}
+
 function _detailTabShellHtml() {
   return `
-    <nav id="detail-tab-bar" class="gb-tabbar">
-      <div class="gb-inner-tab detail-tab detail-tab-note-editor" data-detail-tab="note-editor" hidden data-action="switchDetailTab('note-editor')">エディタ</div>
-      <div class="gb-inner-tab detail-tab detail-tab-db-property-settings" data-detail-tab="db-property-settings" hidden data-action="switchDetailTab('db-property-settings')">プロパティ設定</div>
-      <div class="gb-inner-tab detail-tab detail-tab-calendar" data-detail-tab="calendar-today" hidden data-action="switchDetailTab('calendar-today')">今日</div>
-      <div class="gb-inner-tab detail-tab detail-tab-calendar detail-tab-calendar-settings" data-detail-tab="calendar-settings" hidden data-action="switchDetailTab('calendar-settings')">スケジューラー設定</div>
-      <div class="gb-inner-tab detail-tab detail-tab-calendar detail-tab-calendar-production" data-detail-tab="calendar-production" hidden data-action="switchDetailTab('calendar-production')">制作管理</div>
-      <div class="gb-inner-tab detail-tab detail-tab-board detail-tab-board-card" data-detail-tab="board-card" hidden data-action="switchDetailTab('board-card')">カード</div>
-      <div class="gb-inner-tab detail-tab detail-tab-board detail-tab-board-line" data-detail-tab="board-line" hidden data-action="switchDetailTab('board-line')">ライン</div>
-      <div class="gb-inner-tab detail-tab detail-tab-board-note" data-detail-tab="board-note" hidden data-action="switchDetailTab('board-note')">ノート</div>
-      <div class="gb-inner-tab detail-tab detail-tab-file-style" data-detail-tab="file-style" hidden data-action="switchDetailTab('file-style')">テーマ</div>
-      <div class="gb-inner-tab detail-tab detail-tab-publish" data-detail-tab="publish" hidden data-action="switchDetailTab('publish')">公開</div>
-      <div class="gb-inner-tab detail-tab detail-tab-board-style detail-tab-board-card-style" data-detail-tab="board-card-style" hidden data-action="switchDetailTab('board-card-style')">カードスタイル</div>
-      <div class="gb-inner-tab detail-tab detail-tab-board-style detail-tab-board-line-style" data-detail-tab="board-line-style" hidden data-action="switchDetailTab('board-line-style')">ラインスタイル</div>
-      <div class="gb-inner-tab detail-tab detail-tab-board-style detail-tab-board-depth-style" data-detail-tab="board-depth-style" hidden data-action="switchDetailTab('board-depth-style')">階層別スタイル</div>
-      <div class="gb-inner-tab detail-tab detail-tab-backlinks" data-detail-tab="backlinks" hidden data-action="switchDetailTab('backlinks')">バックリンク</div>
-      <div class="gb-inner-tab detail-tab detail-tab-tag-management" data-detail-tab="tag-management" hidden data-action="switchDetailTab('tag-management')">タグ管理</div>
+    <nav id="detail-tab-bar" class="gb-tabbar" role="tablist" aria-label="オプションパネルのタブ">
+      ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', 'エディタ')}
+      ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', 'プロパティ設定')}
+      ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
+      ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジューラー設定')}
+      ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
+      ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'カード')}
+      ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
+      ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
+      ${_detailTabButtonHtml('file-style', 'detail-tab-file-style', 'テーマ')}
+      ${_detailTabButtonHtml('publish', 'detail-tab-publish', '公開')}
+      ${_detailTabButtonHtml('board-card-style', 'detail-tab-board-style detail-tab-board-card-style', 'カードスタイル')}
+      ${_detailTabButtonHtml('board-line-style', 'detail-tab-board-style detail-tab-board-line-style', 'ラインスタイル')}
+      ${_detailTabButtonHtml('board-depth-style', 'detail-tab-board-style detail-tab-board-depth-style', '階層別スタイル')}
+      ${_detailTabButtonHtml('backlinks', 'detail-tab-backlinks', 'バックリンク')}
+      ${_detailTabButtonHtml('tag-management', 'detail-tab-tag-management', 'タグ管理')}
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
@@ -187,8 +201,14 @@ function _resolveDetailEl(opts) {
   if (opts && opts.modal) {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
+    overlay.dataset.e2eId = 'detail-legacy-modal-overlay';
     const modal = document.createElement('div');
     modal.className = 'modal';
+    modal.dataset.e2eId = 'detail-legacy-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'オプション');
+    modal.tabIndex = -1;
     modal.style.cssText = 'min-width:400px;max-height:80vh;overflow-y:auto;display:flex;flex-direction:column;';
     overlay.appendChild(modal);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
@@ -240,7 +260,7 @@ async function showDetailPanel(contentHtml) {
   const header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;';
   header.innerHTML = `<span style="font-size:12px;font-weight:bold;flex:1;">オプション</span>
-    <button data-action="_hideDetailPanel()" style="font-size:12px;padding:1px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">${lucide('x', 12)}</button>`;
+    <button type="button" class="gb-btn gb-btn-xs gb-btn-icon" data-action="_hideDetailPanel()" aria-label="オプションパネルを閉じる" title="閉じる" data-e2e-id="legacy-detail-panel-close">${lucide('x', 12)}</button>`;
   el.appendChild(header);
   // コンテンツ
   const body = document.createElement('div');
@@ -1033,7 +1053,45 @@ function _fsSetControlE2e(el, field, rowLabel, suffix) {
   if (!el?.dataset) return el;
   el.dataset.e2eId = _fsFieldE2eId(field, rowLabel, suffix);
   if (field?.label) el.dataset.e2eLabel = field.label;
+  const tag = String(el.tagName || '').toLowerCase();
+  const type = String(el.getAttribute?.('type') || '').toLowerCase();
+  const interactive = ['button', 'input', 'select', 'textarea'].includes(tag) || el.getAttribute?.('role') === 'button';
+  if (interactive && type !== 'hidden') {
+    const label = _fsControlA11yLabel(field, rowLabel, suffix);
+    if (label && !el.getAttribute('aria-label')) el.setAttribute('aria-label', label);
+    if (label && !el.getAttribute('title')) el.setAttribute('title', label);
+  }
   return el;
+}
+
+function _fsControlA11yLabel(field, rowLabel, suffix) {
+  const fieldLabel = String(field?.label || '').trim();
+  const row = String(rowLabel || '').trim();
+  const suffixLabels = {
+    fit: '表示方法',
+    scale: '倍率',
+    select: '選択',
+    swatch: '色',
+    alpha: '透明度',
+    checkbox: '切り替え',
+    'toggle-checkbox': '切り替え',
+    bold: '太字',
+    italic: '斜体',
+    toggle: '切り替え',
+    number: '数値',
+    range: 'スライダー',
+    text: 'テキスト',
+    pxtext: 'px値',
+    reset: 'リセット',
+    choose: '画像選択',
+    clear: '画像クリア',
+  };
+  const suffixLabel = suffixLabels[suffix] || '';
+  const parts = [];
+  if (row) parts.push(row);
+  if (fieldLabel && fieldLabel !== row && !fieldLabel.startsWith(row + ' ')) parts.push(fieldLabel);
+  if (suffixLabel && !parts.some(part => part.includes(suffixLabel))) parts.push(suffixLabel);
+  return parts.join(' ').trim() || fieldLabel || suffixLabel || 'スタイル設定';
 }
 
 function _fsIsToggleOn(field, cur) {
@@ -1069,6 +1127,9 @@ function _fsBuildControl(field, adapter, rowLabel) {
   if (field.type === 'boardBgImage') {
     const wrap = document.createElement('span');
     wrap.className = 'gb-fmt-popup-group';
+    wrap.dataset.e2eId = _fsFieldE2eId(field, rowLabel, 'image-group');
+    wrap.setAttribute('role', 'group');
+    wrap.setAttribute('aria-label', _fsControlA11yLabel(field, rowLabel, 'choose'));
     const imgName = (typeof _bdBackgroundImageName === 'function') ? _bdBackgroundImageName() : '';
     const imageBtn = document.createElement('button');
     imageBtn.type = 'button';

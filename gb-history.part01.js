@@ -98,7 +98,7 @@ function _historyActionAttrs(action, args = []) {
 }
 
 function _historyCloseAttrs(id) {
-  return `data-e2e-id="${esc(id)}" data-action="this.closest('.modal-overlay').remove()"`;
+  return `type="button" aria-label="閉じる" title="閉じる" data-e2e-id="${esc(id)}" data-action="this.closest('.modal-overlay').remove()"`;
 }
 
 function _versionDisplayDate(version) {
@@ -829,9 +829,9 @@ async function showFolderVersionFiles(folderPath, versionName) {
     });
     listHtml += '</div>';
     const label = meta.label ? ' — ' + esc(meta.label) : '';
-    o.innerHTML = `<div class="gb-modal" style="min-width:500px;max-width:80vw;">
+    o.innerHTML = `<div class="gb-modal history-folder-files-modal" role="dialog" aria-modal="true" aria-labelledby="history-folder-files-title" style="width:min(500px, calc(100vw - 24px));max-width:90vw;">
       <header class="gb-modal-header">
-        <h3 class="gb-modal-title">フォルダバージョン: ${esc(versionName)}${label}</h3>
+        <h3 id="history-folder-files-title" class="gb-modal-title">フォルダバージョン: ${esc(versionName)}${label}</h3>
         <button class="gb-modal-close" ${_historyCloseAttrs('history-folder-files-close-icon')}>${lucide('x', 14)}</button>
       </header>
       <div class="gb-modal-body">
@@ -843,6 +843,7 @@ async function showFolderVersionFiles(folderPath, versionName) {
       </footer>
     </div>`;
     document.body.appendChild(o);
+    if (typeof window.GBModalShell?.enhanceAll === 'function') window.GBModalShell.enhanceAll();
   } catch (err) {
     hideLoading();
     showStatus('ファイル一覧の取得に失敗しました', true);

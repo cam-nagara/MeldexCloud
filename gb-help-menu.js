@@ -186,6 +186,8 @@ function showMeldexHelpMenu(event) {
   if (typeof window !== 'undefined') window.GBTooltip?.hide?.({ suppressUntilLeave: true });
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu meldex-help-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ヘルプ');
   menu.style.cssText = 'position:fixed;z-index:100002;min-width:260px;max-height:min(78vh, 560px);overflow:auto;';
   _meldexHelpItems().forEach(item => {
     if (item.type === 'separator') {
@@ -201,9 +203,11 @@ function showMeldexHelpMenu(event) {
       menu.appendChild(heading);
       return;
     }
-    const row = document.createElement('div');
-    row.className = 'tree-ctx-item';
-    row.style.cssText = 'padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;';
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'gb-context-menu-item tree-ctx-item';
+    row.setAttribute('role', 'menuitem');
+    row.style.cssText = 'width:100%;border:0;background:transparent;text-align:left;padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;';
     row.innerHTML = `<span style="width:16px;height:16px;display:inline-flex;">${lucide(item.icon, 15)}</span><span>${esc(item.label)}</span>`;
     row.addEventListener('click', () => {
       if (item.type === 'manual') _openMeldexHelpManual(item);
@@ -292,7 +296,7 @@ function showMeldexAboutDialog() {
       </div>
     </section>
     <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">閉じる</button>
+      <button type="button" data-action="this.closest('.modal-overlay').remove()">閉じる</button>
     </div>
   </div>`;
   document.body.appendChild(o);
@@ -308,7 +312,7 @@ async function showMeldexChangelogDialog() {
     <h3 style="display:flex;align-items:center;gap:8px;">${lucide('history',16)} 更新履歴</h3>
     <pre id="meldex-changelog-body" style="flex:1;overflow:auto;white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</pre>
     <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">閉じる</button>
+      <button type="button" data-action="this.closest('.modal-overlay').remove()">閉じる</button>
     </div>
   </div>`;
   document.body.appendChild(o);

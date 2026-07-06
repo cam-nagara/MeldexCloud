@@ -233,6 +233,64 @@ function doFileReplace(all) {
    ノート編集用 editable (#entity-freetext/#page-content/#dp-editable) は
    bindNoteEditorContextMenu 側のメニュー内「ルビを設定...」項目が担当する。
    ============================== */
+function _editorPointRect(x, y) {
+  const left = Number.isFinite(x) ? x : 0;
+  const top = Number.isFinite(y) ? y : 0;
+  return { left, right: left, top, bottom: top, width: 0, height: 0 };
+}
+
+function _editorEventAnchorRect(e, fallbackEl) {
+  const fallback = fallbackEl?.getBoundingClientRect?.();
+  const x = Number.isFinite(e?.clientX) && e.clientX > 0 ? e.clientX : (fallback?.left || 12);
+  const y = Number.isFinite(e?.clientY) && e.clientY > 0 ? e.clientY : (fallback?.top || 12);
+  return _editorPointRect(x, y);
+}
+
+function _positionEditorPopup(popup, anchorRect) {
+  if (!popup) return;
+  if (typeof positionPopup === 'function') {
+    positionPopup(popup, anchorRect);
+    return;
+  }
+  const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
+  popup.style.left = ((anchorRect?.left || 12) / z) + 'px';
+  popup.style.top = ((anchorRect?.bottom ?? anchorRect?.top ?? 12) / z) + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+}
+
+function _editorMenuSeparator() {
+  const sep = document.createElement('div');
+  sep.className = 'gb-context-menu-sep';
+  sep.setAttribute('role', 'separator');
+  return sep;
+}
+
+function _editorMenuButton(label, enabled, onClick) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'gb-context-menu-item';
+  button.setAttribute('role', 'menuitem');
+  button.textContent = label;
+  if (!enabled) {
+    button.classList.add('disabled');
+    button.disabled = true;
+    button.setAttribute('aria-disabled', 'true');
+  }
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (!enabled) return;
+    onClick?.(event, button);
+  });
+  return button;
+}
+
+function _closeEditorPopup(popup, cleanup, restoreFocusEl) {
+  if (!popup) return;
+  if (popup.isConnected) popup.remove();
+  cleanup?.();
+  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') restoreFocusEl.focus();
+}
+
 function _pageTitleRubyHandler(e) {
   const editable = e.target.closest('[contenteditable="true"]');
   if (!editable) return;
@@ -252,23 +310,33 @@ function _pageTitleRubyHandler(e) {
   const savedEditable = editable;
 
   const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
-  menu.style.cssText = `position:fixed;z-index:200;left:${e.clientX}px;top:${e.clientY}px;background:var(--ui-popup-bg, var(--bg2));border:1px solid var(--border);border-radius:4px;padding:8px;box-shadow:0 4px 12px rgba(0,0,0,0.5);font-size:13px;`;
+  menu.className = 'gb-context-menu note-ruby-popup page-title-ruby-popup';
+  menu.setAttribute('role', 'dialog');
+  menu.setAttribute('aria-label', 'ページタイトルにルビを設定');
   // mousedownでフォーカスを奪わない
-  menu.addEventListener('mousedown', (ev) => ev.preventDefault());
-  menu.innerHTML = `
-    <div style="margin-bottom:4px;color:var(--fg2);font-size:12px;">「${esc(selectedText.slice(0, 20))}」にルビを設定</div>
-    <div style="display:flex;gap:4px;">
-      <input type="text" id="ruby-input" placeholder="ルビを入力..." style="flex:1;padding:3px 6px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;outline:none;">
-      <button class="primary" style="padding:3px 8px;font-size:13px;" id="ruby-apply-btn">設定</button>
-    </div>`;
+  menu.addEventListener('mousedown', (ev) => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
+  const label = document.createElement('div');
+  label.className = 'note-ruby-popup-label';
+  label.textContent = `「${selectedText.slice(0, 20)}」にルビを設定`;
+  const row = document.createElement('div');
+  row.className = 'note-ruby-popup-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.id = 'ruby-input';
+  input.className = 'gb-input note-ruby-input';
+  input.placeholder = 'ルビを入力...';
+  input.setAttribute('aria-label', 'ページタイトルのルビ');
+  input.dataset.e2eId = 'page-title-ruby-input';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button';
+  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
+  applyButton.id = 'ruby-apply-btn';
+  applyButton.dataset.e2eId = 'page-title-ruby-apply';
+  applyButton.textContent = '設定';
+  row.append(input, applyButton);
+  menu.append(label, row);
   document.body.appendChild(menu);
-
-  { const rect = menu.getBoundingClientRect(); const z = _getZoom();
-  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 8) / z) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 8) / z) + 'px'; }
-
-  const input = document.getElementById('ruby-input');
+  _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
   // blurで再描画されないよう一時的に無効化
   const origBlur = savedEditable.onblur;
   savedEditable.onblur = null;
@@ -276,11 +344,19 @@ function _pageTitleRubyHandler(e) {
   // メニューが閉じたらblurを復元
   const restoreBlur = () => { savedEditable.onblur = origBlur; };
   window._rubyRestoreBlur = restoreBlur;
+  let outsideCloser = null;
+  let keyCloser = null;
+  const cleanupRubyPopup = () => {
+    if (outsideCloser) document.removeEventListener('pointerdown', outsideCloser, true);
+    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
+    outsideCloser = null;
+    keyCloser = null;
+    if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; }
+  };
 
   function doApply() {
     const ruby = input.value.trim();
-    menu.remove();
-    if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; }
+    _closeEditorPopup(menu, cleanupRubyPopup);
     if (!ruby) return;
 
     const path = savedEditable.dataset?.path || savedEditable.dataset?.entityPath;
@@ -357,19 +433,28 @@ function _pageTitleRubyHandler(e) {
     }).catch(() => {});
   }
 
-  document.getElementById('ruby-apply-btn').addEventListener('click', doApply);
+  applyButton.addEventListener('click', doApply);
   input.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); doApply(); }
-    if (ev.key === 'Escape') { menu.remove(); if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; } }
+    if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(menu, cleanupRubyPopup, savedEditable); }
+    ev.stopPropagation();
   });
 
-  setTimeout(() => document.addEventListener('pointerdown', function closer(ev) {
+  outsideCloser = function closer(ev) {
     if (!menu.contains(ev.target)) {
-      menu.remove();
-      if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; }
-      document.removeEventListener('pointerdown', closer);
+      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
     }
-  }), 0);
+  };
+  keyCloser = function onKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('pointerdown', outsideCloser, true);
+    document.addEventListener('keydown', keyCloser, true);
+  }, 0);
 }
 
 {
@@ -610,21 +695,40 @@ function showNoteRubyPopup(editable, range) {
   if (!text) return;
   const popup = document.createElement('div');
   popup.className = 'gb-context-menu note-ruby-popup';
-  popup.style.cssText = 'position:fixed;z-index:10000;min-width:240px;padding:8px 12px;';
-  popup.innerHTML = `
-    <div style="font-size:12px;margin-bottom:6px;">「${esc(text.slice(0, 20))}」にルビを設定</div>
-    <div style="display:flex;gap:4px;">
-      <input type="text" class="note-ruby-input" placeholder="ルビを入力..." style="flex:1;padding:3px 6px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;outline:none;">
-      <button type="button" class="primary note-ruby-ok" style="padding:3px 8px;font-size:12px;">設定</button>
-    </div>`;
+  popup.setAttribute('role', 'dialog');
+  popup.setAttribute('aria-label', 'ノート本文にルビを設定');
+  const label = document.createElement('div');
+  label.className = 'note-ruby-popup-label';
+  label.textContent = `「${text.slice(0, 20)}」にルビを設定`;
+  const row = document.createElement('div');
+  row.className = 'note-ruby-popup-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'gb-input note-ruby-input';
+  input.placeholder = 'ルビを入力...';
+  input.setAttribute('aria-label', 'ノート本文のルビ');
+  input.dataset.e2eId = 'note-ruby-input';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button';
+  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
+  applyButton.dataset.e2eId = 'note-ruby-apply';
+  applyButton.textContent = '設定';
+  row.append(input, applyButton);
+  popup.append(label, row);
   popup.addEventListener('mousedown', ev => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
   document.body.appendChild(popup);
-  positionPopup(popup, range.getBoundingClientRect());
-  const input = popup.querySelector('.note-ruby-input');
+  _positionEditorPopup(popup, range.getBoundingClientRect());
+  let closeHandler = null;
+  let keyHandler = null;
+  const cleanup = () => {
+    if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
+    if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
+    closeHandler = null;
+    keyHandler = null;
+  };
   const apply = () => {
     const ruby = input.value.trim();
-    popup.remove();
-    document.removeEventListener('pointerdown', closeHandler, true);
+    _closeEditorPopup(popup, cleanup);
     if (!ruby) return;
     editable.focus();
     const sel = window.getSelection();
@@ -656,16 +760,26 @@ function showNoteRubyPopup(editable, range) {
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     showStatus('ルビを設定しました');
   };
-  popup.querySelector('.note-ruby-ok').addEventListener('click', apply);
+  applyButton.addEventListener('click', apply);
   input.addEventListener('keydown', ev => {
     if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); popup.remove(); document.removeEventListener('pointerdown', closeHandler, true); editable.focus(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(popup, cleanup, editable); }
     ev.stopPropagation();
   });
-  function closeHandler(ev) {
-    if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('pointerdown', closeHandler, true); }
-  }
-  setTimeout(() => { document.addEventListener('pointerdown', closeHandler, true); input.focus(); }, 0);
+  closeHandler = function onPointerDown(ev) {
+    if (!popup.contains(ev.target)) _closeEditorPopup(popup, cleanup, editable);
+  };
+  keyHandler = function onKeyDown(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      _closeEditorPopup(popup, cleanup, editable);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('pointerdown', closeHandler, true);
+    document.addEventListener('keydown', keyHandler, true);
+    input.focus();
+  }, 0);
 }
 
 async function confirmNoteTableDelete(message) {
@@ -707,8 +821,10 @@ function _noteCtxMenuHandler(e) {
 
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ノート本文メニュー');
   // mousedownで選択が消えないようにpreventDefault
-  menu.addEventListener('mousedown', (ev) => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
+  menu.addEventListener('mousedown', (ev) => ev.preventDefault());
 
   // 選択範囲を復元してから execCommand を実行するヘルパー（書式ポップアップ用）
   const applyFormat = (cmd, value) => {
@@ -825,23 +941,30 @@ function _noteCtxMenuHandler(e) {
     );
   }
 
+  let menuPointerCloser = null;
+  let menuKeyCloser = null;
+  const closeNoteContextMenu = (restoreFocus = false) => {
+    if (menu.isConnected) menu.remove();
+    if (menuPointerCloser) document.removeEventListener('pointerdown', menuPointerCloser, true);
+    if (menuKeyCloser) document.removeEventListener('keydown', menuKeyCloser, true);
+    menuPointerCloser = null;
+    menuKeyCloser = null;
+    if (restoreFocus && editable.isConnected) editable.focus();
+  };
+
   items.forEach(item => {
-    if (item.type === 'sep') { const s = document.createElement('div'); s.className = 'gb-context-menu-sep'; menu.appendChild(s); return; }
+    if (item.type === 'sep') { menu.appendChild(_editorMenuSeparator()); return; }
     if (item.type === 'format') {
       // 「書式…」: クリックで統一書式ポップアップを開く
-      const el = document.createElement('div');
-      el.className = 'gb-context-menu-item';
-      el.textContent = item.label;
-      if (!item.enabled || typeof openFormatPopup !== 'function') el.classList.add('disabled');
-      el.addEventListener('click', () => {
+      const el = _editorMenuButton(item.label, item.enabled && typeof openFormatPopup === 'function', () => {
         if (!item.enabled || typeof openFormatPopup !== 'function') {
-          closeColHeaderMenu();
+          closeNoteContextMenu(true);
           return;
         }
         // メニューを閉じる前にアンカー位置を取得（閉じると el が DOM から消えて rect=(0,0,0,0) になる）
         const anchorRect = el.getBoundingClientRect();
         const virtualAnchor = { getBoundingClientRect: () => anchorRect };
-        closeColHeaderMenu();
+        closeNoteContextMenu(false);
         // 選択を復元しないと queryCommandState / queryCommandValue が誤った結果を返す
         editable.focus();
         if (savedRange) {
@@ -878,22 +1001,24 @@ function _noteCtxMenuHandler(e) {
       menu.appendChild(el);
       return;
     }
-    const el = document.createElement('div');
-    el.className = 'gb-context-menu-item';
-    el.textContent = item.label;
-    if (!item.enabled) el.classList.add('disabled');
-    el.addEventListener('click', () => { closeColHeaderMenu(); item.action(); });
+    const el = _editorMenuButton(item.label, item.enabled, () => { closeNoteContextMenu(false); item.action(); });
     menu.appendChild(el);
   });
 
-  { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
   document.body.appendChild(menu);
-  { const rect = menu.getBoundingClientRect(); const z = _getZoom();
-  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px'; }
+  _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
   setTimeout(() => {
-    const closer = (ev) => { if (!menu.contains(ev.target)) { closeColHeaderMenu(); document.removeEventListener('pointerdown', closer); } };
-    document.addEventListener('pointerdown', closer);
+    menuPointerCloser = (ev) => {
+      if (!menu.contains(ev.target)) closeNoteContextMenu(true);
+    };
+    menuKeyCloser = (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closeNoteContextMenu(true);
+      }
+    };
+    document.addEventListener('pointerdown', menuPointerCloser, true);
+    document.addEventListener('keydown', menuKeyCloser, true);
   }, 0);
 }
 

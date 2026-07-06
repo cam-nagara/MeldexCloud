@@ -50,30 +50,41 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
   el.appendChild(_buildDpHeader(isEdit ? 'イベント編集' : '新規イベント', pos));
 
   const body = document.createElement('div');
-  body.style.cssText = 'flex:1;overflow-y:auto;padding:8px;';
+  body.className = 'dp-event-form';
   body.innerHTML = `
-    <div class="dp-field"><label>タイトル</label><input id="dp-cal-title" type="text" value="${esc(ev?.title || '')}" placeholder="イベント名" style="width:100%;padding:4px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
-    <div class="dp-field"><label><input id="dp-cal-allday" type="checkbox" ${isAllDay?'checked':''} data-onchange="document.getElementById('dp-cal-start').disabled=this.checked;document.getElementById('dp-cal-end').disabled=this.checked;document.getElementById('dp-cal-start').style.opacity=this.checked?'0.4':'1';document.getElementById('dp-cal-end').style.opacity=this.checked?'0.4':'1';"> 終日</label></div>
-    <div class="dp-field"><label>開始</label><input id="dp-cal-start" type="datetime-local" value="${startVal}" ${isAllDay?'disabled':''} style="width:100%;padding:4px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;${isAllDay?'opacity:0.4;':''}"></div>
-    <div class="dp-field"><label>終了</label><input id="dp-cal-end" type="datetime-local" value="${endVal}" ${isAllDay?'disabled':''} style="width:100%;padding:4px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;${isAllDay?'opacity:0.4;':''}"></div>
-    ${calOpts ? `<div class="dp-field"><label>カレンダー</label><select id="dp-cal-calendar" class="gb-select" style="width:100%;">${calOpts}</select></div>` : ''}
-    <div class="dp-field"><label>色</label><button type="button" id="dp-cal-color" class="gb-color-swatch gb-color-swatch--field" data-color="${esc(ev?.color || '#569cd6')}" title="イベント色"></button></div>
-    <div class="dp-field"><label>場所</label><input id="dp-cal-location" type="text" value="${esc(ev?.location || '')}" style="width:100%;padding:4px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
-    <div class="dp-field"><label>URL</label><input id="dp-cal-url" type="url" value="${esc(ev?.url || '')}" placeholder="https://..." style="width:100%;padding:4px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;"></div>
-    <div class="dp-field"><label>説明</label><textarea id="dp-cal-desc" rows="3" style="width:100%;padding:4px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;">${esc(ev?.description || '')}</textarea></div>
-    <div style="display:flex;gap:8px;margin-top:12px;">
-      ${isEdit ? `<button data-action="_dpCalDelete('${esc(ev.id)}')" style="padding:4px 12px;border:1px solid var(--red);border-radius:3px;background:var(--bg3);color:var(--red);cursor:pointer;font-size:12px;">削除</button>` : ''}
-      ${isEdit ? `<button id="dp-cal-comment-list" style="padding:4px 12px;border:1px solid var(--border);border-radius:3px;background:var(--bg3);color:var(--fg);cursor:pointer;font-size:12px;">コメント一覧</button>` : ''}
-      ${isEdit ? `<button id="dp-cal-add-comment" style="padding:4px 12px;border:1px solid var(--border);border-radius:3px;background:var(--bg3);color:var(--fg);cursor:pointer;font-size:12px;">コメントを追加</button>` : ''}
-      <span style="flex:1;"></span>
-      <button data-action="_dpCalSave('${esc(isEdit ? ev.id : '')}')" style="padding:4px 12px;border:none;border-radius:3px;background:var(--accent);color:var(--ui-fg-strong);cursor:pointer;font-size:12px;">${isEdit ? '更新' : '作成'}</button>
+    <div class="dp-field"><label for="dp-cal-title">タイトル</label><input id="dp-cal-title" class="gb-input" data-e2e-id="dp-cal-title" type="text" value="${esc(ev?.title || '')}" placeholder="イベント名"></div>
+    <div class="dp-field"><label class="gb-check dp-event-check" for="dp-cal-allday"><input id="dp-cal-allday" class="gb-checkbox" data-e2e-id="dp-cal-allday" type="checkbox" ${isAllDay?'checked':''}><span>終日</span></label></div>
+    <div class="dp-field"><label for="dp-cal-start">開始</label><input id="dp-cal-start" class="gb-input" data-e2e-id="dp-cal-start" type="datetime-local" value="${startVal}" ${isAllDay?'disabled':''}></div>
+    <div class="dp-field"><label for="dp-cal-end">終了</label><input id="dp-cal-end" class="gb-input" data-e2e-id="dp-cal-end" type="datetime-local" value="${endVal}" ${isAllDay?'disabled':''}></div>
+    ${calOpts ? `<div class="dp-field"><label for="dp-cal-calendar">カレンダー</label><select id="dp-cal-calendar" class="gb-select" data-e2e-id="dp-cal-calendar">${calOpts}</select></div>` : ''}
+    <div class="dp-field"><span class="dp-field-label">色</span><button type="button" id="dp-cal-color" class="gb-color-swatch gb-color-swatch--field" data-e2e-id="dp-cal-color" data-color="${esc(ev?.color || '#569cd6')}" title="イベント色" aria-label="イベント色"></button></div>
+    <div class="dp-field"><label for="dp-cal-location">場所</label><input id="dp-cal-location" class="gb-input" data-e2e-id="dp-cal-location" type="text" value="${esc(ev?.location || '')}"></div>
+    <div class="dp-field"><label for="dp-cal-url">URL</label><input id="dp-cal-url" class="gb-input" data-e2e-id="dp-cal-url" type="url" value="${esc(ev?.url || '')}" placeholder="https://..."></div>
+    <div class="dp-field"><label for="dp-cal-desc">説明</label><textarea id="dp-cal-desc" class="gb-textarea gb-textarea-sm" data-e2e-id="dp-cal-desc" rows="3">${esc(ev?.description || '')}</textarea></div>
+    <div class="dp-cal-actions">
+      ${isEdit ? `<button type="button" id="dp-cal-delete" class="gb-btn gb-btn-sm gb-btn-danger" data-e2e-id="dp-cal-delete">削除</button>` : ''}
+      ${isEdit ? `<button type="button" id="dp-cal-comment-list" class="gb-btn gb-btn-sm" data-e2e-id="dp-cal-comment-list">コメント一覧</button>` : ''}
+      ${isEdit ? `<button type="button" id="dp-cal-add-comment" class="gb-btn gb-btn-sm" data-e2e-id="dp-cal-add-comment">コメントを追加</button>` : ''}
+      <span class="dp-cal-spacer"></span>
+      <button type="button" id="dp-cal-save" class="gb-btn gb-btn-sm gb-btn-primary" data-e2e-id="dp-cal-save">${isEdit ? '更新' : '作成'}</button>
     </div>
   `;
   el.appendChild(body);
 
-  // スタイル追加
-  body.querySelectorAll('.dp-field').forEach(f => { f.style.marginBottom = '8px'; });
-  body.querySelectorAll('.dp-field > label').forEach(l => { l.style.cssText = 'display:block;font-size:12px;color:var(--fg2);margin-bottom:2px;'; });
+  const allDay = body.querySelector('#dp-cal-allday');
+  const startInput = body.querySelector('#dp-cal-start');
+  const endInput = body.querySelector('#dp-cal-end');
+  const applyAllDayState = () => {
+    const checked = !!allDay?.checked;
+    [startInput, endInput].forEach(input => {
+      if (!input) return;
+      input.disabled = checked;
+      input.classList.toggle('is-disabled', checked);
+    });
+  };
+  allDay?.addEventListener('change', applyAllDayState);
+  applyAllDayState();
+
   const colorSwatch = body.querySelector('#dp-cal-color');
   bindColorSwatch(colorSwatch, () => getColorSwatchValue(colorSwatch, ev?.color || '#569cd6'), (nextColor) => {
     setColorSwatchValue(colorSwatch, nextColor || '#569cd6');
@@ -81,7 +92,7 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
   // Audit-P1 H-6: イベント編集時のコメント追加（target_kind='calendar_event'）。
   // target_ref = { file: calendar_id || '_calendar', eventId: ev.id } で管理。
   if (isEdit && ev?.id) {
-    const addBtn = document.getElementById('dp-cal-add-comment');
+    const addBtn = body.querySelector('#dp-cal-add-comment');
     if (addBtn) {
       addBtn.addEventListener('click', () => {
         if (typeof addCommentHere !== 'function') return;
@@ -94,7 +105,7 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
         }, { anchorEl: addBtn });
       });
     }
-    const listBtn = document.getElementById('dp-cal-comment-list');
+    const listBtn = body.querySelector('#dp-cal-comment-list');
     if (listBtn) {
       listBtn.addEventListener('click', () => {
         const calId = (ev.calendar_id || '_calendar');
@@ -103,8 +114,10 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
         }
       });
     }
+    body.querySelector('#dp-cal-delete')?.addEventListener('click', () => _dpCalDelete(ev.id));
   }
-  setTimeout(() => document.getElementById('dp-cal-title')?.focus(), 50);
+  body.querySelector('#dp-cal-save')?.addEventListener('click', () => _dpCalSave(isEdit ? ev.id : ''));
+  setTimeout(() => body.querySelector('#dp-cal-title')?.focus(), 50);
 }
 
 async function _dpCalSave(editId) {
@@ -269,9 +282,10 @@ async function openEntityInSplit(entityPath, entityName) {
 // 独立詳細パネル用ヘッダー生成
 function _buildDpHeader(title, pos) {
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;';
-  header.innerHTML = `<span id="split-right-title" style="font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(title)}</span>
-    <button data-action="_hideDetailPanel()" style="font-size:12px;padding:1px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">${lucide('x', 12)}</button>`;
+  header.className = 'dp-detail-header';
+  header.innerHTML = `<span id="split-right-title" class="dp-detail-title">${esc(title)}</span>
+    <button type="button" class="gb-btn gb-btn-xs gb-btn-icon gb-btn-quiet" data-e2e-id="detail-panel-close" aria-label="詳細パネルを閉じる" title="閉じる">${lucide('x', 12)}</button>`;
+  header.querySelector('[data-e2e-id="detail-panel-close"]')?.addEventListener('click', () => _hideDetailPanel());
   return header;
 }
 

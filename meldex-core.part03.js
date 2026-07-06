@@ -313,36 +313,222 @@
   return { svg, layer, ann: _ann, toggle, loadAnnotations, setTool, setColor, setOpacity, destroy };
 }
 
+const STANDALONE_MARKUP_TOOLBAR_CSS = `
+.sa-markup-toolbar {
+  position: fixed;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--ui-popup-bg, var(--bg2, #252525));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.sa-markup-toolbar .sa-tb-btn,
+.sa-markup-toolbar .sa-markup-color-btn,
+.sa-markup-toolbar .sa-markup-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg, #d4d4d4);
+  cursor: pointer;
+}
+.sa-markup-toolbar .sa-tb-btn:hover,
+.sa-markup-toolbar .sa-markup-color-btn:hover,
+.sa-markup-toolbar .sa-markup-close-btn:hover {
+  background: var(--bg3, #2d2d2d);
+  border-color: var(--accent, #569cd6);
+}
+.sa-markup-toolbar .sa-tb-btn.active,
+.sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
+  background: var(--accent, #569cd6);
+  border-color: var(--accent, #569cd6);
+  color: #fff;
+}
+.sa-markup-toolbar .sa-tb-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.sa-markup-toolbar .sa-markup-close-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.sa-markup-color-swatch {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border, #333);
+  border-radius: 999px;
+  pointer-events: none;
+}
+.sa-markup-palette {
+  position: fixed;
+  z-index: 56;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 188px;
+  padding: 6px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--ui-popup-bg, var(--bg2, #252525));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.sa-markup-color-dot {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  cursor: pointer;
+}
+@media (max-width: 640px) {
+  .sa-markup-toolbar {
+    left: 8px;
+    right: 8px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    transform: none;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: calc(100vw - 16px);
+    padding: 6px;
+  }
+  .sa-markup-toolbar .sa-tb-btn,
+  .sa-markup-toolbar .sa-markup-color-btn,
+  .sa-markup-toolbar .sa-markup-close-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .sa-markup-toolbar .sa-tb-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  .sa-markup-toolbar .sa-markup-close-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+  .sa-markup-palette {
+    width: min(260px, calc(100vw - 16px));
+    gap: 6px;
+    padding: 8px;
+  }
+  .sa-markup-color-dot {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}`;
+
+function _ensureStandaloneMarkupToolbarStyles() {
+  if (document.getElementById('meldex-standalone-markup-toolbar-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'meldex-standalone-markup-toolbar-styles';
+  style.textContent = STANDALONE_MARKUP_TOOLBAR_CSS;
+  document.head.appendChild(style);
+}
+
 function createMarkupToolbar(markup, parentEl) {
-  let tb = parentEl.querySelector('.sa-toolbar');
+  _ensureStandaloneMarkupToolbarStyles();
+  let tb = parentEl.querySelector('.sa-markup-toolbar');
   if (tb) return tb;
   tb = document.createElement('div');
-  tb.className = 'sa-toolbar';
-  tb.style.cssText = 'position:fixed;z-index:55;background:var(--ui-popup-bg, var(--bg2,#252525));border:1px solid var(--border,#333);border-radius:8px;padding:4px 8px;display:flex;gap:4px;align-items:center;box-shadow:0 4px 12px rgba(0,0,0,0.4);bottom:60px;left:50%;transform:translateX(-50%);';
+  tb.className = 'sa-toolbar sa-markup-toolbar';
+  tb.dataset.markupToolbar = '1';
+  tb.setAttribute('role', 'toolbar');
+  tb.setAttribute('aria-label', '注釈ツールバー');
+  let palette = null;
+  let closePaletteTimer = null;
+  let paletteOutsideHandler = null;
+  let paletteKeyHandler = null;
+  const closePalette = () => {
+    if (closePaletteTimer) clearTimeout(closePaletteTimer);
+    closePaletteTimer = null;
+    if (paletteOutsideHandler) document.removeEventListener('pointerdown', paletteOutsideHandler, true);
+    if (paletteKeyHandler) document.removeEventListener('keydown', paletteKeyHandler, true);
+    paletteOutsideHandler = null;
+    paletteKeyHandler = null;
+    palette?.remove();
+    palette = null;
+    colorBtn?.setAttribute?.('aria-expanded', 'false');
+  };
+  const updateToolButtons = (selectedBtn) => {
+    tb.querySelectorAll('.sa-tb-btn').forEach(b => {
+      const active = b === selectedBtn;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  };
   [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'marker',icon:'highlighter',title:'マーカー' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
     const btn = document.createElement('button');
+    btn.type = 'button';
     btn.className = 'sa-tb-btn' + (t.name === 'pen' ? ' active' : '');
-    btn.dataset.tool = t.name; btn.title = t.title; btn.innerHTML = lucide(t.icon, 18);
-    btn.style.cssText = 'background:var(--bg3,#2d2d2d);border:1px solid var(--border,#333);border-radius:4px;cursor:pointer;padding:4px 6px;color:var(--fg,#d4d4d4);display:flex;align-items:center;';
-    btn.onclick = () => { markup.setTool(t.name); tb.querySelectorAll('.sa-tb-btn').forEach(b => { b.style.background = b === btn ? 'var(--accent,#569cd6)' : 'var(--bg3,#2d2d2d)'; b.style.color = b === btn ? '#fff' : 'var(--fg,#d4d4d4)'; }); };
+    btn.dataset.tool = t.name; btn.title = t.title; btn.setAttribute('aria-label', t.title); btn.setAttribute('aria-pressed', t.name === 'pen' ? 'true' : 'false'); btn.innerHTML = lucide(t.icon, 18);
+    btn.onclick = () => { markup.setTool(t.name); updateToolButtons(btn); };
     tb.appendChild(btn);
   });
-  const colorBtn = document.createElement('div');
-  colorBtn.style.cssText = 'width:22px;height:22px;border-radius:50%;border:2px solid var(--border,#333);cursor:pointer;background:' + (markup.ann.color || PALETTE_COLORS[0]) + ';';
+  const colorBtn = document.createElement('button');
+  colorBtn.type = 'button';
+  colorBtn.className = 'sa-markup-color-btn';
   colorBtn.title = '色';
+  colorBtn.setAttribute('aria-label', '注釈色');
+  colorBtn.setAttribute('aria-haspopup', 'dialog');
+  colorBtn.setAttribute('aria-expanded', 'false');
+  const colorSwatch = document.createElement('span');
+  colorSwatch.className = 'sa-markup-color-swatch';
+  colorSwatch.style.background = markup.ann.color || PALETTE_COLORS[0];
+  colorBtn.appendChild(colorSwatch);
   colorBtn.onclick = () => {
-    let palette = tb.querySelector('.sa-palette');
-    if (palette) { palette.remove(); return; }
-    palette = document.createElement('div'); palette.className = 'sa-palette';
-    palette.style.cssText = 'position:absolute;bottom:44px;left:0;background:var(--bg2,#252525);border:1px solid var(--border,#333);border-radius:6px;padding:6px;display:flex;flex-wrap:wrap;gap:3px;width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
-    PALETTE_COLORS.forEach(c => { const dot = document.createElement('div'); dot.style.cssText = 'width:18px;height:18px;border-radius:50%;cursor:pointer;background:' + c + ';border:1px solid rgba(255,255,255,0.15);'; dot.onclick = () => { markup.setColor(c); colorBtn.style.background = c; palette.remove(); }; palette.appendChild(dot); });
-    tb.appendChild(palette);
+    if (palette) { closePalette(); return; }
+    palette = document.createElement('div');
+    palette.className = 'sa-palette sa-markup-palette';
+    palette.setAttribute('role', 'dialog');
+    palette.setAttribute('aria-label', '注釈色');
+    PALETTE_COLORS.forEach(c => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'sa-markup-color-dot';
+      dot.title = c;
+      dot.setAttribute('aria-label', `注釈色 ${c}`);
+      dot.style.background = c;
+      dot.onclick = () => { markup.setColor(c); colorSwatch.style.background = c; closePalette(); };
+      palette.appendChild(dot);
+    });
+    document.body.appendChild(palette);
+    colorBtn.setAttribute('aria-expanded', 'true');
+    positionPopup(palette, colorBtn.getBoundingClientRect(), { prefer: 'right', gap: 8, avoidRect: tb.getBoundingClientRect() });
+    paletteKeyHandler = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); closePalette(); colorBtn.focus(); } };
+    paletteOutsideHandler = (ev) => { if (!palette?.contains(ev.target) && !colorBtn.contains(ev.target)) closePalette(); };
+    closePaletteTimer = setTimeout(() => {
+      document.addEventListener('pointerdown', paletteOutsideHandler, true);
+      document.addEventListener('keydown', paletteKeyHandler, true);
+    }, 0);
   };
   tb.appendChild(colorBtn);
   const closeBtn = document.createElement('button');
-  closeBtn.innerHTML = lucide('x', 14); closeBtn.title = '閉じる';
-  closeBtn.style.cssText = 'background:none;border:none;color:var(--fg2,#969696);cursor:pointer;font-size:14px;padding:2px 4px;';
-  closeBtn.onclick = () => { markup.toggle(false); tb.style.display = 'none'; document.getElementById('btn-markup')?.classList.remove('active'); };
+  closeBtn.type = 'button';
+  closeBtn.className = 'sa-markup-close-btn';
+  closeBtn.innerHTML = lucide('x', 14); closeBtn.title = '閉じる'; closeBtn.setAttribute('aria-label', '閉じる');
+  closeBtn.onclick = () => { closePalette(); markup.toggle(false); tb.style.display = 'none'; const trigger = document.getElementById('btn-markup'); trigger?.classList.remove('active'); trigger?.setAttribute?.('aria-pressed', 'false'); };
   tb.appendChild(closeBtn);
   parentEl.appendChild(tb);
   return tb;
@@ -513,8 +699,8 @@ function positionPopup(popup, anchorRect, options = {}) {
 //   持つ合成オブジェクト。既存の contextmenu ハンドラにそのまま渡せる。
 // ============================================================
 function addLongPressHandler(el, handler, opts = {}) {
-  const DURATION = opts.duration ?? 500;
-  const MOVE_THRESHOLD = opts.moveThreshold ?? 10;
+  const DURATION = opts.duration ?? opts.delayMs ?? 500;
+  const MOVE_THRESHOLD = opts.moveThreshold ?? opts.moveTolerance ?? 10;
   let timer = null;
   let startX = 0, startY = 0;
   let fired = false;
@@ -585,21 +771,93 @@ document.addEventListener('contextmenu', (e) => {
 // ============================================================
 // 確認ダイアログ（モーダル）
 // ============================================================
+let _showConfirmDialogSeq = 0;
 function showConfirmDialog(message, onOk, onCancel) {
+  const focusReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const dialogId = 'show-confirm-dialog-' + (++_showConfirmDialogSeq);
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:320px;max-width:480px;">
-    <div class="modal-body" style="padding:16px 20px;font-size:13px;white-space:pre-wrap;color:var(--fg);">${typeof esc === 'function' ? esc(message) : message}</div>
-    <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
-      <button type="button" class="cancel-btn">キャンセル</button>
-      <button type="button" class="primary ok-btn">OK</button>
-    </div>
-  </div>`;
-  overlay.querySelector('.ok-btn').addEventListener('click', () => { overlay.remove(); if (onOk) onOk(); });
-  overlay.querySelector('.cancel-btn').addEventListener('click', () => { overlay.remove(); if (onCancel) onCancel(); });
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); if (onCancel) onCancel(); } });
+  overlay.dataset.e2eId = 'show-confirm-dialog-overlay';
+  overlay.dataset.confirmDialog = '1';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal show-confirm-dialog';
+  modal.dataset.e2eId = 'show-confirm-dialog';
+  modal.setAttribute('role', 'alertdialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', '確認');
+  modal.setAttribute('aria-describedby', dialogId + '-body');
+  modal.tabIndex = -1;
+
+  const body = document.createElement('div');
+  body.id = dialogId + '-body';
+  body.className = 'modal-body show-confirm-dialog-body';
+  body.dataset.e2eId = 'show-confirm-dialog-body';
+  body.textContent = String(message ?? '');
+
+  const buttonRow = document.createElement('div');
+  buttonRow.className = 'btn-row show-confirm-dialog-actions';
+  buttonRow.dataset.e2eId = 'show-confirm-dialog-actions';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'cancel-btn';
+  cancelBtn.dataset.e2eId = 'show-confirm-dialog-cancel';
+  cancelBtn.textContent = 'キャンセル';
+
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.className = 'primary ok-btn';
+  okBtn.dataset.e2eId = 'show-confirm-dialog-ok';
+  okBtn.textContent = 'OK';
+
+  buttonRow.append(cancelBtn, okBtn);
+  modal.append(body, buttonRow);
+  overlay.appendChild(modal);
+
+  let closed = false;
+  const restoreFocus = () => {
+    if (focusReturnTarget?.isConnected && typeof focusReturnTarget.focus === 'function') {
+      try { focusReturnTarget.focus({ preventScroll: true }); } catch (_) { focusReturnTarget.focus(); }
+    }
+  };
+  const queueFocusRestore = () => {
+    setTimeout(() => {
+      const active = document.activeElement;
+      if (!active || !active.isConnected || active === document.body || active === document.documentElement || active === focusReturnTarget) {
+        restoreFocus();
+      }
+    }, 0);
+  };
+  const close = (confirmed) => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeyDown);
+    overlay.remove();
+    restoreFocus();
+    queueFocusRestore();
+    if (confirmed) {
+      if (onOk) onOk();
+    } else if (onCancel) {
+      onCancel();
+    }
+  };
+  function onKeyDown(e) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    close(false);
+  }
+
+  okBtn.addEventListener('click', () => close(true));
+  cancelBtn.addEventListener('click', () => close(false));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+  document.addEventListener('keydown', onKeyDown);
   document.body.appendChild(overlay);
-  overlay.querySelector('.ok-btn').focus();
+  window.GBModalShell?.enhanceOverlay?.(overlay);
+  setTimeout(() => {
+    try { okBtn.focus({ preventScroll: true }); } catch (_) { okBtn.focus(); }
+  }, 0);
+  return overlay;
 }
 
 // ============================================================
@@ -609,11 +867,17 @@ function showConfirmDialog(message, onOk, onCancel) {
 // その外をクリックすると、最初のクリックがフォーカス解除に消費され、
 // ターゲットのクリックハンドラが動作しない。
 // capture phaseでblurを先に実行することで、1回のクリックで操作可能にする。
-document.addEventListener('pointerdown', (e) => {
-  const focused = document.activeElement;
-  if (focused && focused.contentEditable === 'true' && !focused.contains(e.target)) {
-    focused.blur();
+function _focusedContentEditableHost(active = document.activeElement) {
+  if (!active || active === document.body || active === document.documentElement) return null;
+  if (active.contentEditable === 'true' || active.contentEditable === 'plaintext-only' || active.isContentEditable) {
+    return active.closest?.('[contenteditable="true"], [contenteditable="plaintext-only"], [contenteditable]:not([contenteditable="false"])') || active;
   }
+  return null;
+}
+
+document.addEventListener('pointerdown', (e) => {
+  const focused = _focusedContentEditableHost();
+  if (focused && !focused.contains(e.target)) focused.blur();
 }, true);
 
 // Export for ES module usage (optional)

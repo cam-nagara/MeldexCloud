@@ -4,6 +4,8 @@
 
 let _folderMembershipCache = new Map();
 let _folderMembershipLoading = new Set();
+let _folderTagCache = new Map();
+let _folderTagLoading = new Set();
 let _folderRenderSeq = 0;
 const FOLDER_PANEL_RENDER_CHUNK_SIZE = 80;
 const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
@@ -144,6 +146,116 @@ function _folderHasActiveFolderFilter(cfg) {
   return _folderFilterArray(cfg?.filterFolders).length > 0;
 }
 
+function _folderTagKey(path) {
+  return _folderMembershipKey(path);
+}
+
+function _folderNormalizeTags(rows) {
+  const source = Array.isArray(rows) ? rows : (Array.isArray(rows?.tags) ? rows.tags : []);
+  return source.map(row => {
+    if (typeof row === 'string') return { id: '', name: String(row || '') };
+    return {
+      id: String(row?.id || ''),
+      name: String(row?.name || ''),
+      color: String(row?.color || ''),
+      group_id: row?.group_id || null,
+    };
+  }).filter(row => row.id || row.name);
+}
+
+function _folderStoreTagsForPath(path, rows) {
+  const key = _folderTagKey(path);
+  if (!key) return [];
+  const normalized = _folderNormalizeTags(rows);
+  _folderTagCache.set(key, normalized);
+  (_folderItems || []).forEach(item => {
+    if (_folderTagKey(item?.path) === key) item._folderTags = normalized;
+  });
+  return normalized;
+}
+
+function _folderInvalidateTagsForPath(path) {
+  const key = _folderTagKey(path);
+  if (!key) return;
+  _folderTagCache.delete(key);
+  (_folderItems || []).forEach(item => {
+    if (_folderTagKey(item?.path) === key) delete item._folderTags;
+  });
+}
+
+function _folderItemTags(item) {
+  const key = _folderTagKey(item?.path);
+  if (!key) return [];
+  if (Array.isArray(item?._folderTags)) return item._folderTags;
+  if (_folderTagCache.has(key)) {
+    item._folderTags = _folderTagCache.get(key);
+    return item._folderTags;
+  }
+  return [];
+}
+
+function _folderTagsAreLoading(items) {
+  return (items || []).some(item => _folderTagLoading.has(_folderTagKey(item?.path)));
+}
+
+function _folderWaitForTagLoads(items) {
+  return new Promise(resolve => {
+    let ticks = 0;
+    const check = () => {
+      if (!_folderTagsAreLoading(items) || ticks >= 200) {
+        resolve(true);
+        return;
+      }
+      ticks += 1;
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
+function _folderHasActiveTagFilter(cfg) {
+  return _folderFilterArray(cfg?.filterTags).length > 0;
+}
+
+function _folderEnsureTags(items, options = {}) {
+  const currentPath = _folderPath;
+  const targets = [];
+  const seen = new Set();
+  (items || []).forEach(item => {
+    const key = _folderTagKey(item?.path);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    if (_folderTagCache.has(key)) {
+      item._folderTags = _folderTagCache.get(key);
+      return;
+    }
+    if (!_folderTagLoading.has(key)) targets.push({ key, path: item.path });
+  });
+  if (targets.length === 0) {
+    return _folderTagsAreLoading(items) ? _folderWaitForTagLoads(items) : Promise.resolve(false);
+  }
+  targets.forEach(target => _folderTagLoading.add(target.key));
+  return (async () => {
+    let changed = false;
+    for (let i = 0; i < targets.length; i += 8) {
+      const batch = targets.slice(i, i + 8);
+      await Promise.all(batch.map(async target => {
+        try {
+          const data = await apiFetch('/global-tags/target?path=' + encodeURIComponent(target.path), { silentError: true });
+          _folderStoreTagsForPath(target.path, data?.tags || []);
+          changed = true;
+        } catch {
+          _folderTagCache.set(target.key, []);
+        } finally {
+          _folderTagLoading.delete(target.key);
+        }
+      }));
+    }
+    if (changed && options.rerender && _folderPath === currentPath) renderFolderGrid();
+    return changed;
+  })();
+}
+
 function _folderEnsureMemberships(items, options = {}) {
   const currentPath = _folderPath;
   const targets = [];
@@ -190,6 +302,31 @@ function _folderFilterFolderKeys(cfg) {
 function _folderMatchesFolderFilter(item, selectedFolders) {
   if (!selectedFolders || selectedFolders.size === 0) return true;
   return _folderItemMemberships(item).some(row => selectedFolders.has(_folderMembershipKey(row.folder)));
+}
+
+function _folderFilterTagKeys(cfg) {
+  return _folderFilterArray(cfg?.filterTags).map(value => String(value || '').toLowerCase()).filter(Boolean);
+}
+
+function _folderMatchesTagFilter(item, selectedTags) {
+  if (!selectedTags || selectedTags.size === 0) return true;
+  return _folderItemTags(item).some(tag => {
+    const id = String(tag.id || '').toLowerCase();
+    const name = String(tag.name || '').toLowerCase();
+    return selectedTags.has(id) || selectedTags.has(name);
+  });
+}
+
+function _folderTagLabel(value) {
+  const key = String(value || '').toLowerCase();
+  for (const item of _folderItems || []) {
+    for (const tag of _folderItemTags(item)) {
+      if (String(tag.id || '').toLowerCase() === key || String(tag.name || '').toLowerCase() === key) {
+        return tag.name || value;
+      }
+    }
+  }
+  return value;
 }
 
 function _folderMembershipFolderLabel(folder) {

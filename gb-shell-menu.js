@@ -6,10 +6,116 @@
 const _shellVerbCache = {}; // path key -> [{name, raw}]
 const _HIDDEN_VERBS_KEY = 'gb:hidden-shell-verbs';
 
+function _shellVerbCacheKey(path) {
+  return String(path || '').replace(/[\\/]+/g, '/').toLowerCase();
+}
+
+function _shellMenuEscHtml(value) {
+  if (typeof esc === 'function') return esc(value);
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+function _shellMenuIconHtml(icon, size = 14) {
+  if (!icon || typeof lucide !== 'function') return '';
+  return '<span class="menu-icon">' + lucide(icon, size) + '</span>';
+}
+
+function _shellMenuAppendItem(menu, label, action, options = {}) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'gb-context-menu-item' + (options.className ? ' ' + options.className : '');
+  item.setAttribute('role', options.role || 'menuitem');
+  if (options.disabled) {
+    item.disabled = true;
+    item.classList.add('disabled');
+  }
+  if (options.html != null) {
+    item.innerHTML = options.html;
+  } else {
+    item.innerHTML = _shellMenuIconHtml(options.icon) + '<span>' + _shellMenuEscHtml(label) + '</span>';
+  }
+  if (options.hasSubmenu) {
+    item.classList.add('has-submenu');
+    item.setAttribute('aria-haspopup', 'menu');
+    item.setAttribute('aria-expanded', 'false');
+  }
+  item.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (item.disabled) return;
+    if (typeof action === 'function') action(event);
+  });
+  menu.appendChild(item);
+  return item;
+}
+
+function _shellMenuAppendSeparator(menu) {
+  const sep = document.createElement('div');
+  sep.className = 'gb-context-menu-sep cm-sep';
+  sep.setAttribute('role', 'separator');
+  menu.appendChild(sep);
+  return sep;
+}
+
+function _shellMenuCreatePanel(label) {
+  const panel = document.createElement('div');
+  panel.className = 'gb-context-menu';
+  panel.setAttribute('role', 'menu');
+  panel.setAttribute('aria-label', label);
+  panel.style.cssText = 'display:none;min-width:160px;';
+  return panel;
+}
+
+function _shellMenuAppendSubmenu(menu, label, icon, panel) {
+  const trigger = _shellMenuAppendItem(menu, label, null, { icon, hasSubmenu: true, className: 'tree-ctx-item' });
+  const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  trigger.addEventListener('mouseenter', () => setExpanded(true));
+  trigger.addEventListener('mouseleave', () => setTimeout(() => {
+    if (panel.style.display === 'none') setExpanded(false);
+  }, 220));
+  trigger.addEventListener('click', () => {
+    trigger.dispatchEvent(new MouseEvent('mouseenter', { cancelable: true }));
+    setExpanded(true);
+  });
+  panel.addEventListener('mouseenter', () => setExpanded(true));
+  panel.addEventListener('mouseleave', () => setExpanded(false));
+  attachHoverSubmenu(trigger, panel);
+  return trigger;
+}
+
+function _shellVerbText(verb) {
+  return String((verb?.name || '') + ' ' + (verb?.raw || ''))
+    .replace(/[&…]/g, '')
+    .toLowerCase();
+}
+
+function _isEditMutationShellVerb(verb) {
+  const text = _shellVerbText(verb);
+  const japaneseTokens = [
+    '削除',
+    '完全に削除',
+    'ゴミ箱',
+    'ごみ箱',
+    '名前の変更',
+    '名前を変更',
+    'リネーム',
+    '切り取り',
+    '切り取る',
+    '貼り付け',
+    '貼付',
+    '移動',
+    '複製',
+  ];
+  return japaneseTokens.some(token => text.includes(token))
+    || /\b(delete|remove|trash|rename|cut|paste|move|duplicate)\b/.test(text);
+}
+
 // --- データ取得 ---
 
 async function fetchShellVerbs(path) {
-  const cacheKey = String(path || '').replace(/[\\/]+/g, '/').toLowerCase();
+  const cacheKey = _shellVerbCacheKey(path);
   if (_shellVerbCache[cacheKey]) return _shellVerbCache[cacheKey];
   try {
     const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
@@ -50,8 +156,9 @@ function toggleHiddenShellVerb(name) {
 
 // --- メニューへの追加 ---
 
-async function appendShellVerbsToMenu(menu, path) {
+async function appendShellVerbsToMenu(menu, path, options = {}) {
   if (!path) return;
+  const editingLocked = !!options.editingLocked;
 
   function reclampMenu() {
     if (!document.body.contains(menu)) return;
@@ -66,14 +173,11 @@ async function appendShellVerbsToMenu(menu, path) {
   }
 
   // プレースホルダー表示
-  const placeholder = document.createElement('div');
-  placeholder.style.cssText = 'padding:4px 12px;color:var(--fg2);font-size:11px;font-style:italic;';
-  placeholder.textContent = 'OS メニュー 読み込み中...';
-
-  const sep = document.createElement('div');
-  sep.className = 'cm-sep';
-  menu.appendChild(sep);
-  menu.appendChild(placeholder);
+  const sep = _shellMenuAppendSeparator(menu);
+  const placeholder = _shellMenuAppendItem(menu, 'OS メニュー 読み込み中...', null, {
+    disabled: true,
+    className: 'gb-shell-menu-loading',
+  });
   reclampMenu();
 
   const verbs = await fetchShellVerbs(path);
@@ -87,34 +191,25 @@ async function appendShellVerbsToMenu(menu, path) {
   }
 
   const hidden = getHiddenShellVerbs();
-  const visibleVerbs = verbs.filter(v => !hidden.includes(v.name));
+  const visibleVerbs = verbs.filter(v => (
+    !hidden.includes(v.name) && !(editingLocked && _isEditMutationShellVerb(v))
+  ));
 
   // サブメニューとして表示
-  const shellWrap = document.createElement('div');
-  shellWrap.style.position = 'relative';
-  const shellTrigger = document.createElement('div');
-  shellTrigger.className = 'tree-ctx-item';
-  shellTrigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide('monitor', 14) + '</span>OS メニュー' + submenuArrow();
-  shellTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;';
-  const shellPanel = document.createElement('div');
-  shellPanel.className = 'gb-context-menu';
-  shellPanel.style.cssText = 'display:none;min-width:160px;';
-  attachHoverSubmenu(shellTrigger, shellPanel);
+  const shellPanel = _shellMenuCreatePanel('OS メニュー');
+  _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel);
 
   if (visibleVerbs.length === 0) {
-    const emptyItem = document.createElement('div');
-    emptyItem.textContent = 'すべて非表示です';
-    emptyItem.style.cssText = 'padding:4px 12px;font-size:12px;color:var(--fg2);white-space:nowrap;';
-    shellPanel.appendChild(emptyItem);
+    _shellMenuAppendItem(
+      shellPanel,
+      editingLocked ? '編集ロック中のため編集系操作は非表示です' : 'すべて非表示です',
+      null,
+      { disabled: true },
+    );
   }
 
   visibleVerbs.forEach(v => {
-    const item = document.createElement('div');
-    item.textContent = v.name;
-    item.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-    item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
-    item.addEventListener('mouseleave', () => { item.style.background = ''; });
-    item.addEventListener('click', () => {
+    const item = _shellMenuAppendItem(shellPanel, v.name, () => {
       closeTreeContextMenu();
       executeShellVerb(path, v.raw);
     });
@@ -127,27 +222,14 @@ async function appendShellVerbsToMenu(menu, path) {
     if (typeof addLongPressHandler === 'function') {
       addLongPressHandler(item, (e) => _showHideVerbPopup(e.clientX, e.clientY, v.name, menu, path));
     }
-    shellPanel.appendChild(item);
   });
 
   // カスタマイズボタン
-  const custSep = document.createElement('div');
-  custSep.className = 'cm-sep';
-  shellPanel.appendChild(custSep);
-  const custItem = document.createElement('div');
-  custItem.textContent = 'メニューのカスタマイズ...';
-  custItem.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:12px;color:var(--fg2);white-space:nowrap;';
-  custItem.addEventListener('mouseenter', () => { custItem.style.background = 'var(--bg4)'; });
-  custItem.addEventListener('mouseleave', () => { custItem.style.background = ''; });
-  custItem.addEventListener('click', () => {
+  _shellMenuAppendSeparator(shellPanel);
+  _shellMenuAppendItem(shellPanel, 'メニューのカスタマイズ...', () => {
     closeTreeContextMenu();
     showShellVerbSettings();
   });
-  shellPanel.appendChild(custItem);
-
-  shellWrap.appendChild(shellTrigger);
-  shellWrap.appendChild(shellPanel);
-  menu.appendChild(shellWrap);
 
   reclampMenu();
 }
@@ -158,19 +240,15 @@ function _showHideVerbPopup(x, y, verbName, parentMenu, path) {
   document.querySelectorAll('.shell-verb-popup').forEach(el => el.remove());
   const popup = document.createElement('div');
   popup.className = 'gb-context-menu shell-verb-popup';
+  popup.setAttribute('role', 'menu');
+  popup.setAttribute('aria-label', 'OS メニュー項目を非表示');
   popup.style.cssText = 'z-index:100001;';
-  const item = document.createElement('div');
-  item.textContent = `「${verbName}」を非表示にする`;
-  item.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:12px;white-space:nowrap;';
-  item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
-  item.addEventListener('mouseleave', () => { item.style.background = ''; });
-  item.addEventListener('click', () => {
+  _shellMenuAppendItem(popup, `「${verbName}」を非表示にする`, () => {
     toggleHiddenShellVerb(verbName);
     popup.remove();
     closeTreeContextMenu();
     showStatus(`「${verbName}」を非表示にしました。カスタマイズから復元できます。`);
   });
-  popup.appendChild(item);
   document.body.appendChild(popup);
   if (typeof positionPopup === 'function') {
     positionPopup(popup, { left: x, right: x, top: y, bottom: y });
@@ -181,9 +259,23 @@ function _showHideVerbPopup(x, y, verbName, parentMenu, path) {
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
   }
   setTimeout(() => {
-    document.addEventListener('pointerdown', function closer(e) {
-      if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('pointerdown', closer); }
-    });
+    const removeListeners = () => {
+      document.removeEventListener('pointerdown', closer, true);
+      document.removeEventListener('keydown', keyCloser, true);
+    };
+    const closer = (e) => {
+      if (!popup.contains(e.target)) {
+        popup.remove();
+        removeListeners();
+      }
+    };
+    const keyCloser = (e) => {
+      if (e.key !== 'Escape') return;
+      popup.remove();
+      removeListeners();
+    };
+    document.addEventListener('pointerdown', closer, true);
+    document.addEventListener('keydown', keyCloser, true);
   }, 0);
 }
 
@@ -202,33 +294,109 @@ function showShellVerbSettings() {
 
   const hidden = getHiddenShellVerbs();
   const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  let html = '<div class="modal" style="min-width:360px;max-height:70vh;overflow-y:auto;">';
-  html += '<h3>右クリックメニューのカスタマイズ</h3>';
-  html += '<div style="font-size:12px;color:var(--fg2);margin-bottom:12px;">チェックを外すとメニューから非表示になります。</div>';
-  html += '<div style="font-size:12px;font-weight:bold;color:var(--fg);margin-bottom:8px;">OS メニュー項目</div>';
+  o.className = 'modal-overlay shell-verb-settings-overlay';
+  o.dataset.shellVerbSettings = '1';
+  o.dataset.e2eId = 'shell-verb-settings-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'modal shell-verb-settings-modal';
+  modal.dataset.e2eId = 'shell-verb-settings-dialog';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'shell-verb-settings-title');
+  modal.style.minWidth = '360px';
+  modal.style.width = 'min(520px, calc(100vw - 32px))';
+  modal.style.maxHeight = 'min(70vh, calc(100dvh - 24px))';
+
+  const title = document.createElement('h3');
+  title.id = 'shell-verb-settings-title';
+  title.textContent = '右クリックメニューのカスタマイズ';
+
+  const desc = document.createElement('div');
+  desc.className = 'gb-section-desc shell-verb-settings-desc';
+  desc.textContent = 'チェックを外すとメニューから非表示になります。';
+
+  const groupTitle = document.createElement('div');
+  groupTitle.className = 'shell-verb-settings-group-title';
+  groupTitle.textContent = 'OS メニュー項目';
+
+  const list = document.createElement('div');
+  list.className = 'shell-verb-settings-list';
+  list.setAttribute('role', 'group');
+  list.setAttribute('aria-label', 'OS メニュー項目');
   for (const [name] of allVerbs) {
-    const checked = !hidden.includes(name) ? 'checked' : '';
-    html += `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;font-size:13px;">
-      <input type="checkbox" ${checked} data-verb-name="${esc(name)}">
-      <span>${esc(name)}</span>
-    </label>`;
+    const label = document.createElement('label');
+    label.className = 'shell-verb-settings-row';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !hidden.includes(name);
+    input.dataset.verbName = name;
+    input.dataset.e2eId = 'shell-verb-settings-check-' + String(name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    input.setAttribute('aria-label', `${name}を表示`);
+    const text = document.createElement('span');
+    text.textContent = name;
+    label.append(input, text);
+    list.appendChild(label);
   }
-  html += '<div class="btn-row" style="margin-top:16px;">';
-  html += '<button data-action="this.closest(\'.modal-overlay\').remove()">閉じる</button>';
-  html += '<button class="primary" id="btn-save-verb-settings">保存</button>';
-  html += '</div></div>';
-  o.innerHTML = html;
+  const footer = document.createElement('div');
+  footer.className = 'btn-row shell-verb-settings-actions';
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.dataset.e2eId = 'shell-verb-settings-close';
+  closeButton.textContent = '閉じる';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'primary';
+  saveButton.id = 'btn-save-verb-settings';
+  saveButton.dataset.e2eId = 'shell-verb-settings-save';
+  saveButton.textContent = '保存';
+  footer.append(closeButton, saveButton);
+  modal.append(title, desc, groupTitle, list, footer);
+  o.appendChild(modal);
   document.body.appendChild(o);
 
-  document.getElementById('btn-save-verb-settings').addEventListener('click', () => {
+  const close = () => {
+    document.removeEventListener('keydown', keyCloser, true);
+    o.remove();
+  };
+  const keyCloser = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    close();
+  };
+  o.addEventListener('pointerdown', (event) => {
+    if (event.target === o) close();
+  });
+  closeButton.addEventListener('click', close);
+  document.addEventListener('keydown', keyCloser, true);
+
+  saveButton.addEventListener('click', () => {
     const displayedNames = new Set(allVerbs.keys());
     const newHidden = hidden.filter(name => !displayedNames.has(name));
     o.querySelectorAll('input[data-verb-name]').forEach(cb => {
       if (!cb.checked) newHidden.push(cb.dataset.verbName);
     });
     setHiddenShellVerbs([...new Set(newHidden)]);
-    o.remove();
+    close();
     showStatus('メニュー設定を保存しました');
   });
+  if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+    window.GBModalShell.enhanceOverlay(o);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.__MeldexShellMenuInternals = {
+    setVerbCacheForTest(path, verbs) {
+      _shellVerbCache[_shellVerbCacheKey(path)] = Array.isArray(verbs) ? verbs : [];
+    },
+    clearVerbCacheForTest(path) {
+      if (path == null) {
+        Object.keys(_shellVerbCache).forEach(key => delete _shellVerbCache[key]);
+        return;
+      }
+      delete _shellVerbCache[_shellVerbCacheKey(path)];
+    },
+    getHiddenShellVerbs,
+    setHiddenShellVerbs,
+  };
 }

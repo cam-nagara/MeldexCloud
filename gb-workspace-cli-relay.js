@@ -361,7 +361,10 @@
     document.querySelectorAll('.gb-context-menu.workspace-cli-relay-menu').forEach(el => el.remove());
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu workspace-cli-relay-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'CLI依頼先');
     menu.style.cssText = 'min-width:230px;max-width:min(320px,calc(100vw - 16px));padding:6px;';
+    let closeMenu = () => menu.remove();
     const desc = document.createElement('div');
     desc.className = 'gb-section-desc';
     desc.style.cssText = 'padding:6px 8px 8px;font-size:12px;line-height:1.45;';
@@ -375,10 +378,12 @@
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'gb-context-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('aria-label', provider.label + 'に依頼');
       item.style.cssText = 'width:100%;display:flex;align-items:center;gap:8px;';
       item.innerHTML = _icon('terminal', 14) + '<span>' + _htmlEsc(provider.label) + 'に依頼</span>';
       item.addEventListener('click', async () => {
-        menu.remove();
+        closeMenu();
         await _sendWorkspaceCliRelayRequest(provider.key);
       });
       menu.appendChild(item);
@@ -392,11 +397,20 @@
     setTimeout(() => {
       const closer = (ev) => {
         if (!menu.contains(ev.target)) {
-          menu.remove();
-          document.removeEventListener('pointerdown', closer);
+          closeMenu();
         }
       };
+      const keyCloser = (ev) => {
+        if (ev.key === 'Escape') closeMenu();
+      };
+      closeMenu = () => {
+        menu.remove();
+        document.removeEventListener('pointerdown', closer);
+        document.removeEventListener('keydown', keyCloser, true);
+      };
       document.addEventListener('pointerdown', closer);
+      document.addEventListener('keydown', keyCloser, true);
+      menu.querySelector('.gb-context-menu-item')?.focus?.();
     }, 0);
   }
 

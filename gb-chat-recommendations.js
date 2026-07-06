@@ -20,6 +20,10 @@
     return String(value == null ? '' : value);
   }
 
+  function stableIdPart(value) {
+    return safeText(value).replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'action';
+  }
+
   function chatState() {
     try {
       return typeof _chatState !== 'undefined' ? _chatState : null;
@@ -345,6 +349,7 @@
     if (!messages?.parentNode) return null;
     panel = global.document.createElement('div');
     panel.id = PANEL_ID;
+    panel.className = 'chat-recommendations-panel';
     panel.style.cssText = 'display:none;flex-direction:column;gap:6px;flex-shrink:0;padding:8px;border-bottom:1px solid var(--border);background:var(--bg);';
     messages.parentNode.insertBefore(panel, messages);
     return panel;
@@ -353,6 +358,7 @@
   function makeIconButton(title, iconName) {
     const button = global.document.createElement('button');
     button.type = 'button';
+    button.className = 'chat-recommendation-icon-btn';
     button.title = title;
     button.setAttribute('aria-label', title);
     button.innerHTML = icon(iconName, 14);
@@ -362,12 +368,16 @@
 
   function createActionRow(action) {
     const row = global.document.createElement('div');
+    row.className = 'chat-recommendation-row';
     row.style.cssText = 'display:flex;align-items:stretch;gap:6px;min-width:0;';
 
     const run = global.document.createElement('button');
     run.type = 'button';
+    run.className = 'chat-recommendation-run-btn';
     run.dataset.chatRecommendationRun = action.id;
-    run.title = '実行';
+    run.dataset.e2eId = 'chat-recommendation-run-' + stableIdPart(action.id);
+    run.title = `${action.label || '提案'}を実行`;
+    run.setAttribute('aria-label', run.title);
     run.style.cssText = 'display:flex;align-items:flex-start;gap:7px;flex:1;min-width:0;text-align:left;padding:7px 8px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:6px;cursor:pointer;';
     const iconEl = global.document.createElement('span');
     iconEl.innerHTML = icon(action.icon || 'sparkles', 15);
@@ -386,6 +396,7 @@
 
     const dismiss = makeIconButton('今は不要', 'x');
     dismiss.dataset.chatRecommendationDismiss = action.id;
+    dismiss.dataset.e2eId = 'chat-recommendation-dismiss-' + stableIdPart(action.id);
     dismiss.addEventListener('click', () => dismissAction(action.id));
 
     row.append(run, dismiss);
@@ -421,6 +432,7 @@
     summary.title = ctx.path || '';
     summary.style.cssText = 'font-size:11px;color:var(--fg2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     const refresh = makeIconButton('更新', 'refreshCw');
+    refresh.dataset.e2eId = 'chat-recommendation-refresh';
     refresh.style.marginLeft = 'auto';
     refresh.addEventListener('click', () => refreshNow({ force: true }));
     header.append(titleIcon, title, summary, refresh);

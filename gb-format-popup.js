@@ -51,8 +51,10 @@
   }
 
   function _removeFormatPopup(popup, options) {
+    if (!popup) return;
+    if (typeof popup._gbFmtCleanup === 'function') popup._gbFmtCleanup();
     if (!(options && options.skipCommit)) _commitPendingFormatInputs(popup);
-    popup?.remove?.();
+    popup.remove?.();
   }
 
   function closeAllFormatPopups() {
@@ -205,6 +207,23 @@
     return btn;
   }
 
+  const WIDTH_CLASS_VALUES = new Set([36, 44, 54, 58, 70, 76]);
+
+  function _applyWidthClass(el, baseClass, width) {
+    if (!el || !width) return;
+    const raw = String(width).trim();
+    const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)(?:px)?$/i);
+    if (match) {
+      const numeric = parseFloat(match[1]);
+      const rounded = Math.round(numeric);
+      if (Math.abs(numeric - rounded) < 0.01 && WIDTH_CLASS_VALUES.has(rounded)) {
+        el.classList.add(baseClass + '--w' + rounded);
+        return;
+      }
+    }
+    el.style.width = (typeof width === 'number' ? width + 'px' : width);
+  }
+
   function _makeNumInput(title, value, onChange, opts) {
     const minV = opts && opts.min != null ? opts.min : 8;
     const maxV = opts && opts.max != null ? opts.max : 48;
@@ -218,7 +237,7 @@
     inp.placeholder = placeholder;
     inp.title = title || 'フォントサイズ';
     inp.className = 'gb-fmt-num';
-    if (width) inp.style.width = (typeof width === 'number' ? width + 'px' : width);
+    _applyWidthClass(inp, 'gb-fmt-num', width);
     if (value !== '' && value != null) inp.value = value;
     inp.defaultValue = inp.value;
     inp._gbFmtCommittedValue = inp.value;
@@ -371,6 +390,15 @@
 
     const popup = document.createElement('div');
     popup.className = POPUP_CLASS + (options.className ? ' ' + options.className : '');
+    let outsideCloseHandler = null;
+    let escapeCloseHandler = null;
+    popup._gbFmtCleanup = () => {
+      if (outsideCloseHandler) document.removeEventListener('pointerdown', outsideCloseHandler, true);
+      if (escapeCloseHandler) document.removeEventListener('keydown', escapeCloseHandler, true);
+      outsideCloseHandler = null;
+      escapeCloseHandler = null;
+      popup._gbFmtCleanup = null;
+    };
 
     const emit = (prop, value) => {
       values[prop] = value;
@@ -558,16 +586,27 @@
       });
     }
 
+    if (options.closeOnEscape !== false) {
+      escapeCloseHandler = (ev) => {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeAllPalettePopups();
+        _removeFormatPopup(popup);
+      };
+      document.addEventListener('keydown', escapeCloseHandler, true);
+    }
+
     // --- 外クリックで閉じる ---
     if (options.closeOnOutside !== false) {
       setTimeout(() => {
-        const closeHandler = (ev) => {
+        if (!popup.isConnected) return;
+        outsideCloseHandler = (ev) => {
           if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-palette-popup')) {
             _removeFormatPopup(popup);
-            document.removeEventListener('pointerdown', closeHandler, true);
           }
         };
-        document.addEventListener('pointerdown', closeHandler, true);
+        document.addEventListener('pointerdown', outsideCloseHandler, true);
       }, 0);
     }
 
@@ -586,7 +625,7 @@
   function _makeTextInputEx(opts) {
     opts = opts || {};
     const inp = _makeTextInput(opts.value, opts.placeholder, opts.onChange || (() => {}));
-    if (opts.width) inp.style.width = (typeof opts.width === 'number' ? opts.width + 'px' : opts.width);
+    _applyWidthClass(inp, 'gb-fmt-text', opts.width);
     if (opts.title) inp.title = opts.title;
     return inp;
   }

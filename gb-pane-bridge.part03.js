@@ -53,11 +53,38 @@
     if (rrh) rrh.style.display = 'none';
     // 右アクティビティバーは残す（ペインタブ開きのトリガーとして使う）
 
+    function _syncLegacyRightPanelState(tabName) {
+      const normalized = tabName === 'sticky' ? 'annotation' : tabName;
+      document.querySelectorAll('#right-panel-tabs .rp-tab').forEach(tab => {
+        const active = tab.dataset.rpTab === normalized;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      document.querySelectorAll('#right-panel .rp-content').forEach(content => {
+        content.classList.toggle('active', content.id === 'rp-' + normalized);
+      });
+      if (typeof window._updateRabActiveState === 'function') {
+        window._updateRabActiveState(normalized);
+        return;
+      }
+      document.querySelectorAll('#activity-bar-right button').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-pressed', 'false');
+      });
+      const rail = normalized ? document.getElementById('rab-' + normalized) : null;
+      if (rail) {
+        rail.classList.add('active');
+        rail.setAttribute('aria-pressed', 'true');
+      }
+    }
+
     // toggleRightPanelTab → ペインにツールを開く
     window.toggleRightPanelTab = function(tabName) {
+      _syncLegacyRightPanelState(tabName);
       _openToolPane(tabName, { toggleExisting: true });
     };
     window.openRightPanelTab = function(tabName) {
+      _syncLegacyRightPanelState(tabName);
       _openToolPane(tabName);
     };
     window.toggleRightPanel = function() {
@@ -78,6 +105,7 @@
 
     // switchRightTab → ペインタブ切替
     window.switchRightTab = function(tabName) {
+      _syncLegacyRightPanelState(tabName);
       _openToolPane(tabName);
     };
 
@@ -240,12 +268,60 @@
     return walk(GBLayout.root, null, '') || null;
   }
 
+  function _findTabByIdInAnyGroup(tabId) {
+    if (!tabId) return null;
+    function walk(node, panelsetNode, groupId) {
+      if (!node) return null;
+      if (node.type === 'pane') {
+        const tab = (node.tabs || []).find(t => t.id === tabId);
+        return tab ? { paneId: node.id, tabId: tab.id, panelsetNode, groupId } : null;
+      }
+      if (node.type === 'split' && Array.isArray(node.children)) {
+        for (const child of node.children) {
+          const found = walk(child, panelsetNode, groupId);
+          if (found) return found;
+        }
+      } else if (node.type === 'panelset' && Array.isArray(node.groups)) {
+        for (const group of node.groups) {
+          const found = walk(group?.root, node, group?.id || '');
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    return walk(GBLayout.root, null, '') || null;
+  }
+
+  function _findReusableToolHostPane() {
+    const visiblePanes = typeof GBLayout.getAllPanes === 'function'
+      ? GBLayout.getAllPanes(GBLayout.root, { activeOnly: true })
+      : [];
+    const allPanes = typeof GBLayout.getAllPanes === 'function'
+      ? GBLayout.getAllPanes(GBLayout.root)
+      : [];
+    return visiblePanes.find(pane => pane?.id && !pane.locked && _isVersionHostPane(pane))
+      || allPanes.find(pane => pane?.id && !pane.locked && _isVersionHostPane(pane))
+      || null;
+  }
+
   function _activateToolPaneMatch(match, options) {
     if (!match?.paneId || !match?.tabId) return;
+    const previousActivePane = GBLayout?.activePane || '';
+    let groupChanged = false;
     if (match.panelsetNode && match.groupId && match.panelsetNode.activeGroupId !== match.groupId) {
-      match.panelsetNode.activeGroupId = match.groupId;
+      groupChanged = true;
+      if (typeof GBPanelSet?.switchGroup === 'function') {
+        GBPanelSet.switchGroup(match.panelsetNode, match.groupId);
+      } else {
+        match.panelsetNode.activeGroupId = match.groupId;
+      }
     }
     GBTabs.activateTab(match.paneId, match.tabId, options);
+    if (groupChanged && typeof _refreshPaneAfterTabSwitch === 'function') {
+      _refreshPaneAfterTabSwitch(match.paneId, {
+        previousActivePane: options?.preserveActivePane ? null : previousActivePane,
+      });
+    }
   }
 
   function _scheduleContentPaneRestore(paneId) {
@@ -320,11 +396,17 @@
       if (newPaneId) GBLayout.setActivePane(newPaneId);
     } else {
       // 通常ツールは右に配置
-      const allPanes = GBLayout.getAllPanes(GBLayout.root);
-      const reusableToolPane = allPanes.find(pane => pane?.id && !pane.locked && _isVersionHostPane(pane));
+      const reusableToolPane = _findReusableToolHostPane();
       if (reusableToolPane) {
         const restorePaneId = _getContentPane(GBLayout.activePane) || _getFileOpenPane(GBLayout.activePane);
-        GBTabs.addTab(reusableToolPane.id, _toolLabel(toolType), toolType, '', null, { preserveActivePane: preserveWorkActive });
+        const tabId = GBTabs.addTab(reusableToolPane.id, _toolLabel(toolType), toolType, '', null, { preserveActivePane: preserveWorkActive });
+        const match = _findTabByIdInAnyGroup(tabId);
+        if (match) _activateToolPaneMatch(match, { preserveActivePane: preserveWorkActive });
+        if (tabId && typeof _refreshPaneAfterTabSwitch === 'function') {
+          _refreshPaneAfterTabSwitch(match?.paneId || reusableToolPane.id, {
+            previousActivePane: preserveWorkActive ? null : restorePaneId,
+          });
+        }
         _scheduleContentPaneRestore(restorePaneId);
         return;
       }

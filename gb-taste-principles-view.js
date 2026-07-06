@@ -1,5 +1,22 @@
 (function () {
   const stateByContainer = new WeakMap();
+  const TASTE_TYPE_LABELS = {
+    principle: '原則',
+    case_study: '事例',
+    anti_pattern: '避ける例',
+    preference: '好み',
+  };
+  const TASTE_SCOPE_LABELS = {
+    character: 'キャラクター',
+    plot: 'プロット',
+    dialogue: '会話',
+    structure: '構成',
+    theme: 'テーマ',
+    pacing: 'テンポ',
+    visual: '画面',
+    world: '世界観',
+    other: 'その他',
+  };
 
   function tasteEsc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -8,6 +25,21 @@
 
   function tasteIcon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+  }
+
+  function tasteTypeLabel(value) {
+    const key = String(value || '');
+    return TASTE_TYPE_LABELS[key] || key || '種別すべて';
+  }
+
+  function tasteScopeLabel(value) {
+    const key = String(value || '');
+    return TASTE_SCOPE_LABELS[key] || key || 'スコープすべて';
+  }
+
+  async function tastePromptText(message, defaultValue, options) {
+    if (typeof cfPrompt === 'function') return await cfPrompt(message, defaultValue || '', options || {});
+    return window.prompt(message, defaultValue || '');
   }
 
   function tasteAuthToken() {
@@ -82,8 +114,8 @@
     const writable = canWrite(container);
     container.classList.add('taste-principles-view');
     container.innerHTML = `
-      <section class="gb-section gb-section--boxed" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:240px;">
+      <section class="gb-section gb-section--boxed taste-enable-summary">
+        <div class="taste-enable-copy">
           <div class="gb-section-title">${tasteIcon('sparkles', 14)} 感性原則</div>
           <div class="gb-section-desc">技法ナレッジから抽出した個人用の執筆判断基準です。</div>
         </div>
@@ -94,12 +126,12 @@
       </section>
       ${state.enabled ? '<section class="gb-section gb-section--boxed"><div class="gb-section-title">あなた専用の感性フィルタ ON</div><div class="gb-section-desc">検索・出典・Skills・記憶抽出には適用されません。アイディア生成と批評だけに使われます。</div></section>' : ''}
       <section class="gb-section gb-section--boxed taste-toolbar">
-        <input class="gb-input" data-taste-q data-e2e-id="settings-taste-query" aria-label="感性原則を検索" placeholder="検索" value="${tasteEsc(state.q)}" style="min-width:180px;flex:1;">
+        <input class="gb-input" data-taste-q data-e2e-id="settings-taste-query" aria-label="感性原則を検索" placeholder="検索" value="${tasteEsc(state.q)}">
         <select class="gb-select" data-taste-type data-e2e-id="settings-taste-type" aria-label="感性原則の種別">
-          ${['', 'principle', 'case_study', 'anti_pattern', 'preference'].map(type => `<option value="${type}" ${state.type === type ? 'selected' : ''}>${type || '種別すべて'}</option>`).join('')}
+          ${['', 'principle', 'case_study', 'anti_pattern', 'preference'].map(type => `<option value="${type}" ${state.type === type ? 'selected' : ''}>${tasteEsc(tasteTypeLabel(type))}</option>`).join('')}
         </select>
         <select class="gb-select" data-taste-scope data-e2e-id="settings-taste-scope" aria-label="感性原則のスコープ">
-          ${['', 'character', 'plot', 'dialogue', 'structure', 'theme', 'pacing', 'visual', 'world', 'other'].map(scope => `<option value="${scope}" ${state.scope === scope ? 'selected' : ''}>${scope || 'scopeすべて'}</option>`).join('')}
+          ${['', 'character', 'plot', 'dialogue', 'structure', 'theme', 'pacing', 'visual', 'world', 'other'].map(scope => `<option value="${scope}" ${state.scope === scope ? 'selected' : ''}>${tasteEsc(tasteScopeLabel(scope))}</option>`).join('')}
         </select>
         ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-taste-action="extract" data-e2e-id="settings-taste-extract">${tasteIcon('sparkles', 14)} 抽出</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-taste-action="add" data-e2e-id="settings-taste-add">${tasteIcon('plus', 14)} 追加</button>` : ''}
@@ -162,7 +194,7 @@
   function setAlert(container, text, error = false) {
     const alert = container.querySelector('[data-taste-alert]');
     if (!alert) return;
-    alert.innerHTML = text ? `<div class="gb-section-desc" style="color:${error ? 'var(--danger)' : 'var(--fg2)'};">${tasteEsc(text)}</div>` : '';
+    alert.innerHTML = text ? `<div class="gb-section-desc taste-alert-message${error ? ' is-error' : ''}">${tasteEsc(text)}</div>` : '';
   }
 
   async function loadTaste(container) {
@@ -211,7 +243,7 @@
 
   async function addTaste(container) {
     if (!ensureCanWrite(container)) return;
-    const rule = window.prompt('新しい感性原則');
+    const rule = await tastePromptText('新しい感性原則', '', { okLabel: '追加' });
     if (!rule) return;
     await tasteApi('/taste/principles', {
       method: 'POST',
@@ -246,24 +278,24 @@
     const totalWeight = Number(item.user_weight || 1) * Number(item.learned_weight || 1);
     const pct = Math.max(4, Math.min(100, Math.round(totalWeight * 50)));
     return `
-      <article data-taste-id="${Number(item.id)}" data-pinned="${item.user_pinned ? '1' : '0'}" data-source-path="${tasteEsc(item.source_path || '')}" style="border-bottom:1px solid var(--border);padding:12px 0;">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <span class="gb-pill">${tasteEsc(item.type)}</span>
-          <span class="gb-pill">${tasteEsc(item.scope)}</span>
-          ${item.user_pinned ? '<span class="gb-pill">pinned</span>' : ''}
-          <span class="gb-pill">learned ${Number(item.learned_weight || 1).toFixed(2)}</span>
-          <span class="gb-pill">feedback ${Number(item.feedback_count || 0)}</span>
+      <article class="taste-card" data-e2e-id="settings-taste-card" data-taste-id="${Number(item.id)}" data-pinned="${item.user_pinned ? '1' : '0'}" data-source-path="${tasteEsc(item.source_path || '')}">
+        <div class="taste-card-meta">
+          <span class="gb-pill">${tasteEsc(tasteTypeLabel(item.type))}</span>
+          <span class="gb-pill">${tasteEsc(tasteScopeLabel(item.scope))}</span>
+          ${item.user_pinned ? '<span class="gb-pill">固定</span>' : ''}
+          <span class="gb-pill">学習 ${Number(item.learned_weight || 1).toFixed(2)}</span>
+          <span class="gb-pill">採用学習 ${Number(item.feedback_count || 0)}</span>
         </div>
-        <div style="margin-top:8px;line-height:1.55;">${tasteEsc(item.rule)}</div>
-        ${item.rationale ? `<div class="gb-section-desc" style="margin-top:5px;">${tasteEsc(item.rationale)}</div>` : ''}
-        <div style="height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:8px;">
-          <div style="height:100%;width:${pct}%;background:var(--accent);"></div>
+        <div class="taste-card-rule">${tasteEsc(item.rule)}</div>
+        ${item.rationale ? `<div class="gb-section-desc taste-card-rationale">${tasteEsc(item.rationale)}</div>` : ''}
+        <div class="taste-card-weight-meter" aria-hidden="true" style="--taste-weight-pct:${pct}%;">
+          <div class="taste-card-weight-meter-fill"></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;">
-          ${writable ? `<label class="gb-field-row" style="gap:4px;"><span class="gb-section-desc">weight</span><input type="number" min="0.1" max="5" step="0.1" value="${Number(item.user_weight || 1).toFixed(1)}" class="gb-input" style="width:72px;" data-taste-action="weight"></label>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-taste-action="pin">${item.user_pinned ? 'unpin' : 'pin'}</button>` : ''}
-          ${item.source_path ? '<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-taste-action="open">元ファイル</button>' : ''}
-          ${writable ? '<button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-taste-action="delete">削除</button>' : ''}
+        <div class="taste-card-actions">
+          ${writable ? `<label class="gb-field-row taste-card-weight"><span class="gb-section-desc">重み</span><input type="number" min="0.1" max="5" step="0.1" value="${Number(item.user_weight || 1).toFixed(1)}" class="gb-input taste-card-weight-input" data-taste-action="weight" data-e2e-id="settings-taste-weight" aria-label="感性原則の重み"></label>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-taste-action="pin" data-e2e-id="settings-taste-pin" aria-label="${item.user_pinned ? '感性原則の固定を解除' : '感性原則を固定'}">${item.user_pinned ? '固定解除' : '固定'}</button>` : ''}
+          ${item.source_path ? '<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-taste-action="open" data-e2e-id="settings-taste-open-source" aria-label="感性原則の元ファイルを開く">元ファイル</button>' : ''}
+          ${writable ? '<button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-taste-action="delete" data-e2e-id="settings-taste-delete" aria-label="感性原則を削除">削除</button>' : ''}
         </div>
       </article>
     `;
@@ -273,8 +305,8 @@
     if (!feedback || !feedback.length) return '<div class="gb-section-desc">採用/却下の学習ログはまだありません。</div>';
     const recent = feedback.slice(0, 6).map(item => {
       const signal = Number(item.signal || 0);
-      const color = signal > 0 ? 'var(--accent)' : signal < 0 ? 'var(--danger)' : 'var(--fg2)';
-      return `<div class="gb-section-desc" style="display:flex;gap:8px;align-items:center;"><span style="color:${color};min-width:42px;">${signal > 0 ? '+' : ''}${signal.toFixed(1)}</span><span>${tasteEsc(item.rule || '')}</span></div>`;
+      const tone = signal > 0 ? ' is-positive' : signal < 0 ? ' is-negative' : '';
+      return `<div class="gb-section-desc taste-learning-row"><span class="taste-learning-signal${tone}">${signal > 0 ? '+' : ''}${signal.toFixed(1)}</span><span>${tasteEsc(item.rule || '')}</span></div>`;
     }).join('');
     return recent;
   }
@@ -292,7 +324,7 @@
   async function deleteTaste(container, id) {
     if (!ensureCanWrite(container)) return;
     const ok = typeof cfConfirm === 'function'
-      ? await cfConfirm('この感性原則を削除しますか？')
+      ? await cfConfirm('この感性原則を削除しますか？', { danger: true, okLabel: '削除' })
       : window.confirm('この感性原則を削除しますか？');
     if (!ok) return;
     await tasteApi('/taste/principles/' + encodeURIComponent(id), { method: 'DELETE' });

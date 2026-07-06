@@ -158,33 +158,33 @@ class ScriptNoteComponent extends ToolComponent {
   static _buildHTML() {
     return `
 <div id="se-toolbar" class="gb-toolbar">
-  <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
-  <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
-  <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" value="">
-  <select id="scenario-note-layout-select" class="tb-select" style="max-width:160px;" title="テンプレート">
+  <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
+  <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
+  <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
+  <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート">
     <option value="manga">マンガシナリオ</option>
     <option value="drama">ドラマ・映画シナリオ</option>
     <option value="afureko">アフレコシナリオ</option>
     <option value="stage">舞台シナリオ</option>
   </select>
-  <button class="tb-icon-btn" data-sn-action="saveTemplate" title="現在の設定をテンプレートとして登録"><span class="ico ico-save"></span></button>
-  <button class="tb-icon-btn" data-sn-action="manageTemplates" title="テンプレートを管理"><span class="ico ico-listChecks"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="saveTemplate" title="現在の設定をテンプレートとして登録" aria-label="現在の設定をテンプレートとして登録"><span class="ico ico-save"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="manageTemplates" title="テンプレートを管理" aria-label="テンプレートを管理"><span class="ico ico-listChecks"></span></button>
   <div class="sep"></div>
-  <button class="tb-icon-btn active" data-sn-action="horizontal" id="btn-horizontal" title="横書き"><span class="ico ico-textAlignStart"></span></button>
-  <button class="tb-icon-btn" data-sn-action="vertical" id="btn-vertical" title="縦書き"><span class="ico ico-kanban"></span></button>
-  <button class="tb-icon-btn" data-sn-action="wrap" id="btn-wrap" title="折返し"><span class="ico ico-wrapText"></span></button>
-  <button class="tb-icon-btn" data-sn-action="mergeDisplay" id="btn-merge-display" title="前行と同じタイプ/ガター値を省略表示（まとめて表示）"><span class="ico ico-rows3"></span></button>
+  <button type="button" class="tb-icon-btn active" data-sn-action="horizontal" id="btn-horizontal" title="横書き" aria-label="横書き"><span class="ico ico-textAlignStart"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="vertical" id="btn-vertical" title="縦書き" aria-label="縦書き"><span class="ico ico-kanban"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="wrap" id="btn-wrap" title="折返し" aria-label="折返し"><span class="ico ico-wrapText"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="mergeDisplay" id="btn-merge-display" title="前行と同じタイプ/ガター値を省略表示（まとめて表示）" aria-label="まとめ表示"><span class="ico ico-rows3"></span></button>
   <div class="sep"></div>
-  <button class="tb-text-btn" data-sn-action="addColumn" title="列を追加"><span class="ico ico-plus"></span>列</button>
+  <button type="button" class="tb-text-btn" data-sn-action="addColumn" title="列を追加"><span class="ico ico-plus"></span>列</button>
   <div class="tb-spacer"></div>
-  <button class="tb-icon-btn" data-sn-action="filter" id="btn-filter" title="タイプ/採用状況でフィルタ"><span class="ico ico-funnel"></span></button>
-  <select id="sn-filter-preset" class="tb-select" style="max-width:140px;" title="フィルタプリセット"><option value="__all__">すべて表示</option></select>
+  <button type="button" class="tb-icon-btn" data-sn-action="filter" id="btn-filter" title="タイプ/採用状況でフィルタ" aria-label="タイプ/採用状況でフィルタ"><span class="ico ico-funnel"></span></button>
+  <select id="sn-filter-preset" class="tb-select sn2-toolbar-filter-preset" title="フィルタプリセット" aria-label="フィルタプリセット"><option value="__all__">すべて表示</option></select>
   <div class="sep"></div>
-  <button class="tb-icon-btn" data-sn-action="saveFilter" title="現在のフィルタを登録"><span class="ico ico-save"></span></button>
-  <button class="tb-icon-btn" data-sn-action="manageFilters" title="フィルタプリセットを管理"><span class="ico ico-listChecks"></span></button>
-  <button class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
-  <button class="tb-icon-btn" data-sn-action="search" title="テキスト列を検索・置換"><span class="ico ico-search"></span></button>
-  <button class="tb-icon-btn gb-toolbar-option-panel-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="saveFilter" title="現在のフィルタを登録" aria-label="現在のフィルタを登録"><span class="ico ico-save"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="manageFilters" title="フィルタプリセットを管理" aria-label="フィルタプリセットを管理"><span class="ico ico-listChecks"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み" aria-label="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="search" title="テキスト列を検索・置換" aria-label="テキスト列を検索・置換"><span class="ico ico-search"></span></button>
+  <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
 </div>
 <div class="sn2-main" style="display:flex;flex:1;overflow:hidden;min-height:0;">
   <div id="scenario-note-surface" style="display:flex;flex:1;overflow:hidden;"></div>
@@ -361,7 +361,8 @@ class ScriptNoteComponent extends ToolComponent {
         if (styleTab) tabBar.appendChild(styleTab);
         return;
       }
-      const el = document.createElement('div');
+      const el = document.createElement('button');
+      el.type = 'button';
       el.className = 'gb-inner-tab detail-tab detail-tab-scriptnote';
       el.dataset.detailTab = t.id;
       el.setAttribute('role', 'tab');
@@ -402,8 +403,24 @@ class ScriptNoteComponent extends ToolComponent {
       const cfg = JSON.parse(localStorage.getItem('detail-panel-cfg') || '{}');
       isHidden = !cfg.visible;
     } catch (e) {}
-    if (isHidden) {
-      if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
+    const rpDetail = document.getElementById('rp-detail');
+    const paneContent = rpDetail?.closest?.('.gb-pane-content') || null;
+    const paneRect = paneContent?.getBoundingClientRect?.() || null;
+    const paneStyle = paneContent && window.getComputedStyle ? getComputedStyle(paneContent) : null;
+    const hasVisibleDetailPane = !!(paneContent
+      && paneRect
+      && paneRect.width > 0
+      && paneRect.height > 0
+      && paneStyle?.display !== 'none'
+      && paneStyle?.visibility !== 'hidden');
+    if (isHidden || !hasVisibleDetailPane) {
+      try {
+        const cfg = JSON.parse(localStorage.getItem('detail-panel-cfg') || '{}');
+        cfg.visible = true;
+        localStorage.setItem('detail-panel-cfg', JSON.stringify(cfg));
+      } catch (e) {}
+      if (typeof openRightPanelTab === 'function') openRightPanelTab('detail');
+      else if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
       else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
     }
     this._syncDetailPanel();
@@ -422,6 +439,100 @@ class ScriptNoteComponent extends ToolComponent {
     });
     // 現在のlayoutModeに合わせて選択
     if (this._editor?.doc?.layoutMode) sel.value = this._editor.doc.layoutMode;
+  }
+
+  _showTitleRenameModal() {
+    const titleInput = this.el?.querySelector('#title-input');
+    if (!titleInput || !this._editor?.doc) {
+      if (typeof showStatus === 'function') showStatus('タイトルを変更できませんでした', true);
+      return false;
+    }
+    this._showNameModal({
+      title: 'タイトルを変更',
+      label: 'タイトル',
+      placeholder: 'シナリオタイトル',
+      value: titleInput.value || this._editor.doc.title || '',
+      okText: '変更',
+      onSubmit: name => {
+        titleInput.value = name;
+        titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      },
+    });
+    return true;
+  }
+
+  _showToolbarSelectModal({ sourceSelector, title, label, okText = '適用', dialog = 'toolbar-select' }) {
+    const source = this.el?.querySelector(sourceSelector);
+    if (!source) {
+      if (typeof showStatus === 'function') showStatus(`${label || '項目'}を選択できませんでした`, true);
+      return false;
+    }
+    const dialogId = `sn2-${dialog}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const titleId = `${dialogId}-title`;
+    const selectId = `${dialogId}-select`;
+    const options = [...source.options].map(opt => (
+      `<option value="${esc(opt.value)}">${esc(opt.textContent || opt.label || opt.value)}</option>`
+    )).join('');
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.dataset.sn2Dialog = dialog;
+    overlay.innerHTML = `<div class="modal sn2-preset-modal sn2-toolbar-select-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><h3 id="${titleId}">${esc(title)}</h3>
+      <div class="modal-body sn2-preset-modal-body"><label class="sn2-preset-field" for="${selectId}"><span class="sn2-preset-label">${esc(label)}</span><select id="${selectId}" class="gb-select sn2-toolbar-modal-select">${options}</select></label></div>
+      <div class="btn-row sn2-preset-modal-actions">
+        <button type="button" class="gb-btn gb-btn-sm cancel-btn">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary ok-btn">${esc(okText)}</button>
+      </div></div>`;
+    const select = overlay.querySelector('.sn2-toolbar-modal-select');
+    if (select) select.value = source.value;
+    const close = () => {
+      document.removeEventListener('keydown', keyHandler, true);
+      overlay.remove();
+    };
+    const apply = () => {
+      if (!select) return;
+      source.value = select.value;
+      source.dispatchEvent(new Event('change', { bubbles: true }));
+      close();
+    };
+    function keyHandler(ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        close();
+      }
+    }
+    overlay.querySelector('.cancel-btn')?.addEventListener('click', close);
+    overlay.querySelector('.ok-btn')?.addEventListener('click', apply);
+    overlay.addEventListener('click', ev => {
+      if (ev.target === overlay) close();
+    });
+    document.addEventListener('keydown', keyHandler, true);
+    document.body.appendChild(overlay);
+    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+      window.GBModalShell.enhanceOverlay(overlay);
+    }
+    requestAnimationFrame(() => select?.focus?.());
+    return true;
+  }
+
+  _showTemplateSelectModal() {
+    this._refreshTemplateSelect();
+    return this._showToolbarSelectModal({
+      sourceSelector: '#scenario-note-layout-select',
+      title: 'テンプレート選択',
+      label: 'テンプレート',
+      dialog: 'toolbar-template-select',
+    });
+  }
+
+  _showFilterPresetSelectModal() {
+    this._refreshFilterPresets();
+    return this._showToolbarSelectModal({
+      sourceSelector: '#sn-filter-preset',
+      title: 'フィルタプリセット',
+      label: 'フィルタプリセット',
+      dialog: 'toolbar-filter-preset',
+    });
   }
 
   _bindToolbar() {
@@ -636,23 +747,40 @@ class ScriptNoteComponent extends ToolComponent {
   }
 
   _showNameModal({ title, label, placeholder, value = '', okText = '登録', onSubmit }) {
+    const dialogId = `sn2-preset-name-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const titleId = `${dialogId}-title`;
+    const inputId = `${dialogId}-input`;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal" style="min-width:320px;"><h3>${esc(title)}</h3>
-      <div class="modal-body" style="padding:12px 16px;"><label>${esc(label)}<input type="text" class="sn2-preset-name" style="width:100%;padding:4px 6px;margin-top:4px;" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label></div>
-      <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
-        <button type="button" class="cancel-btn">キャンセル</button><button type="button" class="primary ok-btn">${esc(okText)}</button>
+    overlay.dataset.sn2Dialog = 'preset-name';
+    overlay.innerHTML = `<div class="modal sn2-preset-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><h3 id="${titleId}">${esc(title)}</h3>
+      <div class="modal-body sn2-preset-modal-body"><label class="sn2-preset-field" for="${inputId}"><span class="sn2-preset-label">${esc(label)}</span><input id="${inputId}" type="text" class="gb-input sn2-preset-name" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label></div>
+      <div class="btn-row sn2-preset-modal-actions">
+        <button type="button" class="gb-btn gb-btn-sm cancel-btn">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary ok-btn">${esc(okText)}</button>
       </div></div>`;
     const input = overlay.querySelector('.sn2-preset-name');
+    const close = () => overlay.remove();
     const submit = () => {
       const name = input.value.trim();
       if (!name || onSubmit?.(name) === false) return;
-      overlay.remove();
+      close();
     };
     overlay.querySelector('.ok-btn').addEventListener('click', submit);
-    overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('.cancel-btn').addEventListener('click', close);
     input.addEventListener('keydown', ev => { if (ev.key === 'Enter') submit(); });
+    overlay.addEventListener('keydown', ev => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    });
+    overlay.addEventListener('click', ev => {
+      if (ev.target === overlay) close();
+    });
     document.body.appendChild(overlay);
+    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+      window.GBModalShell.enhanceOverlay(overlay);
+    }
     input.focus();
     input.select();
   }
@@ -756,40 +884,44 @@ class ScriptNoteComponent extends ToolComponent {
 
   _showPresetManager(kind) {
     const cfg = this._managedPresetConfig(kind);
+    const titleId = `sn2-preset-manager-${kind}-${Date.now().toString(36)}`;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal" style="min-width:420px;max-width:min(92vw,520px);"><h3>${esc(cfg.title)}</h3>
-      <div class="modal-body" style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
-        <button type="button" class="tb-text-btn" data-pm-add><span class="ico ico-plus"></span>追加</button>
-        <div data-pm-list style="display:flex;flex-direction:column;gap:6px;max-height:min(54vh,420px);overflow:auto;"></div>
+    overlay.dataset.sn2Dialog = 'preset-manager';
+    overlay.innerHTML = `<div class="modal sn2-preset-manager-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><h3 id="${titleId}">${esc(cfg.title)}</h3>
+      <div class="modal-body sn2-preset-manager-body">
+        <button type="button" class="tb-text-btn sn2-preset-manager-add" data-pm-add aria-label="${esc(cfg.itemLabel)}を追加"><span class="ico ico-plus"></span>追加</button>
+        <div class="sn2-preset-manager-list" data-pm-list></div>
       </div>
-      <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;"><button type="button" class="cancel-btn">閉じる</button></div></div>`;
+      <div class="btn-row sn2-preset-modal-actions"><button type="button" class="gb-btn gb-btn-sm cancel-btn">閉じる</button></div></div>`;
     const list = overlay.querySelector('[data-pm-list]');
+    const close = () => overlay.remove();
     const render = () => {
       const names = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
       list.innerHTML = '';
       if (!names.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'padding:12px;color:var(--fg2);font-size:12px;border:1px solid var(--border);border-radius:6px;';
+        empty.className = 'sn2-preset-manager-empty';
         empty.textContent = cfg.emptyText;
         list.appendChild(empty);
         return;
       }
       names.forEach((name, index) => {
         const row = document.createElement('div');
+        row.className = 'sn2-preset-manager-row';
         row.dataset.pmName = name;
-        row.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--border);border-radius:6px;';
         const title = document.createElement('div');
-        title.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        title.className = 'sn2-preset-manager-title';
         title.textContent = name;
         const tools = document.createElement('div');
-        tools.style.cssText = 'display:flex;gap:4px;';
+        tools.className = 'sn2-preset-manager-tools';
         [['copy', '複製', 'ico-copy'], ['up', '上へ', 'ico-arrowUp'], ['down', '下へ', 'ico-arrowDown'], ['delete', '削除', 'ico-trash2']].forEach(([action, titleText, icon]) => {
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = 'tb-icon-btn';
+          btn.className = action === 'delete' ? 'tb-icon-btn sn2-preset-manager-btn sn2-preset-manager-btn--delete' : 'tb-icon-btn sn2-preset-manager-btn';
           btn.dataset.pmAction = action;
           btn.title = titleText;
+          btn.setAttribute('aria-label', `${titleText}: ${name}`);
           btn.disabled = (action === 'up' && index === 0) || (action === 'down' && index === names.length - 1);
           btn.innerHTML = `<span class="ico ${icon}"></span>`;
           tools.appendChild(btn);
@@ -814,10 +946,22 @@ class ScriptNoteComponent extends ToolComponent {
       if (action === 'down') this._moveManagedPreset(kind, name, 1, render);
       if (action === 'delete') this._deleteManagedPreset(kind, name, render);
     });
-    overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('.cancel-btn').addEventListener('click', close);
+    overlay.addEventListener('keydown', ev => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    });
+    overlay.addEventListener('click', ev => {
+      if (ev.target === overlay) close();
+    });
     document.body.appendChild(overlay);
     render();
     if (typeof replaceIcons === 'function') replaceIcons(overlay);
+    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+      window.GBModalShell.enhanceOverlay(overlay);
+    }
   }
 
   _duplicateManagedPreset(kind, name, onSaved) {
@@ -871,7 +1015,7 @@ class ScriptNoteComponent extends ToolComponent {
     const cfg = this._managedPresetConfig(kind);
     const data = _snToolReadJsonObject(cfg.storageKey);
     if (!Object.prototype.hasOwnProperty.call(data, name)) return;
-    if (typeof cfConfirm === 'function' && !await cfConfirm(`プリセット「${name}」を削除しますか？`)) return;
+    if (typeof cfConfirm === 'function' && !await cfConfirm(`プリセット「${name}」を削除しますか？`, { danger: true, okLabel: '削除' })) return;
     if (typeof cfConfirm !== 'function' && typeof confirm === 'function' && !confirm(`プリセット「${name}」を削除しますか？`)) return;
     const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
     delete data[name];

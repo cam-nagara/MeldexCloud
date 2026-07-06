@@ -578,7 +578,7 @@
   // ================================================================
   const NAV_PANE_TYPES = new Set(['outliner']);
   const PRIMARY_TOOL_PANE_TYPES = new Set(['chat', 'calendar', 'timer', 'history', 'annotation', 'sticky', 'search']);
-  const TOOL_HOST_PANE_TYPES = new Set([...PRIMARY_TOOL_PANE_TYPES, 'version']);
+  const TOOL_HOST_PANE_TYPES = new Set([...PRIMARY_TOOL_PANE_TYPES, 'detail', 'version']);
   const FILE_OPEN_AVOID_PANE_TYPES = new Set([
     ...NAV_PANE_TYPES,
     ...PRIMARY_TOOL_PANE_TYPES,
@@ -930,27 +930,38 @@
   }
 
   function _getVersionHostPaneInfo() {
-    const allPanes = GBLayout.getAllPanes(GBLayout.root).filter(pane => {
+    const isEligiblePane = (pane) => {
       const activeTab = pane.tabs?.[pane.activeTabIndex];
       return !activeTab || !NAV_PANE_TYPES.has(activeTab.type);
-    });
-    const preferredPanes = allPanes.filter(pane => !pane.locked);
-    const candidatePanes = preferredPanes.length ? preferredPanes : allPanes;
-    for (const pane of candidatePanes) {
-      if ((pane.tabs || []).some(t => PRIMARY_TOOL_PANE_TYPES.has(t.type))) {
-        return { paneId: pane.id, reusable: true };
+    };
+    const findReusable = (panes) => {
+      for (const pane of panes) {
+        if ((pane.tabs || []).some(t => PRIMARY_TOOL_PANE_TYPES.has(t.type))) {
+          return { paneId: pane.id, reusable: true };
+        }
       }
-    }
-    for (const pane of candidatePanes) {
-      if (_isVersionHostPane(pane)) {
-        return { paneId: pane.id, reusable: true };
+      for (const pane of panes) {
+        if (_isVersionHostPane(pane)) {
+          return { paneId: pane.id, reusable: true };
+        }
       }
-    }
+      return null;
+    };
+    const visiblePanes = GBLayout.getAllPanes(GBLayout.root, { activeOnly: true }).filter(isEligiblePane);
+    const allPanes = GBLayout.getAllPanes(GBLayout.root).filter(isEligiblePane);
+    const visiblePreferred = visiblePanes.filter(pane => !pane.locked);
+    const allPreferred = allPanes.filter(pane => !pane.locked);
+    const visibleCandidatePanes = visiblePreferred.length ? visiblePreferred : visiblePanes;
+    const allCandidatePanes = allPreferred.length ? allPreferred : allPanes;
+    const visibleMatch = findReusable(visibleCandidatePanes);
+    if (visibleMatch) return visibleMatch;
+    const allMatch = findReusable(allCandidatePanes);
+    if (allMatch) return allMatch;
     const activeContentPane = _getContentPane(GBLayout.activePane);
     const activeContentInfo = activeContentPane ? GBLayout.findNode(GBLayout.root, activeContentPane)?.node : null;
     const fallbackPaneId = activeContentInfo && !activeContentInfo.locked
       ? activeContentPane
-      : candidatePanes[candidatePanes.length - 1]?.id || allPanes[allPanes.length - 1]?.id || null;
+      : allCandidatePanes[allCandidatePanes.length - 1]?.id || allPanes[allPanes.length - 1]?.id || null;
     return { paneId: fallbackPaneId, reusable: false };
   }
 

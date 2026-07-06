@@ -131,12 +131,12 @@ function renderSettingsThemeDetailDialog(activeTab, options = {}) {
 
 function _renderSettingsThemeDetailEntrySection() {
   const shortcuts = SETTINGS_THEME_DETAIL_TABS.map(tab =>
-    `<button type="button" class="cs-toggle settings-theme-detail-shortcut" data-action="openSettingsThemeDetailDialog" data-args='["${esc(tab.id)}"]'>${esc(tab.label)}</button>`
+    `<button type="button" class="cs-toggle settings-theme-detail-shortcut" data-e2e-id="settings-theme-detail-shortcut-${esc(tab.id)}" data-action="openSettingsThemeDetailDialog" data-args='["${esc(tab.id)}"]'>${esc(tab.label)}</button>`
   ).join('');
   return `<section class="gb-section gb-section--boxed settings-theme-detail-entry">
     <div class="gb-section-title">テーマ詳細設定</div>
     <div class="settings-theme-detail-entry-row">
-      <button type="button" class="cs-toggle settings-theme-detail-open-btn" data-action="openSettingsThemeDetailDialog" data-args='["surface"]'>${typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : ''}<span>テーマ詳細設定を開く</span></button>
+      <button type="button" class="cs-toggle settings-theme-detail-open-btn" data-e2e-id="settings-theme-detail-open" data-action="openSettingsThemeDetailDialog" data-args='["surface"]'>${typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : ''}<span>テーマ詳細設定を開く</span></button>
       <div class="settings-theme-detail-shortcuts">${shortcuts}</div>
     </div>
   </section>`;

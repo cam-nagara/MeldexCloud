@@ -134,6 +134,12 @@ async function _refreshDbActionPanels(dbPath, preferredCtx = null) {
   }
 }
 
+let _dbActionModalSeq = 0;
+
+function _dbActionFocusTrigger(triggerEl) {
+  try { triggerEl?.focus?.({ preventScroll: true }); } catch { triggerEl?.focus?.(); }
+}
+
 // === エントリ詳細にアクションボタンを表示 ===
 async function _renderEntityActions(data, entityPath) {
   const container = document.getElementById('entity-freetext');
@@ -150,15 +156,19 @@ async function _renderEntityActions(data, entityPath) {
   bar.className = 'db-action-bar';
   bar.style.cssText = 'padding:8px 0;display:flex;gap:8px;flex-wrap:wrap;';
 
-  meta.actions.forEach(action => {
+  meta.actions.forEach((action, actionIndex) => {
     const btn = document.createElement('button');
-    btn.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;font-size:13px;';
+    btn.type = 'button';
+    btn.className = 'db-action-btn';
+    btn.dataset.e2eId = `entity-db-action-${actionIndex}`;
+    btn.setAttribute('aria-label', (action.label || 'アクション') + 'を実行');
+    btn.title = action.label || 'アクション';
     const safeIcon = _safeDbActionIconName(action.icon);
     if (safeIcon && typeof lucide === 'function') btn.innerHTML = lucide(safeIcon, 14);
     const label = document.createElement('span');
     label.textContent = action.label || 'アクション';
     btn.appendChild(label);
-    btn.addEventListener('click', () => _showDbActionModal(action, data, entityPath));
+    btn.addEventListener('click', () => _showDbActionModal(action, data, entityPath, btn));
     bar.appendChild(btn);
   });
 
@@ -166,12 +176,17 @@ async function _renderEntityActions(data, entityPath) {
 }
 
 // === アクションモーダル表示 ===
-function _showDbActionModal(action, data, entityPath) {
+function _showDbActionModal(action, data, entityPath, triggerEl = null) {
   const entryName = data.entity || '';
   const properties = data.properties || {};
+  const seq = ++_dbActionModalSeq;
+  const titleId = `db-action-modal-title-${seq}`;
+  const descId = `db-action-modal-desc-${seq}`;
 
-  let html = '<div class="modal-overlay"><div class="modal" style="width:500px;max-height:80vh;overflow:auto;">';
-  html += `<h3 style="margin:0 0 12px;">${esc(action.label || 'アクション実行')}</h3>`;
+  let html = '<div class="modal-overlay" data-db-action-modal="1">';
+  html += `<div class="modal db-action-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" style="width:min(500px, calc(100vw - 32px));max-height:min(80vh, calc(100vh - 32px));overflow:auto;">`;
+  html += `<h3 id="${titleId}" class="gb-modal-title" style="margin:0 0 12px;">${esc(action.label || 'アクション実行')}</h3>`;
+  html += `<div id="${descId}" class="gb-section-desc" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">入力内容を確認して実行します。</div>`;
 
   // エントリ本文（操作手順等）をプレビュー表示
   if (data.page_content) {
@@ -193,30 +208,54 @@ function _showDbActionModal(action, data, entityPath) {
   if (action.input_fields && action.input_fields.length > 0) {
     html += '<div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">入力項目:</div>';
     action.input_fields.forEach((field, i) => {
-      html += `<div style="margin-bottom:8px;"><label style="font-size:12px;color:var(--fg2);">${esc(field.property)}${field.required ? ' *' : ''}</label>`;
+      const fieldId = `db-action-field-${seq}-${i}`;
+      html += `<div style="margin-bottom:8px;"><label for="${fieldId}" style="font-size:12px;color:var(--fg2);">${esc(field.property)}${field.required ? ' *' : ''}</label>`;
       if (field.type === 'select' && field.options) {
-        html += `<select data-field-index="${i}" class="gb-select" style="width:100%;">`;
+        html += `<select id="${fieldId}" data-field-index="${i}" data-e2e-id="db-action-field-${i}" class="gb-select" style="width:100%;">`;
         html += '<option value="">-- 選択 --</option>';
         field.options.forEach(opt => { html += `<option value="${esc(opt)}">${esc(opt)}</option>`; });
         html += '</select>';
       } else {
-        html += `<input data-field-index="${i}" type="text" placeholder="${esc(field.placeholder || '')}" style="width:100%;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;box-sizing:border-box;">`;
+        html += `<input id="${fieldId}" data-field-index="${i}" data-e2e-id="db-action-field-${i}" type="text" class="gb-input" placeholder="${esc(field.placeholder || '')}" style="width:100%;box-sizing:border-box;">`;
       }
       html += '</div>';
     });
   }
 
   html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">';
-  html += '<button class="modal-cancel" style="padding:4px 16px;cursor:pointer;">キャンセル</button>';
-  html += '<button class="modal-exec primary" style="padding:4px 16px;cursor:pointer;">実行</button>';
+  html += '<button type="button" class="gb-btn gb-btn-sm modal-cancel" data-e2e-id="db-action-modal-cancel" style="min-height:44px;">キャンセル</button>';
+  html += '<button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary modal-exec" data-e2e-id="db-action-modal-exec" style="min-height:44px;">実行</button>';
   html += '</div></div></div>';
 
   const overlay = document.createElement('div');
   overlay.innerHTML = html;
   const el = overlay.firstChild;
   document.body.appendChild(el);
+  const modal = el.querySelector('.db-action-modal');
+  let closed = false;
+  const closeModal = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeydown);
+    el.remove();
+    _dbActionFocusTrigger(triggerEl);
+  };
+  const onKeydown = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeModal();
+    }
+  };
+  document.addEventListener('keydown', onKeydown);
+  el.addEventListener('pointerdown', (ev) => {
+    if (ev.target === el) closeModal();
+  });
+  window.GBModalShell?.enhanceAll?.();
+  requestAnimationFrame(() => {
+    try { modal?.focus?.({ preventScroll: true }); } catch { modal?.focus?.(); }
+  });
 
-  el.querySelector('.modal-cancel').addEventListener('click', () => el.remove());
+  el.querySelector('.modal-cancel').addEventListener('click', closeModal);
   el.querySelector('.modal-exec').addEventListener('click', async () => {
     // バリデーション
     const inputValues = {};
@@ -234,7 +273,7 @@ function _showDbActionModal(action, data, entityPath) {
       }
     }
     await _executeDbAction(action, data, entityPath, inputValues);
-    el.remove();
+    closeModal();
   });
 }
 

@@ -73,6 +73,40 @@
       || overlay?.classList?.contains('cloud-conflict-resolver-overlay');
   }
 
+  function _mobileSheetMaxWidth() {
+    const rawWidth = window.visualViewport?.width
+      || window.innerWidth
+      || document.documentElement?.clientWidth
+      || 640;
+    const zoom = Math.max(0.1, _zoom() || 1);
+    return Math.max(240, Math.floor((Math.floor(rawWidth) - 56) / zoom)) + 'px';
+  }
+
+  function _mobileSheetOverlayHeight() {
+    const rawHeight = window.visualViewport?.height
+      || window.innerHeight
+      || document.documentElement?.clientHeight
+      || 720;
+    const zoom = Math.max(0.1, _zoom() || 1);
+    return Math.max(240, Math.floor(Math.floor(rawHeight) / zoom)) + 'px';
+  }
+
+  function _mobileSheetMaxHeight() {
+    const rawHeight = window.visualViewport?.height
+      || window.innerHeight
+      || document.documentElement?.clientHeight
+      || 720;
+    const zoom = Math.max(0.1, _zoom() || 1);
+    return Math.max(180, Math.floor((Math.floor(rawHeight) - 72) / zoom)) + 'px';
+  }
+
+  function _applyMobileSheetGeometry(overlay, dialog) {
+    if (overlay?.style) overlay.style.setProperty('--gb-mobile-dialog-overlay-height', _mobileSheetOverlayHeight());
+    if (!dialog?.style) return;
+    dialog.style.setProperty('--gb-mobile-dialog-sheet-max-width', _mobileSheetMaxWidth());
+    dialog.style.setProperty('--gb-mobile-dialog-sheet-max-height', _mobileSheetMaxHeight());
+  }
+
   function _clearMobileSheet(overlay) {
     const dialog = overlay?.querySelector?.('.gb-mobile-dialog-sheet');
     overlay?.classList?.remove('gb-mobile-dialog-overlay', 'gb-mobile-dialog-overlay-open', 'gb-mobile-dialog-overlay-closing');
@@ -151,9 +185,13 @@
     overlay.dataset.mobileDialogSheetActive = '1';
     dialog.classList.add('gb-mobile-dialog-sheet');
     dialog.setAttribute('data-mobile-dialog-sheet', '1');
+    _applyMobileSheetGeometry(overlay, dialog);
     if (wasActive) {
       overlay.classList.add('gb-mobile-dialog-overlay-open');
       dialog.classList.add('gb-mobile-dialog-sheet-open');
+      overlay.style.opacity = '1';
+      dialog.style.transition = 'none';
+      dialog.style.transform = 'translateY(0)';
     } else {
       overlay.classList.remove('gb-mobile-dialog-overlay-open');
       dialog.classList.remove('gb-mobile-dialog-sheet-open');
@@ -303,7 +341,6 @@
       header = document.createElement('div');
       header.className = 'gb-modal-shell-header';
       candidate.classList.add('gb-modal-shell-title');
-      candidate.style.margin = '0';
       header.appendChild(candidate);
       modal.insertBefore(header, modal.firstChild);
       return header;
@@ -529,10 +566,33 @@
     });
   }
 
+  function _isMobileDialogSheetActive(overlay, modal) {
+    return overlay.dataset.mobileDialogSheetActive === '1' || modal.dataset.mobileDialogSheet === '1';
+  }
+
+  function _clearModalShellGeometryForSheet(modal) {
+    modal.classList.remove('gb-modal-resizable');
+    modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
+    ['position', 'margin', 'left', 'top', 'height'].forEach(prop => {
+      modal.style[prop] = '';
+    });
+  }
+
+  function _syncResizableShell(overlay, modal, header, footer) {
+    if (_isMobileDialogSheetActive(overlay, modal)) {
+      _clearModalShellGeometryForSheet(modal);
+      return false;
+    }
+    _ensureResizeHandles(modal, header, footer);
+    _bindDrag(header, modal, footer);
+    _ensureGeometry(modal, header, footer);
+    return true;
+  }
+
   function enhanceOverlay(overlay) {
     if (!overlay) return;
     _syncMobileSheet(overlay);
-    if (overlay.dataset.modalShellEnhanced === '1' || overlay.dataset.modalShellEnhanced === 'skip') return;
+    if (overlay.dataset.modalShellEnhanced === 'skip') return;
     if (overlay.dataset.modalShell === 'off') {
       overlay.dataset.modalShellEnhanced = 'skip';
       return;
@@ -546,28 +606,23 @@
       overlay.dataset.modalShellEnhanced = 'skip';
       return;
     }
-    overlay.dataset.modalShellEnhanced = '1';
-    overlay.addEventListener('click', (ev) => {
-      if (ev.target !== overlay) return;
-      if (!_suppressOverlayClick(overlay)) return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-    }, true);
+    const alreadyEnhanced = overlay.dataset.modalShellEnhanced === '1';
+    if (!alreadyEnhanced) {
+      overlay.dataset.modalShellEnhanced = '1';
+      overlay.addEventListener('click', (ev) => {
+        if (ev.target !== overlay) return;
+        if (!_suppressOverlayClick(overlay)) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }, true);
+    }
     modal.classList.add('gb-modal-shell');
+    if (!modal.getAttribute('role')) modal.setAttribute('role', 'dialog');
+    if (!modal.getAttribute('aria-modal')) modal.setAttribute('aria-modal', 'true');
     const header = _ensureHeader(modal);
     const footer = _ensureFooter(modal);
     _ensureBody(modal, header, footer);
-    if (overlay.dataset.mobileDialogSheetActive === '1' || modal.dataset.mobileDialogSheet === '1') {
-      modal.classList.remove('gb-modal-resizable');
-      modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
-      ['position', 'margin', 'left', 'top', 'height'].forEach(prop => {
-        modal.style[prop] = '';
-      });
-      return;
-    }
-    _ensureResizeHandles(modal, header, footer);
-    _bindDrag(header, modal, footer);
-    _ensureGeometry(modal, header, footer);
+    _syncResizableShell(overlay, modal, header, footer);
   }
 
   function enhanceAll() {

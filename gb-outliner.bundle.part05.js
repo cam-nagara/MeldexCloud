@@ -1,3 +1,29 @@
+
+  const endLasso = () => {
+    if (!tracking && !active) return;
+    const wasActive = active;
+    const hadCandidateRow = !!candidateRow;
+    const suppressClickNode = candidateRow?.closest?.('.tree-node') || null;
+    active = false;
+    tracking = false;
+    removeDocumentPointerEndHandlers();
+    box?.remove();
+    box = null;
+    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
+      try { scroller.releasePointerCapture(pointerId); } catch {}
+    }
+    pointerId = null;
+    pointerCaptured = false;
+    if (candidateRow) {
+      candidateRow.draggable = candidateRowDraggable;
+      candidateRow = null;
+      candidateRowDraggable = null;
+    }
+    // pointerdown で設定した inline position を元に戻す
+    if (_savedScrollerPosition !== null) {
+      scroller.style.position = _savedScrollerPosition;
+      _savedScrollerPosition = null;
+    }
     if (!wasActive && !hadCandidateRow && selectionMode === 'replace') treeSelection.clear();
     if (wasActive && hadCandidateRow) {
       _outlinerSuppressNextTreeRowClick = true;

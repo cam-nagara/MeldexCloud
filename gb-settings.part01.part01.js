@@ -12,6 +12,13 @@ const MELDEX_LLM_API_KEY_URLS = Object.freeze({
 const MELDEX_WEBCLIP_GUIDE_PATH = 'MeldexHome/マニュアル/03_設定と連携/Chrome拡張機能の設定.md';
 const MELDEX_DEFAULT_APPS_GUIDE_PATH = 'MeldexHome/マニュアル/04_サポート/Windows 既定アプリの設定.md';
 
+function _settingsStorageLabel() {
+  const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
+  if (mode === 'dropbox') return 'Dropboxと接続中';
+  if (mode === 'server') return 'Meldex共有サーバーに接続中';
+  return 'このPCに保存';
+}
+
 function getMeldexSampleDownloadUrl() {
   const cfg = window.MeldexCloudRuntimeConfig || {};
   return String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
@@ -69,6 +76,35 @@ function _shouldUseSettingsMobileLayout() {
   return window.innerWidth <= 768;
 }
 
+function _settingsLayoutZoom() {
+  const zoom = typeof _getZoom === 'function'
+    ? Number(_getZoom())
+    : Number.parseFloat(document.documentElement?.style?.zoom || '1');
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+}
+
+function _settingsModalViewportLimit(axis, margin, fallback) {
+  const viewport = axis === 'height'
+    ? (window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 720)
+    : (window.visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || 1024);
+  const zoom = _settingsLayoutZoom();
+  return Math.max(fallback, Math.floor((viewport - margin) / zoom));
+}
+
+function _settingsModalViewportStyle(isMobile) {
+  const widthLimit = _settingsModalViewportLimit('width', isMobile ? 16 : 72, isMobile ? 240 : 320);
+  const heightLimit = _settingsModalViewportLimit('height', isMobile ? 16 : 72, isMobile ? 240 : 320);
+  const baseWidth = isMobile ? 560 : 980;
+  const baseHeight = isMobile ? 600 : 720;
+  return [
+    'box-sizing:border-box',
+    `width:min(${baseWidth}px, ${widthLimit}px)`,
+    `max-width:${widthLimit}px`,
+    `height:min(${baseHeight}px, ${heightLimit}px)`,
+    `max-height:${heightLimit}px`,
+  ].join(';') + ';';
+}
+
 function _normalizeAvatarBgColor(value) {
   const raw = String(value || '').trim();
   if (/^#[0-9a-f]{3}$/i.test(raw) || /^#[0-9a-f]{6}$/i.test(raw) || /^#[0-9a-f]{8}$/i.test(raw)) return raw;
@@ -105,61 +141,41 @@ async function showSettingsModal(opts) {
   } catch {}
   // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
+  const settingsNavigationTabs = typeof getSettingsNavigationTabs === 'function'
+    ? getSettingsNavigationTabs()
+    : [
+      { id: 'ユーザー・共同作業', desc: 'ユーザー名、ワークスペース、メンバー', icon: 'usersRound' },
+      { id: '保存先・フォルダ', desc: 'ホームフォルダ、保存先、ソースフォルダ', icon: 'folder' },
+      { id: '表示・起動', desc: '表示サイズ、見やすさ、起動時の動作', icon: 'monitorCog' },
+      { id: 'テーマ', desc: 'テーマ、テーマカラー、フォント', icon: 'palette' },
+      { id: 'ショートカット', desc: 'キーボード操作', icon: 'keyboard' },
+      { id: 'AI・Discord', desc: 'AIキー、AI使用量、Discord連携', icon: 'bot' },
+      { id: 'インポート', desc: '外部取り込み、Notion同期、拡張機能', icon: 'download' },
+      { id: '導入・アプリ連携', desc: 'サンプル、ホーム画面追加、ファイル関連付け', icon: 'download' },
+      { id: '履歴・引き継ぎ', desc: 'Undo、バージョン保存、設定移行', icon: 'history' },
+      { id: 'ゴミ箱・データ保守', desc: 'ゴミ箱、バックアップ、内部データ', icon: 'database' },
+      { id: 'フィードバック', desc: 'フィードバック、利用統計、診断', icon: 'messageSquareText' },
+    ];
   const settingsTabGroups = [
-    { label: '基本', tabs: ['全般','テーマ','ユーザー'] },
-    { label: 'AI・連携', tabs: ['LLM','LLMコスト','Discord Bot','拡張機能'] },
-    { label: '作業環境', tabs: ['ワークスペース','取り込み','ショートカット'] },
-    { label: '安全・保守', tabs: ['ゴミ箱','データベース','フィードバック'] },
+    { label: '設定', tabs: settingsNavigationTabs.map(tab => tab.id) },
   ];
   const settingsTabs = settingsTabGroups.flatMap(group => group.tabs);
-  const settingsTabLabels = {
-    'LLM': 'チャットAI',
-    'LLMコスト': 'AI使用量',
-    'Discord Bot': 'Discord連携',
-  };
-  const settingsTabDescriptions = {
-    '全般': '保存先、表示、履歴、レイアウト',
-    'テーマ': '色、外観、画面ごとの見た目',
-    'LLM': 'チャットAI、モデル、プロバイダ',
-    'LLMコスト': '利用量、上限、集計',
-    'Discord Bot': '通知とDiscord連携',
-    'ユーザー': '名前、アイコン、チーム情報',
-    'ワークスペース': '共有作業場所とメンバー',
-    '取り込み': 'サンプル、外部データ、拡張',
-    '拡張機能': '追加機能と連携モジュール',
-    'ショートカット': 'キーボード操作',
-    'ゴミ箱': '削除済み項目の確認',
-    'データベース': 'シートと内部データの保守',
-    'フィードバック': '診断、同意、送信設定',
-  };
-  const settingsTabIcons = {
-    '全般': 'settings',
-    'テーマ': 'palette',
-    'LLM': 'bot',
-    'LLMコスト': 'coins',
-    'Discord Bot': 'messageCircle',
-    'ユーザー': 'user',
-    'ワークスペース': 'usersRound',
-    '取り込み': 'download',
-    '拡張機能': 'blocks',
-    'ショートカット': 'keyboard',
-    'ゴミ箱': 'trash2',
-    'データベース': 'database',
-    'フィードバック': 'messageSquareText',
-  };
-  const settingsTabLabel = (name) => settingsTabLabels[name] || name;
-  const settingsTabDescription = (name) => settingsTabDescriptions[name] || '';
-  const settingsTabIcon = (name) => settingsTabIcons[name] || 'circle';
-  const requestedPanel = _settingsCanonicalPanelName(opts.panel || '');
+  const settingsTabLabel = (name) => typeof _settingsNavigationTabLabel === 'function' ? _settingsNavigationTabLabel(name) : name;
+  const settingsTabDescription = (name) => typeof _settingsNavigationDescription === 'function' ? _settingsNavigationDescription(name) : '';
+  const settingsTabIcon = (name) => typeof _settingsNavigationIcon === 'function' ? _settingsNavigationIcon(name) : 'circle';
+  const defaultSettingsTab = typeof _settingsDefaultTabId === 'function' ? _settingsDefaultTabId() : (settingsTabs[0] || '全般');
+  const requestedPanel = opts.panel ? (typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(opts.panel).tabId : _settingsCanonicalPanelName(opts.panel || '')) : '';
   _settingsThemeSetDirty(false);
   window._settingsOutlinerRootsDirty = false;
   // テーマ変更のキャンセル用にスナップショットを保存
   const _themeSnapshot = snapshotThemeVars();
   const _currentTheme = detectCurrentTheme();
-  const _isDropboxConnected = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox';
-  const _storageLabel = _isDropboxConnected ? 'Dropboxと接続中' : 'このPCに保存';
+  const _storageLabel = _settingsStorageLabel();
   const _workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
-  const _storageDetail = _workspaceState?.path
+  const _serverConnection = window.MeldexRuntimeAdapter?.getServerConnection?.() || null;
+  const _storageDetail = _serverConnection?.url
+    ? _serverConnection.url
+    : _workspaceState?.path
     ? `${_workspaceState.path}${_workspaceState.access ? ' / ' + _workspaceState.access : ''}`
     : '未接続';
   const _webClipperDesktopSetupAvailable = isWebClipperDesktopSetupAvailable();
@@ -169,9 +185,7 @@ async function showSettingsModal(opts) {
   o.className = 'modal-overlay';
   o.dataset.settingsModal = '1';
   const _isMobile = _shouldUseSettingsMobileLayout();
-  const _settingsModalStyle = _isMobile
-    ? 'box-sizing:border-box;width:min(560px, calc(100vw - 16px));max-width:calc(100vw - 16px);height:min(600px, calc(100vh - 16px));max-height:calc(100vh - 16px);'
-    : 'box-sizing:border-box;width:min(980px, calc(100vw - 48px));max-width:calc(100vw - 48px);height:min(720px, calc(100vh - 64px));max-height:calc(100vh - 64px);';
+  const _settingsModalStyle = _settingsModalViewportStyle(_isMobile);
   o.innerHTML = `<div class="modal settings-modal" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
       ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
@@ -191,6 +205,11 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-nav-item{width:100%;display:grid;gap:3px;margin:0 0 6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--fg);text-align:left;font:inherit;cursor:pointer;}
       .settings-modal .settings-nav-item::after{content:attr(data-desc);display:block;color:var(--fg2);font-size:12px;line-height:1.25;}
       .settings-modal .settings-nav-item:hover,.settings-modal .settings-nav-item:focus-visible{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, var(--bg2));outline:none;}
+      .settings-modal .settings-subtab-header{display:flex;gap:6px;align-items:center;padding:8px 0 10px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin-bottom:10px;}
+      .settings-modal .settings-subtab-header[hidden]{display:none!important;}
+      .settings-modal .settings-subtab{height:30px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg2);font:inherit;cursor:pointer;}
+      .settings-modal .settings-subtab:hover,.settings-modal .settings-subtab:focus-visible{border-color:var(--accent);color:var(--fg);outline:none;}
+      .settings-modal .settings-subtab.active{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 16%, var(--bg2));color:var(--fg);font-weight:700;}
       .settings-modal .settings-panel.settings-panel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;align-content:start;}
       .settings-modal .settings-panel.settings-panel-grid[hidden]{display:none!important;}
       .settings-modal .settings-panel-grid .gb-section{margin:0;}
@@ -215,7 +234,7 @@ async function showSettingsModal(opts) {
         `<div class="settings-sidebar-group" data-settings-sidebar-group="${esc(group.label)}">
           <div class="settings-sidebar-group-label">${esc(group.label)}</div>
           ${group.tabs.map((t) =>
-            `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${t==='全般'?' gb-inner-tab-active active':''}" data-tab="${t}" data-e2e-id="settings-tab-${esc(t)}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
+            `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${t===defaultSettingsTab?' gb-inner-tab-active active':''}" data-tab="${t}" data-e2e-id="settings-tab-${esc(t)}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
           ).join('')}
         </div>`
       ).join('')}
@@ -223,6 +242,7 @@ async function showSettingsModal(opts) {
       <div class="settings-desktop-panel" style="min-width:0;flex:1;display:flex;flex-direction:column;">` : ''}
     <!-- タブ内容 -->
     <div style="overflow-y:auto;flex:1;">
+    <div id="settings-subtab-header" class="settings-subtab-header" hidden></div>
     <!-- 全般 -->
     <div class="settings-panel settings-panel-grid settings-panel-grid--general" data-panel="全般">
       <section class="gb-section gb-section--boxed">
@@ -251,7 +271,7 @@ async function showSettingsModal(opts) {
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">保存先</div>
-        <div class="gb-section-desc">このPCのフォルダ、またはDropboxを保存先として使います。</div>
+        <div class="gb-section-desc">このPCのフォルダ、Dropbox、またはMeldex共有サーバーを保存先として使います。</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
@@ -628,6 +648,7 @@ async function showSettingsModal(opts) {
   window._settingsThemeSnapshot = _themeSnapshot;
   document.body.appendChild(o);
   replaceIcons(o);
+  if (typeof _tagSettingsNavigationSections === 'function') _tagSettingsNavigationSections(o);
   const settingsCloseBtn = o.querySelector('#settings-modal-close');
   settingsCloseBtn?.addEventListener('click', () => {
     closeSettingsModalRestoringTheme();
@@ -683,31 +704,37 @@ async function showSettingsModal(opts) {
   else _settingsTeamFocusFolder = '';
   // 指定パネルを開く
   if (requestedPanel) {
-    if (_isMobile && typeof _openSettingsSection === 'function') {
-      _openSettingsSection(requestedPanel);
+    if (typeof _openSettingsSection === 'function') {
+      _openSettingsSection(opts.panel || requestedPanel);
     } else {
       const tab = o.querySelector(`.settings-tab[data-tab="${requestedPanel}"]`);
-      if (tab) tab.click();
+      if (tab && typeof switchSettingsTab === 'function') switchSettingsTab(tab);
+      else if (tab) tab.click();
     }
-  } else if (!_isMobile && typeof _scheduleSettingsPanelInitialization === 'function') {
-    _scheduleSettingsPanelInitialization('全般', o);
+  } else if (!_isMobile) {
+    const tab = o.querySelector(`.settings-tab[data-tab="${defaultSettingsTab}"]`);
+    if (tab && typeof switchSettingsTab === 'function') switchSettingsTab(tab);
+    else if (tab) tab.click();
+    else if (typeof _openSettingsSection === 'function') _openSettingsSection(defaultSettingsTab, o);
   }
-  if (typeof _syncSettingsModalOverlayForPanel === 'function') _syncSettingsModalOverlayForPanel(o, requestedPanel || '全般');
+  if (typeof _syncSettingsModalOverlayForPanel === 'function') _syncSettingsModalOverlayForPanel(o, requestedPanel || defaultSettingsTab);
 }
 
 async function loadStorageInfoForSettings() {
   const modeEl = document.getElementById('settings-storage-mode');
   const detailEl = document.getElementById('settings-storage-detail');
   if (!modeEl || !detailEl) return;
-  const storageLabel = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox' ? 'Dropboxと接続中' : 'このPCに保存';
+  const storageLabel = _settingsStorageLabel();
+  const serverConnection = window.MeldexRuntimeAdapter?.getServerConnection?.() || null;
   try {
     const info = await window.MeldexStorageAdapter?.describeWorkspace?.();
     const displayPath = info?.path || info?.homePath || '';
     const permission = info?.permission ? ' / ' + info.permission : '';
     modeEl.textContent = '現在: ' + storageLabel;
-    detailEl.textContent = '接続先: ' + (displayPath ? (displayPath + permission) : '未接続');
+    detailEl.textContent = '接続先: ' + (serverConnection?.url || (displayPath ? (displayPath + permission) : '未接続'));
   } catch {
     modeEl.textContent = '現在: ' + storageLabel;
+    if (serverConnection?.url) detailEl.textContent = '接続先: ' + serverConnection.url;
   }
 }
 

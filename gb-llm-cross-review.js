@@ -272,35 +272,79 @@
     return resultRun;
   }
 
-  function _close(overlay) {
+  function _restoreFocus(el) {
+    if (!el || typeof el.focus !== 'function' || !el.isConnected) return;
+    try { el.focus({ preventScroll: true }); } catch { el.focus(); }
+  }
+
+  function _focusInitialDialogControl(modal) {
+    if (!modal?.isConnected) return;
+    const focusTarget = modal.querySelector('select:not([disabled]), textarea:not([disabled]), input:not([disabled]), button:not([disabled])') || modal;
+    if (typeof focusTarget.focus !== 'function') return;
+    try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
+  }
+
+  function _close(overlay, options = {}) {
     if (_activeController) {
       try { _activeController.abort(); } catch {}
       _activeController = null;
     }
+    const cleanup = overlay?.__llmReviewCleanup;
+    if (typeof cleanup === 'function') cleanup();
+    const returnFocus = overlay?.__llmReviewReturnFocus || null;
     overlay?.remove();
+    if (options.restoreFocus !== false) setTimeout(() => _restoreFocus(returnFocus), 0);
   }
 
-  function _buildOverlay() {
+  function _buildOverlay(options = {}) {
     const overlay = _el('div', 'modal-overlay');
+    overlay.dataset.llmReviewDialog = '1';
+    overlay.dataset.e2eId = 'llm-review-overlay';
     overlay.style.display = 'flex';
     overlay.style.alignItems = 'center';
     overlay.style.justifyContent = 'center';
     overlay.style.zIndex = '11000';
+    overlay.__llmReviewReturnFocus = options.returnFocus || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const modal = _el('div', 'llm-review-modal modal');
+    modal.dataset.e2eId = 'llm-review-dialog';
+    modal.tabIndex = -1;
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'llm-review-dialog-title');
+    modal.setAttribute('aria-describedby', 'llm-review-dialog-status');
     const header = _el('div', 'llm-review-header');
-    header.appendChild(_el('div', 'llm-review-title', 'LLMレビュー'));
-    const closeBtn = _button('閉じる', 'gb-btn gb-btn-xs');
-    closeBtn.style.marginLeft = 'auto';
+    const title = _el('div', 'llm-review-title', 'LLMレビュー');
+    title.id = 'llm-review-dialog-title';
+    header.appendChild(title);
+    const closeBtn = _button('', 'gb-btn gb-btn-xs gb-btn-icon llm-review-close');
+    closeBtn.dataset.e2eId = 'llm-review-close';
+    closeBtn.setAttribute('aria-label', 'LLMレビューを閉じる');
+    closeBtn.title = '閉じる';
+    if (typeof lucide === 'function') closeBtn.insertAdjacentHTML('beforeend', lucide('x', 14));
+    else closeBtn.textContent = 'x';
     closeBtn.addEventListener('click', () => _close(overlay));
     header.appendChild(closeBtn);
     const body = _el('div', 'llm-review-body');
+    body.dataset.e2eId = 'llm-review-body';
     const footer = _el('div', 'llm-review-footer');
     const status = _el('div', 'llm-review-status');
+    status.id = 'llm-review-dialog-status';
+    status.dataset.e2eId = 'llm-review-status';
+    status.setAttribute('aria-live', 'polite');
     status.style.marginRight = 'auto';
     footer.appendChild(status);
     modal.append(header, body, footer);
     overlay.appendChild(modal);
+    const keyHandler = event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      _close(overlay);
+    };
+    overlay.__llmReviewCleanup = () => document.removeEventListener('keydown', keyHandler, true);
+    document.addEventListener('keydown', keyHandler, true);
     document.body.appendChild(overlay);
+    setTimeout(() => _focusInitialDialogControl(modal), 0);
     return { overlay, body, footer, status };
   }
 
@@ -316,6 +360,7 @@
 
   function _renderReviewerChecks(container, reviewers, preset) {
     container.textContent = '';
+    container.dataset.e2eId = 'llm-review-reviewers';
     const enabled = new Set(preset?.reviewer_ids || []);
     (reviewers || []).forEach(reviewer => {
       const label = _el('label', 'llm-review-check');
@@ -323,6 +368,7 @@
       input.type = 'checkbox';
       input.value = reviewer.reviewer_id || '';
       input.checked = enabled.has(reviewer.reviewer_id);
+      input.dataset.e2eId = 'llm-review-reviewer-check';
       const text = _el('span', '', reviewer.name || reviewer.reviewer_id || '');
       label.append(input, text);
       container.appendChild(label);
@@ -459,6 +505,7 @@
 
   function _renderBulkStateActions(run, status, onStateChange, rerender) {
     const wrap = _el('div', 'llm-review-bulk-actions');
+    wrap.dataset.e2eId = 'llm-review-bulk-actions';
     wrap.appendChild(_el('span', 'llm-review-bulk-label', '一括変更'));
     const canPersist = run?.options?.save_results !== false;
     const issueIds = _issuesForRun(run).map(issue => issue.issue_id);
@@ -470,6 +517,8 @@
     ];
     actions.forEach(([state, label]) => {
       const btn = _button(label, 'llm-review-state-btn');
+      btn.dataset.e2eId = 'llm-review-bulk-state';
+      btn.dataset.reviewState = state;
       btn.disabled = !canPersist || !issueIds.length;
       if (!canPersist) btn.title = 'レビュー結果を保存すると一括変更できます';
       btn.addEventListener('click', async () => {
@@ -530,6 +579,7 @@
 
   function _renderIssue(run, issue, status, onStateChange) {
     const card = _el('div', 'llm-review-issue');
+    card.dataset.e2eId = 'llm-review-issue';
     card.dataset.severity = issue.severity || 'medium';
     card.appendChild(_el('div', 'llm-review-issue-title', `[${_severityLabel(issue.severity)}] ${issue.issue || ''}`));
     const meta = _el('div', 'llm-review-issue-meta');
@@ -550,16 +600,21 @@
       card.appendChild(_el('div', 'llm-review-meta', '警告: ' + issue.warnings.join(' / ')));
     }
     const reason = _el('textarea', 'llm-review-textarea');
+    reason.dataset.e2eId = 'llm-review-issue-reason';
     reason.placeholder = '採用理由 / 却下理由';
     reason.value = issue.state_reason || '';
     const learn = _el('label', 'llm-review-check');
     const learnInput = document.createElement('input');
     learnInput.type = 'checkbox';
     learnInput.checked = issue.accepted_state !== 'pending' && !!issue.apply_to_editor_learning;
+    learnInput.dataset.e2eId = 'llm-review-issue-learning';
     learn.append(learnInput, _el('span', '', 'この傾向を今後のレビューに反映'));
     const actions = _el('div', 'llm-review-issue-actions');
+    actions.dataset.e2eId = 'llm-review-issue-actions';
     Object.entries(STATE_LABELS).forEach(([state, label]) => {
       const btn = _button(label, 'llm-review-state-btn');
+      btn.dataset.e2eId = 'llm-review-issue-state';
+      btn.dataset.reviewState = state;
       btn.dataset.active = issue.accepted_state === state ? '1' : '0';
       if (run?.options?.save_results === false) {
         btn.disabled = true;
@@ -590,7 +645,7 @@
   }
 
   async function openLlmCrossReviewDialog(options = {}) {
-    const { overlay, body, footer, status } = _buildOverlay();
+    const { overlay, body, footer, status } = _buildOverlay({ returnFocus: options.returnFocus });
     const targetCandidates = _targetCandidates(options.target);
     let target = targetCandidates[0] || _normalizeTargetInfo(options.target || _targetInfo());
     const sourceFolder = options.source_folder || _sourceFolderValue();
@@ -600,6 +655,7 @@
     const targetLabel = _el('label', 'llm-review-label');
     targetLabel.appendChild(_el('span', '', '対象ファイル'));
     const targetSelect = _el('select', 'llm-review-select');
+    targetSelect.dataset.e2eId = 'llm-review-target-select';
     _fillTargetSelect(targetSelect, targetCandidates, target);
     targetLabel.appendChild(targetSelect);
     controls.appendChild(targetLabel);
@@ -610,18 +666,22 @@
     const presetLabel = _el('label', 'llm-review-label');
     presetLabel.appendChild(_el('span', '', 'レビュー内容'));
     const presetSelect = _el('select', 'llm-review-select');
+    presetSelect.dataset.e2eId = 'llm-review-preset-select';
     presetLabel.appendChild(presetSelect);
     controls.appendChild(presetLabel);
     const priorityLabel = _el('label', 'llm-review-label');
     priorityLabel.appendChild(_el('span', '', '今回の重点'));
     const priority = _el('textarea', 'llm-review-textarea');
+    priority.dataset.e2eId = 'llm-review-priority';
     priority.placeholder = '特に見てほしい点';
     priorityLabel.appendChild(priority);
     controls.appendChild(priorityLabel);
     const details = document.createElement('details');
     details.className = 'llm-review-details';
+    details.dataset.e2eId = 'llm-review-details';
     const detailsSummary = document.createElement('summary');
     detailsSummary.textContent = '詳細設定';
+    detailsSummary.dataset.e2eId = 'llm-review-details-summary';
     details.appendChild(detailsSummary);
     const reviewerBox = _el('div', '');
     details.appendChild(reviewerBox);
@@ -629,11 +689,13 @@
     const saveInput = document.createElement('input');
     saveInput.type = 'checkbox';
     saveInput.checked = true;
+    saveInput.dataset.e2eId = 'llm-review-save-results';
     saveLabel.append(saveInput, _el('span', '', 'レビュー結果を保存'));
     details.appendChild(saveLabel);
     const providerLabel = _el('label', 'llm-review-label');
     providerLabel.appendChild(_el('span', '', '実行エンジン'));
     const executionProvider = _el('select', 'llm-review-select');
+    executionProvider.dataset.e2eId = 'llm-review-execution-provider';
     _fillExecutionProviderSelect(executionProvider);
     providerLabel.appendChild(executionProvider);
     details.appendChild(providerLabel);
@@ -647,6 +709,9 @@
     const runBtn = _button('実行', 'gb-btn gb-btn-primary');
     const revisionBtn = _button('改稿案作成', 'gb-btn gb-btn-primary');
     const cancelBtn = _button('中止', 'gb-btn');
+    runBtn.dataset.e2eId = 'llm-review-run';
+    revisionBtn.dataset.e2eId = 'llm-review-revision';
+    cancelBtn.dataset.e2eId = 'llm-review-cancel';
     cancelBtn.disabled = true;
     const updateRevisionButton = () => {
       const acceptedIds = _acceptedIssueIds(currentRun);

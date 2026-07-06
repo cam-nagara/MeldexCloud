@@ -12,6 +12,7 @@
   let _currentTarget = null;
   let _openingTarget = false;
   let _renderSeq = 0;
+  let _portedPanel = null;
 
   function _isEnabled() {
     return document.body?.dataset?.cloudMobile === '1'
@@ -229,9 +230,23 @@
     btn.setAttribute('aria-disabled', canOpen ? 'false' : 'true');
   }
 
+  function _syncEntityChatButton() {
+    const btn = document.querySelector('#' + DRAWER_ID + ' .cloud-mobile-side-drawer-chat');
+    if (!btn) return;
+    const canChat = _currentTarget?.kind === 'entity' && !!_currentTarget.entityPath;
+    btn.hidden = !canChat;
+    btn.disabled = !canChat;
+    btn.setAttribute('aria-disabled', canChat ? 'false' : 'true');
+  }
+
+  function _syncHeaderButtons() {
+    _syncOpenButton();
+    _syncEntityChatButton();
+  }
+
   function _setCurrentTarget(target) {
     _currentTarget = target || null;
-    _syncOpenButton();
+    _syncHeaderButtons();
   }
 
   function _isVisible(el) {
@@ -293,12 +308,24 @@
   function _hideDrawerNow() {
     const backdrop = document.getElementById(BACKDROP_ID);
     const drawer = document.getElementById(DRAWER_ID);
+    _restorePortedPanel();
     backdrop?.classList?.remove('open');
     _clearDismissDrag(drawer);
     drawer?.classList?.remove('open');
     drawer?.setAttribute('aria-hidden', 'true');
     if (document.body) delete document.body.dataset.cloudMobileSideDrawerOpen;
     _setCurrentTarget(null);
+  }
+
+  function _restorePortedPanel() {
+    const ported = _portedPanel;
+    _portedPanel = null;
+    if (!ported?.element) return;
+    ported.element.classList.remove('cloud-mobile-side-drawer-panel-content');
+    if (ported.placeholder?.parentNode) {
+      ported.placeholder.parentNode.insertBefore(ported.element, ported.placeholder);
+      ported.placeholder.remove();
+    }
   }
 
   function _fallbackLinkEntry(target) {
@@ -354,7 +381,28 @@
       if (typeof showStatus === 'function') showStatus('リンク先を開けませんでした', true);
     } finally {
       _openingTarget = false;
-      _syncOpenButton();
+      _syncHeaderButtons();
+    }
+  }
+
+  async function _openCurrentTargetChat() {
+    const target = _currentTarget;
+    if (target?.kind !== 'entity' || !target.entityPath) return;
+    try {
+      const ok = await _flushActiveEditor();
+      if (!ok || target !== _currentTarget || !isOpen()) return;
+      const path = String(target.entityPath);
+      if (typeof window.openEntityChatForPath === 'function') {
+        window.openEntityChatForPath(path);
+      } else if (typeof window.openEntityAiChat === 'function') {
+        window.openEntityAiChat(path);
+      } else if (typeof openFileChat === 'function') {
+        openFileChat(path);
+      } else if (typeof showStatus === 'function') {
+        showStatus('チャットを開けません', true);
+      }
+    } catch {
+      if (typeof showStatus === 'function') showStatus('チャットを開けません', true);
     }
   }
 
@@ -453,20 +501,22 @@
       drawer.setAttribute('aria-modal', 'false');
       drawer.setAttribute('aria-labelledby', TITLE_ID);
       drawer.innerHTML = `
-        <button type="button" class="cloud-mobile-drawer-handle cloud-mobile-right-drawer-handle" aria-label="詳細ドロワーを右へ閉じる" title="詳細ドロワーを右へ閉じる">${_iconHtml('chevronsRight', 20, '›')}</button>
+        <button type="button" class="cloud-mobile-drawer-handle cloud-mobile-right-drawer-handle" data-e2e-id="cloud-mobile-side-drawer-dismiss-handle" aria-label="詳細ドロワーを右へ閉じる" title="詳細ドロワーを右へ閉じる">${_iconHtml('chevronsRight', 20, '›')}</button>
         <div class="cloud-mobile-side-drawer-header">
           <strong id="${TITLE_ID}" class="cloud-mobile-side-drawer-title"></strong>
-          <button type="button" class="cloud-mobile-side-drawer-open" aria-label="本画面で開いて編集" title="本画面で開いて編集">${_iconHtml('externalLink', 20, '↗')}</button>
-          <button type="button" class="cloud-mobile-side-drawer-close" aria-label="閉じる" title="閉じる">${_iconHtml('x', 20, '×')}</button>
+          <button type="button" class="cloud-mobile-side-drawer-chat" data-e2e-id="cloud-mobile-side-drawer-entity-chat" aria-label="チャットを開く" title="チャットを開く" hidden>${_iconHtml('messagesSquare', 20, 'Chat')}</button>
+          <button type="button" class="cloud-mobile-side-drawer-open" data-e2e-id="cloud-mobile-side-drawer-open-main" aria-label="本画面で開いて編集" title="本画面で開いて編集">${_iconHtml('externalLink', 20, '↗')}</button>
+          <button type="button" class="cloud-mobile-side-drawer-close" data-e2e-id="cloud-mobile-side-drawer-close" aria-label="閉じる" title="閉じる">${_iconHtml('x', 20, '×')}</button>
         </div>
         <div id="${BODY_ID}" class="cloud-mobile-side-drawer-body"></div>`;
       drawer.querySelector('.cloud-mobile-right-drawer-handle')?.addEventListener('click', close);
+      drawer.querySelector('.cloud-mobile-side-drawer-chat')?.addEventListener('click', _openCurrentTargetChat);
       drawer.querySelector('.cloud-mobile-side-drawer-open')?.addEventListener('click', _openCurrentTargetForEdit);
       drawer.querySelector('.cloud-mobile-side-drawer-close')?.addEventListener('click', close);
       document.body.appendChild(drawer);
       _installDismissGesture(drawer);
       _installHandleDismissGesture(drawer.querySelector('.cloud-mobile-right-drawer-handle'), drawer);
-      _syncOpenButton();
+      _syncHeaderButtons();
     }
     _installDismissGesture(drawer);
     _installHandleDismissGesture(drawer.querySelector('.cloud-mobile-right-drawer-handle'), drawer);
@@ -482,6 +532,7 @@
     if (!_isEnabled()) return null;
     const refs = _ensureDrawer();
     if (!refs?.body) return null;
+    _restorePortedPanel();
     _renderSeq += 1;
     refs.title.textContent = title || '';
     refs.drawer.dataset.drawerKind = kind || '';
@@ -496,6 +547,22 @@
     refs.drawer.setAttribute('aria-hidden', 'false');
     _syncOpenButton();
     return refs.body;
+  }
+
+  function openElement(title, element, options) {
+    if (!_isEnabled() || !element?.parentNode) return false;
+    const parent = element.parentNode;
+    const placeholder = document.createComment('cloud-mobile-side-drawer-panel-placeholder');
+    _setCurrentTarget(null);
+    const body = _openShellNow(title || '', options?.kind || 'panel');
+    if (!body) return false;
+    body.classList.add('cloud-mobile-side-drawer-body--panel');
+    parent.insertBefore(placeholder, element);
+    element.classList.add('cloud-mobile-side-drawer-panel-content');
+    body.appendChild(element);
+    _portedPanel = { element, placeholder };
+    _syncHeaderButtons();
+    return true;
   }
 
   function close() {
@@ -574,6 +641,7 @@
         const parent = document.createElement('button');
         parent.type = 'button';
         parent.className = 'cloud-mobile-side-drawer-parent';
+        parent.dataset.e2eId = 'cloud-mobile-side-drawer-parent-db';
         parent.textContent = '← ' + (_fileName(parentDb) || parentDb);
         parent.title = parentDb;
         parent.addEventListener('click', () => { _openParentDatabase(parentDb); });
@@ -596,6 +664,9 @@
       page.appendChild(pageTitle);
       const editor = document.createElement('div');
       editor.className = 'cloud-mobile-side-drawer-editable';
+      editor.dataset.e2eId = 'cloud-mobile-side-drawer-entity-body';
+      editor.setAttribute('role', 'textbox');
+      editor.setAttribute('aria-label', name + 'の本文');
       editor.contentEditable = 'true';
       editor.dataset.path = noteTarget.path;
       editor.dataset.frontmatter = '';
@@ -673,6 +744,7 @@
     isOpen,
     openBoardLink,
     openEntity,
+    openElement,
     close,
   };
 })();

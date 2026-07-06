@@ -499,6 +499,16 @@ Object.assign(ScriptNoteEditor.prototype, {
     return { getBoundingClientRect: () => anchorRect };
   },
 
+  _clearDetailAutoColorForManualColor(chara, prop) {
+    if (!chara?.autoColor || (prop !== 'bgColor' && prop !== 'textColor')) return;
+    const act = chara.autoColorTarget || 'bg';
+    const targets = typeof act === 'object' ? Object.values(act) : [act];
+    const hasBg = targets.some(v => v === 'bg' || v === 'both');
+    const hasText = targets.some(v => v === 'text' || v === 'both');
+    if (prop === 'bgColor' && hasBg) delete chara.autoColor;
+    if (prop === 'textColor' && hasText) delete chara.autoColor;
+  },
+
   _bulkColorChange(prop, panelContainer) {
     // 一括色変更のトリガー元ボタンを探す
     const toolbar = this._detailBulkBar;
@@ -508,7 +518,10 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._pushUndo('一括色変更');
         this._detailSelection.forEach(idx => {
           const chara = this.doc.characters[idx];
-          if (chara) chara[prop] = color;
+          if (chara) {
+            chara[prop] = color;
+            this._clearDetailAutoColorForManualColor(chara, prop);
+          }
         });
         this._refreshRowStyles();
         this._markDirty();
@@ -525,7 +538,10 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._pushUndo('一括色変更');
         this._detailSelection.forEach(idx => {
           const chara = this.doc.characters[idx];
-          if (chara) chara[prop] = input.value;
+          if (chara) {
+            chara[prop] = input.value;
+            this._clearDetailAutoColorForManualColor(chara, prop);
+          }
         });
         this._refreshRowStyles();
         this._markDirty();
@@ -600,14 +616,20 @@ Object.assign(ScriptNoteEditor.prototype, {
         <div class="sn2-bulk-apply-row">
           <button type="button" class="sn2-detail-add-btn" data-bulk-apply>適用</button>
         </div>
-      </div>`;
+        </div>`;
     let closeHandler = null;
-    const closePopup = () => {
+    let keyHandler = null;
+    const closePopup = (restoreFocus = false) => {
       popup.remove();
       if (closeHandler) {
-        document.removeEventListener('pointerdown', closeHandler);
+        document.removeEventListener('pointerdown', closeHandler, true);
         closeHandler = null;
       }
+      if (keyHandler) {
+        document.removeEventListener('keydown', keyHandler, true);
+        keyHandler = null;
+      }
+      if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchor);
     };
     const bulkValues = {};
     const isEmptyBulkValue = (value) => value === '' || value === null || value === undefined
@@ -691,25 +713,33 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: anchor,
-        close: closePopup,
+        close: () => closePopup(true),
       });
     }
     const positionAnchor = this._detailMultiSelectionPositionAnchor(anchor, panelContainer) || anchor;
     if (typeof positionPopup === 'function') positionPopup(popup, positionAnchor.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+    keyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePopup(true);
+    };
+    document.addEventListener('keydown', keyHandler, true);
     setTimeout(() => {
       closeHandler = (ev) => {
         if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-fmt-popup') && !ev.target.closest?.('.gb-palette-popup')) {
           closePopup();
         }
       };
-      document.addEventListener('pointerdown', closeHandler);
+      if (popup.isConnected) document.addEventListener('pointerdown', closeHandler, true);
     }, 0);
   },
 
   // DB読み込みモーダル
   async _showDbImportModal(panelContainer) {
     let overlay = null;
+    let closeModal = () => { if (overlay) overlay.remove(); };
     try {
       const roots = await apiFetch('/outliner-roots');
       if (!Array.isArray(roots) || !roots.length) { showStatus('フォルダツリーがありません', true); return; }
@@ -722,11 +752,23 @@ Object.assign(ScriptNoteEditor.prototype, {
         </div>
         <div id="sn2-db-selected" class="sn2-db-import-selected">選択: 0件</div>
         <div class="btn-row">
-          <button class="btn" id="sn2-db-cancel">キャンセル</button>
-          <button class="primary" id="sn2-db-ok">読み込み</button>
+          <button type="button" class="btn" id="sn2-db-cancel">キャンセル</button>
+          <button type="button" class="primary" id="sn2-db-ok">読み込み</button>
         </div>
       </div>`;
       document.body.appendChild(overlay);
+      window.GBModalShell?.enhanceOverlay?.(overlay);
+      let keyHandler = null;
+      closeModal = () => {
+        if (keyHandler) { document.removeEventListener('keydown', keyHandler, true); keyHandler = null; }
+        if (overlay?.isConnected) overlay.remove();
+      };
+      keyHandler = (ev) => {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        closeModal();
+      };
+      document.addEventListener('keydown', keyHandler, true);
       const treeHost = overlay.querySelector('#sn2-db-tree');
       const selectedNames = new Set();
       const isCharacterDbFolder = (item) => /キャラ|キャラクター|登場人物|人物|character|chara|cast/i.test(String(item?.name || item?.path || ''));
@@ -777,7 +819,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         empty.textContent = 'キャラ用のシートが見つかりませんでした';
         treeHost.appendChild(empty);
       }
-      overlay.querySelector('#sn2-db-cancel').addEventListener('click', () => overlay.remove());
+      overlay.querySelector('#sn2-db-cancel').addEventListener('click', () => closeModal());
       overlay.querySelector('#sn2-db-ok').addEventListener('click', () => {
         this._pushUndo('DBインポート');
         selectedNames.forEach(name => {
@@ -794,11 +836,11 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._detailSelection?.clear();
         this._markDirty();
         this.renderDetailPanel(panelContainer);
-        overlay.remove();
+        closeModal();
       });
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
     } catch (err) {
-      if (overlay) overlay.remove();
+      closeModal();
       if (typeof showStatus === 'function') showStatus('DB読み込みエラー: ' + err.message, true);
     }
   },
@@ -820,13 +862,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         } else {
           chara[prop] = color;
           // 手動で色を変更した場合はautoColorをクリア（手動設定を優先）
-          if (chara.autoColor) {
-            const act = chara.autoColorTarget || 'bg';
-            const hasBg = typeof act === 'object' ? Object.values(act).some(v => v === 'bg' || v === 'both') : (act === 'bg' || act === 'both');
-            const hasText = typeof act === 'object' ? Object.values(act).some(v => v === 'text' || v === 'both') : (act === 'text' || act === 'both');
-            if (prop === 'bgColor' && hasBg) delete chara.autoColor;
-            if (prop === 'textColor' && hasText) delete chara.autoColor;
-          }
+          this._clearDetailAutoColorForManualColor(chara, prop);
         }
         if (prop === 'bgColor') {
           if (chara[prop]) Object.assign(anchorEl.style, { background: chara[prop], backgroundSize: '', backgroundPosition: '' });
@@ -852,6 +888,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       input.addEventListener('input', () => {
         this._pushUndo('タイプ色変更');
         chara[prop] = input.value;
+        this._clearDetailAutoColorForManualColor(chara, prop);
         if (prop === 'bgColor') Object.assign(anchorEl.style, { background: input.value });
         if (prop === 'textColor') Object.assign(anchorEl.style, { color: input.value });
         this._refreshRowStyles();

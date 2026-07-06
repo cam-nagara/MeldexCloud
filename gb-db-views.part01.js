@@ -579,8 +579,9 @@ async function _showDbConfigModal(dbPath, ctx) {
   o.querySelector('#dbcfg-grid-border')?.addEventListener('click', () => {
     if (typeof showGridBorderModal === 'function') showGridBorderModal(localCtx);
   });
-  o.querySelector('#dbcfg-conditional-color')?.addEventListener('click', () => {
-    if (typeof showConditionalColorPickerModal === 'function') showConditionalColorPickerModal(dbPath, localCtx);
+  const conditionalColorButton = o.querySelector('#dbcfg-conditional-color');
+  conditionalColorButton?.addEventListener('click', () => {
+    if (typeof showConditionalColorPickerModal === 'function') showConditionalColorPickerModal(dbPath, localCtx, conditionalColorButton);
   });
 
   o.querySelector('#dbcfg-save').addEventListener('click', async () => {

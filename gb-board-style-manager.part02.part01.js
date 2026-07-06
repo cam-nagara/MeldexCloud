@@ -19,7 +19,15 @@ let _bdLastDepthEditIndex = 0;
 let _bdLastCardEditId = null;
 let _bdLastLineEditId = null;
 
-function _bdCloseStyleManagerPopup() {
+function _bdSetStyleManagerPopupAnchorState(anchor, expanded) {
+  if (!anchor?.setAttribute) return;
+  anchor.setAttribute('aria-haspopup', 'dialog');
+  anchor.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
+
+function _bdCloseStyleManagerPopup(options) {
+  const anchor = _bdStyleManagerPopupAnchor;
+  _bdSetStyleManagerPopupAnchorState(anchor, false);
   _bdStyleManagerPopup?.remove();
   _bdStyleManagerPopup = null;
   _bdStyleManagerPopupAnchor = null;
@@ -27,6 +35,66 @@ function _bdCloseStyleManagerPopup() {
     document.removeEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
     _bdStyleManagerPopupCloseHandler = null;
   }
+  if (options?.restoreFocus) _bdFocusStyleManagerPopupAnchor(anchor);
+}
+
+function _bdConfigureStyleManagerPopup(popup, label, anchorEl) {
+  if (!popup) return;
+  popup.setAttribute('role', 'dialog');
+  popup.setAttribute('aria-label', label);
+  popup.setAttribute('aria-modal', 'false');
+  popup.tabIndex = -1;
+  _bdSetStyleManagerPopupAnchorState(anchorEl, true);
+}
+
+function _bdStyleManagerPopupItems(popup) {
+  return [...(popup?.querySelectorAll?.('.bd-style-list-item') || [])]
+    .filter(item => item.isConnected && item.offsetParent !== null);
+}
+
+function _bdMoveStyleManagerPopupFocus(popup, direction) {
+  const items = _bdStyleManagerPopupItems(popup);
+  if (!items.length) return;
+  const currentIndex = items.indexOf(document.activeElement);
+  const nextIndex = currentIndex < 0
+    ? (direction > 0 ? 0 : items.length - 1)
+    : (currentIndex + direction + items.length) % items.length;
+  items[nextIndex].focus();
+}
+
+function _bdBindStyleManagerPopupKeys(popup, getAnchor) {
+  if (!popup || popup.dataset.bdStyleManagerKeys === '1') return;
+  popup.dataset.bdStyleManagerKeys = '1';
+  popup.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      _bdCloseStyleManagerPopup({ restoreFocus: true });
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      const targetItem = event.target?.closest?.('.bd-style-list-item');
+      if (targetItem || event.target === popup) {
+        event.preventDefault();
+        _bdMoveStyleManagerPopupFocus(popup, event.key === 'ArrowDown' ? 1 : -1);
+      }
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === ' ') && event.target?.closest?.('.bd-style-list-item')) {
+      event.preventDefault();
+      event.target.closest('.bd-style-list-item')?.click();
+    }
+  });
+  popup.addEventListener('focusout', () => {
+    const anchor = typeof getAnchor === 'function' ? getAnchor() : _bdStyleManagerPopupAnchor;
+    _bdSetStyleManagerPopupAnchorState(anchor, !!popup.isConnected);
+  });
+}
+
+function _bdPrepareStyleManagerPopupControls(popup) {
+  popup?.querySelectorAll?.('.bd-detail-style-action').forEach(button => {
+    const label = button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent.trim();
+    if (label) button.setAttribute('aria-label', label);
+  });
 }
 
 function _bdStyleManagerPopupCloseButtonHtml() {
@@ -42,17 +110,65 @@ function _bdFocusStyleManagerPopupAnchor(resolveAnchor) {
   focus(); setTimeout(focus, 0); if (typeof requestAnimationFrame === 'function') requestAnimationFrame(focus);
 }
 
+function _bdClampStyleManagerPopupToViewport(popup) {
+  if (!popup?.getBoundingClientRect) return;
+  const margin = 4;
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth || 0;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight || 0;
+  if (!viewportWidth || !viewportHeight) return;
+
+  let rect = popup.getBoundingClientRect();
+  const maxVisibleHeight = Math.max(120, viewportHeight - margin * 2);
+  for (let i = 0; i < 4 && rect.height > maxVisibleHeight + 1; i += 1) {
+    const computedMax = parseFloat(getComputedStyle(popup).maxHeight || '');
+    const currentLimit = Number.isFinite(computedMax) && computedMax > 0 ? computedMax : rect.height;
+    const cssToVisualRatio = Number.isFinite(computedMax) && computedMax > 0
+      ? computedMax / Math.max(1, rect.height)
+      : 1;
+    const nextLimit = Math.min(currentLimit, Math.max(120, maxVisibleHeight * cssToVisualRatio * 0.98));
+    popup.style.maxHeight = nextLimit + 'px';
+    popup.style.height = nextLimit + 'px';
+    popup.style.overflowY = 'auto';
+    rect = popup.getBoundingClientRect();
+  }
+
+  const maxVisibleWidth = Math.max(160, viewportWidth - margin * 2);
+  for (let i = 0; i < 4 && rect.width > maxVisibleWidth + 1; i += 1) {
+    const computedMax = parseFloat(getComputedStyle(popup).maxWidth || '');
+    const currentLimit = Number.isFinite(computedMax) && computedMax > 0 ? computedMax : rect.width;
+    const cssToVisualRatio = Number.isFinite(computedMax) && computedMax > 0
+      ? computedMax / Math.max(1, rect.width)
+      : 1;
+    const nextLimit = Math.min(currentLimit, Math.max(160, maxVisibleWidth * cssToVisualRatio * 0.98));
+    popup.style.maxWidth = nextLimit + 'px';
+    popup.style.width = nextLimit + 'px';
+    popup.style.overflowX = 'auto';
+    rect = popup.getBoundingClientRect();
+  }
+
+  let left = rect.left;
+  let top = rect.top;
+  if (rect.right > viewportWidth - margin) left = Math.max(margin, viewportWidth - rect.width - margin);
+  if (rect.bottom > viewportHeight - margin) top = Math.max(margin, viewportHeight - rect.height - margin);
+  if (left < margin) left = margin;
+  if (top < margin) top = margin;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+}
+
 function _bdPositionStyleManagerPopup(popup, anchorEl) {
   if (!popup || !anchorEl?.getBoundingClientRect) return;
   const rect = anchorEl.getBoundingClientRect();
   if (typeof positionPopup === 'function') {
     positionPopup(popup, rect, { prefer: 'below', gap: 4 });
+    _bdClampStyleManagerPopupToViewport(popup);
     return;
   }
   const zoom = typeof _getZoom === 'function' ? _getZoom() : 1;
   popup.style.left = (rect.left / zoom) + 'px';
   popup.style.top = (rect.bottom / zoom + 4) + 'px';
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+  _bdClampStyleManagerPopupToViewport(popup);
 }
 
 // card / line 用のスタイル選択ポップアップ。
@@ -77,6 +193,8 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   document.body.appendChild(popup);
   _bdStyleManagerPopup = popup;
   _bdStyleManagerPopupAnchor = currentAnchor;
+  _bdConfigureStyleManagerPopup(popup, `${kind === 'card' ? 'カード' : 'ライン'}スタイル管理`, currentAnchor);
+  _bdBindStyleManagerPopupKeys(popup, () => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
 
   const render = () => {
     const displayStyles = _bdDisplayedManagedStyles(kind);
@@ -92,11 +210,11 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
     const previewFn = kind === 'card' ? _bdCardStylePreviewHtml : _bdLineStylePreviewHtml;
 
     popup.innerHTML = `
-      <div class="bd-style-manager-popup-list">
+      <div class="bd-style-manager-popup-list" role="listbox" aria-label="${_bdEscAttr(itemLabel)}一覧">
         ${displayStyles.map(style => `
           <div class="bd-style-list-item bd-style-list-item--draggable ${style.id === currentId ? 'active' : ''} ${style.id === activeStyleId ? 'is-applied' : ''}"
                data-bd-style-id="${_bdEscAttr(style.id)}" data-bd-style-item="${_bdEscAttr(style.id)}"
-               draggable="true" tabindex="0" role="button">
+               draggable="true" tabindex="0" role="option" aria-selected="${style.id === currentId ? 'true' : 'false'}" aria-label="${_bdEscAttr(style.name || itemLabel)}">
             <span class="bd-style-list-handle" title="ドラッグして並べ替え">⋮⋮</span>
             <span class="bd-style-list-preview">${previewFn(style)}</span>
             <span class="bd-style-list-name">${esc(style.name)}</span>
@@ -105,11 +223,11 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
         `).join('')}
       </div>
       <div class="bd-style-manager-popup-actions">
-        <button type="button" class="bd-detail-style-action" data-bd-popup-add title="新しい${esc(itemLabel)}を追加">${plusIcon}</button>
-        <button type="button" class="bd-detail-style-action" data-bd-popup-duplicate title="複製">${copyIcon}</button>
-        <button type="button" class="bd-detail-style-action" data-bd-popup-save title="現在の設定をデフォルトとして保存">${saveIcon}</button>
-        <button type="button" class="bd-detail-style-action" data-bd-popup-reset title="デフォルトに戻す">${resetIcon}</button>
-        <button type="button" class="bd-detail-style-action bd-detail-style-action--danger" data-bd-popup-delete title="削除" ${displayStyles.length <= 1 ? 'disabled' : ''}>${trashIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-add title="新しい${esc(itemLabel)}を追加" aria-label="新しい${esc(itemLabel)}を追加">${plusIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-duplicate title="複製" aria-label="複製">${copyIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-save title="現在の設定をデフォルトとして保存" aria-label="現在の設定をデフォルトとして保存">${saveIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-reset title="デフォルトに戻す" aria-label="デフォルトに戻す">${resetIcon}</button>
+        <button type="button" class="bd-detail-style-action bd-detail-style-action--danger" data-bd-popup-delete title="削除" aria-label="削除" ${displayStyles.length <= 1 ? 'disabled' : ''}>${trashIcon}</button>
         ${_bdStyleManagerPopupCloseButtonHtml()}
       </div>`;
 
@@ -124,6 +242,8 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       }
     }
     _bdPositionStyleManagerPopup(popup, currentAnchor);
+    _bdSetStyleManagerPopupAnchorState(currentAnchor, true);
+    _bdPrepareStyleManagerPopupControls(popup);
 
     // リスト項目クリックでアクティブ選択変更
     popup.querySelectorAll('[data-bd-style-id]').forEach(item => {
@@ -135,8 +255,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       });
     });
     popup.querySelector('[data-bd-popup-close]')?.addEventListener('click', () => {
-      _bdCloseStyleManagerPopup();
-      _bdFocusStyleManagerPopupAnchor(() => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
+      _bdCloseStyleManagerPopup({ restoreFocus: true });
     });
 
     // D&D
@@ -338,7 +457,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
     <div class="bd-detail-panel bd-style-in-panel" data-bd-style-in-panel="${_bdEscAttr(kind)}">
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">${esc(itemLabel)}一覧を開く</div>
-        <button type="button" class="bd-style-panel-picker" data-bd-style-panel-picker="${_bdEscAttr(kind)}" data-bd-current-style-id="${_bdEscAttr(selected.id)}" aria-label="${esc(itemLabel)}一覧を開く">
+        <button type="button" class="bd-style-panel-picker" data-bd-style-panel-picker="${_bdEscAttr(kind)}" data-bd-current-style-id="${_bdEscAttr(selected.id)}" aria-label="${esc(itemLabel)}一覧を開く" aria-haspopup="dialog" aria-expanded="false">
           <span class="bd-style-picker-preview">${previewFn(selected)}</span>
           <span class="bd-style-picker-label">${esc(pickerLabelText)}</span>
           <span class="bd-style-picker-caret" aria-hidden="true">▾</span>
@@ -530,7 +649,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">階層一覧を開く</div>
         <div class="bd-detail-style-row">
-          <button type="button" class="bd-style-panel-picker" data-bd-depth-panel-picker="depth" data-bd-depth-current-index="${idx}" aria-label="階層一覧を開く">
+          <button type="button" class="bd-style-panel-picker" data-bd-depth-panel-picker="depth" data-bd-depth-current-index="${idx}" aria-label="階層一覧を開く" aria-haspopup="dialog" aria-expanded="false">
             <span class="bd-style-picker-preview">${previewHtml}</span>
             <span class="bd-style-picker-label">${esc(pickerLabelText)}</span>
             <span class="bd-style-picker-caret" aria-hidden="true">▾</span>
@@ -712,6 +831,8 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
   document.body.appendChild(popup);
   _bdStyleManagerPopup = popup;
   _bdStyleManagerPopupAnchor = currentAnchor;
+  _bdConfigureStyleManagerPopup(popup, '階層別スタイル管理', currentAnchor);
+  _bdBindStyleManagerPopupKeys(popup, () => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
 
   const applyDepthStyles = (renderCb) => {
     if (typeof bdNormalizeDepthStyles === 'function') bd.depthStyles = bdNormalizeDepthStyles(bd.depthStyles);
@@ -733,10 +854,10 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
     const paletteIcon = typeof lucide === 'function' ? lucide('palette', 14) : '色';
 
     popup.innerHTML = `
-      <div class="bd-style-manager-popup-list">
+      <div class="bd-style-manager-popup-list" role="listbox" aria-label="階層別スタイル一覧">
         ${styles.map((style, i) => {
           const tooltip = _bdEscAttr(_bdDepthStyleTooltip(style, i, styles.length));
-          return `<div class="bd-style-list-item bd-depth-style-item ${i === currentIndex ? 'active' : ''}" data-bd-depth-select="${i}" data-bd-depth-item="${i}" draggable="true" title="${tooltip}" aria-label="${tooltip}">
+          return `<div class="bd-style-list-item bd-depth-style-item ${i === currentIndex ? 'active' : ''}" data-bd-depth-select="${i}" data-bd-depth-item="${i}" draggable="true" tabindex="0" role="option" aria-selected="${i === currentIndex ? 'true' : 'false'}" title="${tooltip}" aria-label="${tooltip}">
             <span class="bd-style-list-handle" title="ドラッグして並べ替え">⋮⋮</span>
             <span class="bd-style-list-preview">${_bdDepthStylePreviewHtml(style)}</span>
             <span class="bd-style-list-name">${esc(typeof bdDepthStyleDisplayName === 'function' ? bdDepthStyleDisplayName(style, i, styles.length) : `階層 ${i + 1}`)}</span>
@@ -744,11 +865,11 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
         }).join('')}
       </div>
       <div class="bd-style-manager-popup-actions">
-        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-add title="階層を追加">${plusIcon}</button>
-        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-theme title="テーマカラーを階層別スタイルに適用">${paletteIcon}</button>
-        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-save title="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存">${saveIcon}</button>
-        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-reset title="保存したデフォルトに戻す (未保存ならビルトイン初期値)">${resetIcon}</button>
-        <button type="button" class="bd-detail-style-action bd-detail-style-action--danger" data-bd-popup-depth-delete title="削除" ${styles.length <= 1 ? 'disabled' : ''}>${trashIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-add title="階層を追加" aria-label="階層を追加">${plusIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-theme title="テーマカラーを階層別スタイルに適用" aria-label="テーマカラーを階層別スタイルに適用">${paletteIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-save title="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存" aria-label="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存">${saveIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-reset title="保存したデフォルトに戻す (未保存ならビルトイン初期値)" aria-label="保存したデフォルトに戻す">${resetIcon}</button>
+        <button type="button" class="bd-detail-style-action bd-detail-style-action--danger" data-bd-popup-depth-delete title="削除" aria-label="削除" ${styles.length <= 1 ? 'disabled' : ''}>${trashIcon}</button>
         ${_bdStyleManagerPopupCloseButtonHtml()}
       </div>`;
 
@@ -760,6 +881,8 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       }
     }
     _bdPositionStyleManagerPopup(popup, currentAnchor);
+    _bdSetStyleManagerPopupAnchorState(currentAnchor, true);
+    _bdPrepareStyleManagerPopupControls(popup);
 
     popup.querySelectorAll('[data-bd-depth-select]').forEach(item => {
       item.addEventListener('click', () => {
@@ -770,8 +893,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       });
     });
     popup.querySelector('[data-bd-popup-close]')?.addEventListener('click', () => {
-      _bdCloseStyleManagerPopup();
-      _bdFocusStyleManagerPopupAnchor(() => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
+      _bdCloseStyleManagerPopup({ restoreFocus: true });
     });
 
     popup.querySelectorAll('[data-bd-depth-item]').forEach(item => {

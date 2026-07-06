@@ -1,5 +1,21 @@
     document.body.appendChild(overlay);
-    requiredInput.focus();
+    if (window.innerWidth > 768) {
+      try {
+        requiredInput.focus({ preventScroll: true });
+      } catch (_) {
+        requiredInput.focus();
+      }
+    }
+    try {
+      const resetConsentScroll = () => {
+        dialog.scrollTop = 0;
+        body.scrollTop = 0;
+      };
+      resetConsentScroll();
+      requestAnimationFrame(resetConsentScroll);
+      setTimeout(resetConsentScroll, 80);
+      setTimeout(resetConsentScroll, 180);
+    } catch (_) {}
     return true;
   }
 

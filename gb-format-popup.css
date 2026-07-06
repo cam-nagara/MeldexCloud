@@ -157,6 +157,7 @@
   color: var(--fg);
   font-size: var(--ui-font-12);
   cursor: pointer;
+  white-space: nowrap;
 }
 .gb-fmt-btn.active {
   background: var(--accent);
@@ -190,6 +191,11 @@ input.gb-fmt-num {
   font-size: var(--ui-font-12);
   -moz-appearance: number-input;
 }
+input.gb-fmt-num.gb-fmt-num--w44 { width: 44px; }
+input.gb-fmt-num.gb-fmt-num--w54 { width: 54px; }
+input.gb-fmt-num.gb-fmt-num--w58 { width: 58px; }
+input.gb-fmt-num.gb-fmt-num--w70 { width: 70px; }
+input.gb-fmt-num.gb-fmt-num--w76 { width: 76px; }
 /* スピンボックスは hover/focus でのみ表示（テーマは html の color-scheme で追従） */
 input.gb-fmt-num::-webkit-outer-spin-button,
 input.gb-fmt-num::-webkit-inner-spin-button {
@@ -235,6 +241,10 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   color: var(--fg);
   font-size: var(--ui-font-12);
 }
+.gb-fmt-text.gb-fmt-text--w36 { width: 36px; }
+.gb-fmt-text.gb-fmt-text--w54 { width: 54px; }
+.gb-fmt-text.gb-fmt-text--w60 { width: 60px; }
+.gb-fmt-text.gb-fmt-text--w120 { width: 120px; }
 
 /* select（配置・折返・形状等） */
 .gb-fmt-sel {
@@ -288,4 +298,83 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
 .gb-fmt-reset:hover {
   background: var(--bg);
   color: var(--fg);
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-fmt-popup {
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    box-sizing: border-box;
+    gap: var(--ui-space-3);
+    padding: var(--ui-space-3);
+  }
+
+  .gb-fmt-popup-row {
+    flex-wrap: wrap;
+    gap: var(--ui-space-3);
+  }
+
+  .gb-fmt-popup-group {
+    min-height: 44px;
+  }
+
+  .gb-fmt-swatch,
+  .gb-fmt-swatch-bg,
+  .gb-fmt-swatch-fg,
+  .gb-fmt-swatch--xs,
+  .gb-fmt-swatch--sm {
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+
+  .gb-fmt-btn,
+  .gb-fmt-reset,
+  .gb-fmt-popup-group > .gb-btn-sm,
+  .gb-fmt-popup .meldex-dropdown-close-btn,
+  .gb-fmt-popup [data-meldex-dropdown-close] {
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0 var(--ui-space-4);
+    font-size: var(--ui-font-14);
+  }
+
+  input.gb-fmt-num,
+  input.gb-fmt-num.gb-fmt-num--w44,
+  input.gb-fmt-num.gb-fmt-num--w54,
+  input.gb-fmt-num.gb-fmt-num--w58,
+  input.gb-fmt-num.gb-fmt-num--w70,
+  input.gb-fmt-num.gb-fmt-num--w76,
+  .gb-fmt-text,
+  .gb-fmt-text.gb-fmt-text--w36,
+  .gb-fmt-text.gb-fmt-text--w54,
+  .gb-fmt-sel {
+    height: 44px;
+    min-height: 44px;
+    font-size: var(--ui-font-14);
+  }
+
+  input.gb-fmt-num,
+  input.gb-fmt-num.gb-fmt-num--w44,
+  input.gb-fmt-num.gb-fmt-num--w54,
+  input.gb-fmt-num.gb-fmt-num--w58,
+  input.gb-fmt-num.gb-fmt-num--w70,
+  input.gb-fmt-num.gb-fmt-num--w76 {
+    width: 76px;
+  }
+
+  .gb-fmt-text,
+  .gb-fmt-text.gb-fmt-text--w36,
+  .gb-fmt-text.gb-fmt-text--w54,
+  .gb-fmt-text.gb-fmt-text--w60,
+  .gb-fmt-text.gb-fmt-text--w120 {
+    width: 64px;
+  }
+
+  .gb-fmt-sel--font {
+    max-width: min(100%, 220px);
+  }
 }

@@ -776,14 +776,14 @@
     const status = document.createElement('div');
     status.id = 'settings-beta-feedback-status';
     status.className = 'gb-section-desc';
+    status.setAttribute('aria-live', 'polite');
     status.textContent = _feedbackFormUrl()
       ? '設定済みのフォームURLを利用できます。'
       : '保管シートを作成し、フォームビューを公開した後、そのURLをここに保存してください。';
     section.appendChild(status);
 
     const actions = document.createElement('div');
-    actions.className = 'gb-field-row';
-    actions.style.justifyContent = 'flex-start';
+    actions.className = 'gb-field-row settings-feedback-actions';
     const saveUrlButton = document.createElement('button');
     saveUrlButton.type = 'button';
     saveUrlButton.className = 'gb-btn gb-btn-sm';
@@ -889,9 +889,7 @@
     section.appendChild(desc);
 
     const checks = document.createElement('div');
-    checks.className = 'gb-check-row';
-    checks.style.flexDirection = 'column';
-    checks.style.alignItems = 'flex-start';
+    checks.className = 'gb-check-row settings-feedback-checks';
     const crash = _checkbox('settings-crash-report-enabled', 'クラッシュレポートを送信する', isCrashReportEnabled());
     const telemetry = _checkbox('settings-telemetry-enabled', '利用統計を送信する', isTelemetryEnabled());
     const updates = _checkbox('settings-update-check-enabled', '更新確認のための通信を許可する', !!window.MeldexBetaRelease?.isUpdateCheckEnabled?.());
@@ -903,6 +901,7 @@
     const status = document.createElement('div');
     status.className = 'gb-section-desc';
     status.id = 'settings-feedback-send-status';
+    status.setAttribute('aria-live', 'polite');
     status.textContent = isGoogleConfigured()
       ? 'Google Apps Script Web App: 設定済み'
       : 'Google Apps Script Web App: 未設定（Meldex内の記録のみ有効）';
@@ -936,8 +935,7 @@
     section.appendChild(tokenRow);
 
     const actions = document.createElement('div');
-    actions.className = 'gb-field-row';
-    actions.style.justifyContent = 'flex-start';
+    actions.className = 'gb-field-row settings-feedback-actions';
     const saveGoogleButton = document.createElement('button');
     saveGoogleButton.type = 'button';
     saveGoogleButton.className = 'gb-btn gb-btn-sm';

@@ -1,8 +1,8 @@
 /* Drag-resize support for chat composer inputs. */
 (function () {
   const CONFIGS = [
-    { handleId: 'chat-composer-resize', inputId: 'chat-input', storageKey: 'chat-input-height', minRows: 2, maxRows: 10 },
-    { handleId: 'team-composer-resize', inputId: 'team-input', storageKey: 'team-input-height', minRows: 2, maxRows: 8 },
+    { handleId: 'chat-composer-resize', inputId: 'chat-input', storageKey: 'chat-input-height', minRows: 2, maxRows: 10, label: 'チャット入力欄の高さを調整' },
+    { handleId: 'team-composer-resize', inputId: 'team-input', storageKey: 'team-input-height', minRows: 2, maxRows: 8, label: 'ワークスペースチャット入力欄の高さを調整' },
   ];
 
   function _lineMetrics(input, minRows, maxRows) {
@@ -43,6 +43,17 @@
     return { min: metrics.min, max };
   }
 
+  function _updateHandleAria(handle, bounds, height) {
+    if (!handle || !bounds) return;
+    const min = Math.round(bounds.min);
+    const max = Math.round(bounds.max);
+    const now = Math.round(Math.min(Math.max(Number(height) || min, min), max));
+    handle.setAttribute('aria-valuemin', String(min));
+    handle.setAttribute('aria-valuemax', String(max));
+    handle.setAttribute('aria-valuenow', String(now));
+    handle.setAttribute('aria-valuetext', `入力欄の高さ ${now}px`);
+  }
+
   function _applyHeight(handle, input, cfg, height, persist) {
     const bounds = _bounds(handle, input, cfg);
     const next = Math.round(Math.min(Math.max(Number(height) || bounds.min, bounds.min), bounds.max));
@@ -54,6 +65,7 @@
       input.style.height = next + 'px';
       input.style.overflowY = 'hidden';
     }
+    _updateHandleAria(handle, bounds, next);
     if (persist) localStorage.setItem(cfg.storageKey, String(next));
   }
 
@@ -64,6 +76,10 @@
       _applyHeight(handle, input, cfg, stored, false);
     } else if (typeof window._autoGrowTextarea === 'function') {
       window._autoGrowTextarea(input, cfg.minRows, cfg.maxRows);
+      const target = _resizeTarget(input);
+      _updateHandleAria(handle, bounds, target.getBoundingClientRect().height || bounds.min);
+    } else {
+      _updateHandleAria(handle, bounds, bounds.min);
     }
   }
 
@@ -72,6 +88,11 @@
     const input = document.getElementById(cfg.inputId);
     if (!handle || !input || handle.dataset.chatResizeBound === '1') return;
     handle.dataset.chatResizeBound = '1';
+    if (!handle.getAttribute('role')) handle.setAttribute('role', 'separator');
+    if (!handle.getAttribute('aria-orientation')) handle.setAttribute('aria-orientation', 'horizontal');
+    if (!handle.getAttribute('aria-controls')) handle.setAttribute('aria-controls', cfg.inputId);
+    if (!handle.getAttribute('aria-label')) handle.setAttribute('aria-label', cfg.label || '入力欄の高さを調整');
+    if (!handle.getAttribute('aria-keyshortcuts')) handle.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End');
     _restoreHeight(handle, input, cfg);
 
     handle.addEventListener('pointerdown', event => {

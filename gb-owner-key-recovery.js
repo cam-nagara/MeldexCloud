@@ -14,6 +14,21 @@
     return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
   }
 
+  function _icon(name, size = 14) {
+    return typeof lucide === 'function' ? lucide(name, size) : '';
+  }
+
+  function _restoreFocus(el) {
+    if (!el?.isConnected || typeof el.focus !== 'function') return;
+    try { el.focus({ preventScroll: true }); } catch { try { el.focus(); } catch {} }
+  }
+
+  function _closeRecoveryDialog(overlay, trigger) {
+    if (!overlay?.isConnected) return;
+    overlay.remove();
+    setTimeout(() => _restoreFocus(trigger), 0);
+  }
+
   function _downloadText(filename, text) {
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -162,39 +177,49 @@
     const reason = String(options.reason || '');
     const owner = _isOwner();
     const disabled = owner ? '' : 'disabled';
+    const trigger = options.trigger && document.contains(options.trigger) ? options.trigger : document.activeElement;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.dataset.ownerKeyRecovery = '1';
+    overlay.dataset.e2eId = 'owner-key-recovery-overlay';
     overlay.innerHTML = `
-      <div class="modal" style="width:720px;max-width:94vw;max-height:88vh;overflow:auto;">
-        <div class="gb-field-row" style="justify-content:space-between;gap:8px;margin-bottom:8px;">
-          <h3 style="margin:0;">管理者鍵の復旧</h3>
-          <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-close>${typeof lucide === 'function' ? lucide('x', 14) : '閉じる'}</button>
+      <div class="modal gb-owner-key-recovery-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-key-recovery-title" data-e2e-id="owner-key-recovery-dialog">
+        <div class="gb-modal-header gb-owner-key-dialog-header">
+          <h3 id="owner-key-recovery-title" class="gb-modal-title">管理者鍵の復旧</h3>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-owner-key-dialog-close" aria-label="管理者鍵の復旧を閉じる" data-owner-key-recovery-close data-e2e-id="owner-key-recovery-close">${_icon('x', 14) || '閉じる'}</button>
         </div>
-        <div class="gb-section-desc">${_esc(reason || '署名検証に必要な管理者鍵がこの端末にありません。')}</div>
-        <section class="gb-section gb-section--boxed">
+        <div class="gb-modal-body gb-owner-key-recovery-body" data-e2e-id="owner-key-recovery-body">
+        <div class="gb-section-desc gb-owner-key-recovery-reason">${_esc(reason || '署名検証に必要な管理者鍵がこの端末にありません。')}</div>
+        <section class="gb-section gb-section--boxed gb-owner-key-recovery-section">
           <div class="gb-section-title">パスフレーズから復旧</div>
           <div class="gb-section-desc">管理者が決めた${_esc(minLength)}文字以上のパスフレーズから、現在の保存先用の管理者鍵を再生成します。</div>
-          <label class="gb-field-row">
-            <span class="gb-label" style="min-width:130px;">パスフレーズ</span>
-            <input type="password" class="gb-input" data-owner-key-recovery-passphrase ${disabled} style="flex:1;" autocomplete="new-password">
-            <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-action="derive" ${disabled}>復旧</button>
+          <label class="gb-field-row gb-owner-key-recovery-passphrase-row">
+            <span class="gb-label gb-owner-key-label">パスフレーズ</span>
+            <input type="password" class="gb-input gb-owner-key-recovery-passphrase" data-owner-key-recovery-passphrase data-e2e-id="owner-key-recovery-passphrase" aria-label="管理者鍵復旧パスフレーズ" ${disabled} autocomplete="new-password">
+            <button type="button" class="gb-btn gb-btn-sm gb-owner-key-recovery-action" data-owner-key-recovery-action="derive" ${disabled} data-e2e-id="owner-key-recovery-derive" aria-label="パスフレーズから復旧">復旧</button>
           </label>
         </section>
-        <section class="gb-section gb-section--boxed">
+        <section class="gb-section gb-section--boxed gb-owner-key-recovery-section">
           <div class="gb-section-title">バックアップ鍵から復旧</div>
-          <textarea class="gb-input" data-owner-key-recovery-raw rows="3" ${disabled} style="width:100%;resize:vertical;" placeholder="バックアップファイルの管理者鍵を貼り付け"></textarea>
-          <div class="gb-field-row" style="justify-content:flex-start;gap:6px;margin-top:8px;">
-            <button type="button" class="gb-btn gb-btn-sm" data-owner-key-recovery-action="import" ${disabled}>鍵を復旧</button>
-            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-owner-key-recovery-action="export" ${disabled}>バックアップ保存</button>
+          <textarea class="gb-input gb-owner-key-recovery-raw" data-owner-key-recovery-raw data-e2e-id="owner-key-recovery-raw" rows="3" ${disabled} aria-label="バックアップの管理者鍵" placeholder="バックアップファイルの管理者鍵を貼り付け"></textarea>
+          <div class="gb-field-row gb-owner-key-recovery-actions">
+            <button type="button" class="gb-btn gb-btn-sm gb-owner-key-recovery-action" data-owner-key-recovery-action="import" ${disabled} data-e2e-id="owner-key-recovery-import" aria-label="バックアップ鍵を復旧">鍵を復旧</button>
+            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet gb-owner-key-recovery-action" data-owner-key-recovery-action="export" ${disabled} data-e2e-id="owner-key-recovery-export" aria-label="管理者鍵バックアップを保存">バックアップ保存</button>
           </div>
         </section>
-        <div class="gb-section-desc" data-owner-key-recovery-status></div>
+        <div class="gb-section-desc gb-owner-key-recovery-status" data-owner-key-recovery-status data-e2e-id="owner-key-recovery-status" role="status" aria-live="polite"></div>
+        </div>
       </div>
     `;
     document.body.appendChild(overlay);
-    overlay.querySelector('[data-owner-key-recovery-close]')?.addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); });
+    const close = () => _closeRecoveryDialog(overlay, trigger);
+    overlay.querySelector('[data-owner-key-recovery-close]')?.addEventListener('click', close);
+    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+    overlay.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      close();
+    });
     overlay.addEventListener('click', event => {
       const action = event.target?.closest?.('[data-owner-key-recovery-action]')?.dataset?.ownerKeyRecoveryAction;
       if (action === 'derive') _setFromPassphrase(overlay);
@@ -202,6 +227,11 @@
       if (action === 'export') _exportBackup(overlay);
     });
     if (!owner) _status(overlay, '管理者のみ実行できます。', true);
+    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
+    setTimeout(() => {
+      const target = overlay.querySelector(owner ? '[data-owner-key-recovery-passphrase]' : '[data-owner-key-recovery-close]');
+      target?.focus?.({ preventScroll: true });
+    }, 0);
     return overlay;
   }
 

@@ -1,6 +1,22 @@
 (function () {
   const originalStatusPoliciesView = window.openStatusPoliciesView;
   const stateByContainer = new WeakMap();
+  const TYPE_LABELS = {
+    fact: '事実',
+    decision: '決定',
+    preference: '好み',
+    correction: '訂正',
+    team_consensus: '合意',
+  };
+  const STATUS_LABELS = {
+    accepted: '採用済み',
+    rejected: '却下',
+    pending: '確認待ち',
+    new: '新規',
+    later: 'あとで',
+    reviewed: '確認済み',
+    discarded: '却下',
+  };
 
   function kvEsc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -9,6 +25,16 @@
 
   function kvIcon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+  }
+
+  function kvTypeLabel(value) {
+    const key = String(value || '');
+    return TYPE_LABELS[key] || key || 'すべて';
+  }
+
+  function kvStatusLabel(value) {
+    const key = String(value || '');
+    return STATUS_LABELS[key] || key || '未設定';
   }
 
   function kvAuthToken() {
@@ -72,22 +98,27 @@
     return false;
   }
 
+  async function promptText(message, defaultValue, options) {
+    if (typeof cfPrompt === 'function') return await cfPrompt(message, defaultValue || '', options || {});
+    return window.prompt(message, defaultValue || '');
+  }
+
   function renderShell(container) {
     const state = getState(container);
     container.classList.add('knowledge-layer-view');
     container.innerHTML = `
-      <div class="gb-inner-tabs kv-tabs">
-        <button type="button" class="gb-inner-tab ${state.activeTab === 'overview' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="overview" data-e2e-id="settings-knowledge-tab-overview">${kvIcon('layoutDashboard', 14)} 概要</button>
-        <button type="button" class="gb-inner-tab ${state.activeTab === 'items' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="items" data-e2e-id="settings-knowledge-tab-items">${kvIcon('brain', 14)} 記憶継承</button>
-        <button type="button" class="gb-inner-tab ${state.activeTab === 'taste' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="taste" data-e2e-id="settings-knowledge-tab-taste">${kvIcon('sparkles', 14)} 感性原則</button>
-        <button type="button" class="gb-inner-tab ${state.activeTab === 'rules' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="rules" data-e2e-id="settings-knowledge-tab-rules">${kvIcon('clipboardList', 14)} チャットルール</button>
-        <button type="button" class="gb-inner-tab ${state.activeTab === 'policies' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="policies" data-e2e-id="settings-knowledge-tab-policies">${kvIcon('shieldCheck', 14)} ステータス別ポリシー</button>
+      <div class="gb-inner-tabs kv-tabs" role="tablist" aria-label="ナレッジ">
+        <button type="button" class="gb-inner-tab ${state.activeTab === 'overview' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="overview" data-e2e-id="settings-knowledge-tab-overview" role="tab" aria-selected="${state.activeTab === 'overview' ? 'true' : 'false'}" aria-controls="knowledge-panel-overview" aria-label="概要" title="概要">${kvIcon('layoutDashboard', 14)} 概要</button>
+        <button type="button" class="gb-inner-tab ${state.activeTab === 'items' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="items" data-e2e-id="settings-knowledge-tab-items" role="tab" aria-selected="${state.activeTab === 'items' ? 'true' : 'false'}" aria-controls="knowledge-panel-items" aria-label="記憶継承" title="記憶継承">${kvIcon('brain', 14)} 記憶継承</button>
+        <button type="button" class="gb-inner-tab ${state.activeTab === 'taste' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="taste" data-e2e-id="settings-knowledge-tab-taste" role="tab" aria-selected="${state.activeTab === 'taste' ? 'true' : 'false'}" aria-controls="knowledge-panel-taste" aria-label="感性原則" title="感性原則">${kvIcon('sparkles', 14)} 感性原則</button>
+        <button type="button" class="gb-inner-tab ${state.activeTab === 'rules' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="rules" data-e2e-id="settings-knowledge-tab-rules" role="tab" aria-selected="${state.activeTab === 'rules' ? 'true' : 'false'}" aria-controls="knowledge-panel-rules" aria-label="チャットルール" title="チャットルール">${kvIcon('clipboardList', 14)} チャットルール</button>
+        <button type="button" class="gb-inner-tab ${state.activeTab === 'policies' ? 'gb-inner-tab-active active' : ''}" data-kv-tab="policies" data-e2e-id="settings-knowledge-tab-policies" role="tab" aria-selected="${state.activeTab === 'policies' ? 'true' : 'false'}" aria-controls="knowledge-panel-policies" aria-label="ステータス別ポリシー" title="ステータス別ポリシー">${kvIcon('shieldCheck', 14)} ステータス別ポリシー</button>
       </div>
-      <div data-kv-panel="overview"></div>
-      <div data-kv-panel="items"></div>
-      <div data-kv-panel="taste" hidden></div>
-      <div data-kv-panel="rules" hidden></div>
-      <div data-kv-panel="policies" hidden></div>
+      <div id="knowledge-panel-overview" data-kv-panel="overview" role="tabpanel"></div>
+      <div id="knowledge-panel-items" data-kv-panel="items" role="tabpanel"></div>
+      <div id="knowledge-panel-taste" data-kv-panel="taste" role="tabpanel" hidden></div>
+      <div id="knowledge-panel-rules" data-kv-panel="rules" role="tabpanel" hidden></div>
+      <div id="knowledge-panel-policies" data-kv-panel="policies" role="tabpanel" hidden></div>
     `;
     container.querySelectorAll('[data-kv-tab]').forEach(btn => {
       btn.addEventListener('click', () => switchTab(container, btn.dataset.kvTab));
@@ -146,9 +177,9 @@
           <div class="gb-section-title">${kvIcon('layoutDashboard', 14)} ナレッジ概要</div>
           <div class="gb-section-desc">記憶継承の件数、チャット注入で使われた項目、自動抽出ログ、未解決の競合を確認します。</div>
         </div>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="summary-refresh" data-e2e-id="settings-knowledge-summary-refresh">${kvIcon('refreshCw', 14)} 更新</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="summary-refresh" data-e2e-id="settings-knowledge-summary-refresh" aria-label="更新" title="更新">${kvIcon('refreshCw', 14)} 更新</button>
       </section>
-      <div data-kv-summary-alert></div>
+      <div data-kv-summary-alert aria-live="polite"></div>
       <div data-kv-summary-body class="kv-summary-body">
         <section class="gb-section gb-section--boxed"><div class="gb-section-desc">読み込み中...</div></section>
       </div>
@@ -176,12 +207,20 @@
   function _countListHtml(items, keyName) {
     const list = Array.isArray(items) ? items : [];
     if (!list.length) return '<div class="gb-section-desc">まだありません。</div>';
-    return list.map(item => `
+    return list.map(item => {
+      const rawLabel = item[keyName] || '';
+      const label = keyName === 'type'
+        ? kvTypeLabel(rawLabel)
+        : keyName === 'source_status'
+          ? kvStatusLabel(rawLabel)
+          : (rawLabel || '未設定');
+      return `
       <div class="kv-summary-row" style="display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding:5px 0;">
-        <span>${kvEsc(item[keyName] || '(未設定)')}</span>
+        <span>${kvEsc(label)}</span>
         <strong>${Number(item.count || 0)}</strong>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   function renderSummary(container) {
@@ -253,17 +292,17 @@
           <div class="gb-section-title">${kvIcon('brain', 14)} 記憶継承</div>
           <div class="gb-section-desc">チャットから抽出された決定・事実・好みを、新しいLLMチャットへ自動継承します。</div>
         </div>
-        ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-kv-action="add" data-e2e-id="settings-knowledge-add">${kvIcon('plus', 14)} 手動追加</button>` : ''}
+        ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-kv-action="add" data-e2e-id="settings-knowledge-add" aria-label="手動追加" title="手動追加">${kvIcon('plus', 14)} 手動追加</button>` : ''}
       </section>
       <section class="gb-section gb-section--boxed kv-toolbar">
         <input class="gb-input" data-kv-query data-e2e-id="settings-knowledge-query" aria-label="記憶継承を検索" placeholder="検索" value="${kvEsc(state.query)}">
         <select class="gb-select" data-kv-type data-e2e-id="settings-knowledge-type" aria-label="記憶継承の種類">
-          ${['', 'fact', 'decision', 'preference', 'correction', 'team_consensus'].map(type => `<option value="${type}" ${state.type === type ? 'selected' : ''}>${type || 'すべて'}</option>`).join('')}
+          ${['', 'fact', 'decision', 'preference', 'correction', 'team_consensus'].map(type => `<option value="${type}" ${state.type === type ? 'selected' : ''}>${kvTypeLabel(type)}</option>`).join('')}
         </select>
         <label class="gb-check"><input type="checkbox" data-kv-superseded data-e2e-id="settings-knowledge-include-superseded" aria-label="訂正済みの記憶項目も表示" ${state.includeSuperseded ? 'checked' : ''}> 訂正済みも表示</label>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="refresh" data-e2e-id="settings-knowledge-refresh">${kvIcon('refreshCw', 14)} 更新</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="refresh" data-e2e-id="settings-knowledge-refresh" aria-label="更新" title="更新">${kvIcon('refreshCw', 14)} 更新</button>
       </section>
-      <div data-kv-alert></div>
+      <div data-kv-alert aria-live="polite"></div>
       <section class="gb-section gb-section--boxed">
         <div data-kv-list class="kv-list"><div class="gb-section-desc">読み込み中...</div></div>
       </section>
@@ -329,26 +368,28 @@
   }
 
   function renderItem(item, writable) {
-    const status = item.source_status || '(未設定)';
+    const status = kvStatusLabel(item.source_status);
     const superseded = item.superseded_by ? '<span class="gb-pill">訂正済み</span>' : '';
+    const itemId = Number(item.id);
+    const pinLabel = item.pinned ? '固定解除' : '固定';
     return `
-      <article class="kv-item" data-kv-id="${Number(item.id)}" style="border-bottom:1px solid var(--border);padding:10px 0;">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span class="gb-pill">${kvEsc(item.type)}</span>
+      <article class="kv-item" data-kv-id="${itemId}" data-e2e-id="settings-knowledge-item-${itemId}">
+        <div class="kv-item-head">
+          <span class="gb-pill">${kvEsc(kvTypeLabel(item.type))}</span>
           <strong>${kvEsc(item.subject)}</strong>
           <span class="gb-pill">${kvEsc(status)}</span>
           ${item.is_canonical ? '<span class="gb-pill">確定済み</span>' : ''}
-          ${item.pinned ? '<span class="gb-pill">pinned</span>' : ''}
+          ${item.pinned ? '<span class="gb-pill">固定済み</span>' : ''}
           ${superseded}
         </div>
-        <div style="margin-top:6px;line-height:1.5;">${kvEsc(item.statement)}</div>
-        ${item.reasoning ? `<div class="gb-section-desc" style="margin-top:4px;">理由: ${kvEsc(item.reasoning)}</div>` : ''}
-        <div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+        <div class="kv-item-statement">${kvEsc(item.statement)}</div>
+        ${item.reasoning ? `<div class="gb-section-desc kv-item-reason">理由: ${kvEsc(item.reasoning)}</div>` : ''}
+        <div class="kv-item-actions">
           <span class="gb-section-desc">信頼度 ${Number(item.confidence || 0).toFixed(2)}</span>
-          ${writable ? `<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="pin">${item.pinned ? 'unpin' : 'pin'}</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="edit">編集</button>` : ''}
-          ${item.source_chat_path ? '<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="chat">元チャット</button>' : ''}
-          ${writable ? '<button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-kv-action="delete">削除</button>' : ''}
+          ${writable ? `<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="pin" data-e2e-id="settings-knowledge-item-${itemId}-pin" aria-label="${pinLabel}" title="${pinLabel}">${kvIcon('pin', 14)} ${pinLabel}</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="edit" data-e2e-id="settings-knowledge-item-${itemId}-edit" aria-label="編集" title="編集">${kvIcon('pencil', 14)} 編集</button>` : ''}
+          ${item.source_chat_path ? `<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="chat" data-e2e-id="settings-knowledge-item-${itemId}-chat" aria-label="元チャットを開く" title="元チャットを開く">${kvIcon('messageSquare', 14)} 元チャット</button>` : ''}
+          ${writable ? `<button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-kv-action="delete" data-e2e-id="settings-knowledge-item-${itemId}-delete" aria-label="削除" title="削除">${kvIcon('trash2', 14)} 削除</button>` : ''}
         </div>
       </article>
     `;
@@ -373,7 +414,7 @@
     if (!ensureCanWrite(container)) return;
     const item = itemById(container, id);
     if (!item) return;
-    const rawStatement = window.prompt('記憶内容を編集', item.statement || '');
+    const rawStatement = await promptText('記憶内容を編集', item.statement || '', { okLabel: '保存' });
     if (rawStatement == null) return;
     const statement = String(rawStatement || '').trim();
     if (!statement) {
@@ -390,7 +431,7 @@
   async function deleteItem(container, id) {
     if (!ensureCanWrite(container)) return;
     const ok = typeof cfConfirm === 'function'
-      ? await cfConfirm('この記憶項目を削除しますか？')
+      ? await cfConfirm('この記憶項目を削除しますか？', { danger: true, okLabel: '削除' })
       : window.confirm('この記憶項目を削除しますか？');
     if (!ok) return;
     await kvApi('/knowledge_items/' + encodeURIComponent(id), { method: 'DELETE' });
@@ -406,11 +447,11 @@
 
   async function showManualAdd(container) {
     if (!ensureCanWrite(container)) return;
-    const rawStatement = window.prompt('新しい記憶内容');
+    const rawStatement = await promptText('新しい記憶内容', '', { okLabel: '追加' });
     if (rawStatement == null) return;
     const statement = String(rawStatement || '').trim();
     if (!statement) return;
-    const rawSubject = window.prompt('主語・対象', statement.slice(0, 40));
+    const rawSubject = await promptText('主語・対象', statement.slice(0, 40), { okLabel: '追加' });
     if (rawSubject == null) return;
     const subject = String(rawSubject || '').trim() || statement.slice(0, 40);
     await kvApi('/knowledge_items', {
@@ -431,21 +472,31 @@
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.dataset.knowledgeHomeModal = '1';
+    const closeOverlay = () => {
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+    };
+    const onKeydown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeOverlay();
+    };
     overlay.innerHTML = `
-      <div class="modal knowledge-home-modal" style="width:920px;max-width:94vw;height:720px;max-height:88vh;display:flex;flex-direction:column;">
-        <div class="gb-field-row" style="justify-content:space-between;gap:8px;margin-bottom:8px;">
-          <h3 style="margin:0;">${kvIcon('brain', 16)} ナレッジ</h3>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="knowledge-home-close" data-kv-modal-close aria-label="閉じる">${kvIcon('x', 14)}</button>
+      <div class="modal knowledge-home-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-home-title">
+        <div class="gb-field-row knowledge-home-title-row">
+          <h3 id="knowledge-home-title">${kvIcon('brain', 16)} ナレッジ</h3>
+          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="knowledge-home-close" data-kv-modal-close aria-label="閉じる" title="閉じる">${kvIcon('x', 14)}</button>
         </div>
-        <div data-kv-home-body style="min-height:0;overflow:auto;flex:1;"></div>
+        <div data-kv-home-body class="knowledge-home-body"></div>
       </div>
     `;
     document.body.appendChild(overlay);
+    document.addEventListener('keydown', onKeydown);
     const body = overlay.querySelector('[data-kv-home-body]');
     openKnowledgeLayerView(body, initialTab || 'overview');
-    overlay.querySelector('[data-kv-modal-close]')?.addEventListener('click', () => overlay.remove());
+    overlay.querySelector('[data-kv-modal-close]')?.addEventListener('click', closeOverlay);
     overlay.addEventListener('click', event => {
-      if (event.target === overlay) overlay.remove();
+      if (event.target === overlay) closeOverlay();
     });
   }
 

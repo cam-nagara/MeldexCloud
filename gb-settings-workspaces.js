@@ -50,12 +50,12 @@
   function _memberListHtml(workspace) {
     const members = Array.isArray(workspace?.members) ? workspace.members : [];
     if (!members.length) return '<div class="gb-section-desc">メンバーはまだ登録されていません。</div>';
-    return members.map(member => `<div class="settings-workspace-member" style="display:grid;grid-template-columns:minmax(0,1fr) 120px 32px;gap:6px;align-items:center;margin:4px 0;">
+    return members.map(member => `<div class="settings-workspace-member" style="display:grid;grid-template-columns:minmax(0,1fr) 120px 44px;gap:6px;align-items:center;margin:4px 0;">
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(member.name || '')}</span>
       <select class="gb-select" data-workspace-member-role="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-role-${_escape(member.name || '')}" aria-label="${_escape(member.name || '')}の権限">
         ${['owner','admin','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',member:'メンバー',viewer:'閲覧'}[role]}</option>`).join('')}
       </select>
-      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="メンバーを削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 12)}</button>
+      <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="メンバーを削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
     </div>`).join('');
   }
 
@@ -74,7 +74,7 @@
       </div>
       <div class="gb-field-row">
         <input class="gb-input" data-workspace-name data-e2e-id="settings-workspace-name-${_escape(workspace.id)}" value="${_escape(workspace.name || '')}" aria-label="ワークスペース名">
-        <input class="gb-input" data-workspace-folder data-e2e-id="settings-workspace-folder-${_escape(workspace.id)}" value="${_escape(workspace.folder || '')}" aria-label="フォルダ">
+        <input class="gb-input" data-workspace-folder data-e2e-id="settings-workspace-folder-${_escape(workspace.id)}" value="${_escape(workspace.folder || '')}" aria-label="ワークスペースのフォルダ">
         <button type="button" class="gb-btn gb-btn-sm" data-workspace-save data-e2e-id="settings-workspace-save-${_escape(workspace.id)}">${_icon('save', 14)} 保存</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-workspace-delete data-e2e-id="settings-workspace-delete-${_escape(workspace.id)}">${_icon('trash2', 14)} 削除</button>
       </div>

@@ -2,7 +2,7 @@
   }
   if (field.type === 'boardBgFit') {
     const wrap = document.createElement('span');
-    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
+    wrap.className = 'gb-fs-bg-fit-control';
     const sel = document.createElement('select');
     sel.className = 'gb-select';
     sel.disabled = !(typeof bd !== 'undefined' && bd._bgImage);
@@ -24,11 +24,10 @@
     // ボード追従モード専用: 倍率入力
     const scaleInput = document.createElement('input');
     scaleInput.type = 'number';
-    scaleInput.className = 'gb-input gb-fmt-num';
+    scaleInput.className = 'gb-input gb-fmt-num gb-fmt-num--w70';
     scaleInput.min = '0.05';
     scaleInput.max = '20';
     scaleInput.step = '0.1';
-    scaleInput.style.width = '64px';
     scaleInput.title = '背景画像の表示倍率 (ボード追従モード)';
     _fsSetControlE2e(scaleInput, field, rowLabel, 'scale');
     const curScale = (typeof bd !== 'undefined' && Number.isFinite(Number(bd._bgImageScale))) ? Number(bd._bgImageScale) : 1;
@@ -93,6 +92,7 @@
       slider.max = '100';
       slider.value = String(Math.round(parsed.alpha * 100));
       slider.className = 'cs-alpha';
+      slider.title = field.label + ' 透明度';
       _fsSetControlE2e(slider, field, rowLabel, 'alpha');
       const val = document.createElement('span');
       val.className = 'cs-alpha-val';
@@ -149,6 +149,7 @@
     const checked = unset ? !!field.defaultOn : (cur === field.on);
     const wrap = document.createElement('label');
     wrap.className = 'bd-detail-check';
+    _fsSetControlE2e(wrap, field, rowLabel, 'checkbox-label');
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = checked;
@@ -172,6 +173,7 @@
     const handleToggle = (btn) => {
       const nextOn = !btn.classList.contains('active');
       btn.classList.toggle('active', nextOn);
+      btn.setAttribute('aria-pressed', nextOn ? 'true' : 'false');
       const nextValue = nextOn ? field.on : field.off;
       adapter.set(field, nextValue);
       adapter.applyCss(field, nextValue);
@@ -180,6 +182,7 @@
     if (typeof field.on === 'boolean' && typeof field.off === 'boolean') {
       const wrap = document.createElement('label');
       wrap.className = 'bd-detail-check';
+      _fsSetControlE2e(wrap, field, rowLabel, 'toggle-label');
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.checked = isOn;
@@ -204,6 +207,7 @@
       btn.innerHTML = field.on === 'bold' ? '<b>B</b>' : '<i>I</i>';
       btn.title = field.label;
       _fsSetControlE2e(btn, field, rowLabel, field.on === 'bold' ? 'bold' : 'italic');
+      btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
       btn.addEventListener('click', () => handleToggle(btn));
       return btn;
     }
@@ -214,13 +218,14 @@
     btn.textContent = _fsShortLabel(field, rowLabel);
     btn.title = field.label;
     _fsSetControlE2e(btn, field, rowLabel, 'toggle');
+    btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
     btn.addEventListener('click', () => handleToggle(btn));
     return btn;
   }
   if (field.type === 'number') {
     const inp = document.createElement('input');
     inp.type = 'number';
-    inp.className = 'gb-fmt-num';
+    inp.className = 'gb-fmt-num gb-fmt-num--w70';
     if (field.min !== undefined) inp.min = String(field.min);
     if (field.max !== undefined) inp.max = String(field.max);
     if (field.step !== undefined) inp.step = String(field.step);
@@ -310,9 +315,7 @@
   if (field.type === 'text' || field.type === 'pxtext') {
     const inp = document.createElement('input');
     inp.type = 'text';
-    inp.className = 'gb-fmt-text';
-    // フォント名等は長め、px 値等は短めに
-    inp.style.width = field.type === 'text' ? '120px' : '60px';
+    inp.className = 'gb-fmt-text ' + (field.type === 'text' ? 'gb-fmt-text--w120' : 'gb-fmt-text--w60');
     inp.value = cur || '';
     inp.placeholder = field.type === 'pxtext' ? '2px' : '—';
     inp.title = field.label;

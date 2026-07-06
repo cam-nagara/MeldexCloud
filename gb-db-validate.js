@@ -321,6 +321,7 @@ function showValidationResults(results, dbPath) {
 
   const modal = document.createElement('div');
   modal.className = 'modal';
+  modal.classList.add('gb-validation-results-modal');
   modal.style.cssText = 'width:600px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column;';
 
   // ヘッダー
@@ -338,9 +339,11 @@ function showValidationResults(results, dbPath) {
     modal.appendChild(ok);
   } else {
     const list = document.createElement('div');
+    list.className = 'gb-validation-results-list';
     list.style.cssText = 'flex:1;overflow-y:auto;';
     results.forEach(r => {
       const item = document.createElement('div');
+      item.className = 'gb-validation-result-item';
       item.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--bg4);cursor:pointer;';
       item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
       item.addEventListener('mouseleave', () => { item.style.background = ''; });
@@ -369,13 +372,18 @@ function showValidationResults(results, dbPath) {
 
   // フッター
   const footer = document.createElement('div');
+  footer.className = 'btn-row gb-validation-footer';
   footer.style.cssText = 'margin-top:12px;display:flex;justify-content:space-between;';
   const rulesBtn = document.createElement('button');
+  rulesBtn.type = 'button';
+  rulesBtn.className = 'gb-btn gb-btn-sm';
   rulesBtn.textContent = 'ルール管理';
   rulesBtn.dataset.e2eId = 'validation-results-rules';
   rulesBtn.addEventListener('click', () => { overlay.remove(); showValidationRulesModal(dbPath); });
   footer.appendChild(rulesBtn);
   const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
   closeBtn.textContent = '閉じる';
   closeBtn.dataset.e2eId = 'validation-results-close';
   closeBtn.addEventListener('click', () => overlay.remove());
@@ -395,6 +403,7 @@ function showValidationRulesModal(dbPath) {
 
   const modal = document.createElement('div');
   modal.className = 'modal';
+  modal.classList.add('gb-validation-rules-modal');
   modal.style.cssText = 'width:600px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column;';
 
   const h3 = document.createElement('h3');
@@ -404,6 +413,7 @@ function showValidationRulesModal(dbPath) {
 
   const rules = getValidationRules(dbPath);
   const list = document.createElement('div');
+  list.className = 'gb-validation-rules-list';
   list.style.cssText = 'flex:1;overflow-y:auto;';
 
   if (rules.length === 0) {
@@ -411,10 +421,12 @@ function showValidationRulesModal(dbPath) {
   } else {
     rules.forEach((rule, i) => {
       const item = document.createElement('div');
+      item.className = 'gb-validation-rule-row';
       item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--bg4);';
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
+      cb.className = 'gb-validation-rule-check';
       cb.dataset.e2eId = 'validation-rule-' + (rule.id || i) + '-enabled';
       cb.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を有効化');
       cb.checked = rule.enabled !== false;
@@ -425,16 +437,20 @@ function showValidationRulesModal(dbPath) {
       item.appendChild(cb);
 
       const label = document.createElement('span');
+      label.className = 'gb-validation-rule-label';
       label.style.cssText = 'flex:1;font-size:13px;';
       label.textContent = rule.label || rule.type;
       item.appendChild(label);
 
       const typeBadge = document.createElement('span');
+      typeBadge.className = 'gb-validation-rule-type';
       typeBadge.style.cssText = 'font-size:10px;background:var(--bg4);padding:1px 6px;border-radius:8px;color:var(--fg2);';
       typeBadge.textContent = rule.type;
       item.appendChild(typeBadge);
 
       const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'gb-btn gb-btn-xs';
       editBtn.textContent = '編集';
       editBtn.dataset.e2eId = 'validation-rule-' + (rule.id || i) + '-edit';
       editBtn.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を編集');
@@ -446,12 +462,17 @@ function showValidationRulesModal(dbPath) {
       item.appendChild(editBtn);
 
       const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'gb-btn gb-btn-xs gb-btn-danger';
       delBtn.textContent = '削除';
       delBtn.dataset.e2eId = 'validation-rule-' + (rule.id || i) + '-delete';
       delBtn.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を削除');
       delBtn.style.cssText = 'font-size:11px;padding:1px 6px;';
-      delBtn.addEventListener('click', () => {
-        if (typeof confirm === 'function' && !confirm('この検証ルールを削除しますか？')) return;
+      delBtn.addEventListener('click', async () => {
+        const ok = typeof cfConfirm === 'function'
+          ? await cfConfirm('この検証ルールを削除しますか？', { danger: true, okLabel: '削除' })
+          : (typeof confirm === 'function' ? confirm('この検証ルールを削除しますか？') : true);
+        if (!ok) return;
         rules.splice(i, 1);
         setValidationRules(dbPath, rules);
         overlay.remove();
@@ -466,13 +487,18 @@ function showValidationRulesModal(dbPath) {
 
   // 新規ルール追加
   const footer = document.createElement('div');
+  footer.className = 'btn-row gb-validation-footer';
   footer.style.cssText = 'margin-top:12px;display:flex;justify-content:space-between;';
   const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'gb-btn gb-btn-sm gb-btn-primary';
   addBtn.textContent = '+ 新規ルール';
   addBtn.dataset.e2eId = 'validation-add-rule';
   addBtn.addEventListener('click', () => { overlay.remove(); showValidationRuleEditor(dbPath, null); });
   footer.appendChild(addBtn);
   const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
   closeBtn.textContent = '閉じる';
   closeBtn.dataset.e2eId = 'validation-rules-close';
   closeBtn.addEventListener('click', () => overlay.remove());
@@ -494,6 +520,7 @@ function showValidationRuleEditor(dbPath, existingRule) {
 
   const modal = document.createElement('div');
   modal.className = 'modal';
+  modal.classList.add('gb-validation-rule-editor');
   modal.style.cssText = 'width:500px;max-width:90vw;';
 
   const h3 = document.createElement('h3');
@@ -574,15 +601,19 @@ function showValidationRuleEditor(dbPath, existingRule) {
 
   // ボタン
   const btnRow = document.createElement('div');
+  btnRow.className = 'btn-row gb-validation-footer';
   btnRow.style.cssText = 'margin-top:16px;display:flex;justify-content:flex-end;gap:8px;';
   const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
   cancelBtn.textContent = 'キャンセル';
   cancelBtn.dataset.e2eId = 'validation-editor-cancel';
   cancelBtn.addEventListener('click', () => { overlay.remove(); showValidationRulesModal(dbPath); });
   btnRow.appendChild(cancelBtn);
   const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
   saveBtn.textContent = '保存';
-  saveBtn.className = 'primary';
+  saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
   saveBtn.dataset.e2eId = 'validation-editor-save';
   saveBtn.addEventListener('click', () => {
     rule.label = nameInput.value.trim();

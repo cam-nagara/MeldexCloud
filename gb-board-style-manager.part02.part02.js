@@ -28,17 +28,43 @@ function bdOpenFilterMenu(anchor) {
   document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ボード表示フィルタ');
   menu.style.cssText = 'position:fixed;z-index:10000;';
   const rect = anchor.getBoundingClientRect();
+  anchor.setAttribute('aria-haspopup', 'menu');
+  anchor.setAttribute('aria-expanded', 'true');
   let closeHandler = null;
   const closeMenu = (restoreFocus = false) => {
     menu.remove();
+    anchor.setAttribute('aria-expanded', 'false');
     if (closeHandler) {
       document.removeEventListener('pointerdown', closeHandler);
       closeHandler = null;
     }
     if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchor);
   };
+  const prepareToggleRow = (row, checked) => {
+    row.className = 'gb-context-menu-item';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'menuitemcheckbox');
+    row.setAttribute('aria-checked', checked ? 'true' : 'false');
+    row.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        row.click();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu(true);
+      }
+    });
+  };
+  menu.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeMenu(true);
+    }
+  });
   // 表示フィルタ: 既定 true / OFF で非表示
   const labels = {
     showConnections: 'ライン',
@@ -53,7 +79,9 @@ function bdOpenFilterMenu(anchor) {
   };
   Object.entries(labels).forEach(([key, label]) => {
     const row = document.createElement('div');
-    row.innerHTML = `${radioMark(bd.displayFilters[key] !== false)}${esc(label)}`;
+    const checked = bd.displayFilters[key] !== false;
+    prepareToggleRow(row, checked);
+    row.innerHTML = `${radioMark(checked)}${esc(label)}`;
     row.addEventListener('click', () => {
       bd.displayFilters[key] = !(bd.displayFilters[key] !== false);
       closeMenu(true);
@@ -69,7 +97,9 @@ function bdOpenFilterMenu(anchor) {
   ];
   modes.forEach(({ key, label }) => {
     const row = document.createElement('div');
-    row.innerHTML = `${radioMark(!!bd[key])}${esc(label)}`;
+    const checked = !!bd[key];
+    prepareToggleRow(row, checked);
+    row.innerHTML = `${radioMark(checked)}${esc(label)}`;
     row.addEventListener('click', () => {
       bd[key] = !bd[key];
       closeMenu(true);
@@ -84,7 +114,9 @@ function bdOpenFilterMenu(anchor) {
   {
     const key = 'highlightParentChildGroups';
     const row = document.createElement('div');
-    row.innerHTML = `${radioMark(bd.displayFilters[key] === true)}${esc('親子関係ハイライト')}`;
+    const checked = bd.displayFilters[key] === true;
+    prepareToggleRow(row, checked);
+    row.innerHTML = `${radioMark(checked)}${esc('親子関係ハイライト')}`;
     row.addEventListener('click', () => {
       bd.displayFilters[key] = bd.displayFilters[key] !== true;
       closeMenu(true);
@@ -115,4 +147,7 @@ function bdOpenFilterMenu(anchor) {
     };
     document.addEventListener('pointerdown', closeHandler);
   }, 0);
+  requestAnimationFrame(() => {
+    if (menu.isConnected) menu.querySelector('.gb-context-menu-item')?.focus?.();
+  });
 }

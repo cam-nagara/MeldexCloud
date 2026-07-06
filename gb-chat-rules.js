@@ -104,8 +104,8 @@
             <div class="gb-section-desc">ここで有効なルールはバックエンドでチャットプロンプトに自動注入されます。</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
-            ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-cr-action="add">${crIcon('plus', 14)} 追加</button>` : ''}
-            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-cr-action="refresh">${crIcon('refreshCw', 14)} 更新</button>
+            ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-cr-action="add" data-e2e-id="chat-rules-add">${crIcon('plus', 14)} 追加</button>` : ''}
+            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-cr-action="refresh" data-e2e-id="chat-rules-refresh">${crIcon('refreshCw', 14)} 更新</button>
           </div>
         </div>
       </section>
@@ -170,7 +170,7 @@
     return `
       <article data-cr-id="${Number(rule.id)}" style="border-bottom:1px solid var(--border);padding:10px 0;${enabled}">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <label class="gb-check" style="margin:0;"><input type="checkbox" data-cr-action="toggle" ${rule.enabled ? 'checked' : ''}${writable ? '' : ' disabled'}> 有効</label>
+          <label class="gb-check" style="margin:0;"><input type="checkbox" data-cr-action="toggle" data-e2e-id="chat-rules-toggle-${Number(rule.id)}" ${rule.enabled ? 'checked' : ''}${writable ? '' : ' disabled'}> 有効</label>
           <span class="gb-pill">${crEsc(rule.scope || 'project')}</span>
           ${rule.pinned ? '<span class="gb-pill">pinned</span>' : ''}
           <strong>${crEsc(rule.title || '無題ルール')}</strong>
@@ -178,8 +178,8 @@
         </div>
         <div style="margin-top:6px;line-height:1.5;white-space:pre-wrap;">${crEsc(rule.body || '')}</div>
         ${writable ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-cr-action="edit">編集</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-cr-action="delete">削除</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-cr-action="edit" data-e2e-id="chat-rules-edit-${Number(rule.id)}">編集</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-cr-action="delete" data-e2e-id="chat-rules-delete-${Number(rule.id)}">削除</button>
         </div>` : ''}
       </article>
     `;
@@ -244,7 +244,7 @@
     const rule = ruleById(container, id);
     const label = rule?.title || '無題ルール';
     const ok = typeof cfConfirm === 'function'
-      ? await cfConfirm(`ルール「${label}」を削除しますか？`)
+      ? await cfConfirm(`ルール「${label}」を削除しますか？`, { danger: true, okLabel: '削除' })
       : window.confirm(`ルール「${label}」を削除しますか？`);
     if (!ok) return;
     try {
@@ -271,7 +271,7 @@
       <div class="modal chat-rules-modal" style="width:760px;max-width:92vw;height:560px;max-height:85vh;display:flex;flex-direction:column;">
         <div class="gb-field-row" style="justify-content:space-between;gap:8px;margin-bottom:8px;">
           <h3 style="margin:0;">チャットルール</h3>
-          <button type="button" class="gb-btn gb-btn-sm" data-cr-close>${crIcon('x', 14)}</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon" data-cr-close data-e2e-id="chat-rules-dialog-close" aria-label="閉じる" title="閉じる">${crIcon('x', 14)}</button>
         </div>
         <div data-cr-dialog-body style="min-height:0;overflow:auto;flex:1;"></div>
       </div>

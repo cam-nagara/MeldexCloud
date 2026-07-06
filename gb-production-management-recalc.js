@@ -10,6 +10,15 @@
     else console[error ? 'error' : 'log'](message);
   }
 
+  function _pmIcon(name, size = 14) {
+    return typeof lucide === 'function' ? lucide(name, size) : '';
+  }
+
+  function _pmRestoreFocus(target) {
+    if (!target?.isConnected || typeof target.focus !== 'function') return;
+    try { target.focus({ preventScroll: true }); } catch { try { target.focus(); } catch {} }
+  }
+
   function _pmDesktopOnly() {
     if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
       _pmStatus('制作管理の再計算はデスクトップ版で実行してください', true);
@@ -28,15 +37,23 @@
   function _pmButton(label, primary) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = primary ? 'btn btn-primary' : 'btn';
+    button.className = primary ? 'gb-btn gb-btn-sm gb-btn-primary' : 'gb-btn gb-btn-sm';
     button.textContent = label;
     return button;
   }
 
   function _pmField(label, input) {
     const field = document.createElement('label');
-    field.className = 'field';
+    if (input?.type === 'checkbox') {
+      field.className = 'gb-check gb-production-check';
+      const span = document.createElement('span');
+      span.textContent = label;
+      field.append(input, span);
+      return field;
+    }
+    field.className = 'field gb-production-field';
     const span = document.createElement('span');
+    span.className = 'gb-production-field-label';
     span.textContent = label;
     field.append(span, input);
     return field;
@@ -47,7 +64,7 @@
     input.type = type || 'text';
     input.value = value || '';
     input.placeholder = placeholder || '';
-    input.style.width = '100%';
+    input.className = 'gb-input gb-input-sm gb-production-input';
     return input;
   }
 
@@ -56,38 +73,71 @@
     input.value = value || '';
     input.placeholder = placeholder || '';
     input.rows = 2;
-    input.style.width = '100%';
+    input.className = 'gb-textarea gb-textarea-sm gb-production-input';
     return input;
   }
 
-  function _pmModal(title, width = '760px') {
+  function _pmModal(title, width = '760px', options = {}) {
+    const focusSource = options.trigger || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    overlay.className = 'modal-overlay gb-production-modal-overlay';
+    overlay.dataset.e2eId = options.e2eId || 'production-modal-overlay';
     const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.style.minWidth = '420px';
-    modal.style.maxWidth = width;
-    modal.style.maxHeight = '82vh';
-    modal.style.overflow = 'auto';
+    modal.className = 'modal gb-production-modal';
+    modal.style.setProperty('--gb-production-modal-width', width);
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.tabIndex = -1;
+    modal.dataset.e2eId = options.dialogE2eId || 'production-modal-dialog';
+    const titleId = `${modal.dataset.e2eId}-title`;
+    modal.setAttribute('aria-labelledby', titleId);
+    const header = document.createElement('div');
+    header.className = 'gb-modal-header gb-production-modal-header';
     const heading = document.createElement('h3');
+    heading.id = titleId;
+    heading.className = 'gb-production-title';
     heading.textContent = title;
-    modal.appendChild(heading);
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'gb-modal-close gb-production-modal-close';
+    closeButton.setAttribute('aria-label', `${title}を閉じる`);
+    closeButton.dataset.e2eId = `${modal.dataset.e2eId}-close`;
+    closeButton.innerHTML = _pmIcon('x', 14) || '×';
+    header.append(heading, closeButton);
+    const body = document.createElement('div');
+    body.className = 'gb-modal-body gb-production-modal-body';
+    modal.append(header, body);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+    const close = () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      overlay.remove();
+      _pmRestoreFocus(focusSource);
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      close();
+    };
     overlay.addEventListener('click', (event) => {
-      if (event.target === overlay) overlay.remove();
+      if (event.target === overlay) close();
     });
-    return { overlay, modal };
+    closeButton.addEventListener('click', close);
+    document.addEventListener('keydown', onKeyDown, true);
+    window.GBModalShell?.enhanceOverlay?.(overlay);
+    window.requestAnimationFrame(() => {
+      const focusTarget = body.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])') || modal;
+      _pmRestoreFocus(focusTarget);
+    });
+    return { overlay, modal, body, close };
   }
 
-  function _pmFooter(overlay, buttons) {
+  function _pmFooter(closeModal, buttons) {
     const footer = document.createElement('div');
-    footer.className = 'modal-footer';
-    footer.style.display = 'flex';
-    footer.style.justifyContent = 'flex-end';
-    footer.style.gap = '8px';
+    footer.className = 'gb-modal-footer gb-production-modal-footer';
+    footer.dataset.modalFooter = '1';
     const cancel = _pmButton('閉じる');
-    cancel.addEventListener('click', () => overlay.remove());
+    cancel.addEventListener('click', closeModal);
     footer.append(cancel, ...buttons);
     return footer;
   }
@@ -99,14 +149,22 @@
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   }
 
-  function openProductionRecalculate() {
-    const { overlay, modal } = _pmModal('再計算');
+  function openProductionRecalculate(options = {}) {
+    const { body, close } = _pmModal('再計算', '760px', {
+      trigger: options?.trigger,
+      e2eId: 'production-recalculate-dialog-overlay',
+      dialogE2eId: 'production-recalculate-dialog',
+    });
     const from = _pmInput('date', _pmDateText(0));
+    from.dataset.e2eId = 'production-recalculate-from';
     const to = _pmInput('date', _pmDateText(30));
+    to.dataset.e2eId = 'production-recalculate-to';
     const resultBox = document.createElement('div');
-    resultBox.style.marginTop = '12px';
+    resultBox.className = 'gb-production-result-box';
     const previewButton = _pmButton('プレビューを作成', true);
+    previewButton.dataset.e2eId = 'production-recalculate-preview';
     const applyButton = _pmButton('適用', true);
+    applyButton.dataset.e2eId = 'production-recalculate-apply';
     applyButton.disabled = true;
     let rows = [];
     // 期間を変えたら古いプレビュー結果を適用できないようにする（旧期間の計画の誤適用防止）
@@ -115,7 +173,7 @@
       applyButton.disabled = true;
       resultBox.replaceChildren();
       const note = document.createElement('div');
-      note.style.color = 'var(--fg2)';
+      note.className = 'gb-production-preview-note';
       note.textContent = '期間を変更しました。適用するには再度プレビューを作成してください。';
       resultBox.appendChild(note);
     };
@@ -145,14 +203,15 @@
         const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows });
         _pmStatus(`再計算を適用しました: ${result.applied || 0}件`);
         _pmRefreshCalendars();
-        overlay.remove();
+        close();
       } catch (error) {
         _pmStatus(error?.message || String(error), true);
       } finally {
         applyButton.disabled = false;
       }
     });
-    modal.append(_pmField('開始日', from), _pmField('終了日', to), resultBox, _pmFooter(overlay, [previewButton, applyButton]));
+    body.append(_pmField('開始日', from), _pmField('終了日', to), resultBox);
+    body.parentElement.append(_pmFooter(close, [previewButton, applyButton]));
   }
 
   function _pmRenderPreview(container, result) {
@@ -162,12 +221,14 @@
     container.appendChild(summary);
     (result.suggestions || []).forEach((text) => {
       const item = document.createElement('div');
-      item.style.color = 'var(--warning, #b26a00)';
+      item.className = 'gb-production-preview-warning';
       item.textContent = text;
       container.appendChild(item);
     });
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'gb-production-preview-table-wrap';
     const table = document.createElement('table');
-    table.className = 'db-table';
+    table.className = 'db-table gb-production-preview-table';
     const head = document.createElement('tr');
     ['状態', 'タスク', '担当者', '変更前', '変更後', '理由'].forEach((label) => {
       const th = document.createElement('th');
@@ -184,12 +245,18 @@
       });
       table.appendChild(tr);
     });
-    container.appendChild(table);
+    tableWrap.appendChild(table);
+    container.appendChild(tableWrap);
   }
 
-  function openProductionStaffAdd() {
-    const { overlay, modal } = _pmModal('メンバーを追加', '640px');
+  function openProductionStaffAdd(options = {}) {
+    const { body, close } = _pmModal('メンバーを追加', '640px', {
+      trigger: options?.trigger,
+      e2eId: 'production-staff-add-dialog-overlay',
+      dialogE2eId: 'production-staff-add-dialog',
+    });
     const name = _pmInput('text', '', 'メンバー名');
+    name.dataset.e2eId = 'production-staff-name';
     const display = _pmInput('text', '', '表示名');
     const skills = _pmInput('text', '', 'ネーム,下描き');
     const workHours = _pmInput('text', '09:00-18:00', '09:00-18:00');
@@ -201,7 +268,10 @@
     const caldavUrl = _pmInput('text', '', 'CalDAV カレンダーURL');
     const syncEnabled = document.createElement('input');
     syncEnabled.type = 'checkbox';
+    syncEnabled.className = 'gb-checkbox';
+    syncEnabled.dataset.e2eId = 'production-staff-sync';
     const saveButton = _pmButton('追加', true);
+    saveButton.dataset.e2eId = 'production-staff-add-save';
     saveButton.addEventListener('click', async () => {
       saveButton.disabled = true;
       try {
@@ -227,7 +297,7 @@
         if (result.ok) {
           _pmStatus(`メンバーを追加しました: ${result.staff}`);
           _pmShowRecalcBanner();
-          overlay.remove();
+          close();
         } else {
           _pmStatus(result.message || 'メンバーを追加できませんでした', true);
         }
@@ -237,13 +307,14 @@
         saveButton.disabled = false;
       }
     });
-    modal.append(
+    body.append(
       _pmField('メンバー名', name), _pmField('表示名', display), _pmField('担当できるタスク', skills),
       _pmField('作業可能時間', workHours), _pmField('休憩時間', breakHours), _pmField('休日', holidays),
       _pmField('参加開始日', activeFrom), _pmField('参加終了日', activeTo),
       _pmField('外部カレンダーURL（Google）', googleUrl), _pmField('外部カレンダーURL（CalDAV）', caldavUrl),
-      _pmField('同期有効', syncEnabled), _pmFooter(overlay, [saveButton])
+      _pmField('同期有効', syncEnabled)
     );
+    body.parentElement.append(_pmFooter(close, [saveButton]));
     name.focus();
   }
 
@@ -262,23 +333,16 @@
     document.querySelector('.gb-production-recalc-banner')?.remove();
     const banner = document.createElement('div');
     banner.className = 'gb-production-recalc-banner';
-    banner.style.position = 'fixed';
-    banner.style.left = '50%';
-    banner.style.top = '12px';
-    banner.style.transform = 'translateX(-50%)';
-    banner.style.zIndex = '9999';
-    banner.style.display = 'flex';
-    banner.style.alignItems = 'center';
-    banner.style.gap = '8px';
-    banner.style.padding = '8px 12px';
-    banner.style.border = '1px solid var(--border)';
-    banner.style.background = 'var(--bg)';
-    banner.style.boxShadow = '0 4px 12px rgba(0,0,0,.18)';
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-label', '制作管理の再計算案内');
     const text = document.createElement('span');
+    text.className = 'gb-production-recalc-banner-text';
     text.textContent = 'メンバーを追加しました。再計算しますか？';
     const open = _pmButton('再計算を確認', true);
+    open.dataset.e2eId = 'production-recalc-banner-open';
     const close = _pmButton('閉じる');
-    open.addEventListener('click', () => { banner.remove(); openProductionRecalculate(); });
+    close.dataset.e2eId = 'production-recalc-banner-close';
+    open.addEventListener('click', () => { banner.remove(); openProductionRecalculate({ trigger: open }); });
     close.addEventListener('click', () => banner.remove());
     banner.append(text, open, close);
     document.body.appendChild(banner);
@@ -316,26 +380,35 @@
       const component = _pmFindCalendarComponent();
       const ev = component?._events?.find?.(item => String(item.id) === String(card.dataset.eventId));
       const taskPath = _pmTaskPathFromEvent(ev);
-      _pmShowLockMenu(event.clientX, event.clientY, taskPath, card.dataset.eventId);
+      _pmShowLockMenu(event.clientX, event.clientY, taskPath, card.dataset.eventId, card);
     });
   }
 
-  function _pmShowLockMenu(x, y, taskPath, eventId) {
+  function _pmShowLockMenu(x, y, taskPath, eventId, sourceEl = null) {
     document.querySelector('.gb-production-lock-menu')?.remove();
     const menu = document.createElement('div');
-    menu.className = 'gb-production-lock-menu';
-    menu.style.position = 'fixed';
-    menu.style.zIndex = '9999';
-    menu.style.display = 'grid';
-    menu.style.gap = '4px';
-    menu.style.padding = '6px';
-    menu.style.border = '1px solid var(--border)';
-    menu.style.background = 'var(--bg)';
-    menu.style.boxShadow = '0 4px 12px rgba(0,0,0,.18)';
-    const lock = _pmButton('再計算で固定');
-    const unlock = _pmButton('固定を解除');
-    lock.addEventListener('click', () => { menu.remove(); toggleProductionTaskRecalcLock(taskPath, true, eventId); });
-    unlock.addEventListener('click', () => { menu.remove(); toggleProductionTaskRecalcLock(taskPath, false, eventId); });
+    menu.className = 'gb-context-menu gb-production-lock-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', '制作管理の再計算固定メニュー');
+    menu.dataset.e2eId = 'production-lock-menu';
+    const closeMenu = (restore = true) => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      menu.remove();
+      if (restore) _pmRestoreFocus(sourceEl);
+    };
+    const makeItem = (label, locked) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'gb-context-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = `<span class="menu-icon">${_pmIcon(locked ? 'lock' : 'unlock', 14)}</span><span class="gb-context-menu-item-label"></span>`;
+      item.querySelector('.gb-context-menu-item-label').textContent = label;
+      item.addEventListener('click', () => { closeMenu(false); toggleProductionTaskRecalcLock(taskPath, locked, eventId); });
+      return item;
+    };
+    const lock = makeItem('再計算で固定', true);
+    const unlock = makeItem('固定を解除', false);
     menu.append(lock, unlock);
     document.body.appendChild(menu);
     // UIズーム使用時の二重スケーリングによる位置ズレを防ぐため、共通のポップアップ配置処理を使う
@@ -348,7 +421,33 @@
       menu.style.top = `${y / zoom}px`;
       if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
     }
-    setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+    const onPointerDown = (event) => {
+      if (!menu.contains(event.target)) closeMenu(false);
+    };
+    const onKeyDown = (event) => {
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+      const active = document.activeElement;
+      const index = Math.max(0, items.indexOf(active));
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu(true);
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        items[(index + 1) % items.length]?.focus();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        items[(index - 1 + items.length) % items.length]?.focus();
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        items[0]?.focus();
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        items[items.length - 1]?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    setTimeout(() => document.addEventListener('pointerdown', onPointerDown, true), 0);
+    window.requestAnimationFrame(() => _pmRestoreFocus(lock));
   }
 
   function _pmInstallLockIcon() {

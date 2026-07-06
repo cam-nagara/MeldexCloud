@@ -255,9 +255,12 @@
   function button(label, iconName, handler, title = '', actionId = '') {
     const btn = document.createElement('button');
     btn.type = 'button';
+    btn.className = 'gb-btn gb-btn-sm chat-cli-action-btn';
     btn.title = title || label;
-    if (actionId) btn.dataset.testid = 'chat-cli-' + actionId;
-    btn.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 8px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;cursor:pointer;white-space:nowrap;flex-shrink:0;';
+    if (actionId) {
+      btn.dataset.testid = 'chat-cli-' + actionId;
+      btn.dataset.e2eId = 'chat-cli-' + actionId;
+    }
     btn.innerHTML = icon(iconName, 13) + `<span>${esc(label)}</span>`;
     btn.addEventListener('click', handler);
     return btn;
@@ -269,23 +272,24 @@
     if (panel && historyPanel && panel.parentElement !== historyPanel) historyPanel.appendChild(panel);
     if (!panel || panel.dataset.cliReady === '1') return panel;
     panel.dataset.cliReady = '1';
+    panel.classList.add('chat-cli-panel');
     panel.style.display = 'none';
     panel.style.flexDirection = 'column';
     panel.style.flex = '1';
     panel.style.overflow = 'hidden';
     panel.innerHTML = `
-      <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--bg3);flex-shrink:0;">
-        <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--fg2);white-space:nowrap;min-width:0;">
-          <input id="chat-cli-enabled" type="checkbox" style="margin:0;flex-shrink:0;">
-          <span style="overflow:hidden;text-overflow:ellipsis;">外部CLI取り込み</span>
+      <div class="chat-cli-toolbar">
+        <label class="chat-cli-main-toggle gb-check">
+          <input id="chat-cli-enabled" class="gb-checkbox" data-e2e-id="chat-cli-enabled" type="checkbox">
+          <span class="chat-cli-ellipsis">外部CLI取り込み</span>
         </label>
-        <div id="chat-cli-actions" style="display:flex;gap:4px;"></div>
+        <div id="chat-cli-actions" class="chat-cli-actions"></div>
       </div>
-      <div id="chat-cli-provider-settings" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0;"></div>
-      <div id="chat-cli-status" style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--fg2);font-size:11px;flex-shrink:0;"></div>
-      <div style="display:grid;grid-template-columns:minmax(140px,34%) 1fr;min-height:0;flex:1;overflow:hidden;">
-        <div id="chat-cli-session-list" style="border-right:1px solid var(--border);overflow:auto;"></div>
-        <div id="chat-cli-session-view" style="overflow:auto;padding:8px;display:flex;flex-direction:column;gap:8px;"></div>
+      <div id="chat-cli-provider-settings" class="chat-cli-provider-settings"></div>
+      <div id="chat-cli-status" class="chat-cli-status"></div>
+      <div class="chat-cli-content">
+        <div id="chat-cli-session-list" class="chat-cli-session-list"></div>
+        <div id="chat-cli-session-view" class="chat-cli-session-view"></div>
       </div>
     `;
     const actions = panel.querySelector('#chat-cli-actions');
@@ -346,13 +350,13 @@
       const source = sources[provider.key] || {};
       const row = document.createElement('div');
       row.dataset.provider = provider.key;
-      row.style.cssText = 'display:grid;grid-template-columns:minmax(92px,auto) minmax(120px,1fr);align-items:center;gap:6px;';
+      row.className = 'chat-cli-provider-row';
       row.innerHTML = `
-        <label style="display:inline-flex;align-items:center;gap:4px;min-width:0;font-size:11px;color:var(--fg2);white-space:nowrap;">
-          <input data-role="enabled" data-e2e-id="chat-cli-${provider.key}-enabled" aria-label="${esc(provider.label)}の取り込みを有効にする" type="checkbox" style="margin:0;flex-shrink:0;">
-          <span style="overflow:hidden;text-overflow:ellipsis;">${esc(provider.label)}</span>
+        <label class="chat-cli-provider-toggle gb-check">
+          <input class="gb-checkbox" data-role="enabled" data-e2e-id="chat-cli-${provider.key}-enabled" aria-label="${esc(provider.label)}の取り込みを有効にする" type="checkbox">
+          <span class="chat-cli-ellipsis">${esc(provider.label)}</span>
         </label>
-        <input data-role="watch-path" data-e2e-id="chat-cli-${provider.key}-watch-path" aria-label="${esc(provider.label)}のログフォルダ" type="text" style="width:100%;min-width:0;padding:3px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
+        <input class="gb-input gb-input-sm chat-cli-watch-path" data-role="watch-path" data-e2e-id="chat-cli-${provider.key}-watch-path" aria-label="${esc(provider.label)}のログフォルダ" type="text">
       `;
       const enabled = row.querySelector('[data-role="enabled"]');
       const watchPath = row.querySelector('[data-role="watch-path"]');
@@ -447,7 +451,7 @@
     list.innerHTML = '';
     if (!cliSessions.length) {
       const empty = document.createElement('div');
-      empty.style.cssText = 'padding:16px;color:var(--fg2);font-size:12px;';
+      empty.className = 'chat-cli-empty';
       empty.textContent = '取り込まれたCLIセッションはありません';
       list.appendChild(empty);
       return;
@@ -455,13 +459,15 @@
     cliSessions.forEach(session => {
       const row = document.createElement('button');
       row.type = 'button';
+      row.className = 'chat-cli-session-row';
       row.dataset.testid = 'chat-cli-session-' + String(session.session_id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+      row.dataset.e2eId = row.dataset.testid;
       const active = cliSelectedSession && cliSelectedSession.session?.provider === session.provider && cliSelectedSession.session?.session_id === session.session_id;
-      row.style.cssText = `width:100%;text-align:left;padding:8px;border:0;border-bottom:1px solid var(--border);background:${active ? 'var(--bg3)' : 'var(--bg)'};color:var(--fg);cursor:pointer;`;
+      row.classList.toggle('is-active', !!active);
       row.innerHTML = `
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:bold;">${icon('terminal', 13)}<span>${esc(providerLabel(session.provider))}</span></div>
-        <div style="font-size:11px;color:var(--fg2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(shortPath(session.project_path || session.path))}</div>
-        <div style="font-size:10px;color:var(--fg2);margin-top:2px;">${Number(session.message_count || 0)}件 / ${esc(session.last_updated_at || '')}</div>
+        <div class="chat-cli-session-title">${icon('terminal', 13)}<span>${esc(providerLabel(session.provider))}</span></div>
+        <div class="chat-cli-session-path">${esc(shortPath(session.project_path || session.path))}</div>
+        <div class="chat-cli-session-meta">${Number(session.message_count || 0)}件 / ${esc(session.last_updated_at || '')}</div>
       `;
       row.addEventListener('click', () => openCliSession(session.provider, session.session_id));
       list.appendChild(row);
@@ -512,11 +518,12 @@
     header.innerHTML = `${icon(isUser ? 'user' : (role === 'tool' ? 'wrench' : 'bot'), 12)}<span>${esc(role)}</span><span>${esc(message.timestamp || '')}</span>`;
     const quote = document.createElement('button');
     quote.type = 'button';
+    quote.className = 'gb-btn gb-btn-icon gb-btn-xs gb-btn-ghost chat-cli-quote-btn';
     quote.title = 'Meldexのチャットで引用';
     quote.dataset.testid = 'chat-cli-quote-' + String(message.msg_id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+    quote.dataset.e2eId = quote.dataset.testid;
     quote.dataset.cliMsgId = String(message.msg_id || '');
     quote.innerHTML = icon('quote', 12);
-    quote.style.cssText = 'width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;background:transparent;color:var(--fg2);border:0;border-radius:4px;cursor:pointer;padding:0;';
     quote.addEventListener('click', () => quoteCliMessage(message, session));
     header.appendChild(quote);
     const bubble = document.createElement('div');
@@ -711,7 +718,10 @@
     if (!usingDeferredMessages && attachments.length > 0) {
       if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
         const readyAttachments = await _chatWaitForPendingAttachmentUploads(attachments);
-        if (!readyAttachments) return false;
+        if (!readyAttachments) {
+          if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);
+          return false;
+        }
         attachments = readyAttachments;
       } else if (attachments.some(att => att?.uploading || att?.uploadError || !String(att?.path || '').trim())) {
         if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);

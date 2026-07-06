@@ -1,3 +1,130 @@
+      }
+    });
+  }
+  tabsToClose.forEach(({ paneId, tabId }) => {
+    if (typeof GBTabs !== 'undefined' && typeof GBTabs.closeTab === 'function') {
+      GBTabs.closeTab(paneId, tabId);
+    }
+  });
+
+  ['currentDbPath', 'currentEntityPath', 'currentPagePath', 'currentBoardPath'].forEach(key => {
+    if (_matchesDeletedPaths(state[key], deletedPaths)) {
+      state[key] = null;
+      if (key === activePathKey) clearedCurrentView = true;
+    }
+  });
+  const smartDbRuntimePath = state.currentSmartDb?._filePath || _smartDbIdPath(state.currentSmartDb?.id);
+  if (smartDbRuntimePath && _matchesDeletedPaths(smartDbRuntimePath, deletedPaths)) {
+    state.currentSmartDb = null;
+    state.smartDbData = null;
+    if (state.view === 'smart-db') clearedCurrentView = true;
+  }
+  if (!state.currentDbPath) {
+    state.pivotData = null;
+    state.dbMetadata = null;
+  }
+  if (_clearDeletedLegacyViewHosts(deletedPaths)) {
+    clearedCurrentView = true;
+  }
+
+  const pageContent = document.getElementById('page-content');
+  if (pageContent?.dataset?.path && _matchesDeletedPaths(pageContent.dataset.path, deletedPaths)) {
+    pageContent.dataset.path = '';
+    pageContent.contentEditable = 'false';
+    pageContent.dataset.loadFailed = '1';
+    clearedCurrentView = true;
+  }
+  const freeText = document.getElementById('entity-freetext');
+  if (freeText?.dataset?.entityPath && _matchesDeletedPaths(freeText.dataset.entityPath, deletedPaths)) {
+    freeText.dataset.entityPath = '';
+    freeText.contentEditable = 'false';
+    clearedCurrentView = true;
+  }
+
+  if (typeof _csvPath !== 'undefined' && _matchesDeletedPaths(_csvPath, deletedPaths)) {
+    if (typeof _csvAutoSaveTimer !== 'undefined' && _csvAutoSaveTimer) {
+      clearTimeout(_csvAutoSaveTimer);
+      _csvAutoSaveTimer = null;
+    }
+    if (typeof _csvDirty !== 'undefined') _csvDirty = false;
+    _csvPath = '';
+    clearedCurrentView = true;
+  }
+
+  if (typeof _folderPath !== 'undefined' && _matchesDeletedPaths(_folderPath, deletedPaths)) {
+    _folderPath = '';
+    if (typeof _folderItems !== 'undefined') _folderItems = [];
+    if (typeof _folderSelected !== 'undefined') _folderSelected = null;
+    if (typeof _folderSelectedItems !== 'undefined') _folderSelectedItems = [];
+    if (state.view === 'folder') clearedCurrentView = true;
+  }
+
+  const htmlIframe = document.getElementById('html-iframe');
+  if (htmlIframe) {
+    const src = htmlIframe.getAttribute('src') || '';
+    const decodedSrc = (() => {
+      try { return decodeURIComponent(src); } catch { return src; }
+    })();
+    if (deletedPaths.some(path => decodedSrc.includes(path))) {
+      htmlIframe.removeAttribute('src');
+      if (state.view === 'html' || state.view === 'media') clearedCurrentView = true;
+    }
+  }
+
+  const mediaContent = document.getElementById('media-content');
+  if (state.view === 'media' && _matchesDeletedPaths(state.currentPagePath, deletedPaths)) {
+    if (mediaContent) mediaContent.replaceChildren();
+    clearedCurrentView = true;
+  }
+
+  if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
+    Object.keys(_sn2Editors).forEach(path => {
+      if (!_matchesDeletedPaths(path, deletedPaths)) return;
+      const editor = _sn2Editors[path];
+      if (editor?._saveTimer) {
+        clearTimeout(editor._saveTimer);
+        editor._saveTimer = null;
+      }
+      if (editor) {
+        editor._dirty = false;
+        editor._path = '';
+      }
+      delete _sn2Editors[path];
+    });
+  }
+
+  if (legacyTabsChanged) renderTabs();
+  if (recentChanged && typeof updateRecentItems === 'function') updateRecentItems();
+  if (layoutChanged && typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
+    GBLayout.saveLayout();
+  }
+
+  if (clearedCurrentView) {
+    const fallbackLayoutTab = _findRemainingContentTabAfterDeletion(deletedPaths);
+    if (fallbackLayoutTab && typeof GBTabs !== 'undefined' && typeof GBTabs.activateTab === 'function') {
+      GBTabs.activateTab(fallbackLayoutTab.paneId, fallbackLayoutTab.tabId);
+      return;
+    }
+    const fallbackTab = _tabs.find(tab => tab.id === _activeTabId) || _tabs[0];
+    if (fallbackTab) activateTab(fallbackTab.id);
+    else showView('welcome');
+  }
+}
+
+function _resolveNavHistoryPaneId(paneId) {
+  if (typeof GBLayout === 'undefined' || !GBLayout.root) return null;
+  return paneId || GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id || null;
+}
+
+function _getNavState(paneId) {
+  const resolvedPaneId = _resolveNavHistoryPaneId(paneId);
+  if (!resolvedPaneId || typeof GBLayout === 'undefined' || !GBLayout.root) {
+    return {
+      kind: 'legacy',
+      paneId: null,
+      history: _legacyNavHistory,
+      get index() { return _legacyNavIndex; },
+      set index(v) { _legacyNavIndex = v; },
     };
   }
   const pane = GBLayout.findNode?.(GBLayout.root, resolvedPaneId)?.node || null;
@@ -357,16 +484,33 @@ function _handleTabBarContextmenu(e) {
   const tab = _tabs[idx];
   if (!tab) return;
 
+  document.querySelectorAll('.tab-context-menu').forEach(el => el.remove());
   const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
+  menu.className = 'gb-context-menu tab-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'タブ操作');
+  if (!tabEl.hasAttribute('tabindex')) tabEl.tabIndex = -1;
+  let menuClosed = false;
+  let closeOnPointer = null;
+  let closeOnKey = null;
+  function closeMenu(restoreFocus = false) {
+    if (menuClosed) return;
+    menuClosed = true;
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    menu.remove();
+    if (restoreFocus && typeof tabEl.focus === 'function') {
+      try { tabEl.focus({ preventScroll: true }); } catch { tabEl.focus(); }
+    }
+  }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
   function addMI(label, fn) {
-    const mi = document.createElement('div');
+    const mi = document.createElement('button');
+    mi.type = 'button';
+    mi.className = 'gb-context-menu-item';
+    mi.setAttribute('role', 'menuitem');
     mi.textContent = label;
-    mi.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-    mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; };
-    mi.onmouseleave = () => { mi.style.background = ''; };
-    mi.addEventListener('click', () => { menu.remove(); fn(); });
+    mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
   }
   addMI('新しいウィンドウで開く', () => {
@@ -386,9 +530,34 @@ function _handleTabBarContextmenu(e) {
   });
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
+  const focusableItems = () => [...menu.querySelectorAll('.gb-context-menu-item')];
+  closeOnPointer = function closeTabContextMenuOnPointer(ev) {
+    if (!menu.contains(ev.target)) closeMenu(false);
+  };
+  closeOnKey = function closeTabContextMenuOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    const items = focusableItems();
+    if (!items.length) return;
+    const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+    let nextIndex = currentIndex;
+    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    else if (ev.key === 'Home') nextIndex = 0;
+    else if (ev.key === 'End') nextIndex = items.length - 1;
+    else return;
+    ev.preventDefault();
+    items[nextIndex]?.focus();
+  };
   setTimeout(() => {
-    document.addEventListener('pointerdown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', cl); } });
+    if (menuClosed || !menu.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
   }, 0);
+  menu.querySelector('.gb-context-menu-item')?.focus();
 }
 {
   const _tabBar = document.getElementById('tab-bar');
@@ -504,10 +673,14 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
 
   const dd = document.createElement('div');
   dd.className = 'ab-dropdown nav-history-dropdown';
+  dd.setAttribute('role', 'menu');
+  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
   items.forEach(({ index, entry }) => {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
     item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
     item.title = entry.path || '';
     item.addEventListener('click', () => {
@@ -517,19 +690,61 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
       _withNavFlag(navOpen(entry));
       _refreshPaneNavUi(navState.paneId);
       _persistPaneNavState(navState);
-      dd.remove();
+      closeDropdown(false);
     });
     dd.appendChild(item);
   });
   const anchor = e.currentTarget || e.target?.closest?.('button') || e.target;
   const rect = anchor.getBoundingClientRect();
-  { const z = _getZoom(); dd.style.left = (rect.left / z) + 'px'; dd.style.top = (rect.bottom / z + 2) + 'px'; }
   document.body.appendChild(dd);
-  clampPopupToViewport(dd);
+  if (typeof positionPopup === 'function') positionPopup(dd, rect, { prefer: 'bottom', gap: 2 });
+  else {
+    const z = _getZoom();
+    dd.style.left = (rect.left / z) + 'px';
+    dd.style.top = (rect.bottom / z + 2) + 'px';
+    clampPopupToViewport(dd);
+  }
+  const firstItem = dd.querySelector('.ab-dropdown-item');
+  let dropdownClosed = false;
+  function closeDropdown(restoreFocus) {
+    if (dropdownClosed) return;
+    dropdownClosed = true;
+    dd.remove();
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    if (restoreFocus && anchor?.focus) anchor.focus();
+  }
+  function closeOnPointer(ev) {
+    if (!dd.contains(ev.target)) closeDropdown(false);
+  }
+  function closeOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeDropdown(true);
+      return;
+    }
+    const menuItems = [...dd.querySelectorAll('.ab-dropdown-item')];
+    const current = menuItems.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[(current + 1 + menuItems.length) % menuItems.length].focus();
+    } else if (ev.key === 'ArrowUp' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[(current - 1 + menuItems.length) % menuItems.length].focus();
+    } else if (ev.key === 'Home' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[0].focus();
+    } else if (ev.key === 'End' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[menuItems.length - 1].focus();
+    }
+  }
   setTimeout(() => {
-    const close = (ev) => { if (!dd.contains(ev.target)) { dd.remove(); document.removeEventListener('pointerdown', close, true); } };
-    document.addEventListener('pointerdown', close, true);
+    if (dropdownClosed || !dd.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
   }, 0);
+  firstItem?.focus();
 }
 
 function showNavHistoryDropdown(e, direction) {
@@ -683,218 +898,3 @@ function _normalizeSavedDbViewForV2(view, cfg, index) {
       ? _defaultDbSavedViewName(v.viewMode, index)
       : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
   }
-  if (v.hiddenCols == null) v.hiddenCols = _cloneDbViewArray(cfg.hiddenCols);
-  else v.hiddenCols = _cloneDbViewArray(v.hiddenCols);
-  if (v.pinnedCols == null) v.pinnedCols = _cloneDbViewArray(cfg.pinnedCols);
-  else v.pinnedCols = _cloneDbViewArray(v.pinnedCols);
-  if (v.colOrder == null) v.colOrder = cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null);
-  else v.colOrder = _cloneDbViewValue(v.colOrder, null);
-  if (v.advancedFilters == null) v.advancedFilters = _cloneDbViewArray(cfg.advancedFilters);
-  else v.advancedFilters = _cloneDbViewArray(v.advancedFilters);
-  if (v.conditionalFormat == null) v.conditionalFormat = !!cfg.conditionalFormat;
-  else v.conditionalFormat = !!v.conditionalFormat;
-  if (v.conditionalColors == null) v.conditionalColors = _cloneDbViewObject(cfg.conditionalColors);
-  else v.conditionalColors = _cloneDbViewObject(v.conditionalColors);
-  if (v.filter == null) v.filter = 'disabled';
-  if (v.sortConfig == null) v.sortConfig = cfg.sortConfig == null ? null : _cloneDbViewValue(cfg.sortConfig, null);
-  else v.sortConfig = _cloneDbViewValue(v.sortConfig, null);
-  if (v.manualOrder == null) v.manualOrder = cfg.manualOrder == null ? null : _cloneDbViewValue(cfg.manualOrder, null);
-  else v.manualOrder = _cloneDbViewValue(v.manualOrder, null);
-  if (v.showFooter == null) v.showFooter = !!cfg.showFooter;
-  else v.showFooter = !!v.showFooter;
-  if (v.entityColumnPinned == null) v.entityColumnPinned = cfg.entityColumnPinned !== false;
-  else v.entityColumnPinned = v.entityColumnPinned !== false;
-  if (v.countTypes == null) v.countTypes = _cloneDbViewObject(cfg.countTypes);
-  else v.countTypes = _cloneDbViewObject(v.countTypes);
-  if (v.colWidths == null) v.colWidths = _cloneDbViewObject(cfg.colWidths);
-  else v.colWidths = _cloneDbViewObject(v.colWidths);
-  if (v.thumbnailSize == null) v.thumbnailSize = cfg.thumbnailSize || 'small';
-  _ensureDbViewTypeSpecific(v, cfg);
-  return v;
-}
-function _hasLegacyDbViewState(cfg) {
-  return _hasDbViewArrayState(cfg.hiddenCols)
-    || _hasDbViewArrayState(cfg.pinnedCols)
-    || _hasDbViewArrayState(cfg.colOrder)
-    || _hasDbViewArrayState(cfg.advancedFilters)
-    || _hasDbViewObjectState(cfg.conditionalColors)
-    || _hasDbViewObjectState(cfg.countTypes)
-    || _hasDbViewObjectState(cfg.colWidths)
-    || !!cfg.conditionalFormat
-    || !!cfg.groupBy
-    || !!cfg.kanbanGroupBy
-    || !!cfg.chartConfig
-    || !!cfg.graphConfig
-    || !!cfg.timeline
-    || !!cfg.formConfig
-    || !!cfg.calendarMapping
-    || !!cfg.sortConfig
-    || !!cfg.manualOrder
-    || cfg.showFooter === true
-    || cfg.entityColumnPinned === false
-    || (cfg.thumbnailSize && cfg.thumbnailSize !== 'small')
-    || (cfg.currentViewMode && cfg.currentViewMode !== 'pivot');
-}
-function _hasDbViewMeaningfulValue(value) {
-  if (Array.isArray(value)) return value.length > 0;
-  if (_isDbViewPlainObject(value)) return Object.values(value).some(_hasDbViewMeaningfulValue);
-  return value !== null && value !== undefined && value !== '' && value !== false;
-}
-function _hasMeaningfulDbTimelineState(timeline) {
-  if (!_isDbViewPlainObject(timeline)) return false;
-  if (String(timeline.timeProp || '')) return true;
-  if (String(timeline.endProp || '')) return true;
-  if (String(timeline.rowProp || '_entity') !== '_entity') return true;
-  if (String(timeline.scale || 'day') !== 'day') return true;
-  if (String(timeline.direction || 'horizontal') !== 'horizontal') return true;
-  if (String(timeline.displayStart || '')) return true;
-  if (String(timeline.displayEnd || '')) return true;
-  if (Math.max(1, Math.round(Number(timeline.timeStepMinutes || 1) || 1)) !== 1) return true;
-  if (String(timeline.calendarSystemId || 'gregorian') !== 'gregorian') return true;
-  if (_hasDbViewObjectState(timeline.colWidths)) return true;
-  if (_hasDbViewObjectState(timeline.rowHeights)) return true;
-  if (_hasDbViewArrayState(timeline.cardProps)) return true;
-  if (_hasDbViewArrayState(timeline.calendarSystems)) return true;
-  const defaults = new Set([
-    'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
-    'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
-  ]);
-  return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
-}
-function _hasMeaningfulDbSavedViewState(view, index) {
-  if (!_isDbViewPlainObject(view)) return false;
-  const viewMode = _normalizeDbViewModeValue(view.viewMode || 'pivot');
-  if (viewMode !== 'pivot') return true;
-  const defaultName = typeof _defaultDbSavedViewName === 'function'
-    ? _defaultDbSavedViewName(viewMode, index)
-    : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
-  const name = String(view.name || '').trim();
-  if (name && name !== defaultName) return true;
-  if (_hasDbViewArrayState(view.hiddenCols) || _hasDbViewArrayState(view.pinnedCols)) return true;
-  if (_hasDbViewArrayState(view.colOrder) || _hasDbViewObjectState(view.colOrder)) return true;
-  if (_hasDbViewArrayState(view.advancedFilters)) return true;
-  if (view.conditionalFormat === true || _hasDbViewObjectState(view.conditionalColors)) return true;
-  if (view.filter && view.filter !== 'disabled') return true;
-  if (_hasDbViewMeaningfulValue(view.sortConfig) || _hasDbViewMeaningfulValue(view.manualOrder)) return true;
-  if (view.showFooter === true || view.entityColumnPinned === false) return true;
-  if (_hasDbViewObjectState(view.countTypes) || _hasDbViewObjectState(view.colWidths)) return true;
-  if (view.thumbnailSize && view.thumbnailSize !== 'small') return true;
-  const typeSpecific = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
-  if (typeSpecific.pivot?.groupBy) return true;
-  if (typeSpecific.kanban?.groupBy && typeSpecific.kanban.groupBy !== '_status') return true;
-  if (_hasDbViewObjectState(typeSpecific.calendar?.mapping)) return true;
-  if (_hasMeaningfulDbTimelineState(typeSpecific.timeline)) return true;
-  if (_hasDbViewObjectState(typeSpecific.chart) || _hasDbViewObjectState(typeSpecific.graph)) return true;
-  return typeSpecific.form?.formConfig != null;
-}
-function _hasMeaningfulDbViewConfigState(cfg) {
-  if (!_isDbViewPlainObject(cfg)) return false;
-  if (_hasDbViewArrayState(cfg.deletedProps)) return true;
-  if (_hasLegacyDbViewState(cfg)) return true;
-  const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
-  if (views.length > 1) return true;
-  if (Number.isInteger(cfg.currentViewIdx) && cfg.currentViewIdx > 0) return true;
-  return views.some((view, index) => _hasMeaningfulDbSavedViewState(view, index));
-}
-function _migrateLegacyViewConfig(dbPath, cfg) {
-  const config = _isDbViewPlainObject(cfg) ? cfg : {};
-  if (!dbPath) return { cfg: config, changed: false };
-  if (config._viewMigrationV2Done === true) {
-    if (!Array.isArray(config.savedViews)) config.savedViews = [];
-    if (config.savedViews.length > 0
-      && (!Number.isInteger(config.currentViewIdx)
-        || config.currentViewIdx < 0
-        || config.currentViewIdx >= config.savedViews.length)) {
-      config.currentViewIdx = 0;
-      return { cfg: config, changed: true };
-    }
-    return { cfg: config, changed: false };
-  }
-
-  const legacyView = _makeLegacyDbSavedView(config);
-  const existingViews = Array.isArray(config.savedViews) ? config.savedViews : [];
-  config.savedViews = existingViews.map((view, index) => _normalizeSavedDbViewForV2(view, config, index));
-  if (config.savedViews.length === 0) {
-    config.savedViews.push(legacyView);
-    config.currentViewIdx = 0;
-  } else {
-    if (_hasLegacyDbViewState(config) && config.currentViewIdx === -1) {
-      config.savedViews.unshift(legacyView);
-      config.currentViewIdx = 0;
-    } else if (config.currentViewIdx === -1 || config.currentViewIdx == null) {
-      config.currentViewIdx = 0;
-    }
-    if (config.currentViewIdx < 0 || config.currentViewIdx >= config.savedViews.length) {
-      config.currentViewIdx = 0;
-    }
-  }
-  config._viewMigrationV2Done = true;
-  return { cfg: config, changed: true };
-}
-function _persistMigratedDbViewConfig(dbPath, cfg) {
-  try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
-}
-function _sanitizeDbViewConfigForBackend(cfg) {
-  const cleaned = _cloneDbViewObject(cfg);
-  // プロパティ型は property_types として別保存される。重複保存すると新旧形式がずれやすい。
-  if (Object.prototype.hasOwnProperty.call(cleaned, 'propertyTypes')) delete cleaned.propertyTypes;
-  return cleaned;
-}
-function _hasLocalDbViewConfigCache(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  const keys = [];
-  if (fileId) keys.push('dbViewConfig:' + fileId);
-  keys.push('dbViewConfig:' + (dbPath || ''));
-  return [...new Set(keys)].some((key) => {
-    try {
-      const value = localStorage.getItem(key);
-      if (value == null || String(value).trim() === '') return false;
-      return _hasMeaningfulDbViewConfigState(JSON.parse(value));
-    } catch {
-      return false;
-    }
-  });
-}
-function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
-  if (!dbPath || typeof apiPut !== 'function') return Promise.resolve(false);
-  const payload = _sanitizeDbViewConfigForBackend(cfg);
-  const key = String(dbPath || '');
-  const run = () => apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
-    .then(() => true)
-    .catch((error) => {
-      console.warn('[Meldex] シート表示設定を保存できませんでした', error);
-      return false;
-    });
-  if (_dbViewConfigBackendSaveTimers.has(key)) {
-    clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
-    _dbViewConfigBackendSaveTimers.delete(key);
-  }
-  if (options.immediate === true) return run();
-  const timer = setTimeout(() => {
-    _dbViewConfigBackendSaveTimers.delete(key);
-    run();
-  }, 180);
-  _dbViewConfigBackendSaveTimers.set(key, timer);
-  return Promise.resolve(true);
-}
-function _hasPendingDbViewConfigBackendSave(dbPath) {
-  return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
-}
-function getDbViewConfig(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  let cfg = {};
-  if (fileId) {
-    try { const v = localStorage.getItem('dbViewConfig:' + fileId); if (v) cfg = JSON.parse(v) || {}; } catch { cfg = {}; }
-  }
-  if (!fileId || Object.keys(cfg).length === 0) {
-    try {
-      const v = localStorage.getItem('dbViewConfig:' + (dbPath || ''));
-      if (v) cfg = JSON.parse(v) || {};
-    } catch {}
-  }
-  const migrated = _migrateLegacyViewConfig(dbPath, cfg);
-  if (migrated.changed) _persistMigratedDbViewConfig(dbPath, migrated.cfg);
-  return migrated.cfg;
-}
-function _dbViewConfigHistoryScope(dbPath) {
-  const fileId = _pathToFileId(dbPath);

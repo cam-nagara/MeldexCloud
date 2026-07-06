@@ -618,7 +618,9 @@ const CHAT_COST_DEFAULTS = {
 };
 
 function _chatCostRoot(root) {
-  return (root?.querySelector ? root : document).querySelector('#chat-cost-settings-container');
+  const scope = root?.querySelector ? root : document;
+  if (scope?.matches?.('#chat-cost-settings-container')) return scope;
+  return scope.querySelector('#chat-cost-settings-container');
 }
 
 function _chatCostNumber(container, id, fallback) {
@@ -712,15 +714,15 @@ async function renderChatCostSettings(root) {
         <label class="gb-field-row"><span class="gb-label">長文警告</span><input id="chat-budget-large-warning" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_warning_tokens ?? CHAT_COST_DEFAULTS.large_context_warning_tokens)}"><span class="gb-section-desc">tokens</span></label>
         <label class="gb-field-row"><span class="gb-label">長文停止</span><input id="chat-budget-large-block" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_block_tokens ?? CHAT_COST_DEFAULTS.large_context_block_tokens)}"><span class="gb-section-desc">tokens</span></label>
         <div class="gb-field-row" style="justify-content:flex-start;">
-          <button type="button" class="gb-btn gb-btn-sm" id="chat-budget-save">保存</button>
-          <button type="button" class="gb-btn gb-btn-sm" id="chat-budget-reset">使用量履歴をリセット</button>
+          <button type="button" class="gb-btn gb-btn-sm" id="chat-budget-save">${lucide('save',14)} 保存</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" id="chat-budget-reset">${lucide('rotateCcw',14)} 使用量履歴をリセット</button>
         </div>
         <div id="chat-budget-status" class="gb-section-desc"></div>
       </section>`;
     const statusEl = container.querySelector('#chat-budget-status');
     container.querySelector('#chat-budget-save')?.addEventListener('click', () => saveChatCostSettingsFromSettingsDialog(container, { silent: false }));
     container.querySelector('#chat-budget-reset')?.addEventListener('click', async () => {
-      const ok = typeof cfConfirm === 'function' ? await cfConfirm('LLM使用量履歴をリセットしますか？') : confirm('LLM使用量履歴をリセットしますか？');
+      const ok = typeof cfConfirm === 'function' ? await cfConfirm('LLM使用量履歴をリセットしますか？', { danger: true, okLabel: 'リセット' }) : confirm('LLM使用量履歴をリセットしますか？');
       if (!ok) return;
       await apiPost('/chat/usage/reset', {});
       statusEl.textContent = '使用量履歴をリセットしました';

@@ -237,6 +237,7 @@
       roleBtn.type = 'button';
       roleBtn.textContent = mergeRole ? '' : (row.role || '');
       roleBtn.title = 'クリックで選択、ダブルクリックでタイプ変更';
+      roleBtn.setAttribute('aria-label', `タイプ: ${row.role || '未設定'}`);
       roleBtn.tabIndex = 0;
       roleBtn.dataset.rowId = row.id;
       roleBtn.dataset.e2eId = `sn-row-${row.id}-role`;
@@ -330,11 +331,14 @@
       if (col.align) cell.dataset.align = col.align;
       if (col.valign) cell.dataset.valign = col.valign;
       const val = row.columns[col.id] ?? '';
+      const colControlLabel = `${col.label || col.id || '列'}列`;
       if (col.type === 'number') {
         const inp = document.createElement('input');
         inp.type = 'number';
         inp.className = 'sn2-custom-input';
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
+        inp.setAttribute('aria-label', colControlLabel);
+        inp.title = colControlLabel;
         inp.value = val;
         inp.addEventListener('change', () => {
           this._pushUndo('列値変更');
@@ -347,7 +351,7 @@
         // 単位表示
         if (col.unit) {
           const unitSpan = document.createElement('span');
-          unitSpan.style.cssText = 'font-size:10px;color:var(--fg2);margin-left:2px;flex-shrink:0;';
+          unitSpan.className = 'sn2-custom-unit';
           unitSpan.textContent = col.unit;
           cell.appendChild(unitSpan);
         }
@@ -355,6 +359,8 @@
         const sel = document.createElement('select');
         sel.className = 'sn2-custom-select';
         sel.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
+        sel.setAttribute('aria-label', colControlLabel);
+        sel.title = colControlLabel;
         col.options.forEach(opt => { const o = document.createElement('option'); o.value = opt; o.textContent = opt; sel.appendChild(o); });
         sel.value = val;
         sel.addEventListener('change', () => { this._pushUndo('列値変更'); row.columns[col.id] = sel.value; this._markDirty({ skipUndo: true }); });
@@ -364,6 +370,8 @@
         inp.className = 'sn2-custom-text';
         inp.contentEditable = 'true';
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
+        inp.setAttribute('aria-label', colControlLabel);
+        inp.title = colControlLabel;
         inp.textContent = val;
         this._applyAutoLinks(inp);
         this._applyAutoRuby(inp);

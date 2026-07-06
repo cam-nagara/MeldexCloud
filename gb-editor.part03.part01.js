@@ -842,6 +842,14 @@ function _unlinkContextAnchor(linkTarget) {
   editable.focus();
 }
 
+function _linkContextItemId(label) {
+  return 'note-link-context-menu-' + String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\u3040-\u30ff\u3400-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 function _showLinkContextMenu(e, linkTarget) {
   if (!linkTarget?.path) return;
   removeTooltip();
@@ -849,11 +857,26 @@ function _showLinkContextMenu(e, linkTarget) {
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
 
   const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
+  menu.className = 'gb-context-menu gb-link-context-menu';
+  menu.dataset.e2eId = 'note-link-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'リンクメニュー');
+  menu.style.zIndex = '10080';
   const addItem = (icon, label, action) => {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'gb-context-menu-item';
-    item.innerHTML = (typeof lucide === 'function' ? lucide(icon, 14) : '') + ' ' + label;
+    item.dataset.e2eId = _linkContextItemId(label);
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('aria-label', label);
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'menu-icon';
+    iconWrap.setAttribute('aria-hidden', 'true');
+    if (typeof lucide === 'function') iconWrap.innerHTML = lucide(icon, 16);
+    const labelEl = document.createElement('span');
+    labelEl.className = 'gb-context-menu-item-label';
+    labelEl.textContent = label;
+    item.append(iconWrap, labelEl);
     item.addEventListener('click', () => {
       menu.remove();
       action();
@@ -864,6 +887,19 @@ function _showLinkContextMenu(e, linkTarget) {
     if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
     else openLink(linkTarget.path, linkTarget.label);
   });
+  const browserUrl = String(linkTarget.path || '').trim();
+  if (/^https?:\/\//i.test(browserUrl)) {
+    addItem('externalLink', '既定のブラウザで開く', () => {
+      if (typeof openExternalBrowserUrl === 'function') {
+        openExternalBrowserUrl(browserUrl);
+      } else if (typeof apiPost === 'function') {
+        apiPost('/open-external-url', { url: browserUrl }, { silentError: true })
+          .catch(() => window.open?.(browserUrl, '_blank', 'noopener'));
+      } else {
+        window.open?.(browserUrl, '_blank', 'noopener');
+      }
+    });
+  }
   if (!linkTarget.localAnchor) {
     addItem('layers-2', 'サブパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
       linkType: linkTarget.linkType || '',
@@ -887,9 +923,33 @@ function _showLinkContextMenu(e, linkTarget) {
   if (linkTarget.anchorEl && linkTarget.editableHost) {
     const sep = document.createElement('div');
     sep.className = 'gb-context-menu-sep';
+    sep.setAttribute('role', 'separator');
     menu.appendChild(sep);
     addItem('unlink', 'リンクを解除', () => _unlinkContextAnchor(linkTarget));
   }
+
+  menu.addEventListener('keydown', (ev) => {
+    const items = Array.from(menu.querySelectorAll('.gb-context-menu-item'));
+    if (!items.length) return;
+    const current = items.indexOf(document.activeElement);
+    const focusAt = (index) => {
+      ev.preventDefault();
+      items[(index + items.length) % items.length]?.focus?.({ preventScroll: true });
+    };
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      menu.remove();
+      linkTarget.element?.focus?.({ preventScroll: true });
+    } else if (ev.key === 'ArrowDown') {
+      focusAt(current + 1);
+    } else if (ev.key === 'ArrowUp') {
+      focusAt(current - 1);
+    } else if (ev.key === 'Home') {
+      focusAt(0);
+    } else if (ev.key === 'End') {
+      focusAt(items.length - 1);
+    }
+  });
 
   document.body.appendChild(menu);
   const anchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
@@ -899,8 +959,10 @@ function _showLinkContextMenu(e, linkTarget) {
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
     menu.style.left = (e.clientX / z) + 'px';
     menu.style.top = (e.clientY / z) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
   }
   setTimeout(() => {
+    menu.querySelector('.gb-context-menu-item')?.focus?.({ preventScroll: true });
     const closer = (ev) => {
       if (!menu.contains(ev.target)) {
         menu.remove();
@@ -911,7 +973,38 @@ function _showLinkContextMenu(e, linkTarget) {
   }, 0);
 }
 
+const LINK_CONTEXT_LONG_PRESS_MS = 520;
+const LINK_CONTEXT_LONG_PRESS_MOVE_TOLERANCE = 10;
+let _linkContextLongPressTimer = null;
+let _linkContextLongPressPointerId = null;
+let _linkContextLongPressStart = null;
+let _linkContextLongPressElement = null;
+let _linkContextLongPressSuppressUntil = 0;
+
+function _clearLinkContextLongPress() {
+  if (_linkContextLongPressTimer) clearTimeout(_linkContextLongPressTimer);
+  _linkContextLongPressTimer = null;
+  _linkContextLongPressPointerId = null;
+  _linkContextLongPressStart = null;
+  _linkContextLongPressElement = null;
+}
+
+function _linkContextLongPressMatches(target) {
+  if (!_linkContextLongPressElement || Date.now() > _linkContextLongPressSuppressUntil) return false;
+  const linkTarget = _resolveContextLinkTarget(target);
+  return !!(linkTarget?.element && linkTarget.element === _linkContextLongPressElement);
+}
+
+function _suppressLinkContextLongPressFollowup(e) {
+  if (!_linkContextLongPressMatches(e.target)) return false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  e.stopPropagation();
+  return true;
+}
+
 document.addEventListener('contextmenu', (e) => {
+  if (_suppressLinkContextLongPressFollowup(e)) return;
   const linkTarget = _resolveContextLinkTarget(e.target);
   if (!linkTarget) return;
   e.preventDefault();
@@ -955,6 +1048,7 @@ function _consumeUnifiedLinkEvent(e, linkTarget) {
 
 document.addEventListener('click', (e) => {
   if (e.button !== 0) return;
+  if (_suppressLinkContextLongPressFollowup(e)) return;
   const linkTarget = _resolveContextLinkTarget(e.target);
   if (!_consumeUnifiedLinkEvent(e, linkTarget)) return;
   if (e.detail > 1) {
@@ -979,6 +1073,57 @@ document.addEventListener('dblclick', (e) => {
   clearTimeout(_linkActivationTimer);
   _linkActivationTimer = null;
   _openContextLinkCurrent(linkTarget);
+}, true);
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+  if (e.button != null && e.button !== 0 && e.button !== -1) return;
+  const linkTarget = _resolveContextLinkTarget(e.target);
+  if (!linkTarget?.element) return;
+  _clearLinkContextLongPress();
+  _linkContextLongPressPointerId = e.pointerId;
+  _linkContextLongPressStart = { x: e.clientX, y: e.clientY };
+  _linkContextLongPressElement = linkTarget.element;
+  _linkContextLongPressTimer = setTimeout(() => {
+    const longPressPoint = _linkContextLongPressStart || { x: e.clientX, y: e.clientY };
+    _linkContextLongPressTimer = null;
+    _linkContextLongPressPointerId = null;
+    _linkContextLongPressStart = null;
+    _linkContextLongPressSuppressUntil = Date.now() + 900;
+    try {
+      e.preventDefault();
+      e.stopPropagation();
+    } catch {}
+    const latestTarget = _resolveContextLinkTarget(_linkContextLongPressElement);
+    if (!latestTarget) return;
+    _showLinkContextMenu({
+      clientX: longPressPoint.x,
+      clientY: longPressPoint.y,
+      target: _linkContextLongPressElement,
+      preventDefault: () => e.preventDefault(),
+      stopPropagation: () => e.stopPropagation(),
+      stopImmediatePropagation: () => e.stopImmediatePropagation?.(),
+    }, latestTarget);
+  }, LINK_CONTEXT_LONG_PRESS_MS);
+}, true);
+
+document.addEventListener('pointermove', (e) => {
+  if (_linkContextLongPressPointerId == null || e.pointerId !== _linkContextLongPressPointerId || !_linkContextLongPressStart) return;
+  const dx = e.clientX - _linkContextLongPressStart.x;
+  const dy = e.clientY - _linkContextLongPressStart.y;
+  if (dx * dx + dy * dy > LINK_CONTEXT_LONG_PRESS_MOVE_TOLERANCE * LINK_CONTEXT_LONG_PRESS_MOVE_TOLERANCE) {
+    _clearLinkContextLongPress();
+  }
+}, true);
+
+document.addEventListener('pointerup', (e) => {
+  if (_linkContextLongPressPointerId == null || e.pointerId !== _linkContextLongPressPointerId) return;
+  _clearLinkContextLongPress();
+}, true);
+
+document.addEventListener('pointercancel', (e) => {
+  if (_linkContextLongPressPointerId == null || e.pointerId !== _linkContextLongPressPointerId) return;
+  _clearLinkContextLongPress();
 }, true);
 
 // 詳細パネルにファイルのメタ情報を表示

@@ -114,7 +114,7 @@ function _discordBotCardHtml(bot, index) {
       </div>
       <label class="gb-field">
         <span class="gb-label">既定ソースフォルダ</span>
-        <input class="gb-input" data-e2e-id="discord-bot-${index}-default-source-folder" data-discord-field="default_source_folder" value="${_discordBotEsc(bot.default_source_folder || '')}" placeholder="未指定時は現在のソースフォルダ">
+        <input class="gb-input" data-e2e-id="discord-bot-${index}-default-source-folder" data-discord-field="default_source_folder" value="${_discordBotEsc(bot.default_source_folder || '')}" placeholder="未指定時は現在のソースフォルダ" aria-label="既定ソースフォルダ">
       </label>
       <div class="gb-field-row" style="align-items:flex-start;">
         <label class="gb-check"><input type="checkbox" data-e2e-id="discord-bot-${index}-enabled" data-discord-field="enabled" ${bot.enabled ? 'checked' : ''}><span>有効</span></label>

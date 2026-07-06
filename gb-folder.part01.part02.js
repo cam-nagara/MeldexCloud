@@ -169,10 +169,21 @@
       }, null, 'columns');
     }
   }
-  { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  document.body.appendChild(menu);
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  if (item.path && typeof appendShellVerbsToMenu === 'function') appendShellVerbsToMenu(menu, item.path);
+  const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
+  } else {
+    const z = _getZoom();
+    menu.style.left = (e.clientX / z) + 'px';
+    menu.style.top = (e.clientY / z) + 'px';
+    document.body.appendChild(menu);
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+  if (item.path && typeof appendShellVerbsToMenu === 'function') {
+    appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit });
+    if (typeof positionPopup === 'function') positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
   setTimeout(() => {
     const closer = (ev) => {
       const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
@@ -371,8 +382,10 @@ function _folderConfigureListLayout(container, isListLayout) {
   if (!container) return;
   if (!isListLayout) {
     container.style.removeProperty('--fv-list-grid-columns');
+    container.style.padding = '12px';
     return;
   }
+  container.style.padding = '0 12px 12px 12px';
   _folderApplyListColumnTemplate(container);
 }
 
@@ -852,7 +865,7 @@ let _lassoJustCompleted = false;
     _lassoRect.style.cssText = 'position:absolute;border:1px solid var(--accent);background:rgba(86,156,214,0.15);pointer-events:none;z-index:10;';
     grid.style.position = 'relative';
     grid.appendChild(_lassoRect);
-    grid.setPointerCapture(e.pointerId);
+    try { grid.setPointerCapture(e.pointerId); } catch {}
     e.preventDefault();
   });
   grid.addEventListener('pointermove', (e) => {

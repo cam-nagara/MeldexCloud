@@ -86,23 +86,23 @@ function _bdPrepareContextMenuSelection(nodeId) {
 }
 
 function bdContextMenu(e, nodeId) {
-  document.querySelectorAll('.gb-context-menu').forEach(m=>m.remove());
-  const menu = document.createElement('div'); menu.className = 'gb-context-menu';
+  _bdCloseAllContextMenus();
+  const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'カードメニュー' : 'ボードメニュー');
+  _bdTrackContextMenuTrigger(menu, e?.trigger || null);
   { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1); menu.style.left = (e.clientX/z)+'px'; menu.style.top = (e.clientY/z)+'px'; }
   const contextAnchorEl = { getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY, width: 0, height: 0 }) };
-  function item(label, fn) { const d=document.createElement('div'); d.innerHTML=label; d.addEventListener('click', ()=>{document.querySelectorAll('.gb-context-menu').forEach(m=>m.remove());fn();}); menu.appendChild(d); }
-  function dangerItem(label, fn) { const d=document.createElement('div'); d.innerHTML=label; d.classList.add('danger'); d.addEventListener('click', ()=>{document.querySelectorAll('.gb-context-menu').forEach(m=>m.remove());fn();}); menu.appendChild(d); }
-  function sep() { const d=document.createElement('div'); d.className='bd-cm-sep'; menu.appendChild(d); }
+  function item(label, fn) { return _bdContextMenuItem(menu, label, fn); }
+  function dangerItem(label, fn) { return _bdContextMenuItem(menu, label, fn, { danger: true }); }
+  function sep() { return _bdContextMenuSep(menu); }
   function sub(label) {
-    const wrap=document.createElement('div'); wrap.style.position='relative';
-    const trigger=document.createElement('div'); trigger.innerHTML=esc(label)+submenuArrow(); trigger.style.cursor='pointer';
-    const panel=document.createElement('div'); panel.className='gb-context-menu';
-    panel.style.cssText='display:none;';
-    attachHoverSubmenu(trigger, panel);
-    wrap.appendChild(trigger); wrap.appendChild(panel); menu.appendChild(wrap);
-    return { item(l,fn){ const d=document.createElement('div'); d.innerHTML=l; d.addEventListener('click', ()=>{document.querySelectorAll('.gb-context-menu').forEach(m=>m.remove());fn();}); panel.appendChild(d); },
-             sep(){ const d=document.createElement('div'); d.className='bd-cm-sep'; panel.appendChild(d); },
-             raw(el){ panel.appendChild(el); } };
+    const panel = _bdCreateContextSubmenu(menu, label, 140);
+    return {
+      item(l, fn, opts) { return _bdContextMenuItem(panel, l, fn, opts); },
+      sep() { return _bdContextMenuSep(panel); },
+      label(text) { return _bdContextMenuLabel(panel, text); },
+      raw(el) { panel.appendChild(el); return el; },
+      panel,
+    };
   }
 
   if (nodeId) _bdPrepareContextMenuSelection(nodeId);
@@ -169,11 +169,8 @@ function bdContextMenu(e, nodeId) {
       item('テキスト編集 (F2)', () => bdEditNode(nodeId));
       // 「同階層カード追加 (Enter)」: ルートカード (親なし) では追加先の階層が不定のため disabled。
       if (isRootCard) {
-        const disabled = document.createElement('div');
-        disabled.textContent = '同階層カード追加 (Enter)';
-        disabled.style.cssText = 'padding:4px 16px;color:var(--fg2);cursor:default;opacity:0.55;';
+        const disabled = _bdContextMenuItem(menu, '同階層カード追加 (Enter)', null, { disabled: true, html: false });
         disabled.title = 'ルートカードは親が無いため、同階層追加できません';
-        menu.appendChild(disabled);
       } else {
         item('同階層カード追加 (Enter)', () => {
           bdSelect(nodeId);
@@ -309,76 +306,45 @@ function bdContextMenu(e, nodeId) {
       const cardStylePanel = _bdCreateContextSubmenu(menu, 'カードスタイル', 160);
       const currentStyleId = nd?.cardStyle || bd.activeCardStyle || '';
       const isHierarchical = !nd?.cardStyle;
-      const restoreItem = document.createElement('div');
-      restoreItem.innerHTML = radioMark(isHierarchical) + esc('階層別スタイルに戻す');
-      restoreItem.style.cssText = 'padding:4px 16px;cursor:pointer;' + (isHierarchical ? 'color:var(--accent);' : '');
-      restoreItem.onmouseenter = () => { restoreItem.style.background = 'var(--bg4)'; };
-      restoreItem.onmouseleave = () => { restoreItem.style.background = ''; };
-      restoreItem.addEventListener('click', () => {
-        document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+      const restoreItem = _bdContextMenuItem(cardStylePanel, radioMark(isHierarchical) + esc('階層別スタイルに戻す'), () => {
         if (typeof _bdRestoreCardToHierarchy === 'function') _bdRestoreCardToHierarchy(targetNodeIds);
+      }, {
+        role: 'menuitemradio',
+        checked: isHierarchical,
       });
-      cardStylePanel.appendChild(restoreItem);
-      const restoreSep = document.createElement('div');
-      restoreSep.className = 'bd-cm-sep';
-      cardStylePanel.appendChild(restoreSep);
+      if (isHierarchical) restoreItem.style.color = 'var(--accent)';
+      _bdContextMenuSep(cardStylePanel);
       (bd.cardStyles || []).forEach(style => {
         if (typeof _bdIsCustomStyleId === 'function' && _bdIsCustomStyleId('card', style.id)) return;
-        const si = document.createElement('div');
-        si.innerHTML = radioMark(currentStyleId === style.id) + esc(style.name || '');
-        si.style.cssText = 'padding:4px 16px;cursor:pointer;' + (currentStyleId === style.id ? 'color:var(--accent);' : '');
-        si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-        si.onmouseleave = () => { si.style.background = ''; };
-        si.addEventListener('click', () => {
-          document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+        const si = _bdContextMenuItem(cardStylePanel, radioMark(currentStyleId === style.id) + esc(style.name || ''), () => {
           _bdApplyCardStyleFromMenu(targetNodeIds, style.id);
+        }, {
+          role: 'menuitemradio',
+          checked: currentStyleId === style.id,
         });
-        cardStylePanel.appendChild(si);
+        if (currentStyleId === style.id) si.style.color = 'var(--accent)';
       });
-      const cardStyleSep = document.createElement('div');
-      cardStyleSep.className = 'bd-cm-sep';
-      cardStylePanel.appendChild(cardStyleSep);
+      _bdContextMenuSep(cardStylePanel);
       // 階層別スタイル サブのサブ (有効/無効)
       if (nd) {
-        const autoWrap = document.createElement('div'); autoWrap.style.position = 'relative';
-        const autoTrig = document.createElement('div');
-        autoTrig.innerHTML = '階層別スタイル' + submenuArrow();
-        autoTrig.style.cssText = 'padding:4px 16px;cursor:pointer;';
-        autoTrig.onmouseenter = () => { autoTrig.style.background = 'var(--bg4)'; };
-        autoTrig.onmouseleave = () => { autoTrig.style.background = ''; };
-        const autoPanel = document.createElement('div');
-        autoPanel.className = 'gb-context-menu';
-        autoPanel.style.cssText = 'display:none;min-width:120px;';
-        attachHoverSubmenu(autoTrig, autoPanel);
+        const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 120);
         [['有効', true], ['無効', false]].forEach(([label, val]) => {
-          const si = document.createElement('div');
-          si.innerHTML = radioMark(!!nd._autoStyle === val) + label;
-          si.style.cssText = 'padding:4px 16px;cursor:pointer;' + (!!nd._autoStyle === val ? 'color:var(--accent);' : '');
-          si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-          si.onmouseleave = () => { si.style.background = ''; };
-          si.addEventListener('click', () => {
-            document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+          const si = _bdContextMenuItem(autoPanel, radioMark(!!nd._autoStyle === val) + label, () => {
             nd._autoStyle = val;
             if (val) delete nd._userCardStyle;
             if (val && typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(nd.id);
             bdRender(); bdDirty();
             if (nd.structure && typeof bdAutoLayout === 'function') bdAutoLayout(nd.id);
+          }, {
+            role: 'menuitemradio',
+            checked: !!nd._autoStyle === val,
           });
-          autoPanel.appendChild(si);
+          if (!!nd._autoStyle === val) si.style.color = 'var(--accent)';
         });
-        autoWrap.appendChild(autoTrig); autoWrap.appendChild(autoPanel);
-        cardStylePanel.appendChild(autoWrap);
       }
-      const manageItem = document.createElement('div');
-      manageItem.textContent = 'スタイル管理...';
-      manageItem.style.cssText = 'padding:4px 16px;cursor:pointer;';
-      manageItem.onmouseenter = () => { manageItem.style.background = 'var(--bg4)'; };
-      manageItem.onmouseleave = () => { manageItem.style.background = ''; };
-      manageItem.addEventListener('click', () => {
-        document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+      _bdContextMenuItem(cardStylePanel, 'スタイル管理...', () => {
         if (typeof bdOpenCardStyleManager === 'function') bdOpenCardStyleManager();
       });
-      cardStylePanel.appendChild(manageItem);
     }
 
     // --- 画像操作 サブ (画像カード時のみルート直下) ---
@@ -395,31 +361,18 @@ function bdContextMenu(e, nodeId) {
       imgSub.sep();
       // 不透明度サブのサブ
       {
-        const opWrap = document.createElement('div'); opWrap.style.position = 'relative';
-        const opTrig = document.createElement('div');
-        opTrig.innerHTML = '不透明度' + submenuArrow();
-        opTrig.style.cssText = 'padding:4px 16px;cursor:pointer;';
-        opTrig.onmouseenter = () => { opTrig.style.background = 'var(--bg4)'; };
-        opTrig.onmouseleave = () => { opTrig.style.background = ''; };
-        const opPanel = document.createElement('div');
-        opPanel.className = 'gb-context-menu';
-        opPanel.style.cssText = 'display:none;min-width:100px;';
-        attachHoverSubmenu(opTrig, opPanel);
+        const opPanel = _bdCreateContextSubmenu(imgSub.panel, '不透明度', 100);
         [[1, '100%'], [0.75, '75%'], [0.5, '50%'], [0.25, '25%']].forEach(([val, label]) => {
           const curOp = nd.opacity != null ? nd.opacity : 1;
-          const si = document.createElement('div');
-          si.innerHTML = radioMark(Math.abs(curOp - val) < 0.01) + label;
-          si.style.cssText = 'padding:4px 16px;cursor:pointer;' + (Math.abs(curOp - val) < 0.01 ? 'color:var(--accent);' : '');
-          si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-          si.onmouseleave = () => { si.style.background = ''; };
-          si.addEventListener('click', () => {
-            document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+          const active = Math.abs(curOp - val) < 0.01;
+          const si = _bdContextMenuItem(opPanel, radioMark(active) + label, () => {
             bdSetOpacity(val);
+          }, {
+            role: 'menuitemradio',
+            checked: active,
           });
-          opPanel.appendChild(si);
+          if (active) si.style.color = 'var(--accent)';
         });
-        opWrap.appendChild(opTrig); opWrap.appendChild(opPanel);
-        imgSub.raw(opWrap);
       }
       imgSub.item('カラーピッカー', () => bdColorPicker());
     }
@@ -457,24 +410,10 @@ function bdContextMenu(e, nodeId) {
       const strSub = sub('構造');
       if (!multi) {
         // コンテナ切替 (ルート直下はトグル式だが、サブ内では現在値の確認を兼ねてラジオで並べる)
-        const ctWrap = document.createElement('div'); ctWrap.style.position = 'relative';
-        const ctTrig = document.createElement('div');
-        ctTrig.innerHTML = 'コンテナ' + submenuArrow();
-        ctTrig.style.cssText = 'padding:4px 16px;cursor:pointer;';
-        ctTrig.onmouseenter = () => { ctTrig.style.background = 'var(--bg4)'; };
-        ctTrig.onmouseleave = () => { ctTrig.style.background = ''; };
-        const ctPanel = document.createElement('div');
-        ctPanel.className = 'gb-context-menu';
-        ctPanel.style.cssText = 'display:none;min-width:120px;';
-        attachHoverSubmenu(ctTrig, ctPanel);
+        const ctPanel = _bdCreateContextSubmenu(strSub.panel, 'コンテナ', 120);
         [['コンテナにする', true], ['コンテナ解除', false]].forEach(([label, val]) => {
-          const si = document.createElement('div');
-          si.innerHTML = radioMark(!!nd.container === val) + label;
-          si.style.cssText = 'padding:4px 16px;cursor:pointer;' + (!!nd.container === val ? 'color:var(--accent);' : '');
-          si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-          si.onmouseleave = () => { si.style.background = ''; };
-          si.addEventListener('click', () => {
-            document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+          const active = !!nd.container === val;
+          const si = _bdContextMenuItem(ctPanel, radioMark(active) + label, () => {
             bdPushUndo();
             nd.container = val;
             if (!val) {
@@ -486,11 +425,12 @@ function bdContextMenu(e, nodeId) {
               });
             }
             bdRender(); bdDirty();
+          }, {
+            role: 'menuitemradio',
+            checked: active,
           });
-          ctPanel.appendChild(si);
+          if (active) si.style.color = 'var(--accent)';
         });
-        ctWrap.appendChild(ctTrig); ctWrap.appendChild(ctPanel);
-        strSub.raw(ctWrap);
       }
       // 構造タイプ: 選択中のすべてのカードに一括適用する (親子関係にあってもまとめて設定可能)。
       // c33a3a6 以降、中間カードに設定した structure もそのカード配下のサブツリーに適用される。
@@ -572,10 +512,7 @@ function bdContextMenu(e, nodeId) {
         Object.entries(BD_MARKERS).forEach(([cat, list]) => {
           if (!firstCat) markerSub.sep();
           firstCat = false;
-          const catHeader = document.createElement('div');
-          catHeader.textContent = categoryLabels[cat] || cat;
-          catHeader.style.cssText = 'padding:4px 14px;font-size:11px;color:var(--fg2);cursor:default;user-select:none;';
-          markerSub.raw(catHeader);
+          markerSub.label(categoryLabels[cat] || cat);
           list.forEach((mk, idx) => {
             const isActive = markers[cat] === idx;
             const iconHtml = typeof bdMarkerIconHtml === 'function' ? bdMarkerIconHtml(mk, 12) : (typeof lucide === 'function' ? lucide(mk.icon, 12) : '');

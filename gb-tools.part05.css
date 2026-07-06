@@ -551,6 +551,58 @@
   .gb-timer-row { flex-wrap: wrap; }
   .gb-timer-source-name { flex-basis: 100%; }
   .gb-timer-settings-modal { min-width: auto; width: 95vw; max-width: 95vw; }
+  .gb-timer-settings-modal.gb-mobile-dialog-sheet .tb-icon-btn,
+  .gb-timer-settings-modal[data-mobile-dialog-sheet="1"] .tb-icon-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .gb-timer-settings-modal.gb-mobile-dialog-sheet .gb-btn,
+  .gb-timer-settings-modal[data-mobile-dialog-sheet="1"] .gb-btn,
+  .gb-timer-settings-modal.gb-mobile-dialog-sheet .gb-select,
+  .gb-timer-settings-modal[data-mobile-dialog-sheet="1"] .gb-select,
+  .gb-timer-settings-modal.gb-mobile-dialog-sheet .gb-input,
+  .gb-timer-settings-modal[data-mobile-dialog-sheet="1"] .gb-input {
+    min-height: 44px;
+    height: 44px;
+    box-sizing: border-box;
+    font-size: var(--ui-font-14);
+  }
+  .gb-timer-settings-modal.gb-mobile-dialog-sheet .gb-timer-check,
+  .gb-timer-settings-modal[data-mobile-dialog-sheet="1"] .gb-timer-check {
+    min-height: 44px;
+    padding-block: 4px;
+    box-sizing: border-box;
+  }
+  .gb-timer-settings-modal.gb-mobile-dialog-sheet .gb-timer-preset-item,
+  .gb-timer-settings-modal[data-mobile-dialog-sheet="1"] .gb-timer-preset-item {
+    grid-template-columns: minmax(0, 1fr) repeat(3, 44px);
+  }
   .gb-timer-toolbar-row--main { gap: 6px; }
   .gb-timer-inputs { flex-wrap: wrap; }
+  .gb-timer-root .gb-timer-time-input,
+  .gb-timer-root .gb-timer-mode-select,
+  .gb-timer-root .gb-timer-countup-toggle,
+  .gb-timer-root .gb-timer-settings-btn,
+  .gb-timer-toolbar-row--controls .gb-btn {
+    min-height: 44px;
+    height: 44px;
+    box-sizing: border-box;
+  }
+  .gb-timer-root .gb-timer-countup-toggle,
+  .gb-timer-root .gb-timer-settings-btn {
+    width: 44px;
+    min-width: 44px;
+  }
+  .gb-timer-toolbar-row--controls .gb-btn {
+    min-width: 44px;
+    padding-inline: 12px;
+  }
+  .gb-timer-root .gb-timer-countup-toggle svg,
+  .gb-timer-root .gb-timer-settings-btn svg,
+  .gb-timer-toolbar-row--controls .gb-btn svg {
+    width: 16px;
+    height: 16px;
+  }
 }

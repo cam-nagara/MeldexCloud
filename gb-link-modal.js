@@ -11,6 +11,7 @@ const MeldexLinkModal = (() => {
   let _sidebarOrigNextSibling = null;
   let _sidebarOrigDisplay = null;
   let _sidebarClickHandler = null;
+  let _focusReturnTarget = null;
 
   function _inferTypeFromPath(path) {
     const lower = String(path || '').toLowerCase();
@@ -114,57 +115,93 @@ const MeldexLinkModal = (() => {
     if (_overlay) close();
     _savedRange = savedRange;
     _callback = callback || null;
+    _focusReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     _overlay = document.createElement('div');
     _overlay.className = 'link-modal-overlay';
-    _overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:flex-start;justify-content:center;padding-top:6vh;background:rgba(0,0,0,.4);';
+    _overlay.dataset.e2eId = 'link-insert-modal-overlay';
     _overlay.addEventListener('mousedown', (e) => { if (e.target === _overlay) close(); });
+    _overlay.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      close();
+    });
 
     const modal = document.createElement('div');
     modal.className = 'link-modal';
-    // 縦長ダイアログ: 幅を絞り高さを大きく
-    modal.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:8px;width:min(400px,90vw);height:min(85vh,820px);display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.3);overflow:hidden;';
+    modal.dataset.e2eId = 'link-insert-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'link-insert-modal-title');
+    modal.tabIndex = -1;
 
     // タイトル
     const header = document.createElement('div');
-    header.style.cssText = 'padding:12px 16px 8px;font-size:13px;font-weight:600;color:var(--fg);flex-shrink:0;';
-    header.textContent = 'リンクを挿入';
+    header.className = 'gb-modal-shell-header link-modal-header';
+    header.dataset.e2eId = 'link-insert-modal-header';
+    const title = document.createElement('div');
+    title.id = 'link-insert-modal-title';
+    title.className = 'gb-modal-title';
+    title.textContent = 'リンクを挿入';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'gb-modal-close link-modal-close';
+    closeBtn.dataset.e2eId = 'link-insert-modal-close';
+    closeBtn.setAttribute('aria-label', '閉じる');
+    closeBtn.title = '閉じる';
+    closeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : '<span class="ico ico-x" aria-hidden="true"></span>';
+    closeBtn.addEventListener('click', close);
+    header.append(title, closeBtn);
     modal.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'gb-modal-shell-body link-modal-body';
+    body.dataset.e2eId = 'link-insert-modal-body';
+    modal.appendChild(body);
 
     // フォルダツリー（既存 #sidebar を埋め込み）
     const treeWrap = document.createElement('div');
     treeWrap.className = 'link-modal-tree';
-    treeWrap.style.cssText = 'flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;border-top:1px solid var(--border);border-bottom:1px solid var(--border);';
-    modal.appendChild(treeWrap);
+    treeWrap.dataset.e2eId = 'link-insert-modal-tree';
+    body.appendChild(treeWrap);
 
     // URL入力欄
     const urlWrap = document.createElement('div');
-    urlWrap.style.cssText = 'padding:8px 16px;display:flex;gap:8px;align-items:center;flex-shrink:0;';
-    const urlLabel = document.createElement('span');
+    urlWrap.className = 'link-modal-url-row';
+    urlWrap.dataset.e2eId = 'link-insert-modal-url-row';
+    const urlLabel = document.createElement('label');
+    urlLabel.className = 'link-modal-url-label';
+    urlLabel.htmlFor = 'link-insert-modal-url';
     urlLabel.textContent = 'URL:';
-    urlLabel.style.cssText = 'font-size:12px;color:var(--fg2);white-space:nowrap;';
     const urlInput = document.createElement('input');
+    urlInput.id = 'link-insert-modal-url';
+    urlInput.className = 'gb-input link-modal-url-input';
+    urlInput.dataset.e2eId = 'link-insert-modal-url-input';
     urlInput.type = 'text';
     urlInput.placeholder = 'https://...';
-    urlInput.style.cssText = 'flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:13px;outline:none;box-sizing:border-box;';
     urlInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); if (urlInput.value.trim()) insertUrlLink(urlInput.value.trim()); }
       else if (e.key === 'Escape') { e.preventDefault(); close(); }
     });
     urlWrap.appendChild(urlLabel);
     urlWrap.appendChild(urlInput);
-    modal.appendChild(urlWrap);
+    body.appendChild(urlWrap);
 
     // ボタン
     const btnWrap = document.createElement('div');
-    btnWrap.style.cssText = 'padding:8px 16px 12px;display:flex;justify-content:flex-end;gap:8px;flex-shrink:0;';
+    btnWrap.className = 'gb-modal-shell-footer link-modal-actions';
+    btnWrap.dataset.e2eId = 'link-insert-modal-actions';
     const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'gb-btn gb-btn-sm link-modal-cancel';
+    cancelBtn.dataset.e2eId = 'link-insert-modal-cancel';
     cancelBtn.textContent = 'キャンセル';
-    cancelBtn.style.cssText = 'padding:4px 16px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--fg);cursor:pointer;font-size:12px;';
     cancelBtn.addEventListener('click', close);
     const insertUrlBtn = document.createElement('button');
+    insertUrlBtn.type = 'button';
+    insertUrlBtn.className = 'gb-btn gb-btn-sm gb-btn-primary link-modal-insert-url';
+    insertUrlBtn.dataset.e2eId = 'link-insert-modal-insert-url';
     insertUrlBtn.textContent = 'URLを挿入';
-    insertUrlBtn.style.cssText = 'padding:4px 16px;border:none;border-radius:4px;background:var(--accent);color:var(--ui-fg-strong);cursor:pointer;font-size:12px;';
     insertUrlBtn.addEventListener('click', () => {
       if (urlInput.value.trim()) insertUrlLink(urlInput.value.trim());
     });
@@ -178,6 +215,10 @@ const MeldexLinkModal = (() => {
     // 既存サイドバーをモーダル内に移動
     _moveSidebarInto(treeWrap);
     document.body.dataset.linkModalOpen = '1';
+    window.GBModalShell?.enhanceOverlay?.(_overlay);
+    setTimeout(() => {
+      try { urlInput.focus({ preventScroll: true }); } catch (_) { urlInput.focus(); }
+    }, 0);
   }
 
   function _normalizeSafeUrl(rawUrl) {
@@ -250,8 +291,14 @@ const MeldexLinkModal = (() => {
     close();
   }
 
+  function _restoreFocusTarget(target) {
+    if (!target?.isConnected || typeof target.focus !== 'function') return;
+    try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+  }
+
   function close() {
     // サイドバーを元の位置に戻してからオーバーレイを除去
+    const focusTarget = _focusReturnTarget;
     _restoreSidebar();
     if (_overlay) {
       _overlay.remove();
@@ -260,6 +307,10 @@ const MeldexLinkModal = (() => {
     delete document.body.dataset.linkModalOpen;
     _savedRange = null;
     _callback = null;
+    _restoreFocusTarget(focusTarget);
+    requestAnimationFrame(() => _restoreFocusTarget(focusTarget));
+    setTimeout(() => _restoreFocusTarget(focusTarget), 260);
+    _focusReturnTarget = null;
   }
 
   return { show, close };

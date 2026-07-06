@@ -257,6 +257,23 @@ async function saveCurrentScriptNoteAs(path, options = {}) {
   return true;
 }
 
+function _sn2FormatIcon(name, size = 14) {
+  return typeof lucide === 'function' ? lucide(name, size) : '';
+}
+
+function _sn2IsRenderedFocusTarget(el) {
+  if (!el || !el.isConnected || typeof el.focus !== 'function') return false;
+  const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+  const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+  return !rect || (rect.width > 0 && rect.height > 0);
+}
+
+function _sn2RestoreFocus(el) {
+  if (!_sn2IsRenderedFocusTarget(el)) return;
+  try { el.focus({ preventScroll: true }); } catch { try { el.focus(); } catch {} }
+}
+
 async function promptSaveCurrentScriptNoteAs() {
   const ctx = _sn2GetActiveSaveContext();
   if (!ctx) {
@@ -266,65 +283,176 @@ async function promptSaveCurrentScriptNoteAs() {
   const srcPath = ctx.editor._path || ctx.comp?.state?.scenarioPath || '';
   const defaultName = _sn2NormalizeScriptNoteFileName(srcPath ? srcPath.split('/').pop() : (ctx.editor.doc?.title || ''));
   const srcFolder = srcPath.includes('/') ? srcPath.substring(0, srcPath.lastIndexOf('/')) : '';
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal" style="min-width:420px;max-width:520px;">
-      <h3>シナリオ形式として保存</h3>
-      <div class="field"><label>ファイル名</label><input id="sn-save-name" type="text" value="${typeof esc === 'function' ? esc(defaultName) : defaultName}" style="width:100%;"></div>
-      <div class="field"><label>保存先フォルダ</label>
-        <div id="sn-save-folder-display" style="padding:6px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;">
-          <span id="sn-save-folder-label">${typeof esc === 'function' ? esc(srcFolder || '(ルート)') : (srcFolder || '(ルート)')}</span>
-          <span style="margin-left:auto;opacity:0.5;">${lucide('chevronDown', 10)}</span>
-        </div>
-        <div id="sn-save-folder-tree" style="display:none;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;margin-top:4px;background:var(--bg);"></div>
-      </div>
-      <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-        <button id="sn-save-cancel" class="btn">キャンセル</button>
-        <button id="sn-save-ok" class="btn btn-primary">保存</button>
-      </div>
-    </div>`;
+    overlay.dataset.e2eId = 'save-scenario-format-modal-overlay';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'modal sn2-save-as-modal';
+    dialog.dataset.e2eId = 'save-scenario-format-modal';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'sn-save-title');
+
+    const header = document.createElement('div');
+    header.className = 'gb-modal-header';
+    const title = document.createElement('h3');
+    title.id = 'sn-save-title';
+    title.className = 'gb-modal-title';
+    title.textContent = 'シナリオ形式として保存';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'gb-modal-close gb-btn gb-btn-sm gb-btn-icon gb-btn-ghost';
+    closeButton.setAttribute('aria-label', '閉じる');
+    closeButton.innerHTML = _sn2FormatIcon('x', 14);
+    header.append(title, closeButton);
+
+    const body = document.createElement('div');
+    body.className = 'gb-modal-body sn2-save-as-body';
+
+    const nameField = document.createElement('div');
+    nameField.className = 'field gb-field sn2-save-field';
+    const nameLabel = document.createElement('label');
+    nameLabel.className = 'gb-label';
+    nameLabel.htmlFor = 'sn-save-name';
+    nameLabel.textContent = 'ファイル名';
+    const nameInput = document.createElement('input');
+    nameInput.id = 'sn-save-name';
+    nameInput.className = 'gb-input sn2-save-name-input';
+    nameInput.type = 'text';
+    nameInput.value = defaultName;
+    nameInput.autocomplete = 'off';
+    nameInput.setAttribute('aria-label', 'ファイル名');
+    nameField.append(nameLabel, nameInput);
+
+    const folderField = document.createElement('div');
+    folderField.className = 'field gb-field sn2-save-field';
+    const folderFieldLabel = document.createElement('label');
+    folderFieldLabel.className = 'gb-label';
+    folderFieldLabel.id = 'sn-save-folder-field-label';
+    folderFieldLabel.textContent = '保存先フォルダ';
+    const folderDisplay = document.createElement('button');
+    folderDisplay.id = 'sn-save-folder-display';
+    folderDisplay.type = 'button';
+    folderDisplay.className = 'gb-btn gb-btn-sm gb-btn-quiet sn2-save-folder-display';
+    folderDisplay.setAttribute('role', 'button');
+    folderDisplay.setAttribute('tabindex', '0');
+    folderDisplay.setAttribute('aria-haspopup', 'dialog');
+    folderDisplay.setAttribute('aria-expanded', 'false');
+    folderDisplay.setAttribute('aria-labelledby', 'sn-save-folder-field-label sn-save-folder-label');
+    folderDisplay.setAttribute('aria-label', '保存先フォルダを選択');
+    const folderLabel = document.createElement('span');
+    folderLabel.id = 'sn-save-folder-label';
+    folderLabel.className = 'sn2-save-folder-label';
+    folderLabel.textContent = srcFolder || '(ルート)';
+    const folderChevron = document.createElement('span');
+    folderChevron.className = 'sn2-save-folder-chevron';
+    folderChevron.setAttribute('aria-hidden', 'true');
+    folderChevron.innerHTML = _sn2FormatIcon('chevronDown', 14);
+    folderDisplay.append(folderLabel, folderChevron);
+    const folderTree = document.createElement('div');
+    folderTree.id = 'sn-save-folder-tree';
+    folderTree.className = 'sn2-save-folder-tree';
+    folderTree.setAttribute('role', 'tree');
+    folderTree.hidden = true;
+    folderField.append(folderFieldLabel, folderDisplay, folderTree);
+    body.append(nameField, folderField);
+
+    const footer = document.createElement('div');
+    footer.className = 'gb-modal-footer sn2-save-as-actions';
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.id = 'sn-save-cancel';
+    cancelButton.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+    cancelButton.textContent = 'キャンセル';
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.id = 'sn-save-ok';
+    saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    saveButton.textContent = '保存';
+    footer.append(cancelButton, saveButton);
+    dialog.append(header, body, footer);
+    overlay.appendChild(dialog);
     document.body.appendChild(overlay);
-    const nameInput = overlay.querySelector('#sn-save-name');
-    const folderDisplay = overlay.querySelector('#sn-save-folder-display');
-    const folderTree = overlay.querySelector('#sn-save-folder-tree');
-    const folderLabel = overlay.querySelector('#sn-save-folder-label');
+    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
     let selectedFolder = srcFolder;
+    let finished = false;
+    let saving = false;
     const escCss = (value) => (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
+    const setTreeOpen = (open) => {
+      folderTree.hidden = !open;
+      folderTree.classList.toggle('is-open', !!open);
+      folderDisplay.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    const close = (result) => {
+      if (finished) return;
+      finished = true;
+      overlay.remove();
+      _sn2RestoreFocus(opener);
+      resolve(result);
+    };
     const selectFolder = (path, label) => {
       selectedFolder = path;
       folderLabel.textContent = label || path || '(ルート)';
-      folderTree.style.display = 'none';
+      setTreeOpen(false);
     };
-    const createRow = (name, path, depth, icon = 'folder') => {
+    const createRow = (name, path, depth, icon = 'folder', options = {}) => {
       const row = document.createElement('div');
+      row.className = 'sn2-save-folder-row';
       row.dataset.snFolderPath = path;
       row.dataset.depth = String(depth);
-      row.style.cssText = `padding:4px 8px 4px ${8 + depth * 16}px;cursor:pointer;font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:4px;border-radius:3px;`;
+      row.style.setProperty('--sn2-save-folder-depth', String(depth));
+      row.setAttribute('role', 'treeitem');
+      row.setAttribute('aria-level', String(depth + 1));
+      row.setAttribute('aria-selected', path === selectedFolder ? 'true' : 'false');
       if (path === selectedFolder) {
         row.dataset.selected = '1';
-        row.style.background = 'var(--accent)';
-        row.style.color = '#fff';
+        row.classList.add('is-selected');
       }
+      if (options.onToggle) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'gb-btn gb-btn-xs gb-btn-icon gb-btn-ghost sn2-save-folder-toggle';
+        toggle.setAttribute('aria-label', `${name || '(ルート)'}を展開`);
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.innerHTML = _sn2FormatIcon('chevronRight', 14);
+        toggle.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          await options.onToggle(toggle, row);
+        });
+        row.appendChild(toggle);
+      } else {
+        const spacer = document.createElement('span');
+        spacer.className = 'sn2-save-folder-toggle-spacer';
+        spacer.setAttribute('aria-hidden', 'true');
+        row.appendChild(spacer);
+      }
+      const selectButton = document.createElement('button');
+      selectButton.type = 'button';
+      selectButton.className = 'gb-btn gb-btn-sm gb-btn-ghost sn2-save-folder-select';
+      selectButton.setAttribute('aria-label', `${name || '(ルート)'}を保存先にする`);
       const iconWrap = document.createElement('span');
+      iconWrap.className = 'sn2-save-folder-icon';
+      iconWrap.setAttribute('aria-hidden', 'true');
       iconWrap.innerHTML = typeof lucide === 'function' ? lucide(icon, 12) : '';
-      row.appendChild(iconWrap);
       const label = document.createElement('span');
+      label.className = 'sn2-save-folder-name';
       label.textContent = name || '(ルート)';
-      row.appendChild(label);
-      row.addEventListener('click', () => {
+      selectButton.append(iconWrap, label);
+      row.appendChild(selectButton);
+      selectButton.addEventListener('click', () => {
         folderTree.querySelectorAll('[data-sn-folder-path]').forEach(el => {
           delete el.dataset.selected;
-          el.style.background = '';
-          el.style.color = '';
+          el.classList.remove('is-selected');
+          el.setAttribute('aria-selected', 'false');
         });
         row.dataset.selected = '1';
-        row.style.background = 'var(--accent)';
-        row.style.color = '#fff';
+        row.classList.add('is-selected');
+        row.setAttribute('aria-selected', 'true');
         selectFolder(path, name || '(ルート)');
       });
-      row.addEventListener('mouseenter', () => { if (!row.dataset.selected) row.style.background = 'var(--bg3)'; });
-      row.addEventListener('mouseleave', () => { if (!row.dataset.selected) row.style.background = ''; });
       return row;
     };
     const expandFolder = async (parentPath, depth) => {
@@ -335,36 +463,40 @@ async function promptSaveCurrentScriptNoteAs() {
         const folders = (Array.isArray(data) ? data : (data.items || [])).filter(i => i.type === 'folder');
         for (const f of folders) {
           if (folderTree.querySelector(`[data-sn-folder-path="${escCss(f.path)}"]`)) continue;
-          const row = createRow(f.name, f.path, depth + 1);
-          const toggle = document.createElement('span');
-          toggle.style.cssText = 'cursor:pointer;opacity:0.65;flex-shrink:0;';
-          toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
-          toggle.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const expanded = toggle.dataset.expanded === '1';
-            if (expanded) {
-              const d = Number(row.dataset.depth || 0);
-              let next = row.nextElementSibling;
-              while (next && Number(next.dataset.depth || 0) > d) {
-                const rm = next;
-                next = next.nextElementSibling;
-                rm.remove();
+          const row = createRow(f.name, f.path, depth + 1, 'folder', {
+            onToggle: async (toggle, rowEl) => {
+              const expanded = toggle.dataset.expanded === '1';
+              if (expanded) {
+                const d = Number(rowEl.dataset.depth || 0);
+                let next = rowEl.nextElementSibling;
+                while (next && Number(next.dataset.depth || 0) > d) {
+                  const rm = next;
+                  next = next.nextElementSibling;
+                  rm.remove();
+                }
+                toggle.dataset.expanded = '0';
+                toggle.setAttribute('aria-expanded', 'false');
+                toggle.innerHTML = _sn2FormatIcon('chevronRight', 14);
+                return;
               }
-              toggle.dataset.expanded = '0';
-              toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
-              return;
-            }
-            await expandFolder(f.path, depth + 1);
-            toggle.dataset.expanded = '1';
-            toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronDown', 10) : 'v';
+              await expandFolder(f.path, depth + 1);
+              toggle.dataset.expanded = '1';
+              toggle.setAttribute('aria-expanded', 'true');
+              toggle.innerHTML = _sn2FormatIcon('chevronDown', 14);
+            },
           });
-          row.prepend(toggle);
           if (insertAfter?.nextSibling) folderTree.insertBefore(row, insertAfter.nextSibling);
           else folderTree.appendChild(row);
           insertAfter = row;
         }
       } catch {
-        if (!folderTree.children.length) folderTree.innerHTML = '<div style="padding:8px;color:var(--red);">フォルダ一覧の取得に失敗</div>';
+        if (!folderTree.children.length) {
+          const error = document.createElement('div');
+          error.className = 'sn2-save-folder-status is-error';
+          error.setAttribute('role', 'status');
+          error.textContent = 'フォルダ一覧の取得に失敗';
+          folderTree.replaceChildren(error);
+        }
       }
     };
     // フォルダツリー展開
@@ -379,36 +511,63 @@ async function promptSaveCurrentScriptNoteAs() {
         }
         return;
       }
-      if (folderTree.style.display !== 'none') { folderTree.style.display = 'none'; return; }
-      folderTree.style.display = 'block';
-      folderTree.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
-      folderTree.innerHTML = '';
+      if (!folderTree.hidden) { setTreeOpen(false); return; }
+      setTreeOpen(true);
+      const loading = document.createElement('div');
+      loading.className = 'sn2-save-folder-status';
+      loading.setAttribute('role', 'status');
+      loading.textContent = '読み込み中...';
+      folderTree.replaceChildren(loading);
+      folderTree.replaceChildren();
       folderTree.appendChild(createRow('(ルート)', '', 0, 'home'));
       await expandFolder('', 0);
     });
+    folderDisplay.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      folderDisplay.click();
+    });
     const doSave = async () => {
+      if (saving) return;
       const name = _sn2NormalizeScriptNoteFileName(nameInput.value);
       if (!name) return;
       nameInput.value = name;
       const targetPath = _sn2JoinPath(selectedFolder, name);
+      saving = true;
+      saveButton.disabled = true;
       try {
-        await saveCurrentScriptNoteAs(targetPath);
+        const saved = await saveCurrentScriptNoteAs(targetPath);
+        if (!saved) return;
         if (typeof saveLastView === 'function') {
           const label = typeof getScriptNoteLabelFromPath === 'function'
             ? getScriptNoteLabelFromPath(targetPath)
             : targetPath.split('/').pop().replace(/\.scriptnote\.json$/i, '').replace(/\.\w+$/, '');
           saveLastView({ type: 'scriptnote', label, path: targetPath });
         }
-        overlay.remove();
+        close(true);
         if (typeof showStatus === 'function') showStatus('シナリオ形式で保存しました', false, { showSaveDialog: true });
-        resolve(true);
       } catch (err) {
         if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (err?.message || err), true);
+      } finally {
+        saving = false;
+        if (overlay.isConnected) saveButton.disabled = false;
       }
     };
-    overlay.querySelector('#sn-save-ok').addEventListener('click', doSave);
-    overlay.querySelector('#sn-save-cancel').addEventListener('click', () => { overlay.remove(); resolve(false); });
-    nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSave(); });
+    overlay.addEventListener('pointerdown', event => {
+      if (event.target !== overlay) return;
+      event.preventDefault();
+      close(false);
+    });
+    overlay.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close(false);
+      }
+    });
+    saveButton.addEventListener('click', doSave);
+    cancelButton.addEventListener('click', () => close(false));
+    closeButton.addEventListener('click', () => close(false));
+    nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSave(); } });
     nameInput.focus(); nameInput.select();
   });
 }

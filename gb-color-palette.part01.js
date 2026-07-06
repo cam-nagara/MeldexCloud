@@ -32,6 +32,7 @@
   border: 2px solid transparent; box-sizing: border-box; flex-shrink: 0;
 }
 .gb-swatch:hover { border-color: var(--ui-border-strong, #fff); }
+.gb-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gb-swatch.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .gb-swatch.active { border-color: var(--accent); }
 .gb-swatch[draggable="true"] { cursor: grab; }
@@ -136,14 +137,79 @@
   border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
 }
 .gb-palette-close-row .gb-btn-close:hover { background: var(--bg5, var(--bg4)); border-color: var(--accent); }
-.gb-ctx-menu {
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-palette-popup {
+    box-sizing: border-box;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+  }
+  .gb-palette {
+    width: min(calc(100vw - 32px), calc(44px * 7 + 3px * 6 + 16px));
+  }
+  .gb-palette-grid,
+  .gb-palette-matrix,
+  .gb-palette-row-swatches {
+    width: min(calc(100vw - 48px), calc(44px * 7 + 3px * 6));
+  }
+  .gb-swatch {
+    width: 44px;
+    height: 44px;
+  }
+  .gb-palette-standard-toggle,
+  .gb-palette-reset-btn,
+  .gb-palette-picker-row .gb-btn-save,
+  .gb-palette-picker-row .gb-btn-eyedropper,
+  .gb-palette-close-row .gb-btn-close {
+    min-height: 44px;
+    font-size: 14px;
+  }
+  .gb-palette-picker-row {
+    flex-wrap: wrap;
+  }
+  .gb-palette-standard-toggle,
+  .gb-palette-reset-btn,
+  .gb-palette-picker-row .gb-btn-save,
+  .gb-palette-picker-row .gb-btn-eyedropper,
+  .gb-palette-picker-row .gb-palette-os-accent-swatch,
+  .gb-palette-close-row .gb-btn-close {
+    min-width: 44px;
+  }
+  .gb-palette-picker-row input[type="color"],
+  .gb-palette-picker-row .gb-palette-os-accent-swatch {
+    width: 44px;
+    height: 44px;
+  }
+  .gb-palette-slider-row {
+    grid-template-columns: 44px minmax(0, 1fr) 52px;
+    min-height: 44px;
+    align-items: center;
+  }
+  .gb-palette-slider-row input[type="range"] {
+    height: 44px;
+  }
+  .gb-palette-slider-row .gb-slider-val {
+    min-height: 44px;
+    font-size: 14px;
+  }
+}
+.gb-palette-context-menu {
   position: fixed; z-index: 10200; background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--border);
-  border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); padding: 2px 0; min-width: 80px;
+  border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); padding: 4px; min-width: 96px;
 }
-.gb-ctx-menu div {
-  padding: 4px 12px; font-size: 12px; cursor: pointer; color: var(--fg);
+.gb-palette-context-menu .gb-context-menu-item {
+  width: 100%; border: 0; background: transparent; appearance: none;
+  padding: 5px 14px; font: inherit; font-size: 12px; line-height: 1.2;
+  text-align: left; color: var(--fg); cursor: pointer;
 }
-.gb-ctx-menu div:hover { background: var(--bg4); }
+.gb-palette-context-menu .gb-context-menu-item:hover { background: var(--ui-bg-control-active, var(--bg4)); }
+.gb-palette-context-menu .gb-context-menu-item.danger { color: var(--ui-danger, var(--red, #d16969)); }
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-palette-context-menu .gb-context-menu-item {
+    min-height: 44px;
+    font-size: 14px;
+  }
+}
 `;
   document.head.appendChild(style);
 })();
@@ -582,6 +648,33 @@ function setColorSwatchValue(el, color) {
   return next;
 }
 
+function _isNativePaletteControl(el) {
+  const tag = String(el?.tagName || '').toLowerCase();
+  return tag === 'button' || tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'a';
+}
+
+function _setPaletteSwatchControl(el, label, onActivate) {
+  if (!el) return;
+  if (!_isNativePaletteControl(el)) {
+    el.tabIndex = 0;
+    if (typeof el.setAttribute === 'function') el.setAttribute('role', 'button');
+  }
+  const currentLabel = typeof el.getAttribute === 'function' ? el.getAttribute('aria-label') : '';
+  if (label && !currentLabel && typeof el.setAttribute === 'function') el.setAttribute('aria-label', label);
+  if (el._gbPaletteSwatchKeyHandler && typeof el.removeEventListener === 'function') {
+    el.removeEventListener('keydown', el._gbPaletteSwatchKeyHandler);
+  }
+  if (typeof onActivate === 'function') {
+    el._gbPaletteSwatchKeyHandler = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onActivate(event);
+    };
+    if (typeof el.addEventListener === 'function') el.addEventListener('keydown', el._gbPaletteSwatchKeyHandler);
+  }
+}
+
 function bindColorSwatch(el, getCurrentColor, onSelect) {
   if (!el) return null;
   const readCurrent = typeof getCurrentColor === 'function' ? getCurrentColor : () => (getCurrentColor == null ? '' : getCurrentColor);
@@ -599,6 +692,8 @@ function bindColorSwatch(el, getCurrentColor, onSelect) {
     });
   };
   el.addEventListener('click', el._gbColorSwatchClickHandler);
+  const label = typeof el.getAttribute === 'function' ? el.getAttribute('aria-label') : '';
+  _setPaletteSwatchControl(el, label || el.title || '色を選択', el._gbColorSwatchClickHandler);
   return refresh;
 }
 
@@ -607,10 +702,13 @@ function bindColorSwatch(el, getCurrentColor, onSelect) {
 // ============================================================
 let _gbPalettePopup = null;
 let _gbPaletteOutsideHandler = null;
+let _gbPaletteKeyHandler = null;
 
 function closeColorPalette() {
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
+  document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => menu.remove());
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
+  if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
 }
 
 function openColorPalette(anchorEl, currentColor, onSelect) {
@@ -621,8 +719,15 @@ function openColorPalette(anchorEl, currentColor, onSelect) {
   _gbPalettePopup = palette;
   if (typeof positionPopup === 'function') positionPopup(palette, anchorEl.getBoundingClientRect());
   else { const rect = anchorEl.getBoundingClientRect(); const z = (typeof _getZoom === 'function') ? _getZoom() : 1; palette.style.left = (rect.left / z) + 'px'; palette.style.top = (rect.bottom / z + 4) + 'px'; }
-  _gbPaletteOutsideHandler = (ev) => { if (_gbPalettePopup && !_gbPalettePopup.contains(ev.target) && !ev.target.closest?.('.gb-ctx-menu') && ev.target !== anchorEl) closeColorPalette(); };
+  _gbPaletteOutsideHandler = (ev) => { if (_gbPalettePopup && !_gbPalettePopup.contains(ev.target) && !ev.target.closest?.('.gb-palette-context-menu, .gb-ctx-menu') && ev.target !== anchorEl) closeColorPalette(); };
+  _gbPaletteKeyHandler = (ev) => {
+    if (ev.key !== 'Escape' || !_gbPalettePopup) return;
+    if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
+    ev.preventDefault();
+    closeColorPalette();
+  };
   setTimeout(() => document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true), 0);
+  setTimeout(() => document.addEventListener('keydown', _gbPaletteKeyHandler, true), 0);
 }
 
 // ============================================================
@@ -636,14 +741,18 @@ function createInlineColorGrid(currentColor, onSelect) {
   const defSwatch = document.createElement('div');
   defSwatch.className = 'gb-swatch' + (isDefault ? ' active' : '');
   defSwatch.style.background = 'var(--bg4)'; defSwatch.title = 'デフォルト';
-  defSwatch.addEventListener('click', () => onSelect(''));
+  const selectDefault = () => onSelect('');
+  defSwatch.addEventListener('click', selectDefault);
+  _setPaletteSwatchControl(defSwatch, 'デフォルトを選択', selectDefault);
   grid.appendChild(defSwatch);
   getStandardPaletteSwatches().forEach(info => {
     const c = info.color;
     const swatch = document.createElement('div');
     swatch.className = 'gb-swatch' + (!isDefault && c.toLowerCase() === curHex.toLowerCase() ? ' active' : '');
     swatch.style.background = c; swatch.title = info.title || c;
-    swatch.addEventListener('click', () => onSelect(c));
+    const selectStandard = () => onSelect(c);
+    swatch.addEventListener('click', selectStandard);
+    _setPaletteSwatchControl(swatch, `${info.title || c}を選択`, selectStandard);
     grid.appendChild(swatch);
   });
   getCustomColors().forEach(c => {
@@ -655,7 +764,9 @@ function createInlineColorGrid(currentColor, onSelect) {
       swatch.style.background = c;
     }
     swatch.title = c;
-    swatch.addEventListener('click', () => onSelect(c));
+    const selectCustom = () => onSelect(c);
+    swatch.addEventListener('click', selectCustom);
+    _setPaletteSwatchControl(swatch, `カスタムカラー ${c} を選択`, selectCustom);
     grid.appendChild(swatch);
   });
   return grid;
@@ -733,7 +844,9 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         transSwatch.dataset.type = 'transparent';
         transSwatch.style.cssText = 'background:linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%),linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%);background-size:6px 6px;background-position:0 0,3px 3px;';
         transSwatch.title = '透明';
-        transSwatch.addEventListener('click', () => selectSwatch('#000000', true, -1, -1));
+        const selectTransparent = () => selectSwatch('#000000', true, -1, -1);
+        transSwatch.addEventListener('click', selectTransparent);
+        _setPaletteSwatchControl(transSwatch, '透明を選択', selectTransparent);
         swatchesEl.appendChild(transSwatch);
       }
       items.forEach((info) => {
@@ -746,7 +859,9 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         swatch.dataset.presetIdx = String(presetIdx);
         swatch.style.background = c;
         swatch.title = info.title || c;
-        swatch.addEventListener('click', () => selectSwatch(c, false, -1, presetIdx));
+        const selectPreset = () => selectSwatch(c, false, -1, presetIdx);
+        swatch.addEventListener('click', selectPreset);
+        _setPaletteSwatchControl(swatch, `${info.title || c}を選択`, selectPreset);
         swatchesEl.appendChild(swatch);
       });
       presetMatrix.appendChild(swatchesEl);
@@ -792,22 +907,32 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         swatch.style.background = c;
       }
       swatch.title = c; swatch.draggable = true;
+      swatch.dataset.e2eId = `color-palette-custom-${i}`;
+      swatch.tabIndex = 0;
+      swatch.setAttribute('role', 'button');
+      swatch.setAttribute('aria-label', `カスタムカラー ${c} を選択`);
 
-      swatch.addEventListener('click', () => {
+      const selectCustomSwatch = () => {
         const selected = _customColorSelectionValue(c);
         if (!selected) return;
         selectSwatch(selected.hex, selected.isTransparent, i);
-      });
+      };
+      swatch.addEventListener('click', selectCustomSwatch);
 
       // 右クリック/長押し → コンテキストメニュー
       const openSwatchCtxMenu = (e) => {
         e.preventDefault();
-        document.querySelectorAll('.gb-ctx-menu').forEach(m => m.remove());
+        e.stopPropagation?.();
+        document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(m => m.remove());
         const menu = document.createElement('div');
-        menu.className = 'gb-ctx-menu';
-        const del = document.createElement('div');
+        menu.className = 'gb-context-menu gb-palette-context-menu';
+        menu.setAttribute('role', 'menu');
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'gb-context-menu-item danger';
+        del.dataset.e2eId = 'color-palette-custom-delete';
+        del.setAttribute('role', 'menuitem');
         del.textContent = '削除';
-        del.style.color = 'var(--red, #d16969)';
         del.addEventListener('click', () => {
           menu.remove();
           removeCustomColor(c);
@@ -817,22 +942,36 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         });
         menu.appendChild(del);
         document.body.appendChild(menu);
-        const pointRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+        const swatchRect = swatch.getBoundingClientRect();
+        const pointX = Number.isFinite(e.clientX) && e.clientX > 0 ? e.clientX : swatchRect.left + swatchRect.width / 2;
+        const pointY = Number.isFinite(e.clientY) && e.clientY > 0 ? e.clientY : swatchRect.top + swatchRect.height / 2;
+        const pointRect = { left: pointX, right: pointX, top: pointY, bottom: pointY };
         if (typeof positionPopup === 'function') positionPopup(menu, pointRect, { prefer: 'below', gap: 4 });
         else {
           const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-          menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px';
+          menu.style.left = (pointX / z) + 'px'; menu.style.top = (pointY / z) + 'px';
           if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
         }
+        del.focus({ preventScroll: true });
         setTimeout(() => {
-          const closeCtx = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); } };
+          const closeCtx = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); document.removeEventListener('keydown', keyCtx, true); } };
+          const keyCtx = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); menu.remove(); document.removeEventListener('pointerdown', closeCtx, true); document.removeEventListener('keydown', keyCtx, true); swatch.focus({ preventScroll: true }); } };
           document.addEventListener('pointerdown', closeCtx, true);
+          document.addEventListener('keydown', keyCtx, true);
         }, 0);
       };
       swatch.addEventListener('contextmenu', openSwatchCtxMenu);
       if (typeof addLongPressHandler === 'function') {
         addLongPressHandler(swatch, openSwatchCtxMenu);
       }
+      swatch.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectCustomSwatch();
+        } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+          openSwatchCtxMenu(event);
+        }
+      });
 
       // D&D
       swatch.addEventListener('dragstart', (e) => { dragIdx = i; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', ''); swatch.style.opacity = '0.4'; });
@@ -872,11 +1011,16 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   function makeSlider(labelText, min, max, value, onChange) {
     const row = document.createElement('div'); row.className = 'gb-palette-slider-row';
     const lbl = document.createElement('label'); lbl.textContent = labelText;
+    const sliderKey = ({ '色相': 'hue', '彩度': 'saturation', '明度': 'brightness' }[labelText] || labelText).toString();
     const slider = document.createElement('input');
     slider.type = 'range'; slider.min = String(min); slider.max = String(max); slider.value = String(value);
+    slider.dataset.e2eId = `color-palette-${sliderKey}-range`;
+    slider.setAttribute('aria-label', `${labelText}を調整`);
     const valInput = document.createElement('input');
     valInput.type = 'number'; valInput.className = 'gb-slider-val';
     valInput.min = String(min); valInput.max = String(max); valInput.value = String(value);
+    valInput.dataset.e2eId = `color-palette-${sliderKey}-value`;
+    valInput.setAttribute('aria-label', `${labelText}の数値`);
     slider.addEventListener('input', () => { valInput.value = slider.value; onChange(parseInt(slider.value)); });
     valInput.addEventListener('change', () => {
       let v = parseInt(valInput.value) || 0;
@@ -892,6 +1036,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   pickerRow.className = 'gb-palette-picker-row';
   const picker = document.createElement('input');
   picker.type = 'color'; picker.value = selectedHex; picker.title = 'カラーピッカー';
+  picker.dataset.e2eId = 'color-palette-picker';
+  picker.setAttribute('aria-label', 'カラーピッカー');
   const onPickerChange = () => {
     hsb = _hexToHsb(picker.value);
     selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
@@ -904,6 +1050,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
 
   const saveBtn = document.createElement('button');
   saveBtn.className = 'gb-btn-save';
+  saveBtn.dataset.e2eId = 'color-palette-custom-add';
   saveBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
   saveBtn.title = 'カスタムカラーに追加（選択中のカスタム色があれば上書き）';
   saveBtn.setAttribute('aria-label', 'カスタムカラーに追加');
@@ -923,6 +1070,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
 
   const eyedropBtn = document.createElement('button');
   eyedropBtn.className = 'gb-btn-eyedropper';
+  eyedropBtn.dataset.e2eId = 'color-palette-eyedropper';
   eyedropBtn.type = 'button';
   eyedropBtn.title = '画面上から色を拾う';
   eyedropBtn.setAttribute('aria-label', '画面上から色を拾う');

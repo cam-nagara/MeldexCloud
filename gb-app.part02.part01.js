@@ -5,9 +5,34 @@
   });
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
+  const focusableItems = () => [...menu.querySelectorAll('.gb-context-menu-item')];
+  closeOnPointer = function closeTabContextMenuOnPointer(ev) {
+    if (!menu.contains(ev.target)) closeMenu(false);
+  };
+  closeOnKey = function closeTabContextMenuOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    const items = focusableItems();
+    if (!items.length) return;
+    const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+    let nextIndex = currentIndex;
+    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    else if (ev.key === 'Home') nextIndex = 0;
+    else if (ev.key === 'End') nextIndex = items.length - 1;
+    else return;
+    ev.preventDefault();
+    items[nextIndex]?.focus();
+  };
   setTimeout(() => {
-    document.addEventListener('pointerdown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', cl); } });
+    if (menuClosed || !menu.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
   }, 0);
+  menu.querySelector('.gb-context-menu-item')?.focus();
 }
 {
   const _tabBar = document.getElementById('tab-bar');
@@ -123,10 +148,14 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
 
   const dd = document.createElement('div');
   dd.className = 'ab-dropdown nav-history-dropdown';
+  dd.setAttribute('role', 'menu');
+  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
   items.forEach(({ index, entry }) => {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
     item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
     item.title = entry.path || '';
     item.addEventListener('click', () => {
@@ -136,19 +165,61 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
       _withNavFlag(navOpen(entry));
       _refreshPaneNavUi(navState.paneId);
       _persistPaneNavState(navState);
-      dd.remove();
+      closeDropdown(false);
     });
     dd.appendChild(item);
   });
   const anchor = e.currentTarget || e.target?.closest?.('button') || e.target;
   const rect = anchor.getBoundingClientRect();
-  { const z = _getZoom(); dd.style.left = (rect.left / z) + 'px'; dd.style.top = (rect.bottom / z + 2) + 'px'; }
   document.body.appendChild(dd);
-  clampPopupToViewport(dd);
+  if (typeof positionPopup === 'function') positionPopup(dd, rect, { prefer: 'bottom', gap: 2 });
+  else {
+    const z = _getZoom();
+    dd.style.left = (rect.left / z) + 'px';
+    dd.style.top = (rect.bottom / z + 2) + 'px';
+    clampPopupToViewport(dd);
+  }
+  const firstItem = dd.querySelector('.ab-dropdown-item');
+  let dropdownClosed = false;
+  function closeDropdown(restoreFocus) {
+    if (dropdownClosed) return;
+    dropdownClosed = true;
+    dd.remove();
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    if (restoreFocus && anchor?.focus) anchor.focus();
+  }
+  function closeOnPointer(ev) {
+    if (!dd.contains(ev.target)) closeDropdown(false);
+  }
+  function closeOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeDropdown(true);
+      return;
+    }
+    const menuItems = [...dd.querySelectorAll('.ab-dropdown-item')];
+    const current = menuItems.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[(current + 1 + menuItems.length) % menuItems.length].focus();
+    } else if (ev.key === 'ArrowUp' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[(current - 1 + menuItems.length) % menuItems.length].focus();
+    } else if (ev.key === 'Home' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[0].focus();
+    } else if (ev.key === 'End' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[menuItems.length - 1].focus();
+    }
+  }
   setTimeout(() => {
-    const close = (ev) => { if (!dd.contains(ev.target)) { dd.remove(); document.removeEventListener('pointerdown', close, true); } };
-    document.addEventListener('pointerdown', close, true);
+    if (dropdownClosed || !dd.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
   }, 0);
+  firstItem?.focus();
 }
 
 function showNavHistoryDropdown(e, direction) {

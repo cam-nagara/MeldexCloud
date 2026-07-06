@@ -571,6 +571,123 @@
     window.visualViewport?.addEventListener('resize', scheduleResizeRender, { passive: true });
   }
 
+  function _createLayoutContextMenuItem(label, icon, options) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'gb-context-menu-item';
+    if (options?.submenu) {
+      item.classList.add('has-submenu');
+      item.setAttribute('aria-haspopup', 'menu');
+      item.setAttribute('aria-expanded', 'false');
+    }
+    if (options?.checked !== undefined) {
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', options.checked ? 'true' : 'false');
+      const check = document.createElement('span');
+      check.className = 'gb-menu-check-icon menu-icon';
+      check.style.color = 'var(--ui-accent, var(--accent))';
+      if (options.checked && typeof lucide === 'function') check.innerHTML = lucide('check', 14);
+      item.appendChild(check);
+    } else {
+      item.setAttribute('role', 'menuitem');
+    }
+    if (icon && typeof lucide === 'function') {
+      const iconEl = document.createElement('span');
+      iconEl.className = 'menu-icon';
+      iconEl.innerHTML = lucide(icon, 14);
+      item.appendChild(iconEl);
+    }
+    const labelEl = document.createElement('span');
+    labelEl.textContent = label;
+    item.appendChild(labelEl);
+    return item;
+  }
+
+  function _layoutContextMenuItems(menu) {
+    return Array.from(menu?.querySelectorAll?.('.gb-context-menu-item') || [])
+      .filter(item => !item.disabled && item.getAttribute('aria-disabled') !== 'true');
+  }
+
+  function _layoutContextMenuAnchorRect(e) {
+    const x = Number(e?.clientX);
+    const y = Number(e?.clientY);
+    if (Number.isFinite(x) && Number.isFinite(y) && (x !== 0 || y !== 0)) {
+      return { left: x, top: y, right: x, bottom: y, width: 0, height: 0 };
+    }
+    const trigger = e?.currentTarget;
+    if (trigger?.getBoundingClientRect) return trigger.getBoundingClientRect();
+    return { left: 12, top: 12, right: 12, bottom: 12, width: 0, height: 0 };
+  }
+
+  function _restoreLayoutMenuFocus(trigger) {
+    if (!trigger) return;
+    if (typeof focusMeldexDropdownTrigger === 'function') {
+      focusMeldexDropdownTrigger(trigger);
+      return;
+    }
+    trigger.focus?.({ preventScroll: true });
+  }
+
+  function _positionLayoutContextMenu(menu, e) {
+    const anchor = _layoutContextMenuAnchorRect(e);
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, anchor);
+      return;
+    }
+    const z = (typeof _getZoom === 'function') ? _getZoom() : 1;
+    menu.style.left = (anchor.left / z) + 'px';
+    menu.style.top = (anchor.bottom / z) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+
+  function _bindLayoutContextMenuDismiss(menu, trigger) {
+    const cleanup = () => {
+      document.removeEventListener('keydown', closeOnKey, true);
+      document.removeEventListener('pointerdown', closeOnPointer);
+    };
+    const closeMenu = (restoreFocus) => {
+      document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+      cleanup();
+      if (restoreFocus) _restoreLayoutMenuFocus(trigger);
+    };
+    function closeOnKey(ev) {
+      if (!menu.isConnected) {
+        cleanup();
+        return;
+      }
+      const items = _layoutContextMenuItems(menu);
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeMenu(true);
+        return;
+      }
+      if (!items.length) return;
+      if (ev.key === 'Home' || ev.key === 'End' || ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const activeIndex = Math.max(0, items.indexOf(document.activeElement));
+        const nextIndex = ev.key === 'Home'
+          ? 0
+          : ev.key === 'End'
+            ? items.length - 1
+            : (activeIndex + (ev.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[nextIndex]?.focus?.({ preventScroll: true });
+      }
+    }
+    function closeOnPointer(ev) {
+      if (!menu.isConnected) {
+        cleanup();
+        return;
+      }
+      const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
+      if (!inAny) closeMenu(false);
+    }
+    document.addEventListener('keydown', closeOnKey, true);
+    setTimeout(() => document.addEventListener('pointerdown', closeOnPointer), 0);
+    return closeMenu;
+  }
+
   // === パネル操作メニュー（…ボタン経由: ロック/折りたたみ/最大化/閉じる） ===
   function _showPaneActionsMenu(e, node) {
     if (!_showFreeLayoutUi()) return;
@@ -580,23 +697,18 @@
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'パネル操作');
     menu.style.cssText = 'position:fixed;z-index:10000;';
     const isMaxed = _maximizedPaneId === node.id;
     const hasParent = !!findParent(_root, node.id);
     const canClosePane = hasParent && !node.locked && _canRemovePane(node.id);
+    let closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
 
     function addItem(label, fn, icon) {
-      const mi = document.createElement('div');
-      if (icon && typeof lucide === 'function') {
-        mi.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + label;
-      } else {
-        mi.textContent = label;
-      }
-      mi.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-      mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; };
-      mi.onmouseleave = () => { mi.style.background = ''; };
+      const mi = _createLayoutContextMenuItem(label, icon);
       mi.addEventListener('click', () => {
-        document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+        closeMenu(false);
         fn();
       });
       menu.appendChild(mi);
@@ -605,32 +717,14 @@
     // ロック: サブメニューで現在の状態が一目で分かるよう「ロック」「ロック解除」両方を表示。
     // 選択中の状態には Lucide の check を表示し、クリックで対応する状態へ遷移。
     (function _addLockSubmenu() {
-      const wrap = document.createElement('div');
-      wrap.style.position = 'relative';
-      const trigger = document.createElement('div');
-      trigger.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-      trigger.innerHTML =
-        '<span style="margin-right:6px;opacity:0.7;">'
-        + (typeof lucide === 'function' ? lucide(node.locked ? 'lock' : 'unlock', 14) : '')
-        + '</span>ロック'
-        + (typeof submenuArrow === 'function' ? submenuArrow() : ' ▸');
-      trigger.onmouseenter = () => { trigger.style.background = 'var(--bg4)'; };
-      trigger.onmouseleave = () => { trigger.style.background = ''; };
+      const trigger = _createLayoutContextMenuItem('ロック', node.locked ? 'lock' : 'unlock', { submenu: true });
       const panel = document.createElement('div');
       panel.className = 'gb-context-menu';
+      panel.setAttribute('role', 'menu');
+      panel.setAttribute('aria-label', 'パネルロック');
       panel.style.cssText = 'display:none;';
       function addLockSub(label, iconName, isActive, desired) {
-        const si = document.createElement('div');
-        si.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-        const iconHtml = (typeof lucide === 'function') ? lucide(iconName, 14) : '';
-        const check = isActive
-          ? '<span class="gb-menu-check-icon" style="display:inline-flex;width:1em;margin-right:4px;color:var(--accent);vertical-align:middle;">' + (typeof lucide === 'function' ? lucide('check', 14) : '') + '</span>'
-          : '<span class="gb-menu-check-icon" style="display:inline-block;width:1em;margin-right:4px;"></span>';
-        si.innerHTML = check
-          + '<span style="margin-right:6px;opacity:0.7;">' + iconHtml + '</span>'
-          + label;
-        si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-        si.onmouseleave = () => { si.style.background = ''; };
+        const si = _createLayoutContextMenuItem(label, iconName, { checked: isActive });
         si.addEventListener('click', () => {
           document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
           if (!isActive) setPaneLocked(node.id, desired);
@@ -640,9 +734,8 @@
       addLockSub('ロック', 'lock', !!node.locked, true);
       addLockSub('ロック解除', 'unlock', !node.locked, false);
       if (typeof attachHoverSubmenu === 'function') attachHoverSubmenu(trigger, panel);
-      wrap.appendChild(trigger);
-      wrap.appendChild(panel);
-      menu.appendChild(wrap);
+      menu.appendChild(trigger);
+      document.body.appendChild(panel);
     })();
     if (hasParent) {
       addItem(node.collapsed ? '折りたたみを解除' : '最小化（折りたたみ）', () => {
@@ -672,35 +765,9 @@
     }
 
     document.body.appendChild(menu);
-    const anchor = e.currentTarget?.getBoundingClientRect
-      ? e.currentTarget.getBoundingClientRect()
-      : { left: e.clientX, top: e.clientY, right: e.clientX, bottom: e.clientY, width: 0, height: 0 };
-    if (typeof positionPopup === 'function') {
-      positionPopup(menu, anchor);
-    } else {
-      const z = (typeof _getZoom === 'function') ? _getZoom() : 1;
-      menu.style.left = (e.clientX / z) + 'px';
-      menu.style.top = (e.clientY / z) + 'px';
-    }
-
-    setTimeout(() => {
-      const close = (ev) => {
-        // 自分のメニューが既に DOM から外されている場合は、このリスナー自身を破棄して終了
-        // （mi.click で removeAll した後に古いクロージャが残ると、次回開いた別メニューを
-        //   「外側クリック」と誤判定して破壊してしまうため）
-        if (!menu.isConnected) {
-          document.removeEventListener('pointerdown', close);
-          return;
-        }
-        // 現在開いているどのコンテキストメニュー内にも該当しない場合のみ閉じる
-        const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
-        if (!inAny) {
-          document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-          document.removeEventListener('pointerdown', close);
-        }
-      };
-      document.addEventListener('pointerdown', close);
-    }, 0);
+    _positionLayoutContextMenu(menu, e);
+    menu.querySelector('.gb-context-menu-item')?.focus?.({ preventScroll: true });
+    closeMenu = _bindLayoutContextMenuDismiss(menu, e?.currentTarget || null);
   }
 
   // === ペインタブ右クリックメニュー ===
@@ -708,23 +775,18 @@
     // 既存メニューを除去
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
     const menu = document.createElement('div');
-    menu.className = 'gb-context-menu';
-    { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
+    menu.className = 'gb-context-menu tab-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'タブ操作');
+    menu.style.cssText = 'position:fixed;z-index:10000;';
     const isLocked = () => isPaneLocked(paneId);
     const showLockedStatus = () => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
     };
+    let closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
     function addItem(label, fn, icon) {
-      const mi = document.createElement('div');
-      if (icon && typeof lucide === 'function') {
-        mi.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + label;
-      } else {
-        mi.textContent = label;
-      }
-      mi.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-      mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; };
-      mi.onmouseleave = () => { mi.style.background = ''; };
-      mi.addEventListener('click', () => { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); fn(); });
+      const mi = _createLayoutContextMenuItem(label, icon);
+      mi.addEventListener('click', () => { closeMenu(false); fn(); });
       menu.appendChild(mi);
     }
     // 新しいウィンドウで開く
@@ -775,30 +837,21 @@
       }, isPaneLocked(paneId) ? 'unlock' : 'lock');
       // ペイン最大化サブメニュー
       {
-        const maxWrap = document.createElement('div');
-        maxWrap.style.position = 'relative';
-        const maxTrigger = document.createElement('div');
-        maxTrigger.innerHTML = (typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide('maximize2', 14) + '</span>' : '') + '表示モード' + submenuArrow();
-        maxTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-        maxTrigger.onmouseenter = () => { maxTrigger.style.background = 'var(--bg4)'; };
-        maxTrigger.onmouseleave = () => { maxTrigger.style.background = ''; };
+        const maxTrigger = _createLayoutContextMenuItem('表示モード', 'maximize2', { submenu: true });
         const maxPanel = document.createElement('div');
         maxPanel.className = 'gb-context-menu';
+        maxPanel.setAttribute('role', 'menu');
+        maxPanel.setAttribute('aria-label', '表示モード');
         maxPanel.style.cssText = 'display:none;min-width:120px;';
         attachHoverSubmenu(maxTrigger, maxPanel);
         const isMax = _maximizedPaneId === paneId;
         [['最大化', true], ['通常表示', false]].forEach(([label, val]) => {
-          const si = document.createElement('div');
-          si.innerHTML = radioMark(isMax === val) + label;
-          si.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;' + (isMax === val ? 'color:var(--accent);' : '');
-          si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-          si.onmouseleave = () => { si.style.background = ''; };
+          const si = _createLayoutContextMenuItem(label, '', { checked: isMax === val });
           si.addEventListener('click', () => { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); if (val) maximizePane(paneId); else restoreMaximizedPane(); });
           maxPanel.appendChild(si);
         });
-        maxWrap.appendChild(maxTrigger);
-        maxWrap.appendChild(maxPanel);
-        menu.appendChild(maxWrap);
+        menu.appendChild(maxTrigger);
+        document.body.appendChild(maxPanel);
       }
       // 別のペインで開く（分割）
       addItem('右の作業領域で開く', () => {
@@ -809,14 +862,9 @@
       }, 'columns');
     }
     document.body.appendChild(menu);
-    clampPopupToViewport(menu);
-    setTimeout(() => {
-      const close = (ev) => {
-        const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
-        if (!inAny) { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); document.removeEventListener('pointerdown', close); }
-      };
-      document.addEventListener('pointerdown', close);
-    }, 0);
+    _positionLayoutContextMenu(menu, e);
+    menu.querySelector('.gb-context-menu-item')?.focus?.({ preventScroll: true });
+    closeMenu = _bindLayoutContextMenuDismiss(menu, e?.currentTarget || null);
   }
 
   // === レイアウトリセット ===

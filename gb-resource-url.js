@@ -14,16 +14,16 @@
 
   function _apiUrl(path, query) {
     const runtime = _runtime();
-    const relative = 'api' + (String(path || '').startsWith('/') ? String(path) : '/' + String(path || ''));
-    const url = new URL(
-      runtime ? runtime.resolveAppUrl(relative) : ('/api' + String(path || '')),
-      window.location.origin
-    );
+    const base = runtime?.getApiBaseUrl?.() || '/api';
+    const suffix = String(path || '').replace(/^\/+/, '');
+    const baseText = String(base || '/api').replace(/\/+$/, '') + '/';
+    const url = new URL(suffix, baseText.startsWith('http') ? baseText : window.location.origin + baseText);
     return _appendQuery(url, query).toString();
   }
 
   function _apiPath(path, query) {
     const url = new URL(_apiUrl(path, query));
+    if (url.origin !== window.location.origin) return url.toString();
     return url.pathname + url.search + url.hash;
   }
 

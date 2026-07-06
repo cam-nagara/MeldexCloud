@@ -126,7 +126,10 @@ const GBSelectionFloatMenu = (() => {
     handle.dataset.e2eId = 'selection-float-drag';
     handle.title = label;
     handle.setAttribute('aria-label', label);
-    handle.textContent = '⋮⋮';
+    const iconMarkup = typeof lucide === 'function'
+      ? lucide('gripVertical', 14)
+      : '<span class="ico ico-gripVertical" aria-hidden="true"></span>';
+    handle.innerHTML = `<span class="gb-selection-float-drag-icon" aria-hidden="true">${iconMarkup}</span>`;
     return handle;
   }
 

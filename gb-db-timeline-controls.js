@@ -79,6 +79,39 @@ function _timelineHeaderMenuClose() {
   else document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
 }
 
+function _timelinePrepareHeaderMenu(menu) {
+  if (!menu) return [];
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'タイムラインメニュー');
+  menu.querySelectorAll('.gb-context-menu').forEach(sub => {
+    sub.setAttribute('role', 'menu');
+  });
+  const items = [...menu.querySelectorAll('.gb-context-menu-item:not(.disabled)')];
+  items.forEach((item, index) => {
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = index === 0 ? 0 : -1;
+    if (!item.hasAttribute('aria-label')) {
+      item.setAttribute('aria-label', (item.textContent || '').replace(/\s+/g, ' ').trim());
+    }
+  });
+  menu.addEventListener('keydown', ev => {
+    const activeItems = [...menu.querySelectorAll('.gb-context-menu-item:not(.disabled)')];
+    if (!activeItems.length) return;
+    const currentIndex = Math.max(0, activeItems.indexOf(document.activeElement));
+    let nextIndex = -1;
+    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % activeItems.length;
+    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + activeItems.length) % activeItems.length;
+    else if (ev.key === 'Home') nextIndex = 0;
+    else if (ev.key === 'End') nextIndex = activeItems.length - 1;
+    if (nextIndex >= 0) {
+      ev.preventDefault();
+      activeItems.forEach((item, index) => { item.tabIndex = index === nextIndex ? 0 : -1; });
+      activeItems[nextIndex].focus?.();
+    }
+  });
+  return items;
+}
+
 function _applyTimelineValueOrder(values, order) {
   const saved = Array.isArray(order) ? order : [];
   if (saved.length === 0) return values;
@@ -284,6 +317,7 @@ function _showTimelineHeaderMenu(anchor, options = {}) {
   menu.className = 'gb-context-menu tl-header-menu';
   const items = _timelineHeaderMenuItems(dbPath, options);
   if (typeof _renderColMenuItems === 'function') _renderColMenuItems(menu, items);
+  const focusableItems = _timelinePrepareHeaderMenu(menu);
   document.body.appendChild(menu);
   const rect = anchor?.getBoundingClientRect?.() || { left: 0, right: 0, top: 0, bottom: 0 };
   if (typeof positionPopup === 'function') positionPopup(menu, rect, { prefer: 'below' });
@@ -292,31 +326,63 @@ function _showTimelineHeaderMenu(anchor, options = {}) {
     menu.style.left = rect.left + 'px';
     menu.style.top = rect.bottom + 'px';
   }
+  focusableItems[0]?.focus?.();
   setTimeout(() => {
+    const cleanup = () => {
+      document.removeEventListener('pointerdown', closer);
+      document.removeEventListener('keydown', keyCloser);
+    };
+    const closeMenu = () => {
+      _timelineHeaderMenuClose();
+      cleanup();
+    };
     const closer = (ev) => {
+      if (!menu.isConnected) {
+        cleanup();
+        return;
+      }
       const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
       if (!inAny) {
-        _timelineHeaderMenuClose();
-        document.removeEventListener('pointerdown', closer);
+        closeMenu();
+      }
+    };
+    const keyCloser = (ev) => {
+      if (!menu.isConnected) {
+        cleanup();
+        return;
+      }
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closeMenu();
+        anchor?.focus?.();
       }
     };
     document.addEventListener('pointerdown', closer);
+    document.addEventListener('keydown', keyCloser);
   }, 0);
 }
 
 function _showTimelineHeaderColorModal(dbPath, kind, value, currentColor, ctx) {
+  document.querySelectorAll('.tl-color-modal-overlay').forEach(el => el.remove());
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal tl-color-modal">
-    <h3>タイムライン条件付きカラー</h3>
-    <div class="field"><label>対象</label><div class="tl-color-target"></div></div>
-    <div class="tl-color-row">
-      <div class="field"><label>背景色</label><button type="button" class="gb-fmt-swatch-bg tl-color-bg"></button></div>
-      <div class="field"><label>文字色</label><button type="button" class="gb-fmt-swatch-fg tl-color-fg"></button></div>
+  overlay.className = 'modal-overlay tl-color-modal-overlay';
+  overlay.dataset.e2eId = 'timeline-header-color-modal-overlay';
+  overlay.innerHTML = `<div class="modal tl-color-modal" role="dialog" aria-modal="true" aria-labelledby="tl-color-modal-title" data-e2e-id="timeline-header-color-modal">
+    <div class="gb-modal-header tl-color-header" data-modal-header>
+      <h3 id="tl-color-modal-title">タイムライン条件付きカラー</h3>
+      <button type="button" class="gb-modal-close tl-color-close" aria-label="閉じる" title="閉じる" data-e2e-id="timeline-color-close">${typeof lucide === 'function' ? lucide('x', 16) : '×'}</button>
     </div>
-    <div class="btn-row">
-      <button type="button" class="tl-color-cancel">キャンセル</button>
-      <button type="button" class="tl-color-apply primary">適用</button>
+    <div class="tl-color-body">
+      <div class="field"><label>対象</label><div class="tl-color-target"></div></div>
+      <div class="tl-color-row">
+        <div class="field"><label>背景色</label><button type="button" class="gb-fmt-swatch-bg tl-color-bg" aria-label="背景色" title="背景色" data-e2e-id="timeline-color-bg"></button></div>
+        <div class="field"><label>文字色</label><button type="button" class="gb-fmt-swatch-fg tl-color-fg" aria-label="文字色" title="文字色" data-e2e-id="timeline-color-fg"></button></div>
+      </div>
+    </div>
+    <div class="btn-row gb-modal-footer" data-modal-footer>
+      <button type="button" class="gb-btn gb-btn-sm tl-color-cancel" data-e2e-id="timeline-color-cancel">キャンセル</button>
+      <button type="button" class="gb-btn gb-btn-sm primary tl-color-apply" data-e2e-id="timeline-color-apply">適用</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
@@ -336,13 +402,35 @@ function _showTimelineHeaderColorModal(dbPath, kind, value, currentColor, ctx) {
     bindColorSwatch(bg, () => getColorSwatchValue(bg, initialBg), next => setColorSwatchValue(bg, next || initialBg));
     bindColorSwatch(fg, () => getColorSwatchValue(fg, initialFg), next => setColorSwatchValue(fg, next || initialFg));
   }
-  overlay.querySelector('.tl-color-cancel')?.addEventListener('click', () => overlay.remove());
+  const close = (options = {}) => {
+    document.removeEventListener('keydown', onKeyDown);
+    if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
+    overlay.remove();
+    if (options.restoreFocus !== false) previousFocus?.focus?.();
+  };
+  const onKeyDown = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    close();
+  };
+  overlay.addEventListener('pointerdown', ev => {
+    if (ev.target !== overlay) return;
+    ev.preventDefault();
+    close();
+  });
+  document.addEventListener('keydown', onKeyDown);
+  overlay.querySelector('.tl-color-close')?.addEventListener('click', () => close());
+  overlay.querySelector('.tl-color-cancel')?.addEventListener('click', () => close());
   overlay.querySelector('.tl-color-apply')?.addEventListener('click', () => {
     const next = {
       bg: typeof getColorSwatchValue === 'function' ? getColorSwatchValue(bg, initialBg) : (bg.dataset.color || initialBg),
       fg: typeof getColorSwatchValue === 'function' ? getColorSwatchValue(fg, initialFg) : (fg.dataset.color || initialFg),
     };
-    overlay.remove();
+    close({ restoreFocus: false });
     _setTimelineHeaderColor(dbPath, kind, value, next, ctx);
   });
+  if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+    window.GBModalShell.enhanceOverlay(overlay);
+  }
+  overlay.querySelector('.tl-color-bg')?.focus?.();
 }

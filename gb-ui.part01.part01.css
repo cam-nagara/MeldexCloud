@@ -674,6 +674,95 @@
   min-height: 0;
   box-sizing: border-box;
 }
+
+.gb-backlinks-header {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border-bottom: 1px solid var(--border);
+}
+.gb-backlinks-title {
+  font-weight: var(--ui-weight-semibold);
+}
+.gb-backlinks-count {
+  color: var(--fg2);
+  font-size: var(--ui-font-12);
+}
+.gb-backlinks-spacer {
+  flex: 1 1 auto;
+}
+.gb-backlinks-list {
+  margin: 0;
+  padding: 0;
+}
+.gb-backlink-row,
+.gb-backlinks-empty {
+  list-style: none;
+}
+.gb-backlink-row {
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.gb-backlink-row--openable {
+  cursor: pointer;
+}
+.gb-backlink-row--openable:hover {
+  background: color-mix(in srgb, var(--ui-selection-bg) 12%, transparent);
+}
+.gb-backlink-row--openable:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--ui-selection-bg) 18%, transparent);
+}
+.gb-backlink-label {
+  overflow-wrap: anywhere;
+}
+.gb-backlink-row--openable .gb-backlink-label {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.gb-backlink-row--broken .gb-backlink-label {
+  color: var(--fg2);
+  text-decoration: line-through;
+  cursor: default;
+}
+.gb-backlink-broken-badge {
+  margin-left: var(--ui-space-2);
+  color: var(--fg2);
+  font-size: var(--ui-font-11);
+}
+.gb-backlink-meta {
+  margin-top: var(--ui-space-1);
+  color: var(--fg2);
+  font-size: var(--ui-font-11);
+}
+.gb-backlink-path {
+  color: var(--fg2);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--ui-font-10);
+  overflow-wrap: anywhere;
+}
+.gb-backlinks-empty {
+  padding: var(--ui-space-4);
+  color: var(--fg2);
+  font-size: var(--ui-font-13);
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-backlinks-header {
+    gap: var(--ui-space-3);
+    padding: var(--ui-space-3) var(--ui-space-4);
+  }
+  .gb-backlinks-header .gb-btn-sm {
+    min-height: 44px;
+  }
+  .gb-backlink-row {
+    min-height: 44px;
+    padding: var(--ui-space-3) var(--ui-space-4);
+  }
+}
 [hidden] { display: none !important; }
 
 /* 詳細パネル用: 空プレースホルダー (note/db/board/calendar いずれもアクティブでない時) */
@@ -791,14 +880,18 @@
 .gb-panel-tab-close:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 
 .gb-inner-tab {
+  appearance: none;
+  -webkit-appearance: none;
   display: inline-flex;
   align-items: center;
   gap: var(--ui-space-2);
   height: var(--ui-inner-tab-height);
+  margin: 0;
   padding: 0 var(--ui-inner-tab-padding-x);
   font-family: var(--ui-inner-tab-font, inherit);
   font-size: var(--ui-inner-tab-font-size);
   font-weight: var(--ui-inner-tab-font-weight);
+  line-height: 1;
   color: var(--ui-inner-tab-fg);
   background: var(--ui-inner-tab-bg);
   border-top: none;
@@ -806,6 +899,7 @@
   border-right: none;
   border-bottom: var(--ui-inner-tab-underline-width) solid transparent;
   cursor: pointer;
+  text-align: left;
   user-select: none;
   white-space: nowrap;
   box-sizing: border-box;

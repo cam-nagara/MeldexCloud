@@ -5,7 +5,40 @@ let _smartDbRequestSeq = 0;
 function _smartDbApplyAutoLinks(el, rawText, scopePath) {
   if (!el || typeof MeldexAutoLink === 'undefined' || String(rawText || '').length < 2) return false;
   MeldexAutoLink.applyToDom(el, scopePath || '');
-  return !!el.querySelector('.auto-link');
+  const links = [...el.querySelectorAll('.auto-link')];
+  links.forEach((link, index) => {
+    if (!link.dataset.e2eId) {
+      const key = (link.dataset.path || link.textContent || 'auto-link') + '-' + index;
+      link.dataset.e2eId = 'smart-db-auto-link-' + _smartDbStableIdPart(key);
+    }
+    link.setAttribute('role', 'button');
+    link.tabIndex = 0;
+    link.setAttribute('aria-label', 'リンクを開く: ' + (link.textContent || '').trim());
+    if (!link.dataset.smartDbAutoLinkWired) {
+      link.dataset.smartDbAutoLinkWired = '1';
+      _smartDbBindKeyboardActivate(link, (e) => _smartDbHandleAutoLinkClick(e));
+    }
+  });
+  return links.length > 0;
+}
+
+function _smartDbStableIdPart(value) {
+  const raw = String(value || '').trim();
+  let hash = 2166136261;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const slug = raw
+    .replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'item';
+  return `${slug}-${(hash >>> 0).toString(36)}`;
+}
+
+function _smartDbStableControlId(prefix, ent) {
+  const key = ent?.path || ent?.file_id || ent?.db_path || ent?.name || '';
+  return `${prefix}-${_smartDbStableIdPart(key)}`;
 }
 
 function _smartDbHandleAutoLinkClick(e) {
@@ -43,6 +76,98 @@ function _smartDbEffectiveSources(def) {
   if (!def) return [];
   const explicit = Array.isArray(def.sources) ? def.sources.filter(s => s && s.path) : [];
   return explicit;
+}
+
+function _smartDbActiveElement() {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function _smartDbPopupRestoreTarget(event) {
+  const active = _smartDbActiveElement();
+  const current = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (active && current && current.contains(active)) return active;
+  if (current && current.matches?.('tr')) {
+    const nested = current.querySelector('[role="button"], button, [tabindex]:not([tabindex="-1"])');
+    if (nested instanceof HTMLElement) return nested;
+  }
+  return current || active;
+}
+
+function _smartDbRestoreFocus(target) {
+  if (!target || typeof target.focus !== 'function' || !target.isConnected) return;
+  try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+}
+
+function _smartDbActivationKey(e) {
+  return e && !e.isComposing && e.keyCode !== 229 && (e.key === 'Enter' || e.key === ' ');
+}
+
+function _smartDbBindKeyboardActivate(el, handler) {
+  if (!el || typeof handler !== 'function') return;
+  el.addEventListener('keydown', (e) => {
+    if (!_smartDbActivationKey(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handler(e);
+  });
+}
+
+function _smartDbAttachPopupDismiss(popup, restoreTarget) {
+  if (!popup) return () => {};
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    popup.remove();
+    _smartDbRestoreFocus(restoreTarget);
+    setTimeout(() => _smartDbRestoreFocus(restoreTarget), 0);
+  };
+  const onPointerDown = (ev) => {
+    if (!popup.contains(ev.target)) close();
+  };
+  const onKeyDown = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    close();
+  };
+  document.addEventListener('keydown', onKeyDown, true);
+  setTimeout(() => {
+    if (!popup.isConnected) return;
+    document.addEventListener('pointerdown', onPointerDown, true);
+  }, 0);
+  return close;
+}
+
+function _smartDbAttachOverlayDismiss(overlay, restoreTarget) {
+  if (!overlay) return () => {};
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    _smartDbRestoreFocus(restoreTarget);
+    setTimeout(() => _smartDbRestoreFocus(restoreTarget), 0);
+  };
+  overlay.addEventListener('pointerdown', (ev) => {
+    if (ev.target === overlay) close();
+  });
+  overlay.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    close();
+  });
+  return close;
+}
+
+function _smartDbFocusFirstDialogControl(overlay) {
+  setTimeout(() => {
+    const first = overlay?.querySelector?.('input, select, textarea, button, [role="button"], [tabindex]:not([tabindex="-1"])');
+    _smartDbRestoreFocus(first);
+  }, 0);
 }
 
 function _serializeSmartDbDefinition(def) {
@@ -244,22 +369,37 @@ function renderSmartDbList() {
   const dbs = getSavedSmartDbs();
   container.innerHTML = '';
   // ＋ボタン
-  const addBtn = document.createElement('div');
-  addBtn.style.cssText = 'padding:2px 8px;font-size:11px;color:var(--fg2);cursor:pointer;display:flex;align-items:center;gap:4px;';
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'fav-item smart-db-list-action';
+  addBtn.dataset.e2eId = 'smart-db-create';
+  addBtn.setAttribute('aria-label', '新規スマートシート');
+  addBtn.style.cssText = 'padding:2px 8px;font-size:11px;color:var(--fg2);cursor:pointer;display:flex;align-items:center;gap:4px;background:transparent;border:0;width:100%;text-align:left;';
   addBtn.innerHTML = lucide('plus', 12) + ' 新規スマートシート';
   addBtn.addEventListener('click', createSmartDb);
   container.appendChild(addBtn);
   // 全件インデックス作成ボタン
-  const addGlobalBtn = document.createElement('div');
-  addGlobalBtn.style.cssText = 'padding:2px 8px;font-size:11px;color:var(--fg2);cursor:pointer;display:flex;align-items:center;gap:4px;';
+  const addGlobalBtn = document.createElement('button');
+  addGlobalBtn.type = 'button';
+  addGlobalBtn.className = 'fav-item smart-db-list-action';
+  addGlobalBtn.dataset.e2eId = 'smart-db-create-global';
+  addGlobalBtn.setAttribute('aria-label', '全件インデックスを新規作成');
+  addGlobalBtn.style.cssText = 'padding:2px 8px;font-size:11px;color:var(--fg2);cursor:pointer;display:flex;align-items:center;gap:4px;background:transparent;border:0;width:100%;text-align:left;';
   addGlobalBtn.innerHTML = lucide('plus', 12) + ' 全件インデックスを新規作成';
   addGlobalBtn.addEventListener('click', () => {
     if (typeof createGlobalIndexSmartDb === 'function') createGlobalIndexSmartDb();
   });
   container.appendChild(addGlobalBtn);
   dbs.forEach(d => {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'fav-item';
+    item.dataset.e2eId = 'smart-db-list-item';
+    item.dataset.smartDbId = d.id || '';
+    item.setAttribute('aria-label', 'スマートシートを開く: ' + (d.name || '無題'));
+    item.style.border = '0';
+    item.style.width = '100%';
+    item.style.textAlign = 'left';
     item.innerHTML = lucide('databaseSearch', 14) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(d.name) + '</span>';
     item.title = (d.filters || []).map(f => f.property + ' ' + f.operator + ' ' + f.value).join(', ');
     item.addEventListener('click', () => selectSmartDb(d.id));
@@ -267,15 +407,28 @@ function renderSmartDbList() {
       e.preventDefault();
       const menu = document.createElement('div');
       menu.className = 'gb-context-menu';
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', 'スマートシートメニュー');
       { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-      function addMI(label, fn) { const mi = document.createElement('div'); mi.textContent = label; mi.style.cssText = 'padding:4px 12px;cursor:pointer;'; mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; }; mi.onmouseleave = () => { mi.style.background = ''; }; mi.addEventListener('click', () => { menu.remove(); fn(); }); menu.appendChild(mi); }
+      const closeMenu = _smartDbAttachPopupDismiss(menu, item);
+      function addMI(label, fn, opts = {}) {
+        const mi = document.createElement('button');
+        mi.type = 'button';
+        mi.className = 'gb-context-menu-item' + (opts.danger ? ' danger' : '');
+        if (opts.e2eId) mi.dataset.e2eId = opts.e2eId;
+        mi.setAttribute('role', 'menuitem');
+        mi.setAttribute('aria-label', label);
+        mi.textContent = label;
+        mi.addEventListener('click', () => { closeMenu(); fn(); });
+        menu.appendChild(mi);
+      }
       addMI('フィルタ設定', () => {
         if (d.sourceType === 'all-files' && typeof showGlobalIndexFilterModal === 'function') {
           showGlobalIndexFilterModal(d.id);
         } else {
           showSmartDbFilterModal(d.id);
         }
-      });
+      }, { e2eId: 'smart-db-menu-filter' });
       addMI('リネーム', async () => {
         const newName = await cfPrompt('新しい名前:', d.name);
         if (newName && newName !== d.name) {
@@ -298,11 +451,11 @@ function renderSmartDbList() {
             renderSmartDbList();
           }
         }
-      });
-      addMI('削除', () => deleteSmartDb(d.id));
+      }, { e2eId: 'smart-db-menu-rename' });
+      addMI('削除', () => deleteSmartDb(d.id), { e2eId: 'smart-db-menu-delete', danger: true });
       document.body.appendChild(menu);
       clampPopupToViewport(menu);
-      setTimeout(() => { document.addEventListener('pointerdown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', cl); } }); }, 0);
+      menu.querySelector('.gb-context-menu-item')?.focus?.({ preventScroll: true });
     };
     container.appendChild(item);
   });
@@ -487,29 +640,33 @@ function showSmartDbRowContextMenu(event, ent) {
   document.querySelectorAll('.smart-db-row-menu').forEach(el => el.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu smart-db-row-menu';
-  const item = document.createElement('div');
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スマートシート行メニュー');
+  menu.dataset.e2eId = 'smart-db-row-menu';
+  const item = document.createElement('button');
+  item.type = 'button';
   item.className = 'gb-context-menu-item';
+  item.dataset.e2eId = 'smart-db-row-menu-open-source';
+  item.setAttribute('role', 'menuitem');
+  item.setAttribute('aria-label', '元シートでこの行を開く');
   item.innerHTML = lucide('table', 14) + ' 元シートでこの行を開く';
+  const restoreTarget = _smartDbPopupRestoreTarget(event);
+  const closeMenu = _smartDbAttachPopupDismiss(menu, restoreTarget);
   item.addEventListener('click', () => {
-    menu.remove();
+    closeMenu();
     openSmartDbRowInSourceSheet(ent);
   });
   menu.appendChild(item);
+  const anchor = event?.currentTarget?.getBoundingClientRect?.();
+  const left = Number.isFinite(event?.clientX) && event.clientX > 0 ? event.clientX : (anchor?.left || 0);
+  const top = Number.isFinite(event?.clientY) && event.clientY > 0 ? event.clientY : (anchor?.bottom || anchor?.top || 0);
   positionPopup(menu, {
-    left: event?.clientX || 0,
-    right: event?.clientX || 0,
-    top: event?.clientY || 0,
-    bottom: event?.clientY || 0,
+    left,
+    right: left,
+    top,
+    bottom: top,
   });
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  item.focus({ preventScroll: true });
 }
 
 function renderSmartDbTable() {
@@ -539,9 +696,16 @@ function renderSmartDbTable() {
   const createSmartDbRow = (ent) => {
     const row = document.createElement('tr');
     row.style.cssText = 'cursor:pointer;';
+    row.tabIndex = 0;
+    row.dataset.e2eId = _smartDbStableControlId('smart-db-table-row', ent);
+    row.setAttribute('aria-label', 'スマートシート行: ' + (ent.name || '無題'));
     row.onmouseenter = () => { row.style.background = 'rgba(255,255,255,0.04)'; };
     row.onmouseleave = () => { row.style.background = ''; };
     row.addEventListener('contextmenu', (e) => showSmartDbRowContextMenu(e, ent));
+    row.addEventListener('keydown', (e) => {
+      if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
+      showSmartDbRowContextMenu(e, ent);
+    });
     if (typeof addLongPressHandler === 'function') {
       addLongPressHandler(row, (e) => showSmartDbRowContextMenu(e, ent));
     }
@@ -552,9 +716,14 @@ function renderSmartDbTable() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'auto-link';
     nameSpan.dataset.path = ent.path;
+    nameSpan.dataset.e2eId = row.dataset.e2eId + '-entry';
     nameSpan.textContent = ent.name;
     nameSpan.style.cursor = 'pointer';
+    nameSpan.tabIndex = 0;
+    nameSpan.setAttribute('role', 'button');
+    nameSpan.setAttribute('aria-label', 'エントリを開く: ' + (ent.name || '無題'));
     nameSpan.addEventListener('click', () => selectEntity(ent.path));
+    _smartDbBindKeyboardActivate(nameSpan, () => selectEntity(ent.path));
     tdName.appendChild(nameSpan);
     row.appendChild(tdName);
 
@@ -576,8 +745,13 @@ function renderSmartDbTable() {
     tdDb.style.cssText = 'padding:4px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--fg2);';
     const dbLink = document.createElement('span');
     dbLink.textContent = ent.db_name;
+    dbLink.dataset.e2eId = row.dataset.e2eId + '-source';
     dbLink.style.cssText = 'cursor:pointer;text-decoration:underline dotted;';
+    dbLink.tabIndex = 0;
+    dbLink.setAttribute('role', 'button');
+    dbLink.setAttribute('aria-label', '元シートを開く: ' + (ent.db_name || ''));
     dbLink.addEventListener('click', (e) => { e.stopPropagation(); selectDatabase(ent.db_path); });
+    _smartDbBindKeyboardActivate(dbLink, (e) => { e.stopPropagation(); selectDatabase(ent.db_path); });
     tdDb.appendChild(dbLink);
     row.appendChild(tdDb);
 
@@ -619,12 +793,14 @@ function showSmartDbFilterModal(smartDbId) {
     else showStatus('全件インデックス用フィルタを開けません', true);
     return;
   }
+  const restoreTarget = _smartDbActiveElement();
   const o = document.createElement('div');
   o.className = 'modal-overlay';
+  o.dataset.e2eId = 'smart-filter-overlay';
   let filtersHtml = '';
   (def.filters || []).forEach((f, i) => {
     filtersHtml += `<div class="sdf-row" data-idx="${i}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-      <input type="text" value="${esc(f.property)}" placeholder="プロパティ名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${i}-property" aria-label="スマートシート条件${i + 1} プロパティ">
+      <input type="text" class="gb-input" value="${esc(f.property)}" placeholder="プロパティ名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${i}-property" aria-label="スマートシート条件${i + 1} プロパティ">
       <select data-field="field" class="gb-select" data-e2e-id="smart-filter-${i}-field" aria-label="スマートシート条件${i + 1} 対象">
         <option value="value"${f.field === 'value' ? ' selected' : ''}>値</option>
         <option value="status"${f.field === 'status' ? ' selected' : ''}>ステータス</option>
@@ -637,8 +813,8 @@ function showSmartDbFilterModal(smartDbId) {
         <option value="not_empty"${f.operator === 'not_empty' ? ' selected' : ''}>空でない</option>
         <option value="empty"${f.operator === 'empty' ? ' selected' : ''}>空</option>
       </select>
-      <input type="text" value="${esc(f.value)}" placeholder="値" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="value" data-e2e-id="smart-filter-${i}-value" aria-label="スマートシート条件${i + 1} 値">
-      <button data-action="this.closest('.sdf-row').remove()" data-e2e-id="smart-filter-${i}-remove" aria-label="スマートシート条件${i + 1}を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+      <input type="text" class="gb-input" value="${esc(f.value)}" placeholder="値" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="value" data-e2e-id="smart-filter-${i}-value" aria-label="スマートシート条件${i + 1} 値">
+      <button type="button" data-smart-db-action="remove-filter-row" data-e2e-id="smart-filter-${i}-remove" aria-label="スマートシート条件${i + 1}を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
     </div>`;
   });
   // 既存 sources を「フォルダ」「対象シート」に分離する。
@@ -660,24 +836,34 @@ function showSmartDbFilterModal(smartDbId) {
   folderExplicit.forEach((s, i) => {
     sourcesHtml += _smartDbSourceRowHtml(s.path, i);
   });
-  o.innerHTML = `<div class="modal cond-modal" style="min-width:500px;">
-    <h3>スマートシート フィルタ設定</h3>
+  o.innerHTML = `<div class="modal cond-modal" role="dialog" aria-modal="true" aria-labelledby="sdf-title" aria-describedby="sdf-desc" data-e2e-id="smart-filter-dialog" style="min-width:500px;">
+    <h3 id="sdf-title">スマートシート フィルタ設定</h3>
     <div class="modal-body cond-modal-body">
-      <div class="field"><label>名前</label><input id="sdf-name" type="text" value="${esc(def.name)}" data-e2e-id="smart-filter-name"></div>
-      <div style="margin:0;font-size:12px;color:var(--fg2);">${esc(sourcesNote)}</div>
+      <div class="field"><label for="sdf-name">名前</label><input id="sdf-name" class="gb-input" type="text" value="${esc(def.name)}" data-e2e-id="smart-filter-name" aria-label="スマートシート名"></div>
+      <div id="sdf-desc" style="margin:0;font-size:12px;color:var(--fg2);">${esc(sourcesNote)}</div>
       <div id="sdf-sources" class="cond-list">${sourcesHtml}</div>
-      <button class="cond-add-btn" id="sdf-add-source-btn" data-e2e-id="smart-filter-add-source" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ フォルダを追加</button>
+      <button type="button" class="cond-add-btn" id="sdf-add-source-btn" data-e2e-id="smart-filter-add-source" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ フォルダを追加</button>
       <div style="margin:8px 0 0;font-size:12px;color:var(--fg2);">フィルタ条件（AND: すべて一致）</div>
       <div id="sdf-filters" class="cond-list">${filtersHtml}</div>
-      <button class="cond-add-btn" data-action="document.getElementById('sdf-filters').insertAdjacentHTML('beforeend', _smartDbFilterRowHtml())" data-e2e-id="smart-filter-add-row" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ 条件追加</button>
+      <button type="button" class="cond-add-btn" data-smart-db-action="add-filter-row" data-e2e-id="smart-filter-add-row" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ 条件追加</button>
     </div>
     <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()" data-e2e-id="smart-filter-cancel">キャンセル</button>
-      <button class="primary" id="sdf-save-btn" data-e2e-id="smart-filter-save">保存</button>
+      <button type="button" data-smart-db-action="close-modal" data-e2e-id="smart-filter-cancel">キャンセル</button>
+      <button type="button" class="primary" id="sdf-save-btn" data-e2e-id="smart-filter-save">保存</button>
     </div>
   </div>`;
   document.body.appendChild(o);
   if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(o, '#sdf-filters');
+  const closeOverlay = _smartDbAttachOverlayDismiss(o, restoreTarget);
+  o.addEventListener('click', (ev) => {
+    const actionEl = ev.target?.closest?.('[data-smart-db-action]');
+    if (!actionEl || !o.contains(actionEl)) return;
+    const action = actionEl.dataset.smartDbAction;
+    if (action === 'remove-filter-row') actionEl.closest('.sdf-row')?.remove();
+    else if (action === 'remove-source-row') actionEl.closest('.sdf-src-row')?.remove();
+    else if (action === 'add-filter-row') document.getElementById('sdf-filters')?.insertAdjacentHTML('beforeend', _smartDbFilterRowHtml());
+    else if (action === 'close-modal') closeOverlay();
+  });
   // smartDbId に特殊文字が含まれる場合 esc() は JS 文字列を保護できないため直接バインド
   document.getElementById('sdf-save-btn').addEventListener('click', () => _saveSmartDbFilters(smartDbId));
   document.getElementById('sdf-add-source-btn').addEventListener('click', () => {
@@ -685,20 +871,22 @@ function showSmartDbFilterModal(smartDbId) {
       if (!folderPath) return;
       const host = document.getElementById('sdf-sources');
       if (host) host.insertAdjacentHTML('beforeend', _smartDbSourceRowHtml(folderPath));
-    });
+    }, document.getElementById('sdf-add-source-btn'));
   });
+  _smartDbFocusFirstDialogControl(o);
 }
 
 function _smartDbSourceRowHtml(path, idx) {
   const safeIdx = (idx != null) ? String(idx) : ('new-' + Date.now().toString(36));
   return `<div class="sdf-src-row" data-src-idx="${esc(safeIdx)}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-    <input type="text" value="${esc(path || '')}" placeholder="フォルダパス" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="path" aria-label="対象フォルダ ${esc(safeIdx)}">
-    <button type="button" data-action="this.closest('.sdf-src-row').remove()" aria-label="対象フォルダ ${esc(safeIdx)} を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+    <input type="text" class="gb-input" value="${esc(path || '')}" placeholder="フォルダパス" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="path" data-e2e-id="smart-filter-source-${esc(safeIdx)}-path" aria-label="対象フォルダ ${esc(safeIdx)}">
+    <button type="button" data-smart-db-action="remove-source-row" data-e2e-id="smart-filter-source-${esc(safeIdx)}-remove" aria-label="対象フォルダ ${esc(safeIdx)} を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
 }
 
 // 対象フォルダ選択モーダル（フォルダツリーからピックする）
 async function _openSmartDbFolderPicker(def, callback) {
+  const restoreTarget = arguments.length > 2 ? arguments[2] : null;
   if (window.GBFolderPicker?.pickFolder) {
     const selected = await window.GBFolderPicker.pickFolder({
       title: '対象フォルダを選択',
@@ -723,23 +911,35 @@ async function _openSmartDbFolderPicker(def, callback) {
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:520px;max-width:80vw;">
-    <h3>対象フォルダを選択</h3>
-    <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">フォルダをクリックすると、そのフォルダ＋サブフォルダがスマートシートの対象になります。</div>
-    <div id="sdf-folder-tree" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px;background:var(--bg);"></div>
+  o.dataset.e2eId = 'smart-folder-picker-overlay';
+  const closePicker = () => {
+    o.remove();
+    _smartDbRestoreFocus(restoreTarget);
+  };
+  o.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sdf-folder-title" aria-describedby="sdf-folder-desc" data-e2e-id="smart-folder-picker-dialog" style="min-width:520px;max-width:80vw;">
+    <h3 id="sdf-folder-title">対象フォルダを選択</h3>
+    <div id="sdf-folder-desc" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">フォルダをクリックすると、そのフォルダ＋サブフォルダがスマートシートの対象になります。</div>
+    <div id="sdf-folder-tree" role="tree" aria-label="対象フォルダ" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px;background:var(--bg);"></div>
     <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
+      <button type="button" data-smart-db-action="close-modal" data-e2e-id="smart-folder-picker-cancel">キャンセル</button>
     </div>
   </div>`;
   document.body.appendChild(o);
+  const dismiss = _smartDbAttachOverlayDismiss(o, restoreTarget);
+  o.addEventListener('click', (ev) => {
+    const actionEl = ev.target?.closest?.('[data-smart-db-action]');
+    if (!actionEl || !o.contains(actionEl)) return;
+    if (actionEl.dataset.smartDbAction === 'close-modal') dismiss();
+  });
 
   const tree = o.querySelector('#sdf-folder-tree');
   const fragment = document.createDocumentFragment();
   rootMap.forEach(r => fragment.appendChild(_buildSmartDbFolderRoot(r, (relPath) => {
     if (callback) callback(relPath);
-    o.remove();
+    closePicker();
   })));
   tree.appendChild(fragment);
+  _smartDbFocusFirstDialogControl(o);
 }
 
 // 絶対パスから「ソースフォルダ名/サブパス」形式のソース相対パスを組み立てる
@@ -761,6 +961,8 @@ function _buildSmartDbFolderRoot(rootInfo, onPick) {
   const toggle = labelRow.querySelector('[data-role="toggle"]');
   const labelEl = labelRow.querySelector('[data-role="label"]');
   labelEl.textContent = rootInfo.name + ' (ソースフォルダ全体)';
+  labelEl.dataset.e2eId = 'smart-folder-picker-root-label';
+  labelEl.setAttribute('aria-label', rootInfo.name + ' を対象フォルダにする');
   node.appendChild(labelRow);
 
   const childrenHost = document.createElement('div');
@@ -778,6 +980,9 @@ function _buildSmartDbFolderRoot(rootInfo, onPick) {
     if (e.target === toggle) return;
     if (onPick) onPick(rootInfo.name);
   });
+  _smartDbBindKeyboardActivate(labelEl, () => {
+    if (onPick) onPick(rootInfo.name);
+  });
   return node;
 }
 
@@ -790,6 +995,8 @@ function _buildSmartDbFolderChild(rootInfo, absPath, name, onPick) {
   const toggle = labelRow.querySelector('[data-role="toggle"]');
   const labelEl = labelRow.querySelector('[data-role="label"]');
   labelEl.textContent = name;
+  labelEl.dataset.e2eId = 'smart-folder-picker-child-label';
+  labelEl.setAttribute('aria-label', sourceRelPath + ' を対象フォルダにする');
   node.appendChild(labelRow);
 
   const childrenHost = document.createElement('div');
@@ -807,21 +1014,32 @@ function _buildSmartDbFolderChild(rootInfo, absPath, name, onPick) {
     if (e.target === toggle) return;
     if (onPick) onPick(sourceRelPath);
   });
+  _smartDbBindKeyboardActivate(labelEl, () => {
+    if (onPick) onPick(sourceRelPath);
+  });
   return node;
 }
 
 function _smartDbPickerRow() {
   const labelRow = document.createElement('div');
   labelRow.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 4px;cursor:pointer;border-radius:3px;';
+  labelRow.setAttribute('role', 'presentation');
   labelRow.addEventListener('mouseenter', () => { labelRow.style.background = 'var(--bg3)'; });
   labelRow.addEventListener('mouseleave', () => { labelRow.style.background = ''; });
   const toggle = document.createElement('span');
   toggle.dataset.role = 'toggle';
-  toggle.style.cssText = 'display:inline-block;width:14px;text-align:center;color:var(--fg2);';
+  toggle.dataset.e2eId = 'smart-folder-picker-toggle';
+  toggle.setAttribute('role', 'button');
+  toggle.setAttribute('tabindex', '0');
+  toggle.setAttribute('aria-label', 'サブフォルダを展開');
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:22px;min-width:22px;min-height:22px;text-align:center;color:var(--fg2);';
   toggle.textContent = '▶';
   const labelEl = document.createElement('span');
   labelEl.dataset.role = 'label';
-  labelEl.style.cssText = 'flex:1;';
+  labelEl.setAttribute('role', 'button');
+  labelEl.setAttribute('tabindex', '0');
+  labelEl.style.cssText = 'flex:1;min-height:22px;display:flex;align-items:center;';
   labelRow.appendChild(toggle);
   labelRow.appendChild(labelEl);
   return labelRow;
@@ -857,19 +1075,24 @@ function _wireSmartDbFolderExpand(toggle, childrenHost, fetchChildren, emptyHint
     expanded = true;
     childrenHost.style.display = '';
     toggle.textContent = '▼';
+    toggle.setAttribute('aria-expanded', 'true');
+    toggle.setAttribute('aria-label', 'サブフォルダを折りたたむ');
   };
   const collapse = () => {
     expanded = false;
     childrenHost.style.display = 'none';
     toggle.textContent = '▶';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-label', 'サブフォルダを展開');
   };
   toggle.addEventListener('click', (e) => { e.stopPropagation(); if (expanded) collapse(); else expand(); });
+  _smartDbBindKeyboardActivate(toggle, () => { if (expanded) collapse(); else expand(); });
 }
 
 function _smartDbFilterRowHtml(prop='', field='value', op='contains', val='') {
   const rowId = 'new-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   return `<div class="sdf-row" data-e2e-row="${rowId}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-    <input type="text" value="${esc(prop)}" placeholder="プロパティ名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${rowId}-property" aria-label="スマートシート新規条件 プロパティ">
+    <input type="text" class="gb-input" value="${esc(prop)}" placeholder="プロパティ名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${rowId}-property" aria-label="スマートシート新規条件 プロパティ">
     <select data-field="field" class="gb-select" data-e2e-id="smart-filter-${rowId}-field" aria-label="スマートシート新規条件 対象">
       <option value="value"${field === 'value' ? ' selected' : ''}>値</option>
       <option value="status"${field === 'status' ? ' selected' : ''}>ステータス</option>
@@ -882,8 +1105,8 @@ function _smartDbFilterRowHtml(prop='', field='value', op='contains', val='') {
       <option value="not_empty"${op === 'not_empty' ? ' selected' : ''}>空でない</option>
       <option value="empty"${op === 'empty' ? ' selected' : ''}>空</option>
     </select>
-    <input type="text" value="${esc(val)}" placeholder="値" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="value" data-e2e-id="smart-filter-${rowId}-value" aria-label="スマートシート新規条件 値">
-    <button data-action="this.closest('.sdf-row').remove()" data-e2e-id="smart-filter-${rowId}-remove" aria-label="スマートシート新規条件を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+    <input type="text" class="gb-input" value="${esc(val)}" placeholder="値" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="value" data-e2e-id="smart-filter-${rowId}-value" aria-label="スマートシート新規条件 値">
+    <button type="button" data-smart-db-action="remove-filter-row" data-e2e-id="smart-filter-${rowId}-remove" aria-label="スマートシート新規条件を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
 }
 
@@ -924,7 +1147,7 @@ async function _saveSmartDbFilters(smartDbId) {
     }
     renderSmartDbList();
     showStatus('フィルタを保存しました');
-    document.querySelector('.modal-overlay')?.remove();
+    document.getElementById('sdf-filters')?.closest('.modal-overlay')?.remove();
     // 開いていたら再読み込み
     if (state.currentSmartDb?.id === smartDbId) selectSmartDb(smartDbId, def);
   }

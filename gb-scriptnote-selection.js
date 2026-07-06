@@ -52,6 +52,43 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._rowBulkBarGuardTimer = null;
   },
 
+  _clampRowBulkBarToViewport(bar) {
+    if (!bar?.isConnected) return;
+    const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
+    const margin = 8 / z;
+    const vw = window.innerWidth / z;
+    const vh = window.innerHeight / z;
+    const parentRect = bar.offsetParent?.getBoundingClientRect?.() || { left: 0, top: 0 };
+    const rect = bar.getBoundingClientRect();
+    const box = {
+      left: rect.left / z,
+      top: rect.top / z,
+      width: rect.width / z,
+      height: rect.height / z,
+    };
+    const maxHeight = Math.max(120 / z, vh - margin * 2);
+    if (box.height > maxHeight) {
+      bar.style.maxHeight = `${maxHeight}px`;
+      bar.style.overflowY = 'auto';
+    }
+    const nextRect = bar.getBoundingClientRect();
+    const next = {
+      left: nextRect.left / z,
+      top: nextRect.top / z,
+      width: nextRect.width / z,
+      height: nextRect.height / z,
+    };
+    const clampedLeft = Math.max(margin, Math.min(next.left, vw - next.width - margin));
+    const clampedTop = Math.max(margin, Math.min(next.top, vh - next.height - margin));
+    if (Math.abs(clampedLeft - next.left) > 0.5 || Math.abs(clampedTop - next.top) > 0.5) {
+      bar.style.left = `${clampedLeft - (parentRect.left / z)}px`;
+      bar.style.top = `${clampedTop - (parentRect.top / z)}px`;
+      bar.style.right = '';
+      bar.style.bottom = 'auto';
+      bar.style.transform = 'none';
+    }
+  },
+
   _toggleRowSelection(rowId, idx, shiftKey, ctrlKey) {
     if (!this._rowSelection) this._rowSelection = new Set();
     if (shiftKey && this._lastSelectedIdx >= 0) {
@@ -151,6 +188,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!bar) {
       bar = document.createElement('div');
       bar.className = 'sn2-row-bulk-bar gb-selection-float-bar';
+      bar.setAttribute('role', 'toolbar');
+      bar.setAttribute('aria-label', 'シナリオ行の一括操作');
       (this.host || document.body).appendChild(bar);
       this._rowBulkBar = bar;
     }
@@ -173,14 +212,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     label.className = 'gb-selection-float-count';
     label.textContent = `${count}行選択中`;
     bar.appendChild(label);
-    const mkBtn = (id, text, title, onClick) => {
+    const mkBtn = (id, text, title, onClick, options = {}) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = text;
       button.title = title;
       button.dataset.e2eId = id;
       button.setAttribute('aria-label', title);
-      button.className = 'gb-selection-float-button';
+      button.className = 'gb-selection-float-button' + (options.danger ? ' danger' : '');
       button.addEventListener('click', () => {
         if (!this._guardRowBulkAction()) return;
         window.GBSelectionFloatMenu?.pulseButton?.(button);
@@ -190,9 +229,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
     bar.appendChild(mkBtn('sn-row-bulk-role', 'タイプ変更', '選択行のタイプを一括変更', () => this._bulkChangeRole()));
     bar.appendChild(mkBtn('sn-row-bulk-duplicate', '複製', '選択行を複製', () => this._bulkDuplicateRows()));
-    bar.appendChild(mkBtn('sn-row-bulk-delete', '削除', '選択行を一括削除', () => this._bulkDeleteRows()));
+    bar.appendChild(mkBtn('sn-row-bulk-delete', '削除', '選択行を一括削除', () => this._bulkDeleteRows(), { danger: true }));
     bar.appendChild(mkBtn('sn-row-bulk-invert', '選択反転', '選択状態を反転', () => this._invertRowSelection()));
     bar.appendChild(mkBtn('sn-row-bulk-clear', '選択解除', '選択を解除', () => this._clearRowSelection()));
+    this._clampRowBulkBarToViewport(bar);
     this._startRowBulkBarGuard();
   },
 
@@ -203,36 +243,53 @@ Object.assign(ScriptNoteEditor.prototype, {
     const roles = (this.doc.characters || []).map((chara) => chara.name).filter(Boolean);
     if (!roles.length) return;
     const popup = document.createElement('div');
-    popup.className = 'sn2-header-popup';
-    popup.style.cssText = 'position:fixed;z-index:10100;background:var(--ui-popup-bg, var(--bg3));border:1px solid var(--border);border-radius:6px;padding:4px;box-shadow:0 4px 12px rgba(0,0,0,0.4);max-height:300px;overflow-y:auto;';
-    roles.forEach((name) => {
-      const item = document.createElement('div');
-      item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;border-radius:3px;';
+    popup.className = 'sn2-header-popup sn2-bulk-role-popup';
+    popup.setAttribute('role', 'menu');
+    popup.setAttribute('aria-label', '選択行のタイプを一括変更');
+    popup.style.cssText = 'position:fixed;z-index:10100;max-height:300px;overflow-y:auto;';
+    const bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
+    const trigger = bar?.querySelector?.('[data-e2e-id="sn-row-bulk-role"]') || null;
+    const close = (options = {}) => {
+      popup.remove();
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeydown, true);
+      if (options.restoreFocus) trigger?.focus?.();
+    };
+    const onPointerDown = (ev) => {
+      if (!popup.contains(ev.target)) close({ restoreFocus: true });
+    };
+    const onKeydown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close({ restoreFocus: true });
+    };
+    roles.forEach((name, index) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'sn2-header-popup-item';
+      item.setAttribute('role', 'menuitem');
+      item.dataset.e2eId = `sn-row-bulk-role-option-${index + 1}`;
+      item.dataset.sn2BulkRoleOption = name;
       item.textContent = name;
       item.addEventListener('click', () => {
-        if (!this._guardRowBulkAction()) { popup.remove(); return; }
-        popup.remove();
+        if (!this._guardRowBulkAction()) { close(); return; }
+        close();
         this._pushUndo('一括タイプ変更');
         this.doc.rows.forEach((row) => { if (selectedIds.has(row.id)) row.role = name; });
         this._render();
         this._markDirty();
         this._clearRowSelection();
       });
-      item.addEventListener('pointerenter', () => { item.style.background = 'var(--bg4)'; });
-      item.addEventListener('pointerleave', () => { item.style.background = ''; });
       popup.appendChild(item);
     });
     document.body.appendChild(popup);
-    const bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
     if (bar && typeof positionPopup === 'function') positionPopup(popup, bar.getBoundingClientRect());
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+    requestAnimationFrame(() => popup.querySelector('.sn2-header-popup-item')?.focus());
     setTimeout(() => {
-      const close = (ev) => {
-        if (!popup.contains(ev.target)) {
-          popup.remove();
-          document.removeEventListener('pointerdown', close, true);
-        }
-      };
-      document.addEventListener('pointerdown', close, true);
+      document.addEventListener('pointerdown', onPointerDown, true);
+      document.addEventListener('keydown', onKeydown, true);
     }, 0);
   },
 
@@ -445,7 +502,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   _writeRoleClipboardFallback(text) {
     const ta = document.createElement('textarea');
     ta.value = text;
-    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    ta.setAttribute('aria-hidden', 'true');
+    ta.tabIndex = -1;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
     document.body.appendChild(ta);
     ta.focus();
     ta.select();
@@ -593,29 +652,48 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.querySelectorAll('.sn2-role-cell-menu').forEach(el => el.remove());
     const menu = document.createElement('div');
     menu.className = 'sn2-role-cell-menu sn2-header-popup';
-    const mk = (label, fn) => {
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'タイプセル操作');
+    const close = (options = {}) => {
+      menu.remove();
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeydown, true);
+      if (options.restoreFocus) roleBtn.focus?.();
+    };
+    const onPointerDown = (ev) => {
+      if (!menu.contains(ev.target)) close({ restoreFocus: true });
+    };
+    const onKeydown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close({ restoreFocus: true });
+    };
+    const mk = (label, fn, actionId = '') => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'sn2-header-popup-item';
+      btn.setAttribute('role', 'menuitem');
+      if (actionId) {
+        btn.dataset.sn2RoleCellMenuAction = actionId;
+        btn.dataset.e2eId = `sn2-role-cell-menu-${actionId}`;
+      }
       btn.textContent = label;
-      btn.addEventListener('click', () => { menu.remove(); fn(); });
+      btn.addEventListener('click', () => { close(); fn(); });
       return btn;
     };
-    menu.appendChild(mk('コピー', () => this._copyRoleCellSelection(rowId)));
-    menu.appendChild(mk('貼り付け', () => this._pasteRoleCellSelectionFromClipboard(rowId)));
-    menu.appendChild(mk('削除', () => this._clearSelectedRoleCells(rowId)));
+    menu.appendChild(mk('コピー', () => this._copyRoleCellSelection(rowId), 'copy'));
+    menu.appendChild(mk('貼り付け', () => this._pasteRoleCellSelectionFromClipboard(rowId), 'paste'));
+    menu.appendChild(mk('削除', () => this._clearSelectedRoleCells(rowId), 'clear'));
     menu.style.cssText = 'position:fixed;z-index:10000;min-width:140px;';
     document.body.appendChild(menu);
     const rect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
     if (typeof positionPopup === 'function') positionPopup(menu, rect);
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    requestAnimationFrame(() => menu.querySelector('.sn2-header-popup-item')?.focus());
     setTimeout(() => {
-      const close = (ev) => {
-        if (!menu.contains(ev.target)) {
-          menu.remove();
-          document.removeEventListener('pointerdown', close);
-        }
-      };
-      document.addEventListener('pointerdown', close);
+      document.addEventListener('pointerdown', onPointerDown, true);
+      document.addEventListener('keydown', onKeydown, true);
     }, 0);
     return true;
   },

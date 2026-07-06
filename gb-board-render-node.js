@@ -163,7 +163,7 @@ function bdRenderNode(node, options = {}) {
   const div = document.createElement('div');
   const showStatus = !bd.displayFilters || bd.displayFilters.showStatus !== false;
   const showMarkers = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showMarkers !== false);
-  const showLinkBadges = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showLinkBadges !== false);
+  const showLinkBadges = !bd.displayFilters || bd.displayFilters.showLinkBadges !== false;
   const showMenuButtons = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showMenuButtons !== false);
   const showImageNames = !bd.displayFilters || bd.displayFilters.showImageNames !== false;
 
@@ -287,13 +287,23 @@ function bdAppendStatusHud(div, node) {
   if (!sd) return;
   const statusHud = document.createElement('div');
   statusHud.className = 'bd-status-hud bd-hud';
+  statusHud.dataset.e2eId = `board-card-${node.id}-status-hud`;
   statusHud.style.background = sd.color || '#888';
   statusHud.title = node.status;
+  statusHud.tabIndex = 0;
+  statusHud.setAttribute('role', 'button');
+  statusHud.setAttribute('aria-label', `ステータス: ${node.status}`);
+  statusHud.setAttribute('aria-haspopup', 'menu');
+  statusHud.setAttribute('aria-expanded', 'false');
+  const openStatusMenu = ev => {
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    if (typeof bdStatusMenuFor === 'function') bdStatusMenuFor(node.id, statusHud.getBoundingClientRect(), statusHud);
+  };
   statusHud.addEventListener('pointerdown', ev => { ev.stopPropagation(); });
-  statusHud.addEventListener('click', ev => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (typeof bdStatusMenuFor === 'function') bdStatusMenuFor(node.id, statusHud.getBoundingClientRect());
+  statusHud.addEventListener('click', openStatusMenu);
+  statusHud.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') openStatusMenu(ev);
   });
   div.appendChild(statusHud);
 }
@@ -303,6 +313,7 @@ function bdAppendMarkerHud(div, node) {
   if (!hasMarkers) return;
   const markerHud = document.createElement('div');
   markerHud.className = 'bd-marker-hud bd-hud';
+  markerHud.dataset.e2eId = `board-card-${node.id}-marker-hud`;
   for (const [cat, idx] of Object.entries(node.markers)) {
     const mk = BD_MARKERS[cat]?.[idx];
     if (!mk) continue;
@@ -313,11 +324,20 @@ function bdAppendMarkerHud(div, node) {
     markerHud.appendChild(s);
   }
   markerHud.title = 'マーカーを変更';
+  markerHud.tabIndex = 0;
+  markerHud.setAttribute('role', 'button');
+  markerHud.setAttribute('aria-label', 'マーカーを変更');
+  markerHud.setAttribute('aria-haspopup', 'menu');
+  markerHud.setAttribute('aria-expanded', 'false');
+  const openMarkerMenu = ev => {
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    if (typeof bdMarkerMenuFor === 'function') bdMarkerMenuFor(node.id, markerHud.getBoundingClientRect(), markerHud);
+  };
   markerHud.addEventListener('pointerdown', ev => { ev.stopPropagation(); });
-  markerHud.addEventListener('click', ev => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (typeof bdMarkerMenuFor === 'function') bdMarkerMenuFor(node.id, markerHud.getBoundingClientRect());
+  markerHud.addEventListener('click', openMarkerMenu);
+  markerHud.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') openMarkerMenu(ev);
   });
   div.appendChild(markerHud);
 }
@@ -325,18 +345,28 @@ function bdAppendMarkerHud(div, node) {
 function bdAppendCommentHud(div, node) {
   const commentHud = document.createElement('div');
   commentHud.className = 'bd-comment-hud bd-hud empty';
+  commentHud.dataset.e2eId = `board-card-${node.id}-comment-hud`;
   commentHud.innerHTML = typeof lucide === 'function' ? lucide('messageSquarePlus', 10) : '+';
   commentHud.title = 'コメントを追加';
+  commentHud.tabIndex = 0;
+  commentHud.setAttribute('role', 'button');
+  commentHud.setAttribute('aria-label', 'コメント');
+  commentHud.setAttribute('aria-haspopup', 'menu');
+  commentHud.setAttribute('aria-expanded', 'false');
   commentHud.addEventListener('pointerdown', ev => { ev.stopPropagation(); });
   let clickTimer = null;
-  commentHud.addEventListener('click', ev => {
-    ev.preventDefault();
-    ev.stopPropagation();
+  const openCommentMenu = ev => {
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
     if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
     clickTimer = setTimeout(() => {
       clickTimer = null;
-      if (typeof bdCommentMenuFor === 'function') bdCommentMenuFor(node.id, commentHud.getBoundingClientRect());
+      if (typeof bdCommentMenuFor === 'function') bdCommentMenuFor(node.id, commentHud.getBoundingClientRect(), commentHud);
     }, 250);
+  };
+  commentHud.addEventListener('click', openCommentMenu);
+  commentHud.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') openCommentMenu(ev);
   });
   commentHud.addEventListener('dblclick', ev => {
     ev.preventDefault();
@@ -580,7 +610,9 @@ function bdAppendLinkBadge(div, node, showStatus) {
     if (typeof bdOpenLinkedPathInCurrentPane === 'function') bdOpenLinkedPathInCurrentPane(node.link, node.text || node.link, node.linkType || '');
     else if (typeof openLink === 'function') openLink(node.link, node.text || node.link);
   });
-  div.addEventListener('mouseenter', () => _showLinkTooltip(div, node.link, node.linkType));
+  const showLinkTooltip = () => _showLinkTooltip(div, node.link, node.linkType);
+  div.addEventListener('mouseenter', showLinkTooltip);
+  div.addEventListener('pointerenter', showLinkTooltip);
   div.addEventListener('pointermove', () => {
     if (typeof _isLinkTooltipVisible === 'function' && _isLinkTooltipVisible()) {
       _hideLinkTooltip({ suppressNode: div });
@@ -598,11 +630,14 @@ function bdAppendCardMenuButton(div, node) {
   menuBtn.dataset.e2eId = `board-card-${node.id}-render-${_bdRenderNodeE2ESeq}-menu`;
   menuBtn.textContent = '...';
   menuBtn.title = 'カードメニュー';
+  menuBtn.setAttribute('aria-label', 'カードメニュー');
+  menuBtn.setAttribute('aria-haspopup', 'menu');
+  menuBtn.setAttribute('aria-expanded', 'false');
   menuBtn.addEventListener('click', ev => {
     ev.preventDefault();
     ev.stopPropagation();
     const rect = menuBtn.getBoundingClientRect();
-    bdContextMenu({ clientX: rect.right - 8, clientY: rect.bottom, preventDefault() {}, stopPropagation() {} }, node.id);
+    bdContextMenu({ clientX: rect.right - 8, clientY: rect.bottom, trigger: menuBtn, preventDefault() {}, stopPropagation() {} }, node.id);
   });
   div.appendChild(menuBtn);
 }
@@ -753,7 +788,7 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
   if (chGroupColor && typeof _bdApplyParentChildGroupHighlight === 'function') _bdApplyParentChildGroupHighlight(chDiv, chStyle.shape || '', chGroupColor);
   const showStatus = !bd.displayFilters || bd.displayFilters.showStatus !== false;
   const showMarkers = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showMarkers !== false);
-  const showLinkBadges = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showLinkBadges !== false);
+  const showLinkBadges = !bd.displayFilters || bd.displayFilters.showLinkBadges !== false;
   const showMenuButtons = !fastCardRender && (!bd.displayFilters || bd.displayFilters.showMenuButtons !== false);
   const showImageNames = !bd.displayFilters || bd.displayFilters.showImageNames !== false;
   bdApplyNodeBaseStyles(chDiv, ch, chStyle, showStatus);

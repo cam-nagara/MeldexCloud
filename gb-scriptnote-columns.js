@@ -3,6 +3,37 @@
 
 Object.assign(ScriptNoteEditor.prototype, {
 
+  _bindColumnModalOverlay(overlay, focusSelector) {
+    if (!overlay) return () => {};
+    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+      window.GBModalShell.enhanceOverlay(overlay);
+    }
+    let closed = false;
+    function close() {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', keyHandler, true);
+      overlay.remove();
+    }
+    function keyHandler(ev) {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    }
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) close();
+    });
+    document.addEventListener('keydown', keyHandler, true);
+    requestAnimationFrame(() => {
+      if (!overlay.isConnected) return;
+      const target = focusSelector ? overlay.querySelector(focusSelector) : null;
+      target?.focus?.();
+      target?.select?.();
+    });
+    return close;
+  },
+
   _startColResize(e, colId, resizerEl) {
     e.preventDefault();
     this._pushUndo('列幅変更');
@@ -57,6 +88,65 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.addEventListener('pointerup', onUp);
   },
 
+  _currentColSize(colId) {
+    const isVertical = this.doc.editor?.viewMode === 'vertical';
+    const headerCell = this.host?.querySelector(`.sn2-header-cell[data-col-id="${colId}"]`);
+    const stored = Number(this.doc.editor?.columnWidths?.[colId]);
+    if (Number.isFinite(stored) && stored > 0) return Math.round(stored);
+    if (headerCell) {
+      const rect = headerCell.getBoundingClientRect();
+      return Math.round(isVertical ? rect.height : rect.width);
+    }
+    return 80;
+  },
+
+  _applyColSize(colId, size) {
+    if (!this.doc.editor.columnWidths) this.doc.editor.columnWidths = {};
+    const newSize = Math.max(30, Math.round(Number(size) || 30));
+    const isVertical = this.doc.editor?.viewMode === 'vertical';
+    const editor = this.host?.querySelector('.sn2-editor');
+    const scrollEl = this.host?.querySelector('.sn2-scroll');
+    const headerCell = this.host?.querySelector(`.sn2-header-cell[data-col-id="${colId}"]`);
+    this.doc.editor.columnWidths[colId] = newSize;
+    if (isVertical) {
+      const vcolVar = `--sn2-vcol-${colId}`;
+      editor?.style.setProperty(vcolVar, newSize + 'px');
+      scrollEl?.style.setProperty(vcolVar, newSize + 'px');
+      if (headerCell) headerCell.style.height = newSize + 'px';
+      const header = scrollEl?.querySelector('.sn2-header');
+      if (header) {
+        const headerHeight = header.offsetHeight;
+        scrollEl.querySelectorAll('.sn2-row').forEach(rowEl => { rowEl.style.height = headerHeight + 'px'; });
+      }
+      return;
+    }
+    const colVar = `--sn2-col-${colId}`;
+    editor?.style.setProperty(colVar, newSize + 'px');
+    scrollEl?.style.setProperty(colVar, newSize + 'px');
+    if (colId === '_text') {
+      editor?.style.setProperty('--sn2-text-flex', '0 0 auto');
+      scrollEl?.style.setProperty('--sn2-text-flex', '0 0 auto');
+    }
+    if (headerCell) {
+      headerCell.style.width = newSize + 'px';
+      headerCell.classList.remove('sn2-header-flex');
+    }
+  },
+
+  _handleColResizerKeydown(e, colId) {
+    const isVertical = this.doc.editor?.viewMode === 'vertical';
+    const positiveKey = isVertical ? 'ArrowDown' : 'ArrowRight';
+    const negativeKey = isVertical ? 'ArrowUp' : 'ArrowLeft';
+    if (e.key !== positiveKey && e.key !== negativeKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const step = e.shiftKey ? 1 : 10;
+    const delta = e.key === positiveKey ? step : -step;
+    this._pushUndo('列幅変更');
+    this._applyColSize(colId, this._currentColSize(colId) + delta);
+    this._markDirty();
+  },
+
   // === ヘッダーダブルクリックで列名編集 ===
 
   _startHeaderLabelEdit(cell, colId) {
@@ -67,6 +157,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentLabel;
+    input.setAttribute('aria-label', `${currentLabel || '列'}列名`);
+    input.title = `${currentLabel || '列'}列名`;
     input.style.cssText = 'width:100%;padding:2px 4px;border:1px solid var(--blue,#4a90d9);border-radius:2px;background:var(--bg);color:var(--fg);font-size:11px;font-weight:600;outline:none;box-sizing:border-box;';
     cell.textContent = '';
     cell.appendChild(input);
@@ -109,6 +201,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   _showHeaderMenu(cell, colId) {
     // 既存メニュー・サブメニューを閉じる
     document.querySelectorAll('.sn2-header-popup, .sn2-header-sub-popup').forEach(el => el.remove());
+    document.querySelectorAll('.sn2-header-cell[aria-expanded="true"]').forEach(el => {
+      el.setAttribute('aria-expanded', 'false');
+    });
     const isStandard = colId.startsWith('_');
     const customCols = this._getCustomColumns();
     const colDef = isStandard ? null : customCols.find(c => c.id === colId);
@@ -126,6 +221,9 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     const popup = document.createElement('div');
     popup.className = 'sn2-header-popup';
+    popup.id = `sn2-header-popup-${String(colId || 'col').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    popup.setAttribute('role', 'menu');
+    popup.setAttribute('aria-label', `${(cell.textContent || '列').trim() || '列'}列メニュー`);
 
     const mkSep = () => { const el = document.createElement('div'); el.className = 'sn2-header-popup-sep'; return el; };
     const mkItem = (text, active, onClick) => {
@@ -133,16 +231,26 @@ Object.assign(ScriptNoteEditor.prototype, {
       btn.className = 'sn2-header-popup-item' + (active ? ' active' : '');
       btn.type = 'button';
       btn.textContent = text;
+      btn.setAttribute('role', 'menuitem');
       btn.addEventListener('click', onClick);
       return btn;
     };
     // サブメニュー付きアイテム
     let openSub = null;
-    const closeSub = () => { if (openSub) { openSub.remove(); openSub = null; } };
+    const closeSub = () => {
+      if (openSub) {
+        openSub._triggerBtn?.setAttribute('aria-expanded', 'false');
+        openSub.remove();
+        openSub = null;
+      }
+    };
     const mkSubItem = (text, currentLabel, buildSub) => {
       const btn = document.createElement('button');
       btn.className = 'sn2-header-popup-item sn2-header-popup-sub-trigger';
       btn.type = 'button';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('aria-haspopup', 'menu');
+      btn.setAttribute('aria-expanded', 'false');
       btn.innerHTML = `<span>${text}: <b>${currentLabel}</b></span><span class="sn2-header-popup-arrow">${lucide('chevronRight', 10)}</span>`;
       btn.addEventListener('click', () => {
         if (openSub?._triggerBtn === btn) { closeSub(); return; }
@@ -150,10 +258,13 @@ Object.assign(ScriptNoteEditor.prototype, {
         const sub = document.createElement('div');
         sub.className = 'sn2-header-sub-popup sn2-header-popup';
         sub._triggerBtn = btn;
+        sub.setAttribute('role', 'menu');
+        sub.setAttribute('aria-label', `${text}メニュー`);
         buildSub(sub);
         const bRect = btn.getBoundingClientRect();
         sub.style.cssText = 'position:fixed;z-index:10001;';
         document.body.appendChild(sub);
+        btn.setAttribute('aria-expanded', 'true');
         positionPopup(sub, bRect, { prefer: 'right' });
         openSub = sub;
       });
@@ -235,17 +346,26 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
 
     let closeHandler = null;
-    const closePopup = () => {
+    let escapeHandler = null;
+    const closePopup = (options = {}) => {
       closeSub();
       popup.remove();
+      cell.setAttribute('aria-expanded', 'false');
       if (closeHandler) {
-        document.removeEventListener('pointerdown', closeHandler);
+        document.removeEventListener('pointerdown', closeHandler, true);
         closeHandler = null;
       }
+      if (escapeHandler) {
+        document.removeEventListener('keydown', escapeHandler, true);
+        escapeHandler = null;
+      }
+      if (options.restoreFocus) cell.focus();
     };
 
     // 位置決め
     document.body.appendChild(popup);
+    cell.setAttribute('aria-expanded', 'true');
+    cell.setAttribute('aria-controls', popup.id);
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: cell,
@@ -259,7 +379,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     closeHandler = (ev) => {
       if (!popup.contains(ev.target) && !openSub?.contains(ev.target) && !ev.target.closest?.('.gb-fmt-popup') && !ev.target.closest?.('.gb-palette-popup')) closePopup();
     };
-    setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
+    escapeHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePopup({ restoreFocus: true });
+    };
+    document.addEventListener('keydown', escapeHandler, true);
+    requestAnimationFrame(() => popup.querySelector('.sn2-header-popup-item')?.focus());
+    setTimeout(() => {
+      if (popup.isConnected) document.addEventListener('pointerdown', closeHandler, true);
+    }, 0);
   },
 
   // === 列スタイル設定ポップアップ ===
@@ -284,22 +414,27 @@ Object.assign(ScriptNoteEditor.prototype, {
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--col-style';
     popup.innerHTML = `
-      <div style="font-size:12px;font-weight:600;margin-bottom:6px;">列スタイル</div>
-      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+      <div class="sn2-col-style-title">列スタイル</div>
+      <div class="sn2-col-style-row">
         <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg" data-csp="bgColor" style="background:${bgColor};" title="背景色"></button>
         <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-csp="textColor" style="color:${textColor};" title="テキスト色">T</button>
         <button type="button" class="gb-fmt-btn${cs.fontWeight === 'bold' ? ' active' : ''}" data-csp-toggle-fmt="fontWeight" title="太字"><b>B</b></button>
         <button type="button" class="gb-fmt-btn${cs.fontStyle === 'italic' ? ' active' : ''}" data-csp-toggle-fmt="fontStyle" title="斜体"><i>I</i></button>
-        <input type="number" class="gb-fmt-num" data-csp-num="fontSize" value="${fontSize}" placeholder="px" min="8" max="48">
-        <button type="button" class="gb-fmt-btn" data-csp-reset title="リセット" style="font-size:10px;margin-left:auto;">✕</button>
+        <input type="number" class="gb-fmt-num gb-fmt-num--w54" data-csp-num="fontSize" value="${fontSize}" placeholder="px" min="8" max="48">
+        <button type="button" class="gb-fmt-btn sn2-col-style-reset" data-csp-reset title="リセット">${lucide('rotateCcw', 12)}</button>
       </div>
-      <div style="font-size:10px;color:var(--fg2);margin-top:4px;">※ タイプ管理の設定が優先されます</div>`;
+      <div class="sn2-col-style-note">※ タイプ管理の設定が優先されます</div>`;
     let closeHandler = null;
+    let escapeHandler = null;
     const closePopup = () => {
       popup.remove();
       if (closeHandler) {
-        document.removeEventListener('pointerdown', closeHandler);
+        document.removeEventListener('pointerdown', closeHandler, true);
         closeHandler = null;
+      }
+      if (escapeHandler) {
+        document.removeEventListener('keydown', escapeHandler, true);
+        escapeHandler = null;
       }
     };
     const refresh = () => { this._refreshRowStyles(); this._markDirty(); };
@@ -345,6 +480,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     // (タイプ優先は常時有効 — トグル廃止)
 
     popup.style.cssText = 'position:fixed;z-index:10001;min-width:220px;';
+    document.body.appendChild(popup);
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: anchorEl,
@@ -352,13 +488,22 @@ Object.assign(ScriptNoteEditor.prototype, {
       });
     }
     positionPopup(popup, anchorEl.getBoundingClientRect());
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+    escapeHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePopup();
+    };
+    document.addEventListener('keydown', escapeHandler, true);
     setTimeout(() => {
+      if (!popup.isConnected) return;
       closeHandler = (ev) => {
         if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-palette-popup') && !ev.target.closest?.('.sn2-header-popup') && !ev.target.closest?.('.gb-fmt-popup')) {
           closePopup();
         }
       };
-      document.addEventListener('pointerdown', closeHandler);
+      document.addEventListener('pointerdown', closeHandler, true);
     }, 0);
   },
 
@@ -370,7 +515,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const id = 'col-' + Date.now();
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal" style="min-width:480px;max-width:640px;">
+    overlay.innerHTML = `<div class="modal sn2-column-modal" style="min-width:480px;max-width:640px;">
       <h3>列を追加</h3>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;min-height:300px;">
         <div class="field"><label>列名</label><input type="text" id="sn2-col-name" value="新しい列" style="width:100%;padding:4px 6px;"></div>
@@ -393,10 +538,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       </div>
     </div>`;
     document.body.appendChild(overlay);
+    const closeOverlay = this._bindColumnModalOverlay(overlay, '#sn2-col-name');
     const typeSel = overlay.querySelector('#sn2-col-type');
     const optWrap = overlay.querySelector('#sn2-col-options-wrap');
     typeSel.addEventListener('change', () => { optWrap.style.display = typeSel.value === 'select' ? '' : 'none'; });
-    overlay.querySelector('#sn2-col-cancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#sn2-col-cancel').addEventListener('click', closeOverlay);
     overlay.querySelector('#sn2-col-ok').addEventListener('click', () => {
       const label = overlay.querySelector('#sn2-col-name').value.trim() || '列';
       const type = typeSel.value;
@@ -429,9 +575,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.doc.editor.columnOrder = order;
       this._render();
       this._markDirty();
-      overlay.remove();
+      closeOverlay();
     });
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
   },
 
   // === 列を複製 ===
@@ -503,7 +648,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!colDef || colDef.type !== 'select') return;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal" style="min-width:400px;max-width:500px;">
+    overlay.innerHTML = `<div class="modal sn2-column-modal sn2-column-options-modal" style="min-width:400px;max-width:500px;">
       <h3>${esc(colDef.label)} — 選択肢を編集</h3>
       <div class="modal-body" style="min-height:200px;">
         <label>選択肢（改行区切り）</label>
@@ -515,10 +660,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       </div>
     </div>`;
     document.body.appendChild(overlay);
+    const closeOverlay = this._bindColumnModalOverlay(overlay, '#sn2-opt-edit');
     const textarea = overlay.querySelector('#sn2-opt-edit');
     textarea.value = (colDef.options || []).join('\n');
     textarea.focus();
-    overlay.querySelector('#sn2-opt-cancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#sn2-opt-cancel').addEventListener('click', closeOverlay);
     overlay.querySelector('#sn2-opt-ok').addEventListener('click', () => {
       this._pushUndo('選択肢編集');
       const nextOptions = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
@@ -535,9 +681,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._render();
       this._markDirty();
       if (cleared && typeof showStatus === 'function') showStatus(`削除された選択肢を使っていた${cleared}件の値を空にしました`);
-      overlay.remove();
+      closeOverlay();
     });
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
   },
 
   // === 数値列の単位設定 ===
@@ -559,14 +704,30 @@ Object.assign(ScriptNoteEditor.prototype, {
       </div>`;
     popup.style.cssText += 'position:fixed;z-index:10000;min-width:200px;';
     document.body.appendChild(popup);
+    let closeHandler = null;
+    let escapeHandler = null;
+    const close = () => {
+      popup.remove();
+      if (closeHandler) {
+        document.removeEventListener('pointerdown', closeHandler, true);
+        closeHandler = null;
+      }
+      if (escapeHandler) {
+        document.removeEventListener('keydown', escapeHandler, true);
+        escapeHandler = null;
+      }
+    };
+    if (typeof attachMeldexDropdownCloseButton === 'function') {
+      attachMeldexDropdownCloseButton(popup, {
+        trigger: anchorEl,
+        close,
+      });
+    }
     positionPopup(popup, anchorEl.getBoundingClientRect());
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
     const input = popup.querySelector('#sn2-unit-input');
     input.focus();
     input.select();
-    const close = () => {
-      popup.remove();
-      document.removeEventListener('pointerdown', closeHandler);
-    };
     const save = () => {
       this._pushUndo('単位設定');
       colDef.unit = input.value.trim();
@@ -579,8 +740,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (e.key === 'Enter') save();
       if (e.key === 'Escape') close();
     });
-    const closeHandler = (ev) => { if (!popup.contains(ev.target)) close(); };
-    setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
+    escapeHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    };
+    document.addEventListener('keydown', escapeHandler, true);
+    closeHandler = (ev) => { if (!popup.contains(ev.target)) close(); };
+    setTimeout(() => {
+      if (popup.isConnected) document.addEventListener('pointerdown', closeHandler, true);
+    }, 0);
   },
 
   // === カスタム列追加（末尾に追加、既存メソッド） ===
@@ -591,7 +761,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const id = 'col-' + Date.now();
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal" style="min-width:480px;max-width:640px;">
+    overlay.innerHTML = `<div class="modal sn2-column-modal" style="min-width:480px;max-width:640px;">
       <h3>列を追加</h3>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;min-height:300px;">
         <div class="field"><label>列名</label><input type="text" id="sn2-col-name" value="新しい列" style="width:100%;padding:4px 6px;"></div>
@@ -614,10 +784,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       </div>
     </div>`;
     document.body.appendChild(overlay);
+    const closeOverlay = this._bindColumnModalOverlay(overlay, '#sn2-col-name');
     const typeSel = overlay.querySelector('#sn2-col-type');
     const optWrap = overlay.querySelector('#sn2-col-options-wrap');
     typeSel.addEventListener('change', () => { optWrap.style.display = typeSel.value === 'select' ? '' : 'none'; });
-    overlay.querySelector('#sn2-col-cancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#sn2-col-cancel').addEventListener('click', closeOverlay);
     overlay.querySelector('#sn2-col-ok').addEventListener('click', () => {
       const label = overlay.querySelector('#sn2-col-name').value.trim() || '列';
       const type = typeSel.value;
@@ -630,9 +801,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.doc.editor.customColumns.push({ id, label, type, width, options });
       this._render();
       this._markDirty();
-      overlay.remove();
+      closeOverlay();
     });
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
   },
 
 });

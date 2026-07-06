@@ -114,6 +114,24 @@ function _renderDetailContent(item) {
     b.addEventListener('click', () => openNative(item.path));
     actions.appendChild(b);
   }
+  if (item.path) {
+    const b = document.createElement('button');
+    b.textContent = '自動タグ付け';
+    b.addEventListener('click', () => autoTagFolderTarget(item, { recursive: item.type === 'folder' }));
+    actions.appendChild(b);
+  }
+  if (item.path) {
+    const b = document.createElement('button');
+    b.textContent = '圧縮';
+    b.addEventListener('click', () => compressFolderItems([item]));
+    actions.appendChild(b);
+  }
+  if (item.path && typeof _folderCanExtractArchive === 'function' && _folderCanExtractArchive(item)) {
+    const b = document.createElement('button');
+    b.textContent = '解凍';
+    b.addEventListener('click', () => extractArchiveItem(item));
+    actions.appendChild(b);
+  }
   if (item.type === 'folder') {
     const b = document.createElement('button');
     b.innerHTML = lucide('play', 12) + ' スライドショー';
@@ -240,19 +258,22 @@ if (document.readyState === 'loading') {
       const newSize = Math.max(100, Math.min(800, startSize + delta * sign));
       if (isV) panel.style.width = newSize + 'px';
       else panel.style.height = newSize + 'px';
+      savePanelSize();
     }
-    function onUp() {
-      handle.style.background = '';
-      document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = '');
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      // サイズを保存
+    function savePanelSize() {
       const cfg = _getFvPanelCfg();
       const size = isV ? panel.offsetWidth : panel.offsetHeight;
       // どのタイプのパネルかを判定
       if (panel._panelType === 'preview' || panel._panelType === 'both') cfg.previewSize = size;
       if (panel._panelType === 'detail') cfg.detailSize = size;
       _saveFvPanelCfg(cfg);
+    }
+    function onUp() {
+      handle.style.background = '';
+      document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = '');
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      savePanelSize();
     }
   });
 })();
@@ -387,7 +408,7 @@ async function loadFileFolderTags(filePath, container) {
 function showAddFolderLinkModal(filePath, tagsContainer) {
   const o = document.createElement('div');
   o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:450px;">
+  o.innerHTML = `<div class="modal" style="box-sizing:border-box;min-width:min(450px, calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);">
     <h3>フォルダにリンク登録</h3>
     <div style="margin-bottom:8px;color:var(--fg2);font-size:12px;">${esc(filePath.split('/').pop())}</div>
     <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『MUDMAN』/第1話登場"></div>
@@ -403,7 +424,7 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   o.querySelector('[data-role="cancel"]')?.addEventListener('click', () => o.remove());
   o.querySelector('[data-role="submit"]')?.addEventListener('click', () => submitAddFolderLink(filePath));
   window._folderLinkTagsContainer = tagsContainer;
-  setTimeout(() => document.getElementById('modal-link-folder').focus(), 50);
+  setTimeout(() => document.getElementById('modal-link-folder')?.focus(), 50);
   // フォルダツリーを読み込み
   _loadFolderLinkTree(document.getElementById('modal-link-tree'));
 }
@@ -789,12 +810,16 @@ function showFolderDisplaySettings() {
   menu.appendChild(searchRow);
 
   const membershipsPromise = typeof _folderEnsureMemberships === 'function' ? _folderEnsureMemberships(_folderItems) : Promise.resolve(false);
-  const choices = typeof _folderFilterChoices === 'function' ? _folderFilterChoices() : { types: [], exts: [], folders: [] };
+  const tagsPromise = typeof _folderEnsureTags === 'function' ? _folderEnsureTags(_folderItems) : Promise.resolve(false);
+  const choices = typeof _folderFilterChoices === 'function' ? _folderFilterChoices() : { types: [], exts: [], folders: [], tags: [] };
   const selectedTypes = new Set(typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterTypes) : []);
   const selectedExts = new Set((typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterExts) : []).map(ext => String(ext).toLowerCase()));
   const selectedFolders = new Set(typeof _folderFilterFolderKeys === 'function'
     ? _folderFilterFolderKeys(cfg)
     : ((typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterFolders) : []).map(folder => String(folder).replace(/\\/g, '/').replace(/\/+$/, ''))));
+  const selectedTags = new Set(typeof _folderFilterTagKeys === 'function'
+    ? _folderFilterTagKeys(cfg)
+    : (typeof _folderFilterArray === 'function' ? _folderFilterArray(cfg.filterTags).map(tag => String(tag).toLowerCase()) : []));
 
   _fdSection(menu, '種類');
   const typeBox = document.createElement('div');
@@ -851,6 +876,26 @@ function showFolderDisplaySettings() {
     });
   }
   menu.appendChild(folderBox);
+
+  _fdSection(menu, 'タグ');
+  const tagBox = document.createElement('div');
+  tagBox.style.maxHeight = '150px';
+  tagBox.style.overflowY = 'auto';
+  if (!choices.tags || choices.tags.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:5px 14px;color:var(--fg2);font-size:12px;';
+    empty.textContent = (typeof _folderTagsAreLoading === 'function' && _folderTagsAreLoading(_folderItems))
+      ? 'タグを読み込み中...'
+      : 'このフォルダ内にタグ付き項目はありません';
+    tagBox.appendChild(empty);
+  } else {
+    choices.tags.forEach(([tag, label]) => {
+      tagBox.appendChild(_fdCheckboxRow(label, selectedTags.has(String(tag).toLowerCase()), (enabled) => {
+        _fdSetArrayFilter(cfg, 'filterTags', tag, enabled);
+      }, { dataset: { folderFilterTag: tag } }));
+    });
+  }
+  menu.appendChild(tagBox);
 
   _fdSection(menu, '更新期間');
   const periodRow = document.createElement('div');
@@ -941,6 +986,17 @@ function showFolderDisplaySettings() {
       }
     }).catch(() => {});
   }
+  if (tagsPromise && typeof tagsPromise.then === 'function') {
+    tagsPromise.then((changed) => {
+      if (!changed) return;
+      const latestCfg = getFolderDisplayConfig();
+      if (typeof _folderHasActiveTagFilter === 'function' && _folderHasActiveTagFilter(latestCfg)) renderFolderGrid();
+      if (document.body.contains(menu)) {
+        menu.remove();
+        showFolderDisplaySettings();
+      }
+    }).catch(() => {});
+  }
 
   setTimeout(() => {
     const closer = (ev) => {
@@ -962,6 +1018,102 @@ async function openNative(path) {
   } catch (e) {
     showStatus('開けませんでした: ' + e.message, true);
   }
+}
+
+function _folderArchiveExtension(path) {
+  const lower = String(path || '').split(/[?#]/)[0].toLowerCase();
+  if (lower.endsWith('.tar.gz')) return '.tar.gz';
+  if (lower.endsWith('.tar.bz2')) return '.tar.bz2';
+  if (lower.endsWith('.tar.xz')) return '.tar.xz';
+  const index = lower.lastIndexOf('.');
+  return index >= 0 ? lower.slice(index) : '';
+}
+
+function _folderCanExtractArchive(item) {
+  const ext = _folderArchiveExtension(item?.path || item?.name || '');
+  return ['.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz'].includes(ext);
+}
+
+async function compressFolderItems(items) {
+  const targets = (Array.isArray(items) ? items : [items]).filter(item => item?.path);
+  if (!targets.length) return;
+  try {
+    showStatus('圧縮しています...');
+    const result = await apiPost('/archive/compress', { paths: targets.map(item => item.path) }, { silentError: true });
+    if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
+    showStatus('圧縮しました: ' + (result?.name || result?.path || 'ZIP'));
+  } catch (err) {
+    showStatus('圧縮に失敗しました: ' + (err?.userMessage || err?.message || err), true);
+  }
+}
+
+async function extractArchiveItem(item) {
+  if (!item?.path) return;
+  if (!_folderCanExtractArchive(item)) {
+    openNative(item.path);
+    return;
+  }
+  try {
+    showStatus('解凍しています...');
+    const result = await apiPost('/archive/extract', { path: item.path }, { silentError: true });
+    if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
+    showStatus('解凍しました: ' + (result?.name || result?.path || 'フォルダ'));
+  } catch (err) {
+    showStatus('解凍に失敗しました: ' + (err?.userMessage || err?.message || err), true);
+  }
+}
+
+async function autoTagFolderTarget(item, options = {}) {
+  const path = item?.path || (typeof _folderPath !== 'undefined' ? _folderPath : '');
+  if (!path || !window.MeldexGlobalTags?.autoTag) return;
+  const recursive = options.recursive ?? (item?.type === 'folder');
+  try {
+    showStatus('自動タグ付けを実行しています...');
+    const result = await window.MeldexGlobalTags.autoTag({ path, recursive });
+    if (result?.stopped) {
+      showStatus('自動タグ付けを中断しました: ' + (result.warning || result.reason || ''), true);
+      return;
+    }
+    if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
+    if (window.MeldexTagManagement?.refresh) window.MeldexTagManagement.refresh(false);
+    showStatus((result?.total || 0) + '件に自動タグ付けしました');
+  } catch (err) {
+    showStatus('自動タグ付けに失敗しました: ' + (err?.userMessage || err?.message || err), true);
+  }
+}
+
+function fvBulkCompress() {
+  compressFolderItems(_folderSelectedItems);
+}
+
+function fvBulkAutoTag() {
+  const items = (_folderSelectedItems || []).filter(item => item?.path);
+  if (!items.length) return;
+  if (!window.MeldexGlobalTags?.autoTag) {
+    showStatus('自動タグ付けを初期化できませんでした', true);
+    return;
+  }
+  (async () => {
+    let stopped = null;
+    let total = 0;
+    for (const item of items) {
+      try {
+        const result = await window.MeldexGlobalTags.autoTag({ path: item.path, recursive: item.type === 'folder' });
+        if (result?.stopped) {
+          stopped = result;
+          break;
+        }
+        total += result?.total || 0;
+      } catch (err) {
+        showStatus('自動タグ付けに失敗しました: ' + (err?.userMessage || err?.message || err), true);
+        return;
+      }
+    }
+    if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
+    if (window.MeldexTagManagement?.refresh) window.MeldexTagManagement.refresh(false);
+    if (stopped) showStatus('自動タグ付けを中断しました: ' + (stopped.warning || stopped.reason || ''), true);
+    else showStatus(total + '件に自動タグ付けしました');
+  })();
 }
 
 // formatFileSize は meldex-core.js で定義済み

@@ -102,6 +102,27 @@
   cursor: pointer;
 }
 #entity-create-note-btn button:hover { background: var(--bg4); border-color: var(--accent); }
+#entity-create-note-btn .entity-create-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+#entity-create-note-btn .entity-create-action-icon,
+#entity-create-note-btn .entity-create-action-icon svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+@media (max-width: 430px) {
+  #entity-create-note-btn .entity-create-action-btn {
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+}
 
 /* 自由記述エリア */
 #entity-freetext {
@@ -120,22 +141,96 @@
 .embed-media:hover { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* フローティングメディアコントロール（body直下に生成） */
 #media-float-controls {
-  display: none; position: fixed; z-index: 200;
-  background: rgba(0,0,0,0.7); border-radius: 6px; padding: 3px; gap: 2px;
+  display: none;
+  position: fixed;
+  z-index: var(--ui-z-menu, 200);
+  align-items: center;
+  gap: var(--ui-space-1, 2px);
+  padding: var(--ui-space-1, 2px);
+  background: var(--ui-bg-surface, rgba(0,0,0,0.82));
+  color: var(--ui-fg-default, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, var(--ui-border, #555));
+  border-radius: var(--ui-radius-md, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 10px 28px rgba(0,0,0,0.38));
   backdrop-filter: blur(4px);
 }
 #media-float-controls.visible { display: flex; }
 #media-float-controls button {
-  background: none; border: none; color: var(--ui-fg-strong); cursor: pointer; padding: 3px 7px; font-size: 11px; border-radius: 3px;
+  width: var(--ui-h-sm, 28px);
+  min-width: var(--ui-h-sm, 28px);
+  height: var(--ui-h-sm, 28px);
+  min-height: var(--ui-h-sm, 28px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-size: var(--ui-font-12, 12px);
+  line-height: 1;
+  border-radius: var(--ui-radius-xs, 3px);
 }
-#media-float-controls button:hover { background: rgba(255,255,255,0.2); }
-#media-float-controls button.active { background: var(--accent); }
+#media-float-controls button:hover,
+#media-float-controls button:focus-visible {
+  background: var(--ui-hover-bg, rgba(255,255,255,0.16));
+  color: var(--ui-hover-fg, var(--ui-fg-strong, #fff));
+  border-color: var(--ui-border, #555);
+  outline: none;
+}
+#media-float-controls button.active {
+  background: color-mix(in srgb, var(--ui-accent, var(--accent)) 24%, transparent);
+  color: var(--ui-accent, var(--accent));
+  border-color: color-mix(in srgb, var(--ui-accent, var(--accent)) 55%, transparent);
+}
+#media-float-controls .media-float-danger { color: var(--ui-danger, var(--red)); }
+#media-float-controls svg,
+#media-float-controls .ico {
+  width: var(--ui-icon-sm, 14px) !important;
+  height: var(--ui-icon-sm, 14px) !important;
+  display: block;
+}
+#media-float-controls .media-float-icon-fallback {
+  width: var(--ui-icon-sm, 14px);
+  height: var(--ui-icon-sm, 14px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+}
+@media (max-width: 640px) {
+  #media-float-controls {
+    gap: var(--ui-space-2, 4px);
+    padding: var(--ui-space-2, 4px);
+    z-index: var(--ui-z-toast, 400);
+  }
+  #media-float-controls button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  #media-float-controls svg,
+  #media-float-controls .ico {
+    width: var(--ui-icon-md, 16px) !important;
+    height: var(--ui-icon-md, 16px) !important;
+  }
+}
 /* リサイズハンドル */
 .em-resize-handle {
-  display: none; position: fixed; width: 14px; height: 14px; z-index: 201;
+  display: none; position: fixed; width: 14px; height: 14px; z-index: calc(var(--ui-z-menu, 200) + 1);
   background: var(--accent); border: 2px solid var(--ui-fg-strong); border-radius: 2px; cursor: nwse-resize;
 }
 .em-resize-handle.visible { display: block; }
+@media (max-width: 640px) {
+  .em-resize-handle {
+    width: 24px;
+    height: 24px;
+    z-index: calc(var(--ui-z-toast, 400) + 1);
+    border-radius: var(--ui-radius-sm, 4px);
+  }
+}
 /* アウトライナー読み込み中 */
 .tree-spinner { display: flex; align-items: center; padding: 2px 0; }
 /* グローバルフィルタバー */
@@ -147,3 +242,66 @@
 }
 #entity-freetext > div, #page-content > div { margin: 2px 0; }
 #entity-freetext:empty::before { content: '自由記述...'; color: var(--fg2); }
+
+#note-toc-resize {
+  --note-toc-resize-hit: 8px;
+  position: relative;
+  outline: none;
+  box-sizing: border-box;
+  background: transparent !important;
+  border-right-color: transparent !important;
+}
+.note-editor-body {
+  min-height: 0;
+}
+.note-editor-body #note-toc,
+.note-editor-body #note-toc-resize,
+.note-editor-body #page-content {
+  min-height: 0;
+  box-sizing: border-box;
+}
+#note-toc-resize::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--ui-border, var(--border));
+}
+#note-toc-resize:hover,
+#note-toc-resize:focus-visible {
+  background: transparent !important;
+  border-right-color: transparent !important;
+}
+#note-toc-resize:hover::before,
+#note-toc-resize:focus-visible::before {
+  width: 2px;
+  background: var(--ui-accent, var(--accent));
+}
+@media (pointer: coarse), (max-width: 640px) {
+  #page-view {
+    --note-page-mobile-top-offset: 52px;
+    height: min(
+      calc((var(--meldex-window-inner-height, 100dvh) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1)),
+      calc((var(--cloud-visual-vh, 100dvh) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1)),
+      calc((100dvh - var(--cloud-visual-offset-top, 0px) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1))
+    ) !important;
+    max-height: min(
+      calc((var(--meldex-window-inner-height, 100dvh) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1)),
+      calc((var(--cloud-visual-vh, 100dvh) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1)),
+      calc((100dvh - var(--cloud-visual-offset-top, 0px) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1))
+    ) !important;
+    min-height: 0 !important;
+  }
+  #page-view .note-editor-body {
+    flex: 1 1 auto;
+    min-height: 0 !important;
+  }
+  #note-toc-resize {
+    --note-toc-resize-hit: 24px;
+    align-self: stretch;
+    max-height: 100%;
+  }
+}

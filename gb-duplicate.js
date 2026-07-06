@@ -8,17 +8,17 @@ async function showDuplicateScanModal(folderPath) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.dataset.folderPath = folderPath || '';
-  overlay.innerHTML = `<div class="gb-modal" style="min-width:700px;max-width:90vw;">
+  overlay.innerHTML = `<div class="gb-modal" role="dialog" aria-modal="true" aria-labelledby="duplicate-scan-title" data-e2e-id="duplicate-scan-modal" style="width:min(700px, calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);">
     <header class="gb-modal-header">
-      <h3 class="gb-modal-title">重複画像スキャン</h3>
-      <button class="gb-modal-close" data-action="this.closest('.modal-overlay').remove()">${lucide('x', 14)}</button>
+      <h3 id="duplicate-scan-title" class="gb-modal-title">重複画像スキャン</h3>
+      <button type="button" class="gb-modal-close" aria-label="閉じる" title="閉じる" data-dup-close data-e2e-id="duplicate-scan-close">${lucide('x', 14)}</button>
     </header>
     <div class="gb-modal-body">
       <div id="dup-status" class="gb-section-desc" style="margin-bottom:var(--ui-space-3);">スキャン中...</div>
       <div id="dup-results" style="min-height:200px;"></div>
     </div>
     <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" data-action="this.closest('.modal-overlay').remove()">閉じる</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-dup-close data-e2e-id="duplicate-scan-footer-close">閉じる</button>
     </footer>
   </div>`;
   document.body.appendChild(overlay);
@@ -49,7 +49,7 @@ async function showDuplicateScanModal(folderPath) {
           <span class="dup-group-title">グループ ${gi + 1}</span>
           <span class="dup-group-count">${group.images.length} 枚</span>
           <span style="flex:1;"></span>
-          <button class="gb-btn gb-btn-xs gb-btn-primary" data-action="_dupResolveGroup(this, ${gi})">選択した画像を残す</button>
+          <button type="button" class="gb-btn gb-btn-xs gb-btn-primary" data-dup-resolve data-group="${gi}" data-e2e-id="duplicate-resolve-group-${gi}" aria-label="グループ ${gi + 1} の選択した画像を残す">選択した画像を残す</button>
         </div>
         <div class="dup-group-body">`;
 
@@ -60,16 +60,15 @@ async function showDuplicateScanModal(folderPath) {
         const name = img.rel_path.split('/').pop();
         const isRec = img.recommended;
 
-        html += `<div class="dup-item${isRec ? ' dup-item-recommended' : ''}" data-group="${gi}" data-index="${ii}" data-path="${esc(img.rel_path)}"
-          data-action="_dupToggleSelect(this, ${gi}, ${ii})">
+        html += `<div class="dup-item${isRec ? ' dup-item-recommended dup-item-selected' : ''}" role="button" tabindex="0" aria-pressed="${isRec ? 'true' : 'false'}" data-dup-item data-group="${gi}" data-index="${ii}" data-path="${esc(img.rel_path)}" data-e2e-id="duplicate-item-${gi}-${ii}">
           <div class="dup-item-thumb">
-            <img src="${thumbUrl}" onerror="this.src='';this.alt='読込失敗';">
+            <img src="${thumbUrl}" alt="${esc(name)}" onerror="this.src='';this.alt='読込失敗';">
           </div>
           <div class="dup-item-info">
             <div class="dup-item-name" title="${esc(img.rel_path)}">${esc(name)}</div>
             <div class="dup-item-meta">${dimStr} / ${sizeStr}</div>
             <div class="dup-item-radio">
-              <input type="radio" name="dup-keep-${gi}" value="${ii}" ${isRec ? 'checked' : ''} data-action="event.stopPropagation();">
+              <input type="radio" name="dup-keep-${gi}" value="${ii}" ${isRec ? 'checked' : ''} data-dup-radio data-group="${gi}" data-index="${ii}" aria-label="グループ ${gi + 1} の画像 ${ii + 1} を残す">
               <span class="${isRec ? 'dup-item-rec-label' : 'dup-item-keep-label'}">${isRec ? '推奨（最高解像度）' : '残す'}</span>
             </div>
           </div>
@@ -83,6 +82,7 @@ async function showDuplicateScanModal(folderPath) {
 
     // グループデータを保持
     overlay._dupGroups = res.groups;
+    _bindDuplicateScanModal(overlay);
 
   } catch (e) {
     const s = overlay.querySelector('#dup-status');
@@ -90,16 +90,55 @@ async function showDuplicateScanModal(folderPath) {
   }
 }
 
+function _bindDuplicateScanModal(overlay) {
+  if (!overlay || overlay.dataset.dupBound === '1') return;
+  overlay.dataset.dupBound = '1';
+  overlay.querySelectorAll('[data-dup-close]').forEach(button => {
+    button.addEventListener('click', () => overlay.remove());
+  });
+  overlay.querySelectorAll('[data-dup-resolve]').forEach(button => {
+    button.addEventListener('click', () => {
+      _dupResolveGroup(button, _dupDatasetNumber(button, 'group'));
+    });
+  });
+  overlay.querySelectorAll('[data-dup-item]').forEach(item => {
+    item.addEventListener('click', () => {
+      _dupToggleSelect(item, _dupDatasetNumber(item, 'group'), _dupDatasetNumber(item, 'index'));
+    });
+    item.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      _dupToggleSelect(item, _dupDatasetNumber(item, 'group'), _dupDatasetNumber(item, 'index'));
+    });
+  });
+  overlay.querySelectorAll('[data-dup-radio]').forEach(radio => {
+    radio.addEventListener('click', event => {
+      event.stopPropagation();
+      const item = radio.closest('[data-dup-item]');
+      if (item) _dupToggleSelect(item, _dupDatasetNumber(item, 'group'), _dupDatasetNumber(item, 'index'));
+    });
+  });
+}
+
+function _dupDatasetNumber(el, key) {
+  const n = Number(el?.dataset?.[key]);
+  return Number.isFinite(n) ? n : -1;
+}
+
 function _dupToggleSelect(el, gi, ii) {
   // ラジオボタンを選択
   const radio = el.querySelector('input[type=radio]');
   if (radio) radio.checked = true;
   // 選択状態クラスを切替 (旧インライン style もクリア)
-  el.closest('.dup-group').querySelectorAll('.dup-item').forEach(item => {
+  const groupEl = el.closest('.dup-group');
+  if (!groupEl) return;
+  groupEl.querySelectorAll('.dup-item').forEach(item => {
     item.classList.remove('dup-item-selected');
+    item.setAttribute('aria-pressed', 'false');
     item.style.borderColor = '';
   });
   el.classList.add('dup-item-selected');
+  el.setAttribute('aria-pressed', 'true');
 }
 
 async function _dupResolveGroup(sourceOrGi, maybeGi) {
@@ -141,11 +180,14 @@ async function _dupResolveGroup(sourceOrGi, maybeGi) {
     // 全件成功した場合だけ解決済みにする。部分失敗は同じモーダルから再試行できるよう残す。
     if (groupEl && failed === 0 && succeeded === replaceImgs.length) {
       groupEl.classList.add('dup-group-resolved');
-      groupEl.querySelector('button').disabled = true;
-      groupEl.querySelector('button').innerHTML = lucide('check', 12) + ' 解決済み';
+      const resolvedButton = groupEl.querySelector('[data-dup-resolve]');
+      if (resolvedButton) {
+        resolvedButton.disabled = true;
+        resolvedButton.innerHTML = lucide('check', 12) + ' 解決済み';
+      }
     } else if (groupEl) {
       groupEl.classList.remove('dup-group-resolved');
-      const retryButton = groupEl.querySelector('button');
+      const retryButton = groupEl.querySelector('[data-dup-resolve]');
       if (retryButton) {
         retryButton.disabled = false;
         retryButton.textContent = failed ? '失敗したため再試行' : 'もう一度整理';
@@ -199,13 +241,11 @@ function showClipSearchResults(results, query) {
   }
   let html = `<div class="gb-section-desc" style="margin-bottom:var(--ui-space-3);">「${esc(query)}」の検索結果（${results.results.length} 件）</div>`;
   html += '<div class="clip-search-grid">';
-  results.results.forEach(r => {
+  results.results.forEach((r, index) => {
     const thumbUrl = API_BASE + '/thumb?path=' + encodeURIComponent(r.path) + '&size=120';
     const score = Math.round(r.score * 100);
-    // パスは data-path に格納し、data-action="_openClipViewerResult" でデリゲート実行
-    // （esc() は HTML エスケープであり JS 文字列エスケープではないため）
-    html += `<div class="clip-search-item" data-path="${esc(r.path)}" data-action="_openClipViewerResult">
-      <img class="clip-search-thumb" src="${thumbUrl}" onerror="this.alt='読込失敗';">
+    html += `<div class="clip-search-item" role="button" tabindex="0" data-clip-search-result data-path="${esc(r.path)}" data-e2e-id="clip-search-result-${index}" aria-label="${esc(r.name)} を開く">
+      <img class="clip-search-thumb" src="${thumbUrl}" alt="${esc(r.name)}" onerror="this.alt='読込失敗';">
       <div class="clip-search-name" title="${esc(r.path)}">${esc(r.name)}</div>
       <div class="clip-search-score">類似度: ${score}%</div>
     </div>`;
@@ -215,7 +255,26 @@ function showClipSearchResults(results, query) {
 }
 
 function _openClipViewerResult(e) {
-  const el = e?.target?.closest('[data-path]');
+  const el = e?.target?.closest('[data-clip-search-result][data-path]');
   const p = el?.dataset?.path;
   if (p) openViewer('/viewer?file=' + encodeURIComponent(p));
 }
+
+function _bindClipSearchResultDelegation() {
+  if (window.__MeldexClipSearchResultDelegated) return;
+  window.__MeldexClipSearchResultDelegated = true;
+  document.addEventListener('click', event => {
+    const item = event.target?.closest?.('[data-clip-search-result][data-path]');
+    if (!item) return;
+    _openClipViewerResult({ target: item });
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const item = event.target?.closest?.('[data-clip-search-result][data-path]');
+    if (!item) return;
+    event.preventDefault();
+    _openClipViewerResult({ target: item });
+  });
+}
+
+_bindClipSearchResultDelegation();

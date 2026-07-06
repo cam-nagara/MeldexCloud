@@ -52,27 +52,38 @@
   }
 
   function _openWizard(candidates) {
+    document.querySelectorAll('.bd-bulk-import-overlay').forEach(existing => existing.remove());
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const uid = 'bdbl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+    const titleId = uid + '-title';
+    const descId = uid + '-desc';
+    const sourceId = uid + '-source';
+    const viewId = uid + '-view';
+    const statusId = uid + '-status';
     const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    overlay.className = 'modal-overlay bd-bulk-import-overlay';
     overlay.style.zIndex = '250';
     overlay.innerHTML = `
-      <div class="gb-confirm" role="dialog" aria-modal="true" style="min-width:min(520px,92vw);max-width:min(640px,94vw);">
-        <div class="gb-confirm-title">シート / スマートシートから一括読込</div>
-        <div class="gb-confirm-body" style="display:flex;flex-direction:column;gap:12px;padding:12px 0;">
-          <label style="display:flex;flex-direction:column;gap:4px;">
-            <span style="font-size:12px;">対象のシート / スマートシート</span>
-            <select data-bdbl-source style="padding:4px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;"></select>
+      <div class="gb-confirm bd-bulk-import-dialog" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1">
+        <div class="bd-bulk-import-header">
+          <div class="gb-confirm-title bd-bulk-import-title" id="${titleId}">シート / スマートシートから一括読込</div>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon bd-bulk-import-close" data-bdbl-close title="閉じる" aria-label="閉じる">${_bdblIcon('x', 14)}</button>
+        </div>
+        <div class="gb-confirm-body bd-bulk-import-body" id="${descId}">
+          <label class="bd-bulk-import-field" for="${sourceId}">
+            <span class="bd-bulk-import-label">対象のシート / スマートシート</span>
+            <select id="${sourceId}" class="gb-select bd-bulk-import-select" data-bdbl-source></select>
           </label>
-          <label style="display:flex;flex-direction:column;gap:4px;">
-            <span style="font-size:12px;">ビュー</span>
-            <select data-bdbl-view style="padding:4px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;"></select>
-            <span style="font-size:11px;color:var(--ui-fg-muted,#888);">選択したビューのフィルタを適用します。</span>
+          <label class="bd-bulk-import-field" for="${viewId}">
+            <span class="bd-bulk-import-label">ビュー</span>
+            <select id="${viewId}" class="gb-select bd-bulk-import-select" data-bdbl-view></select>
+            <span class="bd-bulk-import-hint">選択したビューのフィルタを適用します。</span>
           </label>
-          <div data-bdbl-status style="font-size:12px;color:var(--ui-fg-muted,#888);min-height:18px;"></div>
+          <div id="${statusId}" class="bd-bulk-import-status" data-bdbl-status role="status" aria-live="polite"></div>
         </div>
         <div class="gb-confirm-actions">
-          <button class="gb-btn gb-btn-sm" data-bdbl-cancel>キャンセル</button>
-          <button class="gb-btn gb-btn-sm gb-btn-primary" data-bdbl-go>読み込む</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-bdbl-cancel>キャンセル</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-bdbl-go>読み込む</button>
         </div>
       </div>`;
 
@@ -81,6 +92,7 @@
     const statusEl = overlay.querySelector('[data-bdbl-status]');
     const goBtn = overlay.querySelector('[data-bdbl-go]');
     const cancelBtn = overlay.querySelector('[data-bdbl-cancel]');
+    const closeBtn = overlay.querySelector('[data-bdbl-close]');
 
     candidates.forEach((c, i) => {
       const opt = document.createElement('option');
@@ -98,7 +110,7 @@
 
     const setStatus = (text, isError) => {
       statusEl.textContent = text || '';
-      statusEl.style.color = isError ? 'var(--accent,#e66)' : 'var(--ui-fg-muted,#888)';
+      statusEl.classList.toggle('is-error', !!isError);
     };
 
     const setPreviewPending = (pending) => {
@@ -156,10 +168,16 @@
     // Escape ハンドラを含むクリーンアップ。× ボタン / キャンセル / overlay クリック / ESC の
     // いずれで閉じても必ず handler を剥がす (多重オープンでのリーク防止)。
     const onKey = (e) => { if (e.key === 'Escape' && overlay.isConnected) close(); };
-    const close = () => {
+    const close = (options = {}) => {
+      if (busy && !options.force) return;
       document.removeEventListener('keydown', onKey);
       overlay.remove();
+      if (restoreFocusTo?.isConnected) {
+        if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(restoreFocusTo);
+        else restoreFocusTo.focus?.();
+      }
     };
+    closeBtn.addEventListener('click', () => close());
     cancelBtn.addEventListener('click', close);
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', onKey);
@@ -176,7 +194,7 @@
       setStatus(`${currentEntries.length} 件のリンクカードを作成中…`);
       try {
         const created = await _executeImport(currentEntries);
-        close();
+        close({ force: true });
         if (typeof showStatus === 'function') showStatus(`${created} 件のリンクカードを読み込みました`);
       } catch (e) {
         setStatus('読み込みに失敗: ' + (e?.message || e), true);
@@ -187,8 +205,14 @@
     });
 
     document.body.appendChild(overlay);
+    window.GBModalShell?.enhanceOverlay?.(overlay);
     srcSelect.focus();
     refreshViews();
+  }
+
+  function _bdblIcon(name, size) {
+    if (typeof lucide === 'function') return lucide(name, size || 14);
+    return name === 'x' ? '×' : '';
   }
 
   async function _getViewsFor(target) {

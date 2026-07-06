@@ -194,19 +194,41 @@
   }
 
   function _showGroupContextMenu(e, panelsetNode, group) {
+    const anchor = e.currentTarget || e.target;
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
     const menu = document.createElement('div');
-    menu.className = 'gb-context-menu';
+    menu.className = 'gb-context-menu gb-panelset-group-menu';
+    menu.setAttribute('role', 'menu');
     const z = (typeof _getZoom === 'function') ? _getZoom() : 1;
     menu.style.cssText = 'position:fixed;z-index:10000;left:' + (e.clientX / z) + 'px;top:' + (e.clientY / z) + 'px;';
+    const closeMenu = (restoreFocus) => {
+      menu.remove();
+      document.removeEventListener('pointerdown', closeOnPointerDown, true);
+      document.removeEventListener('keydown', closeOnKeyDown, true);
+      if (restoreFocus && typeof anchor?.focus === 'function') anchor.focus();
+    };
+    const closeOnPointerDown = (ev) => {
+      if (!menu.isConnected) {
+        document.removeEventListener('pointerdown', closeOnPointerDown, true);
+        document.removeEventListener('keydown', closeOnKeyDown, true);
+        return;
+      }
+      if (!menu.contains(ev.target)) closeMenu(false);
+    };
+    const closeOnKeyDown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeMenu(true);
+    };
     function addItem(label, fn) {
-      const mi = document.createElement('div');
+      const mi = document.createElement('button');
+      mi.type = 'button';
+      mi.className = 'gb-context-menu-item';
+      mi.setAttribute('role', 'menuitem');
       mi.textContent = label;
-      mi.style.cssText = 'padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;';
-      mi.onmouseenter = () => { mi.style.background = 'var(--bg4)'; };
-      mi.onmouseleave = () => { mi.style.background = ''; };
       mi.addEventListener('click', () => {
-        document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+        closeMenu(false);
         fn();
       });
       menu.appendChild(mi);
@@ -214,21 +236,11 @@
     addItem('このドックを閉じる', () => closeGroup(panelsetNode, group.id));
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    menu.querySelector('.gb-context-menu-item')?.focus?.();
     setTimeout(() => {
-      const close = (ev) => {
-        // 自分のメニューが既に外されている場合は、リスナー自身を破棄して終了
-        // （次回開いた別メニューを「外側クリック」と誤判定して破壊する事故を防ぐ）
-        if (!menu.isConnected) {
-          document.removeEventListener('pointerdown', close);
-          return;
-        }
-        const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
-        if (!inAny) {
-          document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-          document.removeEventListener('pointerdown', close);
-        }
-      };
-      document.addEventListener('pointerdown', close);
+      if (!menu.isConnected) return;
+      document.addEventListener('pointerdown', closeOnPointerDown, true);
+      document.addEventListener('keydown', closeOnKeyDown, true);
     }, 0);
   }
 

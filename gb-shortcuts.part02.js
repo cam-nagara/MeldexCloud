@@ -299,6 +299,7 @@ const GB_TOOLTIPS = {
   'rab-detail':         { label: 'オプション', desc: 'オプションパネルを開く' },
   'rab-calendar':       { label: 'スケジューラー', desc: 'スケジューラーパネルを開く' },
   'rab-chat':           { label: 'チャット', desc: 'チャットパネルを開く' },
+  'rab-tags':           { label: 'タグ', desc: 'タグ管理パネルを開く' },
   'rab-annotation':     { label: '注釈', desc: '注釈パネルを開く' },
   'rab-history':        { label: '履歴', desc: '操作履歴パネルを開く' },
 

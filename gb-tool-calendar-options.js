@@ -125,7 +125,23 @@
     return body;
   }
 
+  function _calOpenDetailPanel() {
+    if (typeof _openDetailRightPanel === 'function') {
+      return _openDetailRightPanel();
+    }
+    if (typeof openRightPanelTab === 'function') {
+      openRightPanelTab('detail');
+      return true;
+    }
+    if (typeof switchRightTab === 'function') {
+      switchRightTab('detail');
+      return true;
+    }
+    return false;
+  }
+
   function _calOptionContainer(title, options = {}) {
+    if (options.openPanel !== false) _calOpenDetailPanel();
     const detailEl = typeof _resolveDetailEl === 'function' ? _resolveDetailEl() : document.getElementById('rp-detail');
     if (!detailEl) return null;
     detailEl.style.display = '';
@@ -816,19 +832,36 @@
     this._closeEventCardMenu();
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-cal-event-card-menu';
+    menu.dataset.e2eId = 'calendar-event-card-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'イベントメニュー');
     menu.style.position = 'fixed';
     menu.style.zIndex = '10003';
+    let closePointer = null;
+    let closeKey = null;
+    const closeMenu = (restoreFocus = false) => {
+      menu.remove();
+      if (closePointer) document.removeEventListener('pointerdown', closePointer, true);
+      if (closeKey) document.removeEventListener('keydown', closeKey, true);
+      closePointer = null;
+      closeKey = null;
+      if (restoreFocus && anchor.isConnected) {
+        try { anchor.focus({ preventScroll: true }); } catch { anchor.focus?.(); }
+      }
+    };
     const addItem = (label, icon, handler, options = {}) => {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'gb-context-menu-item' + (options.danger ? ' danger' : '') + (options.disabled ? ' disabled' : '');
+      item.dataset.calEventCardAction = options.action || label;
+      item.setAttribute('role', 'menuitem');
       item.disabled = !!options.disabled;
       item.innerHTML = `${_calIcon(icon, 14)}<span>${_calEsc(label)}</span>`;
       item.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
         if (item.disabled) return;
-        menu.remove();
+        closeMenu(false);
         handler();
       });
       menu.appendChild(item);
@@ -843,19 +876,22 @@
     const selectionIds = new Set(selected.map(item => String(item?.id || '')));
     if (selected.length > 1 && selectionIds.has(String(eventId))) {
       addItem(`${selected.length}件を複製`, 'copy', () => this._duplicateSelectedEvents(), {
+        action: 'duplicate-selection',
         disabled: !selected.some(item => this._eventCanBulkDuplicate(item)),
       });
       addItem(`${selected.length}件を削除`, 'trash2', () => this._deleteSelectedEvents(), {
+        action: 'delete-selection',
         danger: true,
         disabled: !selected.some(item => this._eventCanBulkDelete(item)),
       });
-      addItem('選択解除', 'x', () => this._clearEventSelection());
+      addItem('選択解除', 'x', () => this._clearEventSelection(), { action: 'clear-selection' });
       addSeparator();
     }
-    addItem('開く', 'fileText', () => this._openEventInPanel(eventId));
+    addItem('開く', 'fileText', () => this._openEventInPanel(eventId), { action: 'open' });
     const source = String(ev.calendar_source || '');
     const lockedGenerated = ['production-task', 'attendance'].includes(source);
     addItem(lockedGenerated ? '元データから編集' : '削除', lockedGenerated ? 'lock' : 'trash2', () => this._deleteEventFromOptions(eventId), {
+      action: lockedGenerated ? 'locked-source' : 'delete',
       danger: !lockedGenerated,
       disabled: lockedGenerated,
     });
@@ -870,13 +906,19 @@
       if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
     }
     setTimeout(() => {
-      const close = (event) => {
+      closePointer = (event) => {
         if (!menu.contains(event.target) && event.target !== anchor) {
-          menu.remove();
-          document.removeEventListener('pointerdown', close, true);
+          closeMenu(false);
         }
       };
-      document.addEventListener('pointerdown', close, true);
+      closeKey = (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu(true);
+      };
+      document.addEventListener('pointerdown', closePointer, true);
+      document.addEventListener('keydown', closeKey, true);
     }, 0);
   };
 
@@ -898,6 +940,7 @@
         : mode === 'hidden'
           ? 'サイドバーのみ'
           : 'すべて表示';
+      sideBtn.setAttribute('aria-label', sideBtn.title);
     }
     const viewSel = this.el?.querySelector?.('.gb-cal-view-select');
     if (viewSel && viewSel.value !== this._view) viewSel.value = this._view;
@@ -1123,17 +1166,17 @@
     const creator = _calEventCreator(ev, this._getUser());
     body.dataset.calEventMembers = JSON.stringify(_calUserListFromValue(ev?.members));
     body.innerHTML = `
-      ${_calField('タイトル', `<input data-cal-event-title type="text" value="${_calEsc(ev?.title || '')}" placeholder="イベント名">`)}
-      ${_calField('', `<label class="cal-option-check"><input data-cal-event-allday type="checkbox" ${isAllDay ? 'checked' : ''}> 終日</label>`)}
-      ${_calField('開始', `<input data-cal-event-start type="${isAllDay ? 'date' : 'datetime-local'}" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.start || defaultStart, now) : startVal)}">`)}
-      ${_calField('終了', `<input data-cal-event-end type="${isAllDay ? 'date' : 'datetime-local'}" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.end || defaultEnd || ev?.start || defaultStart, new Date(now.getTime() + 3600000)) : endVal)}">`)}
-      ${calOpts ? _calField('カレンダー', `<select data-cal-event-calendar class="gb-select">${calOpts}</select>`) : ''}
-      ${_calField('作成者', `<select data-cal-event-creator class="gb-select"><option value="${_calEsc(creator)}">${_calEsc(creator || 'anonymous')}</option></select>`)}
+      ${_calField('タイトル', `<input data-e2e-id="calendar-event-title" data-cal-event-title type="text" aria-label="タイトル" value="${_calEsc(ev?.title || '')}" placeholder="イベント名">`)}
+      ${_calField('', `<label class="cal-option-check"><input data-e2e-id="calendar-event-allday" data-cal-event-allday type="checkbox" aria-label="終日" ${isAllDay ? 'checked' : ''}> 終日</label>`)}
+      ${_calField('開始', `<input data-e2e-id="calendar-event-start" data-cal-event-start type="${isAllDay ? 'date' : 'datetime-local'}" aria-label="開始" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.start || defaultStart, now) : startVal)}">`)}
+      ${_calField('終了', `<input data-e2e-id="calendar-event-end" data-cal-event-end type="${isAllDay ? 'date' : 'datetime-local'}" aria-label="終了" value="${_calEsc(isAllDay ? _calLocalDateInputValue(this, ev?.end || defaultEnd || ev?.start || defaultStart, new Date(now.getTime() + 3600000)) : endVal)}">`)}
+      ${calOpts ? _calField('カレンダー', `<select data-e2e-id="calendar-event-calendar" data-cal-event-calendar class="gb-select" aria-label="カレンダー">${calOpts}</select>`) : ''}
+      ${_calField('作成者', `<select data-e2e-id="calendar-event-creator" data-cal-event-creator class="gb-select" aria-label="作成者"><option value="${_calEsc(creator)}">${_calEsc(creator || 'anonymous')}</option></select>`)}
       ${_calField('メンバー', `<div data-cal-event-members class="cal-option-members"><span style="color:var(--fg2);font-size:12px;">読み込み中...</span></div>`)}
-      ${_calField('色', `<button type="button" data-cal-event-color class="gb-color-swatch gb-color-swatch--field" data-color="${_calEsc(ev?.color || this._eventColorDefault())}" title="イベント色"></button>`)}
-      ${_calField('場所', `<input data-cal-event-location type="text" value="${_calEsc(ev?.location || '')}">`)}
-      ${_calField('URL', `<input data-cal-event-url type="url" value="${_calEsc(ev?.url || '')}" placeholder="https://...">`)}
-      ${_calField('アラーム', `<select data-cal-event-alert class="gb-select">
+      ${_calField('色', `<button type="button" data-e2e-id="calendar-event-color" data-cal-event-color class="gb-color-swatch gb-color-swatch--field" data-color="${_calEsc(ev?.color || this._eventColorDefault())}" title="イベント色"></button>`)}
+      ${_calField('場所', `<input data-e2e-id="calendar-event-location" data-cal-event-location type="text" aria-label="場所" value="${_calEsc(ev?.location || '')}">`)}
+      ${_calField('URL', `<input data-e2e-id="calendar-event-url" data-cal-event-url type="url" aria-label="URL" value="${_calEsc(ev?.url || '')}" placeholder="https://...">`)}
+      ${_calField('アラーム', `<select data-e2e-id="calendar-event-alert" data-cal-event-alert class="gb-select" aria-label="アラーム">
         <option value="-1" ${(ev?.alert_minutes ?? -1) === -1 ? 'selected' : ''}>なし</option>
         <option value="0" ${ev?.alert_minutes === 0 ? 'selected' : ''}>イベント時</option>
         <option value="5" ${ev?.alert_minutes === 5 ? 'selected' : ''}>5分前</option>
@@ -1141,12 +1184,12 @@
         <option value="30" ${ev?.alert_minutes === 30 ? 'selected' : ''}>30分前</option>
         <option value="60" ${ev?.alert_minutes === 60 ? 'selected' : ''}>1時間前</option>
       </select>`)}
-      ${_calField('説明', `<textarea data-cal-event-desc rows="3">${_calEsc(ev?.description || '')}</textarea>`)}
+      ${_calField('説明', `<textarea data-e2e-id="calendar-event-desc" data-cal-event-desc rows="3" aria-label="説明">${_calEsc(ev?.description || '')}</textarea>`)}
       <div class="cal-option-actions cal-option-actions--footer">
-        <button type="button" class="danger" data-cal-event-delete>削除</button>
+        <button type="button" class="danger" data-e2e-id="calendar-event-delete" data-cal-event-delete>削除</button>
         <span></span>
-        ${ev?.id ? '<button type="button" data-cal-event-comment-list>コメント一覧</button><button type="button" data-cal-event-comment>コメントを追加</button>' : ''}
-        <button type="button" class="primary" data-cal-event-save>保存</button>
+        ${ev?.id ? '<button type="button" data-e2e-id="calendar-event-comment-list" data-cal-event-comment-list>コメント一覧</button><button type="button" data-e2e-id="calendar-event-comment-add" data-cal-event-comment>コメントを追加</button>' : ''}
+        <button type="button" class="primary" data-e2e-id="calendar-event-save" data-cal-event-save>保存</button>
       </div>`;
     const allDay = body.querySelector('[data-cal-event-allday]');
     const startInput = body.querySelector('[data-cal-event-start]');
@@ -1353,20 +1396,20 @@
     const statuses = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
     const priorities = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
     body.innerHTML = `
-      ${_calField('タイトル', `<input data-cal-task-title type="text" value="${_calEsc(task.title || '')}" placeholder="ToDo名">`)}
-      ${_calField('ステータス', `<select data-cal-task-status class="gb-select">${statuses.map(([v,l]) => `<option value="${v}" ${(task.status || 'todo') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
-      ${_calField('優先度', `<select data-cal-task-priority class="gb-select">${priorities.map(([v,l]) => `<option value="${v}" ${(task.priority || 'medium') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
-      ${_calField('期限', `<input data-cal-task-due type="date" value="${_calEsc(task.due_date || '')}">`)}
-      ${_calField('担当者', `<input data-cal-task-assignee type="text" value="${_calEsc(task.assignee || '')}">`)}
+      ${_calField('タイトル', `<input data-cal-task-title data-e2e-id="cal-task-title" aria-label="ToDoタイトル" type="text" value="${_calEsc(task.title || '')}" placeholder="ToDo名">`)}
+      ${_calField('ステータス', `<select data-cal-task-status data-e2e-id="cal-task-status" aria-label="ToDoステータス" class="gb-select">${statuses.map(([v,l]) => `<option value="${v}" ${(task.status || 'todo') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
+      ${_calField('優先度', `<select data-cal-task-priority data-e2e-id="cal-task-priority" aria-label="ToDo優先度" class="gb-select">${priorities.map(([v,l]) => `<option value="${v}" ${(task.priority || 'medium') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
+      ${_calField('期限', `<input data-cal-task-due data-e2e-id="cal-task-due" aria-label="ToDo期限" type="date" value="${_calEsc(task.due_date || '')}">`)}
+      ${_calField('担当者', `<input data-cal-task-assignee data-e2e-id="cal-task-assignee" aria-label="ToDo担当者" type="text" value="${_calEsc(task.assignee || '')}">`)}
       <div class="cal-option-grid">
-        ${_calField('見積(h)', `<input data-cal-task-est type="number" step="0.5" value="${_calEsc(task.estimated_hours || 0)}">`)}
-        ${_calField('実績(h)', `<input data-cal-task-act type="number" step="0.5" value="${_calEsc(task.actual_hours || 0)}">`)}
+        ${_calField('見積(h)', `<input data-cal-task-est data-e2e-id="cal-task-estimated-hours" aria-label="ToDo見積時間" type="number" step="0.5" value="${_calEsc(task.estimated_hours || 0)}">`)}
+        ${_calField('実績(h)', `<input data-cal-task-act data-e2e-id="cal-task-actual-hours" aria-label="ToDo実績時間" type="number" step="0.5" value="${_calEsc(task.actual_hours || 0)}">`)}
       </div>
-      ${_calField('説明', `<textarea data-cal-task-desc rows="3">${_calEsc(task.description || '')}</textarea>`)}
+      ${_calField('説明', `<textarea data-cal-task-desc data-e2e-id="cal-task-description" aria-label="ToDo説明" rows="3">${_calEsc(task.description || '')}</textarea>`)}
       <div class="cal-option-actions cal-option-actions--footer">
-        <button type="button" class="danger" data-cal-task-delete>削除</button>
+        <button type="button" class="danger" data-cal-task-delete data-e2e-id="cal-task-delete" aria-label="ToDoを削除">削除</button>
         <span></span>
-        <button type="button" class="primary" data-cal-task-save>保存</button>
+        <button type="button" class="primary" data-cal-task-save data-e2e-id="cal-task-save" aria-label="ToDoを保存">保存</button>
       </div>`;
     body.querySelector('[data-cal-task-save]')?.addEventListener('click', () => this._saveTaskOptions(task.id, body));
     body.querySelector('[data-cal-task-delete]')?.addEventListener('click', () => this._deleteTaskFromOptions(task.id));

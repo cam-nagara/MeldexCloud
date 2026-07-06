@@ -100,6 +100,36 @@
     });
   }
 
+  function _eventElementTarget(event) {
+    const rawTarget = event?.target;
+    if (rawTarget instanceof Element) return rawTarget;
+    if (rawTarget && rawTarget.parentElement instanceof Element) return rawTarget.parentElement;
+    return null;
+  }
+
+  function _isDisabledRoleButton(el) {
+    return !el
+      || el.tagName === 'BUTTON'
+      || el.disabled === true
+      || el.hasAttribute('disabled')
+      || el.getAttribute('aria-disabled') === 'true'
+      || el.getAttribute('data-cloud-disabled') === '1';
+  }
+
+  let _roleButtonKeyboardInstalled = false;
+  function installRoleButtonKeyboardActivation() {
+    if (_roleButtonKeyboardInstalled) return;
+    _roleButtonKeyboardInstalled = true;
+    document.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const el = _eventElementTarget(event)?.closest('[role="button"][data-action]');
+      if (_isDisabledRoleButton(el)) return;
+      event.preventDefault();
+      el.click();
+    });
+  }
+
   function ensureLiveRegions() {
     const status = document.getElementById('status-bar');
     if (status) {
@@ -176,6 +206,8 @@
     bar.textContent = `${support.name} ${support.version} は推奨環境外です。${support.name} ${support.min} 以降での利用を推奨します。`;
     const close = document.createElement('button');
     close.type = 'button';
+    close.setAttribute('data-e2e-id', 'browser-warning-close');
+    close.setAttribute('aria-label', '推奨環境外ブラウザ警告を閉じる');
     close.textContent = '閉じる';
     close.addEventListener('click', () => {
       _setStorageFlag(STORAGE.browserWarningDismissed, true);
@@ -214,10 +246,12 @@
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       refresh(document);
+      installRoleButtonKeyboardActivation();
       installMutationObserver();
     }, { once: true });
   } else {
     refresh(document);
+    installRoleButtonKeyboardActivation();
     installMutationObserver();
   }
 
@@ -228,6 +262,7 @@
     refresh,
     ensureControlLabels,
     ensureLiveRegions,
+    installRoleButtonKeyboardActivation,
     browserSupport: _browserSupport,
     isPreferenceEnabled: _preferenceEnabled,
     isReducedMotion: () => ROOT.classList.contains('meldex-reduced-motion'),

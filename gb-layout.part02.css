@@ -75,6 +75,7 @@
   display: inline-flex; align-items: center; gap: 2px;
   margin-left: auto; padding-right: 4px; flex-shrink: 0;
 }
+.gb-pane-mobile-main-tab-ctrls { display: none; }
 .gb-pane-btn {
   width: 22px; height: 22px; color: var(--fg2); cursor: pointer;
   opacity: 0.7; flex-shrink: 0; user-select: none; border-radius: 3px;
@@ -113,8 +114,8 @@
   flex-shrink: 0;
 }
 .gb-pane-nav-btn {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 3px;
@@ -125,6 +126,10 @@
   align-items: center;
   justify-content: center;
   opacity: 0.8;
+}
+.gb-pane-nav-btn svg {
+  width: 18px;
+  height: 18px;
 }
 .gb-pane-nav-btn:hover:not(:disabled) {
   color: var(--ui-hover-fg);
@@ -292,6 +297,122 @@
 #rp-detail input, #rp-detail textarea, #rp-detail select, #rp-detail button { font-size: var(--ui-font-12) !important; }
 #rp-detail table { font-size: var(--ui-font-12); }
 #rp-detail .dp-field label { font-size: var(--ui-font-12) !important; }
+.dp-detail-header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border-bottom: 1px solid var(--ui-border);
+}
+.dp-detail-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-12);
+  font-weight: var(--ui-weight-bold);
+}
+.dp-event-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--ui-space-4);
+  box-sizing: border-box;
+}
+.dp-event-form .dp-field {
+  margin-bottom: var(--ui-space-4);
+}
+.dp-event-form .dp-field > label,
+.dp-event-form .dp-field-label {
+  display: block;
+  margin-bottom: var(--ui-space-1);
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+}
+.dp-event-form .gb-input,
+.dp-event-form .gb-textarea,
+.dp-event-form .gb-select {
+  width: 100%;
+}
+.dp-event-form .gb-color-swatch--field {
+  display: block;
+}
+.dp-event-form .dp-event-check {
+  min-height: var(--ui-h-sm);
+  color: var(--ui-fg-default);
+}
+.dp-event-form .gb-input.is-disabled {
+  opacity: 0.48;
+}
+.dp-cal-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-4);
+  margin-top: var(--ui-space-6);
+}
+.dp-cal-spacer {
+  flex: 1 1 24px;
+  min-width: var(--ui-space-4);
+}
+body[data-cloud-mobile="1"] .dp-event-form .gb-input,
+body[data-cloud-mobile="1"] .dp-event-form .gb-select,
+body[data-cloud-mobile="1"] .dp-event-form .gb-btn,
+body[data-cloud-mobile="1"] .dp-detail-header .gb-btn,
+body[data-mobile-ui="1"] .dp-event-form .gb-input,
+body[data-mobile-ui="1"] .dp-event-form .gb-select,
+body[data-mobile-ui="1"] .dp-event-form .gb-btn,
+body[data-mobile-ui="1"] .dp-detail-header .gb-btn,
+body[data-mobile-ui-local="1"] .dp-event-form .gb-input,
+body[data-mobile-ui-local="1"] .dp-event-form .gb-select,
+body[data-mobile-ui-local="1"] .dp-event-form .gb-btn,
+body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn {
+  min-height: 44px;
+}
+body[data-cloud-mobile="1"] .dp-event-form .gb-textarea,
+body[data-mobile-ui="1"] .dp-event-form .gb-textarea,
+body[data-mobile-ui-local="1"] .dp-event-form .gb-textarea {
+  min-height: 96px;
+}
+body[data-cloud-mobile="1"] .dp-event-form .gb-color-swatch--field,
+body[data-mobile-ui="1"] .dp-event-form .gb-color-swatch--field,
+body[data-mobile-ui-local="1"] .dp-event-form .gb-color-swatch--field {
+  --gb-swatch-size: 44px;
+}
+body[data-cloud-mobile="1"] .dp-event-form .dp-event-check,
+body[data-mobile-ui="1"] .dp-event-form .dp-event-check,
+body[data-mobile-ui-local="1"] .dp-event-form .dp-event-check {
+  min-height: 44px;
+}
+body[data-cloud-mobile="1"] .dp-detail-header .gb-btn-icon,
+body[data-mobile-ui="1"] .dp-detail-header .gb-btn-icon,
+body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
+  width: 44px;
+  min-width: 44px;
+}
+@media (max-width: 640px) {
+  .dp-event-form .gb-input,
+  .dp-event-form .gb-select,
+  .dp-event-form .gb-btn,
+  .dp-detail-header .gb-btn {
+    min-height: 44px;
+  }
+  .dp-event-form .gb-textarea {
+    min-height: 96px;
+  }
+  .dp-event-form .gb-color-swatch--field {
+    --gb-swatch-size: 44px;
+  }
+  .dp-event-form .dp-event-check {
+    min-height: 44px;
+  }
+  .dp-detail-header .gb-btn-icon {
+    width: 44px;
+    min-width: 44px;
+  }
+}
 /* 2026-04-18: 詳細パネル内の右寄せ項目がパネル端で見切れないよう、
    padding 未指定のタブコンテンツ（.gb-panel-body）に左右の余白を入れる。
    scroll 版（.gb-panel-body-scroll）は既に 8px の padding を持つのでそのまま。 */

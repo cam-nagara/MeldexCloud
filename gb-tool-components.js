@@ -13,12 +13,13 @@ function _paneStateRead(key, fallbackValue) {
 }
 
 function _renderLegacyToolRedirect(container, toolType, label, hint) {
-  container.innerHTML = `<div class="gb-empty-state" style="padding:24px;">
-    <div class="gb-empty-message">${label}</div>
-    <div class="gb-empty-hint">${hint}</div>
-    <div style="margin-top:12px;">
-      <button type="button" class="gb-btn gb-btn-primary" data-action="focus-legacy-tool">既存ペインを表示</button>
-    </div>
+  const safeToolType = esc(String(toolType || 'tool'));
+  const safeLabel = esc(String(label || ''));
+  const safeHint = esc(String(hint || ''));
+  container.innerHTML = `<div class="gb-empty-state gb-tool-legacy-redirect" data-gb-legacy-tool-type="${safeToolType}">
+    <div class="gb-empty-message">${safeLabel}</div>
+    <div class="gb-empty-hint">${safeHint}</div>
+    <button type="button" class="gb-btn gb-btn-primary" data-action="focus-legacy-tool" data-e2e-id="${safeToolType}-legacy-tool-focus" aria-label="${safeLabel}の既存ペインを表示">既存ペインを表示</button>
   </div>`;
   container.querySelector('[data-action="focus-legacy-tool"]')?.addEventListener('click', () => {
     const existing = (typeof GBTabs !== 'undefined' && typeof GBTabs.findPaneWithTab === 'function')
@@ -265,10 +266,10 @@ class SearchComponent extends ToolComponent {
     this.el = document.createElement('div');
     this.el.className = 'gb-tool-search';
     this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;padding:12px;';
-    this.el.innerHTML = `<div class="gb-empty-state" style="padding:24px;">
+    this.el.innerHTML = `<div class="gb-empty-state" data-gb-tool-empty-state="search">
       <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide('search', 42) : ''}</div>
       <div class="gb-empty-message">検索</div>
-      <button type="button" class="gb-btn gb-btn-sm" data-gb-open-vault-search data-e2e-id="search-empty-open-vault-search">検索を開く</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-gb-open-vault-search data-e2e-id="search-empty-open-vault-search" aria-label="全文検索パネルを開く">検索を開く</button>
     </div>`;
     this.el.querySelector('[data-gb-open-vault-search]')?.addEventListener('click', () => {
       if (typeof openSearchPanel === 'function') openSearchPanel();
@@ -598,10 +599,10 @@ class VersionComponent extends ToolComponent {
             <span class="gb-history-label">${dt}${label}</span>
             <span class="gb-history-size">${fileCount}ファイル${totalSize ? ', ' + totalSize : ''}</span>
             <div class="gb-history-actions">
-              <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('showFolderFiles', folderPath, v.name, 'folder')}>一覧</button>
-              ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
-              <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('restoreFolder', folderPath, v.name, 'folder')}>復元</button>
-              ${v.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('deleteFolder', folderPath, v.name, 'folder')}>${lucide('x', 12)}</button>`}
+              <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('showFolderFiles', folderPath, v.name, 'folder')} title="一覧">一覧</button>
+              ${v.auto ? `<button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('promoteFolder', folderPath, v.name, 'folder')} title="スナップショットにする">${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : ''}</button>` : ''}
+              <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('restoreFolder', folderPath, v.name, 'folder')} title="復元">復元</button>
+              ${v.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('deleteFolder', folderPath, v.name, 'folder')} title="削除">${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
             </div>
           </div>`;
         });
@@ -610,7 +611,7 @@ class VersionComponent extends ToolComponent {
         <summary class="gb-version-section-header">${typeof lucide === 'function' ? lucide('folder', 14) : ''} フォルダバージョン（${esc(folderName)}）</summary>
         <div class="gb-version-section-body">
           <div style="margin-bottom:8px;">
-            <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveFolder', folderPath, '', 'folder')}>+ フォルダ版を保存</button>
+            <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveFolder', folderPath, '', 'folder')} title="フォルダ版を保存">+ フォルダ版を保存</button>
           </div>
           ${folderListHtml}
         </div>

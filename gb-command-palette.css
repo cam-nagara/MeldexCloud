@@ -346,9 +346,11 @@ html[data-single-window="1"] .left-chrome-floating {
 }
 
 .cmd-palette-item:hover,
+.cmd-palette-item:focus-visible,
 .cmd-palette-item.is-active {
   background: var(--ui-bg-control-hover, var(--bg3));
   border-color: var(--border);
+  outline: none;
 }
 
 .cmd-palette-item-icon {
@@ -421,12 +423,21 @@ html[data-single-window="1"] .left-chrome-floating {
 }
 
 @media (max-width: 768px) {
-  .left-chrome-floating {
+  .left-chrome-floating:not(.is-docked) {
     left: max(0px, env(safe-area-inset-left));
     bottom: calc(22px + env(safe-area-inset-bottom));
+    width: 44px;
+    gap: 4px;
+    padding: 4px 0;
   }
 
-  body[data-statusbar-hidden="1"] .left-chrome-floating {
+  .left-chrome-floating:not(.is-docked) .left-chrome-floating-btn {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+  }
+
+  body[data-statusbar-hidden="1"] .left-chrome-floating:not(.is-docked) {
     bottom: env(safe-area-inset-bottom);
   }
 

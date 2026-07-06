@@ -375,32 +375,159 @@ function _showCloudPhase1BlockedCreate(type) {
   return false;
 }
 
+const _outlinerContextMenuCleanups = new Set();
+
+function _outlinerEscHtml(value) {
+  if (typeof esc === 'function') return esc(value);
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+function _outlinerMenuIconHtml(icon, size = 14) {
+  if (!icon || typeof lucide !== 'function') return '';
+  return '<span class="menu-icon">' + lucide(icon, size) + '</span>';
+}
+
+function _outlinerCreateContextMenu(label, x, y) {
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', label);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  return menu;
+}
+
+function _outlinerCreateSubmenu(label) {
+  const panel = document.createElement('div');
+  panel.className = 'gb-context-menu';
+  panel.setAttribute('role', 'menu');
+  panel.setAttribute('aria-label', label);
+  panel.style.cssText = 'display:none;min-width:140px;';
+  return panel;
+}
+
+function _outlinerAppendMenuItem(menu, options) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'gb-context-menu-item' + (options?.danger ? ' danger' : '') + (options?.className ? ' ' + options.className : '');
+  item.setAttribute('role', options?.role || 'menuitem');
+  if (options?.disabled) {
+    item.disabled = true;
+    item.classList.add('disabled');
+  }
+  if (options?.title) {
+    item.title = options.title;
+    item.dataset.gbTooltip = options.title;
+  }
+  if (options?.checked) {
+    item.classList.add('active');
+    item.setAttribute('aria-checked', 'true');
+  }
+  if (options?.html != null) {
+    item.innerHTML = options.html;
+  } else {
+    item.innerHTML = _outlinerMenuIconHtml(options?.icon) + '<span>' + _outlinerEscHtml(options?.label || '') + '</span>';
+  }
+  if (options?.hasSubmenu) {
+    item.classList.add('has-submenu');
+    item.setAttribute('aria-haspopup', 'menu');
+    item.setAttribute('aria-expanded', 'false');
+  }
+  item.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (item.disabled) return;
+    if (typeof options?.action === 'function') options.action(event);
+  });
+  menu.appendChild(item);
+  return item;
+}
+
+function _outlinerAppendMenuSeparator(menu) {
+  const separator = document.createElement('div');
+  separator.className = 'gb-context-menu-sep cm-sep';
+  separator.setAttribute('role', 'separator');
+  menu.appendChild(separator);
+  return separator;
+}
+
+function _outlinerAppendSubmenu(menu, label, icon, panel) {
+  const trigger = _outlinerAppendMenuItem(menu, { label, icon, hasSubmenu: true, className: 'tree-ctx-item' });
+  const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  trigger.addEventListener('mouseenter', () => setExpanded(true));
+  trigger.addEventListener('mouseleave', () => setTimeout(() => {
+    if (panel.style.display === 'none') setExpanded(false);
+  }, 220));
+  trigger.addEventListener('click', () => {
+    trigger.dispatchEvent(new MouseEvent('mouseenter', { cancelable: true }));
+    setExpanded(true);
+  });
+  panel.addEventListener('mouseenter', () => setExpanded(true));
+  panel.addEventListener('mouseleave', () => setExpanded(false));
+  attachHoverSubmenu(trigger, panel);
+  return trigger;
+}
+
+function _outlinerPlaceContextMenu(menu) {
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const z = _getZoom();
+  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  const first = menu.querySelector('button.gb-context-menu-item:not(:disabled)');
+  first?.focus?.({ preventScroll: true });
+  _outlinerBindContextMenuClose(menu);
+}
+
+function _outlinerBindContextMenuClose(menu) {
+  let removed = false;
+  let pointerArmed = false;
+  const cleanup = () => {
+    if (removed) return;
+    removed = true;
+    document.removeEventListener('keydown', keyHandler, true);
+    if (pointerArmed) document.removeEventListener('pointerdown', pointerHandler, true);
+    _outlinerContextMenuCleanups.delete(cleanup);
+  };
+  const keyHandler = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTreeContextMenu();
+  };
+  const pointerHandler = (event) => {
+    const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(event.target));
+    if (!inAnyMenu) closeTreeContextMenu();
+  };
+  _outlinerContextMenuCleanups.add(cleanup);
+  document.addEventListener('keydown', keyHandler, true);
+  pointerArmed = true;
+  document.addEventListener('pointerdown', pointerHandler, true);
+}
+
 function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   closeTreeContextMenu();
   const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
-  menu.style.left = x + 'px';
-  menu.style.top = y + 'px';
+  const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
   _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
-    const el = document.createElement('div');
-    el.className = 'gb-context-menu-item';
-    el.innerHTML = '<span class="menu-icon">' + lucide(icon, 14) + '</span>' + label;
-    el.addEventListener('click', async () => { menu.remove(); await addItemAt(addParent, type); });
-    menu.appendChild(el);
+    _outlinerAppendMenuItem(menu, {
+      label,
+      icon,
+      action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
+    });
   });
-  document.body.appendChild(menu);
-  { const rect = menu.getBoundingClientRect(); const z = _getZoom();
-  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px'; }
-  setTimeout(() => {
-    const closer = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  _outlinerPlaceContextMenu(menu);
 }
 
 // --- 右クリックメニュー ---
 function closeTreeContextMenu() {
+  _outlinerContextMenuCleanups.forEach(cleanup => {
+    try { cleanup(); } catch {}
+  });
+  _outlinerContextMenuCleanups.clear();
   document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
 }
 
@@ -440,10 +567,7 @@ function _outlinerLocalCopyPath(nodeEl, nodeData) {
 
 function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   closeTreeContextMenu();
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
-  menu.style.left = x + 'px';
-  menu.style.top = y + 'px';
+  const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
 
   const selectedCount = treeSelection.items.size;
   const isMulti = selectedCount > 1;
@@ -452,48 +576,30 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   const isEntity = nodeData.type === 'entity';
 
   function addMenuItem(text, onclick, cls, icon) {
-    const item = document.createElement('div');
-    if (icon) {
-      item.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + text;
-    } else {
-      item.textContent = text;
-    }
-    if (cls) item.className = cls;
-    item.addEventListener('click', onclick);
-    menu.appendChild(item);
-    return item;
+    return _outlinerAppendMenuItem(menu, {
+      label: text,
+      icon,
+      danger: cls === 'danger',
+      className: cls && cls !== 'danger' ? cls : '',
+      action: onclick,
+    });
   }
   function addSep() {
-    const s = document.createElement('div');
-    s.className = 'cm-sep';
-    menu.appendChild(s);
+    _outlinerAppendMenuSeparator(menu);
   }
 
   // --- 新規作成サブメニュー ---
   const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
   if (!(addParent && isItemLocked(addParent))) {
-    const createWrap = document.createElement('div');
-    createWrap.style.position = 'relative';
-    const createTrigger = document.createElement('div');
-    createTrigger.className = 'tree-ctx-item';
-    createTrigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide('plus', 14) + '</span>新規作成' + submenuArrow();
-    createTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;';
-    const createPanel = document.createElement('div');
-    createPanel.className = 'gb-context-menu';
-    createPanel.style.cssText = 'display:none;min-width:140px;';
-    attachHoverSubmenu(createTrigger, createPanel);
+    const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
+    _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
     _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
-      const ci = document.createElement('div');
-      ci.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + label;
-      ci.style.cssText = 'padding:4px 12px;cursor:pointer;display:flex;align-items:center;';
-      ci.addEventListener('click', async () => { closeTreeContextMenu(); await addItemAt(addParent, type); });
-      ci.onmouseenter = () => { ci.style.background = 'var(--bg4)'; };
-      ci.onmouseleave = () => { ci.style.background = ''; };
-      createPanel.appendChild(ci);
+      _outlinerAppendMenuItem(createPanel, {
+        label,
+        icon,
+        action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
+      });
     });
-    createWrap.appendChild(createTrigger);
-    createWrap.appendChild(createPanel);
-    menu.appendChild(createWrap);
   }
   addSep();
 
@@ -515,35 +621,22 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       lockedItem.title = '編集ロックの設定は管理者のみ可能です';
       lockedItem.dataset.gbTooltip = lockedItem.title;
     } else {
-      const lockWrap = document.createElement('div');
-      lockWrap.style.position = 'relative';
-      const lockTrigger = document.createElement('div');
-      lockTrigger.className = 'tree-ctx-item';
-      lockTrigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide('lock', 14) + '</span>編集ロック' + submenuArrow();
-      lockTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;';
-      const lockPanel = document.createElement('div');
-      lockPanel.className = 'gb-context-menu';
-      lockPanel.style.cssText = 'display:none;min-width:120px;';
-      attachHoverSubmenu(lockTrigger, lockPanel);
-      [[lucide('lock', 12) + ' 編集ロックする', true], [lucide('unlock', 12) + ' 編集ロック解除', false]].forEach(([label, val]) => {
-        const si = document.createElement('div');
-        si.innerHTML = radioMark(locked === val) + label;
-        si.style.cssText = 'padding:4px 12px;cursor:pointer;' + (locked === val ? 'color:var(--accent);' : '');
-        si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-        si.onmouseleave = () => { si.style.background = ''; };
-        si.addEventListener('click', async () => {
+      const lockPanel = _outlinerCreateSubmenu('編集ロック');
+      _outlinerAppendSubmenu(menu, '編集ロック', 'lock', lockPanel);
+      [['編集ロックする', true, 'lock'], ['編集ロック解除', false, 'unlock']].forEach(([label, val, icon]) => {
+        _outlinerAppendMenuItem(lockPanel, {
+          html: radioMark(locked === val) + _outlinerMenuIconHtml(icon, 12) + '<span>' + _outlinerEscHtml(label) + '</span>',
+          checked: locked === val,
+          action: async () => {
           closeTreeContextMenu();
           const changed = locked !== val ? await toggleItemLock(nodeData.path) : true;
           if (!changed) return;
           const lbl = nodeEl.querySelector('.tree-label');
           if (lbl) lbl.style.fontStyle = isItemLocked(nodeData.path) ? 'italic' : '';
           showStatus(val ? '編集ロックしました' : '編集ロックを解除しました');
+          },
         });
-        lockPanel.appendChild(si);
       });
-      lockWrap.appendChild(lockTrigger);
-      lockWrap.appendChild(lockPanel);
-      menu.appendChild(lockWrap);
     }
   }
 
@@ -555,23 +648,13 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     const mainCalPath = localStorage.getItem('main-calendar-path');
     const nodeFid = _pathToFileId(nodeData.path);
     const isMain = (mainCalId && nodeFid && mainCalId === nodeFid) || mainCalPath === nodeData.path;
-    const calWrap = document.createElement('div');
-    calWrap.style.position = 'relative';
-    const calTrigger = document.createElement('div');
-    calTrigger.className = 'tree-ctx-item';
-    calTrigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide('calendar', 14) + '</span>メインカレンダー' + submenuArrow();
-    calTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;';
-    const calPanel = document.createElement('div');
-    calPanel.className = 'gb-context-menu';
-    calPanel.style.cssText = 'display:none;min-width:140px;';
-    attachHoverSubmenu(calTrigger, calPanel);
+    const calPanel = _outlinerCreateSubmenu('メインカレンダー');
+    _outlinerAppendSubmenu(menu, 'メインカレンダー', 'calendar', calPanel);
     [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
-      const si = document.createElement('div');
-      si.innerHTML = radioMark(isMain === val) + label;
-      si.style.cssText = 'padding:4px 12px;cursor:pointer;' + (isMain === val ? 'color:var(--accent);' : '');
-      si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-      si.onmouseleave = () => { si.style.background = ''; };
-      si.addEventListener('click', () => {
+      _outlinerAppendMenuItem(calPanel, {
+        html: radioMark(isMain === val) + '<span>' + _outlinerEscHtml(label) + '</span>',
+        checked: isMain === val,
+        action: () => {
         closeTreeContextMenu();
         const before = _captureMainCalendarSettingsHistory();
         if (val) {
@@ -586,12 +669,9 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
           showStatus('メインカレンダー設定を解除しました');
           _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
         }
+        },
       });
-      calPanel.appendChild(si);
     });
-    calWrap.appendChild(calTrigger);
-    calWrap.appendChild(calPanel);
-    menu.appendChild(calWrap);
   }
 
   // --- バージョン管理（フォルダのみ） ---
@@ -817,23 +897,13 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
     if (_expItems.length > 0) {
       // エクスポートサブメニュー
-      const expWrap = document.createElement('div');
-      expWrap.style.position = 'relative';
-      const expTrigger = document.createElement('div');
       const exportIconName = typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload';
-      expTrigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(exportIconName, 14) + '</span>エクスポート' + submenuArrow();
-      expTrigger.style.cssText = 'padding:4px 12px;cursor:pointer;';
-      expTrigger.onmouseenter = () => { expTrigger.style.background = 'var(--bg4)'; };
-      expTrigger.onmouseleave = () => { expTrigger.style.background = ''; };
-      const expPanel = document.createElement('div');
-      expPanel.className = 'gb-context-menu';
-      expPanel.style.cssText = 'display:none;min-width:140px;';
-      attachHoverSubmenu(expTrigger, expPanel);
+      const expPanel = _outlinerCreateSubmenu('エクスポート');
+      _outlinerAppendSubmenu(menu, 'エクスポート', exportIconName, expPanel);
       _expItems.forEach(ei => {
-        const ei2 = document.createElement('div');
-        ei2.textContent = ei.label;
-        ei2.style.cssText = 'padding:4px 12px;cursor:pointer;';
-        ei2.addEventListener('click', async () => {
+        _outlinerAppendMenuItem(expPanel, {
+          label: ei.label,
+          action: async () => {
           closeTreeContextMenu();
           if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
             showStatus('保存ダイアログを初期化できませんでした', true);
@@ -849,15 +919,10 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
             path: nodeData.path,
             title: nodeData.name || '無題',
           });
+          },
         });
-        ei2.onmouseenter = () => { ei2.style.background = 'var(--bg4)'; };
-        ei2.onmouseleave = () => { ei2.style.background = ''; };
-        expPanel.appendChild(ei2);
       });
-      expWrap.appendChild(expTrigger);
-      expWrap.appendChild(expPanel);
       addSep();
-      menu.appendChild(expWrap);
     }
   }
 
@@ -874,25 +939,23 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   addSep();
   {
     const currentColor = getNodeColor(nodeData.path);
-    const colorItem = document.createElement('div');
-    colorItem.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 12px;cursor:pointer;';
-    colorItem.onmouseenter = () => { colorItem.style.background = 'var(--bg4)'; };
-    colorItem.onmouseleave = () => { colorItem.style.background = ''; };
-    const swatch = document.createElement('button');
-    swatch.type = 'button';
+    const colorItem = _outlinerAppendMenuItem(menu, {
+      html: '',
+      action: () => {
+        openColorPalette(swatch, currentColor, (c) => {
+          closeTreeContextMenu();
+          applyColorToSelection(c || null);
+        });
+      },
+    });
+    const swatch = document.createElement('span');
     swatch.className = 'gb-color-swatch gb-color-swatch--inline';
+    swatch.setAttribute('aria-hidden', 'true');
     setColorSwatchValue(swatch, currentColor || 'var(--fg)');
     colorItem.appendChild(swatch);
     const clbl = document.createElement('span');
     clbl.textContent = isMulti ? `色設定（${selectedCount}件）` : '色設定';
     colorItem.appendChild(clbl);
-    colorItem.addEventListener('click', () => {
-      openColorPalette(swatch, currentColor, (c) => {
-        closeTreeContextMenu();
-        applyColorToSelection(c || null);
-      });
-    });
-    menu.appendChild(colorItem);
   }
 
   // --- ワークスペースルート: ソースフォルダ用メニューは出さない ---

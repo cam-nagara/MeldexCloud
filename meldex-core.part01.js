@@ -11,7 +11,7 @@
 // ============================================================
 // API通信
 // ============================================================
-const API_BASE = '/api';
+const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
@@ -31,8 +31,9 @@ function _apiFetchClonePayload(payload) {
 function _apiFetchBrowseCacheKey(path, opts) {
   if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
   try {
-    const url = new URL(API_BASE + path, window.location.origin || 'http://localhost');
-    if (url.pathname !== API_BASE + '/browse') return '';
+    const url = new URL(API_BASE.replace(/\/+$/, '') + path, window.location.origin || 'http://localhost');
+    const apiBasePath = new URL(API_BASE, window.location.origin || 'http://localhost').pathname.replace(/\/+$/, '');
+    if (url.pathname !== apiBasePath + '/browse') return '';
     const params = [...url.searchParams.entries()]
       .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
     return url.pathname + '?' + params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
@@ -63,7 +64,7 @@ async function apiFetch(path, opts) {
   let requestPromise = null;
   try {
     requestPromise = (async () => {
-      const res = await fetch(API_BASE + path, opts);
+      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, opts);
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       return await res.json();
     })();
@@ -180,8 +181,12 @@ function updateMeldexViewportSize() {
   if (!root) return;
   _clearMeldexRootZoomForDesktop(root);
   const zoom = Math.max(0.1, Number(_getZoom()) || 1);
+  const innerHeight = Math.max(1, Math.round(
+    window.innerHeight || document.documentElement?.clientHeight || 1
+  ));
   _setMeldexRootStyleProperty(root, '--meldex-layout-zoom', String(zoom));
   _setMeldexRootStyleProperty(root, '--meldex-inverse-layout-zoom', String(1 / zoom));
+  _setMeldexRootStyleProperty(root, '--meldex-window-inner-height', innerHeight + 'px');
 }
 function scheduleMeldexViewportSizeUpdate() {
   if (_meldexViewportRefreshRaf) return;
@@ -505,6 +510,39 @@ function showSaveDialog(message, options = {}) {
   return _queueSaveDialog(text, options);
 }
 
+let _mobileStatusToastTimer = 0;
+function _isMobileStatusToastNeeded() {
+  const status = document.getElementById('status-bar');
+  if (!status) return false;
+  const width = Math.min(window.innerWidth || 0, document.documentElement?.clientWidth || window.innerWidth || 0);
+  if (width > 0 && width <= 768) return true;
+  try {
+    return getComputedStyle(status).display === 'none';
+  } catch {
+    return false;
+  }
+}
+
+function _showMobileStatusToast(text, isError) {
+  if (!text || !document.body || !_isMobileStatusToastNeeded()) return;
+  let toast = document.getElementById('gb-mobile-status-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'gb-mobile-status-toast';
+    toast.setAttribute('aria-atomic', 'true');
+    document.body.appendChild(toast);
+  }
+  toast.textContent = text;
+  toast.dataset.statusKind = isError ? 'error' : 'success';
+  toast.setAttribute('role', isError ? 'alert' : 'status');
+  toast.setAttribute('aria-live', isError ? 'assertive' : 'polite');
+  toast.classList.add('is-visible');
+  clearTimeout(_mobileStatusToastTimer);
+  _mobileStatusToastTimer = setTimeout(() => {
+    if (toast.textContent === text) toast.classList.remove('is-visible');
+  }, isError ? 5000 : 3500);
+}
+
 function showStatus(msg, isError, options) {
   const el = document.getElementById('sb-msg');
   const text = String(msg || '');
@@ -522,6 +560,7 @@ function showStatus(msg, isError, options) {
     delete el.dataset.statusKind;
     el.removeAttribute('aria-label');
   }
+  _showMobileStatusToast(text, !!isError);
   if (isError) {
     setTimeout(() => {
       if (el.textContent === text) {
@@ -789,6 +828,7 @@ const UI_TYPE_ICONS = {
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
+  tags: 'tags',
   annotation: 'stickyNote',
   sticky: 'clipboardList',
   history: 'history',

@@ -141,6 +141,116 @@ function _smartDbDashboardBacklinkCount(file) {
     ?? '';
 }
 
+function _smartDbDashboardActivationKey(e) {
+  return e && !e.isComposing && e.keyCode !== 229 && (e.key === 'Enter' || e.key === ' ');
+}
+
+function _smartDbDashboardBindKeyboardActivate(el, handler) {
+  if (!el || typeof handler !== 'function') return;
+  el.addEventListener('keydown', (e) => {
+    if (!_smartDbDashboardActivationKey(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handler(e);
+  });
+}
+
+function _smartDbDashboardStableIdPart(value) {
+  const raw = String(value || '').trim();
+  let hash = 2166136261;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const slug = raw
+    .replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'item';
+  return `${slug}-${(hash >>> 0).toString(36)}`;
+}
+
+function _smartDbDashboardWireAutoLinks(container) {
+  if (!container || typeof onAutoLinkClick !== 'function') return false;
+  const links = [...container.querySelectorAll('.auto-link')];
+  links.forEach((link, index) => {
+    if (!link.dataset.e2eId) {
+      const key = (link.dataset.path || link.textContent || 'auto-link') + '-' + index;
+      link.dataset.e2eId = 'smart-db-dashboard-auto-link-' + _smartDbDashboardStableIdPart(key);
+    }
+    link.setAttribute('role', 'button');
+    link.setAttribute('tabindex', '0');
+    link.setAttribute('aria-label', 'リンクを開く: ' + (link.textContent || '').trim());
+    _smartDbDashboardBindKeyboardActivate(link, (e) => onAutoLinkClick(link, e));
+  });
+  return links.length > 0;
+}
+
+function _smartDbDashboardActiveElement() {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function _smartDbDashboardRestoreFocus(target) {
+  if (!target || typeof target.focus !== 'function' || !target.isConnected) return;
+  try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+}
+
+function _smartDbDashboardIconHtml(icon, size = 16) {
+  if (typeof lucide === 'function') return lucide(icon, size);
+  return '<span class="ico ico-' + icon + '" aria-hidden="true" style="display:inline-block;width:' + size + 'px;height:' + size + 'px;line-height:' + size + 'px;"></span>';
+}
+
+function _smartDbDashboardFixIconSize(button, size = 16) {
+  const icon = button?.querySelector?.('svg, .ico');
+  if (!icon) return;
+  icon.style.width = size + 'px';
+  icon.style.height = size + 'px';
+  icon.style.flex = '0 0 ' + size + 'px';
+  icon.style.display = 'inline-block';
+}
+
+function _smartDbDashboardAttachOverlayDismiss(overlay, restoreTarget) {
+  if (!overlay) return () => {};
+  let closed = false;
+  const close = (restore = true) => {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    if (restore) {
+      _smartDbDashboardRestoreFocus(restoreTarget);
+      setTimeout(() => _smartDbDashboardRestoreFocus(restoreTarget), 0);
+    }
+  };
+  overlay.addEventListener('pointerdown', (ev) => {
+    if (ev.target === overlay) close();
+  });
+  overlay.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    close();
+  });
+  return close;
+}
+
+function _smartDbDashboardFocusFirstDialogControl(overlay) {
+  setTimeout(() => {
+    const first = overlay?.querySelector?.('input, select, textarea, button, [role="button"], [tabindex]:not([tabindex="-1"])');
+    _smartDbDashboardRestoreFocus(first);
+  }, 0);
+}
+
+function _smartDbDashboardFocusAfterRender(widgetId, fallbackTarget) {
+  setTimeout(() => {
+    const escapedWidgetId = widgetId && window.CSS?.escape
+      ? CSS.escape(widgetId)
+      : String(widgetId || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const target = widgetId
+      ? document.querySelector(`[data-e2e-id="smart-db-widget-${escapedWidgetId}-edit"]`)
+      : document.querySelector('[data-e2e-id^="smart-db-add-widget-"]');
+    _smartDbDashboardRestoreFocus(target || fallbackTarget);
+  }, 0);
+}
+
 function _smartDbDashboardGlobalIndexResult(result, def) {
   let files = Array.isArray(result?.files) ? result.files.slice() : [];
   if (def && typeof applyGlobalIndexFilters === 'function') {
@@ -214,10 +324,13 @@ function renderSmartDbDashboardView() {
   header.appendChild(title);
   const addBtn = document.createElement('button');
   addBtn.className = 'tb-icon-btn';
+  addBtn.type = 'button';
   addBtn.title = 'ウィジェットを追加';
+  addBtn.setAttribute('aria-label', 'ウィジェットを追加');
   addBtn.dataset.e2eId = 'smart-db-add-widget-' + (state.currentSmartDb?.id || '');
-  addBtn.innerHTML = '<span class="ico ico-plus"></span>';
-  addBtn.addEventListener('click', () => showSmartDbWidgetEditor());
+  addBtn.innerHTML = _smartDbDashboardIconHtml('plus', 16);
+  _smartDbDashboardFixIconSize(addBtn, 16);
+  addBtn.addEventListener('click', () => showSmartDbWidgetEditor(null, addBtn));
   header.appendChild(addBtn);
   area.appendChild(header);
 
@@ -282,15 +395,15 @@ function _createSmartDbWidgetCard(widget) {
   header.appendChild(title);
   const actions = document.createElement('div');
   actions.className = 'widget-actions';
-  const editBtn = _smartDbWidgetIconButton('pencil', '編集');
+  const editBtn = _smartDbWidgetIconButton('pencil', 'ウィジェットを編集');
   editBtn.dataset.e2eId = 'smart-db-widget-' + widget.id + '-edit';
-  editBtn.addEventListener('click', () => showSmartDbWidgetEditor(widget));
+  editBtn.addEventListener('click', () => showSmartDbWidgetEditor(widget, editBtn));
   actions.appendChild(editBtn);
-  const delBtn = _smartDbWidgetIconButton('trash2', '削除');
+  const delBtn = _smartDbWidgetIconButton('trash2', 'ウィジェットを削除');
   delBtn.dataset.e2eId = 'smart-db-widget-' + widget.id + '-delete';
   delBtn.addEventListener('click', async () => {
     if (typeof cfConfirm === 'function' && !await cfConfirm('このウィジェットを削除しますか？')) return;
-    await removeSmartDbWidget(widget.id);
+    await removeSmartDbWidget(widget.id, delBtn);
   });
   actions.appendChild(delBtn);
   header.appendChild(actions);
@@ -309,7 +422,9 @@ function _smartDbWidgetIconButton(icon, title) {
   btn.className = 'tb-icon-btn';
   btn.type = 'button';
   btn.title = title;
-  btn.innerHTML = '<span class="ico ico-' + icon + '"></span>';
+  btn.setAttribute('aria-label', title);
+  btn.innerHTML = _smartDbDashboardIconHtml(icon, 16);
+  _smartDbDashboardFixIconSize(btn, 16);
   return btn;
 }
 
@@ -423,9 +538,14 @@ async function renderSmartDbListWidget(widget, container, resolved) {
   entityNames.slice(0, maxItems).forEach(en => {
     const tr = document.createElement('tr');
     tr.className = 'smart-db-list-row';
-    tr.addEventListener('click', () => {
+    tr.tabIndex = 0;
+    tr.dataset.e2eId = 'smart-db-dashboard-list-row';
+    tr.setAttribute('aria-label', 'エントリを開く: ' + en);
+    const openEntry = () => {
       _smartDbDashboardOpenEntity(data, resolved.source, en);
-    });
+    };
+    tr.addEventListener('click', openEntry);
+    _smartDbDashboardBindKeyboardActivate(tr, openEntry);
     const tdName = document.createElement('td');
     tdName.className = 'smart-db-list-name';
     tdName.textContent = en;
@@ -438,7 +558,7 @@ async function renderSmartDbListWidget(widget, container, resolved) {
       td.textContent = displayValue;
       if (typeof MeldexAutoLink !== 'undefined' && displayValue.length >= 2) {
         MeldexAutoLink.applyToDom(td, _smartDbDashboardEntityPath(data, resolved.source, en));
-        if (td.querySelector('.auto-link')) {
+        if (_smartDbDashboardWireAutoLinks(td)) {
           td.addEventListener('click', (e) => {
             const al = e.target.closest('.auto-link');
             if (al && typeof onAutoLinkClick === 'function') {
@@ -521,7 +641,7 @@ async function _getSmartDbDashboardPropertyTypes(source, data) {
   return _smartDbDashboardDbMetadataCache[normalized.path];
 }
 
-async function removeSmartDbWidget(widgetId) {
+async function removeSmartDbWidget(widgetId, restoreTarget) {
   const view = getSmartDbDashboardView();
   if (!view) return;
   const before = (typeof _captureSmartDbHistorySnapshot === 'function')
@@ -537,6 +657,7 @@ async function removeSmartDbWidget(widgetId) {
       pushSmartDbDefinitionHistory('スマートシート: ウィジェット削除', before, state.currentSmartDb, state.currentSmartDb?.name || '');
     }
     renderSmartDbDashboardView();
+    _smartDbDashboardFocusAfterRender('', restoreTarget);
   } catch (e) {
     view.widgets = previousWidgets;
     renderSmartDbDashboardView();
@@ -544,9 +665,10 @@ async function removeSmartDbWidget(widgetId) {
   }
 }
 
-function showSmartDbWidgetEditor(existingWidget) {
+function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
   const view = getSmartDbDashboardView();
   if (!view) return;
+  restoreTarget = restoreTarget || _smartDbDashboardActiveElement();
   const widget = _normalizeSmartDbWidget(existingWidget ? JSON.parse(JSON.stringify(existingWidget)) : {
     id: _newSmartDbWidgetId(),
     type: 'stat',
@@ -557,48 +679,64 @@ function showSmartDbWidgetEditor(existingWidget) {
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  overlay.dataset.e2eId = 'smart-db-widget-editor-overlay';
   const modal = document.createElement('div');
   modal.className = 'smart-db-widget-editor-modal';
   modal.classList.add('modal');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'smart-db-widget-editor-title');
+  modal.dataset.e2eId = 'smart-db-widget-editor-dialog';
   overlay.appendChild(modal);
 
   const h3 = document.createElement('h3');
+  h3.id = 'smart-db-widget-editor-title';
   h3.textContent = existingWidget ? 'ウィジェット編集' : 'ウィジェット追加';
   h3.className = 'smart-db-modal-title';
   modal.appendChild(h3);
 
-  const titleInput = _appendTextField(modal, 'タイトル', widget.title, '例: 総エピソード数');
+  const titleInput = _appendTextField(modal, 'タイトル', widget.title, '例: 総エピソード数', {
+    id: 'smart-db-widget-title',
+    e2eId: 'smart-db-widget-editor-title-input',
+  });
   const typeSel = _appendSelectField(modal, 'タイプ', [
     ['stat', '数値（統計値）'],
     ['progress', 'プログレスバー'],
     ['chart', 'チャート'],
     ['list', 'フィルタリスト'],
-  ], widget.type);
+  ], widget.type, { id: 'smart-db-widget-type', e2eId: 'smart-db-widget-editor-type' });
 
   const sourceKind = _appendSelectField(modal, '参照ソース', [
     ['sheet', 'シート'],
     ['smart-sheet', 'スマートシート'],
-  ], widget.source.kind);
+  ], widget.source.kind, { id: 'smart-db-widget-source-kind', e2eId: 'smart-db-widget-editor-source-kind' });
   const sourceField = document.createElement('div');
   sourceField.className = 'field';
   const sourceLabel = document.createElement('label');
   sourceLabel.textContent = '参照ファイル';
+  sourceLabel.htmlFor = 'smart-db-widget-source-path';
   sourceField.appendChild(sourceLabel);
   const sourceRow = document.createElement('div');
   sourceRow.className = 'smart-db-source-row';
   const sourceInput = document.createElement('input');
+  sourceInput.id = 'smart-db-widget-source-path';
   sourceInput.type = 'text';
   sourceInput.readOnly = true;
   sourceInput.value = widget.source.path || '';
   sourceInput.className = 'smart-db-source-input';
+  sourceInput.classList.add('gb-input');
+  sourceInput.dataset.e2eId = 'smart-db-widget-editor-source-path';
+  sourceInput.setAttribute('aria-label', '参照ファイル');
   sourceRow.appendChild(sourceInput);
   const pickBtn = document.createElement('button');
   pickBtn.type = 'button';
   pickBtn.textContent = '選択...';
+  pickBtn.dataset.e2eId = 'smart-db-widget-editor-source-pick';
+  pickBtn.setAttribute('aria-label', '参照ファイルを選択');
   pickBtn.addEventListener('click', () => showSmartDbSourcePicker(sourceKind.value, sourceInput.value, selected => {
     sourceInput.value = selected.path;
     sourceKind.value = selected.kind;
-  }));
+  }, pickBtn));
   sourceRow.appendChild(pickBtn);
   sourceField.appendChild(sourceRow);
   modal.appendChild(sourceField);
@@ -616,12 +754,14 @@ function showSmartDbWidgetEditor(existingWidget) {
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.textContent = 'キャンセル';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.dataset.e2eId = 'smart-db-widget-editor-cancel';
+  cancelBtn.addEventListener('click', () => closeOverlay());
   btnRow.appendChild(cancelBtn);
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.className = 'primary';
   saveBtn.textContent = '保存';
+  saveBtn.dataset.e2eId = 'smart-db-widget-editor-save';
   saveBtn.addEventListener('click', async () => {
     const before = (typeof _captureSmartDbHistorySnapshot === 'function')
       ? _captureSmartDbHistorySnapshot(state.currentSmartDb)
@@ -640,8 +780,9 @@ function showSmartDbWidgetEditor(existingWidget) {
         const label = existingWidget ? 'スマートシート: ウィジェット編集' : 'スマートシート: ウィジェット追加';
         pushSmartDbDefinitionHistory(label, before, state.currentSmartDb, widget.title);
       }
-      overlay.remove();
+      closeOverlay(false);
       renderSmartDbDashboardView();
+      _smartDbDashboardFocusAfterRender(widget.id, restoreTarget);
     } catch (e) {
       view.widgets = previousWidgets;
       showStatus('スマートシートの保存に失敗しました: ' + e.message, true);
@@ -649,32 +790,47 @@ function showSmartDbWidgetEditor(existingWidget) {
   });
   btnRow.appendChild(saveBtn);
   modal.appendChild(btnRow);
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const closeOverlay = _smartDbDashboardAttachOverlayDismiss(overlay, restoreTarget);
   document.body.appendChild(overlay);
+  _smartDbDashboardFocusFirstDialogControl(overlay);
 }
 
-function _appendTextField(parent, labelText, value, placeholder) {
+function _appendTextField(parent, labelText, value, placeholder, options = {}) {
   const field = document.createElement('div');
   field.className = 'field';
   const label = document.createElement('label');
   label.textContent = labelText;
   field.appendChild(label);
   const input = document.createElement('input');
+  if (options.id) {
+    input.id = options.id;
+    label.htmlFor = options.id;
+  }
   input.type = 'text';
   input.value = value || '';
   input.placeholder = placeholder || '';
+  input.className = 'gb-input';
+  if (options.e2eId) input.dataset.e2eId = options.e2eId;
+  input.setAttribute('aria-label', options.ariaLabel || labelText);
   field.appendChild(input);
   parent.appendChild(field);
   return input;
 }
 
-function _appendSelectField(parent, labelText, options, value) {
+function _appendSelectField(parent, labelText, options, value, fieldOptions = {}) {
   const field = document.createElement('div');
   field.className = 'field';
   const label = document.createElement('label');
   label.textContent = labelText;
   field.appendChild(label);
   const select = document.createElement('select');
+  if (fieldOptions.id) {
+    select.id = fieldOptions.id;
+    label.htmlFor = fieldOptions.id;
+  }
+  select.className = 'gb-select';
+  if (fieldOptions.e2eId) select.dataset.e2eId = fieldOptions.e2eId;
+  select.setAttribute('aria-label', fieldOptions.ariaLabel || labelText);
   options.forEach(([key, text]) => {
     const opt = document.createElement('option');
     opt.value = key;
@@ -714,12 +870,16 @@ function _configText(id, labelText, value, placeholder) {
   field.className = 'field';
   const label = document.createElement('label');
   label.textContent = labelText;
+  label.htmlFor = id;
   field.appendChild(label);
   const input = document.createElement('input');
   input.id = id;
   input.type = id === 'wc-max' ? 'number' : 'text';
   input.value = value == null ? '' : value;
   input.placeholder = placeholder || '';
+  input.className = 'gb-input';
+  input.dataset.e2eId = 'smart-db-widget-config-' + id;
+  input.setAttribute('aria-label', labelText);
   if (id === 'wc-max') {
     input.min = '1';
     input.max = '100';
@@ -733,9 +893,13 @@ function _configSelect(id, labelText, options, value) {
   field.className = 'field';
   const label = document.createElement('label');
   label.textContent = labelText;
+  label.htmlFor = id;
   field.appendChild(label);
   const select = document.createElement('select');
   select.id = id;
+  select.className = 'gb-select';
+  select.dataset.e2eId = 'smart-db-widget-config-' + id;
+  select.setAttribute('aria-label', labelText);
   options.forEach(key => {
     const opt = document.createElement('option');
     opt.value = key;
@@ -776,34 +940,46 @@ function _collectSmartDbWidgetConfig(type) {
   return cfg;
 }
 
-function showSmartDbSourcePicker(kind, currentPath, onSelect) {
+function showSmartDbSourcePicker(kind, currentPath, onSelect, restoreTarget) {
+  restoreTarget = restoreTarget || _smartDbDashboardActiveElement();
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  overlay.dataset.e2eId = 'smart-db-source-picker-overlay';
   const modal = document.createElement('div');
   modal.className = 'smart-db-source-picker-modal';
   modal.classList.add('modal');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'smart-db-source-picker-title');
+  modal.dataset.e2eId = 'smart-db-source-picker-dialog';
   const title = document.createElement('h3');
+  title.id = 'smart-db-source-picker-title';
   title.textContent = kind === 'smart-sheet' ? 'スマートシートを選択' : 'シートを選択';
   title.className = 'smart-db-modal-title';
   modal.appendChild(title);
   const list = document.createElement('div');
   list.className = 'smart-db-source-picker';
+  list.dataset.e2eId = 'smart-db-source-picker-list';
+  list.setAttribute('role', 'list');
+  list.setAttribute('aria-live', 'polite');
   modal.appendChild(list);
   const footer = document.createElement('div');
   footer.className = 'smart-db-source-picker-footer';
   const cancel = document.createElement('button');
   cancel.type = 'button';
   cancel.textContent = 'キャンセル';
-  cancel.addEventListener('click', () => overlay.remove());
+  cancel.dataset.e2eId = 'smart-db-source-picker-cancel';
+  cancel.addEventListener('click', () => closeOverlay());
   footer.appendChild(cancel);
   modal.appendChild(footer);
   overlay.appendChild(modal);
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const closeOverlay = _smartDbDashboardAttachOverlayDismiss(overlay, restoreTarget);
   document.body.appendChild(overlay);
   _loadSmartDbSourcePickerItems(list, kind, currentPath, selected => {
     onSelect(selected);
-    overlay.remove();
+    closeOverlay();
   });
+  _smartDbDashboardFocusFirstDialogControl(overlay);
 }
 
 async function _loadSmartDbSourcePickerItems(container, kind, currentPath, onSelect) {
@@ -836,19 +1012,27 @@ function _appendSmartDbSourcePickerRow(container, item, kind, currentPath, onSel
   const row = document.createElement('div');
   row.className = 'smart-db-source-picker-row';
   row.dataset.depth = String(Math.min(depth, 6));
+  row.dataset.e2eId = 'smart-db-source-picker-row';
+  row.setAttribute('role', 'listitem');
+  const itemLabel = item.name || item.path || '項目';
   const openBtn = document.createElement('button');
   openBtn.type = 'button';
   openBtn.className = 'tb-icon-btn';
   openBtn.title = item.type === 'folder' ? '展開' : '選択';
-  openBtn.innerHTML = '<span class="ico ico-' + (item.type === 'folder' ? 'chevronRight' : 'file') + '"></span>';
+  openBtn.dataset.e2eId = 'smart-db-source-picker-open';
+  openBtn.setAttribute('aria-label', (item.type === 'folder' ? '展開: ' : '選択: ') + itemLabel);
+  openBtn.innerHTML = _smartDbDashboardIconHtml(item.type === 'folder' ? 'chevronRight' : 'file', 16);
+  _smartDbDashboardFixIconSize(openBtn, 16);
   row.appendChild(openBtn);
   const label = document.createElement('span');
-  label.textContent = item.name || item.path || '';
+  label.textContent = itemLabel;
   label.className = 'smart-db-source-picker-label';
   row.appendChild(label);
   const chooseBtn = document.createElement('button');
   chooseBtn.type = 'button';
   chooseBtn.textContent = '選択';
+  chooseBtn.dataset.e2eId = 'smart-db-source-picker-choose';
+  chooseBtn.setAttribute('aria-label', '参照ファイルに選択: ' + itemLabel);
   const canSelectDirectly = _smartDbSourceCandidate(item, kind);
   chooseBtn.hidden = !canSelectDirectly;
   if (canSelectDirectly) chooseBtn.addEventListener('click', () => onSelect({ kind, path: item.path }));
@@ -876,7 +1060,11 @@ function _appendSmartDbSourcePickerRow(container, item, kind, currentPath, onSel
       await _renderSmartDbSourceFolder(container, item.path, kind, currentPath, onSelect, depth + 1, rootPath);
     });
     label.classList.add('is-folder');
+    label.tabIndex = 0;
+    label.setAttribute('role', 'button');
+    label.setAttribute('aria-label', '展開: ' + itemLabel);
     label.addEventListener('click', () => openBtn.click());
+    _smartDbDashboardBindKeyboardActivate(label, () => openBtn.click());
   } else {
     openBtn.addEventListener('click', () => {
       if (_smartDbSourceCandidate(item, kind)) onSelect({ kind, path: item.path });

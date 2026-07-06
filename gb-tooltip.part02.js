@@ -1,6 +1,7 @@
   regId('rab-detail',          { label: 'オプション', desc: '右サイドバーにオプション設定タブを表示します' });
   regId('rab-calendar',        { label: 'スケジューラー', desc: '右サイドバーにスケジューラーを表示します' });
   regId('rab-chat',            { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
+  regId('rab-tags',            { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
   regId('rab-annotation',      { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
   regId('rab-history',         { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
@@ -8,6 +9,7 @@
   regData('rp-tab', 'detail',     { label: 'オプション', desc: '右サイドバーにオプション設定タブを表示します' });
   regData('rp-tab', 'calendar',   { label: 'スケジューラー', desc: '右サイドバーにスケジューラーを表示します' });
   regData('rp-tab', 'chat',       { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
+  regData('rp-tab', 'tags',       { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
   regData('rp-tab', 'annotation', { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
   regData('rp-tab', 'history',    { label: '履歴',       desc: '右サイドバーに操作履歴を表示します' });
 
@@ -242,7 +244,6 @@
   regAction('resetcolorsettings',    { label: '配色リセット', desc: '配色設定を初期状態に戻します' });
   regAction('opencspalette',         { label: '色を選択',     desc: 'カラーパレットを開きます' });
   regAction('opencspalettergba',     { label: '色を選択',     desc: '不透明度付きでカラーパレットを開きます' });
-  regAction('openpopuppalette',      { label: '色を選択',     desc: 'カラーパレットを開きます' });
   regAction('openrtcolorpalette',    { label: '色を選択',     desc: 'テキスト用カラーパレットを開きます' });
   regAction('openstylebgonlypalette',{ label: '背景色を選択', desc: '背景色専用のカラーパレットを開きます' });
   regAction('openstylepreviewpopup', { label: 'プレビュー',   desc: 'スタイルのプレビューを表示します' });
@@ -275,6 +276,7 @@
   regAction('openscenariocharacterdbimport', { label: 'キャラ取り込み', desc: 'シナリオで使うキャラ情報をシートから取り込みます' });
 
   // ツールメニュー / モバイル / スクショ
+  regAction('showtoolmenu',          { label: 'ツールメニュー', desc: '現在のビューのツールメニューを開きます' });
   regAction('showmobiletoolmenu',    { label: 'ツールメニュー', desc: 'モバイル向けツールメニューを開きます' });
   regAction('showscreenshotmenu',    { label: 'スクリーンショット', desc: 'スクリーンショット撮影メニューを開きます' });
   regAction('opentooltab',           { label: 'ツールタブを開く', desc: '指定したツールのタブを開きます' });
@@ -396,7 +398,6 @@
   regId('btn-flip-v',       { label: '上下反転',     desc: '画像を上下に反転させます' });
   regId('btn-fullscreen',   { label: 'フルスクリーン', desc: 'フルスクリーン表示を切り替えます', shortcutId: 'global.fullscreen' });
   regId('btn-slideshow',    { label: 'スライドショー', desc: 'スライドショー再生を開始します' });
-  regId('btn-mobile-tools', { label: 'ツールメニュー', desc: 'モバイル向けのツールメニューを開きます' });
   regId('btn-hud',          { label: 'HUD表示',       desc: '操作HUDの表示/非表示を切り替えます' });
   regId('btn-markup',       { label: '注釈モード',    desc: '画像への注釈描画モードを切り替えます' });
   regId('btn-bg',           { label: '背景色',        desc: 'ビューワーの背景色を切り替えます' });

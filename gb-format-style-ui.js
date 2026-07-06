@@ -353,18 +353,20 @@
       const styleId = _registerSettingsDef(def);
       const raw = _cssVar(def.bg);
       const bgStyle = _isTransparent(raw) ? _CHECKER_BG_INLINE_STYLE : `background:${raw}`;
+      const label = def.label || '背景色';
       return `<div class="cs-row">
       <span class="cs-row-label">${_e(def.label)}</span>
-      <button type="button" class="gb-fmt-swatch-bg cs-row-bg-swatch" data-e2e-id="${_e(_e2eId('settings-theme-bg-swatch', def.bg || styleId))}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-style-bg-key="${_e(def.bg)}" data-style-bg-type="${_e(def.bgType || '')}" data-action="openStyleBgOnlyPalette(this)" title="クリックで色を変更" style="${_e(bgStyle)}"></button>
+      <button type="button" class="gb-fmt-swatch-bg cs-row-bg-swatch" data-e2e-id="${_e(_e2eId('settings-theme-bg-swatch', def.bg || styleId))}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-style-bg-key="${_e(def.bg)}" data-style-bg-type="${_e(def.bgType || '')}" data-action="openStyleBgOnlyPalette(this)" aria-label="${_e(label)}の色を変更" title="クリックで色を変更" style="${_e(bgStyle)}"></button>
     </div>`;
     }
     if (def.previewType === 'slider') {
       const styleId = _registerSettingsDef(def);
+      const label = def.label || 'スライダー';
       // プレビュー専用なのでスライダー本体はドラッグ不可にし、ラッパーで書式ポップアップを開く。
       // --gb-range-fill-pct を 50% に固定してプレビュー中央に fill / track 両色が見えるようにする
       return `<div class="cs-row">
       <span class="cs-row-label">${_e(def.label)}</span>
-      <span class="cs-row-preview cs-row-preview--slider cs-row-preview--clickable" data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-action="openStylePreviewPopup(this)" tabindex="0" role="button" title="クリックで書式設定" style="display:inline-flex;align-items:center;padding:4px 8px;min-width:120px;">
+      <span class="cs-row-preview cs-row-preview--slider cs-row-preview--clickable" data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-action="openStylePreviewPopup(this)" tabindex="0" role="button" aria-label="${_e(label)}の書式設定" title="クリックで書式設定" style="display:inline-flex;align-items:center;padding:4px 8px;min-width:120px;">
         <input type="range" min="0" max="100" value="50" data-e2e-id="${_e(_e2eId('settings-theme-preview-range', styleId))}" tabindex="-1" aria-hidden="true" style="--gb-range-fill-pct:50%;width:100%;pointer-events:none;" />
       </span>
     </div>`;
@@ -373,7 +375,7 @@
     const clickable = mapping.fields.length > 0;
     const styleId = clickable ? _registerSettingsDef(def) : '';
     const attrs = clickable
-      ? ` data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-action="openStylePreviewPopup(this)" tabindex="0" role="button" title="クリックで書式設定"`
+      ? ` data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-action="openStylePreviewPopup(this)" tabindex="0" role="button" aria-label="${_e(def.label || 'スタイル')}の書式設定" title="クリックで書式設定"`
       : ` data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}"`;
     const isCaret = CARET_RE.test(def.label || '');
     const cls = 'cs-row-preview' + (clickable ? ' cs-row-preview--clickable' : '') + (def.line ? ' cs-row-preview--line' : '') + (isCaret ? ' cs-row-preview--caret' : '');
@@ -633,10 +635,12 @@
     const el = document.createElement('span');
     const isCaret = !!map.caretColor;
     const lineOnly = !isCaret && (map.borderColor || map.caretColor) && !map.textColor && !map.bgColor && !map.fontFamily;
+    const label = _rowLabel(rowData) || rowData.label || '書式';
     el.className = 'cs-row-preview cs-row-preview--clickable' + (lineOnly ? ' cs-row-preview--line' : '') + (isCaret ? ' cs-row-preview--caret' : '');
     el.tabIndex = 0;
     el.role = 'button';
     el.title = 'クリックで書式設定';
+    el.setAttribute('aria-label', `${label}の書式設定`);
     el.dataset.e2eId = _filePreviewE2eId(rowData);
     el.dataset.stylePreviewLabel = _rowLabel(rowData) || rowData.label || '';
     el.textContent = isCaret ? '\u00a0' : (lineOnly ? '━━' : (rowData.label || 'Aa1'));

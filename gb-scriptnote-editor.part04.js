@@ -539,42 +539,88 @@
     const range = sel.getRangeAt(0);
     const textEl = range.startContainer.closest?.('.sn2-text') || range.startContainer.parentElement?.closest?.('.sn2-text');
     if (!textEl || !this._rangeWithinElement(range, textEl)) return;
-    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup();
+    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup({ restoreFocus: false });
     // ルビ入力ポップアップ
     const popup = document.createElement('div');
-    popup.className = 'sn2-header-popup';
-    popup.style.padding = '8px 12px';
-    popup.innerHTML = `
-      <div style="font-size:12px;margin-bottom:6px;">「${(typeof esc === 'function' ? esc : s => s)(text.slice(0, 20))}」にルビを設定</div>
-      <div style="display:flex;gap:4px;">
-        <input type="text" id="sn2-ruby-input" placeholder="ルビを入力..." style="flex:1;padding:3px 6px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;outline:none;">
-        <button class="primary" style="padding:3px 8px;font-size:12px;" id="sn2-ruby-ok">設定</button>
-      </div>
-      <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
-        <label style="font-size:11px;color:var(--fg2);cursor:pointer;display:flex;align-items:center;gap:3px;">
-          <input type="checkbox" id="sn2-ruby-add-rule"> 自動ルビルールにも追加
-        </label>
-        <button type="button" style="padding:2px 6px;font-size:11px;background:transparent;border:1px solid var(--border);border-radius:3px;color:var(--fg2);cursor:pointer;margin-left:auto;" id="sn2-ruby-auto">読み取得</button>
-      </div>`;
+    popup.className = 'sn2-header-popup sn2-ruby-popup';
+    popup.dataset.e2eId = 'sn2-ruby-popup';
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-modal', 'false');
+    popup.setAttribute('aria-labelledby', 'sn2-ruby-label');
+
+    const title = document.createElement('div');
+    title.id = 'sn2-ruby-label';
+    title.className = 'sn2-ruby-popup-title';
+    title.dataset.e2eId = 'sn2-ruby-label';
+    title.textContent = `「${text.slice(0, 20)}」にルビを設定`;
+
+    const mainRow = document.createElement('div');
+    mainRow.className = 'sn2-ruby-popup-main';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'sn2-ruby-input';
+    input.className = 'gb-input-sm sn2-ruby-popup-input';
+    input.dataset.e2eId = 'sn2-ruby-input';
+    input.placeholder = 'ルビを入力...';
+    input.setAttribute('aria-label', '選択文字のルビ');
+    const okButton = document.createElement('button');
+    okButton.type = 'button';
+    okButton.id = 'sn2-ruby-ok';
+    okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary sn2-ruby-popup-ok';
+    okButton.dataset.e2eId = 'sn2-ruby-ok';
+    okButton.textContent = '設定';
+    mainRow.append(input, okButton);
+
+    const optionRow = document.createElement('div');
+    optionRow.className = 'sn2-ruby-popup-options';
+    const addRuleLabel = document.createElement('label');
+    addRuleLabel.className = 'gb-check sn2-ruby-popup-check';
+    addRuleLabel.dataset.e2eId = 'sn2-ruby-add-rule-label';
+    const addRuleInput = document.createElement('input');
+    addRuleInput.type = 'checkbox';
+    addRuleInput.id = 'sn2-ruby-add-rule';
+    addRuleInput.className = 'gb-checkbox';
+    addRuleInput.dataset.e2eId = 'sn2-ruby-add-rule';
+    const addRuleText = document.createElement('span');
+    addRuleText.textContent = '自動ルビルールにも追加';
+    addRuleLabel.append(addRuleInput, addRuleText);
+    const autoButton = document.createElement('button');
+    autoButton.type = 'button';
+    autoButton.id = 'sn2-ruby-auto';
+    autoButton.className = 'gb-btn gb-btn-sm gb-btn-quiet sn2-ruby-popup-auto';
+    autoButton.dataset.e2eId = 'sn2-ruby-auto';
+    autoButton.textContent = '読み取得';
+    optionRow.append(addRuleLabel, autoButton);
+    popup.append(title, mainRow, optionRow);
     const rr = range.getBoundingClientRect();
     popup.style.cssText += 'position:fixed;z-index:10000;min-width:240px;';
     positionPopup(popup, rr);
-    const input = popup.querySelector('#sn2-ruby-input');
     input.focus();
     let closeHandler = null;
-    const closeRubyPopup = () => {
+    let keyHandler = null;
+    const restoreFocus = () => {
+      if (!textEl?.isConnected) return;
+      try { textEl.focus({ preventScroll: true }); }
+      catch { textEl.focus(); }
+    };
+    const closeRubyPopup = (options = {}) => {
       popup.remove();
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler);
+      if (keyHandler) document.removeEventListener('keydown', keyHandler);
       if (this._rubyPopup === popup) {
         this._rubyPopup = null;
         this._closeRubyPopup = null;
+      }
+      if (options.restoreFocus !== false) {
+        restoreFocus();
+        requestAnimationFrame(restoreFocus);
       }
     };
     this._rubyPopup = popup;
     this._closeRubyPopup = closeRubyPopup;
     const apply = (ruby) => {
       if (!ruby) { closeRubyPopup(); return; }
-      const addRule = popup.querySelector('#sn2-ruby-add-rule')?.checked;
+      const addRule = addRuleInput.checked;
       // テキスト内にルビマークアップを挿入: {漢字|ルビ}
       if (textEl) {
         this._pushUndo('ルビ設定');
@@ -603,7 +649,7 @@
       }
       closeRubyPopup();
     };
-    popup.querySelector('#sn2-ruby-ok').addEventListener('click', () => apply(input.value.trim()));
+    okButton.addEventListener('click', () => apply(input.value.trim()));
     input.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') {
         ev.preventDefault();
@@ -616,7 +662,7 @@
         closeRubyPopup();
       }
     });
-    popup.querySelector('#sn2-ruby-auto').addEventListener('click', async () => {
+    autoButton.addEventListener('click', async () => {
       try {
         const res = await apiFetch('/ruby?text=' + encodeURIComponent(text));
         if (res?.ruby) input.value = res.ruby;
@@ -626,6 +672,13 @@
       }
     });
     closeHandler = (ev) => { if (!popup.contains(ev.target)) closeRubyPopup(); };
+    keyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeRubyPopup();
+    };
+    document.addEventListener('keydown', keyHandler);
     setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
   }
 
@@ -633,7 +686,7 @@
 
   destroy() {
     this._closeRoleMenu();
-    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup();
+    if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup({ restoreFocus: false });
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
     if (this._undoTimer) { clearTimeout(this._undoTimer); this._undoTimer = null; }
     if (this._textInputUndoTimer) { clearTimeout(this._textInputUndoTimer); this._textInputUndoTimer = null; }

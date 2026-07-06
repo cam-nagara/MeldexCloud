@@ -10,6 +10,7 @@
   const ATTR_DISABLED = 'data-gb-tooltip-disabled';
   const ATTR_NATIVE_TITLE = 'data-gb-native-title';
   const TOOLTIP_ID = 'gb-tooltip';
+  const MODAL_OVERLAY_SELECTOR = '.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay';
   const SHOW_DELAY_MS = 350;
   const FOCUS_DELAY_MS = 120;
   const HIDE_DELAY_MS = 80;
@@ -389,6 +390,17 @@
     return !!el.closest(TRANSIENT_TOOLTIP_EXCLUDE_SELECTORS.join(','));
   }
 
+  function activeModalOverlay() {
+    const overlays = [...document.querySelectorAll(MODAL_OVERLAY_SELECTOR)]
+      .filter(node => node instanceof HTMLElement && node.isConnected);
+    return overlays.length ? overlays[overlays.length - 1] : null;
+  }
+
+  function isBlockedByActiveModal(el) {
+    const overlay = activeModalOverlay();
+    return !!overlay && !!el && !overlay.contains(el);
+  }
+
   function findCellContentNativeTitleTarget(start) {
     if (!(start instanceof Element)) return null;
     const cellTarget = start.closest(CELL_CONTENT_EXCLUDE_SELECTORS.join(','));
@@ -407,6 +419,7 @@
     if (isCustomLinkTooltipTarget(el)) return false;
     if (isCellContentTooltipTarget(el)) return false;
     if (isTransientTooltipTarget(el)) return false;
+    if (isBlockedByActiveModal(el)) return false;
     if (isExplicitTooltip(el)) return true;
     return isInteractiveLike(el);
   }
@@ -706,6 +719,10 @@
 
   function showFor(el, explicitText) {
     if (!el || !document.documentElement.contains(el)) return;
+    if (isBlockedByActiveModal(el)) {
+      hideNow({ suppressUntilLeave: true });
+      return;
+    }
     const text = explicitText != null ? String(explicitText).trim() : getTooltipText(el);
     if (!text) {
       if (shouldKeepNativeTitleSuppressed(el)) return;
@@ -764,6 +781,7 @@
 
   function queueShow(el, delay) {
     if (!el || el === activeEl || el === pendingEl) return;
+    if (isBlockedByActiveModal(el)) return;
     if (suppressedEl && !suppressedEl.contains(el)) clearSuppressed();
     if (isSuppressed(el)) return;
     clearTimers();
@@ -923,6 +941,14 @@
     }
   }
 
+  function hideIfBlockedByActiveModal() {
+    const target = activeEl || pendingEl || touchLongPressEl;
+    if (target && isBlockedByActiveModal(target)) {
+      clearTouchLongPress();
+      hideNow({ suppressUntilLeave: true });
+    }
+  }
+
   function install() {
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('mousedown', handleImmediateDismiss, true);
@@ -941,6 +967,10 @@
       clearTouchLongPress();
       refresh();
     }, true);
+    if (window.MutationObserver && document.body) {
+      new MutationObserver(hideIfBlockedByActiveModal)
+        .observe(document.body, { childList: true });
+    }
   }
 
   if (document.readyState === 'loading') {

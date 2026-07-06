@@ -197,23 +197,34 @@ function _showNoteConflictDialog(path, md, pc) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.dataset.noteConflictDialog = '1';
+  overlay.dataset.e2eId = 'note-conflict-dialog-overlay';
   overlay.style.zIndex = '10090';
-  overlay.innerHTML = `<div class="gb-confirm" role="dialog" aria-modal="true" style="min-width:min(920px,92vw);max-width:min(1000px,96vw);">
-    <div class="gb-confirm-message" style="font-weight:600;">他のタブ/パネルで変更されています</div>
-    <div class="gb-confirm-message" style="color:var(--ui-fg-muted);">現在の編集は未保存ドラフトとして保持しています。どちらを残すか選んでください。</div>
-    <div data-conflict-diff style="margin-top:8px;color:var(--ui-fg-muted);">ファイル側の最新版を取得しています...</div>
-    <div class="gb-confirm-actions">
-      <button data-e2e-id="note-conflict-overwrite" data-conflict-action="overwrite">自分の編集で上書き</button>
-      <button data-e2e-id="note-conflict-reload" data-conflict-action="reload">相手の変更を読み込む</button>
-      <button data-e2e-id="note-conflict-save-as" data-conflict-action="save-as">別名で保存</button>
-      <button data-e2e-id="note-conflict-close" data-conflict-action="close">保留</button>
+  overlay.innerHTML = `<div class="gb-confirm note-conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="note-conflict-title" aria-describedby="note-conflict-desc note-conflict-diff" data-e2e-id="note-conflict-dialog" style="min-width:min(920px,92vw);max-width:min(1000px,96vw);">
+    <div id="note-conflict-title" class="gb-confirm-message" style="font-weight:600;">他のタブ/パネルで変更されています</div>
+    <div id="note-conflict-desc" class="gb-confirm-message" style="color:var(--ui-fg-muted);">現在の編集は未保存ドラフトとして保持しています。どちらを残すか選んでください。</div>
+    <div id="note-conflict-diff" data-conflict-diff style="margin-top:8px;color:var(--ui-fg-muted);" aria-live="polite">ファイル側の最新版を取得しています...</div>
+    <div class="gb-confirm-actions" data-modal-footer>
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-e2e-id="note-conflict-overwrite" data-conflict-action="overwrite">自分の編集で上書き</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-reload" data-conflict-action="reload">相手の変更を読み込む</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-save-as" data-conflict-action="save-as">別名で保存</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-close" data-conflict-action="close">保留</button>
     </div>
   </div>`;
+  const restoreFocus = () => {
+    if (pc?.isConnected) pc.focus?.({ preventScroll: true });
+  };
+  const closeDialog = () => {
+    overlay.remove();
+    restoreFocus();
+    requestAnimationFrame(restoreFocus);
+    setTimeout(restoreFocus, 260);
+  };
   overlay.addEventListener('click', async (event) => {
-    const action = event.target?.dataset?.conflictAction;
+    const actionButton = event.target?.closest?.('[data-conflict-action]');
+    const action = actionButton?.dataset?.conflictAction;
     if (!action) return;
     if (action === 'close') {
-      overlay.remove();
+      closeDialog();
       return;
     }
     try {
@@ -233,7 +244,9 @@ function _showNoteConflictDialog(path, md, pc) {
         showStatus('相手の変更を読み込みました');
       } else if (action === 'save-as') {
         const fallback = _noteDir(path) + path.split('/').pop().replace(/(\.[^/.]+)?$/, '_copy$1');
-        const nextPath = await cfPrompt('別名で保存', fallback);
+        const promptPromise = cfPrompt('別名で保存', fallback);
+        document.querySelector('[data-e2e-id="cf-prompt-overlay"]')?.style?.setProperty('z-index', '10100');
+        const nextPath = await promptPromise;
         if (!nextPath) return;
         const res = await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: md });
         if (pc) {
@@ -245,12 +258,21 @@ function _showNoteConflictDialog(path, md, pc) {
         window.MeldexSaveSafety?.clearConflict?.(path);
         showStatus('別名で保存しました');
       }
-      overlay.remove();
+      closeDialog();
     } catch (error) {
       showStatus('競合処理に失敗しました: ' + (error.message || error), true);
     }
   });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeDialog();
+  });
   document.body.appendChild(overlay);
+  const focusInitialAction = () => overlay.querySelector('[data-conflict-action="overwrite"]')?.focus?.({ preventScroll: true });
+  focusInitialAction();
+  requestAnimationFrame(focusInitialAction);
+  setTimeout(focusInitialAction, 60);
   apiFetch('/file?path=' + encodeURIComponent(path)).then(data => {
     _renderNoteConflictDiff(overlay.querySelector('[data-conflict-diff]'), md, String(data?.content || ''));
   }).catch(() => {
@@ -386,6 +408,7 @@ async function openPage(label, path, opts) {
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw);
     pc.innerHTML = html;
+    _prepareEmbeddedMediaControls(pc);
     _loadPageIcon();
     if (typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
     _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
@@ -568,27 +591,50 @@ function initNoteTocResize() {
   const toc = document.getElementById('note-toc');
   const handle = document.getElementById('note-toc-resize');
   if (!toc || !handle) return;
+  handle.setAttribute('role', 'separator');
+  handle.setAttribute('aria-orientation', 'vertical');
+  handle.setAttribute('aria-label', '目次幅を調整');
+  handle.dataset.e2eId = handle.dataset.e2eId || 'note-toc-resize';
+  if (!handle.hasAttribute('tabindex')) handle.tabIndex = 0;
+  const applyWidth = (width) => {
+    const next = Math.max(140, Math.min(420, Math.round(width)));
+    toc.style.width = next + 'px';
+    toc.style.flexBasis = next + 'px';
+    localStorage.setItem(NOTE_TOC_WIDTH_KEY, String(next));
+    return next;
+  };
+  const currentWidth = () => parseFloat(toc.style.width || '') || toc.getBoundingClientRect().width || parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '200', 10) || 200;
   handle.addEventListener('pointerdown', (e) => {
     if (toc.style.display === 'none') return;
     e.preventDefault();
     const startX = e.clientX;
-    const startWidth = toc.getBoundingClientRect().width;
+    const startWidth = currentWidth();
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     const onMove = (ev) => {
-      const next = Math.max(140, Math.min(420, Math.round(startWidth + (ev.clientX - startX))));
-      toc.style.width = next + 'px';
-      toc.style.flexBasis = next + 'px';
+      applyWidth(startWidth + (ev.clientX - startX));
     };
     const onUp = () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      localStorage.setItem(NOTE_TOC_WIDTH_KEY, String(Math.round(toc.getBoundingClientRect().width)));
+      applyWidth(currentWidth());
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
+  });
+  handle.addEventListener('keydown', (e) => {
+    if (toc.style.display === 'none') return;
+    const current = currentWidth();
+    let next = current;
+    if (e.key === 'ArrowLeft') next = current - 16;
+    else if (e.key === 'ArrowRight') next = current + 16;
+    else if (e.key === 'Home') next = 140;
+    else if (e.key === 'End') next = 420;
+    else return;
+    e.preventDefault();
+    applyWidth(next);
   });
 }
 
@@ -766,36 +812,112 @@ document.getElementById('page-content').addEventListener('paste', async function
 // 埋め込みメディア フローティングコントロール
 let _activeMedia = null;
 
+function _prepareEmbeddedMediaForControls(media) {
+  if (!media) return;
+  if (!media.hasAttribute('tabindex')) media.tabIndex = 0;
+  if (!media.hasAttribute('role')) media.setAttribute('role', 'group');
+  if (!media.hasAttribute('aria-label')) {
+    media.setAttribute('aria-label', media.dataset.name ? `埋め込みメディア: ${media.dataset.name}` : '埋め込みメディア');
+  }
+}
+
+function _prepareEmbeddedMediaControls(root) {
+  root?.querySelectorAll?.('.embed-media')?.forEach(_prepareEmbeddedMediaForControls);
+}
+
 (function() {
   const controls = document.getElementById('media-float-controls');
   const resizeHandle = document.getElementById('media-resize-handle');
   if (!controls || !resizeHandle) return;
 
-  // ホバーでコントロール表示
-  document.addEventListener('mouseover', (e) => {
-    const media = e.target.closest('.embed-media');
-    if (media) {
-      _activeMedia = media;
-      _positionMediaControls(media);
-      return;
-    }
-    // コントロール/リサイズ上にいる場合は維持
-    if (e.target.closest('#media-float-controls') || e.target.id === 'media-resize-handle') return;
+  controls.setAttribute('aria-hidden', 'true');
+  resizeHandle.setAttribute('aria-hidden', 'true');
+  controls.querySelectorAll('[data-media-icon]').forEach(btn => {
+    const icon = btn.dataset.mediaIcon;
+    if (icon && typeof lucide === 'function') btn.innerHTML = lucide(icon, 14);
   });
 
-  // コントロールから離れたら非表示（遅延付きで誤消去防止）
   let _mediaHideTimer = null;
-  function _scheduleHideMedia() {
-    clearTimeout(_mediaHideTimer);
-    _mediaHideTimer = setTimeout(() => {
-      controls.classList.remove('visible');
-      resizeHandle.classList.remove('visible');
-      _activeMedia = null;
-    }, 200);
-  }
+
   function _cancelHideMedia() {
     clearTimeout(_mediaHideTimer);
   }
+
+  function _hideMediaControls(options = {}) {
+    const restoreTarget = options.restoreFocus ? _activeMedia : null;
+    controls.classList.remove('visible');
+    resizeHandle.classList.remove('visible');
+    controls.setAttribute('aria-hidden', 'true');
+    resizeHandle.setAttribute('aria-hidden', 'true');
+    if (_activeMedia) delete _activeMedia.dataset.mediaControlsActive;
+    _activeMedia = null;
+    if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
+      try { restoreTarget.focus({ preventScroll: true }); } catch (_) { restoreTarget.focus(); }
+    }
+  }
+
+  function _scheduleHideMedia() {
+    clearTimeout(_mediaHideTimer);
+    _mediaHideTimer = setTimeout(() => _hideMediaControls(), 200);
+  }
+
+  function _showMediaControls(media, options = {}) {
+    if (!media) return;
+    _cancelHideMedia();
+    _prepareEmbeddedMediaForControls(media);
+    if (_activeMedia && _activeMedia !== media) delete _activeMedia.dataset.mediaControlsActive;
+    _activeMedia = media;
+    _activeMedia.dataset.mediaControlsActive = '1';
+    _positionMediaControls(media);
+    controls.removeAttribute('aria-hidden');
+    resizeHandle.removeAttribute('aria-hidden');
+    if (options.focusControls) {
+      const target = controls.querySelector('.active') || controls.querySelector('button');
+      try { target?.focus?.({ preventScroll: true }); } catch (_) { target?.focus?.(); }
+    }
+  }
+
+  function _isMediaControlTarget(target) {
+    return !!(target?.closest?.('#media-float-controls') || target?.id === 'media-resize-handle');
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const media = e.target.closest('.embed-media');
+    if (media) {
+      _showMediaControls(media);
+      return;
+    }
+    // コントロール/リサイズ上にいる場合は維持
+    if (_isMediaControlTarget(e.target)) return;
+  });
+
+  document.addEventListener('pointerdown', (e) => {
+    const media = e.target?.closest?.('.embed-media');
+    if (media) {
+      _showMediaControls(media);
+      return;
+    }
+    if (_isMediaControlTarget(e.target)) return;
+    if (_activeMedia) _scheduleHideMedia();
+  });
+
+  document.addEventListener('focusin', (e) => {
+    const media = e.target?.closest?.('.embed-media');
+    if (media) _showMediaControls(media);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const media = e.target?.closest?.('.embed-media');
+    if (media && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      _showMediaControls(media, { focusControls: true });
+      return;
+    }
+    if (e.key === 'Escape' && (_isMediaControlTarget(e.target) || media) && _activeMedia) {
+      e.preventDefault();
+      _hideMediaControls({ restoreFocus: true });
+    }
+  });
 
   document.addEventListener('mouseout', (e) => {
     const related = e.relatedTarget;
@@ -809,6 +931,20 @@ let _activeMedia = null;
   });
   controls.addEventListener('mouseenter', _cancelHideMedia);
   resizeHandle.addEventListener('mouseenter', _cancelHideMedia);
+  controls.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      _hideMediaControls({ restoreFocus: true });
+      return;
+    }
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const buttons = Array.from(controls.querySelectorAll('button'));
+    const current = buttons.indexOf(document.activeElement);
+    const dir = e.key === 'ArrowRight' ? 1 : -1;
+    const next = buttons[(current + dir + buttons.length) % buttons.length] || buttons[0];
+    next?.focus?.();
+  });
 
   // アラインメントボタン
   controls.querySelectorAll('[data-align]').forEach(btn => {
@@ -826,12 +962,28 @@ let _activeMedia = null;
   });
 
   // 削除ボタン
-  controls.querySelector('[data-action="delete"]').addEventListener('click', () => {
-    if (_activeMedia) {
-      _activeMedia.remove(); controls.classList.remove('visible'); resizeHandle.classList.remove('visible'); _activeMedia = null;
-      const pc = document.getElementById('page-content');
-      if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
+  controls.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+    const media = _activeMedia;
+    if (!media) return;
+    controls.classList.remove('visible');
+    resizeHandle.classList.remove('visible');
+    controls.setAttribute('aria-hidden', 'true');
+    resizeHandle.setAttribute('aria-hidden', 'true');
+    const ok = typeof cfConfirm === 'function'
+      ? await cfConfirm('この埋め込みメディアを削除しますか？', { danger: true, okLabel: '削除' })
+      : confirm('この埋め込みメディアを削除しますか？');
+    if (!ok) {
+      if (media.isConnected) _showMediaControls(media, { focusControls: true });
+      return;
     }
+    if (!media.isConnected) {
+      _hideMediaControls();
+      return;
+    }
+    media.remove();
+    _hideMediaControls();
+    const pc = document.getElementById('page-content');
+    if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
   // リサイズハンドル
@@ -865,12 +1017,15 @@ function _positionMediaControls(media) {
   if (!controls || !media) return;
   const rect = media.getBoundingClientRect();
   const z = _getZoom();
-  controls.style.left = (rect.right / z - controls.offsetWidth - 4) + 'px';
-  controls.style.top = (rect.top / z + 4) + 'px';
   controls.classList.add('visible');
+  const controlsWidth = controls.offsetWidth || 1;
+  controls.style.left = (rect.right / z - controlsWidth - 4) + 'px';
+  controls.style.top = (rect.top / z + 4) + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(controls);
   resizeHandle.style.left = (rect.right / z - 7) + 'px';
   resizeHandle.style.top = (rect.bottom / z - 7) + 'px';
   resizeHandle.classList.add('visible');
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(resizeHandle);
   // 現在のアラインメントを反映
   const ml = media.style.marginLeft, mr = media.style.marginRight;
   controls.querySelectorAll('[data-align]').forEach(b => b.classList.remove('active'));

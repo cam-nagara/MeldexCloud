@@ -888,13 +888,23 @@ class ScriptNoteEditor {
     const buildHeader = (withResizer = true) => {
       const h = document.createElement('div');
       h.className = 'sn2-header' + (viewMode === 'vertical' ? ' sn2-header-vertical' : '');
+      const safeId = (value) => String(value || 'col').replace(/[^a-zA-Z0-9_-]/g, '-');
+      const colLabel = (col) => String(col?.label || defaultLabels[col?.id] || '列').trim() || '列';
       cols.forEach((col, ci) => {
         // リサイザーをセルの前に配置（前のセルとの境界）
         if (withResizer && ci > 0 && cols[ci - 1].id !== '_handle') {
+          const resizeCol = cols[ci - 1];
           const resizer = document.createElement('div');
           resizer.className = 'sn2-col-resizer';
+          resizer.dataset.colId = resizeCol.id;
+          resizer.dataset.e2eId = `sn2-col-resizer-${safeId(resizeCol.id)}`;
+          resizer.tabIndex = 0;
+          resizer.setAttribute('role', 'separator');
+          resizer.setAttribute('aria-orientation', viewMode === 'vertical' ? 'horizontal' : 'vertical');
+          resizer.setAttribute('aria-label', `${colLabel(resizeCol)}列の幅を調整`);
           // ドラッグで前のセルのサイズを変える
-          resizer.addEventListener('pointerdown', (e) => this._startColResize(e, cols[ci - 1].id, resizer));
+          resizer.addEventListener('pointerdown', (e) => this._startColResize(e, resizeCol.id, resizer));
+          resizer.addEventListener('keydown', (e) => this._handleColResizerKeydown?.(e, resizeCol.id));
           h.appendChild(resizer);
         }
         const cell = document.createElement('div');
@@ -902,6 +912,7 @@ class ScriptNoteEditor {
         cell.className = 'sn2-header-cell' + (isTextFlex ? ' sn2-header-flex' : '');
         cell.textContent = col.label;
         cell.dataset.colId = col.id;
+        cell.dataset.e2eId = `sn2-header-cell-${safeId(col.id)}`;
         if (viewMode === 'vertical' && col.id !== '_handle') this._wrapTcy(cell);
         if (col.width) cell.style.width = viewMode === 'vertical' ? '' : `var(--sn2-col-${col.id}, ${col.width}px)`;
         // ヘッダーセルのD&D並べ替え（_handle以外）
@@ -937,33 +948,95 @@ class ScriptNoteEditor {
         if (col.id === '_handle') {
           cell.style.cursor = 'pointer';
           cell.title = '選択メニュー';
-          cell.addEventListener('click', (ev) => {
+          cell.tabIndex = 0;
+          cell.setAttribute('role', 'button');
+          cell.setAttribute('aria-label', '行選択メニュー');
+          cell.setAttribute('aria-haspopup', 'menu');
+          cell.setAttribute('aria-expanded', 'false');
+          cell.dataset.e2eId = 'sn2-header-select-menu-trigger';
+          const openSelectMenu = (ev) => {
             ev.stopPropagation();
             document.querySelectorAll('.sn2-header-popup').forEach(el => el.remove());
+            document.querySelectorAll('[data-e2e-id="sn2-header-select-menu-trigger"][aria-expanded="true"]').forEach(el => {
+              el.setAttribute('aria-expanded', 'false');
+            });
             const popup = document.createElement('div');
-            popup.className = 'sn2-header-popup';
-            const mkBtn = (text, fn) => {
+            popup.id = `sn2-header-select-menu-${Date.now()}`;
+            popup.className = 'sn2-header-popup sn2-header-select-popup';
+            popup.dataset.e2eId = 'sn2-header-select-menu';
+            popup.setAttribute('role', 'menu');
+            popup.setAttribute('aria-label', '行選択メニュー');
+            let closeHandler = null;
+            let escapeHandler = null;
+            const closePopup = (restoreFocus = false) => {
+              popup.remove();
+              cell.setAttribute('aria-expanded', 'false');
+              if (closeHandler) {
+                document.removeEventListener('pointerdown', closeHandler, true);
+                closeHandler = null;
+              }
+              if (escapeHandler) {
+                document.removeEventListener('keydown', escapeHandler, true);
+                escapeHandler = null;
+              }
+              if (restoreFocus) cell.focus();
+            };
+            const mkBtn = (text, actionId, fn) => {
               const b = document.createElement('button');
               b.className = 'sn2-header-popup-item'; b.type = 'button'; b.textContent = text;
-              b.addEventListener('click', () => { popup.remove(); fn(); });
+              b.dataset.e2eId = `sn2-header-select-menu-${actionId}`;
+              b.setAttribute('role', 'menuitem');
+              b.addEventListener('click', () => { closePopup(false); fn(); });
               return b;
             };
-            popup.appendChild(mkBtn('全選択', () => this._selectAllRows()));
-            popup.appendChild(mkBtn('全選択解除', () => this._clearRowSelection()));
+            popup.appendChild(mkBtn('全選択', 'select-all', () => this._selectAllRows()));
+            popup.appendChild(mkBtn('全選択解除', 'clear', () => this._clearRowSelection()));
             popup.style.cssText = 'position:fixed;z-index:10000;';
             document.body.appendChild(popup);
+            cell.setAttribute('aria-expanded', 'true');
+            cell.setAttribute('aria-controls', popup.id);
             positionPopup(popup, cell.getBoundingClientRect());
-            const closeHandler = (e) => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('pointerdown', closeHandler); } };
-            setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
+            if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+            closeHandler = (e) => {
+              if (!popup.contains(e.target) && e.target !== cell) closePopup(false);
+            };
+            escapeHandler = (e) => {
+              if (e.key !== 'Escape') return;
+              e.preventDefault();
+              e.stopPropagation();
+              closePopup(true);
+            };
+            document.addEventListener('keydown', escapeHandler, true);
+            requestAnimationFrame(() => popup.querySelector('.sn2-header-popup-item')?.focus());
+            setTimeout(() => {
+              if (popup.isConnected) document.addEventListener('pointerdown', closeHandler, true);
+            }, 0);
+          };
+          cell.addEventListener('click', openSelectMenu);
+          cell.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter' && ev.key !== ' ') return;
+            ev.preventDefault();
+            openSelectMenu(ev);
           });
         }
         // ヘッダーセルのイベント（_handle以外、段ヘッダーでもメニュー表示可）
         if (col.id !== '_handle') {
           let clickTimer = null;
+          cell.tabIndex = 0;
+          cell.setAttribute('role', 'button');
+          cell.setAttribute('aria-haspopup', 'menu');
+          cell.setAttribute('aria-expanded', 'false');
+          cell.setAttribute('aria-label', `${colLabel(col)}列メニュー`);
           cell.addEventListener('click', (ev) => {
             ev.stopPropagation();
             if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
             clickTimer = setTimeout(() => { clickTimer = null; this._showHeaderMenu(cell, col.id); }, 250);
+          });
+          cell.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter' && ev.key !== ' ') return;
+            ev.preventDefault();
+            if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+            this._showHeaderMenu(cell, col.id);
           });
           cell.addEventListener('dblclick', (ev) => {
             ev.stopPropagation();
@@ -981,7 +1054,14 @@ class ScriptNoteEditor {
         const lastCol = cols[cols.length - 1];
         const resizer = document.createElement('div');
         resizer.className = 'sn2-col-resizer';
+        resizer.dataset.colId = lastCol.id;
+        resizer.dataset.e2eId = `sn2-col-resizer-${safeId(lastCol.id)}`;
+        resizer.tabIndex = 0;
+        resizer.setAttribute('role', 'separator');
+        resizer.setAttribute('aria-orientation', viewMode === 'vertical' ? 'horizontal' : 'vertical');
+        resizer.setAttribute('aria-label', `${colLabel(lastCol)}列の幅を調整`);
         resizer.addEventListener('pointerdown', (e) => this._startColResize(e, lastCol.id, resizer));
+        resizer.addEventListener('keydown', (e) => this._handleColResizerKeydown?.(e, lastCol.id));
         h.appendChild(resizer);
       }
       // スペーサー（ヘッダーの残り領域をページ背景色に）

@@ -35,6 +35,14 @@
     return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  function _icon(name, size, fallback) {
+    return typeof lucide === 'function' ? lucide(name, size || 14) : _esc(fallback || '');
+  }
+
+  function _e2eId(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+  }
+
   async function _readPayload(provider, target) {
     const exists = typeof _pathExists === 'function' ? await _pathExists(provider, target.path).catch(() => false) : true;
     if (!exists) return { payload: null, missing_store: true };
@@ -97,17 +105,32 @@
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'knowledge-integrity-banner';
-      bar.style.cssText = 'position:fixed;left:12px;right:12px;top:48px;z-index:100000;padding:10px 12px;border:1px solid #8a4d18;border-radius:8px;background:#3b2817;color:#ffd6a6;display:flex;gap:10px;align-items:center;box-shadow:0 10px 30px rgba(0,0,0,.28);';
+      bar.className = 'gb-knowledge-integrity-banner';
+      bar.dataset.e2eId = 'knowledge-integrity-banner';
+      bar.setAttribute('role', 'alert');
+      bar.setAttribute('aria-live', 'polite');
       document.body.appendChild(bar);
     }
     const labels = (failed || []).map(item => item.label).join('、');
     bar.innerHTML = `
-      <div style="flex:1;min-width:0;">ナレッジ署名の検証に失敗しました: ${_esc(labels)}</div>
-      <button type="button" data-ki-recover style="padding:5px 10px;border:1px solid #9f6a2f;border-radius:6px;background:#5a3518;color:#fff;cursor:pointer;">復旧</button>
-      <button type="button" data-ki-close style="padding:5px 10px;border:1px solid #9f6a2f;border-radius:6px;background:transparent;color:#ffd6a6;cursor:pointer;">閉じる</button>
+      <div class="gb-knowledge-integrity-message">ナレッジ署名の検証に失敗しました: ${_esc(labels)}</div>
+      <div class="gb-knowledge-integrity-actions">
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-warn" data-ki-recover data-e2e-id="knowledge-integrity-banner-recover" aria-label="ナレッジ署名の復旧を開く">${_icon('history', 14, '')} 復旧</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-ki-close data-e2e-id="knowledge-integrity-banner-close" aria-label="ナレッジ署名の警告を閉じる">${_icon('x', 14, '')} 閉じる</button>
+      </div>
     `;
     bar.querySelector('[data-ki-recover]')?.addEventListener('click', () => openRecoveryDialog(failed));
     bar.querySelector('[data-ki-close]')?.addEventListener('click', _removeBanner);
+  }
+
+  async function _confirmRestore(target, versionName) {
+    const label = target?.label || '対象ファイル';
+    const version = versionName || '選択した履歴';
+    const message = `${label}を「${version}」へ復元しますか？現在の内容は上書きされます。`;
+    if (typeof cfConfirm === 'function') {
+      return await cfConfirm(message, { danger: true, okLabel: '復元', cancelLabel: 'キャンセル' });
+    }
+    return typeof window.confirm === 'function' ? !!window.confirm(message) : true;
   }
 
   async function _loadVersions(target, root) {
@@ -122,19 +145,26 @@
         return;
       }
       box.innerHTML = versions.slice(0, 10).map(version => `
-        <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;border-top:1px solid var(--border);padding:6px 0;">
-          <span>${_esc(version.name)} <span class="gb-section-desc">${_esc(version.created || version.modified || '')}</span></span>
-          <button type="button" class="gb-btn gb-btn-xs" data-ki-restore="${_esc(target.scope)}" data-version="${_esc(version.name)}">復元</button>
+        <div class="gb-knowledge-integrity-version-row">
+          <span class="gb-knowledge-integrity-version-name">${_esc(version.name)} <span class="gb-section-desc">${_esc(version.created || version.modified || '')}</span></span>
+          <button type="button" class="gb-btn gb-btn-xs gb-btn-warn" data-ki-restore="${_esc(target.scope)}" data-version="${_esc(version.name)}" data-e2e-id="knowledge-integrity-restore-${_e2eId(target.scope)}-${_e2eId(version.name)}" aria-label="${_esc(target.label)}を${_esc(version.name)}へ復元">復元</button>
         </div>
       `).join('');
       box.querySelectorAll('[data-ki-restore]').forEach(btn => {
         btn.addEventListener('click', async () => {
-          await window.MeldexDataAccess?.requestJson?.('/version/restore', {
-            method: 'POST',
-            body: JSON.stringify({ path: target.path, version: btn.dataset.version }),
-          });
-          await checkAll();
-          if (typeof showStatus === 'function') showStatus('復元しました');
+          const versionName = btn.dataset.version || '';
+          if (!await _confirmRestore(target, versionName)) return;
+          btn.disabled = true;
+          try {
+            await window.MeldexDataAccess?.requestJson?.('/version/restore', {
+              method: 'POST',
+              body: JSON.stringify({ path: target.path, version: versionName }),
+            });
+            await checkAll();
+            if (typeof showStatus === 'function') showStatus('復元しました');
+          } finally {
+            btn.disabled = false;
+          }
         });
       });
     } catch (err) {
@@ -148,36 +178,47 @@
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.dataset.knowledgeIntegrityRecovery = '1';
+    overlay.dataset.e2eId = 'knowledge-integrity-recovery-overlay';
     overlay.innerHTML = `
-      <div class="modal" style="width:760px;max-width:94vw;height:620px;max-height:88vh;display:flex;flex-direction:column;">
-        <div class="gb-field-row" style="justify-content:space-between;gap:8px;margin-bottom:8px;">
-          <h3 style="margin:0;">ナレッジ署名の復旧</h3>
-          <button type="button" class="gb-btn gb-btn-sm" data-ki-close>${typeof lucide === 'function' ? lucide('x', 14) : '閉じる'}</button>
+      <div class="modal gb-knowledge-integrity-dialog" role="dialog" aria-modal="true" aria-labelledby="knowledge-integrity-recovery-title">
+        <div class="gb-knowledge-integrity-header">
+          <h3 id="knowledge-integrity-recovery-title">ナレッジ署名の復旧</h3>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet" data-ki-close data-e2e-id="knowledge-integrity-recovery-close" aria-label="ナレッジ署名の復旧を閉じる" title="閉じる">${_icon('x', 14, '閉じる')}</button>
         </div>
         <div class="gb-section-desc">Dropboxのファイル履歴から署名検証に失敗したJSONを復元できます。復元後に再検証してください。</div>
-        <div style="overflow:auto;min-height:0;flex:1;margin-top:8px;">
+        <div class="modal-body gb-knowledge-integrity-dialog-body">
           ${targets.map(target => `
-            <section class="gb-section gb-section--boxed">
-              <div class="gb-field-row" style="justify-content:space-between;gap:8px;">
-                <div>
+            <section class="gb-section gb-section--boxed gb-knowledge-integrity-target">
+              <div class="gb-field-row gb-knowledge-integrity-target-header">
+                <div class="gb-knowledge-integrity-target-meta">
                   <div class="gb-section-title">${_esc(target.label)}</div>
                   <div class="gb-section-desc">${_esc(target.path)}</div>
                 </div>
-                <button type="button" class="gb-btn gb-btn-sm" data-ki-load="${_esc(target.scope)}">履歴を表示</button>
+                <button type="button" class="gb-btn gb-btn-sm" data-ki-load="${_esc(target.scope)}" data-e2e-id="knowledge-integrity-load-${_e2eId(target.scope)}" aria-label="${_esc(target.label)}の履歴を表示">履歴を表示</button>
               </div>
-              <div data-ki-versions="${_esc(target.scope)}" class="gb-section-desc"></div>
+              <div data-ki-versions="${_esc(target.scope)}" class="gb-section-desc gb-knowledge-integrity-version-list"></div>
             </section>
           `).join('')}
         </div>
       </div>
     `;
     document.body.appendChild(overlay);
-    overlay.querySelector('[data-ki-close]')?.addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); });
+    window.GBModalShell?.enhanceOverlay?.(overlay);
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', keyHandler);
+    };
+    const keyHandler = event => {
+      if (event.key === 'Escape') close();
+    };
+    overlay.querySelector('[data-ki-close]')?.addEventListener('click', close);
+    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+    document.addEventListener('keydown', keyHandler);
     overlay.querySelectorAll('[data-ki-load]').forEach(btn => {
       const target = targets.find(item => item.scope === btn.dataset.kiLoad);
       if (target) btn.addEventListener('click', () => _loadVersions(target, overlay));
     });
+    overlay.querySelector('[data-ki-load]')?.focus?.();
   }
 
   function stopMonitor() {

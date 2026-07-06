@@ -101,6 +101,20 @@
     document.querySelectorAll('.gb-fmt-popup:not(.gb-fmt-popup--role-opts)').forEach(el => el.remove());
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--role-opts';
+    let closeHandler = null;
+    let keyHandler = null;
+    const closePopup = (restoreFocus = false) => {
+      popup.remove();
+      if (closeHandler) {
+        document.removeEventListener('pointerdown', closeHandler, true);
+        closeHandler = null;
+      }
+      if (keyHandler) {
+        document.removeEventListener('keydown', keyHandler, true);
+        keyHandler = null;
+      }
+      if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorEl);
+    };
     const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const ts = chara.textStyle || {};
     const gs = chara.gutterStyle || {};
@@ -177,7 +191,7 @@
       if (idx >= 0) this.doc.characters.splice(idx + 1, 0, dup);
       else this.doc.characters.push(dup);
       this._markDirty();
-      popup.remove();
+      closePopup();
       this.renderDetailPanel(panelContainer);
     });
     // 削除ボタン
@@ -196,7 +210,7 @@
         this._calcCache = null;
         this._render();
         this._markDirty();
-        popup.remove();
+        closePopup();
         this.renderDetailPanel(panelContainer);
       });
     });
@@ -277,18 +291,25 @@
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: anchorEl,
-        close: () => popup.remove(),
+        close: () => closePopup(true),
       });
     }
     if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+    keyHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePopup(true);
+    };
+    document.addEventListener('keydown', keyHandler, true);
     setTimeout(() => {
-      const closePopup = (ev) => {
+      closeHandler = (ev) => {
         if (!popup.contains(ev.target) && ev.target !== anchorEl && !ev.target.closest?.('.gb-fmt-popup') && !ev.target.closest?.('.gb-palette-popup')) {
-          popup.remove(); document.removeEventListener('pointerdown', closePopup);
+          closePopup();
         }
       };
-      document.addEventListener('pointerdown', closePopup);
+      if (popup.isConnected) document.addEventListener('pointerdown', closeHandler, true);
     }, 0);
   },
 
@@ -496,7 +517,7 @@
     header.innerHTML = '<span class="sn2-detail-theme-header-strong">挙動</span>';
     wrap.appendChild(header);
     const migrBanner = document.createElement('div');
-    migrBanner.style.cssText = 'padding:6px 8px;margin:4px 0;font-size:11px;color:var(--fg2);background:var(--bg3);border-left:3px solid var(--accent);border-radius:3px;';
+    migrBanner.className = 'sn2-detail-theme-banner';
     migrBanner.textContent = '※ 色・基本テキスト・ルビなどのスタイル項目はオプションパネルの「テーマ」タブに移行しました。このタブは挙動系（枠線モード・見開き区切り・自動配色・カウント設定など）専用です。';
     wrap.appendChild(migrBanner);
 
@@ -526,7 +547,7 @@
     settings.innerHTML = `
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label">枠線</label>
-        <select class="sn2-detail-settings-select" data-setting="borderMode">
+        <select class="sn2-detail-settings-select" data-setting="borderMode" data-e2e-id="scriptnote-theme-border-mode">
           <option value="all"${selOpt('all', borderMode)}>すべて</option>
           <option value="horizontal"${selOpt('horizontal', borderMode)}>横線のみ</option>
           <option value="vertical"${selOpt('vertical', borderMode)}>縦線のみ</option>
@@ -535,32 +556,32 @@
         <label class="sn2-detail-settings-label">色</label>
         <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg gb-fmt-swatch--xs" data-setting-color="borderColor" data-e2e-id="scriptnote-theme-border-color" title="枠線の色" aria-label="枠線の色"></button>
         <label class="sn2-detail-settings-label">太さ</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="borderWidth" value="${e(borderWidthValue)}" placeholder="1" min="0" max="10" step="0.5">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="borderWidth" data-e2e-id="scriptnote-theme-border-width" value="${e(borderWidthValue)}" placeholder="1" min="0" max="10" step="0.5">
         <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0">px</span>
         <label class="sn2-detail-settings-label">余白</label>
-        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="margin" value="${e(editorMargin)}" placeholder="16px" title="余白（折り返し時の段間隔にもなる）">
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="margin" data-e2e-id="scriptnote-theme-margin" value="${e(editorMargin)}" placeholder="16px" title="余白（折り返し時の段間隔にもなる）">
       </div>
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
-          <input type="checkbox" data-setting="mergeDisplay"${mergeDisp ? ' checked' : ''}> まとめ表示
+          <input type="checkbox" data-setting="mergeDisplay" data-e2e-id="scriptnote-theme-merge-display"${mergeDisp ? ' checked' : ''}> まとめ表示
         </label>
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
           <input type="checkbox" data-setting="pageBreakSpacing" data-e2e-id="scriptnote-theme-page-break-spacing" title="区切り行の前に1行分の余白を表示" aria-label="ページ間を空ける" ${pageBreakSpacing ? ' checked' : ''}> ページ間を空ける
         </label>
       </div>
-      <div class="sn2-detail-settings-row" style="flex-wrap:nowrap;">
+      <div class="sn2-detail-settings-row sn2-detail-settings-row--nowrap">
         <label class="sn2-detail-settings-label">ホイール速度</label>
-        <input type="range" class="gb-range" style="min-width:120px;flex:1;" min="0.5" max="5" step="0.1" value="${e(wheelSpeed.toFixed(1))}" data-sn2-wheel-speed data-e2e-id="scriptnote-theme-wheel-speed" title="ホイール速度" aria-label="ホイール速度">
-        <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0" style="width:48px;text-align:right;" data-sn2-wheel-speed-value>${e(wheelSpeed.toFixed(1))}倍</span>
+        <input type="range" class="gb-range sn2-detail-theme-range" min="0.5" max="5" step="0.1" value="${e(wheelSpeed.toFixed(1))}" data-sn2-wheel-speed data-e2e-id="scriptnote-theme-wheel-speed" title="ホイール速度" aria-label="ホイール速度">
+        <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0 sn2-detail-theme-range-value" data-sn2-wheel-speed-value>${e(wheelSpeed.toFixed(1))}倍</span>
       </div>
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
-          <input type="checkbox" data-setting="spreadBorderEnabled"${this.doc.editor?.spreadBorder?.enabled ? ' checked' : ''}> 見開き区切り
+          <input type="checkbox" data-setting="spreadBorderEnabled" data-e2e-id="scriptnote-theme-spread-border-enabled"${this.doc.editor?.spreadBorder?.enabled ? ' checked' : ''}> 見開き区切り
         </label>
         <label class="sn2-detail-settings-label">開始</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderStart" value="${e(spreadBorderStartValue)}" min="1" max="999" title="区切り線を引く最初のページ番号">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderStart" data-e2e-id="scriptnote-theme-spread-border-start" value="${e(spreadBorderStartValue)}" min="1" max="999" title="区切り線を引く最初のページ番号">
         <label class="sn2-detail-settings-label">間隔</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderEvery" value="${e(spreadBorderEveryValue)}" min="1" max="99" title="何ページごとに区切り線を引くか">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderEvery" data-e2e-id="scriptnote-theme-spread-border-every" value="${e(spreadBorderEveryValue)}" min="1" max="99" title="何ページごとに区切り線を引くか">
         <span class="sn2-detail-settings-label">p</span>
       </div>
       <div class="sn2-detail-settings-row">

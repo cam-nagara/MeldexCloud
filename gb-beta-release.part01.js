@@ -467,8 +467,19 @@
         'aria-labelledby': 'meldex-cloud-home-only-title',
       });
       const actions = _el('div', { class: 'btn-row meldex-cloud-home-only-actions' });
-      const browserButton = _el('button', { type: 'button', class: 'primary', text: 'このままブラウザで起動' });
-      const retryButton = _el('button', { type: 'button', text: 'ホーム追加をやり直す' });
+      const browserButton = _el('button', {
+        id: 'meldex-cloud-home-only-browser',
+        type: 'button',
+        class: 'primary',
+        dataset: { e2eId: 'cloud-home-only-browser' },
+        text: 'このままブラウザで起動',
+      });
+      const retryButton = _el('button', {
+        id: 'meldex-cloud-home-only-retry',
+        type: 'button',
+        dataset: { e2eId: 'cloud-home-only-retry' },
+        text: 'ホーム追加をやり直す',
+      });
       const close = () => {
         document.removeEventListener('keydown', onKeydown);
         overlay.remove();
@@ -568,7 +579,12 @@
       class: modal ? 'meldex-install-desc' : 'gb-section-desc meldex-install-desc',
       text: 'Meldex本体とクイックメモは別々にホーム画面へ追加します。用途に合わせて必要なものを追加してください。',
     });
-    const status = _el('div', { class: 'meldex-install-status', dataset: { meldexInstallStatus: '1' } });
+    const status = _el('div', {
+      class: 'meldex-install-status',
+      role: 'status',
+      'aria-live': 'polite',
+      dataset: { meldexInstallStatus: '1' },
+    });
     const hint = _el('div', { class: 'meldex-install-hint', dataset: { meldexInstallHint: '1' } });
     const button = _el('button', {
       type: 'button',
@@ -646,7 +662,12 @@
     }
     body.appendChild(_createInstallSection({ context: 'modal', closeOnSuccess: close }));
     const buttons = _el('div', { class: 'btn-row' });
-    const laterButton = _el('button', { type: 'button', text: '今はしない' });
+    const laterButton = _el('button', {
+      id: 'meldex-install-prompt-later',
+      type: 'button',
+      dataset: { e2eId: 'install-modal-later-button' },
+      text: '今はしない',
+    });
     laterButton.addEventListener('click', close);
     overlay.addEventListener('click', event => {
       if (event.target === overlay) close();
@@ -721,8 +742,19 @@
         status,
       ]);
       const buttons = _el('div', { class: 'btn-row meldex-cloud-home-actions' });
-      const addButton = _el('button', { type: 'button', class: 'primary', text: 'ホーム画面に追加する' });
-      const browserButton = _el('button', { type: 'button', text: 'ブラウザで続ける' });
+      const addButton = _el('button', {
+        id: 'meldex-cloud-home-first-add',
+        type: 'button',
+        class: 'primary',
+        dataset: { e2eId: 'cloud-home-first-add' },
+        text: 'ホーム画面に追加する',
+      });
+      const browserButton = _el('button', {
+        id: 'meldex-cloud-home-first-browser',
+        type: 'button',
+        dataset: { e2eId: 'cloud-home-first-browser' },
+        text: 'ブラウザで続ける',
+      });
       function onKeydown(event) {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -867,11 +899,28 @@
       _el('ol', { class: 'meldex-install-help-list' }, _quickMemoInstallSteps().map(step => _el('li', { text: step }))),
     ]);
     const buttons = _el('div', { class: 'btn-row' });
-    const quickMemoButton = _el('button', { type: 'button', text: 'クイックメモを開く' });
+    const quickMemoButton = _el('button', {
+      id: 'meldex-install-help-quick-memo',
+      type: 'button',
+      dataset: { e2eId: 'install-help-open-quick-memo-button' },
+      text: 'クイックメモを開く',
+    });
     const doneButton = options.onManualDone
-      ? _el('button', { type: 'button', class: 'primary', text: 'ホームに追加できたら押す' })
+      ? _el('button', {
+        id: 'meldex-install-help-done',
+        type: 'button',
+        class: 'primary',
+        dataset: { e2eId: 'install-help-done-button' },
+        text: 'ホームに追加できたら押す',
+      })
       : null;
-    const closeButton = _el('button', { type: 'button', class: options.onManualDone ? '' : 'primary', text: '閉じる' });
+    const closeButton = _el('button', {
+      id: 'meldex-install-help-close',
+      type: 'button',
+      class: options.onManualDone ? '' : 'primary',
+      dataset: { e2eId: 'install-help-close-button' },
+      text: '閉じる',
+    });
     const close = () => {
       document.removeEventListener('keydown', onKeydown);
       overlay.remove();
@@ -1002,9 +1051,21 @@
       _el('li', { text: 'LLM連携を使う場合、質問本文と選択した関連コンテキストは各LLMプロバイダへ送信されます。' }),
     ]));
     const links = _el('p', { class: 'meldex-beta-consent-muted' }, [
-      _el('a', { href: 'PRIVACY.html', target: '_blank', rel: 'noopener', text: 'プライバシーポリシー' }),
+      _el('a', {
+        id: 'meldex-beta-consent-privacy-link',
+        href: 'PRIVACY.html',
+        target: '_blank',
+        rel: 'noopener',
+        text: 'プライバシーポリシー',
+      }),
       document.createTextNode(' / '),
-      _el('a', { href: 'TERMS-OF-USE.html', target: '_blank', rel: 'noopener', text: '利用規約' }),
+      _el('a', {
+        id: 'meldex-beta-consent-terms-link',
+        href: 'TERMS-OF-USE.html',
+        target: '_blank',
+        rel: 'noopener',
+        text: '利用規約',
+      }),
       document.createTextNode(' を確認できます。'),
     ]);
     body.appendChild(links);
@@ -1041,7 +1102,13 @@
     }));
 
     const buttons = _el('div', { class: 'btn-row' });
-    const continueButton = _el('button', { class: 'primary', type: 'button', text: '同意して開始' });
+    const continueButton = _el('button', {
+      id: 'meldex-beta-consent-continue',
+      class: 'primary',
+      type: 'button',
+      dataset: { e2eId: 'beta-consent-continue' },
+      text: '同意して開始',
+    });
     continueButton.disabled = true;
     buttons.appendChild(continueButton);
     dialog.appendChild(title);

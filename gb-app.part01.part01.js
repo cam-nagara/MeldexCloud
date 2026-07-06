@@ -114,6 +114,133 @@ function _writeStorageJson(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+function addLongPressHandler(element, handler, options = {}) {
+  if (!element || typeof handler !== 'function') return () => {};
+  const requestedDelayMs = Number.isFinite(options.duration) ? options.duration : options.delayMs;
+  const requestedMoveTolerance = Number.isFinite(options.moveThreshold) ? options.moveThreshold : options.moveTolerance;
+  const delayMs = Number.isFinite(requestedDelayMs) ? Math.max(20, requestedDelayMs) : 520;
+  const moveTolerance = Number.isFinite(requestedMoveTolerance) ? Math.max(2, requestedMoveTolerance) : 10;
+  let timer = null;
+  let suppressTimer = null;
+  let startX = 0;
+  let startY = 0;
+  let pointerId = null;
+  let fired = false;
+  let suppressNextActivation = false;
+
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    pointerId = null;
+    fired = false;
+  };
+  const clearSuppression = () => {
+    if (suppressTimer) clearTimeout(suppressTimer);
+    suppressTimer = null;
+    suppressNextActivation = false;
+  };
+  const scheduleSuppressionReset = () => {
+    if (suppressTimer) clearTimeout(suppressTimer);
+    suppressTimer = setTimeout(() => {
+      suppressTimer = null;
+      suppressNextActivation = false;
+    }, 700);
+  };
+  const consumeSuppressedActivation = (event) => {
+    if (!suppressNextActivation) return false;
+    event.preventDefault();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+    else event.stopPropagation();
+    fired = false;
+    clearSuppression();
+    return true;
+  };
+  const createLongPressEvent = (event) => ({
+    clientX: startX,
+    clientY: startY,
+    target: event.target || element,
+    currentTarget: element,
+    pointerType: event.pointerType || 'touch',
+    pointerId: event.pointerId,
+    originalEvent: event,
+    preventDefault: () => event.preventDefault(),
+    stopPropagation: () => event.stopPropagation(),
+    stopImmediatePropagation: () => {
+      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+      else event.stopPropagation();
+    },
+  });
+
+  const cancelIfMoved = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    if (Math.abs(event.clientX - startX) > moveTolerance || Math.abs(event.clientY - startY) > moveTolerance) clear();
+  };
+
+  const onDown = (event) => {
+    if (event.pointerType === 'mouse' && options.mouse !== true) return;
+    if (event.button != null && event.button !== 0) return;
+    clear();
+    clearSuppression();
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      fired = true;
+      suppressNextActivation = true;
+      try {
+        event.preventDefault();
+        event.stopPropagation();
+        element.setPointerCapture?.(event.pointerId);
+      } catch {}
+      handler(createLongPressEvent(event));
+    }, delayMs);
+  };
+
+  const onUp = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const shouldSuppressClick = fired || suppressNextActivation;
+    clear();
+    if (shouldSuppressClick) {
+      suppressNextActivation = true;
+      scheduleSuppressionReset();
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  const onClick = (event) => {
+    consumeSuppressedActivation(event);
+  };
+  const onContextMenu = (event) => {
+    if (!consumeSuppressedActivation(event)) clear();
+  };
+
+  element.addEventListener('pointerdown', onDown);
+  element.addEventListener('pointermove', cancelIfMoved);
+  element.addEventListener('pointerup', onUp);
+  element.addEventListener('pointercancel', clear);
+  element.addEventListener('pointerleave', clear);
+  element.addEventListener('lostpointercapture', clear);
+  element.addEventListener('click', onClick, true);
+  element.addEventListener('contextmenu', onContextMenu, true);
+  window.addEventListener('scroll', clear, true);
+
+  return () => {
+    clear();
+    clearSuppression();
+    element.removeEventListener('pointerdown', onDown);
+    element.removeEventListener('pointermove', cancelIfMoved);
+    element.removeEventListener('pointerup', onUp);
+    element.removeEventListener('pointercancel', clear);
+    element.removeEventListener('pointerleave', clear);
+    element.removeEventListener('lostpointercapture', clear);
+    element.removeEventListener('click', onClick, true);
+    element.removeEventListener('contextmenu', onContextMenu, true);
+    window.removeEventListener('scroll', clear, true);
+  };
+}
+window.addLongPressHandler = addLongPressHandler;
+
 function _collectPathsNeedingFileIdMigration() {
   const allPaths = new Set();
   const prefixes = ['dbViewConfig:', 'validationRules:', 'entityTemplates:',

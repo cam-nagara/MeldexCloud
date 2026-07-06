@@ -12,6 +12,9 @@
   const _autoSyncTimers = {}; // { timerKey: intervalId }
   let _syncInProgress = false; // 同期の同時実行防止
   let _currentOverlay = null;  // 現在開いているモーダルの参照
+  let _currentOverlayKeydown = null;
+  let _currentOverlayReturnFocus = null;
+  let _notionModalSeq = 0;
   const _SYNC_LOCK_KEY = 'meldex-notion-sync-lock-v1';
   const _SYNC_LOCK_TTL_MS = 10 * 60 * 1000;
   const _syncClientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -89,17 +92,39 @@
 
   // === Notion同期設定UI ===
   async function showNotionSyncModal() {
+    _closeModal();
     const o = document.createElement('div');
     o.className = 'modal-overlay';
+    o.dataset.e2eId = 'notion-sync-modal-overlay';
+    const titleId = `notion-sync-title-${++_notionModalSeq}`;
+    const descId = `notion-sync-global-status-${_notionModalSeq}`;
+    _currentOverlayReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     _currentOverlay = o;
-    o.innerHTML = `<div class="modal" style="min-width:620px;max-width:720px;max-height:85vh;overflow-y:auto;">
-      <h3>${lucide('refreshCw', 16)} Notion同期</h3>
+    o.innerHTML = `<div class="modal notion-sync-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="notion-sync-modal">
+      <h3 id="${titleId}" class="notion-sync-title">${lucide('refreshCw', 16)} Notion同期</h3>
       <div id="notion-sync-modal-body"></div>
+      <div class="btn-row notion-sync-footer" data-modal-footer>
+        <button id="notion-close-btn" type="button" class="gb-btn gb-btn-sm notion-sync-action" data-e2e-id="notion-close" aria-label="Notion同期を閉じる">閉じる</button>
+      </div>
     </div>`;
+    const onKeyDown = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        _closeModal();
+      }
+    };
+    _currentOverlayKeydown = onKeyDown;
+    document.addEventListener('keydown', onKeyDown, true);
+    o.addEventListener('pointerdown', event => {
+      if (event.target === o) _closeModal();
+    });
 
     document.body.appendChild(o);
     replaceIcons(o);
-    await _renderNotionSyncSettings(o.querySelector('#notion-sync-modal-body'), { modal: true });
+    await _renderNotionSyncSettings(o.querySelector('#notion-sync-modal-body'), { modal: true, descId });
+    o.querySelector('#notion-close-btn')?.addEventListener('click', () => _closeModal());
+    window.GBModalShell?.enhanceOverlay?.(o);
+    o.querySelector('.notion-sync-modal')?.focus?.();
   }
 
   async function renderNotionSyncSettings(root) {
@@ -123,39 +148,36 @@
     container.dataset.notionHasToken = hasToken ? '1' : '0';
 
     container.innerHTML = `
-      <details style="margin-bottom:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;" ${hasToken ? '' : 'open'}>
-        <summary style="font-size:13px;font-weight:bold;cursor:pointer;color:var(--fg);">
+      <details class="notion-sync-section" data-e2e-id="notion-integration-section" ${hasToken ? '' : 'open'}>
+        <summary class="notion-sync-section-summary" data-e2e-id="notion-integration-summary" aria-label="Notionインテグレーション設定">
           インテグレーション設定
-          <span style="font-size:12px;font-weight:normal;color:${hasToken ? 'var(--green)' : 'var(--red)'};">${hasToken ? '（接続済み）' : '（未設定）'}</span>
+          <span class="${hasToken ? 'notion-sync-state-ok' : 'notion-sync-state-danger'}">${hasToken ? '（接続済み）' : '（未設定）'}</span>
         </summary>
-        <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">
+        <div class="notion-sync-help">
           <ol style="padding-left:20px;margin:6px 0;">
-            <li><a href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener" data-e2e-id="notion-integrations-link" style="color:var(--accent2);">Notion Integrations</a> で新規インテグレーションを作成</li>
+            <li><a href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener" data-e2e-id="notion-integrations-link" aria-label="Notion Integrationsをブラウザで開く" style="color:var(--accent2);">Notion Integrations</a> で新規インテグレーションを作成</li>
             <li>トークン（<code>ntn_</code>で始まる文字列）をコピー</li>
             <li>下の欄に貼り付けて保存</li>
             <li>同期したいNotionページで「…」→「コネクト」からインテグレーションを追加</li>
           </ol>
         </div>
-        <div style="display:flex;gap:4px;margin-top:6px;">
-          <input id="notion-token" type="password" placeholder="ntn_..." style="flex:1;font-size:12px;font-family:monospace;">
-          <button id="notion-token-save" style="font-size:12px;">トークンを保存</button>
-          <button id="notion-token-delete" style="font-size:12px;color:var(--red);background:none;border:1px solid var(--border);border-radius:3px;" ${hasToken ? '' : 'disabled'}>${lucide('trash2', 12)} トークンを削除</button>
+        <div class="notion-sync-row notion-sync-token-row">
+          <input id="notion-token" class="gb-input notion-sync-input notion-token-input" type="password" placeholder="ntn_..." aria-label="Notionトークン" autocomplete="off" data-e2e-id="notion-token-input">
+          <button id="notion-token-save" type="button" class="gb-btn gb-btn-sm notion-sync-action" data-e2e-id="notion-token-save" aria-label="Notionトークンを保存">トークンを保存</button>
+          <button id="notion-token-delete" type="button" class="gb-btn gb-btn-sm gb-btn-danger notion-sync-action" data-e2e-id="notion-token-delete" aria-label="Notionトークンを削除" ${hasToken ? '' : 'disabled'}>${lucide('trash2', 12)} トークンを削除</button>
         </div>
-        <div id="notion-token-status" style="font-size:12px;margin-top:4px;"></div>
+        <div id="notion-token-status" class="notion-sync-status-line"></div>
       </details>
 
       <div style="margin-bottom:12px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <div style="font-size:13px;font-weight:bold;color:var(--fg);">Notionに同期するフォルダ</div>
-          <button id="notion-add-folder" style="font-size:12px;padding:3px 10px;">${lucide('plus', 12)} フォルダを追加</button>
+        <div class="notion-sync-heading-row">
+          <div class="notion-sync-heading">Notionに同期するフォルダ</div>
+          <button id="notion-add-folder" type="button" class="gb-btn gb-btn-sm notion-sync-action" data-e2e-id="notion-add-folder">${lucide('plus', 12)} フォルダを追加</button>
         </div>
         <div id="notion-folder-list"></div>
       </div>
 
-      <div id="notion-sync-global-status" style="margin-bottom:8px;font-size:12px;color:var(--fg2);">Notion 同期は現在『ローカル → Notion 片方向 push 専用』として動作しています。Notion 側で編集した内容はローカルに反映されません（双方向同期は正式版以降）。</div>
-      ${options.modal ? `<div class="btn-row">
-        <button id="notion-close-btn" style="">閉じる</button>
-      </div>` : ''}
+      <div id="${options.descId || 'notion-sync-global-status'}" class="notion-sync-global-status">Notion 同期は現在『ローカル → Notion 片方向 push 専用』として動作しています。Notion 側で編集した内容はローカルに反映されません（双方向同期は正式版以降）。</div>
     `;
     replaceIcons(container);
 
@@ -163,16 +185,26 @@
     container.querySelector('#notion-token-save')?.addEventListener('click', () => _handleSaveToken(container, options));
     container.querySelector('#notion-token-delete')?.addEventListener('click', () => _handleDeleteToken(container, options));
     container.querySelector('#notion-add-folder')?.addEventListener('click', () => _addFolderEntry('', container, options));
-    container.querySelector('#notion-close-btn')?.addEventListener('click', () => _closeModal());
 
     // 既存フォルダを描画
     _renderFolderList(folders, container, options);
   }
 
   function _closeModal() {
+    if (_currentOverlayKeydown) {
+      document.removeEventListener('keydown', _currentOverlayKeydown, true);
+      _currentOverlayKeydown = null;
+    }
     if (_currentOverlay) {
       _currentOverlay.remove();
       _currentOverlay = null;
+    }
+    const target = _currentOverlayReturnFocus;
+    _currentOverlayReturnFocus = null;
+    if (target?.isConnected && typeof target.focus === 'function') {
+      setTimeout(() => {
+        try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      }, 0);
     }
   }
 
@@ -223,7 +255,7 @@
   // === フォルダカード生成 ===
   function _createFolderCard(folder, index, root, options = {}) {
     const card = document.createElement('div');
-    card.style.cssText = 'padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:8px;';
+    card.className = 'notion-folder-card';
     card.dataset.index = index;
     card.dataset.folderPath = folder.path || '';
     card.dataset.notionPageUrl = folder.notion_page_url || '';
@@ -248,37 +280,37 @@
       `<option value="${o.value}" ${syncInterval === o.value ? 'selected' : ''}>${o.label}</option>`
     ).join('');
     card.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-size:14px;">${lucide('folder', 16)}</span>
-        <span style="font-size:13px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(folder.path || '')}">${esc(folderName)}</span>
-        <button class="notion-remove-folder" style="font-size:11px;padding:1px 6px;color:var(--red);background:none;border:1px solid var(--border);border-radius:3px;cursor:pointer;">削除</button>
+      <div class="notion-folder-card-head">
+        <span class="notion-folder-card-icon">${lucide('folder', 16)}</span>
+        <span class="notion-folder-card-title" title="${esc(folder.path || '')}">${esc(folderName)}</span>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-danger notion-remove-folder notion-sync-action" data-e2e-id="notion-remove-folder" data-notion-card-action="remove" data-notion-card-index="${index}" aria-label="${esc(folderName)}のNotion同期設定を削除">削除</button>
       </div>
-      <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;">
-        <span style="font-size:12px;color:var(--fg2);white-space:nowrap;">フォルダ:</span>
-        <input class="notion-folder-path" type="text" value="${esc(folder.path || '')}" placeholder="ツリーから選択 or パスを入力" style="flex:1;font-size:12px;">
-        <button class="notion-pick-folder" style="font-size:11px;padding:2px 8px;">${lucide('folderTree', 12)} 選択</button>
+      <div class="notion-sync-row">
+        <span class="notion-sync-label">フォルダ:</span>
+        <input class="gb-input notion-sync-input notion-folder-path" type="text" value="${esc(folder.path || '')}" placeholder="ツリーから選択 or パスを入力" aria-label="Notion同期フォルダパス" data-e2e-id="notion-folder-path-${index}">
+        <button type="button" class="gb-btn gb-btn-sm notion-pick-folder notion-sync-action" data-e2e-id="notion-pick-folder" data-notion-card-action="pick-folder" data-notion-card-index="${index}" aria-label="${esc(folderName)}の同期フォルダを選択">${lucide('folderTree', 12)} 選択</button>
       </div>
-      <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;">
-        <span style="font-size:12px;color:var(--fg2);white-space:nowrap;">NotionページURL:</span>
-        <input class="notion-page-url" type="text" value="${esc(folder.notion_page_url || '')}" placeholder="https://www.notion.so/..." style="flex:1;font-size:12px;">
-        <button class="notion-resolve-page" style="font-size:11px;padding:2px 8px;">確認</button>
+      <div class="notion-sync-row">
+        <span class="notion-sync-label">NotionページURL:</span>
+        <input class="gb-input notion-sync-input notion-page-url" type="text" value="${esc(folder.notion_page_url || '')}" placeholder="https://www.notion.so/..." aria-label="NotionページURL" data-e2e-id="notion-page-url-${index}">
+        <button type="button" class="gb-btn gb-btn-sm notion-resolve-page notion-sync-action" data-e2e-id="notion-resolve-page" data-notion-card-action="resolve-page" data-notion-card-index="${index}" aria-label="${esc(folderName)}のNotionページを確認">確認</button>
       </div>
-      ${notionTitle ? `<div style="font-size:12px;color:var(--fg2);margin-bottom:6px;">Notionページ: <b style="color:var(--fg);">${esc(notionTitle)}</b></div>` : ''}
-      <div class="notion-sync-controls-row" style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">
-        <label class="notion-sync-inline-field" style="display:inline-flex;align-items:center;gap:6px;min-width:0;">
-          <span style="font-size:12px;color:var(--fg2);white-space:nowrap;">自動同期:</span>
-          <select class="notion-sync-interval gb-select gb-select-sm" style="width:auto;min-width:112px;">${intervalSelect}</select>
+      ${notionTitle ? `<div class="notion-page-title-line">Notionページ: <b>${esc(notionTitle)}</b></div>` : ''}
+      <div class="notion-sync-controls-row">
+        <label class="notion-sync-inline-field">
+          <span class="notion-sync-label">自動同期:</span>
+          <select class="notion-sync-interval gb-select gb-select-sm" aria-label="${esc(folderName)}のNotion自動同期間隔" data-e2e-id="notion-sync-interval-${index}" data-notion-card-action="sync-interval" data-notion-card-index="${index}">${intervalSelect}</select>
         </label>
-        <div class="notion-sync-inline-field" style="display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1 1 220px;">
-          <span style="font-size:12px;color:var(--fg2);white-space:nowrap;">同期方向:</span>
-          <span class="notion-sync-mode-label" data-notion-sync-mode="push" style="font-size:12px;color:var(--fg);white-space:nowrap;">Meldex → Notion（片方向 push 専用）</span>
+        <div class="notion-sync-inline-field notion-sync-mode-field">
+          <span class="notion-sync-label">同期方向:</span>
+          <span class="notion-sync-mode-label" data-notion-sync-mode="push">Meldex → Notion（片方向 push 専用）</span>
         </div>
-        <span style="font-size:11px;color:var(--fg2);margin-left:auto;white-space:nowrap;">最終同期: ${lastSync}</span>
+        <span class="notion-last-sync">最終同期: ${lastSync}</span>
       </div>
-      <div style="display:flex;gap:4px;">
-        <button class="notion-save-folder" style="font-size:12px;padding:3px 10px;background:none;border:1px solid var(--border);border-radius:3px;cursor:pointer;">設定を保存</button>
-        <button class="notion-sync-now" style="font-size:12px;padding:3px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:3px;cursor:pointer;">${lucide('refreshCw', 12)} 今すぐ同期</button>
-        <span class="notion-folder-status" style="font-size:12px;color:var(--fg2);align-self:center;margin-left:8px;"></span>
+      <div class="notion-sync-actions-row">
+        <button type="button" class="gb-btn gb-btn-sm notion-save-folder notion-sync-action" data-e2e-id="notion-save-folder" data-notion-card-action="save-folder" data-notion-card-index="${index}" aria-label="${esc(folderName)}のNotion同期設定を保存">設定を保存</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-primary notion-sync-now notion-sync-action" data-e2e-id="notion-sync-now" data-notion-card-action="sync-now" data-notion-card-index="${index}" aria-label="${esc(folderName)}を今すぐNotionへ同期">${lucide('refreshCw', 12)} 今すぐ同期</button>
+        <span class="notion-folder-status"></span>
       </div>
     `;
 
@@ -339,26 +371,28 @@
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.dataset.notionFolderPicker = '1';
-      overlay.innerHTML = `<div class="modal" style="width:520px;height:560px;max-width:min(92vw,520px);">
-        <h3 style="display:flex;align-items:center;gap:8px;">${lucide('folderTree', 16)} フォルダを選択</h3>
-        <div style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;">
-          <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);">
-            <span style="white-space:nowrap;">選択中:</span>
-            <code id="notion-folder-picker-current" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--fg);">${esc(initialPath || 'ルート')}</code>
+      const pickerTitleId = `notion-folder-picker-title-${++_notionModalSeq}`;
+      const pickerDescId = `notion-folder-picker-current-${_notionModalSeq}`;
+      overlay.innerHTML = `<div class="modal notion-folder-picker-modal" role="dialog" aria-modal="true" aria-labelledby="${pickerTitleId}" aria-describedby="${pickerDescId}" tabindex="-1" data-e2e-id="notion-folder-picker-dialog">
+        <h3 id="${pickerTitleId}" class="notion-sync-title">${lucide('folderTree', 16)} フォルダを選択</h3>
+        <div class="notion-folder-picker-body">
+          <div class="notion-folder-picker-current-row">
+            <span class="notion-sync-label">選択中:</span>
+            <code id="${pickerDescId}" class="notion-folder-picker-current">${esc(initialPath || 'ルート')}</code>
           </div>
-          <div id="notion-folder-picker-tree" style="flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:4px;"></div>
-          <div id="notion-folder-picker-status" style="min-height:16px;font-size:12px;color:var(--fg2);"></div>
+          <div id="notion-folder-picker-tree" class="notion-folder-picker-tree"></div>
+          <div id="notion-folder-picker-status" class="notion-sync-status-line"></div>
         </div>
-        <div class="btn-row">
-          <button id="notion-folder-picker-cancel" type="button">キャンセル</button>
-          <button id="notion-folder-picker-ok" type="button" class="primary">選択</button>
+        <div class="btn-row notion-folder-picker-actions">
+          <button id="notion-folder-picker-cancel" type="button" class="gb-btn gb-btn-sm notion-sync-action" data-e2e-id="notion-folder-picker-cancel">キャンセル</button>
+          <button id="notion-folder-picker-ok" type="button" class="gb-btn gb-btn-sm gb-btn-primary notion-sync-action" data-e2e-id="notion-folder-picker-ok">選択</button>
         </div>
       </div>`;
       document.body.appendChild(overlay);
       replaceIcons(overlay);
 
       const tree = overlay.querySelector('#notion-folder-picker-tree');
-      const currentEl = overlay.querySelector('#notion-folder-picker-current');
+      const currentEl = overlay.querySelector(`#${pickerDescId}`);
       const statusEl = overlay.querySelector('#notion-folder-picker-status');
       let selectedPath = String(initialPath || '');
       let closed = false;
@@ -389,22 +423,35 @@
       };
       const createRow = (name, path, depth, icon = 'folder') => {
         const row = document.createElement('div');
+        row.className = 'notion-folder-picker-row';
+        row.setAttribute('role', 'button');
+        row.setAttribute('aria-label', `${name || _notionFolderLabel(path)}を選択`);
+        row.tabIndex = 0;
         row.dataset.notionFolderPath = path || '';
         row.dataset.depth = String(depth);
-        row.style.cssText = `padding:5px 8px 5px ${8 + depth * 16}px;cursor:pointer;font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:5px;border-radius:3px;min-height:28px;`;
+        row.style.paddingLeft = `${8 + depth * 16}px`;
         const iconWrap = document.createElement('span');
-        iconWrap.style.cssText = 'width:14px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
+        iconWrap.className = 'notion-folder-picker-icon';
         iconWrap.innerHTML = typeof lucide === 'function' ? lucide(icon, 12) : '';
         row.appendChild(iconWrap);
         const label = document.createElement('span');
         label.textContent = name || _notionFolderLabel(path);
-        label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
+        label.className = 'notion-folder-picker-label';
         row.appendChild(label);
         row.title = path || 'ルート';
         row.addEventListener('click', () => markSelected(row));
         row.addEventListener('dblclick', () => close({ path: row.dataset.notionFolderPath || '' }));
-        row.addEventListener('mouseenter', () => { if (!row.dataset.selected) row.style.background = 'var(--bg3)'; });
-        row.addEventListener('mouseleave', () => { if (!row.dataset.selected) row.style.background = ''; });
+        row.addEventListener('keydown', event => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            close({ path: row.dataset.notionFolderPath || '' });
+          } else if (event.key === ' ') {
+            event.preventDefault();
+            markSelected(row);
+          }
+        });
+        row.addEventListener('mouseenter', () => { if (!row.dataset.selected) row.classList.add('hover'); });
+        row.addEventListener('mouseleave', () => { if (!row.dataset.selected) row.classList.remove('hover'); });
         return row;
       };
       const expandFolder = async (parentPath, depth, parentRow) => {
@@ -417,8 +464,11 @@
             const path = folder.path || '';
             if (tree.querySelector(`[data-notion-folder-path="${_notionCssEscape(path)}"]`)) continue;
             const row = createRow(folder.name, path, depth + 1, 'folder');
-            const toggle = document.createElement('span');
-            toggle.style.cssText = 'cursor:pointer;opacity:0.7;width:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'notion-folder-picker-toggle';
+            toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を展開`);
+            toggle.setAttribute('aria-expanded', 'false');
             toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
             toggle.addEventListener('click', async event => {
               event.stopPropagation();
@@ -432,12 +482,16 @@
                   remove.remove();
                 }
                 toggle.dataset.expanded = '0';
+                toggle.setAttribute('aria-expanded', 'false');
+                toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を展開`);
                 toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
                 replaceIcons(toggle);
                 return;
               }
               await expandFolder(path, depth + 1, row);
               toggle.dataset.expanded = '1';
+              toggle.setAttribute('aria-expanded', 'true');
+              toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を折りたたむ`);
               toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronDown', 10) : 'v';
               replaceIcons(toggle);
             });
@@ -463,6 +517,8 @@
       tree.appendChild(rootRow);
       if (!selectedPath) markSelected(rootRow);
       expandFolder('', 0, rootRow);
+      window.GBModalShell?.enhanceOverlay?.(overlay);
+      overlay.querySelector('.notion-folder-picker-modal')?.focus?.();
       overlay.querySelector('#notion-folder-picker-ok')?.addEventListener('click', () => close({ path: selectedPath }));
       overlay.querySelector('#notion-folder-picker-cancel')?.addEventListener('click', () => close(null));
       overlay.addEventListener('click', event => { if (event.target === overlay) close(null); });
@@ -554,7 +610,10 @@
   }
 
   function _refreshNotionSyncSettings(root, options = {}) {
-    if (root?.isConnected) {
+    const overlay = root?.closest?.('.modal-overlay, [data-mobile-dialog-closing="1"], .gb-mobile-dialog-overlay-closing');
+    const isClosingMobileSheet = overlay?.dataset?.mobileDialogClosing === '1'
+      || overlay?.classList?.contains('gb-mobile-dialog-overlay-closing');
+    if (root?.isConnected && !isClosingMobileSheet) {
       _renderNotionSyncSettings(root, options);
       return;
     }
@@ -564,7 +623,7 @@
   async function _handleDeleteToken(root, options = {}) {
     const statusEl = root?.querySelector?.('#notion-token-status') || document.getElementById('notion-token-status');
     if (!statusEl) return;
-    if (!await cfConfirm('Notionトークンを削除しますか？ 自動同期もすべて停止します。')) return;
+    if (!await cfConfirm('Notionトークンを削除しますか？ 自動同期もすべて停止します。', { danger: true, okLabel: '削除' })) return;
     try {
       _clearAllAutoSyncTimers();
       await apiDelete('/notion/token');
@@ -594,7 +653,7 @@
 
   // === フォルダ削除 ===
   async function _removeFolder(index, root, options = {}) {
-    if (!await cfConfirm('この同期フォルダ設定を削除しますか？')) return;
+    if (!await cfConfirm('この同期フォルダ設定を削除しますか？', { danger: true, okLabel: '削除' })) return;
     try {
       // 削除対象のパスを事前取得してからタイマーを片付ける
       let removedPath = '';

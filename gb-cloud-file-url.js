@@ -121,6 +121,47 @@
     return URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
   }
 
+  function _authHeaders() {
+    const headers = new Headers();
+    try {
+      const token = localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || '';
+      if (token) headers.set('Authorization', 'Bearer ' + token);
+    } catch {}
+    return headers;
+  }
+
+  async function _serverRawUrl(path, opts) {
+    const normalized = _normalizeLocalPath(path);
+    const rawUrl = _fallbackRawUrl(normalized);
+    const response = await fetch(rawUrl, {
+      method: 'GET',
+      headers: _authHeaders(),
+      cache: 'no-store',
+      credentials: 'omit',
+    });
+    if (!response.ok) return { path: normalized, url: rawUrl, streamed: true };
+    const blob = await response.blob();
+    const fileSize = Number(blob.size || 0);
+    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
+      const cachedLarge = CACHE[normalized];
+      if (cachedLarge?.url?.startsWith('blob:')) {
+        try { URL.revokeObjectURL(cachedLarge.url); } catch {}
+      }
+      delete CACHE[normalized];
+      return { path: normalized, url: rawUrl, mime: blob.type || _mimeFromPath(normalized), size: fileSize, streamed: true };
+    }
+    const modified = response.headers.get('etag') || response.headers.get('last-modified') || String(Date.now());
+    const cached = CACHE[normalized];
+    if (cached && cached.modified === modified && cached.size === fileSize) return cached;
+    const url = URL.createObjectURL(blob);
+    if (cached?.url && cached.url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(cached.url); } catch {}
+    }
+    const next = { path: normalized, url, mime: blob.type || _mimeFromPath(normalized), size: fileSize, modified };
+    CACHE[normalized] = next;
+    return next;
+  }
+
   async function _provider() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) return null;
@@ -135,6 +176,7 @@
     if (_isDirectUrl(direct)) return { path: '', url: direct };
     const normalized = _extractRawPath(direct);
     if (!normalized) return { path: '', url: direct };
+    if (_runtime()?.isServerMode?.()) return _serverRawUrl(normalized, opts);
     if (!_runtime()?.isDropboxMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
@@ -251,7 +293,7 @@
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
-      if (isThumbnail && !_runtime()?.isDropboxMode?.()) return;
+      if (isThumbnail && !(_runtime()?.isDropboxMode?.() || _runtime()?.isServerMode?.())) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
       return;
     }

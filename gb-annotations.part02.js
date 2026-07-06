@@ -546,9 +546,12 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   userText.className = 'ann-user-name';
   userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
   headerLabel.appendChild(userText);
-  const deleteBtn = document.createElement('span');
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'ann-note-delete-btn';
   deleteBtn.dataset.annDelete = '1';
-  deleteBtn.style.cursor = 'pointer';
+  deleteBtn.setAttribute('aria-label', '注釈を削除');
+  deleteBtn.title = '削除';
   deleteBtn.innerHTML = lucide('x', 12);
   deleteBtn.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -638,40 +641,133 @@ function renderNote(id, shape, data, color, opacity, user, created) {
 
   // 右クリックメニュー（色変更・フキダシしっぽ・削除）
   function _showAnnotationNoteContextMenu(e, noteEl) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
+    const restoreTarget = e?.currentTarget instanceof HTMLElement ? e.currentTarget : null;
     const menu = document.createElement('div');
-    menu.className = '_note-ctx-menu';
-    menu.style.cssText = 'position:fixed;z-index:210;background:var(--ui-popup-bg, var(--bg2));border:1px solid var(--border);border-radius:6px;padding:4px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4);min-width:120px;';
-    { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
+    menu.className = 'gb-context-menu _note-ctx-menu annotation-note-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', '注釈付箋メニュー');
+    menu.style.position = 'fixed';
+    menu.style.zIndex = '210';
     const hasTail = !!noteEl.querySelector('.ann-tail,.ann-tail-shape');
-    // 色を変更
-    const colorItem = document.createElement('div');
-    colorItem.className = '_ctx-item';
-    colorItem.dataset.action = 'color';
-    colorItem.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-    colorItem.innerHTML = lucide('palette',14) + ' 色を変更';
+    let closeTimer = 0;
+    let tailOpen = false;
+
+    const removeMenus = () => document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
+    const menuItems = (root) => [...root.querySelectorAll('button.gb-context-menu-item:not(.disabled)')];
+    const focusMenuItem = (items, index) => {
+      if (!items.length) return;
+      const next = ((index % items.length) + items.length) % items.length;
+      items[next].focus();
+    };
+    const closeMenu = (restoreFocus = false) => {
+      clearTimeout(closeTimer);
+      document.removeEventListener('pointerdown', onGlobalPointerDown, true);
+      document.removeEventListener('keydown', onGlobalKeyDown, true);
+      tailTrig?.setAttribute('aria-expanded', 'false');
+      removeMenus();
+      if (restoreFocus && restoreTarget?.isConnected) restoreTarget.focus?.();
+    };
+    const hideTailPanel = () => {
+      clearTimeout(closeTimer);
+      tailOpen = false;
+      tailTrig.setAttribute('aria-expanded', 'false');
+      tailPanel.hidden = true;
+      tailPanel.style.display = 'none';
+    };
+    const showTailPanel = () => {
+      clearTimeout(closeTimer);
+      if (!tailPanel.isConnected) document.body.appendChild(tailPanel);
+      tailOpen = true;
+      tailTrig.setAttribute('aria-expanded', 'true');
+      tailPanel.hidden = false;
+      tailPanel.style.display = 'block';
+      if (typeof positionPopup === 'function') {
+        positionPopup(tailPanel, tailTrig.getBoundingClientRect(), { prefer: 'right', gap: 2, avoidRect: menu.getBoundingClientRect() });
+      } else {
+        const rect = tailTrig.getBoundingClientRect();
+        tailPanel.style.left = rect.right + 2 + 'px';
+        tailPanel.style.top = rect.top + 'px';
+        if (typeof clampPopupToViewport === 'function') clampPopupToViewport(tailPanel);
+      }
+    };
+    const scheduleTailClose = () => {
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(() => {
+        if (!tailPanel.matches(':hover') && !tailTrig.matches(':hover') && !tailPanel.contains(document.activeElement)) hideTailPanel();
+      }, 140);
+    };
+    function onGlobalPointerDown(ev) {
+      const inMenu = menu.contains(ev.target) || tailPanel.contains(ev.target);
+      if (!inMenu) closeMenu(false);
+    }
+    function onGlobalKeyDown(ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeMenu(true);
+      }
+    }
+    const handleMenuKeydown = (ev, root, onArrowLeft = null) => {
+      const items = menuItems(root);
+      const currentIndex = items.indexOf(document.activeElement);
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        focusMenuItem(items, currentIndex + 1);
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        focusMenuItem(items, currentIndex - 1);
+      } else if (ev.key === 'Home') {
+        ev.preventDefault();
+        focusMenuItem(items, 0);
+      } else if (ev.key === 'End') {
+        ev.preventDefault();
+        focusMenuItem(items, items.length - 1);
+      } else if (ev.key === 'ArrowLeft' && onArrowLeft) {
+        ev.preventDefault();
+        onArrowLeft();
+      }
+    };
+    const createMenuButton = ({ label, icon, action, danger = false, role = 'menuitem', checked = null }) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'gb-context-menu-item' + (danger ? ' danger' : '');
+      item.dataset.action = action;
+      item.setAttribute('role', role);
+      if (checked != null) item.setAttribute('aria-checked', checked ? 'true' : 'false');
+      const iconSlot = document.createElement('span');
+      iconSlot.className = 'menu-icon';
+      iconSlot.setAttribute('aria-hidden', 'true');
+      iconSlot.innerHTML = icon ? lucide(icon, 16) : (checked ? lucide('check', 16) : '');
+      const labelSlot = document.createElement('span');
+      labelSlot.textContent = label;
+      item.appendChild(iconSlot);
+      item.appendChild(labelSlot);
+      return item;
+    };
+
+    const colorItem = createMenuButton({ label: '色を変更', icon: 'palette', action: 'color' });
     menu.appendChild(colorItem);
 
     // フキダシのしっぽ サブメニュー
-    const tailWrap = document.createElement('div');
-    tailWrap.style.position = 'relative';
-    const tailTrig = document.createElement('div');
-    tailTrig.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-    tailTrig.innerHTML = lucide('messageSquare',14) + ' フキダシのしっぽ' + submenuArrow();
-    tailTrig.onmouseenter = () => { tailTrig.style.background='var(--bg4)'; };
-    tailTrig.onmouseleave = () => { tailTrig.style.background=''; };
+    const tailTrig = createMenuButton({ label: 'フキダシのしっぽ', icon: 'messageSquare', action: 'tail' });
+    tailTrig.classList.add('has-submenu');
+    tailTrig.setAttribute('aria-haspopup', 'menu');
+    tailTrig.setAttribute('aria-expanded', 'false');
     const tailPanel = document.createElement('div');
-    tailPanel.className = '_note-ctx-menu';
-    tailPanel.style.cssText = 'display:none;min-width:100px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:211;';
-    attachHoverSubmenu(tailTrig, tailPanel);
+    tailPanel.className = 'gb-context-menu _note-ctx-menu annotation-note-tail-menu';
+    tailPanel.setAttribute('role', 'menu');
+    tailPanel.setAttribute('aria-label', 'フキダシのしっぽ');
+    tailPanel.hidden = true;
+    tailPanel.style.position = 'fixed';
+    tailPanel.style.zIndex = '211';
+    tailPanel.style.display = 'none';
     [['追加する', false], ['削除する', true]].forEach(([label, isRemove]) => {
-      const si = document.createElement('div');
-      si.innerHTML = radioMark(hasTail === isRemove) + label;
-      si.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;' + (hasTail === isRemove ? 'color:var(--accent);' : '');
-      si.onmouseenter = () => { si.style.background='var(--bg4)'; };
-      si.onmouseleave = () => { si.style.background=''; };
+      const si = createMenuButton({ label, action: isRemove ? 'tail-remove' : 'tail-add', role: 'menuitemradio', checked: hasTail === isRemove });
       si.addEventListener('click', () => {
-        document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
+        closeMenu(false);
         if (isRemove) {
           if (typeof AnnotationStickyTail !== 'undefined') AnnotationStickyTail.removeTail(noteEl, null);
           noteEl.querySelectorAll('.ann-tail, .ann-tail-line, .ann-tail-shape, .ann-tail-handle').forEach(el => el.remove());
@@ -692,21 +788,41 @@ function renderNote(id, shape, data, color, opacity, user, created) {
       });
       tailPanel.appendChild(si);
     });
-    tailWrap.appendChild(tailTrig);
-    tailWrap.appendChild(tailPanel);
-    menu.appendChild(tailWrap);
+    tailTrig.addEventListener('mouseenter', showTailPanel);
+    tailTrig.addEventListener('mouseleave', scheduleTailClose);
+    tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
+    tailTrig.addEventListener('keydown', (ev) => {
+      if (ev.key === 'ArrowRight' || ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        showTailPanel();
+        requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
+      }
+    });
+    tailPanel.addEventListener('mouseenter', () => clearTimeout(closeTimer));
+    tailPanel.addEventListener('mouseleave', scheduleTailClose);
+    tailPanel.addEventListener('keydown', (ev) => handleMenuKeydown(ev, tailPanel, () => {
+      hideTailPanel();
+      tailTrig.focus();
+    }));
+    menu.appendChild(tailTrig);
 
     // 削除
-    const deleteItem = document.createElement('div');
-    deleteItem.className = '_ctx-item';
-    deleteItem.dataset.action = 'delete';
-    deleteItem.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:12px;color:var(--red);display:flex;align-items:center;gap:6px;';
-    deleteItem.innerHTML = lucide('trash2',14) + ' 削除';
+    const deleteItem = createMenuButton({ label: '削除', icon: 'trash2', action: 'delete', danger: true });
     menu.appendChild(deleteItem);
     document.body.appendChild(menu);
-    clampPopupToViewport(menu);
+    if (restoreTarget && restoreTarget.classList?.contains('note-more-btn') && typeof positionPopup === 'function') {
+      positionPopup(menu, restoreTarget.getBoundingClientRect(), { prefer: 'below', gap: 2 });
+    } else if (typeof positionPopup === 'function') {
+      positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY }, { prefer: 'below', gap: 2 });
+    } else {
+      const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
+      menu.style.left = ((e?.clientX || 0) / z) + 'px';
+      menu.style.top = ((e?.clientY || 0) / z) + 'px';
+      if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    }
+    menu.addEventListener('keydown', (ev) => handleMenuKeydown(ev, menu));
     colorItem.addEventListener('click', () => {
-      menu.remove();
+      closeMenu(false);
       openColorPalette(noteEl, color, (newColor) => {
         color = newColor;
         _applyAnnotationNoteColor(noteEl, newColor);
@@ -715,14 +831,14 @@ function renderNote(id, shape, data, color, opacity, user, created) {
       });
     });
     deleteItem.addEventListener('click', () => {
-      menu.remove();
+      closeMenu(false);
       deleteNote(id, noteEl, { data, editor });
     });
-    setTimeout(() => document.addEventListener('pointerdown', function h(ev) {
-      const inAny = [...document.querySelectorAll('._note-ctx-menu')].some(m => m.contains(ev.target));
-      if (!inAny) document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
-      else document.addEventListener('pointerdown', h, {once:true});
-    }, {once:true}), 0);
+    setTimeout(() => {
+      document.addEventListener('pointerdown', onGlobalPointerDown, true);
+      document.addEventListener('keydown', onGlobalKeyDown, true);
+      requestAnimationFrame(() => menuItems(menu)[0]?.focus());
+    }, 0);
   }
 
   note.addEventListener('contextmenu', (e) => {
@@ -734,11 +850,12 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   }
 
   // メニューボタン追加
-  const moreBtn = document.createElement('span');
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
   moreBtn.className = 'note-more-btn';
-  moreBtn.textContent = '\u22ef';
+  moreBtn.setAttribute('aria-label', '注釈メニュー');
   moreBtn.title = 'メニュー';
-  moreBtn.style.cssText = 'position:absolute;top:2px;right:2px;cursor:pointer;font-size:12px;color:var(--fg2);padding:2px 4px;border-radius:3px;z-index:5;';
+  moreBtn.innerHTML = lucide('moreHorizontal', 16);
   moreBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _showAnnotationNoteContextMenu(ev, note); });
   note.appendChild(moreBtn);
 

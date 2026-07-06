@@ -5,6 +5,44 @@
 const SN2_ROWSET_PRESETS_STORAGE_KEY = 'sn2-rowset-presets';
 const SN2_ROWSET_STORAGE_HISTORY_SCOPE = 'settings:scriptnote';
 
+function _snRowsetIcon(name, size, fallback) {
+  if (typeof lucide === 'function') return lucide(name, size || 14);
+  return fallback || '';
+}
+
+function _snRowsetIsRenderedFocusTarget(target) {
+  if (!target?.isConnected || target.hidden || typeof target.focus !== 'function') return false;
+  let node = target;
+  while (node && node !== document.body) {
+    if (node.hidden) return false;
+    const style = window.getComputedStyle ? getComputedStyle(node) : null;
+    if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+    node = node.parentElement;
+  }
+  const rect = typeof target.getBoundingClientRect === 'function' ? target.getBoundingClientRect() : null;
+  return !rect || (rect.width > 0 && rect.height > 0);
+}
+
+function _snRowsetRestoreFocus(target) {
+  if (!_snRowsetIsRenderedFocusTarget(target)) return;
+  if (typeof focusMeldexDropdownTrigger === 'function') {
+    focusMeldexDropdownTrigger(target);
+    return;
+  }
+  try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+}
+
+function _snRowsetConfirmDelete(message) {
+  if (typeof cfConfirm === 'function') {
+    return cfConfirm(message, { danger: true, okLabel: '削除' }).then(Boolean);
+  }
+  if (typeof showConfirmDialog === 'function') {
+    return new Promise(resolve => showConfirmDialog(message, () => resolve(true), () => resolve(false)));
+  }
+  if (typeof confirm === 'function') return Promise.resolve(!!confirm(message));
+  return Promise.resolve(false);
+}
+
 function _snRowsetCaptureStorageHistory() {
   if (typeof captureLocalStorageSettings !== 'function') return null;
   if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
@@ -72,7 +110,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     container.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'sn2-rowset-panel';
-    wrap.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;';
 
     // 現在の行セット状態（セッション中保持）
     if (!this._rowsetRows) this._rowsetRows = [];
@@ -86,14 +123,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     // ── ヘッダー ──
     const header = document.createElement('div');
     header.className = 'sn2-detail-header';
-    header.innerHTML = '<span style="font-weight:600;font-size:13px;">行セット</span>';
+    const title = document.createElement('span');
+    title.className = 'sn2-rowset-title';
+    title.textContent = '行セット';
+    header.appendChild(title);
     wrap.appendChild(header);
 
     // ── プリセット ──
     const presetRow = document.createElement('div');
-    presetRow.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 12px;border-bottom:1px solid var(--border);';
+    presetRow.className = 'sn2-rowset-preset-row';
     const presetSel = document.createElement('select');
-    presetSel.style.cssText = 'flex:1;font-size:11px;padding:2px 4px;';
+    presetSel.className = 'gb-select gb-select-sm sn2-rowset-preset-select';
     presetSel.dataset.e2eId = 'scriptnote-rowset-preset-select';
     presetSel.title = '行セットプリセットを選択';
     presetSel.setAttribute('aria-label', '行セットプリセットを選択');
@@ -111,7 +151,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     presetRow.appendChild(presetSel);
     // 保存ボタン
     const saveBtn = document.createElement('button');
-    saveBtn.className = 'sn2-detail-add-btn';
+    saveBtn.className = 'sn2-detail-add-btn gb-btn gb-btn-sm gb-btn-quiet sn2-rowset-save-preset';
     saveBtn.type = 'button';
     saveBtn.textContent = '保存';
     saveBtn.title = '現在の行セットをプリセットとして保存';
@@ -119,17 +159,66 @@ Object.assign(ScriptNoteEditor.prototype, {
     saveBtn.setAttribute('aria-label', '現在の行セットをプリセットとして保存');
     saveBtn.addEventListener('click', () => {
       if (!this._rowsetRows.length) return;
+      const focusReturnTarget = saveBtn;
+      const dialogId = `sn2-rsp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      const titleId = dialogId + '-title';
+      const inputId = dialogId + '-name';
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
-      overlay.innerHTML = `<div class="modal" style="min-width:280px;"><h3>行セットプリセット保存</h3>
-        <div class="modal-body" style="padding:12px 16px;"><label>プリセット名<input type="text" id="sn2-rsp-name" style="width:100%;padding:4px 6px;margin-top:4px;" placeholder="台詞＋ト書き"></label></div>
-        <div class="btn-row" style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 16px;">
-          <button type="button" class="cancel-btn">キャンセル</button><button type="button" class="primary ok-btn">保存</button>
-        </div></div>`;
-      const doSave = () => {
-        const name = overlay.querySelector('#sn2-rsp-name').value.trim();
-        if (!name) return;
+      overlay.dataset.sn2Dialog = 'rowset-preset-save';
+      const modal = document.createElement('div');
+      modal.className = 'modal sn2-rowset-save-modal';
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('aria-labelledby', titleId);
+      const heading = document.createElement('h3');
+      heading.id = titleId;
+      heading.textContent = '行セットプリセット保存';
+      const body = document.createElement('div');
+      body.className = 'modal-body sn2-rowset-save-body';
+      const field = document.createElement('label');
+      field.className = 'sn2-rowset-save-field';
+      field.setAttribute('for', inputId);
+      const labelText = document.createElement('span');
+      labelText.className = 'gb-label';
+      labelText.textContent = 'プリセット名';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = inputId;
+      input.className = 'gb-input sn2-rowset-save-input';
+      input.placeholder = '台詞＋ト書き';
+      input.dataset.e2eId = 'scriptnote-rowset-save-preset-name';
+      input.setAttribute('aria-label', '行セットプリセット名');
+      field.append(labelText, input);
+      body.appendChild(field);
+      const actions = document.createElement('div');
+      actions.className = 'btn-row sn2-rowset-save-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'gb-btn gb-btn-sm cancel-btn';
+      cancelBtn.textContent = 'キャンセル';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
+      okBtn.textContent = '保存';
+      actions.append(cancelBtn, okBtn);
+      modal.append(heading, body, actions);
+      overlay.appendChild(modal);
+      const close = () => {
+        if (typeof window !== 'undefined') window.removeEventListener('keydown', keyHandler, true);
+        document.removeEventListener('keydown', keyHandler, true);
         overlay.remove();
+        _snRowsetRestoreFocus(focusReturnTarget);
+        setTimeout(() => _snRowsetRestoreFocus(focusReturnTarget), 0);
+        setTimeout(() => _snRowsetRestoreFocus(focusReturnTarget), 60);
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => _snRowsetRestoreFocus(focusReturnTarget));
+        }
+      };
+      const doSave = () => {
+        const name = input.value.trim();
+        if (!name) return;
+        close();
         const presets = this._readRowsetPresets();
         presets[name] = JSON.parse(JSON.stringify(this._rowsetRows));
         this._writeRowsetPresets(presets, {
@@ -139,69 +228,80 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._refreshRowsetPresetOptions(presetSel);
         if (typeof showStatus === 'function') showStatus(`行セットプリセット「${name}」を保存しました`);
       };
-      overlay.querySelector('.ok-btn').addEventListener('click', doSave);
-      overlay.querySelector('.cancel-btn').addEventListener('click', () => overlay.remove());
-      overlay.querySelector('#sn2-rsp-name').addEventListener('keydown', ev => { if (ev.key === 'Enter') doSave(); });
+      function keyHandler(ev) {
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          ev.stopImmediatePropagation?.();
+          close();
+        }
+      }
+      okBtn.addEventListener('click', doSave);
+      cancelBtn.addEventListener('click', close);
+      input.addEventListener('keydown', ev => { if (ev.key === 'Enter') doSave(); });
+      overlay.addEventListener('click', ev => { if (ev.target === overlay) close(); });
+      if (typeof window !== 'undefined') window.addEventListener('keydown', keyHandler, true);
+      document.addEventListener('keydown', keyHandler, true);
       document.body.appendChild(overlay);
-      overlay.querySelector('#sn2-rsp-name').focus();
+      if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
+        window.GBModalShell.enhanceOverlay(overlay);
+      }
+      input.focus();
+      input.select();
     });
     presetRow.appendChild(saveBtn);
     // 削除ボタン
     const delPresetBtn = document.createElement('button');
-    delPresetBtn.className = 'sn2-detail-add-btn';
+    delPresetBtn.className = 'sn2-detail-add-btn gb-btn gb-btn-sm gb-btn-danger sn2-rowset-delete-preset';
     delPresetBtn.type = 'button';
     delPresetBtn.textContent = '削除';
     delPresetBtn.title = '選択中のプリセットを削除';
     delPresetBtn.dataset.e2eId = 'scriptnote-rowset-delete-preset';
     delPresetBtn.setAttribute('aria-label', '選択中のプリセットを削除');
-    delPresetBtn.addEventListener('click', () => {
+    delPresetBtn.addEventListener('click', async () => {
       const val = presetSel.value;
       if (!val) return;
       const presets = this._readRowsetPresets();
       if (!presets[val]) return;
-      if (typeof showConfirmDialog === 'function') {
-        showConfirmDialog(`プリセット「${val}」を削除しますか？`, () => {
-          delete presets[val];
-          this._writeRowsetPresets(presets, {
-            label: 'シナリオ: 行セットプリセット削除',
-            detail: val,
-          });
-          this._refreshRowsetPresetOptions(presetSel);
-          if (typeof showStatus === 'function') showStatus(`プリセット「${val}」を削除しました`);
-        });
-      }
+      if (!await _snRowsetConfirmDelete(`プリセット「${val}」を削除しますか？`)) return;
+      delete presets[val];
+      this._writeRowsetPresets(presets, {
+        label: 'シナリオ: 行セットプリセット削除',
+        detail: val,
+      });
+      this._refreshRowsetPresetOptions(presetSel);
+      if (typeof showStatus === 'function') showStatus(`プリセット「${val}」を削除しました`);
     });
     presetRow.appendChild(delPresetBtn);
     wrap.appendChild(presetRow);
 
     // ── 行リスト ──
     const listLabel = document.createElement('div');
-    listLabel.style.cssText = 'padding:8px 12px 4px;font-size:11px;font-weight:600;color:var(--fg2);';
+    listLabel.className = 'sn2-rowset-list-label gb-section-desc';
     listLabel.textContent = '行の組み合わせ';
     wrap.appendChild(listLabel);
 
     const listWrap = document.createElement('div');
-    listWrap.style.cssText = 'overflow-y:auto;padding:0 8px;';
+    listWrap.className = 'sn2-rowset-list-wrap';
     const list = document.createElement('div');
     list.className = 'sn2-rowset-list';
 
     this._rowsetRows.forEach((entry, i) => {
       const item = document.createElement('div');
-      item.className = 'sn2-detail-item';
-      item.style.cssText = 'display:flex;align-items:center;gap:4px;padding:3px 4px;min-height:28px;';
+      item.className = 'sn2-detail-item sn2-rowset-item';
       item.draggable = true;
       item.dataset.idx = i;
 
       // ドラッグハンドル
       const handle = document.createElement('span');
-      handle.className = 'sn2-detail-handle';
-      handle.textContent = '⠿';
-      handle.style.cssText = 'cursor:grab;color:var(--fg2);font-size:10px;';
+      handle.className = 'sn2-detail-handle sn2-rowset-handle';
+      handle.innerHTML = _snRowsetIcon('gripVertical', 14, '↕');
+      handle.setAttribute('aria-hidden', 'true');
       item.appendChild(handle);
 
       // タイプ選択
       const sel = document.createElement('select');
-      sel.style.cssText = 'flex:1;font-size:12px;padding:2px 4px;min-width:0;';
+      sel.className = 'gb-select gb-select-sm sn2-rowset-role-select';
       sel.dataset.e2eId = 'scriptnote-rowset-role-' + i;
       sel.title = '行セット ' + (i + 1) + ' 行目のタイプ';
       sel.setAttribute('aria-label', sel.title);
@@ -221,13 +321,12 @@ Object.assign(ScriptNoteEditor.prototype, {
 
       // 削除ボタン
       const delBtn = document.createElement('button');
-      delBtn.className = 'gb-fmt-btn';
+      delBtn.className = 'gb-btn gb-btn-xs gb-btn-icon gb-btn-quiet sn2-rowset-delete-row';
       delBtn.type = 'button';
-      delBtn.textContent = '✕';
+      delBtn.innerHTML = _snRowsetIcon('x', 12, '×');
       delBtn.title = '行セット ' + (i + 1) + ' 行目を削除';
       delBtn.dataset.e2eId = 'scriptnote-rowset-delete-row-' + i;
       delBtn.setAttribute('aria-label', delBtn.title);
-      delBtn.style.cssText = 'font-size:10px;color:var(--fg2);flex-shrink:0;';
       delBtn.addEventListener('click', () => {
         this._rowsetRows.splice(i, 1);
         this.renderRowsetPanel(container);
@@ -245,13 +344,12 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     // ── 追加ボタン ──
     const addBtn = document.createElement('button');
-    addBtn.className = 'sn2-detail-add-btn';
+    addBtn.className = 'sn2-detail-add-btn gb-btn gb-btn-sm gb-btn-quiet sn2-rowset-add-row';
     addBtn.type = 'button';
-    addBtn.textContent = '＋ 行を追加';
+    addBtn.innerHTML = _snRowsetIcon('plus', 14, '+') + ' 行を追加';
     addBtn.dataset.e2eId = 'scriptnote-rowset-add-row';
     addBtn.title = '行セットに行を追加';
     addBtn.setAttribute('aria-label', '行セットに行を追加');
-    addBtn.style.cssText = 'margin:4px 12px;';
     addBtn.addEventListener('click', () => {
       this._rowsetRows.push({ role: '' });
       this.renderRowsetPanel(container);
@@ -260,9 +358,9 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     // ── 実行セクション ──
     const execRow = document.createElement('div');
-    execRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:1px solid var(--border);justify-content:flex-end;';
+    execRow.className = 'sn2-rowset-exec-row';
     const repeatLabel = document.createElement('span');
-    repeatLabel.style.cssText = 'font-size:12px;color:var(--fg2);';
+    repeatLabel.className = 'gb-section-desc sn2-rowset-repeat-label';
     repeatLabel.textContent = '回数';
     execRow.appendChild(repeatLabel);
     const repeatInput = document.createElement('input');
@@ -273,17 +371,16 @@ Object.assign(ScriptNoteEditor.prototype, {
     repeatInput.dataset.e2eId = 'scriptnote-rowset-repeat';
     repeatInput.title = '行セットの追加回数';
     repeatInput.setAttribute('aria-label', '行セットの追加回数');
-    repeatInput.style.cssText = 'width:50px;font-size:12px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--fg);';
+    repeatInput.className = 'gb-input-sm sn2-rowset-repeat-input';
     repeatInput.addEventListener('change', () => { this._rowsetRepeat = parseInt(repeatInput.value) || 1; });
     execRow.appendChild(repeatInput);
     const execBtn = document.createElement('button');
-    execBtn.className = 'sn2-detail-add-btn';
+    execBtn.className = 'sn2-detail-add-btn gb-btn gb-btn-sm gb-btn-primary sn2-rowset-insert';
     execBtn.type = 'button';
     execBtn.textContent = 'シナリオに追加';
     execBtn.dataset.e2eId = 'scriptnote-rowset-insert';
     execBtn.title = '行セットをシナリオに追加';
     execBtn.setAttribute('aria-label', '行セットをシナリオに追加');
-    execBtn.style.cssText = 'padding:4px 12px;font-size:12px;font-weight:600;';
     execBtn.addEventListener('click', () => this._execRowsetInsert(container));
     execRow.appendChild(execBtn);
     wrap.appendChild(execRow);

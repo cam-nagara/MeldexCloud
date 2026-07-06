@@ -24,6 +24,8 @@ const GB_SHORTCUTS = {
   'global.shortcutHelp':  { key: 'ctrl+/',       label: 'ショートカット設定を開く',  scope: 'global' },
   'global.navBack':       { key: 'alt+arrowleft',  label: 'パネル履歴を戻る',       scope: 'global' },
   'global.navForward':    { key: 'alt+arrowright', label: 'パネル履歴を進む',       scope: 'global' },
+  'global.navBackBrowser': { key: 'browserback',    label: '戻るボタンでパネル履歴を戻る', scope: 'global' },
+  'global.navForwardBrowser': { key: 'browserforward', label: '進むボタンでパネル履歴を進む', scope: 'global' },
   'global.fullscreen':    { key: 'f11',          label: 'フルスクリーン',             scope: 'global' },
   'global.reload':        { key: 'ctrl+shift+r', label: 'リロード',                  scope: 'global' },
   'global.reload2':       { key: 'f5',           label: 'リロード（F5）',             scope: 'global' },
@@ -321,6 +323,8 @@ function _formatKeyDisplay(keyStr) {
     if (p === 'arrowdown') return '↓';
     if (p === 'arrowleft') return '←';
     if (p === 'arrowright') return '→';
+    if (p === 'browserback') return '戻るボタン';
+    if (p === 'browserforward') return '進むボタン';
     if (p === 'escape') return 'Esc';
     if (p === 'enter') return 'Enter';
     if (p === 'delete') return 'Del';
@@ -655,6 +659,8 @@ const _shortcutHandlers = {
     if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
     if (typeof navForward === 'function') navForward();
   },
+  'global.navBackBrowser': (e) => _shortcutHandlers['global.navBack'](e),
+  'global.navForwardBrowser': (e) => _shortcutHandlers['global.navForward'](e),
   'global.search': () => {
     // アクティブ pane のタブ種別に応じて、現在のビュー内検索バーを開く
     try {

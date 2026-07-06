@@ -499,10 +499,29 @@ const _SLASH_COMMANDS = [
 function _createSlashMenu() {
   const menu = document.createElement('div');
   menu.id = 'slash-menu';
+  menu.className = 'gb-context-menu note-slash-menu';
+  menu.dataset.e2eId = 'note-slash-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ブロック挿入メニュー');
   menu.style.display = 'none';
   document.body.appendChild(menu);
   menu.addEventListener('mousedown', (e) => e.preventDefault()); // フォーカス奪取防止
+  menu.addEventListener('keydown', _onSlashKeydown);
   return menu;
+}
+
+function _noteEnhanceIcon(name, size = 16, fallback = '') {
+  return typeof lucide === 'function' ? lucide(name, size) : fallback;
+}
+
+function _setSlashMenuSelection(menu, index) {
+  const items = Array.from(menu.querySelectorAll('.slash-item'));
+  items.forEach((it, i) => {
+    const selected = i === index;
+    it.classList.toggle('selected', selected);
+    it.setAttribute('aria-selected', selected ? 'true' : 'false');
+    it.tabIndex = selected ? 0 : -1;
+  });
 }
 
 function _renderSlashMenuItems(query) {
@@ -515,15 +534,28 @@ function _renderSlashMenuItems(query) {
   if (filtered.length === 0) { menu.style.display = 'none'; _slashMenuActive = false; return; }
   if (_slashMenuSelection >= filtered.length) _slashMenuSelection = 0;
 
-  menu.innerHTML = filtered.map((c, i) =>
-    `<div class="slash-item${i === _slashMenuSelection ? ' selected' : ''}" data-cmd="${c.id}">` +
-    `<span class="slash-icon">${typeof lucide === 'function' ? lucide(c.icon, 16) : ''}</span>` +
-    `<span>${esc(c.label)}</span></div>`
-  ).join('');
-
-  menu.querySelectorAll('.slash-item').forEach(item => {
+  menu.textContent = '';
+  filtered.forEach((c, i) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'slash-item gb-context-menu-item' + (i === _slashMenuSelection ? ' selected' : '');
+    item.dataset.cmd = c.id;
+    item.dataset.e2eId = 'note-slash-command-' + c.id;
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('aria-label', c.label);
+    item.tabIndex = i === _slashMenuSelection ? 0 : -1;
+    const icon = document.createElement('span');
+    icon.className = 'slash-icon menu-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = _noteEnhanceIcon(c.icon, 16);
+    const label = document.createElement('span');
+    label.className = 'gb-context-menu-item-label';
+    label.textContent = c.label;
+    item.append(icon, label);
     item.addEventListener('click', () => _executeSlashCommand(item.dataset.cmd));
+    menu.appendChild(item);
   });
+  _setSlashMenuSelection(menu, _slashMenuSelection);
 }
 
 function _showSlashMenu() {
@@ -610,21 +642,20 @@ function _onSlashKeydown(e) {
   if (!menu || menu.style.display === 'none') return;
   const items = menu.querySelectorAll('.slash-item');
   if (items.length === 0) return;
+  if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(e.key)) return;
+  e.preventDefault();
+  e.stopPropagation();
 
   if (e.key === 'ArrowDown') {
-    e.preventDefault();
     _slashMenuSelection = (_slashMenuSelection + 1) % items.length;
-    items.forEach((it, i) => it.classList.toggle('selected', i === _slashMenuSelection));
+    _setSlashMenuSelection(menu, _slashMenuSelection);
   } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
     _slashMenuSelection = (_slashMenuSelection - 1 + items.length) % items.length;
-    items.forEach((it, i) => it.classList.toggle('selected', i === _slashMenuSelection));
+    _setSlashMenuSelection(menu, _slashMenuSelection);
   } else if (e.key === 'Enter') {
-    e.preventDefault();
     const selected = items[_slashMenuSelection];
     if (selected) _executeSlashCommand(selected.dataset.cmd);
   } else if (e.key === 'Escape') {
-    e.preventDefault();
     _hideSlashMenu();
   }
 }
@@ -669,15 +700,27 @@ function _initBlockDragHandle() {
   //   旧実装は blockRect.top にハンドルを置いていたため、ハンドルへ向かう途中で
   //   上のブロック領域に侵入して mouseover が再発火し、ハンドルが連鎖的に上方へ逃げていた。
   const HANDLE_H = 20;
+  const TOUCH_HANDLE_SIZE = 44;
+  function _setBlockHandleTouchMode(enabled) {
+    const size = enabled ? TOUCH_HANDLE_SIZE : HANDLE_H;
+    handle.classList.toggle('block-drag-handle--touch', !!enabled);
+    handle.style.width = size + 'px';
+    handle.style.height = size + 'px';
+    handle.style.fontSize = enabled ? '20px' : '16px';
+  }
+  function _blockHandleHeight() {
+    return handle.classList.contains('block-drag-handle--touch') ? TOUCH_HANDLE_SIZE : HANDLE_H;
+  }
   function _positionHandle(blockRect, mouseY) {
     const pcRect = pc.getBoundingClientRect();
     const cs = getComputedStyle(pc);
     const padLeft = parseFloat(cs.paddingLeft) || 0;
     const z = (typeof _getZoom === 'function') ? _getZoom() : 1;
+    const handleHeight = _blockHandleHeight();
     // ハンドル top: マウス Y の中心合わせ。ブロック範囲を超えないようクランプ
     const minTop = blockRect.top;
-    const maxTop = Math.max(blockRect.top, blockRect.bottom - HANDLE_H);
-    const desiredTop = (typeof mouseY === 'number') ? (mouseY - HANDLE_H / 2) : blockRect.top;
+    const maxTop = Math.max(blockRect.top, blockRect.bottom - handleHeight);
+    const desiredTop = (typeof mouseY === 'number') ? (mouseY - handleHeight / 2) : blockRect.top;
     const top = Math.min(maxTop, Math.max(minTop, desiredTop));
     handle.style.top = (top / z) + 'px';
     handle.style.left = ((pcRect.left + Math.max(0, padLeft - 22)) / z) + 'px';
@@ -697,6 +740,7 @@ function _initBlockDragHandle() {
     }
     // 別ブロックに入った、または同一ブロック内で 16px 以上 Y が動いたときだけ再配置
     if (block !== _lastBlock || _lastMouseY === null || Math.abs(e.clientY - _lastMouseY) > 16) {
+      _setBlockHandleTouchMode(false);
       _positionHandle(block.getBoundingClientRect(), e.clientY);
       _lastBlock = block;
       _lastMouseY = e.clientY;
@@ -724,6 +768,7 @@ function _initBlockDragHandle() {
     const block = _findBlock(e.target);
     if (block && block.tagName !== 'BR') {
       const t = e.touches?.[0];
+      _setBlockHandleTouchMode(true);
       _positionHandle(block.getBoundingClientRect(), t?.clientY);
       _lastBlock = block;
       _lastMouseY = t?.clientY ?? null;
@@ -956,4 +1001,10 @@ if (_origOpenPage) {
     // ブロックドラッグハンドル初期化
     _initBlockDragHandle();
   };
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initBlockDragHandle, { once: true });
+} else {
+  _initBlockDragHandle();
 }

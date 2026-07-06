@@ -3,6 +3,18 @@
    gb-tool-calendar.js のプロトタイプ拡張
    ============================== */
 
+function _gbCalModalSizeStyle(minWidth, extra, options) {
+  const width = Math.max(240, Number(minWidth) || 400);
+  const zoom = Math.max(0.1, (typeof _getZoom === 'function' ? _getZoom() : parseFloat(document.documentElement?.style?.zoom || '')) || 1);
+  const viewportWidth = Math.floor(window.visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || width + 16);
+  const viewportHeight = Math.floor(window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 720);
+  const safeWidth = Math.max(240, Math.min(width, viewportWidth - 16));
+  const safeHeight = Math.max(180, Math.floor((viewportHeight - 56) / zoom));
+  const overflow = extra == null ? 'overflow-y:auto;' : String(extra);
+  const height = options?.forceHeight ? `height:${safeHeight}px;` : '';
+  return `min-width:0;min-height:0;width:${safeWidth}px;max-width:${safeWidth}px;max-height:${safeHeight}px;${height}${overflow}`;
+}
+
 // === 月表示 ===
 CalendarComponent.prototype._renderMonth = function() {
   const el = this._contentEl;
@@ -174,6 +186,16 @@ function _calMonthGroupKey(ev, dateStr) {
   return '';
 }
 
+function _calEventStableSlug(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  const ascii = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  let hash = 0;
+  for (let i = 0; i < raw.length; i++) {
+    hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+  }
+  return `${ascii || 'event'}-${Math.abs(hash).toString(36)}`;
+}
+
 CalendarComponent.prototype._monthDisplayEvents = function(dateStr, events) {
   const rows = Array.isArray(events) ? events : [];
   const shiftWorkKeys = new Set(rows
@@ -192,8 +214,13 @@ CalendarComponent.prototype._monthDisplayEvents = function(dateStr, events) {
   });
 };
 
-CalendarComponent.prototype._eventCardMenuHtml = function() {
-  return `<button type="button" class="gb-cal-event-more" data-cal-event-more draggable="false" title="イベントメニュー" aria-label="イベントメニュー">${lucide('moreHorizontal', 10)}</button>`;
+CalendarComponent.prototype._eventCardMenuHtml = function(ev, context) {
+  const base = [
+    context || 'event',
+    ev?.id || ev?.external_id || ev?.title || 'event',
+  ].join('|');
+  const e2eId = `calendar-event-more-${_calEventStableSlug(base)}`;
+  return `<button type="button" class="gb-cal-event-more" data-cal-event-more data-e2e-id="${esc(e2eId)}" draggable="false" title="イベントメニュー" aria-label="イベントメニュー">${lucide('moreHorizontal', 10)}</button>`;
 };
 
 CalendarComponent.prototype._monthDayCell = function(dateStr, dayNum, isToday, isOther) {
@@ -206,7 +233,7 @@ CalendarComponent.prototype._monthDayCell = function(dateStr, dayNum, isToday, i
   monthEvents.forEach(e => {
     const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(e, 14) : '';
     const summaryClass = ['shift', 'attendance'].includes(String(e?.calendar_source || '')) ? ' gb-cal-month-summary-event' : '';
-    html += `<div class="gb-cal-day-event${summaryClass}${this._eventSourceClass(e)}" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}">${this._eventTitleContentHtml(e)}${this._eventCardMenuHtml()}${avatars}</div>`;
+    html += `<div class="gb-cal-day-event${summaryClass}${this._eventSourceClass(e)}" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}">${this._eventTitleContentHtml(e)}${this._eventCardMenuHtml(e, 'month-' + dateStr)}${avatars}</div>`;
   });
   dayTasks.forEach(t => {
     const pc = {urgent:'var(--red)',high:'var(--orange)',medium:'var(--blue)',low:'var(--cal-control-bg, var(--bg3))'}[t.priority] || 'var(--cal-control-bg, var(--bg3))';
@@ -303,7 +330,7 @@ CalendarComponent.prototype._allDayStripHtml = function(dateStrs) {
     html += `<div class="gb-cal-all-day-cell" data-date="${dateStr}" style="min-height:30px;padding:2px;border-left:1px solid var(--cal-grid-line, var(--border));">`;
     this._allDayEventsForDay(dateStr).forEach(ev => {
       const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : '';
-      html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml()}${avatars}</div>`;
+      html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'all-day-' + dateStr)}${avatars}</div>`;
     });
     html += '</div>';
   });
@@ -508,7 +535,7 @@ CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, end
   card.style.left = (2 + offset) + 'px';
   card.style.right = rightReserve + 'px';
   card.style.zIndex = String(2 + lane);
-  card.innerHTML = `${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml()}${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : ''}`;
+  card.innerHTML = `${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'timed-' + (layout?.dateStr || '') + '-' + String(startH || 0))}${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : ''}`;
   card.title = ev.title + '\n' + (ev.start||'').substring(11,16) + '–' + (ev.end||'').substring(11,16);
   card.addEventListener('click', (e) => {
     const moreBtn = e.target.closest('[data-cal-event-more]');
@@ -1162,7 +1189,7 @@ CalendarComponent.prototype._showTaskModal = function(editId, defaultStatus) {
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
   const sts = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
   const pris = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
-  o.innerHTML = `<div class="gb-cal-modal" style="min-width:450px;"><h3>${t?'ToDo編集':'新規ToDo'}</h3>
+  o.innerHTML = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(450)}"><h3>${t?'ToDo編集':'新規ToDo'}</h3>
 <div class="field"><label>タイトル</label><input class="tk-title" value="${esc(t?.title||'')}"></div>
 <div style="display:flex;gap:8px;">
   <div class="field" style="flex:1;"><label>ステータス</label><select class="tk-status">${sts.map(([v,l])=>`<option value="${v}" ${(t?.status||defaultStatus||'todo')===v?'selected':''}>${l}</option>`).join('')}</select></div>

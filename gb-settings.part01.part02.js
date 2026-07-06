@@ -117,15 +117,19 @@ async function _promptFolderPath() {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10001;';
-    overlay.innerHTML = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px;width:500px;max-width:90vw;">
-      <div style="font-size:14px;font-weight:bold;color:var(--fg);margin-bottom:12px;">フォルダのパスを入力</div>
-      <input id="prompt-folder-path" type="text" placeholder="D:\\..." style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;">
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button id="prompt-folder-cancel" style="font-size:12px;padding:4px 12px;">キャンセル</button>
-        <button id="prompt-folder-ok" class="primary" style="font-size:12px;padding:4px 12px;">OK</button>
+    overlay.dataset.settingsFolderPathPrompt = '1';
+    overlay.innerHTML = `<div class="modal settings-folder-path-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-folder-title" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px;width:min(500px, calc(100vw - 24px));max-width:90vw;">
+      <div id="prompt-folder-title" class="gb-modal-header" style="font-size:14px;font-weight:bold;color:var(--fg);margin-bottom:12px;">フォルダのパスを入力</div>
+      <div class="gb-modal-body" style="padding:0;">
+        <input id="prompt-folder-path" class="gb-input" data-e2e-id="settings-home-folder-path-input" type="text" placeholder="D:\\..." style="width:100%;box-sizing:border-box;font-size:13px;min-height:44px;margin-bottom:12px;">
+      </div>
+      <div class="gb-modal-footer" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:0;">
+        <button id="prompt-folder-cancel" type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-home-folder-path-cancel" style="min-height:44px;">キャンセル</button>
+        <button id="prompt-folder-ok" type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="settings-home-folder-path-ok" style="min-height:44px;">OK</button>
       </div>
     </div>`;
     document.body.appendChild(overlay);
+    if (typeof window.GBModalShell?.enhanceAll === 'function') window.GBModalShell.enhanceAll();
     const input = overlay.querySelector('#prompt-folder-path');
     input.focus();
     const close = v => { overlay.remove(); resolve(v); };
@@ -708,7 +712,8 @@ function _settingsCanonicalPanelName(name) {
   return raw;
 }
 
-function _settingsPanelDisplayName(name) {
+function _settingsPanelDisplayName(name, options) {
+  if (typeof _settingsNavigationDisplayName === 'function') return _settingsNavigationDisplayName(name, options || {});
   const canonical = _settingsCanonicalPanelName(name);
   const labels = {
     'LLM': 'チャットAI',

@@ -135,10 +135,16 @@ function _disableAnnFloatingViewLockButton(reason) {
   }
   btn.disabled = true;
   btn.dataset.viewLockBound = '';
+  btn.dataset.viewLockState = 'unsupported';
   btn.title = reason || 'このビューは表示ロック対象外です';
-  btn.innerHTML = typeof lucide === 'function' ? lucide('unlock', 14) : '<span class="ico ico-unlock"></span>';
-  btn.style.color = 'var(--fg2)';
-  btn.style.opacity = '0.45';
+  btn.setAttribute('aria-label', btn.title);
+  btn.setAttribute('aria-pressed', 'false');
+  btn.setAttribute('aria-disabled', 'true');
+  btn.classList.remove('vl-lock-icon-locked');
+  btn.classList.add('vl-lock-icon-disabled');
+  btn.innerHTML = typeof lucide === 'function' ? lucide('unlock', 14) : '<span class="ico ico-unlock" aria-hidden="true"></span>';
+  btn.style.color = '';
+  btn.style.opacity = '';
   _annViewLockBoundKey = '';
 }
 

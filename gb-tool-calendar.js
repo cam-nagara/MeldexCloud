@@ -73,18 +73,18 @@ class CalendarComponent extends ToolComponent {
 
   static _buildHTML(startDay, multiDayCount) {
     void startDay;
-    return `<div class="gb-cal-status"></div>
-<div class="gb-toolbar gb-toolbar-cal">
-  <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
-  <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
-  <button class="tb-icon-btn" data-cal-action="toggleSidebar" title="スケジューラーサイドバー"><span class="ico ico-panelLeft"></span></button>
+    return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
+<div class="gb-toolbar gb-toolbar-cal" role="toolbar" aria-label="カレンダー">
+  <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
+  <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
+  <button type="button" class="tb-icon-btn" data-cal-action="toggleSidebar" title="スケジューラーサイドバー" aria-label="スケジューラーサイドバー"><span class="ico ico-panelLeft"></span></button>
   <div class="sep"></div>
-  <button class="tb-icon-btn" data-cal-action="today" title="今日に戻る">${lucide('calendar', 16)}</button>
-  <button class="tb-icon-btn" data-cal-action="prev" title="前へ">${lucide('chevronLeft', 16)}</button>
+  <button type="button" class="tb-icon-btn" data-cal-action="today" title="今日に戻る" aria-label="今日に戻る">${lucide('calendar', 16)}</button>
+  <button type="button" class="tb-icon-btn" data-cal-action="prev" title="前へ" aria-label="前へ">${lucide('chevronLeft', 16)}</button>
   <span class="tb-title gb-cal-title">---</span>
-  <button class="tb-icon-btn" data-cal-action="next" title="次へ">${lucide('chevronRight', 16)}</button>
+  <button type="button" class="tb-icon-btn" data-cal-action="next" title="次へ" aria-label="次へ">${lucide('chevronRight', 16)}</button>
   <div class="sep"></div>
-  <select class="tb-select gb-cal-view-select" title="表示" data-cal-setting="view">
+  <select class="tb-select gb-cal-view-select" title="表示" aria-label="表示" data-cal-setting="view">
     <option value="month">月</option>
     <option value="week">週</option>
     <option value="multi">複数日</option>
@@ -94,15 +94,15 @@ class CalendarComponent extends ToolComponent {
     <option value="clock12">アナログ時計（12時間）</option>
     <option value="clock24">アナログ時計（24時間）</option>
   </select>
-  <input class="tb-input gb-cal-multi-day-count" type="number" min="2" max="14" step="1" value="${multiDayCount || 3}" title="表示日数" data-cal-setting="multi-day-count" style="width:48px;" hidden>
+  <input class="tb-input gb-cal-multi-day-count" type="number" min="2" max="14" step="1" value="${multiDayCount || 3}" title="表示日数" aria-label="表示日数" data-cal-setting="multi-day-count" style="width:48px;" hidden>
   <div class="tb-spacer"></div>
-  <button class="tb-icon-btn" data-cal-action="openProductionTaskList" title="タスクリストシートを開く">${lucide('listTodo', 16)}</button>
-  <button class="tb-icon-btn" data-cal-action="template" title="テンプレート">${lucide('layoutTemplate', 16)}</button>
-  <button class="tb-icon-btn" data-cal-action="timer" title="タイマー">${lucide('timer', 16)}</button>
+  <button type="button" class="tb-icon-btn" data-cal-action="openProductionTaskList" title="タスクリストシートを開く" aria-label="タスクリストシートを開く">${lucide('listTodo', 16)}</button>
+  <button type="button" class="tb-icon-btn" data-cal-action="template" title="テンプレート" aria-label="テンプレート">${lucide('layoutTemplate', 16)}</button>
+  <button type="button" class="tb-icon-btn" data-cal-action="timer" title="タイマー" aria-label="タイマー">${lucide('timer', 16)}</button>
   <div class="sep"></div>
-  <button class="tb-icon-btn" data-cal-action="reload" title="再読み込み"><span class="ico ico-refreshCw"></span></button>
-  <button class="tb-icon-btn" data-cal-action="sync" title="同期"><span class="ico ico-refreshCw"></span></button>
-  <button class="tb-icon-btn gb-toolbar-option-panel-btn" data-cal-action="detail" title="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
+  <button type="button" class="tb-icon-btn" data-cal-action="reload" title="再読み込み" aria-label="再読み込み"><span class="ico ico-refreshCw"></span></button>
+  <button type="button" class="tb-icon-btn" data-cal-action="sync" title="同期" aria-label="同期"><span class="ico ico-refreshCw"></span></button>
+  <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-cal-action="detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
 </div>
 <div class="gb-cal-main">
   <div class="gb-cal-sidebar">
@@ -110,29 +110,29 @@ class CalendarComponent extends ToolComponent {
       <div style="display:flex;align-items:center;margin-bottom:8px;">
         <span style="font-size:13px;font-weight:bold;flex:1;">打刻</span>
         <label style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;display:flex;align-items:center;gap:3px;">
-          <input type="checkbox" class="gb-cal-clock-toggle" data-cal-setting="clock-enabled"> 有効
+          <input type="checkbox" class="gb-cal-clock-toggle" data-cal-setting="clock-enabled" aria-label="打刻を有効にする"> 有効
         </label>
       </div>
       <div class="gb-cal-clock-buttons" style="display:none;">
-        <button class="gb-cal-clock-btn clock-in" data-clock="clock_in">出勤</button>
-        <button class="gb-cal-clock-btn clock-out" data-clock="clock_out">退勤</button>
-        <button class="gb-cal-clock-btn break" data-clock="break_start">離席</button>
-        <button class="gb-cal-clock-btn break" data-clock="break_end">復帰</button>
+        <button type="button" class="gb-cal-clock-btn clock-in" data-clock="clock_in" aria-label="出勤">出勤</button>
+        <button type="button" class="gb-cal-clock-btn clock-out" data-clock="clock_out" aria-label="退勤">退勤</button>
+        <button type="button" class="gb-cal-clock-btn break" data-clock="break_start" aria-label="離席">離席</button>
+        <button type="button" class="gb-cal-clock-btn break" data-clock="break_end" aria-label="復帰">復帰</button>
       </div>
     </div>
     <div class="gb-cal-mini">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-        <button data-cal-action="miniPrev" title="前の月" style="background:none;border:none;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;">${lucide('chevronLeft', 12)}</button>
+        <button type="button" class="gb-cal-mini-nav" data-cal-action="miniPrev" title="前の月" aria-label="前の月">${lucide('chevronLeft', 12)}</button>
         <span class="gb-cal-mini-title" style="font-size:12px;font-weight:bold;"></span>
-        <button data-cal-action="miniNext" title="次の月" style="background:none;border:none;color:var(--cal-muted-fg, var(--fg2));cursor:pointer;">${lucide('chevronRight', 12)}</button>
+        <button type="button" class="gb-cal-mini-nav" data-cal-action="miniNext" title="次の月" aria-label="次の月">${lucide('chevronRight', 12)}</button>
       </div>
       <div class="gb-cal-mini-grid"></div>
     </div>
-    <div><div class="gb-cal-sidebar-title-row"><span>今日のToDo</span><button data-cal-action="addTodayTask" class="gb-cal-sidebar-add-task" title="ToDo追加">+</button></div><div class="gb-cal-today-tasks" style="font-size:12px;"></div></div>
+    <div><div class="gb-cal-sidebar-title-row"><span>今日のToDo</span><button type="button" data-cal-action="addTodayTask" class="gb-cal-sidebar-add-task" title="ToDo追加" aria-label="今日のToDoを追加">${lucide('plus', 16)}</button></div><div class="gb-cal-today-tasks" style="font-size:12px;"></div></div>
     <div style="margin-top:12px;">
       <div class="gb-cal-sidebar-title-row">
         <span>カレンダー</span>
-        <button data-cal-action="createCalendar" class="gb-cal-sidebar-add-task gb-cal-sidebar-add-calendar" title="新規カレンダー">+</button>
+        <button type="button" data-cal-action="createCalendar" class="gb-cal-sidebar-add-task gb-cal-sidebar-add-calendar" title="新規カレンダー" aria-label="新規カレンダー">${lucide('plus', 16)}</button>
       </div>
       <div class="gb-cal-list" style="font-size:12px;"></div>
     </div>
@@ -661,4 +661,5 @@ class CalendarComponent extends ToolComponent {
 }
 
 // コンポーネントレジストリ更新
+window.CalendarComponent = CalendarComponent;
 registerToolComponent('calendar', { cls: CalendarComponent, icon: 'calendar', label: 'スケジューラー', multi: true, requiresViewLock: true });

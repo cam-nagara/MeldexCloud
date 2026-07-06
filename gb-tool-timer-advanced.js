@@ -120,8 +120,8 @@
     return Math.max(min, Math.min(max, n));
   }
 
-  function _timerConfirm(message) {
-    if (typeof cfConfirm === 'function') return cfConfirm(message);
+  function _timerConfirm(message, options) {
+    if (typeof cfConfirm === 'function') return cfConfirm(message, options);
     return Promise.resolve(window.confirm(message));
   }
 
@@ -338,11 +338,12 @@
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay gb-timer-settings-overlay';
     overlay.dataset.timerSettingsModal = '1';
+    overlay.dataset.e2eId = 'timer-settings-overlay';
     overlay.innerHTML = `
-      <div class="modal gb-timer-settings-modal" role="dialog" aria-modal="true" aria-label="タイマー設定" tabindex="-1" data-gb-tooltip-disabled="true" style="outline:none!important;box-shadow:none!important;">
+      <div class="modal gb-timer-settings-modal" role="dialog" aria-modal="true" aria-labelledby="timer-settings-title" tabindex="-1" data-gb-tooltip-disabled="true" data-e2e-id="timer-settings-dialog">
         <div class="gb-timer-settings-header">
-          <h3>${_timerIcon('settings', 18)} タイマー設定</h3>
-          <button class="tb-icon-btn" type="button" data-timer-settings-close aria-label="閉じる" title="タイマー設定を閉じます">${_timerIcon('x', 14)}</button>
+          <h3 id="timer-settings-title">${_timerIcon('settings', 18)} タイマー設定</h3>
+          <button class="tb-icon-btn" type="button" data-timer-settings-close data-e2e-id="timer-settings-close" aria-label="タイマー設定を閉じる" title="タイマー設定を閉じます">${_timerIcon('x', 14)}</button>
         </div>
         <div class="modal-body gb-timer-settings-body">
           ${this._timerAdvancedHtml()}
@@ -381,7 +382,7 @@
           <div class="gb-timer-row">
             <label class="gb-timer-check" title="選択したカレンダーの開始時刻に合わせてタイマーを開始します"><input data-timer-setting="calendarEnabled" type="checkbox"> 有効</label>
             <select class="gb-select gb-timer-calendar-select" data-timer-calendar-select data-e2e-id="timer-calendar-select" aria-label="連動カレンダー" title="タイマーと連動するカレンダーを選択します"></select>
-            <button class="tb-icon-btn" type="button" data-timer-action="refreshCalendars" title="カレンダー一覧を再取得します">${_timerIcon('refreshCw', 14)}</button>
+            <button class="tb-icon-btn" type="button" data-timer-action="refreshCalendars" aria-label="カレンダー一覧を更新" title="カレンダー一覧を再取得します">${_timerIcon('refreshCw', 14)}</button>
             <span class="gb-timer-muted" data-timer-calendar-status></span>
           </div>
         </section>
@@ -394,13 +395,13 @@
               <option value="none">なし</option>
             </select>
             <label class="gb-timer-range" title="アラーム音の音量を調整します">音量 <input type="range" min="0" max="100" step="5" data-timer-setting="alarmVolume"><span data-timer-volume-label></span></label>
-            <button class="tb-icon-btn" type="button" data-timer-action="testAlarm" title="現在のアラーム音を試聴します">${_timerIcon('volume2', 14)}</button>
+            <button class="tb-icon-btn" type="button" data-timer-action="testAlarm" aria-label="アラーム音を試聴" title="現在のアラーム音を試聴します">${_timerIcon('volume2', 14)}</button>
           </div>
           <div class="gb-timer-row gb-timer-alarm-source-row">
-            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="chooseAlarmSource" title="アラームに使う音源ファイルを選択します">${_timerIcon('music', 13)} 音源を選択</button>
-            <button class="tb-icon-btn" type="button" data-timer-action="clearAlarmSource" title="設定した音源を削除します">${_timerIcon('x', 13)}</button>
+            <button class="gb-btn gb-btn-xs" type="button" data-timer-action="chooseAlarmSource" aria-label="アラーム音源を選択" title="アラームに使う音源ファイルを選択します">${_timerIcon('music', 13)} 音源を選択</button>
+            <button class="tb-icon-btn" type="button" data-timer-action="clearAlarmSource" aria-label="設定した音源を削除" title="設定した音源を削除します">${_timerIcon('x', 13)}</button>
             <span class="gb-timer-source-name" data-timer-alarm-source-name></span>
-            <input class="gb-timer-alarm-file" data-timer-alarm-file type="file" accept="audio/*">
+            <input class="gb-timer-alarm-file" data-timer-alarm-file type="file" accept="audio/*" aria-label="アラーム音源ファイル">
           </div>
           <div class="gb-timer-row gb-timer-row--wrap">
             <label class="gb-timer-check" title="通知を合成音声で読み上げます"><input data-timer-setting="countdownVoice" type="checkbox"> 音声で通知</label>
@@ -579,16 +580,20 @@
       list.innerHTML = '<div class="gb-timer-empty">保存済みタイマーはありません</div>';
       return;
     }
-    list.innerHTML = this._timerPresets.map(item => `
-      <div class="gb-timer-preset-item" data-timer-preset-id="${_timerEsc(item.id)}">
+    list.innerHTML = this._timerPresets.map(item => {
+      const itemId = _timerEsc(item.id);
+      const itemName = _timerEsc(item.name);
+      return `
+      <div class="gb-timer-preset-item" data-timer-preset-id="${itemId}">
         <div class="gb-timer-item-main">
-          <span class="gb-timer-item-name">${_timerEsc(item.name)}</span>
+          <span class="gb-timer-item-name">${itemName}</span>
           <span class="gb-timer-muted">${this._formatTime(item.totalSeconds)}</span>
         </div>
-        <button class="tb-icon-btn" type="button" data-timer-action="loadPreset" data-timer-preset-id="${_timerEsc(item.id)}" title="読み込み">${_timerIcon('download', 14)}</button>
-        <button class="tb-icon-btn" type="button" data-timer-action="startPreset" data-timer-preset-id="${_timerEsc(item.id)}" title="開始">${_timerIcon('play', 14)}</button>
-        <button class="tb-icon-btn" type="button" data-timer-action="deletePreset" data-timer-preset-id="${_timerEsc(item.id)}" title="削除">${_timerIcon('trash2', 14)}</button>
-      </div>`).join('');
+        <button class="tb-icon-btn" type="button" data-timer-action="loadPreset" data-timer-preset-id="${itemId}" aria-label="${itemName}を読み込み" title="${itemName}を読み込み">${_timerIcon('download', 14)}</button>
+        <button class="tb-icon-btn" type="button" data-timer-action="startPreset" data-timer-preset-id="${itemId}" aria-label="${itemName}を開始" title="${itemName}を開始">${_timerIcon('play', 14)}</button>
+        <button class="tb-icon-btn" type="button" data-timer-action="deletePreset" data-timer-preset-id="${itemId}" aria-label="${itemName}を削除" title="${itemName}を削除">${_timerIcon('trash2', 14)}</button>
+      </div>`;
+    }).join('');
     if (typeof replaceIcons === 'function') replaceIcons();
   };
 
@@ -634,7 +639,7 @@
   TimerComponent.prototype._timerAdvancedDeletePreset = async function(id) {
     const item = this._timerPresets.find(preset => preset.id === id);
     if (!item) return;
-    if (!await _timerConfirm(`タイマー設定「${item.name}」を削除しますか？`)) return;
+    if (!await _timerConfirm(`タイマー設定「${item.name}」を削除しますか？`, { danger: true, okLabel: '削除' })) return;
     const before = _timerCaptureStorageHistory([PRESETS_KEY]);
     this._timerPresets = this._timerPresets.filter(preset => preset.id !== id);
     _timerWriteJson(PRESETS_KEY, this._timerPresets);

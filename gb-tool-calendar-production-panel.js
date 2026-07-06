@@ -192,6 +192,9 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = options.primary ? 'gb-btn gb-btn-xs gb-cal-production-button primary' : 'gb-btn gb-btn-xs gb-cal-production-button';
+    btn.setAttribute('aria-label', options.ariaLabel || label);
+    btn.dataset.calProductionAction = options.actionId || label;
+    if (options.actionId) btn.dataset.e2eId = `gb-cal-production-action-${options.actionId}`;
     btn.innerHTML = `${_icon(icon, 13)} <span>${_esc(label)}</span>`;
     btn.addEventListener('click', event => {
       try {
@@ -226,10 +229,16 @@
     shell.className = 'gb-cal-production-panel';
     const tabs = document.createElement('div');
     tabs.className = 'gb-cal-production-tabs';
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', '制作管理');
     TABS.forEach(([key, label]) => {
       const tab = document.createElement('button');
       tab.type = 'button';
       tab.className = 'gb-cal-production-tab' + (key === active ? ' is-active' : '');
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', key === active ? 'true' : 'false');
+      tab.dataset.calProductionTab = key;
+      tab.dataset.e2eId = `gb-cal-production-tab-${key}`;
       tab.textContent = label;
       tab.addEventListener('click', () => render(body, { tab: key }));
       tabs.appendChild(tab);
@@ -253,13 +262,13 @@
     ];
     const wrap = document.createElement('div');
     wrap.className = 'gb-cal-production-actions';
-    wrap.appendChild(_button('タスクを作成', 'listPlus', () => render(body, { tab: 'tasks' }), { primary: true }));
+    wrap.appendChild(_button('タスクを作成', 'listPlus', () => render(body, { tab: 'tasks' }), { primary: true, actionId: 'task-tab' }));
     rows.forEach(([label, icon, fn]) => {
       wrap.appendChild(_button(label, icon, () => {
         const action = window[fn];
         if (typeof action === 'function') action();
         else _status(label + 'を初期化できませんでした', true);
-      }));
+      }, { actionId: fn.replace(/^openProduction|^runProduction/, '').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() }));
     });
     return wrap;
   }
@@ -328,6 +337,8 @@
       input.value = value || '';
     }
     input.dataset.propName = name;
+    input.dataset.calProductionField = name;
+    input.setAttribute('aria-label', _displayLabel(name));
     label.appendChild(input);
     return label;
   }
@@ -342,7 +353,7 @@
     title.textContent = config.label;
     const grid = document.createElement('div');
     grid.className = 'gb-cal-production-form-grid';
-    config.fields.forEach(([name, type, value, options]) => grid.appendChild(_makeField(name, type, value, options || [], context)));
+    config.fields.forEach(([name, type, value, options]) => grid.appendChild(_makeField(name, type, value, options || [], { ...context, fieldScope: tab })));
     const actions = document.createElement('div');
     actions.className = 'gb-cal-production-actions';
     actions.appendChild(_button('追加', 'plus', async (event, button) => {
@@ -354,8 +365,8 @@
         _status(config.label.replace('を追加', '') + 'を追加しました');
         await onSaved();
       });
-    }, { primary: true }));
-    actions.appendChild(_button('閉じる', 'x', () => { box.hidden = true; }));
+    }, { primary: true, actionId: `quick-add-save-${tab}` }));
+    actions.appendChild(_button('閉じる', 'x', () => { box.hidden = true; }, { actionId: `quick-add-close-${tab}` }));
     box.append(title, grid, actions);
     return box;
   }
@@ -372,6 +383,9 @@
       search.placeholder = '検索';
       search.value = options.query || '';
       search.className = 'gb-cal-production-search';
+      search.setAttribute('aria-label', `${label}を検索`);
+      search.dataset.calProductionSearch = options.tab || label;
+      search.dataset.e2eId = `gb-cal-production-search-${options.tab || 'list'}`;
       let timer = null;
       search.addEventListener('input', () => {
         clearTimeout(timer);
@@ -392,8 +406,8 @@
     (options.extraControls || []).forEach(node => caption.appendChild(node));
     const actions = document.createElement('div');
     actions.className = 'gb-cal-production-actions';
-    if (options.onAdd) actions.appendChild(_button(options.onAdd.label, 'plus', options.onAdd.handler, { primary: true }));
-    actions.appendChild(_button('更新', 'refreshCw', options.onRefresh || (() => {})));
+    if (options.onAdd) actions.appendChild(_button(options.onAdd.label, 'plus', options.onAdd.handler, { primary: true, actionId: options.onAdd.actionId || `quick-add-open-${options.tab || 'list'}` }));
+    actions.appendChild(_button('更新', 'refreshCw', options.onRefresh || (() => {}), { actionId: `refresh-${options.tab || 'list'}` }));
     toolbar.append(caption, actions);
     return toolbar;
   }
@@ -418,7 +432,15 @@
     items.forEach((value, index) => {
       const item = document.createElement('label');
       item.className = 'cal-option-member';
-      item.innerHTML = `<input type="checkbox" value="${_esc(value)}" ${index === 0 ? 'checked' : ''}> <span>${_esc(value)}</span>`;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = value;
+      input.checked = index === 0;
+      input.dataset.calProductionChecklist = label;
+      input.setAttribute('aria-label', `${label}: ${value}`);
+      const span = document.createElement('span');
+      span.textContent = value;
+      item.append(input, span);
       list.appendChild(item);
     });
     field.append(title, list);
@@ -450,6 +472,9 @@
     const workInput = document.createElement('input');
     const workOptionsId = `gb-cal-production-work-options-${++_composerSeq}`;
     workInput.setAttribute('list', workOptionsId);
+    workInput.dataset.calProductionField = '作品';
+    workInput.dataset.e2eId = 'gb-cal-production-task-work';
+    workInput.setAttribute('aria-label', '作品');
     workInput.value = works[0] || '無題作品';
     const dataList = document.createElement('datalist');
     dataList.id = workOptionsId;
@@ -491,7 +516,7 @@
         _status(`タスクを作成しました: ${result.created || 0}件`);
         await onSaved();
       });
-    }, { primary: true }));
+    }, { primary: true, actionId: 'task-composer-create' }));
     box.append(title, grid, checks, actions);
     return box;
   }
@@ -516,7 +541,7 @@
       const { path, focusSearch, ...rest } = options;
       return _renderList(content, tab, { ...rest, ...next });
     };
-    const addBox = _renderQuickAdd(tab, refresh, Boolean(ADD_CONFIG[tab]) && !rows.length && !query, { memberOptions });
+    const addBox = _renderQuickAdd(tab, refresh, Boolean(ADD_CONFIG[tab]), { memberOptions });
     const extraControls = [];
     if (tab === 'works') {
       const doneToggle = document.createElement('label');
@@ -524,6 +549,9 @@
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.checked = includeCompletedWorks;
+      checkbox.dataset.calProductionShowCompletedWorks = '1';
+      checkbox.dataset.e2eId = 'gb-cal-production-show-completed-works';
+      checkbox.setAttribute('aria-label', '完了の作品を表示');
       checkbox.addEventListener('change', () => {
         _setShowCompletedWorks(checkbox.checked);
         refresh();
@@ -534,8 +562,9 @@
     const toolbar = _toolbar(TAB_LABELS[tab] || '制作管理', {
       count: rows.length,
       query,
+      tab,
       onSearch: q => refresh({ q, focusSearch: true }),
-      onAdd: addBox ? { label: ADD_CONFIG[tab].label, handler: () => { addBox.hidden = !addBox.hidden; } } : null,
+      onAdd: addBox ? { label: ADD_CONFIG[tab].label, handler: () => { addBox.hidden = !addBox.hidden; }, actionId: `quick-add-open-${tab}` } : null,
       onRefresh: () => refresh(),
       extraControls,
     });
@@ -565,6 +594,9 @@
       const el = document.createElement('div');
       el.className = 'gb-cal-production-row';
       el.dataset.entryPath = row.path || '';
+      el.dataset.calProductionRow = row.path || row.name || '';
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', `${row.name || '制作管理項目'}を編集`);
       el.tabIndex = 0;
       el.style.gridTemplateColumns = _rowGrid(cols);
       cols.forEach(col => {
@@ -612,12 +644,16 @@
     start.dataset.rangeStart = '1';
     start.dataset.rangeRaw = parts.start;
     start.dataset.rangeInitial = start.value || '';
+    start.dataset.calProductionRangePart = 'start';
+    start.setAttribute('aria-label', `${_displayLabel(col)} 開始`);
     const end = document.createElement('input');
     end.type = withTime ? 'datetime-local' : 'date';
     end.value = _toDateInputValue(parts.end, withTime);
     end.dataset.rangeEnd = '1';
     end.dataset.rangeRaw = parts.end;
     end.dataset.rangeInitial = end.value || '';
+    end.dataset.calProductionRangePart = 'end';
+    end.setAttribute('aria-label', `${_displayLabel(col)} 終了`);
     wrap.append(start, end);
     return wrap;
   }
@@ -631,6 +667,8 @@
       });
       select.value = value || '';
       select.dataset.propName = col;
+      select.dataset.calProductionField = col;
+      select.setAttribute('aria-label', _displayLabel(col, context.tab || ''));
       return select;
     }
     if (type === 'date' && spec.range) return _dateRangeControl(col, value, spec);
@@ -642,6 +680,8 @@
       }
       select.value = value || '';
       select.dataset.propName = col;
+      select.dataset.calProductionField = col;
+      select.setAttribute('aria-label', _displayLabel(col, context.tab || ''));
       return select;
     }
     const input = document.createElement('input');
@@ -649,6 +689,8 @@
     if (input.type === 'checkbox') input.checked = _truthy(value);
     else input.value = type === 'date' ? _toDateInputValue(value, !!spec.withTime) : (value || '');
     input.dataset.propName = col;
+    input.dataset.calProductionField = col;
+    input.setAttribute('aria-label', _displayLabel(col, context.tab || ''));
     return input;
   }
 
@@ -661,7 +703,7 @@
     cols.forEach(col => {
       const label = document.createElement('label');
       label.textContent = _displayLabel(col, tab);
-      label.appendChild(_detailControl(col, row.properties?.[col] || '', propertyTypes[col] || {}, context));
+      label.appendChild(_detailControl(col, row.properties?.[col] || '', propertyTypes[col] || {}, { ...context, tab }));
       detail.appendChild(label);
     });
     const actions = document.createElement('div');
@@ -690,10 +732,10 @@
         // 保存後も編集していた行の選択・詳細表示を維持する
         if (typeof context.refresh === 'function') await context.refresh({ path: row.path });
       });
-    }, { primary: true }));
+    }, { primary: true, actionId: 'detail-save' }));
     actions.appendChild(_button('元シートを開く', 'externalLink', () => {
       if (row.path && typeof openPage === 'function') openPage(row.name || '制作管理', row.path);
-    }));
+    }, { actionId: 'detail-open-source' }));
     detail.appendChild(actions);
   }
 

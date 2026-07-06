@@ -27,6 +27,7 @@
     floatingChrome: null,
     leftChromeSyncRaf: 0,
     leftChromePollTimer: 0,
+    restoreFocusEl: null,
     initialized: false,
   };
 
@@ -474,9 +475,25 @@
   }
 
   function _settingsCommands() {
-    return ['全般', 'テーマ', 'LLM', 'ユーザー', '拡張機能', 'ショートカット', 'フィードバック'].map((panel) => {
-      const icon = panel === 'ショートカット' ? 'keyboard' : panel === 'テーマ' ? 'palette' : panel === 'フィードバック' ? 'messageSquareText' : panel === '拡張機能' ? 'puzzle' : 'settings';
-      return _command(`settings:${panel}`, '設定', `${panel}設定を開く`, '', icon, () => _openSettings(panel), { keywords: ['settings', '設定', panel] });
+    const panels = typeof getSettingsNavigationTabs === 'function'
+      ? getSettingsNavigationTabs().map(tab => ({ name: tab.id, icon: tab.icon || 'settings', desc: tab.desc || '' }))
+      : [
+        { name: 'ユーザー・共同作業', icon: 'usersRound', desc: 'ユーザー名、ワークスペース、メンバー' },
+        { name: '保存先・フォルダ', icon: 'folder', desc: 'ホームフォルダ、保存先、ソースフォルダ' },
+        { name: '表示・起動', icon: 'monitorCog', desc: '表示サイズ、見やすさ、起動時の動作' },
+        { name: 'テーマ', icon: 'palette', desc: 'テーマ、テーマカラー、フォント' },
+        { name: 'ショートカット', icon: 'keyboard', desc: 'キーボード操作' },
+        { name: 'AI・Discord', icon: 'bot', desc: 'AIキー、AI使用量、Discord連携' },
+        { name: 'インポート', icon: 'download', desc: '外部取り込み、Notion同期、拡張機能' },
+        { name: '導入・アプリ連携', icon: 'download', desc: 'サンプル、ホーム画面追加、ファイル関連付け' },
+        { name: '履歴・引き継ぎ', icon: 'history', desc: 'Undo、バージョン保存、設定移行' },
+        { name: 'ゴミ箱・データ保守', icon: 'database', desc: 'ゴミ箱、バックアップ、内部データ' },
+        { name: 'フィードバック', icon: 'messageSquareText', desc: 'フィードバック、利用統計、診断' },
+      ];
+    return panels.map((panel) => {
+      const name = panel.name;
+      const icon = panel.icon || (name === 'ショートカット' ? 'keyboard' : name === 'テーマ' ? 'palette' : name === 'フィードバック' ? 'messageSquareText' : name === 'インポート' ? 'download' : 'settings');
+      return _command(`settings:${name}`, '設定', `${name}設定を開く`, panel.desc || '', icon, () => _openSettings(name), { keywords: ['settings', '設定', name] });
     });
   }
 
@@ -546,6 +563,7 @@
       const empty = document.createElement('div');
       empty.className = 'cmd-palette-empty';
       empty.textContent = '該当する項目がありません';
+      if (state.input) state.input.removeAttribute('aria-activedescendant');
       state.list.appendChild(empty);
       return;
     }
@@ -564,8 +582,11 @@
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'cmd-palette-item';
+    button.id = `cmd-palette-item-${index}`;
     button.dataset.commandId = item.id;
     button.dataset.commandIndex = String(index);
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', index === state.activeIndex ? 'true' : 'false');
     if (index === state.activeIndex) button.classList.add('is-active');
 
     const icon = document.createElement('span');
@@ -605,8 +626,13 @@
     buttons.forEach((button) => {
       const active = Number(button.dataset.commandIndex) === state.activeIndex;
       button.classList.toggle('is-active', active);
-      if (active) button.scrollIntoView({ block: 'nearest' });
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+      if (active) {
+        button.scrollIntoView({ block: 'nearest' });
+        if (state.input) state.input.setAttribute('aria-activedescendant', button.id);
+      }
     });
+    if (!buttons.length && state.input) state.input.removeAttribute('aria-activedescendant');
   }
 
   async function _refreshItems(options = {}) {
@@ -733,6 +759,9 @@
     input.spellcheck = false;
     input.placeholder = 'コマンドやファイルを検索';
     input.setAttribute('aria-label', 'コマンドを検索');
+    input.setAttribute('aria-controls', 'cmd-palette-list');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
     const scope = document.createElement('span');
     scope.className = 'cmd-palette-scope';
     const closeButton = document.createElement('button');
@@ -747,6 +776,7 @@
     list.id = 'cmd-palette-list';
     list.className = 'cmd-palette-list';
     list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', 'コマンド候補');
 
     const footer = document.createElement('div');
     footer.className = 'cmd-palette-footer';
@@ -766,7 +796,7 @@
       _refreshItems();
     });
     input.addEventListener('keydown', _onInputKeydown);
-    closeButton.addEventListener('click', closeCommandPalette);
+    closeButton.addEventListener('click', () => closeCommandPalette());
 
     document.body.appendChild(overlay);
     state.overlay = overlay;
@@ -794,11 +824,14 @@
   function showCommandPalette(options = {}) {
     _ensureOverlay();
     if (options.refreshGlobalIndex !== false) invalidateCommandPaletteGlobalIndex();
+    const focusTarget = options.restoreFocusEl || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    state.restoreFocusEl = focusTarget && !state.overlay.contains(focusTarget) ? focusTarget : null;
     state.mode = 'root';
     state.parentItem = null;
     state.activeIndex = 0;
     state.input.value = String(options.query || '');
     state.overlay.hidden = false;
+    state.input.setAttribute('aria-expanded', 'true');
     document.body.classList.add('gb-command-palette-open');
     _syncPaletteViewportClamp();
     _refreshItems({ refreshGlobalIndex: !!options.refreshGlobalIndex });
@@ -810,10 +843,16 @@
     });
   }
 
-  function closeCommandPalette() {
+  function closeCommandPalette(options = {}) {
     if (!state.overlay) return;
     state.overlay.hidden = true;
+    if (state.input) state.input.setAttribute('aria-expanded', 'false');
     document.body.classList.remove('gb-command-palette-open');
+    const restoreEl = state.restoreFocusEl;
+    state.restoreFocusEl = null;
+    if (options.restoreFocus !== false && restoreEl?.isConnected) {
+      try { restoreEl.focus({ preventScroll: true }); } catch {}
+    }
   }
 
   function refreshCommandPalette(options = {}) {
@@ -972,7 +1011,7 @@
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation?.();
-        showCommandPalette();
+        showCommandPalette({ restoreFocusEl: event.currentTarget });
       });
     });
   }

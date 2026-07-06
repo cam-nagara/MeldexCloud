@@ -81,6 +81,18 @@ function _calendarTaskStatusColor(status) {
   }[status] || '#569cd6';
 }
 
+function _calendarModalSizeStyle(minWidth, extra, options) {
+  const width = Math.max(240, Number(minWidth) || 400);
+  const zoom = Math.max(0.1, (typeof _getZoom === 'function' ? _getZoom() : parseFloat(document.documentElement?.style?.zoom || '')) || 1);
+  const viewportWidth = Math.floor(window.visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || width + 16);
+  const viewportHeight = Math.floor(window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 720);
+  const safeWidth = Math.max(240, Math.min(width, viewportWidth - 16));
+  const safeHeight = Math.max(180, Math.floor((viewportHeight - 56) / zoom));
+  const overflow = extra == null ? 'overflow-y:auto;' : String(extra);
+  const height = options?.forceHeight ? `height:${safeHeight}px;` : '';
+  return `min-width:0;min-height:0;width:${safeWidth}px;max-width:${safeWidth}px;max-height:${safeHeight}px;${height}${overflow}`;
+}
+
 function _showCalendarEventDetailPanel(dbPath, ev) {
   if (!ev) return;
   if (ev._mapped && typeof _openMappedCalendarEventPanel === 'function') {
@@ -300,7 +312,7 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   overlay.className = 'modal-overlay';
   const panel = document.createElement('div');
   panel.className = 'modal';
-  panel.style.cssText = 'min-width:450px;max-height:80vh;overflow-y:auto;';
+  panel.style.cssText = _calendarModalSizeStyle(450);
   panel.dataset.calEventMembers = JSON.stringify(_calendarEventMembers(ev));
   overlay.appendChild(panel);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
@@ -404,7 +416,7 @@ function _recParse(ev){try{return ev?.recurrence?(typeof ev.recurrence==='string
 function _openTaskModal(dbPath, task, defaultStatus) {
   const isNew=!task;
   const o=document.createElement('div');o.className='modal-overlay';
-  o.innerHTML=`<div class="modal" style="min-width:450px;">
+  o.innerHTML=`<div class="modal" style="${_calendarModalSizeStyle(450)}">
     <h3>${isNew?'新規ToDo':'ToDo編集'}</h3>
     <div class="field"><label>タイトル</label><input id="tk-title" value="${esc(task?.name||'')}"></div>
     <div style="display:flex;gap:8px;">
@@ -654,7 +666,7 @@ function _renderTodayWidget(sidebar,dbPath,events) {
   if(!pureEvents.length){const e=document.createElement('div');e.style.cssText='font-size:10px;color:var(--fg2);';e.textContent='イベントなし';evSection.appendChild(e);}
   else pureEvents.forEach(ev=>{const el=document.createElement('div');el.style.cssText='font-size:10px;padding:2px 4px;margin:2px 0;border-radius:3px;cursor:pointer;color:#fff;';el.style.background=ev.color;
     const timeStr=ev.allDay?'終日':`${_p2(ev.start.getHours())}:${_p2(ev.start.getMinutes())}`;
-    el.textContent=`${timeStr} ${ev.name}`;el.addEventListener('click', ()=>{if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev);return;}_showCalendarEventDetailPanel(dbPath,ev);});evSection.appendChild(el);});
+    el.textContent=`${timeStr} ${ev.name}`;el.addEventListener('click', ()=>{if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev,el);return;}_showCalendarEventDetailPanel(dbPath,ev);});evSection.appendChild(el);});
   box.appendChild(evSection);
   // タスクセクション
   if(todayTasks.length>0){
@@ -666,7 +678,7 @@ function _renderTodayWidget(sidebar,dbPath,events) {
       const prioColors={urgent:'var(--red)',high:'var(--orange)',medium:'var(--blue)',low:'var(--fg2)'};
       const p=_taskPriority(ev);
       el.innerHTML=`<span style="color:${prioColors[p]||'var(--fg2)'};font-weight:bold;">${(p[0]||'M').toUpperCase()}</span> ${esc(ev.name)}`;
-      el.addEventListener('click', ()=>{if(mappedDb&&ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev);return;}_openTaskModal(dbPath,ev);});tkSection.appendChild(el);
+      el.addEventListener('click', ()=>{if(mappedDb&&ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev,el);return;}_openTaskModal(dbPath,ev);});tkSection.appendChild(el);
     });
     box.appendChild(tkSection);
   }
@@ -730,7 +742,7 @@ async function _showTemplateModal(dbPath) {
   let templates = [];
   try { templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(_getUser())); } catch {}
   const o = document.createElement('div'); o.className = 'modal-overlay';
-  let html = '<div class="modal" style="min-width:600px;max-height:80vh;overflow-y:auto;"><h3>週間テンプレート</h3>';
+  let html = `<div class="modal" style="${_calendarModalSizeStyle(600)}"><h3>週間テンプレート</h3>`;
   html += '<div id="tmpl-list">';
   if (!templates.length) html += '<div style="color:var(--fg2);font-size:12px;padding:8px;">テンプレートがありません</div>';
   templates.forEach(t => {
@@ -790,7 +802,7 @@ async function _editTemplate(dbPath, tid) {
   let entriesHtml = '';
   (t.entries || []).forEach(e => { entriesHtml += _templateEntryRow(e); });
 
-  o.innerHTML = `<div class="modal" style="min-width:550px;max-height:80vh;overflow-y:auto;">
+  o.innerHTML = `<div class="modal" style="${_calendarModalSizeStyle(550)}">
     <h3>テンプレート編集: ${esc(t.name)}</h3>
     <div class="field"><label>名前</label><input id="tmpl-name" type="text" value="${esc(t.name)}"></div>
     <div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">エントリ（1週間分）</div>
@@ -870,7 +882,7 @@ async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
    ============================== */
 function _showSyncModal(dbPath) {
   const o = document.createElement('div'); o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:500px;max-height:80vh;overflow-y:auto;">
+  o.innerHTML = `<div class="modal" style="${_calendarModalSizeStyle(500, null, { forceHeight: true })}">
     <h3>カレンダー同期・ツール</h3>
 
     <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">

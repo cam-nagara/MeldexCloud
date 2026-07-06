@@ -14,12 +14,19 @@ function updateNoteToc() {
     const level = parseInt(h.tagName[1]);
     const indent = (level - 1) * 12;
     const text = h.textContent.trim() || '(無題)';
-    html += `<div class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" style="padding:2px 4px 2px ${indent}px;cursor:pointer;border-radius:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${level===1?'var(--accent)':'var(--fg)'};"
-      onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background=''"
-      data-action="document.querySelectorAll('#page-content h1,#page-content h2,#page-content h3,#page-content h4,#page-content h5,#page-content h6')[${i}].scrollIntoView({behavior:'smooth',block:'start'})"
-      title="${esc(text)}">${esc(text)}</div>`;
+    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}" style="display:block;width:100%;padding:2px 4px 2px ${indent}px;cursor:pointer;border:0;background:transparent;text-align:left;font:inherit;border-radius:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${level===1?'var(--accent)':'var(--fg)'};"
+      title="${esc(text)}">${esc(text)}</button>`;
   });
   toc.innerHTML = html;
+  toc.querySelectorAll('[data-note-toc-index]').forEach(item => {
+    item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
+    item.addEventListener('mouseleave', () => { item.style.background = ''; });
+    item.addEventListener('click', () => {
+      const index = Number(item.dataset.noteTocIndex);
+      const target = document.querySelectorAll('#page-content h1,#page-content h2,#page-content h3,#page-content h4,#page-content h5,#page-content h6')[index];
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
 }
 
 /* ==============================
@@ -29,6 +36,15 @@ function _entityParentDir(entityPath) {
   if (!entityPath) return '';
   const i = entityPath.lastIndexOf('/');
   return i >= 0 ? entityPath.substring(0, i) : '';
+}
+
+function _entityPropControlId(prefix, propName) {
+  const suffix = Array.from(String(propName || 'property'))
+    .map(ch => /[A-Za-z0-9_-]/.test(ch) ? ch : ch.codePointAt(0).toString(16))
+    .join('-')
+    .replace(/-+/g, '-')
+    .slice(0, 80) || 'property';
+  return `${prefix}-${suffix}`;
 }
 
 // エントリ単位のプロパティ並び順 (DB ごとに共有)
@@ -93,12 +109,16 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.className = 'gb-btn gb-btn-sm';
+  saveBtn.title = '候補値を追加';
+  saveBtn.setAttribute('aria-label', '候補値を追加');
   saveBtn.innerHTML = typeof lucide === 'function' ? lucide('check', 14) : '追加';
   row.appendChild(saveBtn);
 
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.title = 'キャンセル';
+  cancelBtn.setAttribute('aria-label', 'キャンセル');
   cancelBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '取消';
   row.appendChild(cancelBtn);
 
@@ -207,6 +227,8 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       hideBtn.type = 'button';
       hideBtn.className = 'gb-prop-hide-btn';
       hideBtn.title = '詳細プロパティから非表示';
+      hideBtn.dataset.e2eId = _entityPropControlId('entity-prop-hide', propName);
+      hideBtn.dataset.propName = propName;
       hideBtn.innerHTML = typeof lucide === 'function' ? lucide('eyeOff', 12) : '非表示';
       hideBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -217,10 +239,14 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       });
       valuesEl.appendChild(hideBtn);
     }
-    const addBtn = document.createElement('span');
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
     addBtn.className = 'cell-add-btn';
+    addBtn.dataset.e2eId = _entityPropControlId('entity-prop-add', propName);
+    addBtn.dataset.propName = propName;
     addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
     addBtn.title = '候補値を追加';
+    addBtn.setAttribute('aria-label', '候補値を追加');
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
@@ -286,6 +312,25 @@ async function _saveEntityFreeText(ep, md) {
   return true;
 }
 
+function _setEntityCreateActionButton(button, iconName, label) {
+  if (!button) return;
+  button.type = 'button';
+  button.className = 'entity-create-action-btn';
+  button.setAttribute('aria-label', label);
+  button.textContent = '';
+  if (typeof lucide === 'function') {
+    const icon = document.createElement('span');
+    icon.className = 'entity-create-action-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = lucide(iconName, 14);
+    button.appendChild(icon);
+  }
+  const text = document.createElement('span');
+  text.className = 'entity-create-action-label';
+  text.textContent = label;
+  button.appendChild(text);
+}
+
 function renderEntityPage(data) {
   // data = {entity, properties: {propName: [{value, status, note, file, ...}]}, page_content}
   document.getElementById('entity-title').textContent = data.entity || '';
@@ -326,9 +371,8 @@ function renderEntityPage(data) {
   if (noteBtnBox) {
     noteBtnBox.innerHTML = '';
     const chatBtn = document.createElement('button');
-    chatBtn.textContent = '+ チャットを作成';
+    _setEntityCreateActionButton(chatBtn, 'messageSquare', 'チャットを作成');
     chatBtn.dataset.e2eId = 'entity-create-chat';
-    chatBtn.setAttribute('aria-label', 'チャットを作成');
     chatBtn.addEventListener('click', () => {
       if (typeof window.openEntityChatForPath === 'function') {
         window.openEntityChatForPath(entityPath);
@@ -340,9 +384,8 @@ function renderEntityPage(data) {
       ft.style.display = 'none';
       if (rtToolbar) rtToolbar.style.display = 'none';
       const btn = document.createElement('button');
-      btn.textContent = '+ ノートを作成';
+      _setEntityCreateActionButton(btn, 'filePlus', 'ノートを作成');
       btn.dataset.e2eId = 'entity-create-note';
-      btn.setAttribute('aria-label', 'ノートを作成');
       btn.addEventListener('click', () => {
         // ノートを作成: 空のコンテンツで初期化、エディタを表示
         ft.style.display = '';

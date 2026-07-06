@@ -118,10 +118,13 @@
         _runtime()?.clearWorkspaceState?.();
         return;
       }
+      const runtime = _runtime();
+      const serverConnection = runtime?.isServerMode?.() ? runtime.getServerConnection?.() : null;
       _runtime()?.setWorkspaceState?.({
-        kind: 'localfs',
+        kind: serverConnection ? 'server' : 'localfs',
         name: String(info?.name || info?.homeName || _basename(statePath) || 'vault'),
         path: statePath,
+        serverUrl: serverConnection?.url || '',
         access: 'editor',
       });
     }

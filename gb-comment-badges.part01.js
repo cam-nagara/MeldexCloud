@@ -169,6 +169,26 @@
     return (items || []).filter(a => !a.orphan && !a.resolved && !a.data?.deleted).length;
   }
 
+  function _commentBadgeLabel(n) {
+    return (n || 0) + '件のコメントを開く';
+  }
+
+  function _setCommentBadgeControlAttrs(badge, n) {
+    if (!badge) return;
+    const label = _commentBadgeLabel(n);
+    try { badge.setAttribute('role', 'button'); } catch {}
+    try { badge.setAttribute('tabindex', '0'); } catch {}
+    try { badge.setAttribute('aria-label', label); } catch {}
+    try { badge.tabIndex = 0; } catch {}
+  }
+
+  function _handleCommentBadgeKeydown(e, badge) {
+    if (!e || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { badge?._cmtClick?.(); } catch {}
+  }
+
   function _setToolbarIndicator(filePath, count) {
     document.querySelectorAll('[data-display-layer="comments"]').forEach(btn => {
       btn.dataset.commentIndicatorPath = filePath || '';
@@ -259,10 +279,12 @@
       badge.style.cssText = 'display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:0 5px;margin-left:6px;background:var(--accent,#4a90e2);color:var(--ui-fg-strong);border-radius:8px;cursor:pointer;user-select:none;vertical-align:middle;line-height:14px;height:14px;';
       badge.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); try { badge._cmtClick?.(); } catch {} });
+      badge.addEventListener('keydown', (e) => _handleCommentBadgeKeydown(e, badge));
       hostEl.appendChild(badge);
     }
     badge.textContent = '💬' + n;
     badge.title = n + '件のコメント';
+    _setCommentBadgeControlAttrs(badge, n);
     if (typeof onClick === 'function') badge._cmtClick = onClick;
   }
 
@@ -449,10 +471,12 @@
       badge.style.cssText = 'position:absolute;top:-4px;right:-4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;font-size:9px;min-width:14px;height:12px;padding:0 3px;background:var(--accent,#4a90e2);color:var(--ui-fg-strong);border-radius:8px;cursor:pointer;user-select:none;line-height:12px;pointer-events:auto;box-shadow:0 0 0 1px var(--bg2);';
       badge.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); try { badge._cmtClick?.(); } catch {} });
+      badge.addEventListener('keydown', (e) => _handleCommentBadgeKeydown(e, badge));
       hostEl.appendChild(badge);
     }
     badge.textContent = '💬' + n;
     badge.title = n + '件のコメント';
+    _setCommentBadgeControlAttrs(badge, n);
     if (typeof onClick === 'function') badge._cmtClick = onClick;
   }
 
@@ -501,11 +525,13 @@
       badge.style.pointerEvents = 'auto';
       badge.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); try { badge._cmtClick?.(); } catch {} });
+      badge.addEventListener('keydown', (e) => _handleCommentBadgeKeydown(e, badge));
       hostEl.parentNode?.appendChild(badge);
       hostEl._cmtClockBadge = badge;
     }
     badge.dataset.eventId = hostEl.dataset.eventId || '';
     badge.textContent = n > 9 ? '9+' : String(n);
+    _setCommentBadgeControlAttrs(badge, n);
     badge._cmtClick = typeof onClick === 'function' ? onClick : null;
     try {
       const box = hostEl.getBBox();
@@ -836,18 +862,23 @@
     return new Promise((resolve) => {
       document.querySelectorAll('._inline-comment-input').forEach(el => el.remove());
       const box = document.createElement('div');
-      box.className = '_inline-comment-input';
-      box.style.cssText = 'position:fixed;z-index:10000;background:var(--ui-popup-bg, var(--bg2));border:1px solid var(--accent);border-radius:4px;padding:6px;box-shadow:0 4px 12px rgba(0,0,0,0.3);min-width:240px;';
+      const labelId = 'inline-comment-input-label-' + Date.now().toString(36);
+      box.className = '_inline-comment-input gb-inline-comment-popup';
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'false');
+      box.setAttribute('aria-labelledby', labelId);
       // mousedown で親側の選択破壊を防ぐ
       box.addEventListener('mousedown', (ev) => { if (ev.target.tagName !== 'TEXTAREA') ev.preventDefault(); });
       const label = document.createElement('div');
+      label.id = labelId;
+      label.className = 'gb-inline-comment-popup-label';
       label.textContent = 'コメントを追加 (対象: ' + (kindLabel || '') + ')';
-      label.style.cssText = 'font-size:11px;color:var(--fg2);margin-bottom:4px;';
       box.appendChild(label);
       const ta = document.createElement('textarea');
+      ta.className = 'gb-inline-comment-popup-textarea';
       ta.value = initialText || '';
       ta.placeholder = 'Enter=保存, Shift+Enter=改行, ESC=キャンセル';
-      ta.style.cssText = 'width:100%;min-height:60px;background:var(--bg1,var(--bg));color:var(--fg);border:1px solid var(--border);border-radius:3px;padding:4px;font-size:13px;resize:vertical;box-sizing:border-box;';
+      ta.setAttribute('aria-label', 'コメント本文');
       box.appendChild(ta);
       document.body.appendChild(box);
       try {

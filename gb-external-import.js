@@ -73,8 +73,10 @@
       return;
     }
     sets.forEach(item => {
+      const stableId = String(item.id || item.name || 'set').replace(/[^a-zA-Z0-9_-]+/g, '-');
       const card = document.createElement('div');
       card.className = 'gb-section gb-section--boxed';
+      card.dataset.e2eId = `external-import-set-card-${stableId}`;
       card.style.marginTop = '8px';
 
       const title = document.createElement('div');
@@ -103,6 +105,8 @@
       if (copyCompleted) runBtn.disabled = true;
       const runLabel = copyCompleted ? '取り込み済み' : (item.service === 'eagle-copy' ? '取り込み' : '更新を反映');
       runBtn.innerHTML = icon(copyCompleted ? 'check' : 'refreshCw', 14) + (runningSetIds.has(item.id) ? ' 取り込み中...' : ' ' + runLabel);
+      runBtn.dataset.e2eId = `external-import-set-run-${stableId}`;
+      runBtn.setAttribute('aria-label', `${item.name || serviceLabel(item.service)}の${runLabel}`);
       runBtn.addEventListener('click', () => runSet(item));
       row.appendChild(runBtn);
 
@@ -110,6 +114,8 @@
       previewBtn.type = 'button';
       previewBtn.className = 'gb-btn gb-btn-sm gb-btn-quiet';
       previewBtn.innerHTML = icon('search', 14) + ' 確認';
+      previewBtn.dataset.e2eId = `external-import-set-preview-${stableId}`;
+      previewBtn.setAttribute('aria-label', `${item.name || serviceLabel(item.service)}を確認`);
       previewBtn.addEventListener('click', () => previewSet(item.id));
       row.appendChild(previewBtn);
 
@@ -117,6 +123,8 @@
       deleteBtn.type = 'button';
       deleteBtn.className = 'gb-btn gb-btn-sm gb-btn-danger';
       deleteBtn.innerHTML = icon('trash2', 14) + ' 一覧から削除';
+      deleteBtn.dataset.e2eId = `external-import-set-delete-${stableId}`;
+      deleteBtn.setAttribute('aria-label', `${item.name || serviceLabel(item.service)}を一覧から削除`);
       deleteBtn.addEventListener('click', () => deleteSet(item.id));
       row.appendChild(deleteBtn);
 
@@ -217,20 +225,21 @@
 
   function showEagleLibraryPicker(onSubmit) {
     return new Promise(resolve => {
+      const restoreFocusEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay external-import-eagle-picker-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.52);display:flex;align-items:center;justify-content:center;z-index:10020;';
       overlay.innerHTML = `
-        <div class="gb-section gb-section--boxed" style="width:min(680px, calc(100vw - 48px));max-height:calc(100vh - 80px);overflow:auto;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.42);padding:14px;">
-          <div class="gb-section-title" style="margin-bottom:8px;">Eagleライブラリを選択</div>
-          <div class="gb-section-desc" style="margin-bottom:10px;">Eagleライブラリ本体、または .library フォルダが入っている親フォルダのパスを指定してください。</div>
+        <div class="modal gb-section gb-section--boxed gb-mobile-dialog-sheet gb-mobile-dialog-sheet-open external-import-eagle-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="external-import-eagle-picker-title" aria-describedby="external-import-eagle-picker-desc" style="width:min(680px, calc(100vw - 48px));max-height:calc(100vh - 80px);overflow:auto;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.42);padding:14px;">
+          <div id="external-import-eagle-picker-title" class="gb-section-title" style="margin-bottom:8px;">Eagleライブラリを選択</div>
+          <div id="external-import-eagle-picker-desc" class="gb-section-desc" style="margin-bottom:10px;">Eagleライブラリ本体、または .library フォルダが入っている親フォルダのパスを指定してください。</div>
           <div class="gb-field-row" style="align-items:stretch;gap:8px;margin-bottom:8px;">
-            <input id="external-import-eagle-path" type="text" autocomplete="off" placeholder="例: \\\\NAS\\Public\\Eaglelibrary または D:\\\\Eagle\\資料.library" style="flex:1;min-width:0;">
+            <input id="external-import-eagle-path" class="gb-input" type="text" autocomplete="off" aria-label="Eagleライブラリのパス" aria-describedby="external-import-eagle-picker-desc external-import-eagle-picker-message" placeholder="例: \\\\NAS\\Public\\Eaglelibrary または D:\\\\Eagle\\資料.library" style="flex:1;min-width:0;">
             <button type="button" id="external-import-eagle-browse" class="gb-btn gb-btn-sm">参照</button>
             <button type="button" id="external-import-eagle-scan" class="gb-btn gb-btn-sm">候補を確認</button>
           </div>
-          <div id="external-import-eagle-picker-message" class="gb-section-desc" style="min-height:18px;margin-bottom:8px;"></div>
-          <div id="external-import-eagle-picker-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
+          <div id="external-import-eagle-picker-message" class="gb-section-desc" role="status" aria-live="polite" aria-atomic="true" style="min-height:18px;margin-bottom:8px;"></div>
+          <div id="external-import-eagle-picker-list" aria-label="Eagleライブラリ候補" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
           <div style="display:flex;gap:8px;justify-content:flex-end;">
             <button type="button" id="external-import-eagle-picker-cancel" class="gb-btn gb-btn-sm gb-btn-quiet">キャンセル</button>
             <button type="button" id="external-import-eagle-picker-ok" class="gb-btn gb-btn-sm primary">追加</button>
@@ -246,6 +255,7 @@
 
       const close = value => {
         overlay.remove();
+        restoreFocusEl?.focus?.({ preventScroll: true });
         resolve(!!value);
       };
       const setMessage = (text, isError) => {
@@ -257,6 +267,7 @@
         Array.from(list.querySelectorAll('[data-eagle-path]')).forEach(row => {
           const selected = row.dataset.eaglePath === selectedPath;
           row.classList.toggle('selected', selected);
+          row.setAttribute('aria-pressed', selected ? 'true' : 'false');
           row.style.borderColor = selected ? 'var(--accent)' : 'var(--border)';
           row.style.background = selected ? 'var(--ui-bg-selected, var(--bg3))' : 'var(--bg2)';
         });
@@ -269,6 +280,9 @@
           row.type = 'button';
           row.className = 'gb-btn gb-btn-quiet';
           row.dataset.eaglePath = item.path || '';
+          row.dataset.e2eId = 'external-import-eagle-candidate';
+          row.setAttribute('aria-pressed', 'false');
+          row.setAttribute('aria-label', `${item.name || 'Eagle'}を選択`);
           row.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:2px;padding:8px;';
           const name = document.createElement('strong');
           name.textContent = item.name || item.path || 'Eagle';
@@ -335,6 +349,12 @@
         event.stopPropagation();
         if (event.target === overlay) close('');
       });
+      overlay.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          close('');
+        }
+      });
       okBtn.addEventListener('click', async () => {
         const path = selectedPath || await inspect();
         if (!path) return;
@@ -348,8 +368,16 @@
         }
       });
       input.addEventListener('keydown', event => {
-        if (event.key === 'Enter') okBtn.click();
-        if (event.key === 'Escape') close('');
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          event.stopPropagation();
+          okBtn.click();
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          close('');
+        }
       });
       input.focus();
       setMessage('親フォルダを指定すると、中のEagleライブラリ候補を一覧表示します。', false);
@@ -624,7 +652,7 @@
             <button type="button" id="external-import-evernote-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Evernoteに接続</button>
             <button type="button" id="external-import-evernote-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button>
             <button type="button" id="external-import-enex-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} ENEXファイルを選ぶ</button>
-            <input id="external-import-enex-input" type="file" accept=".enex" hidden>
+            <input id="external-import-enex-input" type="file" accept=".enex" aria-label="ENEXファイル" hidden>
           </div>
         </section>
         <section class="gb-section gb-section--boxed">
@@ -639,14 +667,14 @@
           <div class="gb-section-title">${icon('galleryHorizontal', 14)} PureRefから取り込む</div>
           <div class="gb-section-desc">PureRefファイルから画像ボードを作成します。</div>
           <button type="button" id="external-import-pureref-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} PureRefファイルを選ぶ</button>
-          <input id="external-import-pureref-input" type="file" accept=".pur" hidden>
+          <input id="external-import-pureref-input" type="file" accept=".pur" aria-label="PureRefファイル" hidden>
         </section>
       </div>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${icon('listChecks', 14)} 取り込みセット</div>
         <div id="external-import-set-list"><div class="gb-section-desc">読み込み中...</div></div>
       </section>
-      <div id="external-import-status" class="gb-section-desc"></div>
+      <div id="external-import-status" class="gb-section-desc" role="status" aria-live="polite" aria-atomic="true"></div>
     `;
     bind();
     refresh();

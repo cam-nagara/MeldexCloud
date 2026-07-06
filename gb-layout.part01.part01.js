@@ -27,6 +27,68 @@ const GBLayout = (() => {
     return FREE_LAYOUT_UI_ENABLED;
   }
 
+  function _paneRoleName(node) {
+    const role = String(node?.meldexRole || '').trim();
+    if (role) return role;
+    return node?.id === 'pane-main' ? 'main' : '';
+  }
+
+  function _paneRoleClassName(role) {
+    return String(role || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'unknown';
+  }
+
+  function _applyPaneRoleAttributes(pane, node) {
+    const role = _paneRoleName(node);
+    if (!pane || !role) return;
+    pane.dataset.meldexRole = role;
+    pane.classList.add('gb-pane-role-' + _paneRoleClassName(role));
+  }
+
+  function _isMainPaneNode(node) {
+    return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main');
+  }
+
+  function _activeTabForPaneNode(node) {
+    if (!node || !Array.isArray(node.tabs) || node.tabs.length === 0) return null;
+    const index = Number.isInteger(node.activeTabIndex) ? node.activeTabIndex : -1;
+    return node.tabs[index] || node.tabs[0] || null;
+  }
+
+  function _isCloudMobileLayout() {
+    return document.body?.dataset?.cloudMobile === '1';
+  }
+
+  function _shouldShowMobileMainTabActions(node) {
+    return !_showFreeLayoutUi()
+      && (_isMobileLayout() || _isCloudMobileLayout())
+      && _isMainPaneNode(node)
+      && !!_activeTabForPaneNode(node);
+  }
+
+  function _shouldShowPaneActionsButton(node) {
+    return _showFreeLayoutUi() || _shouldShowMobileMainTabActions(node);
+  }
+
+  function _isMobileMainTabActionsButton(node) {
+    return _shouldShowMobileMainTabActions(node);
+  }
+
+  function _showPaneMoreButtonMenu(e, node) {
+    if (_showFreeLayoutUi()) {
+      _showPaneActionsMenu(e, node);
+      return;
+    }
+    if (!_isMainPaneNode(node)) return;
+    const activeTab = _activeTabForPaneNode(node);
+    if (!activeTab) return;
+    if (typeof setActivePane === 'function') setActivePane(node.id, { skipCallback: true });
+    _showTabContextMenu(e, node.id, activeTab);
+  }
+
   // === データモデル ===
   function createPaneNode(id, tabs, activeTabIndex) {
     return {
@@ -748,6 +810,7 @@ const GBLayout = (() => {
     pane.className = 'gb-pane' + (node.id === _activePane ? ' gb-pane-active' : '') + (node.locked ? ' gb-pane-locked' : '');
     pane.dataset.paneId = node.id;
     pane.dataset.paneLocked = node.locked ? '1' : '0';
+    _applyPaneRoleAttributes(pane, node);
 
     // タブバー
     const tabBar = document.createElement('div');
@@ -804,9 +867,14 @@ const GBLayout = (() => {
     backBtn.type = 'button';
     backBtn.className = 'gb-pane-nav-btn gb-pane-nav-back';
     backBtn.dataset.e2eId = `pane-${node.id}-nav-back`;
-    backBtn.title = '戻る履歴';
-    backBtn.innerHTML = lucide('arrowLeft', 12);
+    backBtn.title = '戻る (Alt+←) / 右クリックで履歴';
+    backBtn.innerHTML = lucide('arrowLeft', 18);
     backBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (typeof navBack === 'function') navBack(node.id);
+    });
+    backBtn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'back');
     });
@@ -814,9 +882,14 @@ const GBLayout = (() => {
     forwardBtn.type = 'button';
     forwardBtn.className = 'gb-pane-nav-btn gb-pane-nav-forward';
     forwardBtn.dataset.e2eId = `pane-${node.id}-nav-forward`;
-    forwardBtn.title = '進む履歴';
-    forwardBtn.innerHTML = lucide('arrowRight', 12);
+    forwardBtn.title = '進む (Alt+→) / 右クリックで履歴';
+    forwardBtn.innerHTML = lucide('arrowRight', 18);
     forwardBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (typeof navForward === 'function') navForward(node.id);
+    });
+    forwardBtn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'forward');
     });
@@ -840,25 +913,30 @@ const GBLayout = (() => {
     // （以前は ロック/最小化/最大化/閉じる の4ボタンが横並びだった）
     const ctrls = document.createElement('span');
     ctrls.className = 'gb-pane-ctrls';
+    const showPaneActionsButton = _shouldShowPaneActionsButton(node);
+    const mobileMainTabActions = _isMobileMainTabActionsButton(node);
+    if (mobileMainTabActions) ctrls.classList.add('gb-pane-mobile-main-tab-ctrls');
     ctrls.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
 
     const moreBtn = document.createElement('button');
     moreBtn.type = 'button';
     moreBtn.className = 'gb-pane-btn gb-pane-more';
+    if (mobileMainTabActions) moreBtn.classList.add('gb-pane-mobile-tab-more');
     moreBtn.dataset.e2eId = `pane-${node.id}-actions`;
-    moreBtn.title = 'パネル操作';
+    moreBtn.title = mobileMainTabActions ? 'タブ操作' : 'パネル操作';
+    moreBtn.setAttribute('aria-label', moreBtn.title);
     moreBtn.innerHTML = lucide('moreHorizontal', 12);
     // pointerdown で即反応（span だと click が拾われないケースがあったため button に変更）
     moreBtn.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       e.preventDefault();
-      _showPaneActionsMenu(e, node);
+      _showPaneMoreButtonMenu(e, node);
     });
     moreBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
     });
-    if (_showFreeLayoutUi()) ctrls.appendChild(moreBtn);
+    if (showPaneActionsButton) ctrls.appendChild(moreBtn);
 
     // タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls が切れないよう、
     // タブ部分だけを横スクロール可能な中間コンテナに入れる
@@ -873,6 +951,8 @@ const GBLayout = (() => {
         tabEl.dataset.tabId = tab.id;
         tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
         tabEl.draggable = _showFreeLayoutUi();
+        tabEl.tabIndex = -1;
+        tabEl.setAttribute('aria-haspopup', 'menu');
 
         const iconSpan = document.createElement('span');
         iconSpan.className = 'gb-tab-icon';
@@ -981,7 +1061,7 @@ const GBLayout = (() => {
     if (_showFreeLayoutUi()) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
-    if (_showFreeLayoutUi()) tabBar.appendChild(ctrls);
+    if (showPaneActionsButton) tabBar.appendChild(ctrls);
 
     // タブバーの D&D 並び替え（同ペイン内のタブを並び替える）
     // 別ペインからのタブ移動は docking システム側が処理する

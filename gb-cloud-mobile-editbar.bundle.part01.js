@@ -38,30 +38,32 @@
     '.gb-cal-modal-overlay',
   ].join(',');
   const OVERFLOW_ITEMS = [
-    { label: '本文', icon: 'type', action: () => _formatBlock('P') },
-    { label: '見出し1', icon: 'heading1', action: () => _formatBlock('H1') },
-    { label: '見出し2', icon: 'heading2', action: () => _formatBlock('H2') },
-    { label: '見出し3', icon: 'heading3', action: () => _formatBlock('H3') },
-    { label: '番号付き', icon: 'listOrdered', action: () => _execTextCommand('insertOrderedList') },
-    { label: '取り消し線', icon: 'strikethrough', action: () => _execTextCommand('strikeThrough') },
-    { label: 'リンク', icon: 'link', action: () => _createLink() },
-    { label: '書式クリア', icon: 'eraser', action: () => _execTextCommand('removeFormat') },
+    { id: 'paragraph', label: '本文', icon: 'type', action: () => _formatBlock('P') },
+    { id: 'heading-1', label: '見出し1', icon: 'heading1', action: () => _formatBlock('H1') },
+    { id: 'heading-2', label: '見出し2', icon: 'heading2', action: () => _formatBlock('H2') },
+    { id: 'heading-3', label: '見出し3', icon: 'heading3', action: () => _formatBlock('H3') },
+    { id: 'ordered-list', label: '番号付き', icon: 'listOrdered', action: () => _execTextCommand('insertOrderedList') },
+    { id: 'strikethrough', label: '取り消し線', icon: 'strikethrough', action: () => _execTextCommand('strikeThrough') },
+    { id: 'link', label: 'リンク', icon: 'link', action: () => _createLink() },
+    { id: 'callout', label: 'コールアウト', icon: 'lightbulb', action: () => _insertCalloutFromMobile() },
+    { id: 'clear-format', label: '書式クリア', icon: 'eraser', action: () => _execTextCommand('removeFormat') },
   ];
   const LAYOUT_ITEMS = [];
   const PANEL_ITEMS = [
-    { label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
-    { label: 'ビューワー', icon: 'monitor', action: () => _openPreviewPanel() },
-    { label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('toggleOptionPanel') },
-    { label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
-    { label: '注釈', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
-    { label: 'ヒストリー', icon: 'history', action: () => _openToolPanel('history') },
+    { id: 'folder-tree', label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
+    { id: 'preview', label: 'ビューワー', icon: 'monitor', action: () => _openPreviewPanel() },
+    { id: 'options', label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('toggleOptionPanel') },
+    { id: 'version', label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
+    { id: 'annotation', label: '注釈', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
+    { id: 'history', label: 'ヒストリー', icon: 'history', action: () => _openToolPanel('history') },
   ];
   const TOOL_ITEMS = [
-    { label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
-    { label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
-    { label: '注釈ツール', icon: 'penLine', action: () => _callGlobal('toggleAnnotationToolbar') },
-    { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
-    { label: '設定', icon: 'settings', action: () => _openSettingsModal() },
+    { id: 'create', label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
+    { id: 'command-palette', label: 'コマンドパレット', icon: 'command', action: () => _callGlobal('showCommandPalette') },
+    { id: 'chat', label: 'チャット', icon: 'messageSquare', action: () => _openMobileChat() },
+    { id: 'annotation-tool', label: '注釈ツール', icon: 'penLine', action: () => _callGlobal('toggleAnnotationToolbar') },
+    { id: 'help', label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
+    { id: 'settings', label: '設定', icon: 'settings', action: () => _openSettingsModal() },
   ];
   const NEW_ITEMS = [
     { label: 'フォルダ', icon: 'folderPlus', type: 'folder' },
@@ -72,6 +74,7 @@
     { label: 'スマートシート', icon: 'database', type: 'smart-db' },
     { label: 'カレンダー', icon: 'calendarPlus', type: 'calendar' },
   ];
+  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv', 'smart-db']);
   const EDITBAR_ITEMS = [
     { id: 'bold', label: '太字', icon: 'bold', action: () => _execTextCommand('bold') },
     { id: 'italic', label: '斜体', icon: 'italic', action: () => _execTextCommand('italic') },
@@ -106,13 +109,13 @@
     { id: 'menu', label: 'メニュー', icon: 'menu', action: () => _openMenuSheet() },
   ];
   const BOARD_OVERFLOW_ITEMS = [
-    { label: '選択', icon: 'mousePointer2', action: () => _boardSetTool('select') },
-    { label: '消しゴム', icon: 'eraser', action: () => _boardSetTool('erase') },
-    { label: 'Redo', icon: 'redo2', action: () => _callGlobal('bdRedo') },
-    { label: '削除', icon: 'trash2', action: () => _callGlobal('bdDeleteSelected') },
-    { label: '複製', icon: 'copy', action: () => _boardDuplicateSelected() },
-    { label: '回転リセット', icon: 'rotateCcw', action: () => _callGlobal('bdResetRotation') },
-    { label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
+    { id: 'select', label: '選択', icon: 'mousePointer2', action: () => _boardSetTool('select') },
+    { id: 'erase', label: '消しゴム', icon: 'eraser', action: () => _boardSetTool('erase') },
+    { id: 'redo', label: 'Redo', icon: 'redo2', action: () => _callGlobal('bdRedo') },
+    { id: 'delete', label: '削除', icon: 'trash2', action: () => _callGlobal('bdDeleteSelected') },
+    { id: 'duplicate', label: '複製', icon: 'copy', action: () => _boardDuplicateSelected() },
+    { id: 'reset-rotation', label: '回転リセット', icon: 'rotateCcw', action: () => _callGlobal('bdResetRotation') },
+    { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
   ];
   const ANNOTATION_ITEMS = [
     { id: 'pen', label: 'ペン', icon: 'pencil', tool: 'pen' },
@@ -292,25 +295,155 @@
       database: 'シート',
       board: 'ボード',
       scriptnote: 'シナリオ',
+      calendar: 'カレンダー',
       csv: 'CSV',
       'smart-db': 'スマートシート',
     })[toolType] || 'メニュー';
   }
 
+  function _desktopToolMenuItemsForMobile(toolType) {
+    if (!DESKTOP_BACKED_TOOL_TYPES.has(toolType) || typeof buildToolMenuItems !== 'function') return [];
+    try {
+      return buildToolMenuItems(toolType) || [];
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function _activeToolType() {
+    try {
+      if (typeof getActiveScriptNoteComponent === 'function' && getActiveScriptNoteComponent()?._editor?.doc) return 'scriptnote';
+      const visibleScriptnote = document.querySelector('.gb-pane-active .gb-scriptnote-root, .gb-scriptnote-root');
+      if (visibleScriptnote && _isVisibleElement(visibleScriptnote)) return 'scriptnote';
+      const activePane = (typeof GBLayout !== 'undefined') ? GBLayout.activePane : undefined;
+      const activeTab = (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function')
+        ? GBTabs.getActiveTab(activePane)
+        : null;
+      const rawType = activeTab?.type || '';
+      if (rawType === 'scenario') return 'scriptnote';
+      if (rawType === 'pivot') return 'database';
+      return rawType;
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  function _activeScriptNoteComponent() {
+    if (typeof getActiveScriptNoteComponent === 'function') {
+      const comp = getActiveScriptNoteComponent();
+      if (comp?._editor?.doc) return comp;
+    }
+    try {
+      const activePane = (typeof GBLayout !== 'undefined') ? GBLayout.activePane : undefined;
+      const activeTab = (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function')
+        ? GBTabs.getActiveTab(activePane)
+        : null;
+      if (activeTab?.type !== 'scriptnote') return null;
+      return (typeof getComponentInstance === 'function') ? getComponentInstance(activeTab.id) : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function _runScriptNoteToolbarAction(action) {
+    const comp = _activeScriptNoteComponent();
+    if (!comp) {
+      if (typeof showStatus === 'function') showStatus('シナリオ操作を実行できませんでした', true);
+      return false;
+    }
+    if (action === 'renameTitle' && typeof comp._showTitleRenameModal === 'function') {
+      return !!comp._showTitleRenameModal();
+    }
+    if (action === 'chooseTemplate' && typeof comp._showTemplateSelectModal === 'function') {
+      return !!comp._showTemplateSelectModal();
+    }
+    if (action === 'chooseFilterPreset' && typeof comp._showFilterPresetSelectModal === 'function') {
+      return !!comp._showFilterPresetSelectModal();
+    }
+    const button = comp.el?.querySelector?.(`[data-sn-action="${action}"]`);
+    if (action === 'filter' && comp._editor && typeof comp._editor._showFilterMenu === 'function') {
+      const mobileAnchor = document.getElementById('cloud-mobile-main-button') || button;
+      comp._editor._showFilterMenu(button || mobileAnchor, mobileAnchor);
+      return true;
+    }
+    if (action === 'search' && comp._editor && typeof comp._editor._showSearchReplacePopup === 'function') {
+      comp._editor._showSearchReplacePopup(button || document.getElementById('cloud-mobile-main-button'));
+      return true;
+    }
+    if (action === 'detail' && typeof comp._openDetailPanel === 'function') {
+      comp._openDetailPanel();
+      const panel = document.getElementById('rp-detail');
+      if (window.MeldexCloudMobileSideDrawer?.openElement?.('オプション', panel, { kind: 'detail' })) return true;
+      return true;
+    }
+    if (button) {
+      button.click();
+      return true;
+    }
+    if (action === 'saveTemplate' && typeof comp._addTemplatePreset === 'function') {
+      comp._addTemplatePreset({ allowOverwrite: true });
+      return true;
+    }
+    if (action === 'manageTemplates' && typeof comp._showPresetManager === 'function') {
+      comp._showPresetManager('template');
+      return true;
+    }
+    if (action === 'saveFilter' && typeof comp._addFilterPreset === 'function') {
+      comp._addFilterPreset({ allowOverwrite: true });
+      return true;
+    }
+    if (action === 'manageFilters' && typeof comp._showPresetManager === 'function') {
+      comp._showPresetManager('filter');
+      return true;
+    }
+    if (typeof showStatus === 'function') showStatus('シナリオ操作を実行できませんでした', true);
+    return false;
+  }
+
   function _toolMenuItems(toolType) {
     if (toolType === 'folder') {
       return [
-        { label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
-        { label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
-        { label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
-        { label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
-        { label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
-        { label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
-        { label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
-        { label: '設定', icon: 'settings', action: () => _openSettingsModal() },
+        { id: 'create', label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
+        { id: 'command-palette', label: 'コマンドパレット', icon: 'command', action: () => _callGlobal('showCommandPalette') },
+        { id: 'folder-tree', label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
+        { id: 'reload', label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
+        { id: 'display-settings', label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
+        { id: 'slideshow', label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
+        { id: 'search', label: '検索', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'folder') },
+        { id: 'help', label: 'ヘルプ', icon: 'circleHelp', action: () => _openHelpMenu() },
+        { id: 'settings', label: '設定', icon: 'settings', action: () => _openSettingsModal() },
       ];
     }
-    return [];
+    if (toolType === 'scriptnote') {
+      return [
+        { id: 'open', label: '開く', icon: 'folderOpen', action: () => _callGlobal('showScriptNoteOpenModal') },
+        { id: 'new-scriptnote', label: '新規作成', icon: 'plus', action: () => _callGlobal('showAddOutlinerItem', 'scriptnote') },
+        { id: 'import-scriptnote', label: '旧シナリオからインポート', icon: 'download', action: () => _callGlobal('showScriptNoteImportModal') },
+        { id: 'export-scriptnote', label: 'シナリオ形式として保存', icon: 'save', action: () => _callGlobal('promptSaveCurrentScriptNoteAs') },
+        { id: 'export-image', label: '画像として保存', icon: 'image', action: () => {
+          if (typeof MeldexExportImage !== 'undefined') return MeldexExportImage.exportCurrentView('scriptnote');
+          if (typeof showStatus === 'function') showStatus('画像として保存できませんでした', true);
+          return false;
+        } },
+        { id: 'rename-title', label: 'タイトル', icon: 'type', action: () => _runScriptNoteToolbarAction('renameTitle') },
+        { id: 'choose-template', label: 'テンプレート', icon: 'layoutTemplate', action: () => _runScriptNoteToolbarAction('chooseTemplate') },
+        { id: 'horizontal', label: '横書き', icon: 'textAlignStart', action: () => _runScriptNoteToolbarAction('horizontal') },
+        { id: 'vertical', label: '縦書き', icon: 'kanban', action: () => _runScriptNoteToolbarAction('vertical') },
+        { id: 'wrap', label: '折返し', icon: 'wrapText', action: () => _runScriptNoteToolbarAction('wrap') },
+        { id: 'merge-display', label: 'まとめ表示', icon: 'rows3', action: () => _runScriptNoteToolbarAction('mergeDisplay') },
+        { id: 'add-column', label: '列を追加', icon: 'plus', action: () => _runScriptNoteToolbarAction('addColumn') },
+        { id: 'filter', label: 'フィルタ', icon: 'funnel', action: () => _runScriptNoteToolbarAction('filter') },
+        { id: 'filter-preset', label: 'フィルタプリセット', icon: 'listFilter', action: () => _runScriptNoteToolbarAction('chooseFilterPreset') },
+        { id: 'search', label: '検索・置換', icon: 'search', action: () => _runScriptNoteToolbarAction('search') },
+        { id: 'detail', label: 'オプション', icon: 'slidersHorizontal', action: () => _runScriptNoteToolbarAction('detail') },
+        { id: 'reload', label: '再読み込み', icon: 'refreshCw', action: () => _runScriptNoteToolbarAction('reload') },
+        { id: 'save-template', label: 'テンプレートを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveTemplate') },
+        { id: 'manage-templates', label: 'テンプレートを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageTemplates') },
+        { id: 'save-filter', label: 'フィルタを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveFilter') },
+        { id: 'manage-filters', label: 'フィルタを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageFilters') },
+      ];
+    }
+    return _desktopToolMenuItemsForMobile(toolType);
   }
 
   function _editableFromNode(node) {
@@ -765,136 +898,3 @@
     _restoreSelection();
     if (typeof openColorPalette !== 'function') return;
     const fallback = command === 'hiliteColor' ? '#ffff88' : '#ffffff';
-    openColorPalette(anchor, anchor?.dataset?.color || '', (color) => {
-      const next = color || fallback;
-      if (anchor?.dataset) anchor.dataset.color = next;
-      _execTextCommand(command, next);
-    });
-  }
-
-  function _normalizeSafeMobileUrl(rawUrl) {
-    const raw = String(rawUrl || '').trim();
-    if (!raw) return null;
-    let candidate = raw;
-    if (!/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
-      if (!/^[^\s/@]+\.[^\s/]{2,}([/?#].*)?$/i.test(candidate)) return null;
-      candidate = 'https://' + candidate;
-    }
-    try {
-      const parsed = new URL(candidate);
-      if (!['http:', 'https:', 'mailto:', 'tel:'].includes(parsed.protocol)) return null;
-      return candidate;
-    } catch (_err) {
-      return null;
-    }
-  }
-
-  function _createLink() {
-    _restoreSelection();
-    const url = window.prompt?.('リンク先URL');
-    if (!url) return;
-    const safeUrl = _normalizeSafeMobileUrl(url);
-    if (!safeUrl) {
-      if (typeof showStatus === 'function') showStatus('安全なURLを入力してください', true);
-      return;
-    }
-    _execTextCommand('createLink', safeUrl);
-  }
-
-  function _ensureMainButton() {
-    if (_mainButton?.isConnected) return _mainButton;
-    if (!document.body) return null;
-    const existing = document.getElementById('cloud-mobile-main-button');
-    if (existing) {
-      _mainButton = existing;
-      return _mainButton;
-    }
-    _mainButton = document.createElement('button');
-    _mainButton.type = 'button';
-    _mainButton.id = 'cloud-mobile-main-button';
-    _mainButton.className = 'cloud-mobile-main-button';
-    _mainButton.title = 'メニュー';
-    _mainButton.setAttribute('aria-label', 'メニューを開く');
-    _mainButton.appendChild(_icon('menu', 20));
-    const label = document.createElement('span');
-    label.className = 'cloud-mobile-label';
-    label.textContent = 'メニュー';
-    _mainButton.appendChild(label);
-    _mainButton.hidden = true;
-    _bindPressAction(_mainButton, _openMenuSheet);
-    document.body.appendChild(_mainButton);
-    return _mainButton;
-  }
-
-  function _appendSheetSection(sheet, title, items) {
-    const section = document.createElement('section');
-    section.className = 'cloud-mobile-menu-section';
-    const heading = document.createElement('h3');
-    heading.textContent = title;
-    section.appendChild(heading);
-    const grid = document.createElement('div');
-    grid.className = 'cloud-mobile-menu-grid';
-    items.forEach((item) => {
-      grid.appendChild(_button('cloud-mobile-menu-item', item.label, item.icon, () => {
-        _closeMenuSheet();
-        item.action?.();
-      }));
-    });
-    section.appendChild(grid);
-    sheet.appendChild(section);
-  }
-
-  function _openMenuSheet() {
-    if (!_isEnabled() || _hasBlockingModal()) return;
-    _closeOverflowSheet();
-    _closeMenuSheet();
-    _menuOverlay = document.createElement('div');
-    _menuOverlay.className = 'cloud-mobile-menu-overlay';
-    _menuOverlay.setAttribute('role', 'presentation');
-
-    const sheet = document.createElement('div');
-    sheet.className = 'cloud-mobile-menu-sheet';
-    sheet.setAttribute('role', 'dialog');
-    sheet.setAttribute('aria-modal', 'true');
-    sheet.setAttribute('aria-label', 'スマホ用メニュー');
-
-    const header = document.createElement('div');
-    header.className = 'cloud-mobile-sheet-header';
-    const title = document.createElement('strong');
-    title.textContent = 'メニュー';
-    header.appendChild(title);
-    header.appendChild(_button('cloud-mobile-sheet-close', '閉じる', 'x', _closeMenuSheet));
-    sheet.appendChild(header);
-
-    if (LAYOUT_ITEMS.length) _appendSheetSection(sheet, 'レイアウト', LAYOUT_ITEMS);
-    _appendSheetSection(sheet, 'パネル', PANEL_ITEMS);
-    _appendSheetSection(sheet, 'ツール', _mobileWriteBlocked()
-      ? TOOL_ITEMS.filter(item => item.label !== '新規作成')
-      : TOOL_ITEMS);
-
-    _menuOverlay.appendChild(sheet);
-    _menuOverlay.addEventListener('pointerdown', (event) => {
-      if (event.target === _menuOverlay) _closeMenuSheet();
-    });
-    document.body.appendChild(_menuOverlay);
-  }
-
-  function _openToolMenuSheet(toolType) {
-    if (!_isEnabled() || _hasBlockingModal()) return false;
-    const toolItems = _toolMenuItems(toolType);
-    if (!toolItems.length) return false;
-    _closeOverflowSheet();
-    _closeMenuSheet();
-    _menuOverlay = document.createElement('div');
-    _menuOverlay.className = 'cloud-mobile-menu-overlay';
-    _menuOverlay.setAttribute('role', 'presentation');
-
-    const sheet = document.createElement('div');
-    sheet.className = 'cloud-mobile-menu-sheet';
-    sheet.setAttribute('role', 'dialog');
-    sheet.setAttribute('aria-modal', 'true');
-    sheet.setAttribute('aria-label', `${_toolMenuTitle(toolType)}メニュー`);
-
-    const header = document.createElement('div');
-    header.className = 'cloud-mobile-sheet-header';
-    const title = document.createElement('strong');

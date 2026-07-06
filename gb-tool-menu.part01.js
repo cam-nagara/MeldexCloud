@@ -3,51 +3,121 @@
  * 各ツールのツールバー左端に表示するメニューボタンの共通機能
  */
 
+function _toolMenuVisibleItems(menu) {
+  return [...(menu?.querySelectorAll?.('.gb-context-menu-item') || [])]
+    .filter(item => {
+      if (!(item instanceof HTMLElement) || item.disabled || item.classList.contains('disabled')) return false;
+      const rect = item.getBoundingClientRect();
+      const style = getComputedStyle(item);
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    });
+}
+
+function _toolMenuAppendIcon(row, iconName) {
+  if (!iconName) return;
+  const icon = document.createElement('span');
+  icon.className = 'menu-icon';
+  icon.innerHTML = lucide(iconName, 14);
+  row.appendChild(icon);
+}
+
+function _toolMenuAppendLabel(row, label) {
+  const labelEl = document.createElement('span');
+  labelEl.className = 'menu-label';
+  labelEl.textContent = label || '';
+  row.appendChild(labelEl);
+}
+
+function _toolMenuAppendShortcut(row, shortcut) {
+  const shortcutEl = document.createElement('span');
+  shortcutEl.className = 'menu-shortcut';
+  shortcutEl.textContent = shortcut || '';
+  row.appendChild(shortcutEl);
+  return shortcutEl;
+}
+
+function _toolMenuFocusMove(menu, direction) {
+  const items = _toolMenuVisibleItems(menu);
+  if (!items.length) return;
+  const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+  const nextIndex = direction === 'last'
+    ? items.length - 1
+    : direction === 'first'
+      ? 0
+      : (currentIndex + direction + items.length) % items.length;
+  items[nextIndex]?.focus?.();
+}
+
 // ツールメニュー項目を描画する（サブメニュー対応）
-function _renderToolMenuItems(container, items, isSubmenu) {
-  const rootDd = isSubmenu ? container.closest('.tool-menu-dropdown') : container;
+function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
+  const rootDd = rootMenu || container;
+  const closeRootMenu = (restoreFocus = false) => {
+    if (typeof rootDd?._cleanup === 'function') rootDd._cleanup({ restoreFocus });
+    else document.querySelectorAll('.tool-menu-dropdown').forEach(m => m.remove());
+  };
   items.forEach(item => {
     if (item.separator) {
       const sep = document.createElement('div');
-      sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0;';
+      sep.className = 'gb-context-menu-sep ab-dropdown-sep';
+      sep.setAttribute('role', 'separator');
       container.appendChild(sep);
       return;
     }
     if (item.submenu) {
       // サブメニュートリガー
       const wrap = document.createElement('div');
-      wrap.style.cssText = 'position:relative;';
-      const trigger = document.createElement('div');
-      trigger.className = 'ab-dropdown-item';
-      trigger.style.cssText = 'display:flex;align-items:center;';
-      if (item.icon) {
-        trigger.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(item.icon, 14) + '</span>' + esc(item.label) + submenuArrow();
-      } else {
-        trigger.innerHTML = esc(item.label) + submenuArrow();
-      }
+      wrap.className = 'tool-menu-submenu-wrap';
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      trigger.className = 'gb-context-menu-item ab-dropdown-item tool-menu-submenu-trigger';
+      trigger.setAttribute('role', 'menuitem');
+      trigger.setAttribute('aria-haspopup', 'menu');
+      trigger.setAttribute('aria-expanded', 'false');
+      _toolMenuAppendIcon(trigger, item.icon);
+      _toolMenuAppendLabel(trigger, item.label);
+      const arrow = _toolMenuAppendShortcut(trigger, '');
+      arrow.innerHTML = lucide('chevronRight', 12);
       const sub = document.createElement('div');
-      sub.className = 'ab-dropdown ab-sub-menu tool-menu-dropdown';
+      sub.className = 'gb-context-menu ab-dropdown ab-sub-menu tool-menu-dropdown tool-menu-submenu';
+      sub.setAttribute('role', 'menu');
+      sub.setAttribute('aria-label', item.label || 'サブメニュー');
       sub.style.cssText = 'display:none;min-width:200px;';
-      _renderToolMenuItems(sub, item.submenu, true);
+      _renderToolMenuItems(sub, item.submenu, true, rootDd);
       attachHoverSubmenu(trigger, sub);
+      trigger.addEventListener('mouseenter', () => trigger.setAttribute('aria-expanded', 'true'));
+      trigger.addEventListener('mouseleave', () => {
+        setTimeout(() => {
+          if (!sub.isConnected || getComputedStyle(sub).display === 'none') trigger.setAttribute('aria-expanded', 'false');
+        }, 220);
+      });
       wrap.appendChild(trigger);
       wrap.appendChild(sub);
       container.appendChild(wrap);
       return;
     }
-    const el = document.createElement('div');
-    el.className = 'ab-dropdown-item';
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'gb-context-menu-item ab-dropdown-item';
+    el.setAttribute('role', 'menuitem');
     if (item.shortcut) {
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.innerHTML = esc(item.label) + '<span style="margin-left:auto;padding-left:16px;color:var(--fg2);font-size:11px;">' + esc(item.shortcut) + '</span>';
+      _toolMenuAppendLabel(el, item.label);
+      _toolMenuAppendShortcut(el, item.shortcut);
     } else if (item.icon) {
-      el.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(item.icon, 14) + '</span>' + esc(item.label);
+      _toolMenuAppendIcon(el, item.icon);
+      _toolMenuAppendLabel(el, item.label);
     } else {
       el.textContent = item.label;
     }
-    if (item.disabled) { el.style.opacity = '0.4'; el.style.pointerEvents = 'none'; }
-    el.addEventListener('click', () => { document.querySelectorAll('.tool-menu-dropdown').forEach(m => m.remove()); item.action?.(); });
+    if (item.disabled) {
+      el.disabled = true;
+      el.classList.add('disabled');
+      el.setAttribute('aria-disabled', 'true');
+    }
+    el.addEventListener('click', () => {
+      const actionContext = { trigger: rootDd?._sourceButton || null, menuItem: el };
+      closeRootMenu(false);
+      item.action?.(actionContext);
+    });
     container.appendChild(el);
   });
 }
@@ -82,30 +152,72 @@ function showToolMenu(e, toolType) {
   document.querySelectorAll('.tool-menu-dropdown').forEach(el => el.remove());
 
   const dd = document.createElement('div');
-  dd.className = 'ab-dropdown tool-menu-dropdown';
+  dd.className = 'gb-context-menu ab-dropdown tool-menu-dropdown';
+  dd.dataset.toolMenuRoot = '1';
+  dd._sourceButton = btn || null;
+  dd.setAttribute('role', 'menu');
+  dd.setAttribute('aria-label', 'ツールメニュー');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;';
 
   const items = buildToolMenuItems(toolType);
-  _renderToolMenuItems(dd, items);
+  _renderToolMenuItems(dd, items, false, dd);
 
-  // 位置決め
   const rect = btn ? btn.getBoundingClientRect() : { left: e.clientX, bottom: e.clientY };
-  { const z = _getZoom(); dd.style.left = (rect.left / z) + 'px'; dd.style.top = (rect.bottom / z + 2) + 'px'; }
   document.body.appendChild(dd);
-  // 画面はみ出し補正
-  { const ddRect = dd.getBoundingClientRect(); const z = _getZoom();
-  if (ddRect.right > window.innerWidth) dd.style.left = ((window.innerWidth - ddRect.width - 4) / z) + 'px';
-  if (ddRect.bottom > window.innerHeight) dd.style.top = ((window.innerHeight - ddRect.height - 4) / z) + 'px'; }
+  if (typeof positionPopup === 'function') {
+    positionPopup(dd, rect, { prefer: 'below', gap: 2 });
+  } else if (typeof clampPopupToViewport === 'function') {
+    const z = _getZoom();
+    dd.style.left = (rect.left / z) + 'px';
+    dd.style.top = (rect.bottom / z + 2) + 'px';
+    clampPopupToViewport(dd);
+  }
+  btn?.setAttribute?.('aria-haspopup', 'menu');
+  btn?.setAttribute?.('aria-expanded', 'true');
+  let pointerHandler = null;
+  let keyHandler = null;
+  const closeAll = (opts = {}) => {
+    document.querySelectorAll('.tool-menu-dropdown').forEach(el => el.remove());
+    if (pointerHandler) document.removeEventListener('pointerdown', pointerHandler, true);
+    if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
+    pointerHandler = null;
+    keyHandler = null;
+    btn?.setAttribute?.('aria-expanded', 'false');
+    if (opts.restoreFocus) btn?.focus?.();
+  };
+  dd._cleanup = closeAll;
+  dd.querySelector('.gb-context-menu-item:not(:disabled)')?.focus?.();
 
   setTimeout(() => {
-    const close = (ev) => {
+    pointerHandler = (ev) => {
       const inAny = [...document.querySelectorAll('.tool-menu-dropdown')].some(m => m.contains(ev.target));
       if (!inAny && ev.target !== btn) {
-        document.querySelectorAll('.tool-menu-dropdown').forEach(el => el.remove());
-        document.removeEventListener('click', close);
+        closeAll({ restoreFocus: true });
       }
     };
-    document.addEventListener('click', close);
+    keyHandler = (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeAll({ restoreFocus: true });
+        return;
+      }
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        _toolMenuFocusMove(dd, 1);
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        _toolMenuFocusMove(dd, -1);
+      } else if (ev.key === 'Home') {
+        ev.preventDefault();
+        _toolMenuFocusMove(dd, 'first');
+      } else if (ev.key === 'End') {
+        ev.preventDefault();
+        _toolMenuFocusMove(dd, 'last');
+      }
+    };
+    document.addEventListener('pointerdown', pointerHandler, true);
+    document.addEventListener('keydown', keyHandler, true);
   }, 0);
 }
 
@@ -341,8 +453,29 @@ function openScenarioInScriptNote(path, label = '', opts) {
   return true;
 }
 
-function showScriptNoteOpenModal(mode = 'open') {
+function _toolMenuModalIcon(name, size) {
+  return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+}
+
+function _restoreToolMenuModalFocus(trigger) {
+  if (!trigger?.isConnected || typeof trigger.focus !== 'function') return;
+  try { trigger.focus({ preventScroll: true }); } catch { try { trigger.focus(); } catch {} }
+}
+
+function _setScriptNoteOpenMessage(host, text, depth = 0, isError = false) {
+  if (!host) return;
+  const message = document.createElement('div');
+  message.className = 'scriptnote-open-message' + (isError ? ' is-error' : '');
+  message.style.setProperty('--scriptnote-open-indent', (depth * 16 + 8) + 'px');
+  message.textContent = text;
+  host.replaceChildren(message);
+}
+
+function showScriptNoteOpenModal(mode = 'open', options = {}) {
   const isImport = mode === 'import';
+  const trigger = options.trigger
+    || document.activeElement?.closest?.('.tool-menu-btn, button, [role="button"], [tabindex]')
+    || null;
   const activeComp = getActiveScriptNoteComponent();
   const selectedTreeNode = document.querySelector('.tree-node-row.active')?.closest?.('.tree-node')?._nodeData || null;
   const selectedFromTree = (isImport && isScenarioBrowseItem(selectedTreeNode)) || (!isImport && isScriptNoteBrowseItem(selectedTreeNode));
@@ -356,32 +489,43 @@ function showScriptNoteOpenModal(mode = 'open') {
     ? (selectedTreeNode.name || '')
     : (canReuseActivePath ? activeLabel : '');
   const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:520px;max-width:760px;">
-    <h3>${lucide(isImport ? 'scenario' : 'bookOpenText', 18)} ${isImport ? '旧シナリオからインポート' : 'シナリオを開く'}</h3>
-    <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;">
-      <div class="field" style="display:flex;flex-direction:column;gap:6px;margin-bottom:0;min-height:0;flex:1 1 auto;">
-        <label>フォルダツリーから${isImport ? '旧シナリオ' : 'シナリオ'}を選択</label>
-        <div id="scriptnote-open-tree" style="flex:1 1 auto;min-height:280px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--bg);padding:8px;"></div>
+  overlay.className = 'modal-overlay gb-scriptnote-open-overlay';
+  overlay.dataset.e2eId = isImport ? 'tool-menu-scriptnote-import-overlay' : 'tool-menu-scriptnote-open-overlay';
+  overlay.innerHTML = `<div class="modal gb-scriptnote-open-modal" role="dialog" aria-modal="true" aria-labelledby="scriptnote-open-title" tabindex="-1" data-e2e-id="${isImport ? 'tool-menu-scriptnote-import-dialog' : 'tool-menu-scriptnote-open-dialog'}">
+    <div class="gb-modal-header gb-scriptnote-open-header" data-modal-header>
+      <h3 id="scriptnote-open-title" class="gb-modal-title gb-scriptnote-open-title"><span class="gb-scriptnote-open-title-icon" aria-hidden="true">${_toolMenuModalIcon(isImport ? 'scenario' : 'bookOpenText', 16)}</span><span>${isImport ? '旧シナリオからインポート' : 'シナリオを開く'}</span></h3>
+      <button type="button" id="scriptnote-open-close" class="gb-modal-close gb-scriptnote-open-close" aria-label="${isImport ? '旧シナリオからインポートを閉じる' : 'シナリオを開くを閉じる'}" data-e2e-id="tool-menu-scriptnote-open-close">${_toolMenuModalIcon('x', 14)}</button>
+    </div>
+    <div class="gb-modal-body gb-scriptnote-open-body">
+      <div class="field gb-scriptnote-open-field">
+        <label id="scriptnote-open-tree-label" class="gb-scriptnote-open-label">フォルダツリーから${isImport ? '旧シナリオ' : 'シナリオ'}を選択</label>
+        <div id="scriptnote-open-tree" class="gb-scriptnote-open-tree" role="group" aria-labelledby="scriptnote-open-tree-label" data-e2e-id="tool-menu-scriptnote-open-tree"></div>
       </div>
-      <div id="scriptnote-open-selection" style="font-size:12px;color:var(--fg2);min-height:1.5em;padding:0 2px;"></div>
-      <div style="font-size:11px;color:var(--fg2);line-height:1.6;">
+      <div id="scriptnote-open-selection" class="gb-scriptnote-open-selection" aria-live="polite"></div>
+      <div class="gb-scriptnote-open-hint">
         ${isImport ? 'フォルダを展開して旧シナリオファイル(.scenario.json)を選択してください。選択した旧シナリオからシナリオファイルを作成して開きます。' : 'フォルダを展開してシナリオファイルを選択してください。'}
       </div>
     </div>
-    <div class="btn-row">
-      <button id="scriptnote-open-cancel" class="btn">キャンセル</button>
-      <button id="scriptnote-open-ok" class="primary" disabled>${isImport ? '作成して開く' : '開く'}</button>
+    <div class="gb-modal-footer gb-scriptnote-open-footer" data-modal-footer>
+      <button type="button" id="scriptnote-open-cancel" class="gb-btn gb-btn-sm">キャンセル</button>
+      <button type="button" id="scriptnote-open-ok" class="gb-btn gb-btn-sm gb-btn-primary" disabled>${isImport ? '作成して開く' : '開く'}</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
+  window.GBModalShell?.enhanceOverlay?.(overlay);
   const treeHost = overlay.querySelector('#scriptnote-open-tree');
   const selectionEl = overlay.querySelector('#scriptnote-open-selection');
   const openBtn = overlay.querySelector('#scriptnote-open-ok');
+  const closeBtn = overlay.querySelector('#scriptnote-open-close');
+  const cancelBtn = overlay.querySelector('#scriptnote-open-cancel');
   let onKeyDown = null;
-  const close = () => {
+  let closed = false;
+  const close = (restoreFocus = true) => {
+    if (closed) return;
+    closed = true;
     if (onKeyDown) document.removeEventListener('keydown', onKeyDown);
     overlay.remove();
+    if (restoreFocus) _restoreToolMenuModalFocus(trigger);
   };
   const submit = () => {
     if (!selectedPath) {
@@ -392,7 +536,7 @@ function showScriptNoteOpenModal(mode = 'open') {
       showStatus('開く... ではシナリオファイルだけを選択できます。旧シナリオは「旧シナリオからインポート...」を使ってください', true);
       return;
     }
-    close();
+    close(true);
     const label = selectedLabel || getScriptNoteLabelFromPath(selectedPath, '');
     if (!isImport && loadScenarioIntoActiveScriptNote(selectedPath, label)) return;
     if (openScenarioInScriptNote(selectedPath, label)) return;
@@ -403,11 +547,11 @@ function showScriptNoteOpenModal(mode = 'open') {
     selectedLabel = label || '';
     treeHost.querySelectorAll('.scriptnote-open-row.is-selected').forEach(el => {
       el.classList.remove('is-selected');
-      el.style.background = '';
+      el.setAttribute('aria-selected', 'false');
     });
     if (rowEl) {
       rowEl.classList.add('is-selected');
-      rowEl.style.background = 'var(--bg3)';
+      rowEl.setAttribute('aria-selected', 'true');
     }
     selectionEl.textContent = selectedPath
       ? `選択中: ${selectedLabel || selectedPath.split('/').pop().replace(/\.\w+$/, '')}`
@@ -423,42 +567,55 @@ function showScriptNoteOpenModal(mode = 'open') {
     const wrapper = document.createElement('div');
     const row = document.createElement('div');
     row.className = 'scriptnote-open-row';
-    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px 4px ' + (depth * 16 + 4) + 'px;border-radius:4px;cursor:pointer;min-height:26px;';
-    row.addEventListener('mouseenter', () => {
-      if (!row.classList.contains('is-selected')) row.style.background = 'var(--bg3)';
-    });
-    row.addEventListener('mouseleave', () => {
-      if (!row.classList.contains('is-selected')) row.style.background = '';
-    });
+    const itemLabel = item.name || item.label || item.path?.split('/').pop() || '';
+    const rowKey = String(item.path || itemLabel || 'item').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'item';
+    row.dataset.e2eId = 'scriptnote-open-row-' + rowKey;
+    row.dataset.scriptnoteOpenPath = item.path || '';
+    row.style.setProperty('--scriptnote-open-indent', (depth * 16 + 4) + 'px');
     const isFolder = item.type === 'folder' || item._isRoot;
     const toggle = document.createElement('button');
     toggle.type = 'button';
+    toggle.className = 'scriptnote-open-toggle';
+    toggle.dataset.e2eId = 'scriptnote-open-toggle-' + rowKey;
+    toggle.dataset.scriptnoteOpenPath = item.path || '';
     if (isFolder) toggle.innerHTML = lucide('chevronRight', 10); else toggle.textContent = '';
-    toggle.style.cssText = 'width:18px;min-width:18px;height:18px;padding:0;border:none;background:none;color:var(--fg2);cursor:' + (isFolder ? 'pointer' : 'default') + ';';
+    toggle.setAttribute('aria-label', isFolder ? 'フォルダを展開: ' + itemLabel : 'フォルダではありません');
+    if (!isFolder) {
+      toggle.disabled = true;
+      toggle.tabIndex = -1;
+      toggle.setAttribute('aria-hidden', 'true');
+    }
     const label = document.createElement('div');
-    label.textContent = item.name || item.label || item.path?.split('/').pop() || '';
+    label.className = 'scriptnote-open-row-label';
+    label.textContent = itemLabel;
     const isSelectableItem = isImport ? isScenarioBrowseItem(item) : isScriptNoteBrowseItem(item);
-    label.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:' + (isSelectableItem ? 'var(--fg)' : 'var(--fg2)') + ';';
+    row.classList.toggle('is-selectable', isSelectableItem);
+    row.classList.toggle('is-muted', !isFolder && !isSelectableItem);
     row.appendChild(toggle);
     row.appendChild(label);
     wrapper.appendChild(row);
     const children = document.createElement('div');
-    children.style.display = 'none';
-    children.style.minWidth = '0';
+    children.className = 'scriptnote-open-children';
+    children.hidden = true;
     wrapper.appendChild(children);
 
     if (isFolder) {
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      row.setAttribute('aria-expanded', 'false');
+      row.setAttribute('aria-label', 'フォルダを展開: ' + itemLabel);
       const toggleFolder = async () => {
-        const willOpen = children.style.display === 'none';
+        const willOpen = children.hidden;
+        row.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
         if (!willOpen) {
-          children.style.display = 'none';
+          children.hidden = true;
           toggle.innerHTML = lucide('chevronRight', 10);
           return;
         }
         toggle.innerHTML = lucide('chevronDown', 10);
-        children.style.display = 'block';
+        children.hidden = false;
         if (children.dataset.loaded === 'true') return;
-        children.innerHTML = '<div style="padding:4px 8px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
+        _setScriptNoteOpenMessage(children, '読み込み中...', depth + 1);
         try {
           const items = await apiFetch(buildBrowseUrl(item.path, rootPath));
           const visibleItems = (items || [])
@@ -471,34 +628,49 @@ function showScriptNoteOpenModal(mode = 'open') {
             });
           children.innerHTML = '';
           if (!visibleItems.length) {
-            children.innerHTML = '<div style="padding:4px 8px 4px ' + ((depth + 1) * 16 + 4) + 'px;color:var(--fg2);font-size:12px;">' + (isImport ? '旧シナリオなし' : 'シナリオなし') + '</div>';
+            _setScriptNoteOpenMessage(children, isImport ? '旧シナリオなし' : 'シナリオなし', depth + 1);
           } else {
             visibleItems.forEach(child => children.appendChild(createNodeRow(child, depth + 1, rootPath)));
           }
           children.dataset.loaded = 'true';
         } catch {
-          children.innerHTML = '<div style="padding:4px 8px 4px ' + ((depth + 1) * 16 + 4) + 'px;color:var(--red);font-size:12px;">読み込み失敗</div>';
+          _setScriptNoteOpenMessage(children, '読み込み失敗', depth + 1, true);
         }
       };
       toggle.addEventListener('click', (e) => { e.stopPropagation(); toggleFolder(); });
       row.addEventListener('click', toggleFolder);
+      row.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        toggleFolder();
+      });
     } else {
+      row.setAttribute('role', 'button');
+      row.tabIndex = isSelectableItem ? 0 : -1;
+      row.setAttribute('aria-selected', selectedPath && item.path === selectedPath ? 'true' : 'false');
+      row.setAttribute('aria-label', itemLabel);
       row.addEventListener('click', () => updateSelection(item.path, item.name || '', row));
       row.addEventListener('dblclick', () => {
         updateSelection(item.path, item.name || '', row);
         submit();
+      });
+      row.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        updateSelection(item.path, item.name || '', row);
+        if (e.key === 'Enter') submit();
       });
       if (selectedPath && item.path === selectedPath) updateSelection(item.path, item.name || '', row);
     }
     return wrapper;
   };
   const renderTree = async () => {
-    treeHost.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
+    _setScriptNoteOpenMessage(treeHost, '読み込み中...');
     try {
       const roots = await apiFetch('/outliner-roots');
       treeHost.innerHTML = '';
       if (!Array.isArray(roots) || !roots.length) {
-        treeHost.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:12px;">フォルダツリーがありません</div>';
+        _setScriptNoteOpenMessage(treeHost, 'フォルダツリーがありません');
         return;
       }
       roots.forEach(root => {
@@ -507,22 +679,23 @@ function showScriptNoteOpenModal(mode = 'open') {
       });
       if (!selectedPath) updateSelection('', '', null);
     } catch {
-      treeHost.innerHTML = '<div style="padding:8px;color:var(--red);font-size:12px;">フォルダツリーの読み込みに失敗しました</div>';
+      _setScriptNoteOpenMessage(treeHost, 'フォルダツリーの読み込みに失敗しました', 0, true);
     }
   };
-  overlay.querySelector('#scriptnote-open-cancel').addEventListener('click', close);
+  closeBtn.addEventListener('click', () => close(true));
+  cancelBtn.addEventListener('click', () => close(true));
   openBtn.addEventListener('click', submit);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(true); });
   onKeyDown = (e) => {
-    if (e.key === 'Escape') close();
+    if (e.key === 'Escape') close(true);
     if (e.key === 'Enter' && !openBtn.disabled) submit();
   };
   document.addEventListener('keydown', onKeyDown);
   renderTree();
 }
 
-function showScriptNoteImportModal() {
-  return showScriptNoteOpenModal('import');
+function showScriptNoteImportModal(options = {}) {
+  return showScriptNoteOpenModal('import', options);
 }
 
 function loadScenarioIntoActiveScriptNote(path, label = '') {

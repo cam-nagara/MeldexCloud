@@ -360,6 +360,7 @@ function _folderHasActiveFilters(cfg) {
     || _folderFilterArray(cfg.filterTypes).length > 0
     || _folderFilterArray(cfg.filterExts).length > 0
     || _folderHasActiveFolderFilter(cfg)
+    || _folderHasActiveTagFilter(cfg)
     || (cfg.filterModifiedPreset && cfg.filterModifiedPreset !== 'all');
 }
 
@@ -369,6 +370,7 @@ function _getFolderFilteredItems() {
   const types = new Set(_folderFilterArray(cfg.filterTypes));
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
   const folders = new Set(_folderFilterFolderKeys(cfg));
+  const tags = new Set(_folderFilterTagKeys(cfg));
   return _folderItems.filter(item => {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
@@ -378,6 +380,7 @@ function _getFolderFilteredItems() {
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
     if (!_folderMatchesFolderFilter(item, folders)) return false;
+    if (!_folderMatchesTagFilter(item, tags)) return false;
     return _folderMatchesModifiedFilter(item, cfg);
   });
 }
@@ -387,9 +390,11 @@ function _folderFilterChoices() {
   const selectedTypes = _folderFilterArray(cfg.filterTypes);
   const selectedExts = _folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase());
   const selectedFolders = _folderFilterFolderKeys(cfg);
+  const selectedTags = _folderFilterTagKeys(cfg);
   const typeMap = new Map();
   const extMap = new Map();
   const folderMap = new Map();
+  const tagMap = new Map();
   _folderItems.forEach(item => {
     const type = _folderItemTypeKey(item);
     if (type && !typeMap.has(type)) typeMap.set(type, _folderItemTypeLabel(type));
@@ -402,14 +407,20 @@ function _folderFilterChoices() {
         if (folder && !folderMap.has(folder)) folderMap.set(folder, _folderMembershipFolderLabel(folder));
       });
     }
+    _folderItemTags(item).forEach(tag => {
+      const key = String(tag.id || tag.name || '').toLowerCase();
+      if (key && !tagMap.has(key)) tagMap.set(key, tag.name || key);
+    });
   });
   selectedTypes.forEach(type => { if (!typeMap.has(type)) typeMap.set(type, _folderItemTypeLabel(type)); });
   selectedExts.forEach(ext => { if (ext && !extMap.has(ext)) extMap.set(ext, ext); });
   selectedFolders.forEach(folder => { if (folder && !folderMap.has(folder)) folderMap.set(folder, _folderMembershipFolderLabel(folder)); });
+  selectedTags.forEach(tag => { if (tag && !tagMap.has(tag)) tagMap.set(tag, _folderTagLabel(tag)); });
   return {
     types: Array.from(typeMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
     exts: Array.from(extMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
     folders: Array.from(folderMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
+    tags: Array.from(tagMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ja')),
   };
 }
 
@@ -426,11 +437,26 @@ function _clearFolderFilters() {
     filterTypes: [],
     filterExts: [],
     filterFolders: [],
+    filterTags: [],
     filterModifiedPreset: 'all',
     filterModifiedFrom: '',
     filterModifiedTo: '',
   });
   return cfg;
+}
+
+function applyFolderTagFilter(tag) {
+  if (!_folderPath || !Array.isArray(_folderItems)) {
+    if (typeof showStatus === 'function') showStatus('フォルダを開いてからタグで絞り込んでください', true);
+    return false;
+  }
+  const tagKey = String(tag?.id || tag?.name || tag || '').trim();
+  if (!tagKey) return false;
+  const cfg = _saveFolderDisplayConfigPatch({ filterTags: [tagKey] });
+  if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
+  renderFolderGrid({ resetScrollTop: true });
+  _updateFolderDisplayFilterButton(cfg);
+  return true;
 }
 
 function _updateFolderDisplayFilterButton(cfg) {
@@ -473,6 +499,7 @@ function renderFolderGrid(opts) {
 
   const dcfg = getFolderDisplayConfig();
   if (_folderHasActiveFolderFilter(dcfg)) _folderEnsureMemberships(_folderItems, { rerender: true });
+  if (_folderHasActiveTagFilter(dcfg)) _folderEnsureTags(_folderItems, { rerender: true });
   const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems());
   _folderVisibleItems = filteredItems;
   _updateFolderDisplayFilterButton(dcfg);
@@ -942,6 +969,22 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
   if (item.type !== 'folder') addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
+  if (!blankTarget && item.path) {
+    addItem('自動タグ付け', () => {
+      if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
+    }, null, 'tags');
+  }
+  if (!blankTarget && item.path) {
+    const archiveTargets = _folderSelectedItems.length > 1 ? _folderSelectedItems : [item];
+    addItem(archiveTargets.length > 1 ? '選択項目を圧縮' : '圧縮', () => {
+      if (typeof compressFolderItems === 'function') compressFolderItems(archiveTargets);
+    }, null, 'archive');
+  }
+  if (!blankTarget && item.path && typeof _folderCanExtractArchive === 'function' && _folderCanExtractArchive(item)) {
+    addItem('解凍', () => {
+      if (typeof extractArchiveItem === 'function') extractArchiveItem(item);
+    }, null, 'packageOpen');
+  }
 
   if (item.type === 'calendar' && item.path) {
     const mainCalId = localStorage.getItem('main-calendar-id');

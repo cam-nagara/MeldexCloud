@@ -1,3 +1,385 @@
+function _gbPrepareUntrustedIframe(iframe, rawUrl) {
+  if (!iframe) return null;
+  iframe.setAttribute('sandbox', _gbHtmlIframeSandboxForUrl(rawUrl || iframe.getAttribute('src') || iframe.src || ''));
+  iframe.setAttribute('referrerpolicy', 'no-referrer');
+  return iframe;
+}
+
+function _gbNormalizeHtmlViewerUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = new URL(text, window.location.origin);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
+
+function _gbSetHtmlViewerSrc(rawUrl) {
+  const url = _gbNormalizeHtmlViewerUrl(rawUrl);
+  if (!url) {
+    if (typeof showStatus === 'function') showStatus('HTMLビューワーで開けないURLです', true);
+    return false;
+  }
+  const iframe = _gbPrepareUntrustedIframe(document.getElementById('html-iframe'), url);
+  if (iframe) iframe.src = url;
+  const urlBar = document.getElementById('html-url-bar');
+  if (urlBar) urlBar.value = url;
+  return true;
+}
+
+_gbPrepareUntrustedIframe(document.getElementById('html-iframe'));
+
+function openHtmlFile(label, path, opts) {
+  const openOpts = opts || {};
+  if (!openOpts.skipShowView) showView('html');
+  else if (!openOpts.skipStateView) state.view = 'html';
+  state.currentPagePath = path;
+  const currentTitleEl = document.getElementById('current-title');
+  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
+  if (!openOpts.skipSaveLastView) saveLastView({type:'html', label, path});
+  if (!openOpts.skipNavPush) {
+    const _navEntry = {type:'html', label, path};
+    navPush(_navEntry);
+  }
+  if (!openOpts.skipRecent) addRecent(label, path, 'html');
+  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
+  if (typeof trackIframeLoading === 'function') {
+    trackIframeLoading(document.getElementById('html-iframe'), 'HTMLを読み込み中...', openOpts);
+  }
+  _gbSetHtmlViewerSrc(url);
+  if (!openOpts.skipGlobalUi) showStatus('HTML: ' + label);
+}
+/* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
+function getUsername() {
+  try { const cfg = JSON.parse(localStorage.getItem('meldex-user') || '{}'); return cfg.name || 'anonymous'; } catch { return 'anonymous'; }
+}
+
+// ビュー切り替え時のアノテーション再読み込みは showView 本体 (720-731行) で処理済み
+
+// replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
+
+const _GB_RESIZABLE_MODAL_SELECTOR = '.modal, .gb-modal, .link-modal, .gb-cal-modal';
+const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+
+function _gbClampModalValue(value, min, max) {
+  if (max < min) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function _gbModalMinSize(modal) {
+  const cs = getComputedStyle(modal);
+  const minWidth = Math.max(240, parseFloat(cs.minWidth) || 0);
+  const minHeight = Math.max(160, parseFloat(cs.minHeight) || 0);
+  return { minWidth, minHeight };
+}
+
+function _gbIsMobileDialogSheetModal(modal) {
+  if (!modal) return false;
+  const overlay = modal.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay');
+  return overlay?.dataset?.mobileDialogSheetActive === '1'
+    || modal.dataset.mobileDialogSheet === '1'
+    || modal.classList?.contains('gb-mobile-dialog-sheet');
+}
+
+function _gbClampModalForNarrowViewport(modal) {
+  if (!modal || window.innerWidth > 768) return;
+  const gap = 8;
+  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  modal.style.minWidth = '0';
+  modal.style.width = Math.max(240, window.innerWidth - gap * 2) + 'px';
+  modal.style.maxWidth = 'calc(100vw - 16px)';
+  modal.style.maxHeight = Math.max(160, viewportHeight - gap * 2) + 'px';
+}
+
+function _gbClearResizableModalState(modal) {
+  if (!modal) return;
+  if (modal.dataset?.gbResizableModal) delete modal.dataset.gbResizableModal;
+  modal.classList?.remove('gb-modal-resizable');
+  modal.querySelectorAll?.(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
+}
+
+function _gbStartModalResize(event, modal, direction) {
+  if (!modal || (event.button != null && event.button !== 0)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const handle = event.currentTarget;
+  try { handle?.setPointerCapture?.(event.pointerId); } catch (_) {}
+
+  const rect = modal.getBoundingClientRect();
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+  const { minWidth, minHeight } = _gbModalMinSize(modal);
+  const gap = 8;
+  document.body.classList.add('gb-modal-resizing');
+
+  function onMove(moveEvent) {
+    moveEvent.preventDefault();
+    const dx = moveEvent.clientX - start.x;
+    const dy = moveEvent.clientY - start.y;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+    let left = start.left;
+    let top = start.top;
+    let right = start.right;
+    let bottom = start.bottom;
+
+    if (direction.includes('e')) {
+      right = _gbClampModalValue(start.right + dx, start.left + minWidth, viewportW - gap);
+    }
+    if (direction.includes('w')) {
+      left = _gbClampModalValue(start.left + dx, gap, start.right - minWidth);
+    }
+    if (direction.includes('s')) {
+      bottom = _gbClampModalValue(start.bottom + dy, start.top + minHeight, viewportH - gap);
+    }
+    if (direction.includes('n')) {
+      top = _gbClampModalValue(start.top + dy, gap, start.bottom - minHeight);
+    }
+
+    modal.style.left = left + 'px';
+    modal.style.top = top + 'px';
+    modal.style.width = Math.max(minWidth, right - left) + 'px';
+    modal.style.height = Math.max(minHeight, bottom - top) + 'px';
+  }
+
+  function onUp() {
+    try { handle?.releasePointerCapture?.(event.pointerId); } catch (_) {}
+    document.removeEventListener('pointermove', onMove, true);
+    document.removeEventListener('pointerup', onUp, true);
+    document.removeEventListener('pointercancel', onUp, true);
+    document.body.classList.remove('gb-modal-resizing');
+  }
+
+  document.addEventListener('pointermove', onMove, true);
+  document.addEventListener('pointerup', onUp, true);
+  document.addEventListener('pointercancel', onUp, true);
+}
+
+function _gbInstallModalResizeEdges(modal) {
+  if (!modal || modal.dataset.gbResizableModal === '1') return;
+  if (_gbIsMobileDialogSheetModal(modal)) {
+    _gbClearResizableModalState(modal);
+    return;
+  }
+  modal.dataset.gbResizableModal = '1';
+  modal.classList.add('gb-modal-resizable');
+  modal.style.boxSizing = 'border-box';
+  modal.style.position = 'absolute';
+  modal.style.right = 'auto';
+  modal.style.bottom = 'auto';
+  modal.style.margin = '0';
+  modal.style.transform = 'none';
+  modal.style.maxWidth = 'calc(100vw - 16px)';
+  modal.style.maxHeight = 'calc(100vh - 16px)';
+  _gbClampModalForNarrowViewport(modal);
+
+  _GB_MODAL_RESIZE_DIRECTIONS.forEach(direction => {
+    const edge = document.createElement('div');
+    edge.className = `gb-modal-shell-edge gb-modal-shell-edge-${direction}`;
+    edge.dataset.modalResize = direction;
+    edge.addEventListener('pointerdown', event => _gbStartModalResize(event, modal, direction));
+    modal.appendChild(edge);
+  });
+}
+
+function _gbPrepareResizableModal(modal) {
+  if (!modal || modal.dataset.gbResizableModal === '1') return;
+  if (_gbIsMobileDialogSheetModal(modal)) {
+    _gbClearResizableModalState(modal);
+    return;
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!modal.isConnected || modal.dataset.gbResizableModal === '1') return;
+      if (_gbIsMobileDialogSheetModal(modal)) {
+        _gbClearResizableModalState(modal);
+        return;
+      }
+      _gbClampModalForNarrowViewport(modal);
+      const rect = modal.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const gap = 8;
+      const width = Math.min(rect.width, window.innerWidth - gap * 2);
+      const height = Math.min(rect.height, window.innerHeight - gap * 2);
+      const left = _gbClampModalValue(rect.left, gap, window.innerWidth - width - gap);
+      const top = _gbClampModalValue(rect.top, gap, window.innerHeight - height - gap);
+      modal.style.left = left + 'px';
+      modal.style.top = top + 'px';
+      modal.style.width = width + 'px';
+      modal.style.height = height + 'px';
+      _gbInstallModalResizeEdges(modal);
+    });
+  });
+}
+
+function _gbFindResizableModals(node) {
+  const result = [];
+  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) && !_gbIsMobileDialogSheetModal(node)) result.push(node);
+  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => {
+    if (!_gbIsMobileDialogSheetModal(modal)) result.push(modal);
+  });
+  return result;
+}
+
+// モーダル表示後にサイズを固定し、4辺+4隅でリサイズできるようにする
+function _gbResizableModalMutationFilter(mutation) {
+  return Array.from(mutation.addedNodes || []).some(node => {
+    if (node?.nodeType !== 1) return false;
+    return node.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) || !!node.querySelector?.(_GB_RESIZABLE_MODAL_SELECTOR);
+  });
+}
+function _gbResizableModalMutationCallback(mutations) {
+  for (const m of mutations) {
+    for (const node of m.addedNodes) {
+      if (node.nodeType !== 1) continue;
+      _gbFindResizableModals(node).forEach(_gbPrepareResizableModal);
+    }
+  }
+}
+if (window.GBMutationBus) {
+  window.GBMutationBus.subscribe('gb-app-resizable-modals', {
+    filter: _gbResizableModalMutationFilter,
+    callback: _gbResizableModalMutationCallback,
+    throttle: 30,
+  });
+} else {
+  new MutationObserver(_gbResizableModalMutationCallback).observe(document.body, { childList: true, subtree: true });
+}
+/* ==============================
+   起動
+   ============================== */
+replaceIcons();
+loadColorSettings();
+updateColorScheme();
+updateUserIcon();
+// UIスケール復元
+// ページ離脱時の未保存データ保護
+function _sendUnloadJson(url, method, body) {
+  let requestMethod = method || 'POST';
+  let requestBody = body || {};
+  if (requestMethod === 'PUT' && String(url || '').includes('/value?')) {
+    requestMethod = 'POST';
+    requestBody = { ...requestBody, _unload_update: true };
+  }
+  const payload = JSON.stringify(requestBody);
+  const blob = new Blob([payload], { type: 'application/json' });
+  if (requestMethod === 'POST' && navigator.sendBeacon) {
+    try {
+      if (navigator.sendBeacon(url, blob)) return true;
+    } catch {}
+  }
+  try {
+    fetch(url, {
+      method: requestMethod,
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
+    return payload.length <= 60000;
+  } catch {}
+  return false;
+}
+
+window.addEventListener('beforeunload', (e) => {
+  let unloadSaveQueued = true;
+  // ノート: 未保存の自動保存タイマーが残っている場合、即座に保存
+  if (window._noteAutoSaveTimer) {
+    clearTimeout(window._noteAutoSaveTimer);
+    window._noteAutoSaveTimer = null;
+    const pc = document.getElementById('page-content');
+    const currentPath = pc?.dataset?.path;
+    if (currentPath) {
+      const md = htmlToMd(pc?.innerHTML || '');
+      const fm = pc.dataset.frontmatter || '';
+      const full = fm ? fm + md : md;
+      const body = typeof _noteSavePayload === 'function'
+        ? _noteSavePayload(pc, full)
+        : { content: full, if_match_etag: pc?.dataset?.lastSavedEtag || '', skip_if_missing: true };
+      const noteSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(currentPath), 'POST', body);
+      unloadSaveQueued = noteSaveQueued && unloadSaveQueued;
+      if (!noteSaveQueued) {
+        window._noteAutoSaveTimer = setTimeout(() => {
+          if (typeof flushPendingEditorAutosave === 'function') flushPendingEditorAutosave();
+        }, 500);
+      }
+    }
+  }
+  // entity-freetext: 未保存タイマーが残っている場合
+  if (window._ftAutoSaveTimer) {
+    clearTimeout(window._ftAutoSaveTimer);
+    const ft = document.getElementById('entity-freetext');
+    const ep = ft?.dataset?.entityPath;
+    if (ep) {
+      const md = htmlToMd(ft?.innerHTML || '');
+      const isEntry = ep.endsWith('.md');
+      const url = isEntry
+        ? API_BASE + '/value?path=' + encodeURIComponent(ep)
+        : API_BASE + '/file?path=' + encodeURIComponent(ep + '/_freetext.md');
+      const body = isEntry ? { new_body: md, skip_if_missing: true } : { content: md, skip_if_missing: true };
+      unloadSaveQueued = _sendUnloadJson(url, isEntry ? 'PUT' : 'POST', body) && unloadSaveQueued;
+    }
+  }
+  // キャンバス: 未保存タイマーが残っている場合
+  if (window._bdTimer && typeof bd !== 'undefined' && bd.dirty && bd.path && typeof bdToMd === 'function') {
+    const canSaveBoardPath = typeof _bdCanSaveCurrentBoardPath !== 'function' || _bdCanSaveCurrentBoardPath(bd.path);
+    if (!canSaveBoardPath) {
+      unloadSaveQueued = false;
+    } else {
+      clearTimeout(window._bdTimer);
+      const boardSaveQueued = _sendUnloadJson(API_BASE + '/file?path=' + encodeURIComponent(bd.path), 'POST', { content: bdToMd(), skip_if_missing: true });
+      unloadSaveQueued = boardSaveQueued && unloadSaveQueued;
+      if (!boardSaveQueued) window._bdTimer = setTimeout(bdSave, 500);
+    }
+  }
+  if (!unloadSaveQueued) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+// ノート縦書き復元
+if (localStorage.getItem('note-vertical') === '1') {
+  document.getElementById('page-content')?.classList.add('vertical-writing');
+  const btn = document.getElementById('btn-note-vertical');
+  if (btn) {
+    // 上の replaceIcons() は既に実行済みなので、ここで lucide() を直接呼んで SVG を埋め込む
+    btn.innerHTML = (typeof lucide === 'function') ? lucide('textAlignStart', 16) : '<span class="ico ico-textAlignStart"></span>';
+    btn.title = '横書きに戻す';
+    btn.classList.add('active');
+  }
+}
+// ノート余白復元
+if (typeof applyNoteMargin === 'function') applyNoteMargin();
+if (typeof applyNoteContentMaxWidth === 'function') applyNoteContentMaxWidth();
+// UIスケール復元
+document.documentElement.style.fontSize = ''; // 旧font-sizeスケーリングをクリア
+{
+  const saved = localStorage.getItem('ui-scale');
+  if (saved !== null) {
+    // ユーザーが手動設定済み（または前回の自動設定値） → そのまま適用
+    const s = parseInt(saved, 10) || 100;
+    applyUIScale(s);
+  } else {
+    // 初回起動: 画面サイズから最適スケールを自動決定
+    const autoScale = _detectOptimalScale();
+    applyUIScale(autoScale);
+    localStorage.setItem('ui-scale', String(autoScale));
+  }
+}
+
+// ステータスバー表示状態復元
 try {
   if (typeof applyStatusbarHidden === 'function') {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
@@ -47,6 +429,7 @@ document.addEventListener('wheel', (e) => {
 // モバイルツールメニュー（トップバー折りたたみ時）
 function showMobileToolMenu(e) {
   document.querySelectorAll('.mobile-tool-menu').forEach(el => el.remove());
+  const btn = e.target.closest('button') || e.target;
   const items = [
     { label: 'フォルダ', action: () => openToolTab('folder') },
     { label: 'ノート', action: () => openToolTab('page') },
@@ -62,20 +445,70 @@ function showMobileToolMenu(e) {
   ];
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu mobile-tool-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ツールメニュー');
   menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
+  let menuClosed = false;
+  let closeOnPointer = null;
+  let closeOnKey = null;
+  function closeMenu(restoreFocus = false) {
+    if (menuClosed) return;
+    menuClosed = true;
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    menu.remove();
+    if (restoreFocus && typeof btn.focus === 'function') {
+      try { btn.focus({ preventScroll: true }); } catch { btn.focus(); }
+    }
+  }
+  function focusableItems() {
+    return [...menu.querySelectorAll('.gb-context-menu-item')];
+  }
   items.forEach(it => {
-    if (!it) { const sep = document.createElement('div'); sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0;'; menu.appendChild(sep); return; }
-    const row = document.createElement('div');
+    if (!it) { const sep = document.createElement('div'); sep.className = 'gb-context-menu-sep'; sep.setAttribute('role', 'separator'); menu.appendChild(sep); return; }
+    const row = document.createElement('button');
+    row.type = 'button';
     row.className = 'gb-context-menu-item';
+    row.setAttribute('role', 'menuitem');
     row.textContent = it.label;
-    row.addEventListener('click', () => { menu.remove(); try { it.action(); } catch {} });
+    row.addEventListener('click', () => { closeMenu(false); try { it.action(); } catch {} });
     menu.appendChild(row);
   });
   document.body.appendChild(menu);
-  const btn = e.target.closest('button') || e.target;
   const br = btn.getBoundingClientRect();
-  { const z = _getZoom(); menu.style.left = Math.max(4, Math.min(br.left / z, window.innerWidth / z - menu.offsetWidth - 4)) + 'px'; menu.style.top = (br.bottom / z + 2) + 'px'; }
-  setTimeout(() => { document.addEventListener('pointerdown', function cl(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', cl); } }); }, 0);
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, br, { prefer: 'bottom', gap: 2 });
+  } else {
+    { const z = _getZoom(); menu.style.left = Math.max(4, Math.min(br.left / z, window.innerWidth / z - menu.offsetWidth - 4)) + 'px'; menu.style.top = (br.bottom / z + 2) + 'px'; }
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+  closeOnPointer = function closeMobileToolMenuOnPointer(ev) {
+    if (!menu.contains(ev.target)) closeMenu(false);
+  };
+  closeOnKey = function closeMobileToolMenuOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    const rows = focusableItems();
+    if (!rows.length) return;
+    const currentIndex = Math.max(0, rows.indexOf(document.activeElement));
+    let nextIndex = currentIndex;
+    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % rows.length;
+    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + rows.length) % rows.length;
+    else if (ev.key === 'Home') nextIndex = 0;
+    else if (ev.key === 'End') nextIndex = rows.length - 1;
+    else return;
+    ev.preventDefault();
+    rows[nextIndex]?.focus();
+  };
+  setTimeout(() => {
+    if (menuClosed || !menu.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
+  }, 0);
+  menu.querySelector('.gb-context-menu-item')?.focus();
 }
 
 // OS テーマ変更を監視
@@ -106,7 +539,7 @@ document.addEventListener('pointerdown', (e) => {
 // 共通コンテキストメニューの閉じる処理
 // ============================================================
 document.addEventListener('pointerdown', (e) => {
-  if (!e.target.closest('.gb-context-menu')) {
+  if (!e.target?.closest?.('.gb-context-menu')) {
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   }
 }, true);

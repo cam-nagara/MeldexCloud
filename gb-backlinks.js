@@ -84,34 +84,41 @@
       const broken = !it.exists;
       const loc = it.link_location ? ` / ${_esc(it.link_location)}` : '';
       const typeLabel = it.link_type === 'body' ? '本文' : (it.link_type === 'url-prop' ? 'URL' : it.link_type);
+      const displayName = it.display_name || it.source_path;
       const title = broken ? 'リンク切れ（参照元ファイルが存在しません）' : 'クリックで開く';
-      const style = broken
-        ? 'color:var(--fg2);text-decoration:line-through;cursor:default;'
-        : 'color:var(--accent);cursor:pointer;text-decoration:underline;';
       const openType = _resolveBacklinkOpenType(it);
       const openPath = broken ? '' : _resolveBacklinkOpenPath(it, openType);
+      const rowClass = broken ? 'gb-backlink-row gb-backlink-row--broken' : 'gb-backlink-row gb-backlink-row--openable';
+      const rowAttrs = broken
+        ? ''
+        : ` role="button" tabindex="0" aria-label="${_esc(displayName)}を開く"`;
       const brokenBadge = broken
-        ? `<span style="font-size:.75em;color:var(--fg2);margin-left:6px;">(リンク切れ)</span>` : '';
-      return `<li data-idx="${idx}" style="padding:6px 8px;border-bottom:1px solid var(--border);list-style:none;">
-        <span class="bl-link" data-path="${_esc(openPath)}" data-link-type="${_esc(openType)}" style="${style}" title="${_esc(title)}">${_esc(it.display_name || it.source_path)}</span>
+        ? `<span class="gb-backlink-broken-badge">(リンク切れ)</span>` : '';
+      return `<li data-idx="${idx}" class="${rowClass}" data-e2e-id="backlink-row-${idx + 1}"${rowAttrs}>
+        <span class="bl-link gb-backlink-label" data-path="${_esc(openPath)}" data-link-type="${_esc(openType)}" title="${_esc(title)}">${_esc(displayName)}</span>
         ${brokenBadge}
-        <div style="font-size:.75em;color:var(--fg2);margin-top:2px;">${_esc(typeLabel)}${loc}</div>
-        <div style="font-size:.7em;color:var(--fg2);font-family:var(--font-mono,monospace);">${_esc(it.source_path)}</div>
+        <div class="gb-backlink-meta">${_esc(typeLabel)}${loc}</div>
+        <div class="gb-backlink-path">${_esc(it.source_path)}</div>
       </li>`;
-    }).join('') : `<li style="padding:var(--ui-space-4);color:var(--fg2);font-size:.9em;list-style:none;">このエントリへの参照はありません</li>`;
+    }).join('') : `<li class="gb-backlinks-empty">このエントリへの参照はありません</li>`;
     container.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;padding:8px var(--ui-space-4);border-bottom:1px solid var(--border);">
-        <span style="font-weight:600;">バックリンク</span>
-        <span style="color:var(--fg2);font-size:.85em;">${items.length}件</span>
-        <span style="flex:1;"></span>
-        <button class="gb-btn gb-btn-sm" data-action="backlinksRebuild">全体再構築</button>
+      <div class="gb-backlinks-header">
+        <span class="gb-backlinks-title">バックリンク</span>
+        <span class="gb-backlinks-count">${items.length}件</span>
+        <span class="gb-backlinks-spacer"></span>
+        <button class="gb-btn gb-btn-sm" type="button" data-action="backlinksRebuild" data-e2e-id="backlinks-rebuild" aria-label="バックリンクを全体再構築" title="バックリンクを全体再構築">全体再構築</button>
       </div>
-      <ul style="margin:0;padding:0;">${rows}</ul>`;
-    container.querySelectorAll('li').forEach(li => {
+      <ul class="gb-backlinks-list">${rows}</ul>`;
+    container.querySelectorAll('.gb-backlink-row--openable').forEach(li => {
       const idx = parseInt(li.dataset.idx, 10);
       const it = items[idx];
       if (!it || !it.exists) return;
       li.addEventListener('click', () => _openBacklink(it));
+      li.addEventListener('keydown', e => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        _openBacklink(it);
+      });
     });
     const rbBtn = container.querySelector('[data-action="backlinksRebuild"]');
     if (rbBtn) rbBtn.addEventListener('click', async (e) => {

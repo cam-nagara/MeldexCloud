@@ -113,7 +113,11 @@ function closeConditionModal(listSelector) {
 function createConditionFieldBlock(labelText, control) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'display:block;margin:0 0 8px;';
-  const label = document.createElement('div');
+  const label = document.createElement(control?.id ? 'label' : 'div');
+  if (control?.id) {
+    label.setAttribute('for', control.id);
+    label.className = 'gb-label';
+  }
   label.textContent = labelText;
   label.style.cssText = 'font-size:11px;color:var(--ui-fg-muted, var(--fg2));margin:0 0 4px;';
   wrap.appendChild(label);

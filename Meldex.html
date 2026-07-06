@@ -206,29 +206,29 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <div id="sidebar-backdrop" class="sidebar-backdrop" style="display:none !important;" data-action="toggleSidebar()"></div>
 <div id="sidebar" style="display:none;">
   <div id="sidebar-search-bar" style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;">
-    <input type="search" id="sidebar-search-input" placeholder="検索..." autocomplete="off" data-lpignore="true" data-form-type="other" readonly data-onfocus="this.removeAttribute('readonly')" style="flex:1;min-width:0;padding:4px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;outline:none;" data-onkeydown="if(event.key==='Escape'){this.value='';doTreeNameSearch();}" data-oninput="doTreeNameSearch()">
-    <button id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
-    <button id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="全文検索" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
-    <button id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ表示切替" data-action="toggleGlobalFilterBar()"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
+    <input type="search" id="sidebar-search-input" aria-label="フォルダツリーを検索" placeholder="検索..." autocomplete="off" data-lpignore="true" data-form-type="other" readonly data-onfocus="this.removeAttribute('readonly')" style="flex:1;min-width:0;padding:4px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;outline:none;" data-onkeydown="if(event.key==='Escape'){this.value='';doTreeNameSearch();}" data-oninput="doTreeNameSearch()">
+    <button type="button" id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" aria-label="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="全文検索" aria-label="全文検索を開く" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ表示切替" aria-label="フィルタ表示を切り替える" data-action="toggleGlobalFilterBar()"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-outliner-refresh" class="outliner-refresh-btn" data-e2e-id="outliner-refresh-button" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フォルダツリーを更新" aria-label="フォルダツリーを更新" data-action="refreshOutlinerFromButton(event)"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
   </div>
   <div id="search-panel">
     <div class="sp-header">
       <div class="sp-input-row">
-        <input type="text" id="sp-query" placeholder="ソースフォルダ内を全文検索..." style="flex:1;" data-onkeydown="if(event.key==='Enter')doVaultSearch();if(event.key==='Escape')closeSearchPanel();">
-        <button class="sp-btn" title="検索" data-action="doVaultSearch()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
-        <button class="sp-btn" title="閉じる" data-action="closeSearchPanel()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
+        <input type="text" id="sp-query" aria-label="ソースフォルダ内を全文検索" placeholder="ソースフォルダ内を全文検索..." style="flex:1;" data-onkeydown="if(event.key==='Enter')doVaultSearch();if(event.key==='Escape')closeSearchPanel();">
+        <button type="button" class="sp-btn" title="検索" aria-label="検索" data-action="doVaultSearch()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
+        <button type="button" class="sp-btn" title="閉じる" aria-label="検索パネルを閉じる" data-action="closeSearchPanel()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
       </div>
       <div class="sp-input-row" id="sp-replace-row" style="display:none;">
-        <input type="text" id="sp-replace" placeholder="置換...">
-        <button class="sp-btn sp-btn-label" title="置換" data-action="doVaultReplace(false)">置換</button>
-        <button class="sp-btn sp-btn-label" title="全置換" data-action="doVaultReplace(true)">全置換</button>
+        <input type="text" id="sp-replace" aria-label="置換後の文字列" placeholder="置換...">
+        <button type="button" class="sp-btn sp-btn-label" title="置換" data-action="doVaultReplace(false)">置換</button>
+        <button type="button" class="sp-btn sp-btn-label" title="全置換" data-action="doVaultReplace(true)">全置換</button>
       </div>
       <div class="sp-opts">
-        <label><input type="checkbox" id="sp-case"> 大小区別</label>
-        <label><input type="checkbox" id="sp-regex"> 正規表現</label>
-        <label><input type="checkbox" id="sp-folder-only"> 選択フォルダ内</label>
-        <label><input type="checkbox" id="sp-show-replace" data-onchange="document.getElementById('sp-replace-row').style.display=this.checked?'flex':'none'"> 置換</label>
+        <label><input type="checkbox" id="sp-case" aria-label="大小区別"> 大小区別</label>
+        <label><input type="checkbox" id="sp-regex" aria-label="正規表現"> 正規表現</label>
+        <label><input type="checkbox" id="sp-folder-only" aria-label="選択フォルダ内"> 選択フォルダ内</label>
+        <label><input type="checkbox" id="sp-show-replace" aria-label="置換" data-onchange="document.getElementById('sp-replace-row').style.display=this.checked?'flex':'none'"> 置換</label>
       </div>
     </div>
     <div class="sp-results" id="sp-results" style="max-height:30vh;overflow-y:auto;"></div>
@@ -236,8 +236,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
   </div>
   <div id="global-filter-bar" style="border-bottom:1px solid var(--border);padding:4px 8px;flex-shrink:0;font-size:11px;">
     <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;" id="gf-chips"></div>
-    <div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
-      <label style="display:flex;align-items:center;gap:2px;cursor:pointer;color:var(--fg2);font-size:11px;"><input type="checkbox" id="gf-search-entities" data-onchange="setTreeSearchIncludeEntities(this.checked)"> エントリも検索</label>
+    <div class="gf-search-row" style="display:flex;align-items:center;gap:6px;margin-top:3px;">
+      <label class="gf-search-entities-label" style="display:flex;align-items:center;gap:2px;cursor:pointer;color:var(--fg2);font-size:11px;"><input type="checkbox" id="gf-search-entities" data-e2e-id="global-filter-search-entities" aria-label="エントリも検索" data-onchange="setTreeSearchIncludeEntities(this.checked)"> エントリも検索</label>
     </div>
   </div>
   <div id="section-smart-db" style="display:none;"><div id="body-smart-db"></div></div>
@@ -261,8 +261,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <div class="sidebar-section-header" data-sidebar-section="workspaces" data-e2e-id="sidebar-section-workspaces-header">
         <span class="sidebar-section-toggle expanded" id="toggle-workspaces"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>ワークスペース</span>
-        <span style="margin-left:auto;" class="sidebar-section-btn" data-action="openWorkspaceSettings()" title="ワークスペースの管理"><span class="ico ico-moreHorizontal" style="width:14px;height:14px;"></span></span>
-        <span class="sidebar-section-btn" data-action="addWorkspaceFromSidebar()" title="ワークスペースを追加"><span class="ico ico-plus" style="width:14px;height:14px;"></span></span>
+        <span style="margin-left:auto;" class="sidebar-section-btn" role="button" tabindex="0" aria-label="ワークスペースの管理" data-e2e-id="sidebar-workspace-settings" data-action="openWorkspaceSettings()" title="ワークスペースの管理"><span class="ico ico-moreHorizontal" style="width:14px;height:14px;"></span></span>
+        <span class="sidebar-section-btn" role="button" tabindex="0" aria-label="ワークスペースを追加" data-e2e-id="sidebar-workspace-add" data-action="addWorkspaceFromSidebar()" title="ワークスペースを追加"><span class="ico ico-plus" style="width:14px;height:14px;"></span></span>
       </div>
       <div class="sidebar-section-body" id="body-workspaces"></div>
     </div>
@@ -271,8 +271,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
         <span class="sidebar-section-toggle expanded" id="toggle-roots"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>ソースフォルダ</span>
         <span style="margin-left:auto;display:flex;gap:2px;">
-          <span class="sidebar-section-btn" data-action="_openSourceFolderSettings()" title="ソースフォルダの管理"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></span>
-          <span class="sidebar-section-btn" data-action="addOutlinerRootFromSettings()" title="ソースフォルダを追加"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span>
+          <span class="sidebar-section-btn" role="button" tabindex="0" aria-label="ソースフォルダの管理" data-e2e-id="sidebar-source-folder-settings" data-action="_openSourceFolderSettings()" title="ソースフォルダの管理"><span class="ico ico-moreHorizontal" style="width:14px;height:14px;"></span></span>
+          <span class="sidebar-section-btn" role="button" tabindex="0" aria-label="ソースフォルダを追加" data-e2e-id="sidebar-source-folder-add" data-action="addOutlinerRootFromSettings()" title="ソースフォルダを追加"><span class="ico ico-plus" style="width:14px;height:14px;"></span></span>
         </span>
       </div>
       <div class="sidebar-section-body" id="body-roots">
@@ -283,7 +283,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <div class="sidebar-section-header" data-sidebar-section="home" data-e2e-id="sidebar-section-home-header">
         <span class="sidebar-section-toggle expanded" id="toggle-home"><span class="ico ico-chevronRight" style="width:10px;height:10px;"></span></span>
         <span>ホームフォルダ</span>
-        <span style="margin-left:auto;" class="sidebar-section-btn" data-action="_showHomeAddMenu(event)" title="追加"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span>
+        <span style="margin-left:auto;" class="sidebar-section-btn" role="button" tabindex="0" aria-label="ホームフォルダに追加" data-e2e-id="sidebar-home-add" data-action="_showHomeAddMenu(event)" title="追加"><span class="ico ico-plus" style="width:14px;height:14px;"></span></span>
       </div>
       <div class="sidebar-section-body" id="body-home"></div>
     </div>
@@ -308,7 +308,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <span class="ico ico-settings" aria-hidden="true"></span>
     </button>
   </div>
-  <input type="file" id="xlsx-import-input" accept=".xlsx" style="display:none" data-onchange="handleXlsxImportToOutliner(event)">
+  <input type="file" id="xlsx-import-input" accept=".xlsx" aria-label="Excelファイルを取り込む" style="display:none" data-onchange="handleXlsxImportToOutliner(event)">
 </div>
 <div id="sidebar-resize" style="display:none !important;" title="ドラッグでフォルダツリーの幅を調節"></div>
 <div id="left-chrome-floating" class="left-chrome-floating" aria-label="グローバル操作">
@@ -332,8 +332,8 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <div id="tab-bar" style="display:none;"></div>
 <div id="app-toolbar">
   <div id="tb-db" class="gb-toolbar" style="display:none;">
-    <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'database')"><span class="ico ico-menu"></span></button>
-    <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('database', event)"><span class="ico ico-folderTree"></span></button>
+    <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'database')"><span class="ico ico-menu"></span></button>
+    <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('database', event)"><span class="ico ico-folderTree"></span></button>
     <span id="toolbar-category" class="tb-title tb-file-title"></span>
     <div class="db-toolbar-view-switcher" aria-label="シートビュー切替">
       <div class="view-tabs db-view-tabs" id="db-view-tabs"></div>
@@ -342,44 +342,44 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <div class="tb-spacer"></div>
     <div class="db-toolbar-actions-right"></div>
     <div class="db-toolbar-display-actions">
-      <button class="tb-icon-btn" id="btn-db-cell-wrap" title="折返し" data-action="showDbCellWrapMenu(event)"><span class="ico ico-wrapText"></span></button>
-      <button class="tb-icon-btn" id="btn-db-auto-fit-columns" title="列幅自動調整" data-action="autoFitCurrentSheetColumns()"><span class="ico ico-columns3"></span></button>
+      <button type="button" class="tb-icon-btn" id="btn-db-cell-wrap" title="折返し" aria-label="折返し" data-action="showDbCellWrapMenu(event)"><span class="ico ico-wrapText"></span></button>
+      <button type="button" class="tb-icon-btn" id="btn-db-auto-fit-columns" title="列幅自動調整" aria-label="列幅自動調整" data-action="autoFitCurrentSheetColumns()"><span class="ico ico-columns3"></span></button>
     </div>
-    <button class="tb-icon-btn" id="btn-filter" title="フィルタ" data-action="showUnifiedFilterModal()" style="position:relative;"><span class="ico ico-filter"></span><span id="filter-badge" class="tb-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
-    <button class="tb-icon-btn" title="並び替え" data-action="showDbSortMenu(event)"><span class="ico ico-arrowUpDown"></span></button>
+    <button type="button" class="tb-icon-btn" id="btn-filter" title="フィルタ" aria-label="フィルタ" data-action="showUnifiedFilterModal()" style="position:relative;"><span class="ico ico-filter"></span><span id="filter-badge" class="tb-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
+    <button type="button" class="tb-icon-btn" title="並び替え" aria-label="並び替え" data-action="showDbSortMenu(event)"><span class="ico ico-arrowUpDown"></span></button>
     <div class="sep"></div>
-    <button class="tb-icon-btn" title="公開を更新" data-action="publishCurrentDatabaseView()"><span class="ico ico-upload"></span></button>
+    <button type="button" class="tb-icon-btn" title="公開を更新" aria-label="公開を更新" data-action="publishCurrentDatabaseView()"><span class="ico ico-upload"></span></button>
     <div class="sep"></div>
-    <button class="tb-icon-btn" data-e2e-id="sheet-reload-current" title="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
-    <button class="tb-icon-btn" title="検索と置換" data-action="openCurrentToolbarSearchReplace('database')"><span class="ico ico-search"></span></button>
-    <button class="tb-icon-btn gb-toolbar-option-panel-btn" id="btn-db-detail" title="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
+    <button type="button" class="tb-icon-btn" data-e2e-id="sheet-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
+    <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('database')"><span class="ico ico-search"></span></button>
+    <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" id="btn-db-detail" title="オプションを開く" aria-label="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
   </div>
   <div id="rt-toolbar" class="toolbar-group gb-toolbar" style="display:none;">
-    <button class="tb-icon-btn" title="太字 (Ctrl+B)" data-action="rtCmd('bold')" data-e2e-id="rt-template-bold"><span class="ico ico-bold"></span></button>
-    <button class="tb-icon-btn" title="斜体 (Ctrl+I)" data-action="rtCmd('italic')" data-e2e-id="rt-template-italic"><span class="ico ico-italic"></span></button>
-    <button class="tb-icon-btn" title="下線 (Ctrl+U)" data-action="rtCmd('underline')" data-e2e-id="rt-template-underline"><span class="ico ico-underline"></span></button>
-    <button class="tb-icon-btn" title="取り消し線" data-action="rtCmd('strikeThrough')" data-e2e-id="rt-template-strike"><span class="ico ico-strikethrough"></span></button>
+    <button type="button" class="tb-icon-btn" title="太字 (Ctrl+B)" aria-label="太字" data-action="rtCmd('bold')" data-e2e-id="rt-template-bold"><span class="ico ico-bold"></span></button>
+    <button type="button" class="tb-icon-btn" title="斜体 (Ctrl+I)" aria-label="斜体" data-action="rtCmd('italic')" data-e2e-id="rt-template-italic"><span class="ico ico-italic"></span></button>
+    <button type="button" class="tb-icon-btn" title="下線 (Ctrl+U)" aria-label="下線" data-action="rtCmd('underline')" data-e2e-id="rt-template-underline"><span class="ico ico-underline"></span></button>
+    <button type="button" class="tb-icon-btn" title="取り消し線" aria-label="取り消し線" data-action="rtCmd('strikeThrough')" data-e2e-id="rt-template-strike"><span class="ico ico-strikethrough"></span></button>
     <div class="sep"></div>
-    <select class="tb-select" title="見出し" data-onchange="rtHeading(this.value); this.value='';" data-e2e-id="rt-template-heading">
+    <select class="tb-select" title="見出し" aria-label="見出し" data-onchange="rtHeading(this.value); this.value='';" data-e2e-id="rt-template-heading">
       <option value="">見出し</option>
       <option value="H1">H1</option><option value="H2">H2</option><option value="H3">H3</option>
       <option value="H4">H4</option><option value="H5">H5</option><option value="H6">H6</option>
       <option value="P">本文</option>
     </select>
-    <select class="tb-select" title="フォントサイズ" data-onchange="rtCmd('fontSize',this.value); this.value='';" data-e2e-id="rt-template-font-size">
+    <select class="tb-select" title="フォントサイズ" aria-label="フォントサイズ" data-onchange="rtCmd('fontSize',this.value); this.value='';" data-e2e-id="rt-template-font-size">
       <option value="">サイズ</option>
       <option value="1">極小</option><option value="2">小</option><option value="3">標準</option>
       <option value="4">大</option><option value="5">特大</option><option value="6">巨大</option>
     </select>
     <div class="sep"></div>
-    <button type="button" id="rt-fg-color" class="gb-color-swatch gb-color-swatch--toolbar rt-color-swatch" data-rt-cmd="foreColor" data-rt-color="#d4d4d4" title="テキスト色" data-action="openRtColorPalette(this,this.dataset.rtCmd)"></button>
-    <button type="button" id="rt-bg-color" class="gb-color-swatch gb-color-swatch--toolbar rt-color-swatch" data-rt-cmd="hiliteColor" data-rt-color="#1e1e1e" title="背景色" data-action="openRtColorPalette(this,this.dataset.rtCmd)"></button>
+    <button type="button" id="rt-fg-color" class="gb-color-swatch gb-color-swatch--toolbar rt-color-swatch" data-rt-cmd="foreColor" data-rt-color="#d4d4d4" title="テキスト色" aria-label="テキスト色" data-action="openRtColorPalette(this,this.dataset.rtCmd)"></button>
+    <button type="button" id="rt-bg-color" class="gb-color-swatch gb-color-swatch--toolbar rt-color-swatch" data-rt-cmd="hiliteColor" data-rt-color="#1e1e1e" title="背景色" aria-label="背景色" data-action="openRtColorPalette(this,this.dataset.rtCmd)"></button>
     <div class="sep"></div>
-    <button class="tb-icon-btn" title="箇条書き" data-action="rtCmd('insertUnorderedList')" data-e2e-id="rt-template-unordered-list"><span class="ico ico-list"></span></button>
-    <button class="tb-icon-btn" title="番号付き" data-action="rtCmd('insertOrderedList')" data-e2e-id="rt-template-ordered-list"><span class="ico ico-listOrdered"></span></button>
-    <button class="tb-icon-btn" title="引用" data-action="rtCmd('formatBlock','BLOCKQUOTE')" data-e2e-id="rt-template-blockquote"><span class="ico ico-quote"></span></button>
-    <button class="tb-icon-btn" title="コールアウト" data-action="insertCallout()" data-e2e-id="rt-template-callout"><span class="ico ico-lightbulb"></span></button>
-    <button class="tb-icon-btn" title="水平線" data-action="rtCmd('insertHorizontalRule')" data-e2e-id="rt-template-horizontal-rule"><span class="ico ico-minus"></span></button>
+    <button type="button" class="tb-icon-btn" title="箇条書き" aria-label="箇条書き" data-action="rtCmd('insertUnorderedList')" data-e2e-id="rt-template-unordered-list"><span class="ico ico-list"></span></button>
+    <button type="button" class="tb-icon-btn" title="番号付き" aria-label="番号付き" data-action="rtCmd('insertOrderedList')" data-e2e-id="rt-template-ordered-list"><span class="ico ico-listOrdered"></span></button>
+    <button type="button" class="tb-icon-btn" title="引用" aria-label="引用" data-action="rtCmd('formatBlock','BLOCKQUOTE')" data-e2e-id="rt-template-blockquote"><span class="ico ico-quote"></span></button>
+    <button type="button" class="tb-icon-btn" title="コールアウト" aria-label="コールアウト" data-action="insertCallout()" data-e2e-id="rt-template-callout"><span class="ico ico-lightbulb"></span></button>
+    <button type="button" class="tb-icon-btn" title="水平線" aria-label="水平線" data-action="rtCmd('insertHorizontalRule')" data-e2e-id="rt-template-horizontal-rule"><span class="ico ico-minus"></span></button>
   </div>
 </div>
 <div id="toolbar" style="display:none;">
@@ -387,14 +387,14 @@ html[data-desktop-launch="1"] #gb-layout-root{
   <div id="tb-detail" style="display:none;"></div>
 </div>
   <div id="file-search-bar">
-    <textarea id="fsb-query" placeholder="検索..." rows="1" style="width:160px;resize:none;"></textarea>
+    <textarea id="fsb-query" aria-label="ファイル内検索" placeholder="検索..." rows="1" style="width:160px;resize:none;"></textarea>
     <span class="fsb-count" id="fsb-count"></span>
-    <button title="前へ" data-action="doFileSearch(-1)">↑</button>
-    <button title="次へ" data-action="doFileSearch(1)">↓</button>
-    <textarea id="fsb-replace" placeholder="置換..." rows="1" style="width:120px;resize:none;"></textarea>
-    <button title="置換" data-action="doFileReplace(false)">置換</button>
-    <button title="全置換" data-action="doFileReplace(true)">全置換</button>
-    <button title="検索を閉じる" data-action="closeFileSearch()">×</button>
+    <button type="button" title="前へ" aria-label="前へ" data-action="doFileSearch(-1)">↑</button>
+    <button type="button" title="次へ" aria-label="次へ" data-action="doFileSearch(1)">↓</button>
+    <textarea id="fsb-replace" aria-label="ファイル内置換" placeholder="置換..." rows="1" style="width:120px;resize:none;"></textarea>
+    <button type="button" title="置換" aria-label="置換" data-action="doFileReplace(false)">置換</button>
+    <button type="button" title="全置換" aria-label="全置換" data-action="doFileReplace(true)">全置換</button>
+    <button type="button" title="検索を閉じる" aria-label="検索を閉じる" data-action="closeFileSearch()">×</button>
   </div>
   <div id="main-area">
     <div id="main-center-row" style="display:flex;flex:1;min-height:0;overflow:hidden;">
@@ -422,15 +422,15 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <div id="form-view" class="form-view" style="display:none;flex:1;overflow:auto;"></div>
       <div id="smart-db-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
         <div class="smart-db-toolbar">
-          <button class="tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'smart-db')"><span class="ico ico-menu"></span></button>
-          <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('smart-db', event)"><span class="ico ico-folderTree"></span></button>
+          <button type="button" class="tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'smart-db')"><span class="ico ico-menu"></span></button>
+          <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('smart-db', event)"><span class="ico ico-folderTree"></span></button>
           <div class="smart-db-view-tabs" id="smart-db-view-tabs" role="tablist" aria-label="スマートシートビュー">
             <button type="button" class="smart-db-view-tab active" data-smart-db-view="table" data-action="setSmartDbActiveView('table')" role="tab" aria-selected="true">表</button>
             <button type="button" class="smart-db-view-tab" data-smart-db-view="dashboard" data-action="setSmartDbActiveView('dashboard')" role="tab" aria-selected="false">ダッシュボード</button>
           </div>
           <div class="tb-spacer"></div>
-          <button class="tb-icon-btn" data-e2e-id="smart-db-reload-current" title="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
-          <button class="tb-icon-btn" title="フィルタ設定" data-action="state.currentSmartDb && showSmartDbFilterModal(state.currentSmartDb.id)"><span class="ico ico-slidersHorizontal"></span></button>
+          <button type="button" class="tb-icon-btn" data-e2e-id="smart-db-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
+          <button type="button" class="tb-icon-btn" title="フィルタ設定" aria-label="フィルタ設定" data-action="state.currentSmartDb && showSmartDbFilterModal(state.currentSmartDb.id)"><span class="ico ico-slidersHorizontal"></span></button>
         </div>
         <div id="smart-db-table-area" class="smart-db-table-area">
           <table id="smart-db-table" class="smart-db-table" role="table" aria-label="スマートシート">
@@ -450,22 +450,22 @@ html[data-desktop-launch="1"] #gb-layout-root{
     </div>
     <div id="page-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;position:relative;">
       <div id="page-rt-toolbar" class="gb-toolbar">
-        <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'page')"><span class="ico ico-menu"></span></button>
-        <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
+        <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'page')"><span class="ico ico-menu"></span></button>
+        <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
         <div id="page-title" class="tb-file-title tb-file-title--input" contenteditable="true"></div>
         <div class="sep"></div>
-        <button class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-panelLeft"></span></button>
-        <button class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" data-action="toggleNoteVertical()"><span class="ico ico-kanban"></span></button>
-        <button class="tb-icon-btn" id="btn-heading-indent" title="見出しインデント表示" data-action="toggleHeadingIndent()"><span class="ico ico-indentIncrease"></span></button>
-        <button class="tb-icon-btn" data-display-layer="autoLinks" aria-pressed="false" title="自動リンク: オフ" data-action="MeldexDisplayLayers.toggleLayer('autoLinks')"><span class="ico ico-externalLink"></span></button>
-        <button class="tb-icon-btn" data-display-layer="comments" aria-pressed="false" title="コメント表示: オフ" data-action="MeldexDisplayLayers.toggleLayer('comments')"><span class="ico ico-messageSquare"></span></button>
+        <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-panelLeft"></span></button>
+        <button type="button" class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" aria-label="縦書きにする" data-action="toggleNoteVertical()"><span class="ico ico-kanban"></span></button>
+        <button type="button" class="tb-icon-btn" id="btn-heading-indent" title="見出しインデント表示" aria-label="見出しインデント表示" data-action="toggleHeadingIndent()"><span class="ico ico-indentIncrease"></span></button>
+        <button type="button" class="tb-icon-btn" data-display-layer="autoLinks" aria-pressed="false" title="自動リンク: オフ" aria-label="自動リンク表示" data-action="MeldexDisplayLayers.toggleLayer('autoLinks')"><span class="ico ico-externalLink"></span></button>
+        <button type="button" class="tb-icon-btn" data-display-layer="comments" aria-pressed="false" title="コメント表示: オフ" aria-label="コメント表示" data-action="MeldexDisplayLayers.toggleLayer('comments')"><span class="ico ico-messageSquare"></span></button>
         <div class="sep"></div>
-        <button class="tb-icon-btn" title="太字 (Ctrl+B)" data-action="rtCmd('bold')" data-e2e-id="page-rt-bold"><span class="ico ico-bold"></span></button>
-        <button class="tb-icon-btn" title="斜体 (Ctrl+I)" data-action="rtCmd('italic')" data-e2e-id="page-rt-italic"><span class="ico ico-italic"></span></button>
-        <button class="tb-icon-btn" title="下線 (Ctrl+U)" data-action="rtCmd('underline')" data-e2e-id="page-rt-underline"><span class="ico ico-underline"></span></button>
-        <button class="tb-icon-btn" title="取り消し線" data-action="rtCmd('strikeThrough')" data-e2e-id="page-rt-strike"><span class="ico ico-strikethrough"></span></button>
+        <button type="button" class="tb-icon-btn" title="太字 (Ctrl+B)" aria-label="太字" data-action="rtCmd('bold')" data-e2e-id="page-rt-bold"><span class="ico ico-bold"></span></button>
+        <button type="button" class="tb-icon-btn" title="斜体 (Ctrl+I)" aria-label="斜体" data-action="rtCmd('italic')" data-e2e-id="page-rt-italic"><span class="ico ico-italic"></span></button>
+        <button type="button" class="tb-icon-btn" title="下線 (Ctrl+U)" aria-label="下線" data-action="rtCmd('underline')" data-e2e-id="page-rt-underline"><span class="ico ico-underline"></span></button>
+        <button type="button" class="tb-icon-btn" title="取り消し線" aria-label="取り消し線" data-action="rtCmd('strikeThrough')" data-e2e-id="page-rt-strike"><span class="ico ico-strikethrough"></span></button>
         <div class="sep"></div>
-        <select class="tb-select" title="見出し" data-onchange="rtHeading(this.value); this.value='';" data-e2e-id="page-rt-heading">
+        <select class="tb-select" title="見出し" aria-label="見出し" data-onchange="rtHeading(this.value); this.value='';" data-e2e-id="page-rt-heading">
           <option value="">見出し</option>
           <option value="TITLE">タイトル</option>
           <option value="H1">H1</option><option value="H2">H2</option><option value="H3">H3</option>
@@ -473,24 +473,24 @@ html[data-desktop-launch="1"] #gb-layout-root{
           <option value="P">本文</option>
         </select>
         <div class="sep"></div>
-        <button class="tb-icon-btn" title="箇条書き" data-action="rtCmd('insertUnorderedList')" data-e2e-id="page-rt-unordered-list"><span class="ico ico-list"></span></button>
-        <button class="tb-icon-btn" title="番号付き" data-action="rtCmd('insertOrderedList')" data-e2e-id="page-rt-ordered-list"><span class="ico ico-listOrdered"></span></button>
-        <button class="tb-icon-btn" title="引用" data-action="rtCmd('formatBlock','BLOCKQUOTE')" data-e2e-id="page-rt-blockquote"><span class="ico ico-textQuote"></span></button>
-        <button class="tb-icon-btn" title="コールアウト" data-action="insertCallout()" data-e2e-id="page-rt-callout"><span class="ico ico-lightbulb"></span></button>
-        <button class="tb-icon-btn" title="表を挿入" data-action="insertNoteTable()"><span class="ico ico-table"></span></button>
-        <button class="tb-icon-btn" title="水平線" data-action="rtCmd('insertHorizontalRule')" data-e2e-id="page-rt-horizontal-rule"><span class="ico ico-minus"></span></button>
+        <button type="button" class="tb-icon-btn" title="箇条書き" aria-label="箇条書き" data-action="rtCmd('insertUnorderedList')" data-e2e-id="page-rt-unordered-list"><span class="ico ico-list"></span></button>
+        <button type="button" class="tb-icon-btn" title="番号付き" aria-label="番号付き" data-action="rtCmd('insertOrderedList')" data-e2e-id="page-rt-ordered-list"><span class="ico ico-listOrdered"></span></button>
+        <button type="button" class="tb-icon-btn" title="引用" aria-label="引用" data-action="rtCmd('formatBlock','BLOCKQUOTE')" data-e2e-id="page-rt-blockquote"><span class="ico ico-textQuote"></span></button>
+        <button type="button" class="tb-icon-btn" title="コールアウト" aria-label="コールアウト" data-action="insertCallout()" data-e2e-id="page-rt-callout"><span class="ico ico-lightbulb"></span></button>
+        <button type="button" class="tb-icon-btn" title="表を挿入" aria-label="表を挿入" data-action="insertNoteTable()"><span class="ico ico-table"></span></button>
+        <button type="button" class="tb-icon-btn" title="水平線" aria-label="水平線" data-action="rtCmd('insertHorizontalRule')" data-e2e-id="page-rt-horizontal-rule"><span class="ico ico-minus"></span></button>
         <div class="tb-spacer"></div>
-        <button class="tb-icon-btn" data-e2e-id="page-reload-current" title="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
-        <button class="tb-icon-btn" title="検索と置換" data-action="openCurrentToolbarSearchReplace('page')"><span class="ico ico-search"></span></button>
-        <button class="tb-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
+        <button type="button" class="tb-icon-btn" data-e2e-id="page-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
+        <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('page')"><span class="ico ico-search"></span></button>
+        <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
       </div>
-      <div style="display:flex;flex:1;overflow:hidden;">
+      <div class="note-editor-body" style="display:flex;flex:1;min-height:0;overflow:hidden;">
         <div id="note-toc" style="display:none;width:200px;flex-shrink:0;overflow-y:auto;overscroll-behavior:contain;padding:8px;border-right:1px solid var(--border);background:var(--bg2);font-size:12px;"></div>
-        <div id="note-toc-resize" title="目次幅を調整" style="display:none;width:6px;flex-shrink:0;cursor:col-resize;background:transparent;border-right:1px solid var(--border);"></div>
+        <div id="note-toc-resize" title="目次幅を調整" role="separator" aria-orientation="vertical" aria-label="目次幅を調整" tabindex="0" data-e2e-id="note-toc-resize" style="display:none;width:var(--note-toc-resize-hit, 8px);min-width:var(--note-toc-resize-hit, 8px);flex-shrink:0;cursor:col-resize;background:transparent;border-right:1px solid var(--border);touch-action:none;"></div>
         <div id="page-content" contenteditable="true" style="flex:1;padding:16px max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2));overflow-y:auto;overscroll-behavior:contain;line-height:1.7;white-space:normal;outline:none;min-height:200px;"></div>
       </div>
       <svg id="ann-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;z-index:50;pointer-events:none;overflow:visible;"><rect width="100%" height="100%" fill="transparent"/><g id="ann-layer"></g></svg>
-      <button id="btn-tb-annotation" class="annotation-fab" title="注釈 (Alt+A)" data-action="toggleAnnotationToolbar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg></button>
+      <button id="btn-tb-annotation" class="annotation-fab" type="button" title="注釈 (Alt+A)" aria-label="注釈" data-action="toggleAnnotationToolbar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg></button>
     </div>
     <div id="media-view" style="display:none;flex-direction:column;flex:1;overflow:auto;align-items:center;justify-content:center;background:var(--preview-bg,var(--content-bg,var(--bg)));padding:16px;">
       <div id="media-title" style="font-size:16px;font-weight:bold;margin-bottom:12px;color:var(--fg);text-align:center;"></div>
@@ -498,31 +498,31 @@ html[data-desktop-launch="1"] #gb-layout-root{
     </div>
     <div id="html-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
       <div id="html-toolbar" class="gb-toolbar" style="display:none;">
-        <button class="tb-icon-btn" title="戻る" data-action="htmlNavBack()"><span class="ico ico-arrowLeftS"></span></button>
-        <button class="tb-icon-btn" title="進む" data-action="htmlNavForward()"><span class="ico ico-arrowRightS"></span></button>
-        <input id="html-url-bar" class="tb-input" type="text" placeholder="URLを入力..." style="flex:1;min-width:120px;" data-onkeydown="if(event.key==='Enter')htmlNavigate(this.value)">
-        <button class="tb-icon-btn" title="移動" data-action="htmlNavigate(document.getElementById('html-url-bar').value)"><span class="ico ico-arrowRight"></span></button>
-        <button class="tb-icon-btn" title="更新" data-action="htmlRefresh()"><span class="ico ico-refreshCw"></span></button>
+        <button type="button" class="tb-icon-btn" title="戻る" aria-label="戻る" data-action="htmlNavBack()"><span class="ico ico-arrowLeftS"></span></button>
+        <button type="button" class="tb-icon-btn" title="進む" aria-label="進む" data-action="htmlNavForward()"><span class="ico ico-arrowRightS"></span></button>
+        <input id="html-url-bar" class="tb-input" type="text" aria-label="URL" placeholder="URLを入力..." style="flex:1;min-width:120px;" data-onkeydown="if(event.key==='Enter')htmlNavigate(this.value)">
+        <button type="button" class="tb-icon-btn" title="移動" aria-label="移動" data-action="htmlNavigate(document.getElementById('html-url-bar').value)"><span class="ico ico-arrowRight"></span></button>
+        <button type="button" class="tb-icon-btn" title="更新" aria-label="更新" data-action="htmlRefresh()"><span class="ico ico-refreshCw"></span></button>
       </div>
       <iframe id="html-iframe" style="flex:1;border:none;background:#fff;" allowfullscreen></iframe>
     </div>
     <div id="csv-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
       <div id="csv-toolbar" class="gb-toolbar">
-        <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'csv')"><span class="ico ico-menu"></span></button>
-        <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('csv', event)"><span class="ico ico-folderTree"></span></button>
+        <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'csv')"><span class="ico ico-menu"></span></button>
+        <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('csv', event)"><span class="ico ico-folderTree"></span></button>
         <span id="csv-title" class="tb-title tb-file-title"></span>
-        <button id="csv-add-row" class="tb-text-btn" title="行を追加"><span class="ico ico-plus"></span>行</button>
-        <button id="csv-add-col" class="tb-text-btn" title="列を追加"><span class="ico ico-plus"></span>列</button>
-        <button id="csv-to-db" class="tb-text-btn" title="CSVをシートに変換"><span class="ico ico-db"></span>シートに変換</button>
+        <button id="csv-add-row" class="tb-text-btn" type="button" title="行を追加" aria-label="行を追加"><span class="ico ico-plus"></span>行</button>
+        <button id="csv-add-col" class="tb-text-btn" type="button" title="列を追加" aria-label="列を追加"><span class="ico ico-plus"></span>列</button>
+        <button id="csv-to-db" class="tb-text-btn" type="button" title="CSVをシートに変換" aria-label="CSVをシートに変換"><span class="ico ico-db"></span>シートに変換</button>
         <div class="tb-spacer"></div>
-        <button class="tb-icon-btn" data-e2e-id="csv-reload-current" title="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
+        <button type="button" class="tb-icon-btn" data-e2e-id="csv-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
       </div>
       <div id="csv-table-container" style="flex:1;overflow:auto;"></div>
     </div>
     <div id="folder-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
       <div id="folder-toolbar" class="folder-toolbar" style="display:flex;align-items:center;padding:6px 16px;border-bottom:1px solid var(--border);flex-shrink:0;gap:8px;">
-        <button class="tb-icon-btn tool-menu-btn" title="メニュー" data-action="showToolMenu(event,'folder')"><span class="ico ico-menu"></span></button>
-        <button class="tb-icon-btn" title="フォルダツリーで表示" data-action="revealCurrentInFolderTree('folder', event)"><span class="ico ico-folderTree"></span></button>
+        <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'folder')"><span class="ico ico-menu"></span></button>
+        <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('folder', event)"><span class="ico ico-folderTree"></span></button>
         <div id="folder-toolbar-actions" class="folder-toolbar-file-actions" role="toolbar" aria-label="フォルダ操作">
           <button id="folder-toolbar-add" class="tb-icon-btn" type="button" title="追加" aria-label="追加" aria-haspopup="menu" aria-expanded="false" data-e2e-id="folder-toolbar-add"></button>
           <button id="folder-toolbar-copy" class="tb-icon-btn" type="button" title="コピー" aria-label="コピー" data-e2e-id="folder-toolbar-copy"></button>
@@ -532,27 +532,29 @@ html[data-desktop-launch="1"] #gb-layout-root{
         </div>
         <span id="folder-title" style="font-size:16px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
         <span id="folder-item-count" style="font-size:12px;color:var(--fg2);"></span>
-        <button id="folder-btn-slideshow" title="スライドショー" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="openFolderSlideshow()"><span class="ico ico-play"></span></button>
-        <select id="folder-layout-select" style="font-size:12px;padding:2px 4px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;" data-onchange="setFolderLayout(this.value)">
+        <button id="folder-btn-slideshow" type="button" title="スライドショー" aria-label="スライドショー" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="openFolderSlideshow()"><span class="ico ico-play"></span></button>
+        <select id="folder-layout-select" title="表示形式" aria-label="表示形式" style="font-size:12px;padding:2px 4px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;" data-onchange="setFolderLayout(this.value)">
           <option value="grid">グリッド</option>
           <option value="waterfall">ウォーターフォール</option>
           <option value="hflow">横並び（高さ揃え）</option>
           <option value="list">リスト</option>
         </select>
-        <button id="folder-display-filter-btn" title="表示/フィルタ" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="showFolderDisplaySettings()"><span class="ico ico-filter"></span> 表示</button>
-        <button class="tb-icon-btn" data-e2e-id="folder-reload-current" title="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
-        <button class="tb-icon-btn" title="検索と置換" data-action="openCurrentToolbarSearchReplace('folder')"><span class="ico ico-search"></span></button>
-        <button class="tb-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" data-action="showFolderPanelSettings()"><span class="ico ico-slidersHorizontal"></span></button>
+        <button id="folder-display-filter-btn" type="button" title="表示/フィルタ" aria-label="表示/フィルタ" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="showFolderDisplaySettings()"><span class="ico ico-filter"></span> 表示</button>
+        <button type="button" class="tb-icon-btn" data-e2e-id="folder-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
+        <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('folder')"><span class="ico ico-search"></span></button>
+        <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" data-action="showFolderPanelSettings()"><span class="ico ico-slidersHorizontal"></span></button>
       </div>
       <div id="fv-panel-top" class="fv-side-panel" style="display:none;"></div>
       <div id="fv-resize-top" class="fv-resize-h" style="display:none;"></div>
       <div id="fv-bulk-bar" class="fv-bulk-bar" role="menu" aria-hidden="true" hidden>
         <span class="fv-bulk-count"></span>
-        <button data-action="fvBulkSlideshow()">スライドショー</button>
-        <button data-action="fvBulkBoard()">ボードに並べる</button>
-        <button data-action="fvBulkDelete()">削除</button>
-        <button data-action="fvBulkCopyPath()">パスをコピー</button>
-        <button data-action="fvBulkDeselect()">選択解除</button>
+        <button type="button" aria-label="スライドショー" data-action="fvBulkSlideshow()">スライドショー</button>
+        <button type="button" aria-label="ボードに並べる" data-action="fvBulkBoard()">ボードに並べる</button>
+        <button type="button" aria-label="自動タグ付け" data-action="fvBulkAutoTag()">自動タグ付け</button>
+        <button type="button" aria-label="圧縮" data-action="fvBulkCompress()">圧縮</button>
+        <button type="button" aria-label="削除" data-action="fvBulkDelete()">削除</button>
+        <button type="button" aria-label="パスをコピー" data-action="fvBulkCopyPath()">パスをコピー</button>
+        <button type="button" aria-label="選択解除" data-action="fvBulkDeselect()">選択解除</button>
       </div>
       <div style="display:flex;flex:1;overflow:hidden;">
         <div id="fv-panel-left" class="fv-side-panel" style="display:none;"></div>
@@ -568,37 +570,37 @@ html[data-desktop-launch="1"] #gb-layout-root{
       </div><!-- /main-views -->
     </div><!-- /main-center-row -->
   </div><!-- /main-area -->
-  <div id="ann-toolbar" class="floating-toolbar">
+  <div id="ann-toolbar" class="floating-toolbar" role="toolbar" aria-label="注釈ツール">
     <div class="ft-drag" title="ドラッグで移動"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>
-    <button class="ann-tool active" data-tool="pen" title="ペン (筆圧)"><span class="ico ico-pencil"></span></button>
-    <label class="ann-width-control" title="ペンの太さ"><input type="range" id="ann-width-pen" data-ann-width-tool="pen" min="1" max="16" step="1" value="3"><span id="ann-width-pen-label">3</span></label>
-    <button class="ann-tool" data-tool="marker" title="マーカー"><span class="ico ico-highlighter"></span></button>
-    <label class="ann-width-control" title="マーカーの太さ"><input type="range" id="ann-width-marker" data-ann-width-tool="marker" min="4" max="40" step="1" value="12"><span id="ann-width-marker-label">12</span></label>
-    <button class="ann-tool" data-tool="lasso" title="投げ縄塗り"><span class="ico ico-lasso"></span></button>
-    <button class="ann-tool" data-tool="rect" title="矩形塗り"><span class="ico ico-square"></span></button>
-    <button class="ann-tool" data-tool="eraser" title="消しゴム"><span class="ico ico-eraser"></span></button>
-    <label class="ann-width-control" title="消しゴムの太さ"><input type="range" id="ann-width-eraser" data-ann-width-tool="eraser" min="4" max="48" step="1" value="14"><span id="ann-width-eraser-label">14</span></label>
+    <button type="button" class="ann-tool active" data-tool="pen" title="ペン (筆圧)" aria-label="ペン"><span class="ico ico-pencil"></span></button>
+    <label class="ann-width-control" title="ペンの太さ"><input type="range" id="ann-width-pen" aria-label="ペンの太さ" data-ann-width-tool="pen" min="1" max="16" step="1" value="3"><span id="ann-width-pen-label">3</span></label>
+    <button type="button" class="ann-tool" data-tool="marker" title="マーカー" aria-label="マーカー"><span class="ico ico-highlighter"></span></button>
+    <label class="ann-width-control" title="マーカーの太さ"><input type="range" id="ann-width-marker" aria-label="マーカーの太さ" data-ann-width-tool="marker" min="4" max="40" step="1" value="12"><span id="ann-width-marker-label">12</span></label>
+    <button type="button" class="ann-tool" data-tool="lasso" title="投げ縄塗り" aria-label="投げ縄塗り"><span class="ico ico-lasso"></span></button>
+    <button type="button" class="ann-tool" data-tool="rect" title="矩形塗り" aria-label="矩形塗り"><span class="ico ico-square"></span></button>
+    <button type="button" class="ann-tool" data-tool="eraser" title="消しゴム" aria-label="消しゴム"><span class="ico ico-eraser"></span></button>
+    <label class="ann-width-control" title="消しゴムの太さ"><input type="range" id="ann-width-eraser" aria-label="消しゴムの太さ" data-ann-width-tool="eraser" min="4" max="48" step="1" value="14"><span id="ann-width-eraser-label">14</span></label>
     <div style="width:1px;height:20px;background:var(--border);margin:0 4px;"></div>
-    <button class="ann-tool" data-tool="sticky" title="付箋"><span class="ico ico-stickyNote"></span></button>
+    <button type="button" class="ann-tool" data-tool="sticky" title="付箋" aria-label="付箋"><span class="ico ico-stickyNote"></span></button>
     <div style="width:1px;height:20px;background:var(--border);margin:0 4px;"></div>
-    <button type="button" id="ann-color-swatch" class="gb-color-swatch gb-color-swatch--field" title="色" data-color="#c48080"></button>
-    <input type="range" id="ann-opacity" min="0" max="1" step="0.05" value="1" title="全体の不透明度" style="width:60px;">
+    <button type="button" id="ann-color-swatch" class="gb-color-swatch gb-color-swatch--field" title="色" aria-label="色" data-color="#c48080"></button>
+    <input type="range" id="ann-opacity" aria-label="全体の不透明度" min="0" max="1" step="0.05" value="1" title="全体の不透明度" style="width:60px;">
     <span id="ann-opacity-label" style="font-size:10px;color:var(--fg2);min-width:28px;">100%</span>
     <div style="width:1px;height:20px;background:var(--border);margin:0 4px;"></div>
-    <button title="注釈パネル" data-action="openRightPanelTab('annotation')"><span class="ico ico-clipboardList"></span></button>
-    <button title="スクリーンショット撮影" data-action="showScreenshotMenu(event)"><span class="ico ico-camera"></span></button>
+    <button type="button" title="注釈パネル" aria-label="注釈パネル" data-action="openRightPanelTab('annotation')"><span class="ico ico-clipboardList"></span></button>
+    <button type="button" title="スクリーンショット撮影" aria-label="スクリーンショット撮影" data-action="showScreenshotMenu(event)"><span class="ico ico-camera"></span></button>
     <div style="width:1px;height:20px;background:var(--border);margin:0 4px;"></div>
-    <button id="ann-view-lock-btn" class="vl-lock-icon ann-tool" type="button" title="表示ロック（注釈対象ビュー）" disabled><span class="ico ico-unlock"></span></button>
-    <button id="btn-overlay-toggle" title="オーバーレイ表示中" class="active" data-action="toggleOverlayVisibility()"><span class="ico ico-eye"></span></button>
-    <button title="全削除" style="color:var(--red);" data-action="annClear()"><span class="ico ico-trash2"></span></button>
+    <button id="ann-view-lock-btn" class="vl-lock-icon ann-tool" type="button" title="表示ロック（注釈対象ビュー）" aria-label="表示ロック" disabled><span class="ico ico-unlock"></span></button>
+    <button type="button" id="btn-overlay-toggle" title="オーバーレイ表示中" aria-label="オーバーレイ表示" class="active" data-action="toggleOverlayVisibility()"><span class="ico ico-eye"></span></button>
+    <button type="button" title="全削除" aria-label="全削除" style="color:var(--red);" data-action="annClear()"><span class="ico ico-trash2"></span></button>
   </div>
 <!-- メディアビュー -->
 <!-- メディアフローティングコントロール -->
-<div id="media-float-controls">
-  <button data-align="left" title="左寄せ"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="6" height="14" x="6" y="5" rx="2"/><rect width="6" height="10" x="16" y="7" rx="2"/><path d="M2 2v20"/></svg></button>
-  <button data-align="center" title="中央" class="active"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="6" height="14" x="2" y="5" rx="2"/><rect width="6" height="10" x="16" y="7" rx="2"/><path d="M12 2v20"/></svg></button>
-  <button data-align="right" title="右寄せ"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="6" height="14" x="2" y="5" rx="2"/><rect width="6" height="10" x="12" y="7" rx="2"/><path d="M22 2v20"/></svg></button>
-  <button data-action="delete" title="削除" style="color:var(--red);"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
+<div id="media-float-controls" role="toolbar" aria-label="埋め込みメディア操作" aria-hidden="true" data-e2e-id="note-media-float-controls">
+  <button type="button" class="media-float-btn" data-align="left" data-media-icon="alignHorizontalJustifyStart" data-e2e-id="note-media-align-left" title="左寄せ" aria-label="左寄せ"><span class="media-float-icon-fallback" aria-hidden="true">L</span></button>
+  <button type="button" class="media-float-btn active" data-align="center" data-media-icon="alignHorizontalJustifyCenter" data-e2e-id="note-media-align-center" title="中央" aria-label="中央"><span class="media-float-icon-fallback" aria-hidden="true">C</span></button>
+  <button type="button" class="media-float-btn" data-align="right" data-media-icon="alignHorizontalJustifyEnd" data-e2e-id="note-media-align-right" title="右寄せ" aria-label="右寄せ"><span class="media-float-icon-fallback" aria-hidden="true">R</span></button>
+  <button type="button" class="media-float-btn media-float-danger" data-action="delete" data-media-icon="trash2" data-e2e-id="note-media-delete" title="削除" aria-label="削除"><span class="ico ico-trash2" aria-hidden="true"></span></button>
 </div>
 <div id="media-resize-handle" class="em-resize-handle"></div>
 <div id="status-bar" role="status" aria-live="polite" aria-atomic="true">
@@ -617,11 +619,12 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <div id="right-resize-handle"></div>
 <div id="right-panel">
   <div id="right-panel-tabs">
-    <div class="rp-tab" data-rp-tab="detail" data-action="switchRightTab('detail')"><span class="ico ico-slidersHorizontal" style="width:14px;height:14px;"></span> オプション</div>
-    <div class="rp-tab" data-rp-tab="calendar" data-action="switchRightTab('calendar')"><span class="ico ico-calendar" style="width:14px;height:14px;"></span> スケジューラー</div>
-    <div class="rp-tab active" data-rp-tab="chat" data-action="switchRightTab('chat')"><span class="ico ico-messagesSquare" style="width:14px;height:14px;"></span> チャット</div>
-    <div class="rp-tab" data-rp-tab="annotation" data-action="switchRightTab('annotation')"><span class="ico ico-stickyNote" style="width:14px;height:14px;"></span> 注釈</div>
-    <div class="rp-tab" data-rp-tab="history" data-action="switchRightTab('history')"><span class="ico ico-history" style="width:14px;height:14px;"></span> 履歴</div>
+    <div class="rp-tab" data-rp-tab="detail" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-detail" data-action="switchRightTab('detail')"><span class="ico ico-slidersHorizontal" style="width:14px;height:14px;"></span> オプション</div>
+    <div class="rp-tab" data-rp-tab="calendar" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-calendar" data-action="switchRightTab('calendar')"><span class="ico ico-calendar" style="width:14px;height:14px;"></span> スケジューラー</div>
+    <div class="rp-tab active" data-rp-tab="chat" role="tab" tabindex="0" aria-selected="true" aria-controls="rp-chat" data-action="switchRightTab('chat')"><span class="ico ico-messagesSquare" style="width:14px;height:14px;"></span> チャット</div>
+    <div class="rp-tab" data-rp-tab="tags" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-tags" data-action="switchRightTab('tags')"><span class="ico ico-tags" style="width:14px;height:14px;"></span> タグ</div>
+    <div class="rp-tab" data-rp-tab="annotation" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-annotation" data-action="switchRightTab('annotation')"><span class="ico ico-stickyNote" style="width:14px;height:14px;"></span> 注釈</div>
+    <div class="rp-tab" data-rp-tab="history" role="tab" tabindex="0" aria-selected="false" aria-controls="rp-history" data-action="switchRightTab('history')"><span class="ico ico-history" style="width:14px;height:14px;"></span> 履歴</div>
   </div>
   <div id="rp-calendar" class="rp-content" style="flex:1;overflow:hidden;display:flex;"></div>
   <div id="rp-detail" class="rp-content"></div>
@@ -642,25 +645,25 @@ html[data-desktop-launch="1"] #gb-layout-root{
     <div id="chat-llm-panel" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
       <div style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;">
         <div id="chat-title-combo" style="flex:1;min-width:120px;position:relative;display:flex;align-items:center;">
-          <input id="chat-session-title" type="text" placeholder="チャット名（任意）" title="Enter またはフォーカスを外すと保存／▼ から過去のチャットを開ける" style="flex:1;width:100%;padding:2px 22px 2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;">
-          <button id="chat-title-dropdown-btn" title="過去のチャットを選択" data-action="showChatHistoryDropdown(event)" style="position:absolute;right:1px;top:1px;bottom:1px;padding:0 4px;background:transparent;color:var(--fg2);border:none;cursor:pointer;font-size:10px;display:flex;align-items:center;">▼</button>
+          <input id="chat-session-title" type="text" aria-label="チャット名" placeholder="チャット名（任意）" title="Enter またはフォーカスを外すと保存／▼ から過去のチャットを開ける" style="flex:1;width:100%;padding:2px 22px 2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;">
+          <button id="chat-title-dropdown-btn" type="button" aria-label="チャット履歴" title="チャット履歴" data-action="showChatHistoryDropdown(event)" style="position:absolute;right:1px;top:1px;bottom:1px;padding:0 4px;background:transparent;color:var(--fg2);border:none;cursor:pointer;font-size:10px;display:flex;align-items:center;justify-content:center;">▼</button>
         </div>
-        <button title="新規" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="chatClear()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-        <button title="エクスポート" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showChatExportMenu(event)"><span class="ico ico-upload" style="width:12px;height:12px;"></span></button>
-        <button title="検索" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="_chatSearchToggle()"><span class="ico ico-search" style="width:12px;height:12px;"></span></button>
+        <button type="button" title="新規" aria-label="新規チャット" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="chatClear()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
+        <button type="button" title="エクスポート" aria-label="エクスポート" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showChatExportMenu(event)"><span class="ico ico-upload" style="width:12px;height:12px;"></span></button>
+        <button type="button" title="検索" aria-label="検索" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="_chatSearchToggle()"><span class="ico ico-search" style="width:12px;height:12px;"></span></button>
       </div>
       <div id="chat-search-bar" style="display:none;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;align-items:center;">
-        <input id="chat-search-input" type="text" placeholder="チャット検索..." style="flex:1;padding:3px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-        <select id="chat-search-scope" style="font-size:11px;padding:2px 4px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+        <input id="chat-search-input" type="text" aria-label="チャット検索" placeholder="チャット検索..." style="flex:1;padding:3px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
+        <select id="chat-search-scope" title="検索範囲" aria-label="検索範囲" style="font-size:11px;padding:2px 4px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
           <option value="session">このチャット</option>
           <option value="all">全チャット</option>
         </select>
         <span id="chat-search-count" style="font-size:11px;color:var(--fg2);min-width:30px;"></span>
-        <button title="検索を閉じる" data-action="_chatSearchClose()" style="padding:1px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-x" style="width:12px;height:12px;"></span></button>
+        <button type="button" title="検索を閉じる" aria-label="検索を閉じる" data-action="_chatSearchClose()" style="padding:1px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-x" style="width:12px;height:12px;"></span></button>
       </div>
       <div id="chat-search-results" style="display:none;flex:1;overflow-y:auto;padding:8px;"></div>
       <div id="chat-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;"></div>
-      <div id="chat-composer-resize" class="chat-composer-resize" role="separator" aria-orientation="horizontal" tabindex="0" title="入力欄の高さを調整"></div>
+      <div id="chat-composer-resize" class="chat-composer-resize" role="separator" aria-orientation="horizontal" aria-controls="chat-input" aria-label="チャット入力欄の高さを調整" aria-keyshortcuts="ArrowUp ArrowDown Home End" tabindex="0" title="チャット入力欄の高さを調整"></div>
       <div id="chat-composer" style="padding:8px;flex-shrink:0;">
         <div id="chat-target-badge" style="display:flex;align-items:center;gap:6px;padding:4px 6px;margin-bottom:4px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--fg2);min-height:24px;box-sizing:border-box;">
           <span data-chat-current-target-icon style="width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;"></span>
@@ -670,94 +673,96 @@ html[data-desktop-launch="1"] #gb-layout-root{
         </div>
         <div id="chat-context-bar" style="display:none;padding:4px 8px;margin-bottom:4px;background:var(--bg3);border-radius:4px;font-size:11px;color:var(--fg2);flex-wrap:wrap;gap:4px;"></div>
         <div id="chat-attachments-bar" style="display:none;padding:4px 6px;margin-bottom:4px;background:var(--bg3);border-radius:4px;font-size:11px;color:var(--fg2);flex-wrap:wrap;gap:6px;"></div>
-        <input id="chat-attachment-file" type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;">
+        <input id="chat-attachment-file" type="file" aria-label="チャット添付ファイル" accept="image/*,.pdf,application/pdf" multiple style="display:none;">
         <div style="display:flex;gap:4px;">
-          <textarea id="chat-input" placeholder="メッセージを入力... (Enter送信, Shift+Enter改行)" rows="5" style="flex:1;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:13px;resize:none;outline:none;font-family:inherit;"></textarea>
+          <textarea id="chat-input" aria-label="AIチャットのメッセージ" placeholder="メッセージを入力... (Enter送信, Shift+Enter改行)" rows="5" style="flex:1;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:13px;resize:none;outline:none;font-family:inherit;"></textarea>
           <div style="display:flex;flex-direction:column;gap:4px;align-self:flex-end;">
-            <button id="chat-voice-btn" title="音声入力" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;line-height:1;" data-action="chatToggleVoiceInput()"><span class="ico ico-mic"></span></button>
-            <button class="stamp-btn" title="スタンプ" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="onStampSend('chat-input', chatSend)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
-            <button id="chat-send-btn" title="送信 (Enter)" style="min-width:52px;white-space:nowrap;word-break:keep-all;flex-shrink:0;text-align:center;padding:8px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="chatSend" data-args='{"fromButton":true}'>送信</button>
+            <button id="chat-voice-btn" type="button" title="音声入力" aria-label="音声入力" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;line-height:1;" data-action="chatToggleVoiceInput()"><span class="ico ico-mic"></span></button>
+            <button type="button" class="stamp-btn" title="スタンプ" aria-label="スタンプ" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="onStampSend('chat-input', chatSend)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
+            <button id="chat-send-btn" type="button" title="送信 (Enter)" aria-label="送信" style="min-width:52px;white-space:nowrap;word-break:keep-all;flex-shrink:0;text-align:center;padding:8px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="chatSend" data-args='{"fromButton":true}'>送信</button>
           </div>
         </div>
         <div class="chat-composer-controls" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
-          <button title="画像を添付（マルチモーダル）" data-action="chatAttachmentPick()" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-          <select id="chat-provider" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="gemini">Gemini</option><option value="anthropic">Claude</option><option value="openai">GPT</option><option value="local_llm">ローカルLLM</option><option value="codex">Codex CLI</option><option value="claude_code">Claude Code</option><option value="gemini_cli">Gemini CLI</option></select>
-          <select id="chat-model" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;max-width:200px;"></select>
-          <button title="モデル一覧を更新" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="chatRefreshModels()">⟳</button>
-          <button title="LLM設定" data-action="showChatGenerationSettingsMenu(event)" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-settings" style="width:12px;height:12px;"></span></button>
-          <button title="LLMレビュー" data-action="openLlmCrossReviewDialog()" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">レビュー</button>
+          <button type="button" title="画像を添付（マルチモーダル）" aria-label="画像を添付" data-action="chatAttachmentPick()" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:14px;height:14px;"></span></button>
+          <select id="chat-provider" title="AIプロバイダ" aria-label="AIプロバイダ" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="gemini">Gemini</option><option value="anthropic">Claude</option><option value="openai">GPT</option><option value="local_llm">ローカルLLM</option><option value="codex">Codex CLI</option><option value="claude_code">Claude Code</option><option value="gemini_cli">Gemini CLI</option></select>
+          <select id="chat-model" title="AIモデル" aria-label="AIモデル" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;max-width:200px;"></select>
+          <button type="button" title="モデル一覧を更新" aria-label="モデル一覧を更新" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="chatRefreshModels()"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
+          <button type="button" title="LLM設定" aria-label="LLM設定" data-action="showChatGenerationSettingsMenu(event)" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-settings" style="width:14px;height:14px;"></span></button>
+          <button type="button" title="LLMレビュー" aria-label="LLMレビュー" data-action="openLlmCrossReviewDialog()" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">レビュー</button>
         </div>
       </div>
     </div>
     <div id="chat-team-panel" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
       <div style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
         <div id="team-rooms" style="flex-shrink:0;border-bottom:1px solid var(--border);overflow-y:auto;max-height:30%;background:var(--bg2);">
-          <div style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;">
-            <select id="team-room-select" style="flex:1;min-width:120px;padding:2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;">
+          <div class="team-room-toolbar" style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;">
+            <select id="team-room-select" class="team-room-select" data-e2e-id="team-room-select" title="ルームを選択" aria-label="ルームを選択" style="flex:1;min-width:120px;padding:2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;">
               <option value="">ルームを選択</option>
             </select>
-            <button title="ルームを追加" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showCreateRoomModal()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-            <button title="DMを開始" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:3px;" data-action="showDirectMessageModal()"><span class="ico ico-user" style="width:12px;height:12px;"></span> DM</button>
+            <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-room-add-button" title="ルームを追加" aria-label="ルームを追加" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showCreateRoomModal()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
+            <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-dm-start-button" title="DMを開始" aria-label="DMを開始" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:3px;" data-action="showDirectMessageModal()"><span class="ico ico-user" style="width:12px;height:12px;"></span> DM</button>
           </div>
           <div id="team-room-list" style="font-size:12px;"></div>
         </div>
         <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
           <div id="team-room-title" style="padding:6px 12px;font-weight:bold;border-bottom:1px solid var(--border);flex-shrink:0;font-size:13px;">ルームを選択</div>
           <div id="team-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:6px;"></div>
-          <div id="team-composer-resize" class="chat-composer-resize" role="separator" aria-orientation="horizontal" tabindex="0" title="入力欄の高さを調整"></div>
+          <div id="team-composer-resize" class="chat-composer-resize" role="separator" aria-orientation="horizontal" aria-controls="team-input" aria-label="ワークスペースチャット入力欄の高さを調整" aria-keyshortcuts="ArrowUp ArrowDown Home End" tabindex="0" title="ワークスペースチャット入力欄の高さを調整"></div>
           <div id="team-composer" style="padding:8px;flex-shrink:0;">
             <div id="team-attachments-bar" style="display:none;padding:4px 6px;margin-bottom:4px;background:var(--bg3);border-radius:4px;font-size:11px;color:var(--fg2);flex-wrap:wrap;gap:6px;"></div>
-            <input id="team-attachment-file" type="file" accept="image/*" multiple style="display:none;">
+            <input id="team-attachment-file" data-e2e-id="team-attachment-file" aria-label="ワークスペースチャット画像添付" type="file" accept="image/*" multiple style="display:none;">
             <div style="display:flex;gap:4px;">
-              <textarea id="team-input" placeholder="メッセージを入力... (Enter送信, Shift+Enter改行)" rows="5" style="flex:1;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:13px;resize:none;outline:none;font-family:inherit;"></textarea>
+              <textarea id="team-input" data-e2e-id="team-input" aria-label="ワークスペースチャットのメッセージ" placeholder="メッセージを入力... (Enter送信, Shift+Enter改行)" rows="5" style="flex:1;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:13px;resize:none;outline:none;font-family:inherit;"></textarea>
               <div style="display:flex;flex-direction:column;gap:4px;align-self:flex-end;">
-                <button class="stamp-btn" title="スタンプ" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="onStampSend('team-input', teamSend)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
-                <button id="team-send-btn" title="送信 (Enter)" style="padding:8px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="teamSend()">送信</button>
+                <button type="button" class="stamp-btn team-composer-action-btn" data-e2e-id="team-stamp-button" title="スタンプ" aria-label="スタンプ" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="onStampSend('team-input', teamSend)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
+                <button id="team-send-btn" type="button" class="team-composer-action-btn" data-e2e-id="team-send-button" title="送信 (Enter)" style="padding:8px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="teamSend()">送信</button>
               </div>
             </div>
-            <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
-              <button title="画像を添付" data-action="teamAttachmentPick()" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-              <button id="team-workspace-cli-btn" title="管理者PCのCLIに依頼" data-action="openWorkspaceCliRelayMenu(event)" style="padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:4px;font-size:12px;"><span class="ico ico-terminal" style="width:12px;height:12px;"></span><span>CLIに依頼</span></button>
+            <div class="team-composer-controls" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
+              <button type="button" class="team-composer-inline-btn" data-e2e-id="team-attach-image-button" title="画像を添付" aria-label="画像を添付" data-action="teamAttachmentPick()" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
+              <button id="team-workspace-cli-btn" type="button" class="team-composer-inline-btn" data-e2e-id="team-workspace-cli-button" title="管理者PCのCLIに依頼" aria-label="管理者PCのCLIに依頼" data-action="openWorkspaceCliRelayMenu(event)" style="padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:4px;font-size:12px;"><span class="ico ico-terminal" style="width:12px;height:12px;"></span><span>CLIに依頼</span></button>
             </div>
           </div>
         </div>
       </div>
     </div>
   </div>
+  <div id="rp-tags" class="rp-content" style="flex:1;overflow:hidden;"></div>
   <div id="rp-annotation" class="rp-content">
     <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
       <span style="font-size:13px;font-weight:bold;flex:1;">注釈管理</span>
-      <button title="新規コメント" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="newRpComment()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-      <button title="更新" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="loadRpAnnotationList()"><span class="ico ico-refreshCw" style="width:12px;height:12px;"></span></button>
+      <button type="button" title="新規コメント" aria-label="新規コメント" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="newRpComment()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
+      <button type="button" title="更新" aria-label="更新" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="loadRpAnnotationList()"><span class="ico ico-refreshCw" style="width:12px;height:12px;"></span></button>
     </div>
     <div style="padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;gap:4px;flex-wrap:wrap;">
-      <input id="rp-ann-search" type="text" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
-      <select id="rp-ann-view" title="表示" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="preview">プレビュー</option><option value="list">リスト</option></select>
-      <select id="rp-ann-sort" title="並び替え" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="modified-desc">更新が新しい順</option><option value="created-desc">作成が新しい順</option><option value="created-asc">作成が古い順</option><option value="path-asc">ファイル名順</option><option value="type-asc">種類順</option><option value="user-asc">ユーザー順</option></select>
-      <select id="rp-ann-type" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option></select>
-      <select id="rp-ann-scope" title="対象ファイル" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="current">現在のファイル</option><option value="all">全ファイル</option></select>
-      <select id="rp-ann-status" title="状態" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="open">未解決</option><option value="all">全て</option><option value="resolved">解決済み</option><option value="orphan">孤児</option><option value="deleted">削除済み</option></select>
-      <select id="rp-ann-user" title="ユーザー" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全ユーザー</option></select>
+      <input id="rp-ann-search" type="text" aria-label="注釈を検索" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
+      <select id="rp-ann-view" title="表示" aria-label="表示" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="preview">プレビュー</option><option value="list">リスト</option></select>
+      <select id="rp-ann-sort" title="並び替え" aria-label="並び替え" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="modified-desc">更新が新しい順</option><option value="created-desc">作成が新しい順</option><option value="created-asc">作成が古い順</option><option value="path-asc">ファイル名順</option><option value="type-asc">種類順</option><option value="user-asc">ユーザー順</option></select>
+      <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option></select>
+      <select id="rp-ann-scope" title="対象ファイル" aria-label="対象ファイル" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="current">現在のファイル</option><option value="all">全ファイル</option></select>
+      <select id="rp-ann-status" title="状態" aria-label="状態" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="open">未解決</option><option value="all">全て</option><option value="resolved">解決済み</option><option value="orphan">孤児</option><option value="deleted">削除済み</option></select>
+      <select id="rp-ann-user" title="ユーザー" aria-label="ユーザー" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全ユーザー</option></select>
     </div>
     <div id="rp-ann-list" style="flex:1;overflow-y:auto;padding:8px;"></div>
   </div>
   <div id="rp-history" class="rp-content" style="flex:1;overflow-y:auto;">
     <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
       <span style="font-size:13px;font-weight:bold;flex:1;">操作履歴</span>
-      <button title="元に戻す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="historyUndo()"><span class="ico ico-arrowLeftS" style="width:12px;height:12px;"></span> 戻す</button>
-      <button title="やり直す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="historyRedo()"><span class="ico ico-arrowRightS" style="width:12px;height:12px;"></span> 進む</button>
+      <button type="button" title="元に戻す" aria-label="元に戻す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="historyUndo()"><span class="ico ico-arrowLeftS" style="width:12px;height:12px;"></span> 戻す</button>
+      <button type="button" title="やり直す" aria-label="やり直す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="historyRedo()"><span class="ico ico-arrowRightS" style="width:12px;height:12px;"></span> 進む</button>
     </div>
     <div id="rp-history-list" style="padding:8px;font-size:12px;"></div>
   </div>
 </div><!-- /right-panel -->
 <div id="activity-bar-right" style="display:none !important;">
-  <button id="rab-detail" title="オプションパネル" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
+  <button id="rab-detail" type="button" title="オプションパネル" aria-label="オプションパネル" aria-pressed="false" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
   <div class="ab-sep"></div>
-  <button id="rab-calendar" title="スケジューラー" data-action="toggleRightPanelTab('calendar')"><span class="ico ico-calendar"></span></button>
-  <button id="rab-chat" title="チャット" data-action="toggleRightPanelTab('chat')"><span class="ico ico-messagesSquare"></span></button>
-  <button id="rab-annotation" title="注釈" data-action="toggleRightPanelTab('annotation')"><span class="ico ico-stickyNote"></span></button>
+  <button id="rab-calendar" type="button" title="スケジューラー" aria-label="スケジューラー" aria-pressed="false" data-action="toggleRightPanelTab('calendar')"><span class="ico ico-calendar"></span></button>
+  <button id="rab-chat" type="button" title="チャット" aria-label="チャット" aria-pressed="false" data-action="toggleRightPanelTab('chat')"><span class="ico ico-messagesSquare"></span></button>
+  <button id="rab-tags" type="button" title="タグ" aria-label="タグ" aria-pressed="false" data-action="toggleRightPanelTab('tags')"><span class="ico ico-tags"></span></button>
+  <button id="rab-annotation" type="button" title="注釈" aria-label="注釈" aria-pressed="false" data-action="toggleRightPanelTab('annotation')"><span class="ico ico-stickyNote"></span></button>
   <div class="ab-sep"></div>
-  <button id="rab-history" title="履歴" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
+  <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
 <script src="gb-layout.js"></script><script src="gb-panelset.js"></script><script src="gb-tabs.js"></script><script src="gb-pane-default-layout.js"></script><script src="gb-docking.js"></script><script src="gb-dock-popup.js"></script><script src="gb-component.js"></script><script src="gb-tool-components.js"></script><script src="gb-tool-timer.js"></script><script src="gb-tool-timer-advanced.js"></script><script src="gb-tool-timer-custom-alarm.js"></script><script src="gb-tool-calendar.js"></script><script src="gb-tool-calendar-views.js"></script><script src="gb-tool-calendar-todo-view.js"></script><script src="gb-tool-calendar-clock-view.js"></script><script src="gb-tool-calendar-sync.js"></script><script src="gb-board-performance.js"></script><script src="gb-board-llm-context.js"></script><script src="gb-canvas-engine.js"></script><script src="gb-canvas-minimap.js"></script><script src="gb-board-image-drop-mode.js"></script><script src="gb-canvas-features.js"></script><script src="gb-board-find.js"></script><script src="gb-canvas-interact.js"></script><script src="gb-board-presets.js"></script><script src="gb-board-links.js"></script><script src="gb-board-bulk-import.js"></script><script src="gb-board-ui.js"></script><script src="gb-board-render-node.js"></script><script src="gb-board-dirty.js"></script><script src="gb-board-background.js"></script><script src="gb-board-style-manager.js"></script><script src="gb-tool-canvas.js"></script><script src="gb-export-save.js"></script><script src="gb-public-runtime.js"></script><script src="gb-cloud-form-relay.js"></script><script src="gb-scriptnote-rules.js"></script><script src="gb-scriptnote-format.js"></script><script src="gb-scriptnote-document.js"></script><script src="gb-scriptnote-editor.js"></script><script src="gb-scriptnote-history.js"></script><script src="gb-scriptnote-interactions.js"></script><script src="gb-scriptnote-selection.js"></script><script src="gb-scriptnote-filter.js"></script><script src="gb-scriptnote-status.js"></script><script src="gb-scriptnote-search.js"></script><script src="gb-scriptnote-clipstudio.js"></script><script src="gb-scriptnote-detail.js"></script><script src="gb-scriptnote-menu.js"></script><script src="gb-scriptnote-ruby.js"></script><script src="gb-scriptnote-rowset.js"></script><script src="gb-scriptnote-columns.js"></script>
 <link rel="stylesheet" href="gb-scriptnote-editor.css">

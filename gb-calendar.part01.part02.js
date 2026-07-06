@@ -1,6 +1,6 @@
         el.addEventListener('dragend',()=>{el.style.opacity='';});
       }
-      el.addEventListener('click', e2=>{e2.stopPropagation();if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev);return;}_showCalendarEventDetailPanel(dbPath,ev);});
+      el.addEventListener('click', e2=>{e2.stopPropagation();if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev,el);return;}_showCalendarEventDetailPanel(dbPath,ev);});
       cell.appendChild(el);
     });
     if(dayEvs.length>3){const more=document.createElement('div');more.className='cal-month-more';more.textContent=`+${dayEvs.length-3}`;cell.appendChild(more);}
@@ -134,7 +134,7 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
     el.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',JSON.stringify(_calendarDragPayloadForEvent(ev)));el.style.opacity='0.4';});
     el.addEventListener('dragend',()=>{el.style.opacity='';});
   }
-  el.addEventListener('click', e=>{e.stopPropagation();if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev);return;}_showCalendarEventDetailPanel(dbPath,ev);});
+  el.addEventListener('click', e=>{e.stopPropagation();if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev,el);return;}_showCalendarEventDetailPanel(dbPath,ev);});
   if (!eventCanEditDates || (ev._mapped && !ev._mappedSupportsEnd)) return el;
   const commitResize = async (newStart, newEnd) => {
     if (ev._mapped && typeof _saveMappedCalendarDates === 'function') {
@@ -161,7 +161,7 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
     await _refreshCalendarDb(dbPath);
   };
   // リサイズハンドル（下）
-  const resBot=document.createElement('div');resBot.style.cssText='position:absolute;bottom:0;left:0;right:0;height:6px;cursor:ns-resize;';
+  const resBot=document.createElement('div');resBot.className='cal-event-resize-handle cal-event-resize-bottom';resBot.style.cssText='position:absolute;bottom:0;left:0;right:0;height:6px;cursor:ns-resize;';
   resBot.onpointerdown=e2=>{e2.stopPropagation();e2.preventDefault();el.style.touchAction='none';const sy=e2.clientY,sh=el.offsetHeight;document.body.style.userSelect='none';
     const onMove=e3=>{el.style.height=Math.max(10,sh+e3.clientY-sy)+'px';};
     const onUp=async()=>{document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.body.style.userSelect='';el.style.touchAction='';
@@ -177,7 +177,7 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
     };document.addEventListener('pointermove',onMove);document.addEventListener('pointerup',onUp);};
   el.appendChild(resBot);
   // リサイズハンドル（上）
-  const resTop=document.createElement('div');resTop.style.cssText='position:absolute;top:0;left:0;right:0;height:6px;cursor:ns-resize;';
+  const resTop=document.createElement('div');resTop.className='cal-event-resize-handle cal-event-resize-top';resTop.style.cssText='position:absolute;top:0;left:0;right:0;height:6px;cursor:ns-resize;';
   resTop.onpointerdown=e2=>{e2.stopPropagation();e2.preventDefault();el.style.touchAction='none';const sy=e2.clientY,origTop=parseFloat(el.style.top),origH=el.offsetHeight;document.body.style.userSelect='none';
     const onMove=e3=>{const dy=Math.min(e3.clientY-sy, origH-10);el.style.top=(origTop+dy)+'px';el.style.height=Math.max(10,origH-dy)+'px';};
     const onUp=async()=>{document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.body.style.userSelect='';el.style.touchAction='';

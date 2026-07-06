@@ -1,16 +1,272 @@
+      note.remove();
+      _postToParent({ type: 'ann-delete-note', annId: item.id, data: payload });
+    };
+
+    deleteBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+    deleteBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
+    });
+
+    // 右クリックメニュー (色変更 / フキダシしっぽ / 削除)
+    function _showEmbeddedNoteContextMenu(ev) {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
+      const restoreTarget = ev?.currentTarget instanceof HTMLElement ? ev.currentTarget : null;
+      const fallbackRect = (restoreTarget || note).getBoundingClientRect();
+      const clientX = Number.isFinite(ev?.clientX) ? ev.clientX : fallbackRect.left + Math.min(32, Math.max(8, fallbackRect.width / 2));
+      const clientY = Number.isFinite(ev?.clientY) ? ev.clientY : fallbackRect.top + Math.min(32, Math.max(8, fallbackRect.height / 2));
+      const menu = document.createElement('div');
+      menu.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-context-menu annotation-note-context-menu';
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', '注釈付箋メニュー');
+      menu.style.position = 'fixed';
+      menu.style.zIndex = '210';
+      const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
+      let closeTimer = 0;
+      let tailOpen = false;
+      let tailTrig = null;
+      let tailPanel = null;
+
+      const removeMenus = () => document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
+      const menuItems = (root) => [...root.querySelectorAll('button.gb-context-menu-item:not(.disabled)')];
+      const focusMenuItem = (items, index) => {
+        if (!items.length) return;
+        const next = ((index % items.length) + items.length) % items.length;
+        items[next].focus();
+      };
+      const closeMenu = (restoreFocus = false) => {
+        clearTimeout(closeTimer);
+        document.removeEventListener('pointerdown', onGlobalPointerDown, true);
+        document.removeEventListener('keydown', onGlobalKeyDown, true);
+        tailTrig?.setAttribute('aria-expanded', 'false');
+        removeMenus();
+        if (restoreFocus && restoreTarget?.isConnected) restoreTarget.focus?.();
+      };
+      const hideTailPanel = () => {
+        clearTimeout(closeTimer);
+        tailOpen = false;
+        tailTrig?.setAttribute('aria-expanded', 'false');
+        if (tailPanel) {
+          tailPanel.hidden = true;
+          tailPanel.style.display = 'none';
+        }
+      };
+      const showTailPanel = () => {
+        clearTimeout(closeTimer);
+        if (!tailPanel) return;
+        if (!tailPanel.isConnected) document.body.appendChild(tailPanel);
+        tailOpen = true;
+        tailTrig?.setAttribute('aria-expanded', 'true');
+        tailPanel.hidden = false;
+        tailPanel.style.display = 'block';
+        if (typeof window.positionPopup === 'function') {
+          window.positionPopup(tailPanel, tailTrig.getBoundingClientRect(), { prefer: 'right', gap: 2, avoidRect: menu.getBoundingClientRect() });
+        } else {
+          const rect = tailTrig.getBoundingClientRect();
+          tailPanel.style.left = rect.right + 2 + 'px';
+          tailPanel.style.top = rect.top + 'px';
+          if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(tailPanel);
+        }
+      };
+      const scheduleTailClose = () => {
+        clearTimeout(closeTimer);
+        closeTimer = setTimeout(() => {
+          if (!tailPanel?.matches(':hover') && !tailTrig?.matches(':hover') && !tailPanel?.contains(document.activeElement)) hideTailPanel();
+        }, 140);
+      };
+      function onGlobalPointerDown(e2) {
+        const inAny = menu.contains(e2.target) || !!tailPanel?.contains(e2.target);
+        if (!inAny) closeMenu(false);
+      }
+      function onGlobalKeyDown(e2) {
+        if (e2.key === 'Escape') {
+          e2.preventDefault();
+          e2.stopPropagation();
+          closeMenu(true);
+        }
+      }
+      const handleMenuKeydown = (e2, root, onArrowLeft = null) => {
+        const items = menuItems(root);
+        const currentIndex = items.indexOf(document.activeElement);
+        if (e2.key === 'ArrowDown') {
+          e2.preventDefault();
+          focusMenuItem(items, currentIndex + 1);
+        } else if (e2.key === 'ArrowUp') {
+          e2.preventDefault();
+          focusMenuItem(items, currentIndex - 1);
+        } else if (e2.key === 'Home') {
+          e2.preventDefault();
+          focusMenuItem(items, 0);
+        } else if (e2.key === 'End') {
+          e2.preventDefault();
+          focusMenuItem(items, items.length - 1);
+        } else if (e2.key === 'ArrowLeft' && onArrowLeft) {
+          e2.preventDefault();
+          onArrowLeft();
+        }
+      };
+      const createMenuButton = ({ label, icon, action, danger = false, role = 'menuitem', checked = null }) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'gb-context-menu-item' + (danger ? ' danger' : '');
+        button.dataset.action = action;
+        button.setAttribute('role', role);
+        if (checked != null) button.setAttribute('aria-checked', checked ? 'true' : 'false');
+        const iconSlot = document.createElement('span');
+        iconSlot.className = 'menu-icon';
+        iconSlot.setAttribute('aria-hidden', 'true');
+        iconSlot.innerHTML = typeof window.lucide === 'function' && icon ? window.lucide(icon, 16) : '';
+        const labelSlot = document.createElement('span');
+        labelSlot.textContent = label;
+        button.appendChild(iconSlot);
+        button.appendChild(labelSlot);
+        return button;
+      };
+      const persistTailState = () => {
+        const payload = _notePayload(data, editor, note);
+        if (item.id && !String(item.id).startsWith('pending-note-') && typeof apiPut === 'function') {
+          if (!_updateBoardAnnotation(item.id, { data: payload })) {
+            apiPut('/annotations/' + encodeURIComponent(item.id), { data: payload })
+              .catch(error => _reportMarkupSaveFailure(error));
+          }
+        } else {
+          item._pendingData = payload;
+        }
+      };
+      const applyTailOperation = (isRemove) => {
+        const hasTailMod = (typeof AnnotationStickyTail !== 'undefined');
+        if (isRemove) {
+          if (hasTailMod && note._annTailCtx) {
+            delete note._annTailCtx.data.tail;
+            delete note._annTailCtx.data.tailX;
+            delete note._annTailCtx.data.tailY;
+          }
+          note.querySelectorAll(':scope > .ann-tail, :scope > .ann-tail-line, :scope > .ann-tail-shape, :scope > .ann-tail-handle').forEach(el => el.remove());
+          delete data.tail;
+          delete data.tailX;
+          delete data.tailY;
+        } else if (hasTailMod && !note.querySelector('.ann-tail,.ann-tail-shape')) {
+          const w = note.offsetWidth || data.width || 180;
+          const h = note.offsetHeight || data.height || 100;
+          const newTail = {
+            startX: w / 2,
+            startY: h / 2,
+            endX: w / 2,
+            endY: h + 40,
+            target: null,
+          };
+          data.tail = newTail;
+          delete data.tailX;
+          delete data.tailY;
+          if (note._annTailCtx) {
+            note._annTailCtx.data.tail = newTail;
+            delete note._annTailCtx.data.tailX;
+            delete note._annTailCtx.data.tailY;
+          }
+          AnnotationStickyTail.setTail(note, newTail, null);
+        }
+        persistTailState();
+      };
+
+      const colorItem = createMenuButton({ label: '色を変更', icon: 'palette', action: 'color' });
+      colorItem.addEventListener('click', () => {
+        closeMenu(false);
+        if (typeof window.openColorPalette === 'function') {
+          window.openColorPalette(note, item.color || '', (newColor) => {
+            item.color = newColor || item.color;
+            _applyNoteColor(note, item.color);
+            if (boardMode && String(item.id || '').startsWith('pending-note-')) return;
+            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
+            _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
+          });
+        }
+      });
+      menu.appendChild(colorItem);
+
+      tailTrig = createMenuButton({ label: 'フキダシのしっぽ', icon: 'messageSquare', action: 'tail' });
+      tailTrig.classList.add('has-submenu');
+      tailTrig.setAttribute('aria-haspopup', 'menu');
+      tailTrig.setAttribute('aria-expanded', 'false');
+      tailPanel = document.createElement('div');
+      tailPanel.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-tail-menu annotation-note-tail-menu';
+      tailPanel.setAttribute('role', 'menu');
+      tailPanel.setAttribute('aria-label', 'フキダシのしっぽ');
+      tailPanel.hidden = true;
+      tailPanel.style.position = 'fixed';
+      tailPanel.style.zIndex = '211';
+      tailPanel.style.display = 'none';
+      [['追加する', false], ['削除する', true]].forEach(([label, isRemove]) => {
+        const tailButton = createMenuButton({ label, action: isRemove ? 'tail-remove' : 'tail-add', role: 'menuitemradio', checked: hasTail === isRemove });
+        tailButton.addEventListener('click', () => {
+          closeMenu(false);
+          applyTailOperation(isRemove);
+        });
+        tailPanel.appendChild(tailButton);
+      });
+      tailTrig.addEventListener('mouseenter', showTailPanel);
+      tailTrig.addEventListener('mouseleave', scheduleTailClose);
+      tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
+      tailTrig.addEventListener('keydown', (e2) => {
+        if (e2.key === 'ArrowRight' || e2.key === 'Enter' || e2.key === ' ') {
+          e2.preventDefault();
+          showTailPanel();
+          requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
+        }
+      });
+      tailPanel.addEventListener('mouseenter', () => clearTimeout(closeTimer));
+      tailPanel.addEventListener('mouseleave', scheduleTailClose);
+      tailPanel.addEventListener('keydown', (e2) => handleMenuKeydown(e2, tailPanel, () => {
+        hideTailPanel();
+        tailTrig.focus();
+      }));
+      menu.appendChild(tailTrig);
+
+      const deleteItem = createMenuButton({ label: '削除', icon: 'trash2', action: 'delete', danger: true });
       deleteItem.addEventListener('click', () => {
-        menu.remove();
+        closeMenu(false);
         _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
       });
       menu.appendChild(deleteItem);
       document.body.appendChild(menu);
-      if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(menu);
-      setTimeout(() => document.addEventListener('pointerdown', function h(e2) {
-        const inAny = [...document.querySelectorAll('._note-ctx-menu')].some(m => m.contains(e2.target));
-        if (!inAny) document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
-        else document.addEventListener('pointerdown', h, { once: true });
-      }, { once: true }), 0);
+      if (restoreTarget && restoreTarget.classList?.contains('note-more-btn') && typeof window.positionPopup === 'function') {
+        window.positionPopup(menu, restoreTarget.getBoundingClientRect(), { prefer: 'below', gap: 2 });
+      } else if (typeof window.positionPopup === 'function') {
+        window.positionPopup(menu, { left: clientX, right: clientX, top: clientY, bottom: clientY }, { prefer: 'below', gap: 2 });
+      } else {
+        const z = (typeof window._getZoom === 'function') ? window._getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
+        menu.style.left = (clientX / z) + 'px';
+        menu.style.top = (clientY / z) + 'px';
+        if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(menu);
+      }
+      menu.addEventListener('keydown', (e2) => handleMenuKeydown(e2, menu));
+      setTimeout(() => {
+        document.addEventListener('pointerdown', onGlobalPointerDown, true);
+        document.addEventListener('keydown', onGlobalKeyDown, true);
+        requestAnimationFrame(() => menuItems(menu)[0]?.focus());
+      }, 0);
     }
+
+    // ヘッダー右端の「…」ボタン: 右クリックと同じメニューを開く
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'note-more-btn';
+    moreBtn.dataset.annMore = '1';
+    moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
+    moreBtn.setAttribute('aria-label', '注釈メニュー');
+    moreBtn.title = 'メニュー';
+    moreBtn.innerHTML = lucide('moreHorizontal', 16);
+    _normalizeEmbeddedNoteIcon(moreBtn, 16);
+    moreBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+    moreBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _showEmbeddedNoteContextMenu(e);
+    });
+    note.appendChild(moreBtn);
+
     note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
     if (typeof window.addLongPressHandler === 'function') {
       window.addLongPressHandler(note, _showEmbeddedNoteContextMenu);
@@ -272,6 +528,39 @@
   });
 
   const bridge = { svg, layer, notesLayer, ann: _ann, handleMessage: _handleMessage, updateSize: _updateSize };
+  const e2eBridgeEnabled = (() => {
+    if (typeof window === 'undefined') return false;
+    if (window.GBE2EActions) return true;
+    try {
+      const params = new URLSearchParams(window.location?.search || '');
+      return params.get('smoke') === '1' || params.get('e2e') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  if (e2eBridgeEnabled) {
+    bridge.renderEmbeddedNoteForE2E = (options = {}) => {
+      const item = {
+        id: options.id || ('e2e-embedded-note-' + Date.now().toString(36)),
+        type: 'comment',
+        shape: 'sticky',
+        color: options.color || _ann.color || '#c48080',
+        opacity: options.opacity ?? _ann.opacity ?? 1,
+        user: options.user || _annotationUser(),
+        created: options.created || new Date().toISOString(),
+      };
+      const data = {
+        x: Number(options.x) || 120,
+        y: Number(options.y) || 120,
+        width: Number(options.width) || 180,
+        height: Number(options.height) || 100,
+        text: options.text || '',
+        html: options.html || '',
+        user: item.user,
+      };
+      return _renderNote(item, data);
+    };
+  }
   wrapper._annBridge = bridge;
   if (host !== wrapper) host._annBridge = bridge;
   return bridge;
@@ -609,292 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
         Object.assign(data, _saNotePayload(data, textarea, note), {
-          x: parseFloat(note.style.left) || 0,
-          y: parseFloat(note.style.top) || 0,
-        });
-        try {
-          await _saUpdateAnnotation(annId, { data: { ...data } });
-        } catch (error) {
-          data.x = previous.x;
-          data.y = previous.y;
-          data.text = previous.text;
-          data.width = previous.width;
-          data.height = previous.height;
-          note.style.left = previous.left;
-          note.style.top = previous.top;
-          note.style.width = previous.noteWidth;
-          note.style.minHeight = previous.noteMinHeight;
-          textarea.style.height = previous.textareaHeight;
-          textarea.value = previous.text;
-          _saReportSaveFailure(error);
-        }
-      };
-      document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
-    });
-    container.appendChild(note);
-  }
-
-  async function loadAnnotations(targetPath) {
-    const requestSeq = ++_loadAnnotationsSeq;
-    const requestedTarget = String(targetPath || '');
-    layer.innerHTML = ''; container.querySelectorAll('.sa-note').forEach(n => n.remove());
-    if (!requestedTarget) return;
-    try {
-      const items = await apiFetch('/annotations?target=' + encodeURIComponent(requestedTarget));
-      const activeTarget = typeof getTargetPath === 'function' ? String(getTargetPath() || '') : requestedTarget;
-      if (requestSeq !== _loadAnnotationsSeq || activeTarget !== requestedTarget) return;
-      items.forEach(item => {
-        const data = _saParseAnnotationData(item);
-        if (!data) return;
-        if (_isStandaloneNoteAnnotation(item, data)) _renderNote(item.id, data, item.color);
-        else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') return;
-        else if (item.type === 'rect' && data?.width != null && data?.height != null) _renderRect(data, item.color, item.opacity, item.id);
-        else if (data.points) _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id);
-      });
-      _syncStandaloneNoteInteractivity();
-    } catch (error) {
-      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, '注釈を読み込めませんでした');
-    }
-  }
-
-  function toggle(active) {
-    if (active === undefined) active = !_ann.active;
-    _ann.active = active;
-    svg.style.pointerEvents = active ? 'auto' : 'none';
-    svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-    svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
-    hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
-    _syncStandaloneNoteInteractivity();
-  }
-  function setTool(tool) { _ann.tool = tool; if (_ann.active) svg.style.cursor = tool === 'eraser' ? 'not-allowed' : tool === 'sticky' ? 'cell' : 'crosshair'; }
-  function setColor(c) { _ann.color = c; }
-  function setOpacity(o) {
-    const opacity = _saNormalizeOpacity(o, 1);
-    _ann.opacity = opacity;
-    svg.style.opacity = opacity;
-    container.querySelectorAll('.sa-note').forEach(n => { n.style.opacity = opacity; });
-  }
-  function destroy() { svg.remove(); container.querySelectorAll('.sa-note').forEach(n => n.remove()); }
-
-  return { svg, layer, ann: _ann, toggle, loadAnnotations, setTool, setColor, setOpacity, destroy };
-}
-
-function createMarkupToolbar(markup, parentEl) {
-  let tb = parentEl.querySelector('.sa-toolbar');
-  if (tb) return tb;
-  tb = document.createElement('div');
-  tb.className = 'sa-toolbar';
-  tb.style.cssText = 'position:fixed;z-index:55;background:var(--ui-popup-bg, var(--bg2,#252525));border:1px solid var(--border,#333);border-radius:8px;padding:4px 8px;display:flex;gap:4px;align-items:center;box-shadow:0 4px 12px rgba(0,0,0,0.4);bottom:60px;left:50%;transform:translateX(-50%);';
-  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'marker',icon:'highlighter',title:'マーカー' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
-    const btn = document.createElement('button');
-    btn.className = 'sa-tb-btn' + (t.name === 'pen' ? ' active' : '');
-    btn.dataset.tool = t.name; btn.title = t.title; btn.innerHTML = lucide(t.icon, 18);
-    btn.style.cssText = 'background:var(--bg3,#2d2d2d);border:1px solid var(--border,#333);border-radius:4px;cursor:pointer;padding:4px 6px;color:var(--fg,#d4d4d4);display:flex;align-items:center;';
-    btn.onclick = () => { markup.setTool(t.name); tb.querySelectorAll('.sa-tb-btn').forEach(b => { b.style.background = b === btn ? 'var(--accent,#569cd6)' : 'var(--bg3,#2d2d2d)'; b.style.color = b === btn ? '#fff' : 'var(--fg,#d4d4d4)'; }); };
-    tb.appendChild(btn);
-  });
-  const colorBtn = document.createElement('div');
-  colorBtn.style.cssText = 'width:22px;height:22px;border-radius:50%;border:2px solid var(--border,#333);cursor:pointer;background:' + (markup.ann.color || PALETTE_COLORS[0]) + ';';
-  colorBtn.title = '色';
-  colorBtn.onclick = () => {
-    let palette = tb.querySelector('.sa-palette');
-    if (palette) { palette.remove(); return; }
-    palette = document.createElement('div'); palette.className = 'sa-palette';
-    palette.style.cssText = 'position:absolute;bottom:44px;left:0;background:var(--bg2,#252525);border:1px solid var(--border,#333);border-radius:6px;padding:6px;display:flex;flex-wrap:wrap;gap:3px;width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
-    PALETTE_COLORS.forEach(c => { const dot = document.createElement('div'); dot.style.cssText = 'width:18px;height:18px;border-radius:50%;cursor:pointer;background:' + c + ';border:1px solid rgba(255,255,255,0.15);'; dot.onclick = () => { markup.setColor(c); colorBtn.style.background = c; palette.remove(); }; palette.appendChild(dot); });
-    tb.appendChild(palette);
-  };
-  tb.appendChild(colorBtn);
-  const closeBtn = document.createElement('button');
-  closeBtn.innerHTML = lucide('x', 14); closeBtn.title = '閉じる';
-  closeBtn.style.cssText = 'background:none;border:none;color:var(--fg2,#969696);cursor:pointer;font-size:14px;padding:2px 4px;';
-  closeBtn.onclick = () => { markup.toggle(false); tb.style.display = 'none'; document.getElementById('btn-markup')?.classList.remove('active'); };
-  tb.appendChild(closeBtn);
-  parentEl.appendChild(tb);
-  return tb;
-}
-
-// === ポップアップ位置制御（共通ヘルパー） ===
-// pywebview/WebView2環境ではwindow.innerWidth/Heightが不正確な場合があるため
-// document.documentElement.clientWidth/Heightを使用する
-function _popupCssRect(rect, z) {
-  if (!rect) return null;
-  const left = Number(rect.left);
-  const right = Number(rect.right);
-  const top = Number(rect.top);
-  const bottom = Number(rect.bottom);
-  if (![left, right, top, bottom].every(Number.isFinite)) return null;
-  return { left: left / z, right: right / z, top: top / z, bottom: bottom / z };
-}
-
-function _popupClampValue(value, min, max) {
-  if (max < min) return min;
-  return Math.max(min, Math.min(max, value));
-}
-
-function _popupRectsOverlap(a, b, gap = 0) {
-  if (!a || !b) return false;
-  return !(
-    a.right <= b.left - gap
-    || a.left >= b.right + gap
-    || a.bottom <= b.top - gap
-    || a.top >= b.bottom + gap
-  );
-}
-
-function _popupCandidateRect(left, top, width, height) {
-  return { left, top, right: left + width, bottom: top + height };
-}
-
-function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid) {
-  if (!avoid) return { left: baseLeft, top: baseTop };
-  const maxLeft = vw - pw - gap;
-  const maxTop = vh - ph - gap;
-  const xNearAnchor = _popupClampValue(baseLeft, gap, maxLeft);
-  const yNearAnchor = _popupClampValue(baseTop, gap, maxTop);
-  const candidates = [
-    { left: xNearAnchor, top: avoid.bottom + gap, side: 'below', space: vh - avoid.bottom - gap },
-    { left: xNearAnchor, top: avoid.top - ph - gap, side: 'above', space: avoid.top - gap },
-    { left: avoid.right + gap, top: yNearAnchor, side: 'right', space: vw - avoid.right - gap },
-    { left: avoid.left - pw - gap, top: yNearAnchor, side: 'left', space: avoid.left - gap },
-  ];
-
-  for (const candidate of candidates) {
-    const left = _popupClampValue(candidate.left, gap, maxLeft);
-    const top = _popupClampValue(candidate.top, gap, maxTop);
-    const rect = _popupCandidateRect(left, top, pw, ph);
-    const fitsViewport = left >= gap && top >= gap && rect.right <= vw - gap && rect.bottom <= vh - gap;
-    if (fitsViewport && !_popupRectsOverlap(rect, avoid, 0)) return { left, top };
-  }
-
-  const vertical = candidates
-    .filter(c => c.side === 'below' || c.side === 'above')
-    .filter(c => c.space >= 72)
-    .sort((a, b) => b.space - a.space)[0];
-  if (vertical) {
-    const left = _popupClampValue(vertical.left, gap, maxLeft);
-    const top = vertical.side === 'above'
-      ? Math.max(gap, avoid.top - Math.min(ph, vertical.space) - gap)
-      : avoid.bottom + gap;
-    return { left, top, maxHeight: Math.max(72, vertical.space) };
-  }
-
-  const horizontal = candidates
-    .filter(c => c.side === 'right' || c.side === 'left')
-    .filter(c => c.space >= 72)
-    .sort((a, b) => b.space - a.space)[0];
-  if (horizontal) {
-    const left = horizontal.side === 'left'
-      ? Math.max(gap, avoid.left - Math.min(pw, horizontal.space) - gap)
-      : avoid.right + gap;
-    const top = _popupClampValue(horizontal.top, gap, maxTop);
-    return { left, top, maxWidth: Math.max(72, horizontal.space) };
-  }
-
-  return {
-    left: _popupClampValue(baseLeft, gap, maxLeft),
-    top: _popupClampValue(baseTop, gap, maxTop),
-  };
-}
-
-function positionPopup(popup, anchorRect, options = {}) {
-  const z = _getZoom();
-  const vw = document.documentElement.clientWidth;
-  const vh = document.documentElement.clientHeight;
-  const gap = options.gap ?? 4;
-  const preferDirection = options.prefer || 'below'; // 'below' | 'right'
-  // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
-  const ar = _popupCssRect(anchorRect, z);
-  const avoid = _popupCssRect(options.avoidRect, z);
-  if (!ar) return;
-  // 非表示でDOMに追加して測定
-  popup.style.maxHeight = '';
-  popup.style.maxWidth = '';
-  popup.style.overflowY = '';
-  popup.style.overflowX = '';
-  popup.style.visibility = 'hidden';
-  if (!popup.parentNode) document.body.appendChild(popup);
-  const pw = popup.offsetWidth;
-  const ph = popup.offsetHeight;
-  let left, top;
-  if (preferDirection === 'right') {
-    // 右に表示、収まらなければ左
-    left = ar.right + gap;
-    if (left + pw > vw) left = Math.max(gap, ar.left - pw - gap);
-    if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
-    top = ar.top;
-  } else {
-    // 下に表示
-    left = ar.left;
-    top = ar.bottom + gap;
-  }
-  // 右端チェック
-  if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
-  // 下端チェック
-  const spaceBelow = vh - ar.bottom - gap;
-  const spaceAbove = ar.top - gap;
-  if (top + ph > vh) {
-    if (ph <= spaceAbove) {
-      top = ar.top - ph - gap;
-    } else if (spaceBelow >= spaceAbove) {
-      top = ar.bottom + gap;
-      popup.style.maxHeight = Math.max(120, spaceBelow) + 'px';
-      popup.style.overflowY = 'auto';
-    } else {
-      top = gap;
-      popup.style.maxHeight = Math.max(120, spaceAbove) + 'px';
-      popup.style.overflowY = 'auto';
-    }
-  }
-  // 上端チェック
-  if (top < gap) top = gap;
-  if (avoid) {
-    const fitted = _fitPopupAroundAvoidRect(left, top, pw, ph, vw, vh, gap, avoid);
-    left = fitted.left;
-    top = fitted.top;
-    if (fitted.maxHeight != null) {
-      popup.style.maxHeight = fitted.maxHeight + 'px';
-      popup.style.overflowY = 'auto';
-    }
-    if (fitted.maxWidth != null) {
-      popup.style.maxWidth = fitted.maxWidth + 'px';
-      popup.style.overflowX = 'auto';
-    }
-  }
-  popup.style.left = left + 'px';
-  popup.style.top = top + 'px';
-  popup.style.visibility = 'visible';
-  // 最終安全策: clampPopupToViewportで確実にビューポート内に収める
-  clampPopupToViewport(popup);
-}
-
-// ============================================================
-// 長押し検知ヘルパー: iPad など contextmenu が安定しない環境向けに、
-// タッチ/ペン入力の長押しで handler を発火させる。マウスは触らない
-// （従来の contextmenu で右クリックメニューがそのまま使える）。
-//
-// 使い方:
-//   addLongPressHandler(el, (ev) => { myMenuFn(ev, ...); });
-//   ev は clientX/Y/target/currentTarget/preventDefault/stopPropagation を
-//   持つ合成オブジェクト。既存の contextmenu ハンドラにそのまま渡せる。
-// ============================================================
-function addLongPressHandler(el, handler, opts = {}) {
-  const DURATION = opts.duration ?? 500;
-  const MOVE_THRESHOLD = opts.moveThreshold ?? 10;
-  let timer = null;
-  let startX = 0, startY = 0;
-  let fired = false;
-  let touchStartEv = null;
-
-  const cancel = () => {
-    if (timer) { clearTimeout(timer); timer = null; }
-  };
-
-  el.addEventListener('pointerdown', (e) => {
-    // タッチと Apple Pencil 等のペン入力のみ対象。マウスは無視
-    if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
-    if (e.button !== 0 && e.button !== undefined && e.button !== -1) return;
-    cancel();
-    fired = false;
-    startX = e.clientX;
-    startY = e.clientY;

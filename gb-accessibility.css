@@ -62,7 +62,24 @@
   background: transparent;
   border: 1px solid currentColor;
   border-radius: 4px;
+  min-width: 56px;
+  min-height: 28px;
   padding: 2px 8px;
+}
+
+@media (max-width: 640px) {
+  .meldex-browser-warning {
+    top: max(8px, env(safe-area-inset-top));
+    align-items: flex-start;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+
+  .meldex-browser-warning button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
+  }
 }
 
 html.meldex-high-contrast,

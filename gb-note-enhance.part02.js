@@ -120,6 +120,17 @@ function _saveFileThemeToDbFolderNote(theme) {
 // ============================================================
 // 5. コピーボタン（コードブロック・コールアウト）
 // ============================================================
+function _noteEnhanceRenderIcon(name, size = 14, fallback = '') {
+  return typeof lucide === 'function' ? lucide(name, size) : fallback;
+}
+
+function _noteEnhanceSetCopyButtonIcon(btn, name, label) {
+  if (!btn) return;
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+  btn.innerHTML = _noteEnhanceRenderIcon(name, 14, label);
+}
+
 function _initCopyButton() {
   document.addEventListener('mouseover', (e) => {
     const codeBlock = e.target.closest('#page-content pre, #entity-freetext pre');
@@ -130,9 +141,10 @@ function _initCopyButton() {
 
     const btn = document.createElement('button');
     btn.className = 'copy-btn';
-    btn.innerHTML = typeof lucide === 'function' ? lucide('copy', 14) : '📋';
-    btn.title = 'コピー';
+    btn.type = 'button';
+    btn.dataset.e2eId = codeBlock ? 'note-copy-button-code' : 'note-copy-button-callout';
     btn.contentEditable = 'false';
+    _noteEnhanceSetCopyButtonIcon(btn, 'copy', 'コピー');
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
@@ -140,8 +152,8 @@ function _initCopyButton() {
         ? (codeBlock.querySelector('code')?.textContent || codeBlock.textContent)
         : (callout.querySelector('.callout-body')?.textContent || callout.textContent);
       navigator.clipboard.writeText(text).then(() => {
-        btn.innerHTML = typeof lucide === 'function' ? lucide('check', 14) : '✓';
-        setTimeout(() => { btn.innerHTML = typeof lucide === 'function' ? lucide('copy', 14) : '📋'; }, 1500);
+        _noteEnhanceSetCopyButtonIcon(btn, 'check', 'コピーしました');
+        setTimeout(() => { _noteEnhanceSetCopyButtonIcon(btn, 'copy', 'コピー'); }, 1500);
       });
     });
 
@@ -634,9 +646,9 @@ function _noteTableControlButton(action, label, title) {
   btn.className = action === 'menu' ? 'note-table-cell-menu-btn' : 'note-table-cell-plus';
   btn.dataset.noteTableAction = action;
   btn.dataset.e2eId = 'note-table-cell-' + action;
-  btn.textContent = label;
   btn.title = title;
   btn.setAttribute('aria-label', title);
+  btn.innerHTML = _noteEnhanceRenderIcon(action === 'menu' ? 'moreHorizontal' : 'plus', 14, label);
   btn.contentEditable = 'false';
   btn.addEventListener('mousedown', (ev) => ev.preventDefault());
   return btn;
@@ -735,15 +747,21 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
   document.querySelectorAll('.table-cell-menu, .gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'table-cell-menu gb-context-menu';
-  menu.style.cssText = 'position:fixed;z-index:10030;background:var(--ui-popup-bg, var(--bg2));border:1px solid var(--border);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.3);padding:4px 0;min-width:150px;font-size:12px;';
+  menu.dataset.e2eId = 'note-table-cell-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', '表の操作メニュー');
 
   const mkItem = (id, label, handler, danger = false) => {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'gb-context-menu-item' + (danger ? ' danger' : '');
     item.dataset.e2eId = 'note-table-cell-menu-' + id;
-    item.style.cssText = 'width:100%;border:0;background:transparent;text-align:left;font:inherit;';
-    item.textContent = label;
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('aria-label', label);
+    const labelEl = document.createElement('span');
+    labelEl.className = 'gb-context-menu-item-label';
+    labelEl.textContent = label;
+    item.appendChild(labelEl);
     item.addEventListener('click', async (ev) => {
       ev.preventDefault();
       ev.stopPropagation();

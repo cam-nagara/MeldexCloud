@@ -10,6 +10,8 @@
   let _detailRequestSeq = 0;
   let _conflictTotal = 0;
   let _conflictTruncated = false;
+  let _restoreFocusTo = null;
+  let _keyHandler = null;
 
   function _api() {
     return window.MeldexDataAccess;
@@ -220,6 +222,9 @@
     _conflicts.forEach((item) => {
       const button = _el('button', 'cloud-conflict-list-item');
       button.type = 'button';
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', item.path === _selectedPath ? 'true' : 'false');
+      button.setAttribute('aria-label', `${item.name || _basename(item.path)} ${item.path || ''}`.trim());
       if (item.path === _selectedPath) button.classList.add('active');
       button.appendChild(_el('span', 'cloud-conflict-list-name', item.name || _basename(item.path)));
       button.appendChild(_el('span', 'cloud-conflict-list-path', item.path || ''));
@@ -313,7 +318,7 @@
     const button = _overlay?.querySelector?.(`[data-conflict-action="${action}"]`);
     if (button?.disabled) return;
     const label = action === 'keep_original' ? '元ファイル' : (action === 'merge_sqlite_sheet' ? 'シートのマージ結果' : '競合コピー');
-    const ok = confirm(`${label}を残して競合を解消します。解消前のファイルは _meldex/conflict-backups に保存されます。続行しますか？`);
+    const ok = await _confirmResolve(label);
     if (!ok) return;
     _setStatus('解消中...');
     _setResolveButtonState(null, true);
@@ -358,22 +363,45 @@
     }
   }
 
+  async function _confirmResolve(label) {
+    const message = `${label}を残して競合を解消します。解消前のファイルは _meldex/conflict-backups に保存されます。続行しますか？`;
+    if (typeof window.cfConfirm === 'function') {
+      return !!await window.cfConfirm(message, { danger: true, okLabel: '解消', cancelLabel: 'キャンセル' });
+    }
+    return typeof window.confirm === 'function' ? !!window.confirm(message) : false;
+  }
+
   function _buildShell() {
     const overlay = _el('div', 'cloud-conflict-resolver-overlay');
     const dialog = _el('section', 'cloud-conflict-resolver');
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'cloud-conflict-title');
+    dialog.setAttribute('aria-describedby', 'cloud-conflict-status');
+    dialog.tabIndex = -1;
 
     const header = _el('div', 'cloud-conflict-header');
-    header.appendChild(_el('div', 'cloud-conflict-title', 'Dropbox 競合解消'));
-    header.appendChild(_el('div', 'cloud-conflict-status', ''));
+    const title = _el('div', 'cloud-conflict-title', 'Dropbox 競合解消');
+    title.id = 'cloud-conflict-title';
+    header.appendChild(title);
+    const status = _el('div', 'cloud-conflict-status', '');
+    status.id = 'cloud-conflict-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    header.appendChild(status);
     const closeBtn = _el('button', 'cloud-conflict-btn', '閉じる');
     closeBtn.type = 'button';
+    closeBtn.dataset.conflictClose = '1';
+    closeBtn.setAttribute('aria-label', '競合解消を閉じる');
+    closeBtn.title = '閉じる';
     closeBtn.addEventListener('click', close);
     header.appendChild(closeBtn);
 
     const body = _el('div', 'cloud-conflict-body');
-    body.appendChild(_el('div', 'cloud-conflict-list'));
+    const list = _el('div', 'cloud-conflict-list');
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', '競合コピー一覧');
+    body.appendChild(list);
 
     const detail = _el('div', 'cloud-conflict-detail');
     const meta = _el('div', 'cloud-conflict-meta');
@@ -386,14 +414,22 @@
 
     const compare = _el('div', 'cloud-conflict-compare');
     const originalPane = _el('section', 'cloud-conflict-pane');
-    originalPane.appendChild(_el('div', 'cloud-conflict-pane-title', '元ファイル'));
+    originalPane.setAttribute('aria-labelledby', 'cloud-conflict-original-title');
+    const originalTitle = _el('div', 'cloud-conflict-pane-title', '元ファイル');
+    originalTitle.id = 'cloud-conflict-original-title';
+    originalPane.appendChild(originalTitle);
     const originalCode = _el('pre', 'cloud-conflict-code');
     originalCode.dataset.conflictPane = 'original';
+    originalCode.setAttribute('aria-label', '元ファイルの内容');
     originalPane.appendChild(originalCode);
     const conflictPane = _el('section', 'cloud-conflict-pane');
-    conflictPane.appendChild(_el('div', 'cloud-conflict-pane-title', '競合コピー'));
+    conflictPane.setAttribute('aria-labelledby', 'cloud-conflict-copy-title');
+    const conflictTitle = _el('div', 'cloud-conflict-pane-title', '競合コピー');
+    conflictTitle.id = 'cloud-conflict-copy-title';
+    conflictPane.appendChild(conflictTitle);
     const conflictCode = _el('pre', 'cloud-conflict-code');
     conflictCode.dataset.conflictPane = 'conflict';
+    conflictCode.setAttribute('aria-label', '競合コピーの内容');
     conflictPane.appendChild(conflictCode);
     compare.appendChild(originalPane);
     compare.appendChild(conflictPane);
@@ -404,18 +440,22 @@
     const footer = _el('div', 'cloud-conflict-footer');
     const deferBtn = _el('button', 'cloud-conflict-btn', '後回し');
     deferBtn.type = 'button';
+    deferBtn.setAttribute('aria-label', '競合解消を後回しにする');
     deferBtn.addEventListener('click', snooze);
     const keepOriginalBtn = _el('button', 'cloud-conflict-btn', '元ファイルを残す');
     keepOriginalBtn.type = 'button';
     keepOriginalBtn.dataset.conflictAction = 'keep_original';
+    keepOriginalBtn.setAttribute('aria-label', '元ファイルを残して競合を解消');
     keepOriginalBtn.addEventListener('click', () => _resolve('keep_original'));
     const mergeSqliteBtn = _el('button', 'cloud-conflict-btn', 'シートをマージ');
     mergeSqliteBtn.type = 'button';
     mergeSqliteBtn.dataset.conflictAction = 'merge_sqlite_sheet';
+    mergeSqliteBtn.setAttribute('aria-label', 'SQLiteシートをマージして競合を解消');
     mergeSqliteBtn.addEventListener('click', () => _resolve('merge_sqlite_sheet'));
     const keepConflictBtn = _el('button', 'cloud-conflict-btn primary', '競合コピーを残す');
     keepConflictBtn.type = 'button';
     keepConflictBtn.dataset.conflictAction = 'keep_conflict';
+    keepConflictBtn.setAttribute('aria-label', '競合コピーを残して競合を解消');
     keepConflictBtn.addEventListener('click', () => _resolve('keep_conflict'));
     footer.appendChild(deferBtn);
     footer.appendChild(keepOriginalBtn);
@@ -434,8 +474,18 @@
 
   async function open(seed) {
     if (_overlay) close();
+    _restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     _overlay = _buildShell();
     document.body.appendChild(_overlay);
+    _keyHandler = (event) => {
+      if (event.key === 'Escape' && _overlay) {
+        if (document.querySelector('.modal-overlay .gb-confirm')) return;
+        event.preventDefault();
+        close();
+      }
+    };
+    document.addEventListener('keydown', _keyHandler);
+    _overlay.querySelector('.cloud-conflict-resolver')?.focus?.({ preventScroll: true });
     _setStatus('競合を検索中...');
     _setResolveButtonState(null);
     _clearMeta('競合を選択してください');
@@ -454,13 +504,21 @@
   }
 
   function close() {
+    const focusTarget = _restoreFocusTo;
+    if (_keyHandler) document.removeEventListener('keydown', _keyHandler);
+    _keyHandler = null;
     if (_overlay) _overlay.remove();
     _overlay = null;
+    _restoreFocusTo = null;
     _conflicts = [];
     _selectedPath = '';
     _conflictTotal = 0;
     _conflictTruncated = false;
     _detailRequestSeq += 1;
+    if (focusTarget?.isConnected) {
+      if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(focusTarget);
+      else focusTarget.focus?.({ preventScroll: true });
+    }
   }
 
   window.MeldexCloudConflictResolver = {

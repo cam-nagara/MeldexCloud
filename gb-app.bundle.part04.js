@@ -1,3 +1,218 @@
+// フォルダ別ロールを保持（DB列ロック等で参照）
+let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
+const _myTeamRoles = {};     // { folderPath: role }
+
+async function _syncMyTeamProfile() {
+  try { await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(); } catch {}
+  const name = getUsername();
+  if (!name || name === 'anonymous') return;
+  const avatar = localStorage.getItem('meldex-avatar') || '';
+  const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncWorkspaceProfiles = async () => {
+    try {
+      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
+        ? await window.MeldexWorkspaces.load({ force: true })
+        : [];
+      for (const workspace of workspaces || []) {
+        if (!workspace?.id) continue;
+        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+      }
+      await window.MeldexWorkspaces?.load?.({ force: true });
+    } catch {}
+  };
+  // 全ソースフォルダに同期
+  try {
+    const roots = await apiFetch('/outliner-roots').catch(() => []);
+    const visibleRoots = roots.filter(r => r.visible && r.path);
+    if (visibleRoots.length === 0) {
+      // ソースフォルダなし → デフォルトvaultに同期
+      try {
+        await apiPost('/team/sync', teamPayload());
+        const members = await apiFetch('/team');
+        const me = members.find(m => m.name === name);
+        if (me) _myTeamRole = me.role || 'editor';
+      } catch {}
+      await syncWorkspaceProfiles();
+      return;
+    }
+    for (const root of visibleRoots) {
+      try {
+        await apiPost('/team/sync', teamPayload({ folder: root.path }));
+        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
+        const me = members.find(m => m.name === name);
+        if (me) _myTeamRoles[root.path] = me.role || 'editor';
+      } catch {}
+    }
+    // デフォルトロール = 最初の可視ソースフォルダのロール
+    const firstRole = _myTeamRoles[visibleRoots[0].path];
+    if (firstRole) _myTeamRole = firstRole;
+    await syncWorkspaceProfiles();
+  } catch {}
+}
+
+let _startupSplashHidden = false;
+function _hideStartupSplash() {
+  if (_startupSplashHidden) return;
+  _startupSplashHidden = true;
+  const splash = document.getElementById('gb-splash');
+  if (!splash) return;
+  splash.style.pointerEvents = 'none';
+  splash.style.transition = 'opacity 0.3s';
+  splash.style.opacity = '0';
+  setTimeout(() => splash.remove(), 300);
+}
+
+function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
+  if (!timeout) return Promise.resolve(promise);
+  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
+      }
+      if (typeof _sendLog === 'function') {
+        _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
+      }
+      resolve(fallbackValue);
+    }, timeout);
+    Promise.resolve(promise).then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
+      resolve(value);
+    }).catch((error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.error.' + label, startedAt, {
+          timeoutMs: timeout,
+          error: error?.message || String(error),
+        });
+      }
+      reject(error);
+    });
+  });
+}
+
+function _runStartupBackground(label, promise, onReady) {
+  Promise.resolve(promise)
+    .then((value) => {
+      if (typeof onReady === 'function') onReady(value);
+      return value;
+    })
+    .catch((error) => {
+      console.warn(`[Meldex] startup background task failed: ${label}`, error);
+      if (typeof _sendLog === 'function') {
+        _sendLog('warn', {
+          message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
+          stack: error?.stack || '',
+        });
+      }
+      return null;
+    });
+}
+
+function _refreshOutlinerAfterStartupReady() {
+  try {
+    const outlinerOptions = {
+      coalesce: true,
+      skipIfRecentlyLoaded: true,
+      reason: 'startup-ready',
+    };
+    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
+    const refreshJobs = [];
+    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
+    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    return Promise.allSettled(refreshJobs);
+  } catch (error) {
+    console.warn('[Meldex] startup outliner refresh failed:', error);
+    return Promise.resolve(null);
+  }
+}
+
+function _highlightLastOutlinerNodeAfterStartup() {
+  setTimeout(() => {
+    const last = _readLastViewFromStorage();
+    if (!last) return;
+    const p = last.path || last.dbPath || last.entityPath || '';
+    if (p) highlightOutlinerNode(p);
+  }, 500);
+}
+
+function _readLastViewFromStorage() {
+  try {
+    return JSON.parse(localStorage.getItem('lastView') || 'null');
+  } catch {
+    localStorage.removeItem('lastView');
+    return null;
+  }
+}
+
+function _repairStartupDatabaseViewTabs() {
+  try {
+    if (!state.currentDbPath || typeof _renderDbViewTabsSafely !== 'function') return;
+    const tabs = document.getElementById('db-view-tabs') || document.querySelector('.db-view-tabs');
+    if (!tabs) return;
+    if (tabs.querySelector('[data-e2e-id^="db-view-add-"]')) return;
+    _renderDbViewTabsSafely(typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  } catch {}
+}
+
+function _scheduleStartupDatabaseViewTabsRepair() {
+  [0, 80, 250].forEach(delay => setTimeout(_repairStartupDatabaseViewTabs, delay));
+}
+
+async function _restoreStartupBoardView(label, path, opts) {
+  const openOpts = opts || {};
+  const boardLabel = label || String(path || '').split(/[\\/]/).pop() || '';
+  if (typeof GBPaneBridge !== 'undefined'
+    && GBPaneBridge?.initialized
+    && typeof GBLayout !== 'undefined'
+    && typeof GBTabs !== 'undefined'
+    && typeof navPush === 'function') {
+    state.view = 'board';
+    state.currentBoardPath = path;
+    navPush({ type: 'board', label: boardLabel, path });
+    if (typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
+      GBPaneBridge.refreshPaneAfterTabSwitch(GBLayout.activePane, { force: true });
+    }
+    if (!openOpts.skipSaveLastView) saveLastView({ type: 'board', label: boardLabel, path });
+    if (!openOpts.skipRecent && typeof addRecent === 'function') addRecent(boardLabel, path, 'board');
+    if (!openOpts.skipHighlight && typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
+    if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
+    return true;
+  }
+  const opened = typeof openBoard === 'function' ? await openBoard(boardLabel, path, openOpts) : false;
+  return opened !== false;
+}
+
+// 特定フォルダ内のパスに対するロールを取得
+function getMyRoleForPath(filePath) {
+  if (!filePath) return _myTeamRole;
+  const normFile = String(filePath).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  let matchedRole = '';
+  let matchedLength = -1;
+  for (const [folder, role] of Object.entries(_myTeamRoles)) {
+    const norm = String(folder || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!norm) continue;
+    if ((normFile === norm || normFile.startsWith(norm + '/')) && norm.length > matchedLength) {
+      matchedRole = role;
+      matchedLength = norm.length;
+    }
+  }
+  return matchedRole || _myTeamRole;
+}
+
 // doLogin / ログイン画面は廃止（チーム方式に移行）
 
 // localStorage移行（旧CrossFolio → Meldex、一度だけ実行）
@@ -364,25 +579,106 @@ function showView(viewName, ctx) {
 }
 // スクリーンショットメニュー
 function showScreenshotMenu(e) {
+  const btn = e?.target?.closest?.('button') || e?.target;
   const existing = document.querySelector('.ab-dropdown.ss-menu');
-  if (existing) { existing.remove(); return; }
+  if (existing) {
+    existing.remove();
+    btn?.setAttribute?.('aria-expanded', 'false');
+    return;
+  }
   const menu = document.createElement('div');
   menu.className = 'ab-dropdown ss-menu';
-  function addItem(label, fn) { const item = document.createElement('div'); item.className = 'ab-dropdown-item'; item.textContent = label; item.addEventListener('click', () => { menu.remove(); fn(); }); menu.appendChild(item); }
-  function addSep() { const s = document.createElement('div'); s.className = 'ab-dropdown-sep'; menu.appendChild(s); }
-  addItem('全画面キャプチャ', () => captureScreenshot('full'));
-  addItem('範囲選択キャプチャ', () => captureScreenshot('region'));
+  menu.id = 'screenshot-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スクリーンショット');
+  if (btn?.setAttribute) {
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'true');
+    btn.setAttribute('aria-controls', menu.id);
+  }
+  let closed = false;
+  let pointerCloser = null;
+  let keyCloser = null;
+  const closeMenu = (restoreFocus = false) => {
+    if (closed) return;
+    closed = true;
+    if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
+    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
+    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
+    menu.remove();
+    if (restoreFocus) btn?.focus?.();
+  };
+  function addItem(label, fn, mode) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
+    if (mode) item.dataset.screenshotMode = mode;
+    item.textContent = label;
+    item.addEventListener('click', () => { closeMenu(false); fn(); });
+    menu.appendChild(item);
+  }
+  function addSep() {
+    const s = document.createElement('div');
+    s.className = 'ab-dropdown-sep';
+    s.setAttribute('role', 'separator');
+    menu.appendChild(s);
+  }
+  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
+  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
   addSep();
-  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'));
-  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'));
+  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
+  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
   addSep();
   addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
   document.body.appendChild(menu);
-  const btn = e.target.closest('button') || e.target;
-  const rect = btn.getBoundingClientRect();
-  { const z = _getZoom(); menu.style.left = (rect.right / z + 4) + 'px'; menu.style.top = (rect.top / z) + 'px'; }
-  requestAnimationFrame(() => { const z = _getZoom(); const mr = menu.getBoundingClientRect(); if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px'; if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px'; });
-  setTimeout(() => { document.addEventListener('pointerdown', function closer(ev) { if (!menu.contains(ev.target) && !btn.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } }); }, 0);
+  const placeMenu = () => {
+    if (!btn?.getBoundingClientRect) return;
+    const rect = btn.getBoundingClientRect();
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
+      return;
+    }
+    const z = _getZoom();
+    menu.style.left = (rect.right / z + 4) + 'px';
+    menu.style.top = (rect.top / z) + 'px';
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
+      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
+    });
+  };
+  placeMenu();
+  menu.addEventListener('keydown', (ev) => {
+    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
+    const index = items.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const delta = ev.key === 'ArrowDown' ? 1 : -1;
+      items[(index + delta + items.length) % items.length]?.focus();
+    } else if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0]?.focus();
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items.at(-1)?.focus();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  });
+  pointerCloser = (ev) => {
+    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
+  };
+  keyCloser = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  };
+  document.addEventListener('pointerdown', pointerCloser, true);
+  document.addEventListener('keydown', keyCloser, true);
+  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
 }
 
 function _screenshotModeIsRegion(mode) {
@@ -436,32 +732,31 @@ function _cropScreenshotCanvas(canvas, region) {
 
 function _selectScreenshotRegionFromCanvas(canvas) {
   return new Promise(resolve => {
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay screenshot-region-overlay';
+    overlay.dataset.modalShell = 'off';
+    overlay.dataset.e2eId = 'screenshot-region-overlay';
     overlay.style.zIndex = '5000';
-    overlay.style.background = 'rgba(0,0,0,0.68)';
-    overlay.style.display = 'flex';
-    overlay.style.alignItems = 'center';
-    overlay.style.justifyContent = 'center';
 
     const shell = document.createElement('div');
     shell.className = 'screenshot-region-shell';
-    shell.style.display = 'flex';
-    shell.style.flexDirection = 'column';
-    shell.style.gap = '8px';
-    shell.style.maxWidth = '94vw';
-    shell.style.maxHeight = '92vh';
+    shell.dataset.e2eId = 'screenshot-region-shell';
+    shell.tabIndex = -1;
+    shell.setAttribute('role', 'dialog');
+    shell.setAttribute('aria-modal', 'true');
+    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
 
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
-    stage.style.position = 'relative';
-    stage.style.overflow = 'hidden';
-    stage.style.background = '#111';
-    stage.style.border = '1px solid rgba(255,255,255,0.35)';
-    stage.style.cursor = 'crosshair';
-    stage.style.touchAction = 'none';
+    stage.dataset.e2eId = 'screenshot-region-stage';
+    stage.tabIndex = 0;
+    stage.setAttribute('role', 'group');
+    stage.setAttribute('aria-label', '保存する範囲');
 
     const preview = document.createElement('canvas');
+    preview.className = 'screenshot-region-preview';
+    preview.setAttribute('aria-hidden', 'true');
     preview.width = canvas.width;
     preview.height = canvas.height;
     preview.getContext('2d').drawImage(canvas, 0, 0);
@@ -470,30 +765,26 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
     preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
     preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
-    preview.style.display = 'block';
 
     const selection = document.createElement('div');
     selection.className = 'screenshot-region-selection';
-    selection.style.position = 'absolute';
-    selection.style.border = '2px solid #fff';
-    selection.style.boxShadow = '0 0 0 9999px rgba(0,0,0,0.35)';
-    selection.style.pointerEvents = 'none';
+    selection.setAttribute('aria-hidden', 'true');
     selection.style.display = 'none';
 
     const actions = document.createElement('div');
     actions.className = 'screenshot-region-actions';
-    actions.style.display = 'flex';
-    actions.style.justifyContent = 'flex-end';
-    actions.style.gap = '8px';
+    actions.setAttribute('aria-label', '範囲選択の操作');
 
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'screenshot-region-cancel';
     cancel.textContent = 'キャンセル';
 
     const ok = document.createElement('button');
     ok.type = 'button';
     ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.dataset.e2eId = 'screenshot-region-save';
     ok.textContent = '保存';
 
     actions.append(cancel, ok);
@@ -505,10 +796,16 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     let start = null;
     let current = null;
     let activePointerId = null;
+    let cleaned = false;
 
     const cleanup = (value) => {
+      if (cleaned) return;
+      cleaned = true;
       overlay.remove();
       document.removeEventListener('keydown', onKeyDown);
+      if (restoreFocusTo?.isConnected && !restoreFocusTo.closest?.('.screenshot-region-overlay')) {
+        restoreFocusTo.focus?.();
+      }
       resolve(value);
     };
     const pointFromEvent = (ev) => {
@@ -555,16 +852,20 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       };
     };
     function onKeyDown(ev) {
-      if (ev.key === 'Escape') cleanup(null);
-      if (ev.key === 'Enter') {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        cleanup(null);
+      } else if (ev.key === 'Enter') {
         const region = canvasRegion();
         if (region) cleanup(region);
       }
     }
     stage.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
+      ev.preventDefault();
+      stage.focus?.();
       activePointerId = ev.pointerId;
-      stage.setPointerCapture?.(ev.pointerId);
+      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
       start = pointFromEvent(ev);
       current = start;
       updateSelection();
@@ -577,7 +878,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     stage.addEventListener('pointerup', (ev) => {
       if (activePointerId == null || ev.pointerId !== activePointerId) return;
       current = pointFromEvent(ev);
-      stage.releasePointerCapture?.(ev.pointerId);
+      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
       activePointerId = null;
       updateSelection();
     });
@@ -594,307 +895,6 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       cleanup(region);
     });
     document.addEventListener('keydown', onKeyDown);
-    ok.focus();
+    shell.focus();
   });
 }
-
-async function captureScreenshot(mode) {
-  let stream = null;
-  let hideState = null;
-  try {
-    const hideFirst = mode.includes('hide');
-    if (hideFirst) hideState = await _hideMeldexWindowForScreenshot();
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'monitor' } });
-    const video = document.createElement('video');
-    const loaded = new Promise((resolve, reject) => {
-      video.onloadeddata = resolve;
-      video.onerror = () => reject(new Error('画面キャプチャ映像を読み込めませんでした'));
-    });
-    video.srcObject = stream;
-    await video.play();
-    await loaded;
-    await new Promise(r => setTimeout(r, 200));
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0);
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-    if (hideFirst) {
-      await _restoreMeldexWindowForScreenshot(hideState);
-      hideState = null;
-    }
-    let outputCanvas = canvas;
-    if (_screenshotModeIsRegion(mode)) {
-      const region = await _selectScreenshotRegionFromCanvas(canvas);
-      if (!region) return;
-      outputCanvas = _cropScreenshotCanvas(canvas, region);
-    }
-    const b64 = outputCanvas.toDataURL('image/png');
-    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: '_screenshots' });
-    if (res.path) {
-      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
-      const viewerUrl = window.MeldexResourceUrl?.viewer
-        ? window.MeldexResourceUrl.viewer({ file: res.path, markup: 1 })
-        : ('/viewer?file=' + encodeURIComponent(res.path) + '&markup=1');
-      window.open(viewerUrl, '_blank');
-    }
-  } catch (e) {
-    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
-  } finally {
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
-  }
-}
-
-// モバイル: スワイプでサイドバー開閉
-(function() {
-  let touchStartX = 0, touchStartY = 0;
-  document.addEventListener('touchstart', (e) => {
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-  }, { passive: true });
-  document.addEventListener('touchend', (e) => {
-    if (window.innerWidth > 768) return;
-    const dx = e.changedTouches[0].clientX - touchStartX;
-    const dy = e.changedTouches[0].clientY - touchStartY;
-    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
-    const sidebar = document.getElementById('sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
-      // 左端から右スワイプ → サイドバー開く
-      sidebar.classList.add('open');
-      if (backdrop) {
-        backdrop.classList.add('open');
-        backdrop.style.setProperty('display', 'block', 'important');
-      }
-    } else if (dx < 0 && sidebar.classList.contains('open')) {
-      // 左スワイプ → サイドバー閉じる
-      sidebar.classList.remove('open');
-      if (backdrop) {
-        backdrop.classList.remove('open');
-        backdrop.style.setProperty('display', 'none', 'important');
-      }
-    }
-  }, { passive: true });
-})();
-
-/* ==============================
-   ステータスバー
-   ============================== */
-// メッセージ先頭行をタイトル、残りを本文として HTML を組み立てる。
-// 単一行メッセージは従来通り本文 div のみ表示し、複数行のみタイトル化する。
-function _buildCfDialogBody(message) {
-  const text = String(message ?? '');
-  if (!text) return '';
-  // v0.5.250: .gb-confirm-message クラスに統一 (CSS で line-height / white-space / word-break を一括指定)。
-  // 複数行メッセージでは先頭行を強調表示 (font-weight) し、以降を本文として扱う。
-  const lines = text.split('\n');
-  if (lines.length < 2) {
-    return `<div class="gb-confirm-message">${esc(text)}</div>`;
-  }
-  const title = (lines.shift() || '').trim();
-  const body = lines.join('\n').trim();
-  let html = '';
-  if (title) html += `<div class="gb-confirm-message" style="font-weight:600;">${esc(title)}</div>`;
-  if (body) html += `<div class="gb-confirm-message" style="color:var(--ui-fg-muted);">${esc(body)}</div>`;
-  return html;
-}
-
-// v0.5.250: cf ダイアログは .modal (大型殻) から .gb-confirm (コンパクト殻) に統一。
-// - ヘッダー / フッター分割なし (短い問いかけ専用)
-// - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
-// - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
-function _cfIsDeleteMessage(text) {
-  // 破壊的操作を示唆するキーワード。
-  // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
-  // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。
-  return /削除|破棄|除去|消去|初期化|リセット|を空に|デフォルト.{0,8}戻/.test(String(text || ''));
-}
-
-// カスタムalertダイアログ（alert()の代替、画面中央モーダル）
-function cfAlert(message, options) {
-  const opts = options || {};
-  const okLabel = opts.okLabel || 'OK';
-  const showSupport = opts.support !== false && /HTTP\s+\d{3}|Error|エラー|失敗|例外/.test(String(message || ''));
-  const supportButton = showSupport
-    ? '<button id="_gb-support" class="gb-btn gb-btn-sm">サポートに送信</button>'
-    : '';
-  return new Promise(resolve => {
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="alertdialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <div class="gb-confirm-actions">
-        ${supportButton}
-        <button id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    const cleanup = () => { o.remove(); document.removeEventListener('keydown', kh); resolve(); };
-    function kh(e) { if (e.key === 'Enter' || e.key === 'Escape') cleanup(); }
-    o.querySelector('#_gb-ok').addEventListener('click', cleanup);
-    o.querySelector('#_gb-support')?.addEventListener('click', () => {
-      window.MeldexDiagnostics?.showSupportDialog?.(new Error(String(message || '')), { kind: 'cfAlert' });
-    });
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(); });
-    document.addEventListener('keydown', kh);
-    o.querySelector('#_gb-ok').focus();
-  });
-}
-
-// カスタムconfirmダイアログ（confirm()の代替、画面中央モーダル）
-// options: { danger?: boolean, okLabel?: string, cancelLabel?: string }
-function cfConfirm(message, options) {
-  const opts = options || {};
-  const autoDanger = _cfIsDeleteMessage(message);
-  const isDanger = opts.danger !== undefined ? !!opts.danger : autoDanger;
-  const defaultOk = isDanger ? (autoDanger && /削除/.test(String(message)) ? '削除' : '実行') : '決定';
-  const okLabel = opts.okLabel || defaultOk;
-  const cancelLabel = opts.cancelLabel || 'キャンセル';
-  const okVariant = isDanger ? 'gb-btn-danger' : 'gb-btn-primary';
-  return new Promise(resolve => {
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="alertdialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <div class="gb-confirm-actions">
-        <button id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
-        <button id="_gb-ok" class="gb-btn gb-btn-sm ${okVariant}">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    const cleanup = (val) => { o.remove(); document.removeEventListener('keydown', kh); resolve(val); };
-    function kh(e) {
-      if (e.key === 'Escape') { cleanup(false); return; }
-      // 通常モードは Enter = OK のショートカット。
-      // danger モードは誤操作防止のため Enter のショートカットを無効化し、
-      // フォーカスされたボタン (初期は cancel) の自然な Enter 起動に任せる。
-      if (e.key === 'Enter' && !isDanger) {
-        const active = document.activeElement;
-        if (active?.id === '_gb-cancel' || active?.id === '_gb-ok') return;
-        cleanup(true);
-      }
-    }
-    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(true));
-    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(false));
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(false); });
-    document.addEventListener('keydown', kh);
-    // danger 時は誤操作防止のため cancel に初期フォーカス、それ以外は ok
-    o.querySelector(isDanger ? '#_gb-cancel' : '#_gb-ok').focus();
-  });
-}
-
-// カスタムpromptダイアログ（prompt()の代替）
-function cfPrompt(message, defaultValue, options) {
-  const opts = options || {};
-  const okLabel = opts.okLabel || '決定';
-  const cancelLabel = opts.cancelLabel || 'キャンセル';
-  return new Promise(resolve => {
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="dialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <input type="text" id="_gb-prompt-input" class="gb-confirm-input" value="${esc(defaultValue ?? '')}">
-      <div class="gb-confirm-actions">
-        <button id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
-        <button id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    const input = o.querySelector('#_gb-prompt-input');
-    const cleanup = (val) => { o.remove(); resolve(val); };
-    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(input.value));
-    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(null));
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(null); });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') cleanup(input.value); if (e.key === 'Escape') cleanup(null); });
-    input.focus();
-    input.select();
-  });
-}
-
-// showStatus() は meldex-core.js で定義済み（nullチェック付き）
-
-// xlsx取込: ファイル選択 → 新規台本作成 → 台本エディタで開く
-function importXlsxToOutliner() {
-  document.getElementById('xlsx-import-input').click();
-}
-
-function _readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function handleXlsxImportToOutliner(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = '';
-  if (!/\.xlsx$/i.test(file.name)) {
-    showStatus('xlsx取込は .xlsx ファイルを選択してください', true);
-    return;
-  }
-
-  // ファイル名（拡張子なし）を台本名にする
-  const baseName = file.name.replace(/\.xlsx$/i, '');
-
-  try {
-    const data = await _readFileAsDataUrl(file);
-    const res = await apiPost('/import-xlsx-scriptnote', {
-      filename: file.name,
-      title: baseName,
-      data,
-    });
-    const scriptnotePath = res.path || res.node?.path;
-    const label = res.label || baseName;
-
-    // 台本エディタで開く
-    if (scriptnotePath && typeof openScenarioInScriptNote === 'function') {
-      openScenarioInScriptNote(scriptnotePath, label);
-    }
-
-    // フォルダツリーをリロード
-    await loadOutliner();
-    showStatus(`xlsx取込: ${label}`);
-  } catch (err) {
-    showStatus('xlsx取込に失敗しました: ' + err.message, true);
-  }
-}
-
-// Phase C: ボードエンジンはgb-canvas-engine.js + gb-canvas-features.js + gb-canvas-interact.js に移行済み
-// bd オブジェクトは gb-canvas-engine.js で定義
-
-// グローバルdrop防止（未処理エリアへのドロップでブラウザがファイルを開くのを防ぐ）
-document.addEventListener('dragover', (e) => { e.preventDefault(); }, false);
-document.addEventListener('drop', (e) => {
-  // 個別ハンドラでpreventDefaultされていない場合のみ（フォールバック）
-  if (!e.defaultPrevented) e.preventDefault();
-}, false);
-
-/* === gb-app.part03.js === */
-// timeline-view(カレンダー)へのD&Dドロップ（ファイルから新規イベント作成）
-function _appLocalDateTimeInputValue(date) {
-  if (typeof formatLocalDateTime === 'function') return formatLocalDateTime(date);
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function _appShouldHandleStandaloneCalendarDrop() {
-  return state.view === 'timeline'
-    && !state.currentDbPath
-    && typeof _showCalEventInDetailPanel === 'function';
-}
-
-{
-  const tv = document.getElementById('timeline-view');
-  if (tv) tv.addEventListener('dragover', (e) => {
-    if (e.dataTransfer.types.includes('application/x-meldex-node') && _appShouldHandleStandaloneCalendarDrop()) e.preventDefault();
-  });
-  if (tv) tv.addEventListener('drop', (e) => {
-    if (!_appShouldHandleStandaloneCalendarDrop()) return;

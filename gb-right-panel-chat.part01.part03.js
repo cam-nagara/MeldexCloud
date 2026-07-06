@@ -614,17 +614,21 @@ function chatEditUserMessage(index) {
   bubble.style.boxSizing = 'border-box';
   bubble.style.whiteSpace = 'normal';
   const textarea = document.createElement('textarea');
+  textarea.className = 'chat-message-edit-textarea';
   textarea.value = original;
   textarea.rows = Math.min(10, Math.max(3, original.split('\n').length + 1));
   textarea.style.cssText = 'display:block;width:100%;min-width:0;box-sizing:border-box;background:rgba(255,255,255,0.08);color:inherit;border:1px solid rgba(255,255,255,0.35);border-radius:6px;padding:6px;font:inherit;resize:vertical;';
   const actions = document.createElement('div');
+  actions.className = 'chat-message-edit-actions';
   actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap;';
   const cancel = document.createElement('button');
   cancel.type = 'button';
+  cancel.className = 'chat-message-edit-cancel';
   cancel.textContent = 'キャンセル';
   cancel.style.cssText = 'font-size:11px;padding:2px 8px;background:transparent;color:inherit;border:1px solid rgba(255,255,255,0.35);border-radius:4px;cursor:pointer;';
   const save = document.createElement('button');
   save.type = 'button';
+  save.className = 'chat-message-edit-save';
   save.textContent = '保存して再送';
   save.style.cssText = 'font-size:11px;padding:2px 8px;background:rgba(255,255,255,0.18);color:inherit;border:1px solid rgba(255,255,255,0.45);border-radius:4px;cursor:pointer;';
   actions.append(cancel, save);
@@ -715,6 +719,7 @@ function chatAddMessage(role, content, options = {}) {
     cancelBtn.setAttribute('aria-label', '保留を取り消す');
     cancelBtn.disabled = !!_chatState.queuedSendRunning;
     cancelBtn.dataset.chatQueuedCancelId = String(options?.queuedMessageId || msgId || '');
+    cancelBtn.dataset.e2eId = 'chat-message-queued-cancel-' + (options?.queuedMessageId || msgId || 'unknown');
     cancelBtn.innerHTML = lucide('x', 12);
     cancelBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;background:transparent;color:var(--fg2);border:none;border-radius:4px;cursor:pointer;padding:0;';
     cancelBtn.addEventListener('click', (event) => {
@@ -729,6 +734,7 @@ function chatAddMessage(role, content, options = {}) {
     copyBtn.title = 'メッセージをコピー';
     copyBtn.setAttribute('aria-label', 'メッセージをコピー');
     copyBtn.dataset.chatCopyIndex = String(options.messageIndex);
+    copyBtn.dataset.e2eId = 'chat-message-copy-' + options.messageIndex;
     copyBtn.innerHTML = _chatCopyIconHtml(12);
     copyBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;background:transparent;color:var(--fg2);border:none;border-radius:4px;cursor:pointer;padding:0;';
     copyBtn.addEventListener('click', (event) => {
@@ -744,6 +750,7 @@ function chatAddMessage(role, content, options = {}) {
     deleteBtn.setAttribute('aria-label', 'メッセージを削除');
     deleteBtn.disabled = !!_chatState.streaming;
     deleteBtn.dataset.chatDeleteIndex = String(options.messageIndex);
+    deleteBtn.dataset.e2eId = 'chat-message-delete-' + options.messageIndex;
     deleteBtn.innerHTML = lucide('trash2', 12);
     deleteBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;background:transparent;color:var(--fg2);border:none;border-radius:4px;cursor:pointer;padding:0;';
     deleteBtn.addEventListener('click', (event) => {
@@ -759,6 +766,7 @@ function chatAddMessage(role, content, options = {}) {
     regenBtn.setAttribute('aria-label', '再生成');
     regenBtn.disabled = !!_chatState.streaming;
     regenBtn.dataset.chatRegenerateIndex = String(options.messageIndex);
+    regenBtn.dataset.e2eId = 'chat-message-regenerate-' + options.messageIndex;
     regenBtn.innerHTML = lucide('refreshCw', 12);
     regenBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;background:transparent;color:var(--fg2);border:none;border-radius:4px;cursor:pointer;padding:0;';
     regenBtn.addEventListener('click', (event) => {
@@ -774,6 +782,7 @@ function chatAddMessage(role, content, options = {}) {
     editBtn.setAttribute('aria-label', '編集して再送');
     editBtn.disabled = !!_chatState.streaming;
     editBtn.dataset.chatEditIndex = String(options.messageIndex);
+    editBtn.dataset.e2eId = 'chat-message-edit-' + options.messageIndex;
     editBtn.innerHTML = lucide('pencil', 12);
     editBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;background:transparent;color:var(--fg2);border:none;border-radius:4px;cursor:pointer;padding:0;';
     editBtn.addEventListener('click', (event) => {

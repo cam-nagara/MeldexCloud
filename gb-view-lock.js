@@ -221,6 +221,11 @@
     btn.dataset.e2eId = `view-lock-${kind || 'view'}-${paneId || 'global'}-${targetKey}-${hostKey}-${iconKey}`;
   }
 
+  function _viewLockIconMarkup(locked) {
+    if (typeof lucide === 'function') return lucide(locked ? 'lock' : 'unlock', 14);
+    return `<span class="ico ico-${locked ? 'lock' : 'unlock'}" aria-hidden="true"></span>`;
+  }
+
   function _resolveHudContainer(hostEl) {
     if (!hostEl) return null;
     const directToolbar = hostEl.querySelector(':scope > .gb-toolbar, :scope > .smart-db-toolbar, :scope > [id$="-toolbar"]');
@@ -246,12 +251,14 @@
       btn = document.createElement('button');
       btn.className = 'vl-lock-icon';
       btn.type = 'button';
-      btn.style.cssText = 'position:static;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;background:var(--bg2);color:var(--fg2);border:1px solid var(--border);border-radius:4px;cursor:pointer;opacity:0.85;';
       btn.title = '表示ロック';
     }
     if (!hostIsButton && btn.parentElement !== containerEl) containerEl.appendChild(btn);
     btn.type = 'button';
     btn.disabled = false;
+    btn.setAttribute('aria-disabled', 'false');
+    btn.classList.remove('vl-lock-icon-disabled');
+    btn.style.color = '';
     btn.style.opacity = '';
     const identityHost = hostIsButton ? containerEl : hostEl;
     const hostKey = _ensureHudHostIdentity(identityHost);
@@ -271,13 +278,15 @@
     const render = () => {
       const entry = _cache.get(vk);
       const locked = !!(entry && entry.locked);
-      btn.innerHTML = typeof lucide === 'function'
-        ? lucide(locked ? 'lock' : 'unlock', 14)
-        : (locked ? '🔒' : '🔓');
+      btn.innerHTML = _viewLockIconMarkup(locked);
       btn.title = locked
         ? '表示ロック中です（クリックで解除）'
         : '表示ロックを有効にする';
-      btn.style.color = locked ? 'var(--accent)' : 'var(--fg2)';
+      btn.setAttribute('aria-label', locked ? '表示ロックを解除' : '表示ロックを有効にする');
+      btn.setAttribute('aria-pressed', locked ? 'true' : 'false');
+      btn.dataset.viewLockState = locked ? 'locked' : 'unlocked';
+      btn.classList.toggle('vl-lock-icon-locked', locked);
+      btn.style.color = '';
     };
     render();
     // 初期取得後に再描画
@@ -319,7 +328,7 @@
     const interactiveSel = `button, select, input[type=checkbox], input[type=radio], input[type=range], input[type=button], input[type=submit], a[href], [role="button"], [data-vl-guard], ${editableSel}`;
     const pointerGuardSel = '.gb-split-handle, .gb-resize-handle, .resize-handle, .sidebar-resizer, [data-resize-handle], [data-vl-guard-pointer]';
     const toolbarSel = '#app-toolbar, .gb-toolbar, .gb-pane-toolbar, .gb-tool-header, [data-vl-toolbar]';
-    const excludeSel = '.vl-lock-icon, .gb-tabs, .gb-tab, .gb-pane-header, .gb-dock-handle, .cf-modal, .modal, .gb-context-menu, .cf-confirm, .cf-prompt, ._inline-comment-input, ._note-ctx-menu, #ann-overlay, #ann-toolbar, #right-panel, .gb-right-panel';
+    const excludeSel = '.vl-lock-icon, .gb-tabs, .gb-tab, .gb-pane-header, .gb-dock-handle, .cf-modal, .modal, .gb-context-menu, .cf-confirm, .cf-prompt, ._inline-comment-input, ._note-ctx-menu, #ann-overlay, #ann-toolbar, #right-panel, .gb-right-panel, #rp-chat, .gb-tool-chat';
     const isElementNode = (node) => {
       const ctor = (typeof Element !== 'undefined') ? Element : null;
       return !!node && (!ctor || node instanceof ctor) && typeof node.closest === 'function';

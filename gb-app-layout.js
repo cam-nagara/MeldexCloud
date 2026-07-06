@@ -23,7 +23,7 @@ const GBAppLayouts = (() => {
 
   const UTILITY_TYPES = new Set([
     'outliner', 'detail', 'preview', 'chat', 'calendar',
-    'history', 'annotation', 'sticky', 'search', 'version', 'timer',
+    'history', 'annotation', 'sticky', 'tags', 'search', 'version', 'timer',
   ]);
 
   let _initialized = false;

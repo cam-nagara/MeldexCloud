@@ -118,6 +118,133 @@ function _writeStorageJson(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+function addLongPressHandler(element, handler, options = {}) {
+  if (!element || typeof handler !== 'function') return () => {};
+  const requestedDelayMs = Number.isFinite(options.duration) ? options.duration : options.delayMs;
+  const requestedMoveTolerance = Number.isFinite(options.moveThreshold) ? options.moveThreshold : options.moveTolerance;
+  const delayMs = Number.isFinite(requestedDelayMs) ? Math.max(20, requestedDelayMs) : 520;
+  const moveTolerance = Number.isFinite(requestedMoveTolerance) ? Math.max(2, requestedMoveTolerance) : 10;
+  let timer = null;
+  let suppressTimer = null;
+  let startX = 0;
+  let startY = 0;
+  let pointerId = null;
+  let fired = false;
+  let suppressNextActivation = false;
+
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    pointerId = null;
+    fired = false;
+  };
+  const clearSuppression = () => {
+    if (suppressTimer) clearTimeout(suppressTimer);
+    suppressTimer = null;
+    suppressNextActivation = false;
+  };
+  const scheduleSuppressionReset = () => {
+    if (suppressTimer) clearTimeout(suppressTimer);
+    suppressTimer = setTimeout(() => {
+      suppressTimer = null;
+      suppressNextActivation = false;
+    }, 700);
+  };
+  const consumeSuppressedActivation = (event) => {
+    if (!suppressNextActivation) return false;
+    event.preventDefault();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+    else event.stopPropagation();
+    fired = false;
+    clearSuppression();
+    return true;
+  };
+  const createLongPressEvent = (event) => ({
+    clientX: startX,
+    clientY: startY,
+    target: event.target || element,
+    currentTarget: element,
+    pointerType: event.pointerType || 'touch',
+    pointerId: event.pointerId,
+    originalEvent: event,
+    preventDefault: () => event.preventDefault(),
+    stopPropagation: () => event.stopPropagation(),
+    stopImmediatePropagation: () => {
+      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+      else event.stopPropagation();
+    },
+  });
+
+  const cancelIfMoved = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    if (Math.abs(event.clientX - startX) > moveTolerance || Math.abs(event.clientY - startY) > moveTolerance) clear();
+  };
+
+  const onDown = (event) => {
+    if (event.pointerType === 'mouse' && options.mouse !== true) return;
+    if (event.button != null && event.button !== 0) return;
+    clear();
+    clearSuppression();
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      fired = true;
+      suppressNextActivation = true;
+      try {
+        event.preventDefault();
+        event.stopPropagation();
+        element.setPointerCapture?.(event.pointerId);
+      } catch {}
+      handler(createLongPressEvent(event));
+    }, delayMs);
+  };
+
+  const onUp = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const shouldSuppressClick = fired || suppressNextActivation;
+    clear();
+    if (shouldSuppressClick) {
+      suppressNextActivation = true;
+      scheduleSuppressionReset();
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  const onClick = (event) => {
+    consumeSuppressedActivation(event);
+  };
+  const onContextMenu = (event) => {
+    if (!consumeSuppressedActivation(event)) clear();
+  };
+
+  element.addEventListener('pointerdown', onDown);
+  element.addEventListener('pointermove', cancelIfMoved);
+  element.addEventListener('pointerup', onUp);
+  element.addEventListener('pointercancel', clear);
+  element.addEventListener('pointerleave', clear);
+  element.addEventListener('lostpointercapture', clear);
+  element.addEventListener('click', onClick, true);
+  element.addEventListener('contextmenu', onContextMenu, true);
+  window.addEventListener('scroll', clear, true);
+
+  return () => {
+    clear();
+    clearSuppression();
+    element.removeEventListener('pointerdown', onDown);
+    element.removeEventListener('pointermove', cancelIfMoved);
+    element.removeEventListener('pointerup', onUp);
+    element.removeEventListener('pointercancel', clear);
+    element.removeEventListener('pointerleave', clear);
+    element.removeEventListener('lostpointercapture', clear);
+    element.removeEventListener('click', onClick, true);
+    element.removeEventListener('contextmenu', onContextMenu, true);
+    window.removeEventListener('scroll', clear, true);
+  };
+}
+window.addLongPressHandler = addLongPressHandler;
+
 function _collectPathsNeedingFileIdMigration() {
   const allPaths = new Set();
   const prefixes = ['dbViewConfig:', 'validationRules:', 'entityTemplates:',
@@ -771,130 +898,3 @@ function purgeAppPathReferences(paths) {
           pane.navIndex = pane.navHistory.length ? Math.min(pane.navIndex, pane.navHistory.length - 1) : -1;
           layoutChanged = true;
         }
-      }
-    });
-  }
-  tabsToClose.forEach(({ paneId, tabId }) => {
-    if (typeof GBTabs !== 'undefined' && typeof GBTabs.closeTab === 'function') {
-      GBTabs.closeTab(paneId, tabId);
-    }
-  });
-
-  ['currentDbPath', 'currentEntityPath', 'currentPagePath', 'currentBoardPath'].forEach(key => {
-    if (_matchesDeletedPaths(state[key], deletedPaths)) {
-      state[key] = null;
-      if (key === activePathKey) clearedCurrentView = true;
-    }
-  });
-  const smartDbRuntimePath = state.currentSmartDb?._filePath || _smartDbIdPath(state.currentSmartDb?.id);
-  if (smartDbRuntimePath && _matchesDeletedPaths(smartDbRuntimePath, deletedPaths)) {
-    state.currentSmartDb = null;
-    state.smartDbData = null;
-    if (state.view === 'smart-db') clearedCurrentView = true;
-  }
-  if (!state.currentDbPath) {
-    state.pivotData = null;
-    state.dbMetadata = null;
-  }
-  if (_clearDeletedLegacyViewHosts(deletedPaths)) {
-    clearedCurrentView = true;
-  }
-
-  const pageContent = document.getElementById('page-content');
-  if (pageContent?.dataset?.path && _matchesDeletedPaths(pageContent.dataset.path, deletedPaths)) {
-    pageContent.dataset.path = '';
-    pageContent.contentEditable = 'false';
-    pageContent.dataset.loadFailed = '1';
-    clearedCurrentView = true;
-  }
-  const freeText = document.getElementById('entity-freetext');
-  if (freeText?.dataset?.entityPath && _matchesDeletedPaths(freeText.dataset.entityPath, deletedPaths)) {
-    freeText.dataset.entityPath = '';
-    freeText.contentEditable = 'false';
-    clearedCurrentView = true;
-  }
-
-  if (typeof _csvPath !== 'undefined' && _matchesDeletedPaths(_csvPath, deletedPaths)) {
-    if (typeof _csvAutoSaveTimer !== 'undefined' && _csvAutoSaveTimer) {
-      clearTimeout(_csvAutoSaveTimer);
-      _csvAutoSaveTimer = null;
-    }
-    if (typeof _csvDirty !== 'undefined') _csvDirty = false;
-    _csvPath = '';
-    clearedCurrentView = true;
-  }
-
-  if (typeof _folderPath !== 'undefined' && _matchesDeletedPaths(_folderPath, deletedPaths)) {
-    _folderPath = '';
-    if (typeof _folderItems !== 'undefined') _folderItems = [];
-    if (typeof _folderSelected !== 'undefined') _folderSelected = null;
-    if (typeof _folderSelectedItems !== 'undefined') _folderSelectedItems = [];
-    if (state.view === 'folder') clearedCurrentView = true;
-  }
-
-  const htmlIframe = document.getElementById('html-iframe');
-  if (htmlIframe) {
-    const src = htmlIframe.getAttribute('src') || '';
-    const decodedSrc = (() => {
-      try { return decodeURIComponent(src); } catch { return src; }
-    })();
-    if (deletedPaths.some(path => decodedSrc.includes(path))) {
-      htmlIframe.removeAttribute('src');
-      if (state.view === 'html' || state.view === 'media') clearedCurrentView = true;
-    }
-  }
-
-  const mediaContent = document.getElementById('media-content');
-  if (state.view === 'media' && _matchesDeletedPaths(state.currentPagePath, deletedPaths)) {
-    if (mediaContent) mediaContent.replaceChildren();
-    clearedCurrentView = true;
-  }
-
-  if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
-    Object.keys(_sn2Editors).forEach(path => {
-      if (!_matchesDeletedPaths(path, deletedPaths)) return;
-      const editor = _sn2Editors[path];
-      if (editor?._saveTimer) {
-        clearTimeout(editor._saveTimer);
-        editor._saveTimer = null;
-      }
-      if (editor) {
-        editor._dirty = false;
-        editor._path = '';
-      }
-      delete _sn2Editors[path];
-    });
-  }
-
-  if (legacyTabsChanged) renderTabs();
-  if (recentChanged && typeof updateRecentItems === 'function') updateRecentItems();
-  if (layoutChanged && typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
-    GBLayout.saveLayout();
-  }
-
-  if (clearedCurrentView) {
-    const fallbackLayoutTab = _findRemainingContentTabAfterDeletion(deletedPaths);
-    if (fallbackLayoutTab && typeof GBTabs !== 'undefined' && typeof GBTabs.activateTab === 'function') {
-      GBTabs.activateTab(fallbackLayoutTab.paneId, fallbackLayoutTab.tabId);
-      return;
-    }
-    const fallbackTab = _tabs.find(tab => tab.id === _activeTabId) || _tabs[0];
-    if (fallbackTab) activateTab(fallbackTab.id);
-    else showView('welcome');
-  }
-}
-
-function _resolveNavHistoryPaneId(paneId) {
-  if (typeof GBLayout === 'undefined' || !GBLayout.root) return null;
-  return paneId || GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id || null;
-}
-
-function _getNavState(paneId) {
-  const resolvedPaneId = _resolveNavHistoryPaneId(paneId);
-  if (!resolvedPaneId || typeof GBLayout === 'undefined' || !GBLayout.root) {
-    return {
-      kind: 'legacy',
-      paneId: null,
-      history: _legacyNavHistory,
-      get index() { return _legacyNavIndex; },
-      set index(v) { _legacyNavIndex = v; },

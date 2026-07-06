@@ -309,14 +309,16 @@ function _syncSettingsModalOverlayForPanel(modalOrOverlay, panelName) {
     : modalOrOverlay?.closest?.('.modal-overlay') || document.querySelector('.modal-overlay[data-settings-modal="1"]');
   if (!overlay) return;
   const canonical = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName || '') : panelName;
-  const isThemePanel = canonical === 'テーマ';
+  const target = typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(panelName || canonical) : null;
+  const isThemePanel = canonical === 'テーマ' || target?.tabId === 'テーマ' || (target?.panels || []).includes('テーマ');
   overlay.classList.toggle('no-dim', isThemePanel);
   overlay.dataset.settingsPreviewMode = isThemePanel ? 'theme' : '';
 }
 
 function _ensureSettingsThemePanelVisible(panelName, root) {
   const canonical = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName || '') : panelName;
-  if (canonical !== 'テーマ' || typeof ensureSettingsThemePanel !== 'function') return;
+  const panels = typeof _settingsLegacyPanelsForName === 'function' ? _settingsLegacyPanelsForName(panelName) : [canonical];
+  if (!panels.includes('テーマ') || typeof ensureSettingsThemePanel !== 'function') return;
   const scope = root?.closest?.('.modal') || root || document;
   const panel = scope.querySelector?.('.settings-panel[data-panel="テーマ"]');
   if (panel) ensureSettingsThemePanel(panel);
@@ -339,6 +341,16 @@ const _SETTINGS_PANEL_INIT_DATA_KEYS = {
 };
 
 function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
+  const panelNames = typeof _settingsLegacyPanelsForName === 'function'
+    ? _settingsLegacyPanelsForName(panelName, options)
+    : [];
+  const targets = panelNames.length
+    ? panelNames
+    : [typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName || '') : panelName];
+  targets.filter(Boolean).forEach(targetPanel => _scheduleSettingsLegacyPanelInitialization(targetPanel, root, options));
+}
+
+function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {}) {
   const canonical = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName || '') : panelName;
   const key = _SETTINGS_PANEL_INIT_DATA_KEYS[canonical];
   if (!key) return;
@@ -460,8 +472,48 @@ function _scheduleSettingsPanelInitialization(panelName, root, options = {}) {
   }
 }
 
+function _renderSettingsSubtabs(modal, target) {
+  const header = modal?.querySelector?.('#settings-subtab-header');
+  if (!header) return;
+  const pages = Array.isArray(target?.tab?.pages) ? target.tab.pages : [];
+  if (pages.length <= 1) {
+    header.hidden = true;
+    header.innerHTML = '';
+    return;
+  }
+  header.hidden = false;
+  header.innerHTML = pages.map(page => `
+    <button type="button" class="settings-subtab${page.id === target.pageId ? ' active' : ''}"
+      data-settings-tab="${esc(target.tabId)}"
+      data-settings-page="${esc(page.id)}"
+      data-e2e-id="settings-subtab-${esc(target.tabId)}-${esc(page.id)}">${esc(page.label)}</button>
+  `).join('');
+  header.querySelectorAll('[data-settings-page]').forEach(button => {
+    button.addEventListener('click', () => {
+      _openSettingsSection(button.dataset.settingsTab, modal, { pageId: button.dataset.settingsPage });
+    });
+  });
+}
+
+function _showSettingsNavigationTarget(modal, target) {
+  if (!modal || !target) return;
+  const panelNames = new Set(typeof _settingsLegacyPanelsForName === 'function' ? _settingsLegacyPanelsForName(target) : []);
+  modal.querySelectorAll('.settings-panel').forEach(p => {
+    p.hidden = !panelNames.has(p.dataset.panel);
+    p.style.display = '';
+  });
+  _renderSettingsSubtabs(modal, target);
+  if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
+  _ensureSettingsThemePanelVisible(target.tabId, modal);
+  _syncSettingsModalOverlayForPanel(modal, target.tabId);
+  _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
+}
+
 function switchSettingsTab(el) {
-  const tabName = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(el.dataset.tab) : el.dataset.tab;
+  const target = typeof resolveSettingsNavigationTarget === 'function'
+    ? resolveSettingsNavigationTarget(el.dataset.tab)
+    : { tabId: (typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(el.dataset.tab) : el.dataset.tab), panels: [el.dataset.tab] };
+  const tabName = target.tabId;
   try {
     window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: tabName });
   } catch {}
@@ -475,14 +527,7 @@ function switchSettingsTab(el) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  // パネル (hidden 属性で切替)
-  el.closest('.modal').querySelectorAll('.settings-panel').forEach(p => {
-    p.hidden = p.dataset.panel !== tabName;
-    p.style.display = '';
-  });
-  _ensureSettingsThemePanelVisible(tabName, el);
-  _syncSettingsModalOverlayForPanel(el, tabName);
-  _scheduleSettingsPanelInitialization(tabName, el);
+  _showSettingsNavigationTarget(el.closest('.modal'), target);
 }
 
 // モバイル: セクションドリルダウン
@@ -495,22 +540,24 @@ function _settingsModalFromRoot(root) {
 }
 
 // モバイル: セクションドリルダウン
-function _openSettingsSection(panelName, root) {
+function _openSettingsSection(panelName, root, options = {}) {
   const modal = _settingsModalFromRoot(root);
   if (!modal) return;
-  panelName = typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName) : panelName;
+  const target = typeof resolveSettingsNavigationTarget === 'function'
+    ? resolveSettingsNavigationTarget(panelName, options)
+    : { tabId: (typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(panelName) : panelName), panels: [panelName] };
+  panelName = target.tabId;
   try {
     window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: panelName });
   } catch {}
   const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = true;
-  modal.querySelectorAll('.settings-panel').forEach(p => {
-    p.hidden = p.dataset.panel !== panelName;
-    p.style.display = '';
+  _showSettingsNavigationTarget(modal, target);
+  modal.querySelectorAll('.settings-tab').forEach(tab => {
+    const active = tab.dataset.tab === target.tabId;
+    tab.classList.toggle('gb-inner-tab-active', active);
+    tab.classList.toggle('active', active);
   });
-  _ensureSettingsThemePanelVisible(panelName, modal);
-  _syncSettingsModalOverlayForPanel(modal, panelName);
-  _scheduleSettingsPanelInitialization(panelName, modal, { immediate: true });
   const btnRow = modal.querySelector('.btn-row');
   if (btnRow) btnRow.hidden = false;
   const backBtn = modal.querySelector('#settings-back-btn');
@@ -518,7 +565,7 @@ function _openSettingsSection(panelName, root) {
   const headerText = modal.querySelector('#settings-header-text');
   if (headerText) {
     headerText.textContent = typeof _settingsPanelDisplayName === 'function'
-      ? _settingsPanelDisplayName(panelName)
+      ? _settingsPanelDisplayName(target.tabId, { pageId: target.pageId })
       : panelName;
   }
 }
@@ -530,6 +577,11 @@ function _backToSettingsList(root) {
   if (btnRow) btnRow.hidden = true;
   const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = false;
+  const subtabHeader = modal.querySelector('#settings-subtab-header');
+  if (subtabHeader) {
+    subtabHeader.hidden = true;
+    subtabHeader.innerHTML = '';
+  }
   const backBtn = modal.querySelector('#settings-back-btn');
   if (backBtn) backBtn.hidden = true;
   const headerText = modal.querySelector('#settings-header-text');

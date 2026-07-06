@@ -3,6 +3,227 @@
   min-width: 0;
 }
 
+.idea-inbox-modal {
+  width: min(820px, 92vw);
+  height: min(720px, 88vh);
+}
+
+.idea-inbox-modal.gb-modal-shell {
+  width: min(820px, 92vw);
+  height: min(720px, 88vh);
+}
+
+.idea-inbox-modal .gb-modal-shell-body,
+.idea-inbox-modal .gb-modal-shell-body-generated {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.idea-inbox-title {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+  flex-shrink: 0;
+}
+
+.idea-inbox-title .settings-modal-close {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.idea-inbox-title svg,
+.idea-inbox-view .gb-section-title svg,
+.idea-inbox-view .gb-btn svg {
+  width: var(--ui-icon-sm);
+  height: var(--ui-icon-sm);
+  flex: 0 0 var(--ui-icon-sm);
+}
+
+.idea-inbox-title > svg,
+.idea-inbox-title .settings-modal-close svg {
+  width: var(--ui-icon-md);
+  height: var(--ui-icon-md);
+  flex-basis: var(--ui-icon-md);
+}
+
+.idea-inbox-view {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.idea-inbox-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.idea-inbox-toolbar-main {
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.modal .idea-inbox-view .gb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-2);
+  height: var(--ui-h-sm);
+  min-height: var(--ui-h-sm);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.idea-inbox-title .settings-modal-close,
+.modal .idea-inbox-view .gb-select,
+.modal .idea-inbox-view .gb-check,
+.modal .idea-inbox-view input,
+.modal .idea-inbox-view .gb-btn:not(:disabled):not([disabled]) {
+  pointer-events: auto !important;
+}
+
+.modal .idea-inbox-view .gb-check {
+  min-height: var(--ui-h-sm);
+}
+
+.idea-inbox-alert-text {
+  color: var(--fg2);
+}
+
+.idea-inbox-alert-text.is-error {
+  color: var(--danger);
+}
+
+.idea-inbox-card {
+  border-bottom: 1px solid var(--ui-border);
+  padding: var(--ui-space-5) 0;
+}
+
+.idea-inbox-card-meta,
+.idea-inbox-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-3);
+  min-width: 0;
+}
+
+.idea-inbox-card-body {
+  margin-top: var(--ui-space-4);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.idea-inbox-card-note {
+  margin-top: var(--ui-space-3);
+}
+
+.idea-inbox-pill-danger {
+  color: var(--danger);
+}
+
+.idea-inbox-taste-evaluation {
+  display: flex;
+  gap: var(--ui-space-3);
+  flex-wrap: wrap;
+  margin-top: var(--ui-space-4);
+}
+
+.idea-inbox-card-actions {
+  margin-top: 10px;
+}
+
+.idea-inbox-card-actions > .gb-btn {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  scroll-margin-block: 96px;
+}
+
+.idea-inbox-card-actions > .gb-btn:disabled,
+.idea-inbox-card-actions > .gb-btn[disabled] {
+  pointer-events: none !important;
+}
+
+@media (max-width: 640px) {
+  .modal-overlay[data-idea-inbox="1"] {
+    position: fixed !important;
+    inset: 0 !important;
+    display: flex !important;
+    align-items: flex-end !important;
+    justify-content: center !important;
+    box-sizing: border-box;
+    height: 100vh !important;
+    height: 100dvh !important;
+    padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left)) !important;
+    overflow: hidden;
+    transform: none !important;
+  }
+
+  .idea-inbox-modal {
+    position: relative !important;
+    inset: auto !important;
+    width: min(100%, 640px) !important;
+    height: min(100%, calc(100dvh - 16px)) !important;
+    max-width: 100% !important;
+    max-height: calc(100dvh - 16px) !important;
+    margin: 0 !important;
+    transform: none !important;
+  }
+
+  .idea-inbox-title {
+    min-height: var(--ui-h-touch);
+  }
+
+  .idea-inbox-modal.gb-modal-shell {
+    width: min(100%, 640px) !important;
+    height: min(100%, calc(100dvh - 16px)) !important;
+  }
+
+  .idea-inbox-toolbar {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch !important;
+    gap: var(--ui-space-3) !important;
+  }
+
+  .idea-inbox-toolbar-main {
+    width: 100%;
+    pointer-events: none;
+    min-width: 0 !important;
+  }
+
+  .modal .idea-inbox-view .gb-select,
+  .modal .idea-inbox-view .gb-check,
+  .modal .idea-inbox-view .gb-btn,
+  .idea-inbox-title .settings-modal-close {
+    min-height: var(--ui-h-touch);
+  }
+
+  .modal .idea-inbox-view .gb-select,
+  .modal .idea-inbox-view .gb-btn {
+    height: auto;
+    width: 100%;
+  }
+
+  .modal .idea-inbox-view .gb-check {
+    padding: 0 var(--ui-space-2);
+  }
+
+  .idea-inbox-card-actions > .gb-btn {
+    flex: 1 1 100%;
+  }
+}
+
 .gb-pill {
   display: inline-flex;
   align-items: center;
@@ -75,6 +296,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 430px) {
+  .knowledge-auto-ai-toggle,
+  .knowledge-auto-details summary,
+  .knowledge-auto-target-row {
+    min-height: var(--ui-h-touch);
+  }
+
+  .knowledge-auto-details summary {
+    padding: 0 var(--ui-space-1);
+  }
+
+  .knowledge-auto-target-row {
+    gap: var(--ui-space-2);
+  }
 }
 
 .knowledge-layer-view .gb-inner-tabs {
@@ -219,6 +456,55 @@
   min-width: 0;
 }
 
+.knowledge-home-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 94vw);
+  height: min(720px, 88vh);
+  max-height: 88vh;
+  min-width: 0;
+}
+
+.knowledge-home-title-row {
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  margin-bottom: var(--ui-space-3);
+}
+
+.knowledge-home-title-row h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.knowledge-home-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.taste-principles-view .taste-enable-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-5);
+}
+
+.taste-principles-view .taste-enable-copy {
+  flex: 1 1 240px;
+  min-width: 240px;
+}
+
+.taste-principles-view .taste-alert-message {
+  color: var(--fg2);
+}
+
+.taste-principles-view .taste-alert-message.is-error {
+  color: var(--danger);
+}
+
 .knowledge-layer-view .kv-toolbar,
 .taste-principles-view .taste-toolbar {
   display: flex;
@@ -256,7 +542,164 @@
   flex: 0 0 auto;
 }
 
+.knowledge-layer-view .kv-item {
+  border-bottom: 1px solid var(--border);
+  padding: var(--ui-space-4) 0;
+}
+
+.knowledge-layer-view .kv-item-head,
+.knowledge-layer-view .kv-item-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+
+.knowledge-layer-view .kv-item-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-layer-view .kv-item-statement {
+  margin-top: var(--ui-space-2);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-layer-view .kv-item-reason {
+  margin-top: var(--ui-space-1);
+  overflow-wrap: anywhere;
+}
+
+.knowledge-layer-view .kv-item-actions {
+  margin-top: var(--ui-space-3);
+}
+
+.knowledge-layer-view .kv-item-actions .gb-btn {
+  pointer-events: auto;
+}
+
+.knowledge-layer-view .kv-item-actions .gb-btn svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.taste-principles-view .taste-card {
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+  padding: var(--ui-space-5) 0;
+}
+
+.taste-principles-view .taste-card-meta,
+.taste-principles-view .taste-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-4);
+  min-width: 0;
+}
+
+.taste-principles-view .taste-card-rule,
+.taste-principles-view .taste-card-rationale {
+  overflow-wrap: anywhere;
+}
+
+.taste-principles-view .taste-card-rule {
+  line-height: 1.55;
+  margin-top: var(--ui-space-4);
+}
+
+.taste-principles-view .taste-card-rationale {
+  margin-top: var(--ui-space-1);
+}
+
+.taste-principles-view .taste-card-weight-meter {
+  background: var(--bg3);
+  border-radius: var(--ui-radius-sm);
+  height: 6px;
+  margin-top: var(--ui-space-4);
+  overflow: hidden;
+}
+
+.taste-principles-view .taste-card-weight-meter-fill {
+  background: var(--accent);
+  height: 100%;
+  width: var(--taste-weight-pct, 4%);
+}
+
+.taste-principles-view .taste-card-actions {
+  margin-top: 10px;
+}
+
+.taste-principles-view .taste-card-weight {
+  gap: var(--ui-space-2);
+  min-height: var(--ui-h-sm);
+}
+
+.taste-principles-view .taste-card-weight-input {
+  width: 72px;
+}
+
+.taste-principles-view .taste-learning-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+}
+
+.taste-principles-view .taste-learning-signal {
+  color: var(--fg2);
+  min-width: 42px;
+}
+
+.taste-principles-view .taste-learning-signal.is-positive {
+  color: var(--accent);
+}
+
+.taste-principles-view .taste-learning-signal.is-negative {
+  color: var(--danger);
+}
+
+body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-inner-tab,
+body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-inner-tab,
+body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-btn,
+body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-btn,
+body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-btn-sm,
+body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-btn-sm,
+body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-input,
+body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-input,
+body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-select,
+body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-select,
+body[data-cloud-mobile="1"] .modal .knowledge-layer-view .gb-check,
+body[data-mobile-ui-local="1"] .modal .knowledge-layer-view .gb-check,
+body[data-cloud-mobile="1"] .modal .taste-principles-view .gb-btn,
+body[data-mobile-ui-local="1"] .modal .taste-principles-view .gb-btn,
+body[data-cloud-mobile="1"] .modal .taste-principles-view .gb-input,
+body[data-mobile-ui-local="1"] .modal .taste-principles-view .gb-input,
+body[data-cloud-mobile="1"] .modal .taste-principles-view .gb-select,
+body[data-mobile-ui-local="1"] .modal .taste-principles-view .gb-select,
+body[data-cloud-mobile="1"] .modal .taste-principles-view .gb-check,
+body[data-mobile-ui-local="1"] .modal .taste-principles-view .gb-check,
+body[data-cloud-mobile="1"] .modal .taste-principles-view .taste-card-weight,
+body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight {
+  height: auto;
+  min-height: var(--ui-h-touch);
+}
+
 @media (max-width: 680px) {
+  .knowledge-home-modal {
+    width: 100vw;
+    height: min(88vh, 720px);
+    max-width: 100vw;
+    border-radius: var(--ui-radius-md) var(--ui-radius-md) 0 0;
+  }
+
+  .modal .knowledge-layer-view .gb-inner-tab {
+    height: auto;
+    min-height: var(--ui-h-touch);
+  }
+
   .knowledge-layer-view .kv-toolbar .gb-input,
   .knowledge-layer-view .kv-toolbar .gb-select,
   .knowledge-layer-view .kv-toolbar .gb-check,
@@ -270,6 +713,19 @@
 
   .knowledge-layer-view .kv-header {
     flex-direction: column;
+  }
+
+  .knowledge-layer-view .kv-header .gb-btn,
+  .knowledge-layer-view .kv-item-actions .gb-btn,
+  .taste-principles-view .taste-card-actions .gb-btn,
+  .taste-principles-view .taste-card-weight,
+  .taste-principles-view .taste-card-weight .gb-input {
+    width: 100%;
+    min-height: var(--ui-h-touch);
+  }
+
+  .knowledge-layer-view .kv-item-actions .gb-section-desc {
+    flex-basis: 100%;
   }
 }
 

@@ -475,12 +475,21 @@ function bdSetMarker(nodeId, category, markerIdx) {
 // --- カードHUD クリック時のサブメニュー (board-card-popup-redesign-plan.md §7) ---
 // カードHUDの左上ステータス/右下マーカー/左下コメントをクリックしたときに、その要素位置に
 // ポップアップを開く。既存の .gb-context-menu を流用し、bdContextMenu と共存可能にする。
-function _bdCreateHudMenu(rect) {
+function _bdCreateHudMenu(rect, options) {
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
+  if (options?.label) menu.setAttribute('aria-label', options.label);
   menu.style.position = 'fixed';
   menu.style.minWidth = '180px';
+  const trigger = options?.trigger || null;
+  if (typeof _bdTrackContextMenuTrigger === 'function') _bdTrackContextMenuTrigger(menu, trigger);
+  const closeMenu = (restoreFocus = false) => {
+    menu.remove();
+    if (trigger?.setAttribute) trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && trigger && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(trigger);
+  };
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {
     positionPopup(menu, rect);
@@ -494,22 +503,38 @@ function _bdCreateHudMenu(rect) {
     document.addEventListener('pointerdown', function h(ev) {
       const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
       if (!inAny) {
-        document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+        closeMenu(false);
         document.removeEventListener('pointerdown', h);
       }
     }, { once: false });
   }, 0);
+  menu.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeMenu(true);
+    }
+  });
   return menu;
 }
 function _bdHudMenuItem(htmlLabel, onClick, opts) {
   const d = document.createElement('div');
   d.className = 'gb-context-menu-item';
+  d.tabIndex = 0;
+  d.setAttribute('role', opts?.role || 'menuitem');
+  if (opts?.checked !== undefined) d.setAttribute('aria-checked', opts.checked ? 'true' : 'false');
   d.innerHTML = htmlLabel;
   if (opts?.danger) d.classList.add('danger');
   d.addEventListener('click', (ev) => {
     ev.preventDefault(); ev.stopPropagation();
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
     try { onClick?.(); } catch {}
+  });
+  d.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      d.click();
+    }
   });
   return d;
 }
@@ -518,13 +543,21 @@ function _bdHudMenuSep() {
   d.className = 'gb-context-menu-sep';
   return d;
 }
+function _bdRepositionHudMenu(menu, rect) {
+  if (!menu || !rect) return;
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, rect);
+  } else if (typeof clampPopupToViewport === 'function') {
+    clampPopupToViewport(menu);
+  }
+}
 function _bdCheckMark(isActive) {
   return isActive ? lucide('check', 12) + ' ' : '<span style="display:inline-block;width:14px;"></span>';
 }
 
-function bdStatusMenuFor(nodeId, rect) {
+function bdStatusMenuFor(nodeId, rect, trigger) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  const menu = _bdCreateHudMenu(rect);
+  const menu = _bdCreateHudMenu(rect, { label: 'ステータス', trigger });
   const targetIds = bd.selected.has(nodeId) ? [...bd.selected] : [nodeId];
   const setStatus = (st) => {
     bdPushUndo();
@@ -533,38 +566,38 @@ function bdStatusMenuFor(nodeId, rect) {
   };
   const curStatus = n.status || '';
   // 「なし」項目
-  menu.appendChild(_bdHudMenuItem(_bdCheckMark(!curStatus) + 'なし', () => setStatus('')));
+  menu.appendChild(_bdHudMenuItem(_bdCheckMark(!curStatus) + 'なし', () => setStatus(''), { role: 'menuitemradio', checked: !curStatus }));
   bdStatusNames().filter(s => !!s).forEach(st => {
     const sd = bdStatusDef(st);
     const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${sd.color};margin-right:4px;vertical-align:middle;"></span>`;
-    menu.appendChild(_bdHudMenuItem(_bdCheckMark(curStatus === st) + dot + esc(st), () => setStatus(st)));
+    menu.appendChild(_bdHudMenuItem(_bdCheckMark(curStatus === st) + dot + esc(st), () => setStatus(st), { role: 'menuitemradio', checked: curStatus === st }));
   });
   menu.appendChild(_bdHudMenuSep());
   menu.appendChild(_bdHudMenuItem('ステータスを管理...', () => {
     if (typeof bdManageStatuses === 'function') bdManageStatuses();
   }));
+  _bdRepositionHudMenu(menu, rect);
+  requestAnimationFrame(() => _bdFocusContextMenuItem(menu, 'first'));
 }
 
-function bdMarkerMenuFor(nodeId, rect) {
+function bdMarkerMenuFor(nodeId, rect, trigger) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  const menu = _bdCreateHudMenu(rect);
+  const menu = _bdCreateHudMenu(rect, { label: 'マーカー', trigger });
   const markers = n.markers || {};
   // 2026-04-18: BD_MARKERS.progress 廃止に伴い progress ラベルは不要。priority / flag のみ保持。
   const categoryLabels = { priority: '優先度', flag: 'フラグ' };
   const entries = Object.entries(BD_MARKERS);
   entries.forEach(([cat, list], catIdx) => {
     if (catIdx > 0) menu.appendChild(_bdHudMenuSep());
-    const catHeader = document.createElement('div');
-    catHeader.textContent = categoryLabels[cat] || cat;
-    catHeader.style.cssText = 'padding:4px 14px;font-size:11px;color:var(--fg2);cursor:default;user-select:none;';
-    menu.appendChild(catHeader);
+    _bdContextMenuLabel(menu, categoryLabels[cat] || cat);
     list.forEach((mk, idx) => {
       const isActive = markers[cat] === idx;
       const iconHtml = typeof bdMarkerIconHtml === 'function' ? bdMarkerIconHtml(mk, 12) : lucide(mk.icon, 12);
       const iconSpan = `<span style="color:${mk.color};margin-right:4px;vertical-align:middle;">${iconHtml}</span>`;
       menu.appendChild(_bdHudMenuItem(
         _bdCheckMark(isActive) + iconSpan + esc(mk.label),
-        () => { bdPushUndo(); bdSetMarker(nodeId, cat, isActive ? -1 : idx); }
+        () => { bdPushUndo(); bdSetMarker(nodeId, cat, isActive ? -1 : idx); },
+        { role: 'menuitemcheckbox', checked: isActive }
       ));
     });
   });
@@ -577,11 +610,13 @@ function bdMarkerMenuFor(nodeId, rect) {
       bdRender(); bdDirty();
     }));
   }
+  _bdRepositionHudMenu(menu, rect);
+  requestAnimationFrame(() => _bdFocusContextMenuItem(menu, 'first'));
 }
 
-function bdCommentMenuFor(nodeId, rect) {
+function bdCommentMenuFor(nodeId, rect, trigger) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  const menu = _bdCreateHudMenu(rect);
+  const menu = _bdCreateHudMenu(rect, { label: 'コメント', trigger });
   const filePath = (bd?.path || '').trim();
   // Audit-P1 H-5: HUD の rect を仮想アンカーとしてインライン textarea を配置する
   const anchorRect = rect || (menu && menu.getBoundingClientRect ? menu.getBoundingClientRect() : null);
@@ -615,6 +650,8 @@ function bdCommentMenuFor(nodeId, rect) {
     }
     if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
   }));
+  _bdRepositionHudMenu(menu, rect);
+  requestAnimationFrame(() => _bdFocusContextMenuItem(menu, 'first'));
 }
 
 // --- 下部ツールバーのズーム倍率ラベルをクリックしたときのドロップダウン ---
@@ -622,7 +659,9 @@ function bdCommentMenuFor(nodeId, rect) {
 function bdShowZoomMenu(anchor) {
   if (!anchor) return;
   const rect = anchor.getBoundingClientRect();
-  const menu = _bdCreateHudMenu(rect);
+  anchor.setAttribute('aria-haspopup', 'menu');
+  const menu = _bdCreateHudMenu(rect, { trigger: anchor });
+  menu.setAttribute('aria-label', '表示倍率');
   menu.style.minWidth = '120px';
   const levels = [500, 400, 300, 200, 150, 120, 100, 80, 50, 20, 10];
   const currentPct = Math.round((bd.zoom || 1) * 100);
@@ -645,6 +684,14 @@ function bdShowZoomMenu(anchor) {
   menu.appendChild(_bdHudMenuItem('<span style="display:inline-block;width:14px;"></span>フィットマップ', () => {
     if (typeof bdFitAll === 'function') bdFitAll();
   }));
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, rect);
+  } else if (typeof clampPopupToViewport === 'function') {
+    clampPopupToViewport(menu);
+  }
+  requestAnimationFrame(() => {
+    if (menu.isConnected) menu.querySelector('.gb-context-menu-item')?.focus?.();
+  });
 }
 
 // v0.5.285 でフローティングミニマップ (bdToggleMinimap / _bdDrawFloatingMinimap /
@@ -684,18 +731,143 @@ async function bdResizeSelected() {
 }
 
 // --- 14. Context Menus ---
+function _bdCloseAllContextMenus() {
+  document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+}
+
+function _bdTrackContextMenuTrigger(menu, trigger) {
+  if (!menu || !trigger?.setAttribute) return;
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'true');
+  if (typeof MutationObserver !== 'function') return;
+  const observer = new MutationObserver(() => {
+    if (menu.isConnected) return;
+    trigger.setAttribute('aria-expanded', 'false');
+    observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true });
+}
+
+function _bdVisibleContextMenuItems(menu) {
+  return [...(menu?.querySelectorAll?.('.gb-context-menu-item') || [])]
+    .filter(item => !item.classList.contains('disabled')
+      && item.getAttribute('aria-disabled') !== 'true'
+      && item.offsetParent !== null);
+}
+
+function _bdFocusContextMenuItem(menu, direction) {
+  const items = _bdVisibleContextMenuItems(menu);
+  if (!items.length) return;
+  const current = document.activeElement;
+  const idx = Math.max(0, items.indexOf(current));
+  const nextIdx = direction === 'first' ? 0
+    : direction === 'last' ? items.length - 1
+    : (idx + direction + items.length) % items.length;
+  items[nextIdx]?.focus?.();
+}
+
+function _bdEnhanceContextMenu(menu, label) {
+  if (!menu) return menu;
+  menu.classList.add('gb-context-menu');
+  menu.setAttribute('role', 'menu');
+  if (label) menu.setAttribute('aria-label', label);
+  if (menu.dataset.bdMenuEnhanced === '1') return menu;
+  menu.dataset.bdMenuEnhanced = '1';
+  menu.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      _bdCloseAllContextMenus();
+      return;
+    }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); _bdFocusContextMenuItem(menu, 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); _bdFocusContextMenuItem(menu, -1); }
+    else if (ev.key === 'Home') { ev.preventDefault(); _bdFocusContextMenuItem(menu, 'first'); }
+    else if (ev.key === 'End') { ev.preventDefault(); _bdFocusContextMenuItem(menu, 'last'); }
+  });
+  return menu;
+}
+
+function _bdContextMenuItem(parent, label, fn, opts) {
+  const options = opts || {};
+  const item = document.createElement('div');
+  item.className = 'gb-context-menu-item';
+  item.tabIndex = options.disabled ? -1 : 0;
+  item.setAttribute('role', options.role || 'menuitem');
+  if (options.checked !== undefined) item.setAttribute('aria-checked', options.checked ? 'true' : 'false');
+  if (options.disabled) {
+    item.classList.add('disabled');
+    item.setAttribute('aria-disabled', 'true');
+  }
+  if (options.danger) item.classList.add('danger');
+  if (options.html === false) item.textContent = String(label || '');
+  else item.innerHTML = label;
+  const activate = ev => {
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    if (options.disabled) return;
+    _bdCloseAllContextMenus();
+    fn?.();
+  };
+  item.addEventListener('click', activate);
+  item.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') activate(ev);
+  });
+  parent?.appendChild?.(item);
+  return item;
+}
+
+function _bdContextMenuLabel(parent, label) {
+  const item = document.createElement('div');
+  item.className = 'gb-context-menu-label';
+  item.textContent = label;
+  item.setAttribute('role', 'presentation');
+  parent?.appendChild?.(item);
+  return item;
+}
+
+function _bdContextMenuSep(parent) {
+  const sep = document.createElement('div');
+  sep.className = 'gb-context-menu-sep bd-cm-sep';
+  sep.setAttribute('role', 'separator');
+  parent?.appendChild?.(sep);
+  return sep;
+}
+
 function _bdCreateContextSubmenu(menu, label, minWidth) {
   const wrap = document.createElement('div');
-  wrap.style.position = 'relative';
+  wrap.className = 'gb-context-menu-submenu';
   const trigger = document.createElement('div');
-  trigger.innerHTML = esc(label) + submenuArrow();
-  trigger.style.cssText = 'padding:4px 16px;cursor:pointer;';
-  trigger.onmouseenter = () => { trigger.style.background='var(--bg4)'; };
-  trigger.onmouseleave = () => { trigger.style.background=''; };
-  const panel = document.createElement('div');
-  panel.className = 'gb-context-menu';
+  trigger.className = 'gb-context-menu-item has-submenu';
+  trigger.innerHTML = esc(label);
+  trigger.tabIndex = 0;
+  trigger.setAttribute('role', 'menuitem');
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  const panel = _bdEnhanceContextMenu(document.createElement('div'), label);
   panel.style.cssText = `display:none;min-width:${minWidth || 120}px;`;
   attachHoverSubmenu(trigger, panel);
+  trigger.addEventListener('mouseenter', () => trigger.setAttribute('aria-expanded', 'true'));
+  trigger.addEventListener('mouseleave', () => setTimeout(() => {
+    if (panel.style.display === 'none') trigger.setAttribute('aria-expanded', 'false');
+  }, 220));
+  panel.addEventListener('mouseleave', () => setTimeout(() => {
+    if (panel.style.display === 'none') trigger.setAttribute('aria-expanded', 'false');
+  }, 220));
+  trigger.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowRight' && ev.key !== 'Enter' && ev.key !== ' ') return;
+    ev.preventDefault();
+    trigger.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+    trigger.setAttribute('aria-expanded', 'true');
+    requestAnimationFrame(() => _bdFocusContextMenuItem(panel, 'first'));
+  });
+  panel.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowLeft') return;
+    ev.preventDefault();
+    panel.style.display = 'none';
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.focus?.();
+  });
   wrap.appendChild(trigger);
   wrap.appendChild(panel);
   menu.appendChild(wrap);
@@ -784,25 +956,23 @@ function _bdApplyLineStyleFromMenu(connIds, styleId) {
 //   色 / ラインスタイル(実線/破線) / ラインの太さ / 矢印 / ライン形状 / ラベル色 は
 //   オプションパネル側に一本化。ポップアップは切替と状態トグルに専念する。
 function bdConnContextMenu(e, conn) {
-  document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  const menu = document.createElement('div'); menu.className = 'gb-context-menu';
+  _bdCloseAllContextMenus();
+  const menu = _bdEnhanceContextMenu(document.createElement('div'), 'ラインメニュー');
+  _bdTrackContextMenuTrigger(menu, e?.trigger || null);
   {
     const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
     menu.style.left = (e.clientX / z) + 'px';
     menu.style.top = (e.clientY / z) + 'px';
   }
-  function item(label, fn) { const d = document.createElement('div'); d.innerHTML = label; d.addEventListener('click', () => { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); fn(); }); menu.appendChild(d); }
-  function dangerItem(label, fn) { const d = document.createElement('div'); d.innerHTML = label; d.classList.add('danger'); d.addEventListener('click', () => { document.querySelectorAll('.gb-context-menu').forEach(m => m.remove()); fn(); }); menu.appendChild(d); }
-  function sep() { const d = document.createElement('div'); d.className = 'bd-cm-sep'; menu.appendChild(d); }
+  function item(label, fn) { return _bdContextMenuItem(menu, label, fn); }
+  function dangerItem(label, fn) { return _bdContextMenuItem(menu, label, fn, { danger: true }); }
+  function sep() { return _bdContextMenuSep(menu); }
 
   const fromN = bd.nodes.find(n => n.id === conn.from);
   const toN = bd.nodes.find(n => n.id === conn.to);
   const fromLbl = fromN ? fromN.text.split('\n')[0].slice(0, 12) : '?';
   const toLbl = toN ? toN.text.split('\n')[0].slice(0, 12) : '?';
-  const titleRow = document.createElement('div');
-  titleRow.style.cssText = 'padding:4px 16px;color:var(--fg2);font-size:12px;cursor:default;';
-  titleRow.innerHTML = esc(fromLbl) + ' → ' + esc(toLbl);
-  menu.appendChild(titleRow);
+  _bdContextMenuLabel(menu, `${fromLbl} → ${toLbl}`);
   sep();
   item('テキスト編集', () => {
     if (!conn.label) { bdPushUndo(); conn.label = 'テキスト'; conn._labelWasEmpty = true; conn._labelPlaceholderUndoCaptured = true; bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-label-edit' }); bdDirty(); }
@@ -862,56 +1032,31 @@ function bdConnContextMenu(e, conn) {
     const targetConnIds = selectedConnIds.includes(conn.id) && selectedConnIds.length > 1 ? selectedConnIds : [conn.id];
     const currentStyleId = conn.styleRef || bd.activeLineStyle || '';
     (bd.lineStyles || []).forEach(style => {
-      const si = document.createElement('div');
-      si.innerHTML = radioMark(currentStyleId === style.id) + esc(style.name || '');
-      si.style.cssText = 'padding:4px 16px;cursor:pointer;' + (currentStyleId === style.id ? 'color:var(--accent);' : '');
-      si.onmouseenter = () => { si.style.background = 'var(--bg4)'; };
-      si.onmouseleave = () => { si.style.background = ''; };
-      si.addEventListener('click', () => {
-        document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+      const si = _bdContextMenuItem(stylePanel, radioMark(currentStyleId === style.id) + esc(style.name || ''), () => {
         if (typeof _bdApplyLineStyleFromMenu === 'function') _bdApplyLineStyleFromMenu(targetConnIds, style.id);
+      }, {
+        role: 'menuitemradio',
+        checked: currentStyleId === style.id,
       });
-      stylePanel.appendChild(si);
+      if (currentStyleId === style.id) si.style.color = 'var(--accent)';
     });
     if (stylePanel.childElementCount) {
-      const sepEl = document.createElement('div');
-      sepEl.className = 'bd-cm-sep';
-      stylePanel.appendChild(sepEl);
+      _bdContextMenuSep(stylePanel);
     }
-    const manageItem = document.createElement('div');
-    manageItem.textContent = 'スタイル管理...';
-    manageItem.style.cssText = 'padding:4px 16px;cursor:pointer;';
-    manageItem.onmouseenter = () => { manageItem.style.background = 'var(--bg4)'; };
-    manageItem.onmouseleave = () => { manageItem.style.background = ''; };
-    manageItem.addEventListener('click', () => {
-      document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    _bdContextMenuItem(stylePanel, 'スタイル管理...', () => {
       if (typeof bdOpenLineStyleManager === 'function') bdOpenLineStyleManager();
     });
-    stylePanel.appendChild(manageItem);
   }
   // 表示 サブ (非表示/表示 + 前面/背面)
   {
     const viewPanel = _bdCreateContextSubmenu(menu, '表示', 140);
     const isHidden = !!conn.hidden;
-    const toggleItem = document.createElement('div');
-    toggleItem.textContent = isHidden ? '表示する' : '非表示にする';
-    toggleItem.style.cssText = 'padding:4px 16px;cursor:pointer;';
-    toggleItem.onmouseenter = () => { toggleItem.style.background = 'var(--bg4)'; };
-    toggleItem.onmouseleave = () => { toggleItem.style.background = ''; };
-    toggleItem.addEventListener('click', () => {
-      document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    _bdContextMenuItem(viewPanel, isHidden ? '表示する' : '非表示にする', () => {
       bdPushUndo();
       conn.hidden = !isHidden;
       bdDrawConns({ connIds: [conn.id], reason: 'conn-menu-hidden' }); bdDirty();
     });
-    viewPanel.appendChild(toggleItem);
-    const zFrontItem = document.createElement('div');
-    zFrontItem.textContent = '前面に移動';
-    zFrontItem.style.cssText = 'padding:4px 16px;cursor:pointer;';
-    zFrontItem.onmouseenter = () => { zFrontItem.style.background = 'var(--bg4)'; };
-    zFrontItem.onmouseleave = () => { zFrontItem.style.background = ''; };
-    zFrontItem.addEventListener('click', () => {
-      document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    _bdContextMenuItem(viewPanel, '前面に移動', () => {
       bdPushUndo();
       const idx = bd.connections.indexOf(conn);
       if (idx >= 0 && idx < bd.connections.length - 1) {
@@ -920,14 +1065,7 @@ function bdConnContextMenu(e, conn) {
         bdDrawConns(); bdDirty();
       }
     });
-    viewPanel.appendChild(zFrontItem);
-    const zBackItem = document.createElement('div');
-    zBackItem.textContent = '背面に移動';
-    zBackItem.style.cssText = 'padding:4px 16px;cursor:pointer;';
-    zBackItem.onmouseenter = () => { zBackItem.style.background = 'var(--bg4)'; };
-    zBackItem.onmouseleave = () => { zBackItem.style.background = ''; };
-    zBackItem.addEventListener('click', () => {
-      document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    _bdContextMenuItem(viewPanel, '背面に移動', () => {
       bdPushUndo();
       const idx = bd.connections.indexOf(conn);
       if (idx > 0) {
@@ -936,7 +1074,6 @@ function bdConnContextMenu(e, conn) {
         bdDrawConns(); bdDirty();
       }
     });
-    viewPanel.appendChild(zBackItem);
   }
   // v0.5.320: ライン形状の個別オーバーライドを既定値 (スタイル継承) に戻す
   const hasOverride = !!(conn.fromAnchor || conn.toAnchor

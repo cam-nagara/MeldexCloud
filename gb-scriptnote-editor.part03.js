@@ -565,12 +565,19 @@
       };
       const menu = document.createElement('div');
       menu.className = 'sn2-context-menu sn2-header-popup';
-      const mkItem = (label, action, enabled = true) => {
+      menu.setAttribute('role', 'menu');
+      const mkItem = (label, action, enabled = true, actionId = '') => {
         const btn = document.createElement('button');
         btn.className = 'sn2-header-popup-item';
+        btn.type = 'button';
+        btn.setAttribute('role', 'menuitem');
+        if (actionId) {
+          btn.dataset.sn2TextMenuAction = actionId;
+          btn.dataset.e2eId = `sn2-text-menu-${actionId}`;
+        }
         btn.textContent = label;
         btn.disabled = !enabled;
-        if (!enabled) btn.style.opacity = '0.4';
+        if (!enabled) btn.setAttribute('aria-disabled', 'true');
         btn.addEventListener('click', () => {
           menu.remove();
           // 選択範囲を復元してからアクションを実行
@@ -601,14 +608,14 @@
           }
         }
         addCommentHere(override || undefined, { anchorEl: commentAnchorEl });
-      }));
+      }, true, 'add-comment'));
       menu.appendChild(mkItem('コメント一覧を開く', () => {
         const filePath = this._path || this.doc?.source?.path || '';
         if (filePath && typeof CommentBadges !== 'undefined' && typeof CommentBadges.openPanelForFileComments === 'function') {
           CommentBadges.openPanelForFileComments(filePath);
         }
-      }));
-      menu.appendChild(mkItem('ルビ設定…', () => this._insertRuby(), hasSelection));
+      }, true, 'open-comments'));
+      menu.appendChild(mkItem('ルビ設定…', () => this._insertRuby(), hasSelection, 'ruby'));
       menu.appendChild(mkItem('リンクを挿入...', () => {
         if (typeof showLinkInsertModal === 'function') {
           showLinkInsertModal(savedRange, (result) => {
@@ -636,9 +643,9 @@
             }
           });
         }
-      }));
-      menu.appendChild(mkItem('切り取り', () => document.execCommand('cut'), hasSelection));
-      menu.appendChild(mkItem('コピー', () => document.execCommand('copy'), hasSelection));
+      }, true, 'insert-link'));
+      menu.appendChild(mkItem('切り取り', () => document.execCommand('cut'), hasSelection, 'cut'));
+      menu.appendChild(mkItem('コピー', () => document.execCommand('copy'), hasSelection, 'copy'));
       menu.appendChild(mkItem('貼り付け', async () => {
         try {
           const text = await navigator.clipboard.readText();
@@ -648,7 +655,7 @@
           document.execCommand('insertText', false, text);
           this._syncRowFromDom(textEl, { skipUndo: true });
         } catch { document.execCommand('paste'); }
-      }));
+      }, true, 'paste'));
       menu.appendChild(mkItem('セル内に貼り付け', async () => {
         try {
           const clipText = await navigator.clipboard.readText();
@@ -665,7 +672,7 @@
           s.addRange(r);
           this._syncRowFromDom(textEl, { skipUndo: true });
         } catch { /* clipboard API unavailable */ }
-      }));
+      }, true, 'paste-in-cell'));
       menu.style.cssText = 'position:fixed;z-index:10000;min-width:140px;';
       const clickRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
       positionPopup(menu, clickRect);

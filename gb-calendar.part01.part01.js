@@ -187,6 +187,7 @@ function _bindCalendarCellAddButton(cell, onClick) {
   btn.className = 'cal-cell-quick-add';
   btn.textContent = '+';
   btn.title = 'イベントを追加';
+  btn.setAttribute('aria-label', 'イベントを追加');
   const token = [cell.dataset.date || 'day', cell.dataset.hour || 'all-day'].join('-').replace(/[^a-zA-Z0-9_-]/g, '-');
   btn.dataset.e2eId = `cal-cell-quick-add-${token}`;
   btn.style.cssText = 'position:absolute;top:4px;right:4px;width:20px;height:20px;border:none;border-radius:999px;background:var(--accent);color:var(--ui-fg-strong);font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.12s ease;z-index:4;';
@@ -200,6 +201,8 @@ function _bindCalendarCellAddButton(cell, onClick) {
   const hide = () => { btn.style.opacity = '0'; btn.style.pointerEvents = 'none'; };
   cell.addEventListener('mouseenter', show);
   cell.addEventListener('mouseleave', hide);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('blur', hide);
   return btn;
 }
 async function _quickCreateCalendarEvent(dbPath, options = {}) {
@@ -500,15 +503,15 @@ function renderCalendarSettingsBar(container, dbPath, viewMode, pivotData, ctx) 
     ${activeViewMode === 'calendar'
       ? `<label>表示: <select id="cal-mode" class="gb-select gb-select-sm">${sel}</select></label>`
       : viewBadge}
-    <button id="cal-prev" class="tl-nav-btn">${lucide('chevronLeft', 14)}</button>
+    <button id="cal-prev" type="button" class="tl-nav-btn" title="前へ" aria-label="前へ">${lucide('chevronLeft', 14)}</button>
     <span id="cal-title" style="font-weight:600;min-width:120px;text-align:center;">${esc(title)}</span>
-    <button id="cal-next" class="tl-nav-btn">${lucide('chevronRight', 14)}</button>
-    <button id="cal-today" class="tl-nav-btn">今日</button>
+    <button id="cal-next" type="button" class="tl-nav-btn" title="次へ" aria-label="次へ">${lucide('chevronRight', 14)}</button>
+    <button id="cal-today" type="button" class="tl-nav-btn" title="今日" aria-label="今日">今日</button>
     ${info.isMappedDb ? '<span style="font-size:11px;color:var(--fg2);padding:0 8px;">日時のみ編集可</span>' : ''}
-    ${info.canCreateEvents ? '<button id="cal-add-ev" class="tl-nav-btn" title="イベント追加">+ イベント</button>' : ''}
-    ${info.canCreateEvents && activeViewMode==='tasks'?'<button id="cal-add-task" class="tl-nav-btn" title="ToDo追加">+ ToDo</button>':''}
-    <button id="cal-timer" class="tl-nav-btn" title="タイマー">タイマー</button>
-    ${info.canSyncExternal ? '<button id="cal-sync" class="tl-nav-btn" title="同期">同期</button>' : ''}
+    ${info.canCreateEvents ? '<button id="cal-add-ev" type="button" class="tl-nav-btn" title="イベント追加" aria-label="イベント追加">+ イベント</button>' : ''}
+    ${info.canCreateEvents && activeViewMode==='tasks'?'<button id="cal-add-task" type="button" class="tl-nav-btn" title="ToDo追加" aria-label="ToDo追加">+ ToDo</button>':''}
+    <button id="cal-timer" type="button" class="tl-nav-btn" title="タイマー" aria-label="タイマー">タイマー</button>
+    ${info.canSyncExternal ? '<button id="cal-sync" type="button" class="tl-nav-btn" title="同期" aria-label="同期">同期</button>' : ''}
     <label style="margin-left:auto;font-size:10px;">開始曜日:
       <select id="cal-start-day" class="gb-select gb-select-sm">
         <option value="0" ${_calStartDay===0?'selected':''}>日</option>

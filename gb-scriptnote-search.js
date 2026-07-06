@@ -5,8 +5,12 @@ Object.assign(ScriptNoteEditor.prototype, {
   _closeSearchReplacePopup() {
     if (this._searchPopup?.isConnected) this._searchPopup.remove();
     if (this._searchPopupCloseHandler) {
-      document.removeEventListener('pointerdown', this._searchPopupCloseHandler);
+      document.removeEventListener('pointerdown', this._searchPopupCloseHandler, true);
       this._searchPopupCloseHandler = null;
+    }
+    if (this._searchPopupKeyHandler) {
+      document.removeEventListener('keydown', this._searchPopupKeyHandler, true);
+      this._searchPopupKeyHandler = null;
     }
     this._updateSearchPopupUi = null;
     this._searchPopup = null;
@@ -263,6 +267,12 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     document.body.appendChild(popup);
     this._searchPopup = popup;
+    if (typeof attachMeldexDropdownCloseButton === 'function') {
+      attachMeldexDropdownCloseButton(popup, {
+        trigger: anchorBtn,
+        close: () => this._closeSearchReplacePopup(),
+      });
+    }
     if (anchorBtn) positionPopup(popup, anchorBtn.getBoundingClientRect());
     else {
       const hostRect = this.host?.getBoundingClientRect?.();
@@ -271,10 +281,19 @@ Object.assign(ScriptNoteEditor.prototype, {
         : { left: window.innerWidth - 16, right: window.innerWidth - 16, top: 16, bottom: 16 };
       positionPopup(popup, anchorRect);
     }
+    this._searchPopupKeyHandler = (ev) => {
+      if (ev.key !== 'Escape' || !this._searchPopup?.isConnected) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this._closeSearchReplacePopup();
+    };
+    document.addEventListener('keydown', this._searchPopupKeyHandler, true);
     this._searchPopupCloseHandler = (ev) => {
       if (!popup.contains(ev.target) && ev.target !== anchorBtn) this._closeSearchReplacePopup();
     };
-    setTimeout(() => document.addEventListener('pointerdown', this._searchPopupCloseHandler), 0);
+    setTimeout(() => {
+      if (popup.isConnected) document.addEventListener('pointerdown', this._searchPopupCloseHandler, true);
+    }, 0);
     syncState(null, !!queryInput.value);
     queryInput.focus();
     queryInput.select();

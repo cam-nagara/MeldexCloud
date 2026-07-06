@@ -858,42 +858,173 @@ function exportDbAsTemplate(dbPath) {
   };
 }
 
+function _dbTemplateTrigger(triggerEl = null) {
+  if (triggerEl && typeof triggerEl.focus === 'function') return triggerEl;
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  return active && typeof active.focus === 'function' ? active : null;
+}
+
+function _focusDbTemplateTrigger(triggerEl) {
+  if (!triggerEl || typeof triggerEl.focus !== 'function' || !triggerEl.isConnected) return;
+  try {
+    triggerEl.focus({ preventScroll: true });
+  } catch {
+    try { triggerEl.focus(); } catch {}
+  }
+}
+
+function _cleanupDbTemplateOverlay(overlay) {
+  if (!overlay || typeof overlay._dbTemplateCleanup !== 'function') return;
+  overlay._dbTemplateCleanup();
+}
+
+function _isTopDbTemplateOverlay(overlay) {
+  if (!overlay?.isConnected) return false;
+  const overlays = Array.from(document.querySelectorAll('.modal-overlay[data-db-template-modal]'))
+    .filter(el => el.isConnected);
+  return overlays[overlays.length - 1] === overlay;
+}
+
+function _closeDbTemplateOverlay(overlay, triggerEl = null, options = {}) {
+  if (!overlay || !overlay.isConnected) return;
+  _cleanupDbTemplateOverlay(overlay);
+  overlay.remove();
+  if (options.restoreFocus === false) return;
+  const trigger = triggerEl || overlay._dbTemplateTrigger || null;
+  _focusDbTemplateTrigger(trigger);
+  setTimeout(() => _focusDbTemplateTrigger(trigger), 0);
+  setTimeout(() => _focusDbTemplateTrigger(trigger), 60);
+}
+
+function _bindDbTemplateDismiss(overlay, triggerEl = null) {
+  if (!overlay) return;
+  const onPointerDown = (e) => {
+    if (e.target !== overlay) return;
+    _closeDbTemplateOverlay(overlay, triggerEl);
+  };
+  const onKeyDown = (e) => {
+    if (e.key !== 'Escape' || !overlay.isConnected) return;
+    if (!_isTopDbTemplateOverlay(overlay)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _closeDbTemplateOverlay(overlay, triggerEl);
+  };
+  overlay.addEventListener('pointerdown', onPointerDown);
+  document.addEventListener('keydown', onKeyDown, true);
+  overlay._dbTemplateCleanup = () => {
+    overlay.removeEventListener('pointerdown', onPointerDown);
+    document.removeEventListener('keydown', onKeyDown, true);
+    overlay._dbTemplateCleanup = null;
+  };
+}
+
+function _dbTemplateViewportSize() {
+  const zoom = typeof _getZoom === 'function'
+    ? Math.max(0.1, _getZoom() || 1)
+    : Math.max(0.1, parseFloat(document.documentElement?.style?.zoom || '') || 1);
+  const width = (window.visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || 800) / zoom;
+  const height = (window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 600) / zoom;
+  return { width, height };
+}
+
+function _isDbTemplateMobileSheetMode() {
+  return document.body?.dataset?.cloudMobile === '1'
+    || document.body?.dataset?.mobileUi === '1'
+    || document.body?.dataset?.mobileUiLocal === '1'
+    || window.MeldexCloudMobileState?.mobile === true;
+}
+
+function _setDbTemplateModalSize(modal, opts = {}) {
+  if (!modal || _isDbTemplateMobileSheetMode()) return;
+  const viewport = _dbTemplateViewportSize();
+  const usableWidth = Math.max(260, viewport.width - 32);
+  const usableHeight = Math.max(220, viewport.height - 24);
+  const maxWidth = Math.max(260, opts.maxWidth || 500);
+  modal.style.width = Math.round(Math.min(maxWidth, usableWidth)) + 'px';
+  if (!opts.heightRatio && !opts.maxHeight) return;
+  let targetHeight = opts.heightRatio ? viewport.height * opts.heightRatio : usableHeight;
+  if (opts.maxHeight) targetHeight = Math.min(targetHeight, opts.maxHeight);
+  targetHeight = Math.min(targetHeight, usableHeight);
+  if (opts.minHeight) targetHeight = Math.max(Math.min(opts.minHeight, usableHeight), targetHeight);
+  modal.style.height = Math.round(targetHeight) + 'px';
+}
+
+function _showDbTemplateOverlay(overlay, modal, triggerEl = null, focusTarget = null) {
+  if (!overlay || !modal) return;
+  overlay._dbTemplateTrigger = triggerEl || null;
+  _bindDbTemplateDismiss(overlay, triggerEl);
+  document.body.appendChild(overlay);
+  if (typeof GBModalShell !== 'undefined' && GBModalShell?.enhanceAll) GBModalShell.enhanceAll();
+  requestAnimationFrame(() => {
+    try {
+      (focusTarget || modal)?.focus?.({ preventScroll: true });
+    } catch {
+      try { (focusTarget || modal)?.focus?.(); } catch {}
+    }
+  });
+}
+
+function _setupDbTemplateButton(button, className, e2eId, ariaLabel = '') {
+  if (!button) return button;
+  button.type = 'button';
+  if (className) button.className = className;
+  if (e2eId) button.dataset.e2eId = e2eId;
+  if (ariaLabel) button.setAttribute('aria-label', ariaLabel);
+  return button;
+}
+
 /* --- テンプレートギャラリーUI --- */
 
 /**
  * テンプレートギャラリーモーダルを表示
  */
-function showTemplateGalleryModal(dbPath) {
+function showTemplateGalleryModal(dbPath, triggerEl = null) {
+  const trigger = _dbTemplateTrigger(triggerEl);
+  const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
+  const titleId = `db-template-gallery-title-${seq}`;
+  const descId = `db-template-gallery-desc-${seq}`;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.dataset.dbTemplateModal = 'gallery';
   overlay.style.zIndex = '120';
 
   const modal = document.createElement('div');
-  modal.className = 'modal';
-  modal.style.cssText = 'width:720px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column;';
+  modal.className = 'modal db-template-modal db-template-gallery-modal';
+  modal.dataset.e2eId = 'db-template-gallery-dialog';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', titleId);
+  modal.setAttribute('aria-describedby', descId);
+  modal.tabIndex = -1;
+  _setDbTemplateModalSize(modal, { maxWidth: 720, maxHeight: 720, heightRatio: 0.8, minHeight: 420 });
 
   // ヘッダー
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;';
+  header.className = 'db-template-modal-header';
   const h3 = document.createElement('h3');
+  h3.id = titleId;
   h3.textContent = 'シートテンプレート';
-  h3.style.margin = '0';
   header.appendChild(h3);
+  const desc = document.createElement('div');
+  desc.id = descId;
+  desc.className = 'gb-visually-hidden';
+  desc.textContent = 'シートに適用するテンプレートを選ぶダイアログ';
+  header.appendChild(desc);
   const closeBtn = document.createElement('button');
-  closeBtn.innerHTML = lucide('x', 16);
-  closeBtn.style.cssText = 'background:none;border:none;color:var(--fg2);cursor:pointer;';
-  closeBtn.addEventListener('click', () => overlay.remove());
+  _setupDbTemplateButton(closeBtn, 'gb-btn tb-icon-btn db-template-close-btn', 'db-template-gallery-close', '閉じる');
+  closeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : '×';
+  closeBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
   header.appendChild(closeBtn);
   modal.appendChild(header);
 
   // コンテンツ（左: フィルタ、右: カード）
   const content = document.createElement('div');
-  content.style.cssText = 'display:flex;gap:16px;flex:1;overflow:hidden;';
+  content.className = 'db-template-content';
 
   // 左サイドバー
   const sidebar = document.createElement('div');
-  sidebar.style.cssText = 'width:120px;flex-shrink:0;display:flex;flex-direction:column;gap:4px;';
+  sidebar.className = 'db-template-sidebar';
+  sidebar.setAttribute('aria-label', 'テンプレート種別');
   let currentTier = 'all';
 
   const tierFilters = [
@@ -906,13 +1037,20 @@ function showTemplateGalleryModal(dbPath) {
 
   tierFilters.forEach(tf => {
     const btn = document.createElement('button');
+    btn.type = 'button';
     btn.textContent = tf.label;
     btn.className = 'template-tier-btn' + (tf.key === 'all' ? ' active' : '');
     btn.dataset.tier = tf.key;
+    btn.dataset.e2eId = `db-template-tier-${tf.key}`;
+    btn.setAttribute('aria-pressed', tf.key === 'all' ? 'true' : 'false');
     btn.addEventListener('click', () => {
       currentTier = tf.key;
-      sidebar.querySelectorAll('.template-tier-btn').forEach(b => b.classList.remove('active'));
+      sidebar.querySelectorAll('.template-tier-btn').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
       btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
       renderTemplateCards();
     });
     sidebar.appendChild(btn);
@@ -922,28 +1060,30 @@ function showTemplateGalleryModal(dbPath) {
   // 右: カードグリッド
   const grid = document.createElement('div');
   grid.className = 'template-grid';
+  grid.dataset.e2eId = 'db-template-grid';
   content.appendChild(grid);
   modal.appendChild(content);
 
   // フッター: カスタムテンプレート作成ボタン
   const footer = document.createElement('div');
-  footer.style.cssText = 'margin-top:12px;display:flex;justify-content:flex-end;gap:8px;';
+  footer.className = 'db-template-footer';
   const createBtn = document.createElement('button');
+  _setupDbTemplateButton(createBtn, 'gb-btn gb-btn-sm', 'db-template-create-open');
   createBtn.textContent = '+ 現在のシートからテンプレート作成';
   createBtn.addEventListener('click', () => {
-    overlay.remove();
-    showCreateTemplateModal(dbPath);
+    _closeDbTemplateOverlay(overlay, trigger, { restoreFocus: false });
+    showCreateTemplateModal(dbPath, trigger);
   });
   footer.appendChild(createBtn);
   const cancelBtn = document.createElement('button');
+  _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-gallery-cancel');
   cancelBtn.textContent = '閉じる';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
   footer.appendChild(cancelBtn);
   modal.appendChild(footer);
 
   overlay.appendChild(modal);
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
+  _showDbTemplateOverlay(overlay, modal, trigger, modal);
 
   function renderTemplateCards() {
     grid.innerHTML = '';

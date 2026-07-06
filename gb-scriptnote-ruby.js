@@ -1,6 +1,22 @@
 /* gb-scriptnote-ruby.js: 台本エディタ v2 — ルビタブ
    ScriptNoteEditor.prototype を拡張する */
 
+function _snRubyIcon(name, size, fallback) {
+  if (typeof lucide === 'function') return lucide(name, size || 14);
+  return fallback || '';
+}
+
+function _snRubyConfirmDelete(message) {
+  if (typeof cfConfirm === 'function') {
+    return Promise.resolve(cfConfirm(message, { danger: true, okLabel: '削除' })).then(Boolean);
+  }
+  if (typeof showConfirmDialog === 'function') {
+    return new Promise(resolve => showConfirmDialog(message, () => resolve(true), () => resolve(false)));
+  }
+  if (typeof confirm === 'function') return Promise.resolve(!!confirm(message));
+  return Promise.resolve(false);
+}
+
 Object.assign(ScriptNoteEditor.prototype, {
 
   _refreshAutoRubyDisplay() {
@@ -19,21 +35,31 @@ Object.assign(ScriptNoteEditor.prototype, {
     // ヘッダー
     const header = document.createElement('div');
     header.className = 'sn2-detail-header';
-    header.innerHTML = '<span style="font-weight:600;font-size:13px;">ルビ</span>';
+    const title = document.createElement('span');
+    title.className = 'sn2-ruby-title';
+    title.textContent = 'ルビ';
+    header.appendChild(title);
     const headerBtns = document.createElement('div');
-    headerBtns.style.cssText = 'display:flex;gap:3px;';
+    headerBtns.className = 'sn2-ruby-header-actions';
     const mkBtn = (label, title, onClick, e2eId) => {
       const b = document.createElement('button');
-      b.className = 'sn2-detail-add-btn';
+      b.className = 'sn2-detail-add-btn gb-btn gb-btn-sm gb-btn-quiet sn2-ruby-add-rule';
       b.type = 'button';
-      b.textContent = label;
       b.title = title;
       b.setAttribute('aria-label', title || label);
       if (e2eId) b.dataset.e2eId = e2eId;
+      const icon = document.createElement('span');
+      icon.className = 'sn2-ruby-btn-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = _snRubyIcon('plus', 13, '+');
+      const text = document.createElement('span');
+      text.className = 'sn2-ruby-btn-label';
+      text.textContent = label;
+      b.append(icon, text);
       b.addEventListener('click', onClick);
       return b;
     };
-    headerBtns.appendChild(mkBtn('＋追加', '自動ルビルール追加', () => {
+    headerBtns.appendChild(mkBtn('追加', '自動ルビルール追加', () => {
       this._pushUndo('ルビルール追加');
       if (!this.doc.rubyRules) this.doc.rubyRules = [];
       this.doc.rubyRules.push({ text: '', ruby: '', auto: true });
@@ -46,17 +72,16 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     // ── 表示設定セクション（ルビ一覧の上に配置） ──
     const settingsLabel = document.createElement('div');
-    settingsLabel.className = 'sn2-detail-settings-label';
-    settingsLabel.style.cssText = 'padding:8px 12px 4px;font-weight:600;';
+    settingsLabel.className = 'sn2-detail-settings-label sn2-ruby-section-label';
     settingsLabel.textContent = '表示設定';
     wrap.appendChild(settingsLabel);
     const settingsWrap = document.createElement('div');
-    settingsWrap.style.cssText = 'padding:4px 12px 8px;display:flex;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--border);';
+    settingsWrap.className = 'sn2-ruby-settings';
     // ルビサイズ
     const sizeRow = document.createElement('div');
-    sizeRow.style.cssText = 'display:flex;align-items:center;gap:4px;';
+    sizeRow.className = 'sn2-ruby-field';
     const sizeLabel = document.createElement('span');
-    sizeLabel.style.cssText = 'font-size:11px;color:var(--fg2);';
+    sizeLabel.className = 'sn2-ruby-field-label';
     sizeLabel.textContent = 'サイズ';
     sizeRow.appendChild(sizeLabel);
     const sizeInput = document.createElement('input');
@@ -66,7 +91,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     sizeInput.dataset.e2eId = 'scriptnote-ruby-size-input';
     sizeInput.setAttribute('aria-label', 'ルビサイズ');
     sizeInput.title = 'ルビサイズ';
-    sizeInput.style.cssText = 'width:52px;font-size:10px;padding:1px 3px;border:1px solid var(--border);border-radius:2px;background:var(--bg);color:var(--fg);';
+    sizeInput.className = 'gb-num-input sn2-ruby-number-input';
     sizeInput.addEventListener('change', () => {
       this._pushUndo('ルビサイズ変更');
       if (!this.doc.editor) this.doc.editor = {};
@@ -80,15 +105,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     sizeRow.appendChild(sizeInput);
     const sizeUnit = document.createElement('span');
-    sizeUnit.style.cssText = 'font-size:10px;color:var(--fg2);';
+    sizeUnit.className = 'sn2-ruby-unit';
     sizeUnit.textContent = 'em';
     sizeRow.appendChild(sizeUnit);
     settingsWrap.appendChild(sizeRow);
     // テキストとの距離（サイズの横に並べる）
     const offsetRow = document.createElement('div');
-    offsetRow.style.cssText = 'display:flex;align-items:center;gap:4px;';
+    offsetRow.className = 'sn2-ruby-field';
     const offsetLabel = document.createElement('span');
-    offsetLabel.style.cssText = 'font-size:11px;color:var(--fg2);';
+    offsetLabel.className = 'sn2-ruby-field-label';
     offsetLabel.textContent = '距離';
     offsetRow.appendChild(offsetLabel);
     const offsetInput = document.createElement('input');
@@ -98,7 +123,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     offsetInput.dataset.e2eId = 'scriptnote-ruby-offset-input';
     offsetInput.setAttribute('aria-label', 'ルビ距離');
     offsetInput.title = 'ルビ距離';
-    offsetInput.style.cssText = 'width:52px;font-size:10px;padding:1px 3px;border:1px solid var(--border);border-radius:2px;background:var(--bg);color:var(--fg);';
+    offsetInput.className = 'gb-num-input sn2-ruby-number-input';
     offsetInput.addEventListener('change', () => {
       this._pushUndo('ルビ距離変更');
       if (!this.doc.editor) this.doc.editor = {};
@@ -111,7 +136,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     offsetRow.appendChild(offsetInput);
     const offsetUnit = document.createElement('span');
-    offsetUnit.style.cssText = 'font-size:10px;color:var(--fg2);';
+    offsetUnit.className = 'sn2-ruby-unit';
     offsetUnit.textContent = 'px';
     offsetRow.appendChild(offsetUnit);
     settingsWrap.appendChild(offsetRow);
@@ -136,23 +161,39 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     if (fileRubies.length) {
       const secLabel = document.createElement('div');
-      secLabel.className = 'sn2-detail-settings-label';
-      secLabel.style.cssText = 'padding:8px 12px 4px;font-weight:600;';
+      secLabel.className = 'sn2-detail-settings-label sn2-ruby-section-label';
       secLabel.textContent = `ファイル内ルビ（${fileRubies.length}件）`;
       wrap.appendChild(secLabel);
       const table = document.createElement('table');
-      table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px;';
+      table.className = 'sn2-ruby-table';
       const thead = document.createElement('thead');
-      thead.innerHTML = '<tr style="color:var(--fg2);font-size:10px;border-bottom:1px solid var(--border);"><th style="padding:2px 8px;text-align:left;">対象</th><th style="padding:2px 4px;text-align:left;">ルビ</th><th style="padding:2px 8px;text-align:right;">位置</th></tr>';
+      const headRow = document.createElement('tr');
+      ['対象', 'ルビ', '位置'].forEach((text, index) => {
+        const th = document.createElement('th');
+        th.textContent = text;
+        if (index === 2) th.className = 'sn2-ruby-file-pos';
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
-      fileRubies.forEach(fr => {
+      fileRubies.forEach((fr, idx) => {
         const tr = document.createElement('tr');
-        tr.style.cssText = 'cursor:pointer;border-bottom:1px solid var(--border);';
-        tr.innerHTML = `<td style="padding:3px 8px;">${this._escHtml(fr.text)}</td>
-          <td style="padding:3px 4px;color:var(--fg2);">${this._escHtml(fr.ruby)}</td>
-          <td style="padding:3px 8px;text-align:right;color:var(--fg2);font-size:10px;">${this._escHtml(fr.role || '行' + (fr.rowIdx + 1))}</td>`;
-        tr.addEventListener('click', () => {
+        tr.className = 'sn2-ruby-file-row';
+        tr.tabIndex = 0;
+        tr.setAttribute('role', 'button');
+        tr.setAttribute('aria-label', `${fr.text} のルビ位置へ移動`);
+        tr.dataset.e2eId = 'scriptnote-ruby-file-row-' + idx;
+        const baseCell = document.createElement('td');
+        baseCell.textContent = fr.text;
+        const rubyCell = document.createElement('td');
+        rubyCell.className = 'sn2-ruby-file-ruby';
+        rubyCell.textContent = fr.ruby;
+        const posCell = document.createElement('td');
+        posCell.className = 'sn2-ruby-file-pos';
+        posCell.textContent = fr.role || '行' + (fr.rowIdx + 1);
+        tr.append(baseCell, rubyCell, posCell);
+        const jumpToRubyRow = () => {
           const row = this.doc.rows[fr.rowIdx];
           if (row) {
             const safeRowId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
@@ -165,22 +206,25 @@ Object.assign(ScriptNoteEditor.prototype, {
               setTimeout(() => rowEl.classList.remove('sn2-swap-highlight'), 600);
             }
           }
+        };
+        tr.addEventListener('click', jumpToRubyRow);
+        tr.addEventListener('keydown', (ev) => {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          ev.preventDefault();
+          jumpToRubyRow();
         });
-        tr.addEventListener('pointerenter', () => { tr.style.background = 'var(--bg3)'; });
-        tr.addEventListener('pointerleave', () => { tr.style.background = ''; });
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
       const tableWrap = document.createElement('div');
-      tableWrap.style.cssText = 'max-height:200px;overflow-y:auto;padding:0 4px;';
+      tableWrap.className = 'sn2-ruby-table-wrap';
       tableWrap.appendChild(table);
       wrap.appendChild(tableWrap);
     }
 
     // ── 自動ルビルール（テーブル形式） ──
     const autoLabel = document.createElement('div');
-    autoLabel.className = 'sn2-detail-settings-label';
-    autoLabel.style.cssText = 'padding:8px 12px 4px;font-weight:600;border-top:1px solid var(--border);';
+    autoLabel.className = 'sn2-detail-settings-label sn2-ruby-section-label sn2-ruby-section-label--ruled';
     autoLabel.textContent = `自動ルビルール（${autoRules.length}件）`;
     wrap.appendChild(autoLabel);
 
@@ -188,13 +232,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     ruleList.className = 'sn2-detail-list';
     autoRules.forEach((rule, i) => {
       const item = document.createElement('div');
-      item.className = 'sn2-detail-item';
-      item.style.cssText = 'display:flex;align-items:center;gap:4px;padding:3px 8px;min-height:32px;';
+      item.className = 'sn2-detail-item sn2-ruby-rule-item';
       item.draggable = true;
       item.dataset.idx = i;
 
       const handle = document.createElement('span');
-      handle.className = 'sn2-detail-handle';
+      handle.className = 'sn2-detail-handle sn2-ruby-rule-handle';
+      handle.setAttribute('aria-hidden', 'true');
       handle.textContent = '⠿';
       item.appendChild(handle);
 
@@ -205,7 +249,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       textInp.dataset.e2eId = 'scriptnote-ruby-rule-text-' + i;
       textInp.setAttribute('aria-label', '自動ルビ対象 ' + (i + 1));
       textInp.title = '自動ルビ対象';
-      textInp.style.cssText = 'flex:1;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--fg);font-size:12px;outline:none;min-width:0;';
+      textInp.className = 'gb-input-sm sn2-ruby-rule-input';
       textInp.addEventListener('change', () => {
         this._pushUndo('ルビルール編集');
         rule.text = textInp.value.trim();
@@ -216,7 +260,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
       const arrow = document.createElement('span');
       arrow.textContent = '→';
-      arrow.style.cssText = 'color:var(--fg2);font-size:11px;flex-shrink:0;';
+      arrow.className = 'sn2-ruby-rule-arrow';
       item.appendChild(arrow);
 
       const rubyInp = document.createElement('input');
@@ -226,7 +270,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       rubyInp.dataset.e2eId = 'scriptnote-ruby-rule-ruby-' + i;
       rubyInp.setAttribute('aria-label', '自動ルビ ' + (i + 1));
       rubyInp.title = '自動ルビ';
-      rubyInp.style.cssText = 'flex:1;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--fg);font-size:12px;outline:none;min-width:0;';
+      rubyInp.className = 'gb-input-sm sn2-ruby-rule-input';
       rubyInp.addEventListener('change', () => {
         this._pushUndo('ルビルール編集');
         rule.ruby = rubyInp.value.trim();
@@ -237,21 +281,20 @@ Object.assign(ScriptNoteEditor.prototype, {
 
       // 削除ボタン（右端固定、改行しない）
       const delBtn = document.createElement('button');
-      delBtn.className = 'gb-fmt-btn';
+      delBtn.className = 'gb-btn gb-btn-xs gb-btn-icon gb-btn-quiet sn2-ruby-delete-rule';
       delBtn.type = 'button';
-      delBtn.textContent = '✕';
       delBtn.title = '削除';
       delBtn.dataset.e2eId = 'scriptnote-ruby-rule-delete-' + i;
       delBtn.setAttribute('aria-label', '自動ルビルールを削除 ' + (i + 1));
-      delBtn.style.cssText = 'font-size:10px;color:var(--fg2);flex-shrink:0;margin-left:auto;';
-      delBtn.addEventListener('click', () => {
-        showConfirmDialog(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を削除しますか？`, () => {
-          this._pushUndo('ルビルール削除');
-          autoRules.splice(i, 1);
-          this._refreshAutoRubyDisplay();
-          this._markDirty({ skipUndo: true });
-          this.renderRubyPanel(container);
-        });
+      delBtn.innerHTML = _snRubyIcon('trash2', 13, '削除');
+      delBtn.addEventListener('click', async () => {
+        const ok = await _snRubyConfirmDelete(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を削除しますか？`);
+        if (!ok) return;
+        this._pushUndo('ルビルール削除');
+        autoRules.splice(i, 1);
+        this._refreshAutoRubyDisplay();
+        this._markDirty({ skipUndo: true });
+        this.renderRubyPanel(container);
       });
       item.appendChild(delBtn);
 

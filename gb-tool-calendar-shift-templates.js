@@ -16,6 +16,16 @@
     return typeof lucide === 'function' ? lucide(name, size) : '';
   }
 
+  function _stModalSizeStyle(minWidth, extra = 'overflow:auto;') {
+    const width = Math.max(240, Number(minWidth) || 400);
+    const zoom = Math.max(0.1, (typeof _getZoom === 'function' ? _getZoom() : parseFloat(document.documentElement?.style?.zoom || '')) || 1);
+    const viewportWidth = Math.floor(window.visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || width + 16);
+    const viewportHeight = Math.floor(window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 720);
+    const safeWidth = Math.max(240, Math.min(width, viewportWidth - 16));
+    const safeHeight = Math.max(180, Math.floor((viewportHeight - 56) / zoom));
+    return `min-width:0;min-height:0;width:${safeWidth}px;max-width:${safeWidth}px;max-height:${safeHeight}px;${extra}`;
+  }
+
   function _stValidTime(value) {
     return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ''));
   }
@@ -35,11 +45,16 @@
 
   let _stActiveTimeMenu = null;
   let _stActiveTimeCleanup = null;
+  let _stActiveTimeButton = null;
 
   function _stCloseTimeMenus() {
     if (_stActiveTimeCleanup) {
       _stActiveTimeCleanup();
       _stActiveTimeCleanup = null;
+    }
+    if (_stActiveTimeButton) {
+      _stActiveTimeButton.setAttribute('aria-expanded', 'false');
+      _stActiveTimeButton = null;
     }
     if (_stActiveTimeMenu) {
       _stActiveTimeMenu.remove();
@@ -67,11 +82,14 @@
     _stCloseTimeMenus();
     const optional = input.dataset.calShiftTimeOptional === '1';
     const current = _stDisplayTime(input.value);
+    const label = input.getAttribute('aria-label') || '時刻';
+    const button = input.closest('[data-cal-shift-time-control]')?.querySelector('[data-cal-shift-time-menu]') || null;
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-cal-time-picker';
     menu.style.position = 'fixed';
     menu.style.zIndex = '10004';
     menu.setAttribute('role', 'listbox');
+    menu.setAttribute('aria-label', label + '候補');
     _stTimeOptions(current, optional).forEach(value => {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -79,6 +97,7 @@
       btn.dataset.value = value;
       btn.setAttribute('role', 'option');
       btn.setAttribute('aria-selected', value === current ? 'true' : 'false');
+      btn.setAttribute('aria-label', `${label} ${value || '未設定'}`);
       btn.textContent = value || '未設定';
       btn.addEventListener('click', event => {
         event.preventDefault();
@@ -92,6 +111,8 @@
       menu.appendChild(btn);
     });
     _stActiveTimeMenu = menu;
+    _stActiveTimeButton = button;
+    button?.setAttribute('aria-expanded', 'true');
     _stPositionMenu(menu, input.closest('[data-cal-shift-time-control]') || input);
     requestAnimationFrame(() => {
       const selected = menu.querySelector('[aria-selected="true"]');
@@ -125,6 +146,8 @@
       control._calShiftTimeBound = true;
       const input = control.querySelector('[data-cal-shift-time]');
       const button = control.querySelector('[data-cal-shift-time-menu]');
+      button?.setAttribute('aria-haspopup', 'listbox');
+      button?.setAttribute('aria-expanded', 'false');
       button?.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
@@ -449,19 +472,22 @@
     this._loadShiftScheduleTemplates().then(templates => {
       if (token !== this._shiftTemplateSettingsSeq || !field.isConnected) return;
       const rows = templates.length
-        ? templates.map(template => `<div class="gb-cal-shift-template-row" data-cal-shift-template-id="${_stEsc(template.id)}">
+        ? templates.map(template => {
+          const name = template.name || '無題';
+          return `<div class="gb-cal-shift-template-row" data-cal-shift-template-id="${_stEsc(template.id)}">
             <div>
-              <strong>${_stEsc(template.name || '無題')}</strong>
+              <strong>${_stEsc(name)}</strong>
               <span>${_stEsc(_stTemplateLine(template))}</span>
             </div>
-            <button type="button" data-cal-shift-template-edit="${_stEsc(template.id)}" title="編集">${_stIcon('pencil', 14)}</button>
-            <button type="button" data-cal-shift-template-delete="${_stEsc(template.id)}" title="削除">${_stIcon('trash2', 14)}</button>
-          </div>`).join('')
+            <button type="button" data-cal-shift-template-edit="${_stEsc(template.id)}" aria-label="${_stEsc(name)}を編集" title="${_stEsc(name)}を編集">${_stIcon('pencil', 14)}</button>
+            <button type="button" data-cal-shift-template-delete="${_stEsc(template.id)}" aria-label="${_stEsc(name)}を削除" title="${_stEsc(name)}を削除">${_stIcon('trash2', 14)}</button>
+          </div>`;
+        }).join('')
         : '<div class="gb-section-desc">テンプレートがありません。</div>';
       field.innerHTML = `
         <label>シフト勤務テンプレート</label>
         <div class="gb-cal-shift-template-list">${rows}</div>
-        <button type="button" class="gb-cal-shift-template-add" data-cal-shift-template-new>${_stIcon('plus', 14)} テンプレート追加</button>`;
+        <button type="button" class="gb-cal-shift-template-add" data-cal-shift-template-new aria-label="シフト勤務テンプレートを追加" title="シフト勤務テンプレートを追加">${_stIcon('plus', 14)} テンプレート追加</button>`;
       field.querySelector('[data-cal-shift-template-new]')?.addEventListener('click', () => this._showShiftTemplateEditor(null));
       field.querySelectorAll('[data-cal-shift-template-edit]').forEach(btn => {
         const template = templates.find(item => item.id === btn.dataset.calShiftTemplateEdit);
@@ -469,7 +495,7 @@
       });
       field.querySelectorAll('[data-cal-shift-template-delete]').forEach(btn => {
         btn.addEventListener('click', async () => {
-          if (typeof cfConfirm === 'function' && !await cfConfirm('このシフト勤務テンプレートを削除しますか？')) return;
+          if (typeof cfConfirm === 'function' && !await cfConfirm('このシフト勤務テンプレートを削除しますか？', { danger: true, okLabel: '削除' })) return;
           await apiFetch('/cal/schedule-templates/' + encodeURIComponent(btn.dataset.calShiftTemplateDelete), { method: 'DELETE' });
           this._renderShiftTemplateSettings(body);
           this._showStatus?.('シフト勤務テンプレートを削除しました');
@@ -504,10 +530,10 @@
     }).join('') : `<option value="">${teamLoadFailed ? 'ワークスペースを読み込めませんでした' : 'ワークスペースを設定してください'}</option>`;
     const overlay = document.createElement('div');
     overlay.className = 'gb-cal-modal-overlay';
-    overlay.innerHTML = `<div class="gb-cal-modal gb-cal-shift-template-modal" style="min-width:520px;max-height:80vh;overflow:auto;">
-      <h3>${template?.id ? 'シフト勤務テンプレート編集' : 'シフト勤務テンプレート追加'}</h3>
-      <div class="field"><label>名前</label><input data-cal-shift-template-name type="text" value="${_stEsc(template?.name || '標準勤務')}"></div>
-      <div class="field"><label>ワークスペース</label><select class="gb-select" data-cal-shift-template-team>${teamOptions}</select></div>
+    overlay.innerHTML = `<div class="gb-cal-modal gb-cal-shift-template-modal" role="dialog" aria-modal="true" aria-labelledby="gb-cal-shift-template-title" style="${_stModalSizeStyle(520)}">
+      <h3 id="gb-cal-shift-template-title">${template?.id ? 'シフト勤務テンプレート編集' : 'シフト勤務テンプレート追加'}</h3>
+      <div class="field"><label>名前</label><input class="gb-input" data-cal-shift-template-name type="text" aria-label="シフト勤務テンプレート名" value="${_stEsc(template?.name || '標準勤務')}"></div>
+      <div class="field"><label>ワークスペース</label><select class="gb-select" data-cal-shift-template-team aria-label="ワークスペース">${teamOptions}</select></div>
       ${teamLoadFailed ? '<div class="gb-section-desc">ワークスペース一覧を読み込めませんでした。保存済みのワークスペースは維持できます。</div>' : ''}
       <div style="display:flex;gap:8px;">
         <div class="field" style="flex:1;"><label>勤務開始</label>${_stTimeControlHtml('work-start', entry.workStart || '09:00', '勤務開始')}</div>
@@ -517,11 +543,23 @@
         <label>休憩</label>
         <div class="gb-cal-shift-break-head"><span></span><span>開始</span><span>終了</span><span></span></div>
         <div class="gb-cal-shift-break-list" data-cal-shift-break-list>${_stBreakRowsHtml(breaks)}</div>
-        <button type="button" data-cal-shift-break-add>${_stIcon('plus', 14)} 休憩追加</button>
+        <button type="button" data-cal-shift-break-add aria-label="休憩を追加" title="休憩を追加">${_stIcon('plus', 14)} 休憩追加</button>
       </div>
       <div class="btn-row"><button type="button" data-cal-shift-template-cancel>キャンセル</button><button type="button" class="primary" data-cal-shift-template-save>保存</button></div>
     </div>`;
     document.body.appendChild(overlay);
+    let saving = false;
+    const closeEditor = () => {
+      _stCloseTimeMenus();
+      overlay.remove();
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+    const closeOnEscape = event => {
+      if (event.key !== 'Escape' || saving) return;
+      event.preventDefault();
+      closeEditor();
+    };
+    document.addEventListener('keydown', closeOnEscape, true);
     const bindBreakDeletes = () => {
       overlay.querySelectorAll('[data-cal-shift-break-remove]').forEach(btn => {
         if (btn._calShiftBreakBound) return;
@@ -543,10 +581,8 @@
       _stRenumberBreakRows(overlay);
     });
     overlay.querySelector('[data-cal-shift-template-cancel]')?.addEventListener('click', () => {
-      _stCloseTimeMenus();
-      overlay.remove();
+      closeEditor();
     });
-    let saving = false;
     overlay.querySelector('[data-cal-shift-template-save]')?.addEventListener('click', async () => {
       if (saving) return;
       const name = overlay.querySelector('[data-cal-shift-template-name]')?.value.trim() || '標準勤務';
@@ -603,8 +639,7 @@
       try {
         if (template?.id) await apiPut('/cal/schedule-templates/' + encodeURIComponent(template.id), payload);
         else await apiPost('/cal/schedule-templates', payload);
-        _stCloseTimeMenus();
-        overlay.remove();
+        closeEditor();
         this._renderShiftTemplateSettings?.(this._calendarSettingsBody);
         this._showStatus?.('シフト勤務テンプレートを保存しました');
       } catch (error) {
@@ -646,28 +681,48 @@
     menu.className = 'gb-context-menu gb-cal-shift-template-picker';
     menu.style.position = 'fixed';
     menu.style.zIndex = '10003';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'シフト勤務テンプレート');
     templates.forEach(template => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'gb-context-menu-item';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('aria-label', `${template.name || '無題'}を適用`);
       btn.innerHTML = `<span>${_stEsc(template.name || '無題')}</span><span class="menu-shortcut">${_stEsc(_stTemplateLine(template))}</span>`;
       btn.addEventListener('click', async event => {
         event.preventDefault();
         event.stopPropagation();
-        menu.remove();
+        closeMenu();
         await this._applyShiftTemplateToDate(template, dateStr);
       });
       menu.appendChild(btn);
     });
     _stPositionMenu(menu, anchorEl);
+    let cleanup = null;
+    const closeMenu = () => {
+      cleanup?.();
+      menu.remove();
+      anchorEl?.focus?.();
+    };
     setTimeout(() => {
       const close = event => {
         if (!menu.contains(event.target)) {
-          menu.remove();
-          document.removeEventListener('pointerdown', close, true);
+          closeMenu();
+        }
+      };
+      const keyClose = event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeMenu();
         }
       };
       document.addEventListener('pointerdown', close, true);
+      document.addEventListener('keydown', keyClose, true);
+      cleanup = () => {
+        document.removeEventListener('pointerdown', close, true);
+        document.removeEventListener('keydown', keyClose, true);
+      };
     }, 0);
   };
 

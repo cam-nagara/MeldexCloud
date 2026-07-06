@@ -357,12 +357,13 @@
     _savedRoot = root;
     _savedRange = range.cloneRange();
     const anchor = { getBoundingClientRect: () => rect };
-    openFormatPopup(anchor, {
+    const popup = openFormatPopup(anchor, {
       fields: FIELDS,
       values: _computedValues(range),
       className: POPUP_CLASS,
       closeOnOutside: true,
       avoidRect: _rangeAvoidRect(range),
+      focusTarget: root,
       extraRow2: [_selectionClipboardRow()],
       onChange(prop, value) {
         const normalized = prop === 'bold' ? 'fontWeight'
@@ -375,6 +376,8 @@
         _wrapSelectionWithStyle(_stylePatch(normalized, value));
       },
     });
+    popup?.setAttribute?.('role', 'dialog');
+    popup?.setAttribute?.('aria-label', '選択範囲の書式設定');
   }
 
   function _schedule() {
@@ -426,6 +429,34 @@
     if (win) win.opener = null;
   }
 
+  function _restoreGoogleContextFocus(target) {
+    const focusTarget = target?.closest?.('[contenteditable="true"], textarea, input, button, [tabindex]');
+    if (!focusTarget?.isConnected || typeof focusTarget.focus !== 'function') return;
+    try { focusTarget.focus({ preventScroll: true }); } catch { try { focusTarget.focus(); } catch {} }
+  }
+
+  function _googleContextItems(menu) {
+    return Array.from(menu?.querySelectorAll?.('.gb-context-menu-item:not(:disabled)') || [])
+      .filter(item => {
+        if (!(item instanceof HTMLElement) || item.classList.contains('disabled')) return false;
+        const rect = item.getBoundingClientRect();
+        const style = getComputedStyle(item);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      });
+  }
+
+  function _focusGoogleContextItem(menu, direction) {
+    const items = _googleContextItems(menu);
+    if (!items.length) return;
+    const current = items.indexOf(document.activeElement);
+    const next = direction === 'first'
+      ? 0
+      : direction === 'last'
+        ? items.length - 1
+        : (Math.max(0, current) + direction + items.length) % items.length;
+    items[next]?.focus?.();
+  }
+
   function _googleContextActions(ev) {
     const target = ev?.target;
     const text = _contextSelectionText(target);
@@ -454,17 +485,32 @@
       const sep = document.createElement('div');
       sep.className = 'gb-context-menu-sep';
       sep.dataset.gbGoogleContext = '1';
+      sep.setAttribute('role', 'separator');
       menu.appendChild(sep);
     }
     actions.forEach(action => {
-      const item = document.createElement('div');
+      const item = document.createElement('button');
+      item.type = 'button';
       item.className = 'gb-context-menu-item';
       item.dataset.gbGoogleContext = '1';
-      item.innerHTML = (typeof lucide === 'function' ? lucide(action.icon, 14) + ' ' : '') + action.label;
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('aria-label', action.label);
+      if (typeof lucide === 'function') {
+        const icon = document.createElement('span');
+        icon.className = 'menu-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = lucide(action.icon, 14);
+        item.appendChild(icon);
+      }
+      const label = document.createElement('span');
+      label.className = 'menu-label';
+      label.textContent = action.label;
+      item.appendChild(label);
       item.addEventListener('click', (clickEv) => {
         clickEv.preventDefault();
         clickEv.stopPropagation();
-        document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+        if (typeof menu._gbGoogleContextClose === 'function') menu._gbGoogleContextClose(false);
+        else document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
         action.run();
       });
       menu.appendChild(item);
@@ -472,12 +518,26 @@
   }
 
   function _showGoogleContextMenu(ev, actions) {
-    document.querySelectorAll('.gb-google-context-menu').forEach(el => el.remove());
+    document.querySelectorAll('.gb-google-context-menu').forEach(el => {
+      if (typeof el._gbGoogleContextClose === 'function') el._gbGoogleContextClose(false);
+      else el.remove();
+    });
     if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
     if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+    const sourceTarget = ev?.target;
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-google-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Google検索メニュー');
     _appendGoogleContextItems(menu, actions);
+    const cleanup = { pointer: null, key: null };
+    const close = (restoreFocus = true) => {
+      menu.remove();
+      if (cleanup.pointer) document.removeEventListener('pointerdown', cleanup.pointer);
+      if (cleanup.key) menu.removeEventListener('keydown', cleanup.key);
+      if (restoreFocus) _restoreGoogleContextFocus(sourceTarget);
+    };
+    menu._gbGoogleContextClose = close;
     document.body.appendChild(menu);
     if (typeof positionPopup === 'function') {
       positionPopup(menu, { left: ev.clientX, right: ev.clientX, top: ev.clientY, bottom: ev.clientY });
@@ -489,13 +549,34 @@
       if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
     }
     setTimeout(() => {
-      const closer = (downEv) => {
+      cleanup.pointer = (downEv) => {
         if (!menu.contains(downEv.target)) {
-          menu.remove();
-          document.removeEventListener('pointerdown', closer);
+          close(true);
         }
       };
-      document.addEventListener('pointerdown', closer);
+      cleanup.key = (keyEv) => {
+        if (keyEv.key === 'Escape') {
+          keyEv.preventDefault();
+          close(true);
+          return;
+        }
+        if (keyEv.key === 'ArrowDown') {
+          keyEv.preventDefault();
+          _focusGoogleContextItem(menu, 1);
+        } else if (keyEv.key === 'ArrowUp') {
+          keyEv.preventDefault();
+          _focusGoogleContextItem(menu, -1);
+        } else if (keyEv.key === 'Home') {
+          keyEv.preventDefault();
+          _focusGoogleContextItem(menu, 'first');
+        } else if (keyEv.key === 'End') {
+          keyEv.preventDefault();
+          _focusGoogleContextItem(menu, 'last');
+        }
+      };
+      document.addEventListener('pointerdown', cleanup.pointer);
+      menu.addEventListener('keydown', cleanup.key);
+      _focusGoogleContextItem(menu, 'first');
     }, 0);
   }
 

@@ -1,6 +1,7 @@
       if (e.key === 'Enter' && !isDanger) {
         const active = document.activeElement;
         if (active?.id === '_gb-cancel' || active?.id === '_gb-ok') return;
+        e.preventDefault();
         cleanup(true);
       }
     }
@@ -19,6 +20,7 @@ function cfPrompt(message, defaultValue, options) {
   const okLabel = opts.okLabel || '決定';
   const cancelLabel = opts.cancelLabel || 'キャンセル';
   return new Promise(resolve => {
+    const restoreFocusTo = _cfRestoreFocusTarget();
     const o = document.createElement('div');
     o.className = 'modal-overlay';
     o.style.zIndex = '300';
@@ -26,17 +28,36 @@ function cfPrompt(message, defaultValue, options) {
       ${_buildCfDialogBody(message)}
       <input type="text" id="_gb-prompt-input" class="gb-confirm-input" value="${esc(defaultValue ?? '')}">
       <div class="gb-confirm-actions">
-        <button id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
-        <button id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
+        <button type="button" id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
+        <button type="button" id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
       </div>
     </div>`;
     document.body.appendChild(o);
+    _enhanceCfDialog(o, 'cf-prompt', '入力');
     const input = o.querySelector('#_gb-prompt-input');
-    const cleanup = (val) => { o.remove(); resolve(val); };
+    let done = false;
+    const cleanup = (val) => {
+      if (done) return;
+      done = true;
+      o.remove();
+      document.removeEventListener('keydown', kh);
+      _restoreCfDialogFocus(restoreFocusTo, o);
+      resolve(val);
+    };
+    function kh(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cleanup(null);
+      }
+    }
     o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(input.value));
     o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(null));
     o.addEventListener('click', (e) => { if (e.target === o) cleanup(null); });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') cleanup(input.value); if (e.key === 'Escape') cleanup(null); });
+    document.addEventListener('keydown', kh);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); cleanup(input.value); }
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(null); }
+    });
     input.focus();
     input.select();
   });

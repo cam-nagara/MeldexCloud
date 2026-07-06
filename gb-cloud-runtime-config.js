@@ -2,30 +2,40 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.6.165",
+    "semver": "0.6.170",
     "variant": "cloud-beta"
   },
-  "cloudPublicUrl": "",
+  "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
   "cloudBackupUrl": "",
   "betaFeedback": {
-    "googleWebAppUrl": "",
+    "googleWebAppUrl": "https://script.google.com/macros/s/AKfycbwwt2QNHhABaxGOki7Gpw-Hm6Lnlqnc0uA1LwKncNrNilptWwj6U5-xQeWJj5cZQrzyRw/exec",
     "feedbackFormUrl": ""
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": ""
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.152"
   },
   "desktop": {
-    "currentVersion": "0.6.165",
-    "downloadUrl": "",
-    "releasesUrl": "",
-    "versions": []
+    "currentVersion": "0.6.152",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/Meldex-v0.6.152.zip",
+    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
+    "versions": [
+      {
+        "version": "0.6.152",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/Meldex-v0.6.152.zip",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.152",
+        "assetName": "Windows用ZIP",
+        "sha256": "6dbd5c83188af32fd96494d96cbb03a32c52d6bf3421b90e31f63d6833a3983c",
+        "publishedAt": "2026-06-29T13:51:38Z",
+        "notesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.152"
+      }
+    ]
   },
   "samples": {
-    "downloadUrl": ""
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/MeldexSamples.zip"
   },
   "dropbox": {
-    "developerAppKey": ""
+    "developerAppKey": "ovxy3vacegzu7nu"
   }
 };
   window.MeldexCloudRuntimeConfig = Object.freeze({

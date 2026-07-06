@@ -244,3 +244,41 @@
   gap: 6px;
   flex-shrink: 0;
 }
+
+@media (pointer: coarse), (max-width: 640px) {
+  .gb-icon-picker,
+  .gb-context-menu.gb-icon-picker {
+    width: min(420px, calc(100vw - 16px));
+    max-height: min(680px, calc(100dvh - 16px));
+    gap: 10px;
+  }
+
+  .gb-icon-picker-close {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .gb-icon-picker-tab,
+  .gb-icon-picker-preset,
+  .gb-icon-picker-more,
+  .gb-icon-picker-actions .gb-btn {
+    min-height: 44px;
+  }
+
+  .gb-icon-picker-search {
+    min-height: 44px;
+  }
+
+  .gb-icon-picker-grid {
+    grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  }
+
+  .gb-icon-picker-cell {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

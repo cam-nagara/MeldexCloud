@@ -281,6 +281,18 @@ button.is-active {
     padding-right: 9px;
   }
 
+  .qm-header-actions button,
+  .qm-toolbar button,
+  .qm-color,
+  #widthInput {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .qm-meta input {
+    min-height: 44px;
+  }
+
   .qm-meta {
     grid-template-columns: 1fr;
   }

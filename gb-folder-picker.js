@@ -4,6 +4,8 @@
 
   if (window.GBFolderPicker) return;
 
+  let _dialogSeq = 0;
+
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
   }
@@ -194,6 +196,8 @@
     toggle.type = 'button';
     toggle.className = 'gb-folder-picker-toggle';
     toggle.title = '展開';
+    toggle.setAttribute('aria-label', `${name}を展開`);
+    toggle.setAttribute('aria-expanded', 'false');
     toggle.style.cssText = 'width:18px;height:22px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;flex-shrink:0;';
     toggle.innerHTML = _icon('chevronRight', 12);
     row.appendChild(toggle);
@@ -225,11 +229,17 @@
       const expanded = children.style.display !== 'none';
       if (expanded) {
         children.style.display = 'none';
+        toggle.title = '展開';
+        toggle.setAttribute('aria-label', `${name}を展開`);
+        toggle.setAttribute('aria-expanded', 'false');
         toggle.innerHTML = _icon('chevronRight', 12);
         if (typeof replaceIcons === 'function') replaceIcons(toggle);
         return;
       }
       children.style.display = '';
+      toggle.title = '折りたたむ';
+      toggle.setAttribute('aria-label', `${name}を折りたたむ`);
+      toggle.setAttribute('aria-expanded', 'true');
       toggle.innerHTML = _icon('chevronDown', 12);
       if (typeof replaceIcons === 'function') replaceIcons(toggle);
       if (children.dataset.loaded === '1') return;
@@ -289,18 +299,23 @@
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.dataset.gbFolderPicker = '1';
+      overlay.dataset.modalShell = 'off';
 
       const modal = document.createElement('div');
-      modal.className = 'modal';
+      modal.className = 'modal gb-folder-picker-modal';
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
       modal.style.cssText = 'width:560px;height:620px;max-width:min(92vw,560px);max-height:86vh;display:flex;flex-direction:column;';
       overlay.appendChild(modal);
 
       const title = document.createElement('h3');
+      title.id = `gb-folder-picker-title-${++_dialogSeq}`;
       title.style.cssText = 'display:flex;align-items:center;gap:8px;';
       const titleIcon = document.createElement('span');
       titleIcon.innerHTML = _icon('folderTree', 16);
       title.appendChild(titleIcon);
       title.appendChild(document.createTextNode(options.title || 'フォルダを選択'));
+      modal.setAttribute('aria-labelledby', title.id);
       modal.appendChild(title);
 
       const currentRow = document.createElement('div');

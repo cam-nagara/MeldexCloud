@@ -238,6 +238,7 @@
 
 // --- リンクツールチップ ---
 let _linkTooltipEl = null;
+let _linkTooltipOwnerNode = null;
 let _linkTooltipTimer = null;
 let _linkTooltipToken = 0;
 let _linkTooltipSuppressedNode = null;
@@ -268,9 +269,16 @@ function _showLinkTooltip(nodeDiv, linkPath, linkType) {
       if (text.length >= 300) text += '\u2026';
 
       if (token !== _linkTooltipToken || !document.documentElement.contains(nodeDiv)) return;
+      if (_linkTooltipOwnerNode && document.documentElement.contains(_linkTooltipOwnerNode)) {
+        _linkTooltipOwnerNode.removeAttribute('aria-describedby');
+      }
+      _linkTooltipOwnerNode = null;
       if (_linkTooltipEl) { _linkTooltipEl.remove(); _linkTooltipEl = null; }
       const tip = document.createElement('div');
       tip.className = 'bd-link-tooltip';
+      tip.id = 'bd-link-tooltip-' + token;
+      tip.setAttribute('role', 'tooltip');
+      tip.setAttribute('aria-hidden', 'false');
       tip.textContent = text || '(\u7a7a)';
       const rect = nodeDiv.getBoundingClientRect();
       const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
@@ -280,6 +288,8 @@ function _showLinkTooltip(nodeDiv, linkPath, linkType) {
       document.body.appendChild(tip);
       if (typeof clampPopupToViewport === 'function') clampPopupToViewport(tip);
       _linkTooltipEl = tip;
+      _linkTooltipOwnerNode = nodeDiv;
+      nodeDiv.setAttribute('aria-describedby', tip.id);
     } catch {}
   }, 500);
 }
@@ -291,6 +301,10 @@ function _isLinkTooltipVisible() {
 function _hideLinkTooltip(options = {}) {
   _linkTooltipToken++;
   clearTimeout(_linkTooltipTimer);
+  if (_linkTooltipOwnerNode && document.documentElement.contains(_linkTooltipOwnerNode)) {
+    _linkTooltipOwnerNode.removeAttribute('aria-describedby');
+  }
+  _linkTooltipOwnerNode = null;
   if (_linkTooltipEl) { _linkTooltipEl.remove(); _linkTooltipEl = null; }
   if (options.suppressNode && document.documentElement.contains(options.suppressNode)) {
     _linkTooltipSuppressedNode = options.suppressNode;
