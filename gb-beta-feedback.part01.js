@@ -21,6 +21,8 @@
   const FEEDBACK_FORM_URL_KEY = 'meldex-beta-feedback-form-url';
   const GOOGLE_WEB_APP_URL_KEY = 'meldex-beta-feedback-google-web-app-url';
   const GOOGLE_ADMIN_TOKEN_KEY = 'meldex-beta-feedback-google-admin-token';
+  const GOOGLE_IMPORT_DEFAULT_LIMIT = 10;
+  const GOOGLE_IMPORT_DEFAULT_MAX_PASSES = 25;
   const CRASH_FIELD_BLOCKLIST = new Set([
     'path', 'filepath', 'filename', 'targetpath',
     'currentpath', 'currentpagepath', 'currentdbpath',
@@ -275,6 +277,16 @@
     session.performance[name] = current;
   }
 
+  function _isPerformanceLogPayload(payload) {
+    return payload?.perf === true || String(payload?.message || '').startsWith('[perf]');
+  }
+
+  function _recordPerformanceLogPayload(payload) {
+    const label = String(payload?.label || '').trim();
+    if (!label) return;
+    recordPerformance(label, payload?.durationMs);
+  }
+
   function _buildSummary(reason) {
     const session = _getSession();
     return {
@@ -307,6 +319,11 @@
     _session.flushedAt = _nowIso();
   }
 
+  function _shouldPersistTelemetrySummary(reason) {
+    const normalized = String(reason || 'manual');
+    return normalized === 'manual' || normalized === 'pagehide';
+  }
+
   async function _postJson(path, payload, keepalive) {
     const response = await fetch((typeof API_BASE === 'string' ? API_BASE : '/api') + path, {
       method: 'POST',
@@ -314,7 +331,15 @@
       body: JSON.stringify(payload),
       keepalive: !!keepalive,
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const text = await response.text();
+        const parsed = JSON.parse(text);
+        detail = parsed?.detail || parsed?.message || parsed?.error || text;
+      } catch (_) {}
+      throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    }
     return response.json().catch(() => ({ ok: true }));
   }
 
@@ -633,13 +658,50 @@
     if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
       return { ok: false, skipped: true, reason: 'cloud-google-import-needs-desktop-server' };
     }
-    const body = {
+    const limit = Number(options?.limit || GOOGLE_IMPORT_DEFAULT_LIMIT) || GOOGLE_IMPORT_DEFAULT_LIMIT;
+    const maxPasses = Math.max(1, Math.min(50, Number(options?.maxPasses || GOOGLE_IMPORT_DEFAULT_MAX_PASSES) || GOOGLE_IMPORT_DEFAULT_MAX_PASSES));
+    const baseBody = {
       googleWebAppUrl: options?.googleWebAppUrl || _googleUrl(),
       adminToken: options?.adminToken || _googleAdminToken(),
-      limit: Number(options?.limit || 50) || 50,
+      limit,
       markImported: true,
     };
-    return _postJson('/beta/feedback/google-import', body, false);
+    const total = {
+      ok: true,
+      fetched: 0,
+      imported: 0,
+      duplicate: 0,
+      ignored: 0,
+      marked: 0,
+      passes: 0,
+      limited: false,
+      markFailed: false,
+      markErrors: [],
+      items: [],
+    };
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      const result = await _postJson('/beta/feedback/google-import', baseBody, false);
+      if (!result?.ok || result?.skipped) {
+        if (!total.passes) return result;
+        total.partial = true;
+        total.stopReason = result?.reason || 'google-import-stopped';
+        total.stopMessage = result?.message || result?.error || '';
+        total.lastResult = result;
+        return total;
+      }
+      total.passes += 1;
+      total.fetched += Number(result.fetched || 0);
+      total.imported += Number(result.imported || 0);
+      total.duplicate += Number(result.duplicate || 0);
+      total.ignored += Number(result.ignored || 0);
+      total.marked += Number(result.marked || 0);
+      if (Array.isArray(result.items)) total.items.push(...result.items);
+      if (Array.isArray(result.markErrors)) total.markErrors.push(...result.markErrors);
+      total.markFailed = total.markFailed || !!result.markFailed;
+      if (total.markFailed || Number(result.fetched || 0) <= 0) return total;
+    }
+    total.limited = true;
+    return total;
   }
 
   function _isFeedbackFormPayload(data) {
@@ -669,6 +731,9 @@
     _flushTelemetryPromise = (async () => {
       const summary = _buildSummary(reason || 'manual');
       _safeSet(LAST_SUMMARY_KEY, JSON.stringify(summary));
+      if (!_shouldPersistTelemetrySummary(summary.reason)) {
+        return { ok: true, delivered: false, skipped: true, reason: 'telemetry-snapshot-only', summary };
+      }
       const tasks = [];
       tasks.push(_postJson('/beta/usage', summary, reason !== 'manual'));
       tasks.push(sendGoogle('usage', summary));
@@ -715,6 +780,10 @@
       runtimeMode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
       ..._redactCrashPayloadData(data),
     };
+    if (_isPerformanceLogPayload(payload)) {
+      _recordPerformanceLogPayload(payload);
+      return;
+    }
     if (isTelemetryEnabled()) {
       const session = _getSession();
       if (payload.level === 'error') session.errorCount += 1;

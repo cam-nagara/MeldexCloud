@@ -94,8 +94,10 @@
     const exists = await _pathExists(provider, STORE_PATH).catch(() => false);
     if (!exists) return { entries: [], updated_at: '' };
     const data = await _readJsonSafe(provider, STORE_PATH, { entries: [] });
+    const rawEntries = Array.isArray(data?.entries) ? data.entries : [];
+    const entries = rawEntries.map(_cleanEntry).filter(Boolean);
     return {
-      entries: (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean),
+      entries,
       updated_at: String(data?.updated_at || ''),
     };
   }
@@ -110,9 +112,7 @@
   }
 
   async function _readPruned(provider) {
-    const store = await _readStore(provider);
-    await _writeStore(provider, store.entries).catch(() => {});
-    return store;
+    return _readStore(provider);
   }
 
   function _pathsOverlap(target, locked, includeDescendants) {

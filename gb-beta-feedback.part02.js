@@ -45,9 +45,13 @@
             ? 'Google受信箱の取込はデスクトップ版のMeldexサーバー起動時に実行できます'
             : 'Google受信箱を取り込めませんでした。設定を確認してください。';
         } else if (result?.ok) {
-          status.textContent = `Google受信箱の取込完了: 取得 ${result.fetched || 0}件 / 取込 ${result.imported || 0}件 / 重複 ${result.duplicate || 0}件 / 対象外 ${result.ignored || 0}件 / Google反映 ${result.marked || 0}件`;
+          const markWarning = result.markFailed ? ' / Google反映に未完了あり' : '';
+          const limitWarning = result.limited ? ' / 未処理が残っています' : '';
+          const partialWarning = result.partial ? ` / 途中停止${result.stopMessage ? ': ' + result.stopMessage : ''}` : '';
+          const passText = result.passes ? ` / 処理 ${result.passes}回` : '';
+          status.textContent = `Google受信箱の取込完了: 取得 ${result.fetched || 0}件 / 取込 ${result.imported || 0}件 / 重複 ${result.duplicate || 0}件 / 対象外 ${result.ignored || 0}件 / Google反映 ${result.marked || 0}件${passText}${markWarning}${limitWarning}${partialWarning}`;
         } else {
-          status.textContent = 'Google受信箱を取り込めませんでした。';
+          status.textContent = 'Google受信箱を取り込めませんでした。' + (result?.message ? ' ' + result.message : '');
         }
       } catch (error) {
         status.textContent = 'Google受信箱の取込に失敗しました: ' + (error?.message || error);

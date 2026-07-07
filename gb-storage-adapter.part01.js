@@ -702,13 +702,11 @@
 
       try {
         const rawUsage = await _auth().getSpaceUsage();
-        const snapshot = {
+        return {
           ..._spaceUsageSnapshot(rawUsage, account, vaultMeta),
           isOwner: true,
+          persisted: false,
         };
-        await this.assertOwnerWrite('_meldex/space-usage.json');
-        await this.writeJson('_meldex/space-usage.json', snapshot);
-        return snapshot;
       } catch (err) {
         if (cached && typeof cached === 'object') {
           return {
@@ -721,6 +719,23 @@
         }
         return { ok: false, source: 'error', error: err?.message || String(err), isOwner: true };
       }
+    }
+
+    async publishSharedSpaceUsage() {
+      const account = await _auth().getCurrentAccount(false).catch(() => null);
+      const vaultMeta = await this.readVaultMetadata();
+      if (!this.isCurrentAccountVaultOwner(vaultMeta, account)) {
+        throw new Error('管理者のみ共有容量情報を更新できます');
+      }
+      const rawUsage = await _auth().getSpaceUsage();
+      const snapshot = {
+        ..._spaceUsageSnapshot(rawUsage, account, vaultMeta),
+        isOwner: true,
+        persisted: true,
+      };
+      await this.assertOwnerWrite('_meldex/space-usage.json');
+      await this.writeJson('_meldex/space-usage.json', snapshot);
+      return snapshot;
     }
 
     async findMountedFolderByPath() {

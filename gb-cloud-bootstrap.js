@@ -13,6 +13,7 @@
   const CLOUD_SPACE_WARNING_RATIO = 0.8;
   const CLOUD_SPACE_BLOCK_RATIO = 0.95;
   const CLOUD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+  const CLOUD_CONFLICT_REPORT_KEY = 'meldex-cloud-conflict-report-signature';
   let _cloudHealthTimer = 0;
   let _cloudReadonlyObserver = null;
   let _cloudReadonlySyncPending = false;
@@ -153,6 +154,32 @@
     else delete document.body.dataset.cloudQuotaBlocked;
   }
 
+  function _safeSessionGet(key) {
+    try { return sessionStorage.getItem(key); } catch (_) { return null; }
+  }
+
+  function _safeSessionSet(key, value) {
+    try { sessionStorage.setItem(key, value); } catch (_) {}
+  }
+
+  function _reportConflictHealth(conflicts) {
+    const conflictCount = Number(conflicts?.count || 0);
+    if (!conflictCount) return;
+    const signature = [
+      conflictCount,
+      conflicts?.truncated ? 'truncated' : 'complete',
+    ].join(':');
+    if (_safeSessionGet(CLOUD_CONFLICT_REPORT_KEY) === signature) return;
+    _safeSessionSet(CLOUD_CONFLICT_REPORT_KEY, signature);
+    window.MeldexBetaFeedback?.recordLog?.('error', {
+      message: `Dropbox競合コピーを${conflictCount}件検出しました`,
+      reason: 'dropbox-conflict-copies-detected',
+      conflictCount,
+      conflictTruncated: !!conflicts?.truncated,
+      runtimeMode: _isDropboxMode() ? 'dropbox' : 'local-conflict-monitor',
+    });
+  }
+
   function _applyCloudHealth(spaceUsage, conflicts) {
     const ratio = _spaceUsageRatio(spaceUsage);
     if (ratio >= CLOUD_SPACE_BLOCK_RATIO) {
@@ -165,6 +192,7 @@
 
     const conflictCount = Number(conflicts?.count || 0);
     if (conflictCount > 0 && !window.MeldexCloudConflictResolver?.isSnoozed?.()) {
+      _reportConflictHealth(conflicts);
       const first = conflicts?.items?.[0]?.path ? `: ${conflicts.items[0].path}` : '';
       _showBanner(`Dropbox 競合コピーを ${conflictCount} 件検出しました。内容を確認して手動で統合してください${first}`, 'warning', {
         kind: 'health-conflict',
