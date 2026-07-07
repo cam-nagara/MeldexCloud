@@ -507,8 +507,9 @@
     const store = await _readStore(provider, STORES.policies);
     _assertWritable(store);
     const status = String(body.original_status_value || body.status_value || '').trim();
-    const list = (await listStatusPolicies(provider)).policies.filter(policy => !policy.is_system || policy.status_value === status);
-    const existing = list.find(policy => policy.status_value === status || policy.status_value === body.status_value) || null;
+    const list = Array.isArray(store.policies) ? store.policies.map(policy => _normalizePolicy(policy, null)) : [];
+    const preset = _presetMap().get(status) || _presetMap().get(String(body.status_value || ''));
+    const existing = list.find(policy => policy.status_value === status || policy.status_value === body.status_value) || preset || null;
     const policy = _normalizePolicy(body, existing);
     const next = list.filter(row => row.status_value !== status && row.status_value !== policy.status_value);
     next.push(policy);

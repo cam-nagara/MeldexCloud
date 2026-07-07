@@ -98,7 +98,7 @@ async function loadTeamRooms() {
       const lastText = r.last ? esc((lastFrom ? lastFrom + ': ' : '') + lastBody.substring(0, 30)) : '';
       const typeIcon = { general: lucide('messagesSquare',12), dm: lucide('user',12), group: lucide('users',12), file: lucide('paperclip',12) }[r.type] || lucide('messagesSquare',12);
       const displayName = _roomDisplayName(r);
-      return `<div data-room-path="${esc(r.path)}" data-room-name="${esc(r.name)}" data-room-type="${esc(r.type || 'general')}" data-room-display="${esc(displayName)}" data-action="selectTeamRoom('${esc(r.path).replace(/'/g, "\\'")}')" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);${active?'background:var(--bg4);':''}" title="${lastText}">` +
+      return `<div data-room-path="${esc(r.path)}" data-room-name="${esc(r.name)}" data-room-type="${esc(r.type || 'general')}" data-room-display="${esc(displayName)}" data-action="selectTeamRoom" data-args="${esc(JSON.stringify([r.path]))}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);${active?'background:var(--bg4);':''}" title="${lastText}">` +
         `<div>${typeIcon} <span class="team-room-name">${esc(displayName)}</span></div>` +
         (lastText ? `<div style="font-size:10px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${lastText}</div>` : '') +
         `</div>`;

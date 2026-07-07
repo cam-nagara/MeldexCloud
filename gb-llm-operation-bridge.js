@@ -592,7 +592,7 @@
       action: args.action || '',
       selector: descriptor.selector,
       label: descriptor.label,
-      value: _controlValue(_resolveElement(descriptor.selector) || element),
+      value: _controlPublicValue(_resolveElement(descriptor.selector) || element),
       history: historyPushed,
       changed_keys: changedKeys,
       visible: _isVisible(_resolveElement(descriptor.selector) || element),

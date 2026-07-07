@@ -243,8 +243,17 @@ function initIframeMarkup(scrollContainer) {
     return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
   }
 
+  function _parentMessageTargetOrigin() {
+    try {
+      const origin = window.location?.origin || '';
+      return origin && origin !== 'null' ? origin : '*';
+    } catch {
+      return '*';
+    }
+  }
+
   function _postToParent(message) {
-    if (typeof window !== 'undefined' && window.parent) window.parent.postMessage(message, '*');
+    if (typeof window !== 'undefined' && window.parent) window.parent.postMessage(message, _parentMessageTargetOrigin());
   }
 
   function _drawWidth(tool, pressures, width) {

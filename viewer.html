@@ -608,6 +608,14 @@ const renderCache = new Map();
 
 function cssUrl(url) { return 'url("' + String(url || '').replace(/["\\\n\r\f]/g, ch => '\\' + ch) + '")'; }
 
+function parentMessageTargetOrigin() {
+  try {
+    return location.origin && location.origin !== 'null' ? location.origin : '*';
+  } catch {
+    return '*';
+  }
+}
+
 function notifyParentCurrentViewerFile() {
   if (window.parent === window) return;
   const item = items.length ? items[Math.max(0, Math.min(items.length - 1, idx))] : null;
@@ -622,7 +630,7 @@ function notifyParentCurrentViewerFile() {
       folderPath: currentFolder,
       index: idx,
       total: items.length,
-    }, '*');
+    }, parentMessageTargetOrigin());
   } catch {}
 }
 
@@ -956,7 +964,7 @@ function requestParentFolderNavigation(direction) {
       direction,
       currentPath,
       folderPath: currentFolder,
-    }, '*');
+    }, parentMessageTargetOrigin());
     return true;
   } catch {
     return false;

@@ -521,8 +521,21 @@
     }
   }
 
+  function _isTrustedParentMessageEvent(ev) {
+    if (!ev) return false;
+    if (typeof window !== 'undefined' && window.parent && ev.source !== window.parent) return false;
+    try {
+      const origin = window.location?.origin || '';
+      if (origin && origin !== 'null' && ev.origin !== origin) return false;
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
   // 親からのpostMessageで同期
   window.addEventListener('message', (ev) => {
+    if (!_isTrustedParentMessageEvent(ev)) return;
     const msg = ev.data;
     _handleMessage(msg);
   });

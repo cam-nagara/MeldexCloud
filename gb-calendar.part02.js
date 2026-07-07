@@ -81,6 +81,22 @@ function _calendarTaskStatusColor(status) {
   }[status] || '#569cd6';
 }
 
+function _calendarSafeCssColor(value, fallback = '') {
+  const text = String(value || '').trim();
+  if (!text || /["'<>;]/.test(text)) return fallback;
+  if (/^#[0-9a-f]{3,8}$/i.test(text)) return text;
+  if (/^var\(--[a-z0-9_-]+\)$/i.test(text)) return text;
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(text)) return text;
+  return fallback;
+}
+
+function _calendarSafeTintColor(value) {
+  const color = _calendarSafeCssColor(value, '');
+  if (!color) return '';
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color + '33';
+  return color;
+}
+
 function _calendarModalSizeStyle(minWidth, extra, options) {
   const width = Math.max(240, Number(minWidth) || 400);
   const zoom = Math.max(0.1, (typeof _getZoom === 'function' ? _getZoom() : parseFloat(document.documentElement?.style?.zoom || '')) || 1);
@@ -559,7 +575,7 @@ function _renderShiftView(container, dbPath, events) {
       });
       const isWe=new Date(y,m,d).getDay()===0||new Date(y,m,d).getDay()===6;
       let content='',bg=isWe?'var(--bg4)':'';
-      if(dayEvs.length>0){content=dayEvs.map(ev=>ev.allDay?lucide('circle',8):`${_p2(ev.start.getHours())}:${_p2(ev.start.getMinutes())}-${_p2(ev.end.getHours())}:${_p2(ev.end.getMinutes())}`).join('<br>');bg=dayEvs[0].color+'33';}
+      if(dayEvs.length>0){content=dayEvs.map(ev=>ev.allDay?lucide('circle',8):`${_p2(ev.start.getHours())}:${_p2(ev.start.getMinutes())}-${_p2(ev.end.getHours())}:${_p2(ev.end.getMinutes())}`).join('<br>');bg=_calendarSafeTintColor(dayEvs[0].color);}
       html+=`<td style="border:1px solid var(--border);padding:1px 2px;text-align:center;cursor:pointer;${bg?'background:'+bg+';':''}" data-cal-shift-date="${ds}" data-cal-shift-user="${esc(user)}">${content}</td>`;
     }
     html+='</tr>';

@@ -68,6 +68,15 @@ function bdEditConnLabel(conn) {
   }, 50);
 }
 
+function _bdSafeInlineColor(value, fallback = '') {
+  const text = String(value || '').trim();
+  if (!text || /["'<>;]/.test(text)) return fallback;
+  if (/^#[0-9a-f]{3,8}$/i.test(text)) return text;
+  if (/^var\(--[a-z0-9_-]+\)$/i.test(text)) return text;
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(text)) return text;
+  return fallback;
+}
+
 function _bdPrepareContextMenuSelection(nodeId) {
   if (!nodeId || !bd.nodes.some(n => n.id === nodeId)) return;
   if (bd.selected instanceof Set && bd.selected.has(nodeId)) return;
@@ -494,7 +503,7 @@ function bdContextMenu(e, nodeId) {
       if (typeof bdStatusNames === 'function') {
         bdStatusNames().filter(s => !!s).forEach(st => {
           const sd = typeof bdStatusDef === 'function' ? bdStatusDef(st) : null;
-          const dot = sd ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${sd.color};margin-right:4px;vertical-align:middle;"></span>` : '';
+          const dot = sd ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${_bdSafeInlineColor(sd.color, '#888')};margin-right:4px;vertical-align:middle;"></span>` : '';
           statusSub.item(radioMark(curStatus === st) + dot + esc(st), () => setStatus(st));
         });
       }
@@ -516,7 +525,7 @@ function bdContextMenu(e, nodeId) {
           list.forEach((mk, idx) => {
             const isActive = markers[cat] === idx;
             const iconHtml = typeof bdMarkerIconHtml === 'function' ? bdMarkerIconHtml(mk, 12) : (typeof lucide === 'function' ? lucide(mk.icon, 12) : '');
-            const iconSpan = `<span style="color:${mk.color};margin-right:4px;vertical-align:middle;">${iconHtml}</span>`;
+            const iconSpan = `<span style="color:${_bdSafeInlineColor(mk.color, 'var(--fg2)')};margin-right:4px;vertical-align:middle;">${iconHtml}</span>`;
             markerSub.item(radioMark(isActive) + iconSpan + esc(mk.label), () => {
               bdPushUndo();
               if (typeof bdSetMarker === 'function') bdSetMarker(nodeId, cat, isActive ? -1 : idx);

@@ -245,7 +245,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function() {
     html += `<button class="tmpl-edit" data-tid="${t.id}" style="font-size:11px;padding:2px 8px;margin-right:4px;">編集</button>`;
     html += `<button class="tmpl-del" data-tid="${t.id}" style="font-size:11px;padding:2px 8px;color:var(--red);">削除</button>`;
     html += `<button class="tmpl-gen" data-tid="${t.id}" style="font-size:11px;padding:2px 8px;margin-left:4px;background:var(--cal-accent, var(--accent));color:var(--cal-accent-fg, var(--ui-fg-strong));border:none;border-radius:3px;cursor:pointer;">一括生成</button></div></div>`;
-    (t.entries||[]).forEach(e => { html += `<div style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));padding:1px 0;">${dl[e.dayOfWeek]} ${e.startTime}〜${addMin(e.startTime,e.duration)} ${esc(e.title)}</div>`; });
+    (t.entries||[]).forEach(e => { html += `<div style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));padding:1px 0;">${esc(dl[e.dayOfWeek] || '')} ${esc(e.startTime || '')}〜${esc(addMin(e.startTime,e.duration))} ${esc(e.title)}</div>`; });
     html += '</div>';
   });
   html += '</div><div class="btn-row"><button class="tmpl-create">新規テンプレート</button><button class="tmpl-close">閉じる</button></div></div>';
@@ -280,8 +280,8 @@ CalendarComponent.prototype._editTemplate = async function(tid) {
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
   const entryRow = (e) => `<div class="tmpl-entry" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;font-size:12px;">
     <select data-field="dayOfWeek" class="gb-select gb-select-sm">${dl.map((d,i)=>`<option value="${i}" ${(e?.dayOfWeek??0)===i?'selected':''}>${d}</option>`).join('')}</select>
-    <input type="time" data-field="startTime" value="${e?.startTime||'09:00'}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
-    <input type="number" data-field="duration" value="${e?.duration||60}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
+    <input type="time" data-field="startTime" value="${esc(e?.startTime||'09:00')}" style="padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
+    <input type="number" data-field="duration" value="${esc(e?.duration||60)}" min="5" step="5" style="width:60px;padding:2px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;" title="分"><span style="color:var(--cal-muted-fg, var(--fg2));">分</span>
     <input type="text" data-field="title" value="${esc(e?.title||'')}" placeholder="タイトル" style="flex:1;padding:2px 4px;background:var(--cal-input-bg, var(--bg));color:var(--cal-input-fg, var(--fg));border:1px solid var(--cal-control-border, var(--border));border-radius:3px;">
     <button class="tmpl-entry-del" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button></div>`;
   let entriesHtml = (t.entries||[]).map(e => entryRow(e)).join('');

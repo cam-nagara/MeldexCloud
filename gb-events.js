@@ -12,19 +12,71 @@
   // 新方式 data-args 経路でブロックする予約名。window[name] がプロトタイプ汚染や
   // 任意コード実行の入口になり得る識別子を明示的に弾く
   const _BLOCKED_ACTION_NAMES = new Set(['constructor', 'eval', 'Function', '__proto__', 'prototype']);
+  const _RAW_DATA_ACTION_ALLOWLIST = new Set([
+    "document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');",
+    "cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})",
+    "cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})",
+    "apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))",
+    "apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))",
+    "document.getElementById('settings-transfer-import-input')?.click()",
+    "window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })",
+  ]);
 
   function parseAction(actionStr) {
     if (!actionStr) return null;
-    const match = actionStr.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\((.*)\)$/);
+    const actionName = '([a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\.([a-zA-Z_$][a-zA-Z0-9_$]*))*';
+    const match = actionStr.match(new RegExp('^(' + actionName + ')\\((.*)\\)$'));
     if (match) {
-      return { fn: match[1], argsStr: match[2], isCall: true };
+      return { fn: match[1], argsStr: match[match.length - 1], isCall: true };
     }
     // 引数なし: "functionName" のみ
-    const matchSimple = actionStr.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)$/);
+    const matchSimple = actionStr.match(new RegExp('^(' + actionName + ')$'));
     if (matchSimple) {
       return { fn: matchSimple[1], argsStr: '', isCall: false };
     }
     return null;
+  }
+
+  function _resolveActionFunction(fnName) {
+    const parts = String(fnName || '').split('.').filter(Boolean);
+    if (!parts.length || parts.some(part => _BLOCKED_ACTION_NAMES.has(part))) return null;
+    let cursor = window;
+    for (const part of parts) {
+      cursor = cursor?.[part];
+      if (cursor == null) return null;
+    }
+    return typeof cursor === 'function' ? cursor : null;
+  }
+
+  function _parseActionToken(token, element, event) {
+    if (token === 'event' || token === 'e') return event;
+    if (token === 'this') return element;
+    if (token === 'true') return true;
+    if (token === 'false') return false;
+    if (/^-?\d+(\.\d+)?$/.test(token)) return Number(token);
+    if (/^['"].*['"]$/.test(token)) return token.slice(1, -1);
+    const datasetMatch = token.match(/^this\.dataset\.([a-zA-Z_$][a-zA-Z0-9_$]*)$/);
+    if (datasetMatch) return element?.dataset?.[datasetMatch[1]];
+    const closestMatch = token.match(/^this\.closest\((['"])([^'"]+)\1\)$/);
+    if (closestMatch) return element?.closest?.(closestMatch[2]) || null;
+    const fn = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(token) ? _resolveActionFunction(token) : null;
+    if (fn) return fn;
+    return token;
+  }
+
+  function _executeKnownRawDataAction(actionStr, element, event) {
+    const closestRemove = actionStr.match(/^this\.closest\((['"])([^'"]+)\1\)\.remove\(\)$/);
+    if (closestRemove) {
+      element?.closest?.(closestRemove[2])?.remove?.();
+      return true;
+    }
+    if (actionStr === 'this.parentElement.remove()') {
+      element?.parentElement?.remove?.();
+      return true;
+    }
+    if (!_RAW_DATA_ACTION_ALLOWLIST.has(actionStr)) return false;
+    executeRawHandler(actionStr, element, event);
+    return true;
   }
 
   function executeAction(actionStr, element, event) {
@@ -60,7 +112,7 @@
     // シンプルなケース: functionName() or functionName('arg') をパース
     const parsed = parseAction(actionStr);
     if (parsed) {
-      const fn = window[parsed.fn];
+      const fn = _resolveActionFunction(parsed.fn);
       if (typeof fn === 'function') {
         const argsStr = parsed.argsStr.trim();
         if (!argsStr) {
@@ -68,9 +120,9 @@
           else fn(event);
           return;
         }
-        // 引数にネストした関数呼び出しやthisがある場合はraw実行にフォールバック
-        if (argsStr.includes('(') || argsStr.includes('=>') || argsStr.includes('this')) {
-          executeRawHandler(actionStr, element, event);
+        if (/[;{}]/.test(argsStr) || /=>/.test(argsStr) || /\)\s*\./.test(actionStr)) {
+          if (_executeKnownRawDataAction(actionStr, element, event)) return;
+          console.warn('gb-events blocked complex data-action:', actionStr);
           return;
         }
         // シンプルな引数をパース（クォート内カンマを考慮）
@@ -87,13 +139,7 @@
         }
         if (cur.trim() !== '') argTokens.push(cur.trim());
         for (const token of argTokens) {
-          if (token === 'event' || token === 'e') args.push(event);
-          else if (token === 'true') args.push(true);
-          else if (token === 'false') args.push(false);
-          else if (/^-?\d+(\.\d+)?$/.test(token)) args.push(Number(token));
-          else if (/^['"].*['"]$/.test(token)) args.push(token.slice(1, -1));
-          else if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(token) && typeof window[token] === 'function') args.push(window[token]);
-          else args.push(token); // 文字列としてそのまま渡す（evalは使わない）
+          args.push(_parseActionToken(token, element, event));
         }
         // 末尾に event を付けて呼び出す。余剰引数は無視されるので後方互換。
         // 関数側が event を参照したい場合は arity を 1 増やすだけで受け取れる
@@ -102,8 +148,10 @@
       }
     }
 
-    // パースできない複雑な式はraw実行（new Function経由）
-    executeRawHandler(actionStr, element, event);
+    // パースできない複雑な式は、静的に把握している既存UI操作だけ実行する。
+    if (!_executeKnownRawDataAction(actionStr, element, event)) {
+      console.warn('gb-events blocked unknown data-action:', actionStr);
+    }
   }
 
   function _eventElementTarget(event) {

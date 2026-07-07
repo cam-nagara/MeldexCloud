@@ -687,6 +687,7 @@
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') payload.reasoning_effort = reasoningLevel === 'max' ? 'high' : 'medium';
+    let sawResponseEvent = false;
     const request = async () => {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -698,6 +699,7 @@
         body: JSON.stringify(payload),
       });
       await _readSse(res, data => {
+        sawResponseEvent = true;
         const delta = data.choices?.[0]?.delta?.content;
         if (delta) send({ type: 'text_delta', content: delta });
         if (data.usage) send({ type: 'usage', usage: data.usage });

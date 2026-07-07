@@ -365,7 +365,7 @@
     const idx = queue.findIndex((item) => item.memo_id === memo.memo_id);
     if (idx >= 0) queue[idx] = memo;
     else queue.push(memo);
-    return writeJson(QUEUE_KEY, queue.slice(-30));
+    return writeJson(QUEUE_KEY, queue);
   }
 
   function persistDraft(memo) {

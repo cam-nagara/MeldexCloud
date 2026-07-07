@@ -539,8 +539,9 @@ async function _findAvailableFolderBoardPath(dir, baseBoardName) {
     const boardPath = _folderBoardPathForName(dir, boardName);
     try {
       await apiFetch('/file?path=' + encodeURIComponent(boardPath));
-    } catch {
-      return { boardName, boardPath };
+    } catch (e) {
+      if (e?.status === 404) return { boardName, boardPath };
+      throw e;
     }
   }
   throw new Error('同名のボードが多すぎるため、新しいボードを作成できません');

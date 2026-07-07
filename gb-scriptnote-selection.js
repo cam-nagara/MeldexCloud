@@ -147,7 +147,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     this.doc.rows.forEach((row) => {
       newRows.push(row);
       if (selectedIds.has(row.id)) {
-        newRows.push({ ...row, id: crypto.randomUUID(), columns: { ...(row.columns || {}) } });
+        const nextId = (globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
+        newRows.push({ ...row, id: nextId, columns: { ...(row.columns || {}) } });
       }
     });
     this.doc.rows = newRows;
