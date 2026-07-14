@@ -16,12 +16,14 @@
   <link rel="apple-touch-icon" sizes="120x120" href="Meldex_apple_touch_icon_120.png">
   <link rel="apple-touch-icon" href="Meldex_apple_touch_icon_180.png">
   <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="public-standalone-apps.css">
   <script src="gb-cloud-runtime-config.js"></script>
+  <script src="public-standalone-apps.js"></script>
   <script>
     (function () {
       'use strict';
       var fallbackReleases = '';
-    var fallbackVersion = 'v0.6.173 BETA';
+      var fallbackVersion = 'v0.6.185 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -44,11 +46,8 @@
       }
       function pickDesktopAsset(release) {
         var assets = Array.isArray(release && release.assets) ? release.assets : [];
-        var preferred = assets.find(function (asset) {
-          return /meldex/i.test(asset.name || '') && /\.(zip|exe|msi)$/i.test(asset.name || '');
-        });
-        return preferred || assets.find(function (asset) {
-          return /\.(zip|exe|msi)$/i.test(asset.name || '');
+        return assets.find(function (asset) {
+          return /^Meldex(?:-v?\d[0-9A-Za-z._-]*)?\.(zip|exe|msi)$/i.test(asset.name || '');
         }) || null;
       }
       function optionFromRelease(release) {
@@ -178,6 +177,7 @@
         var sampleUrl = (cfg.samples && cfg.samples.downloadUrl) || releasesUrl;
         setRuntimeLinkState('desktop-releases', releasesUrl, !!releasesUrl);
         setRuntimeHref('sample-download', sampleUrl);
+        window.MeldexStandaloneDistribution?.renderAndApply?.(cfg, releasesUrl);
         releaseOptions = await loadReleaseOptions(releasesUrl, desktop);
         selectedIndex = 0;
         renderVersionSelect();
@@ -632,6 +632,7 @@
     </a>
     <nav class="nav" aria-label="ページ内ナビゲーション">
       <a href="#download">ダウンロード</a>
+      <a href="#standalone-apps">単独アプリ</a>
       <a href="#samples">サンプル</a>
       <a href="#cloud">クラウド版</a>
       <a href="#compare">版の比較</a>
@@ -665,7 +666,7 @@
           </div>
         </header>
         <ul class="facts">
-            <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.6.173 BETA</span></li>
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.6.185 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
@@ -681,11 +682,11 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.6.173 BETA / 最新</option>
+              <option value="0">v0.6.185 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-              <span>選択中: <strong data-runtime-text="desktop-version">v0.6.173 BETA</strong></span>
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.6.185 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -709,6 +710,19 @@
             <p>インストール前、または古い版へ戻す前には、作品フォルダをバックアップしてください。</p>
           </article>
         </div>
+      </div>
+    </section>
+    <section class="section" id="standalone-apps">
+      <div class="section-inner">
+        <h2>各ツールを単独アプリとして使う</h2>
+        <p>ノート、シナリオ、ボード、シート、タイマーは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。クラウド版はMeldex Cloudと同じDropbox上の保存先を使います。</p>
+        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
+        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> のクラウド版を開けます。</p></noscript>
+        <ul class="notes">
+          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
+          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
+          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
+        </ul>
       </div>
     </section>
     <section class="section" id="samples">

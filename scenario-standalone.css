@@ -1,0 +1,27 @@
+.scenario-main {
+  display: flex;
+  min-height: 0;
+}
+
+.scenario-main .gb-scriptnote-root {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.scenario-main #se-toolbar {
+  border-top: 0;
+}
+
+.scenario-main #se-toolbar [title="フォルダツリーで表示"],
+.scenario-main #se-toolbar .tool-menu-btn {
+  display: none;
+}
+
+.scenario-main .sn2-main {
+  min-height: 0;
+}
+
+.scenario-main #scenario-note-surface {
+  background: var(--bg, var(--sa-bg));
+}

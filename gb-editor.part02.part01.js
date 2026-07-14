@@ -161,7 +161,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   if (!grid) return;
   const opts = options || {};
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
-  const propTypes = (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
+  const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
   const allProps = Object.keys(data.properties || {});
   const layout = typeof getPropertyLayout === 'function'
     ? getPropertyLayout(parentDb, allProps)

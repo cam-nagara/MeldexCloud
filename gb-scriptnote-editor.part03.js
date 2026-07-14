@@ -43,11 +43,30 @@
         return;
       }
 
+      // テキストセル範囲選択中の Delete/Backspace: 行削除ではなく選択セルの内容をクリアする
+      if ((e.key === 'Delete' || e.key === 'Backspace')
+          && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+          && this._textCellSelection?.size
+          && typeof this._clearSelectedTextCells === 'function') {
+        e.preventDefault();
+        this._clearSelectedTextCells();
+        return;
+      }
+
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;
+      // アクティブセルのみ（非編集中）の場合、旧来のテキスト編集キー処理
+      // （Enter分割・Backspace/Delete行結合・Shift+Delete行削除等）は行わない。
+      // 矢印/Tab/Enter/Escapeはホストのkeydownルーティングでナビゲーションが処理済み。
+      if (typeof this._isActiveNonEditingTarget === 'function' && this._isActiveNonEditingTarget(text)) return;
       const isVertical = this.doc.editor?.viewMode === 'vertical';
 
       if (e.key === 'Enter' && !e.shiftKey && !(e.ctrlKey || e.metaKey)) {
+        if (this._cellEditMode && typeof this._exitEditMode === 'function') {
+          e.preventDefault();
+          this._exitEditMode();
+          return;
+        }
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.addRow', e)) return;
         e.preventDefault();
         const splitOffset = this._getTextOffset(text);
@@ -193,7 +212,7 @@
           return;
         }
         if (e.shiftKey) {
-          // Shift+矢印: セル境界に達したら行選択を拡張、それ以外はブラウザのデフォルトに任せる
+          // Shift+矢印: セル境界に達したらテキストセル範囲選択を拡張、それ以外はブラウザのデフォルトに任せる
           const sel = window.getSelection();
           if (!sel?.rangeCount) return;
           // focusが属するセルを起点にする（複数セル選択時はfocusが別セルにいる）
@@ -207,16 +226,14 @@
           const curRowId = curRow.dataset.rowId;
           const curIdx = this.doc.rows.findIndex(r => r.id === curRowId);
           if (curIdx < 0) return;
-          if (!this._rowSelection) this._rowSelection = new Set();
-          // アンカー検証: _lastSelectedIdx が現在の選択に含まれていなければ curRow を新アンカーにする
-          const lastRow = this._lastSelectedIdx >= 0 ? this.doc.rows[this._lastSelectedIdx] : null;
+          if (!this._textCellSelection) this._textCellSelection = new Set();
+          // アンカー検証: _textCellAnchorIdx が現在の選択に含まれていなければ curRow を新アンカーにする
+          const anchorRow = (this._textCellAnchorIdx >= 0) ? this.doc.rows[this._textCellAnchorIdx] : null;
           let anchorIdx;
-          if (lastRow && this._rowSelection.has(lastRow.id)) {
-            anchorIdx = this._lastSelectedIdx;
+          if (anchorRow && this._textCellSelection.has(anchorRow.id)) {
+            anchorIdx = this._textCellAnchorIdx;
           } else {
-            this._rowSelection.clear();
-            this._rowSelection.add(curRowId);
-            this._lastSelectedIdx = curIdx;
+            this._textCellAnchorIdx = curIdx;
             anchorIdx = curIdx;
           }
           // 次の行を探す（フィルタ非表示はスキップ）
@@ -228,17 +245,8 @@
             nextIdx += dir;
           }
           if (nextIdx < 0 || nextIdx >= this.doc.rows.length) return;
-          // アンカー〜nextIdx の範囲で選択を再構築
-          this._rowSelection.clear();
-          const fromI = Math.min(anchorIdx, nextIdx);
-          const toI = Math.max(anchorIdx, nextIdx);
-          for (let i = fromI; i <= toI; i++) {
-            const rr = this.doc.rows[i];
-            if (!rr) continue;
-            if (!this._isRoleVisible(rr.role || '', rr.status || '')) continue;
-            this._rowSelection.add(rr.id);
-          }
-          this._updateRowSelectionUI();
+          // アンカー〜nextIdx の連続範囲で選択を再構築（排他制御とUI更新は _setTextCellRange 側で行う）
+          if (typeof this._setTextCellRange === 'function') this._setTextCellRange(anchorIdx, nextIdx);
           // 次の行のテキストにフォーカス移動（境界端に置く）
           const nextRowEl = this.host?.querySelector(`.sn2-row[data-row-id="${this.doc.rows[nextIdx].id}"]`);
           const nextText = nextRowEl?.querySelector('.sn2-text');
@@ -926,7 +934,10 @@
       const padLeft = parseFloat(cs.paddingLeft) || 0;
       const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.6;
       const contentWidth = elRect.width - padRight - padLeft;
-      if (contentWidth <= lh * 1.5) return true;
+      if (contentWidth <= lh * 1.5) {
+        if (allowSelection) return isPrev ? isAtTextStart() : isAtTextEnd();
+        return true;
+      }
       // rect が取れない場合はテキスト先頭/末尾で判定
       if (rect.width <= 0 && rect.height <= 0) return isPrev ? isAtTextStart() : isAtTextEnd();
       if (isPrev) return rect.right > elRect.right - padRight - lh;
@@ -938,7 +949,10 @@
     const padBot = parseFloat(cs.paddingBottom) || 0;
     const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.6;
     const contentHeight = elRect.height - padTop - padBot;
-    if (contentHeight <= lh * 1.5) return true;
+    if (contentHeight <= lh * 1.5) {
+      if (allowSelection) return isPrev ? isAtTextStart() : isAtTextEnd();
+      return true;
+    }
     // rect が取れない場合はテキスト先頭/末尾で判定
     if (rect.width <= 0 && rect.height <= 0) return isPrev ? isAtTextStart() : isAtTextEnd();
     if (isPrev) return rect.top < elRect.top + padTop + lh;

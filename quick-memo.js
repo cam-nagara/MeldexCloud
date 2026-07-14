@@ -4,13 +4,13 @@
   const QUEUE_KEY = 'meldex:quick-memo:queue:v1';
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
   const CLIENT_ID_KEY = 'meldex:quick-memo:client-id:v1';
-  const TARGET_SHEET_KEY = 'meldex:quick-memo:target-sheet:v1';
+  const TAGS_CACHE_KEY = 'meldex:quick-memo:tags-cache:v1';
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
   const els = {};
   const state = {
     dirty: false,
     saving: false,
-    drawMode: true,
+    drawMode: false,
     drawTool: 'pen',
     drawing: false,
     hasDrawing: false,
@@ -21,6 +21,14 @@
     saveTimer: 0,
     flushRequested: false,
     share: null,
+    currentMode: 'text',
+    allTags: [],
+    selectedTags: [],
+    voiceTimerInterval: null,
+    voiceStartTime: 0,
+    voicePausing: false,
+    installPrompt: null,
+    memoList: [],
   };
 
   document.addEventListener('DOMContentLoaded', init);
@@ -31,18 +39,26 @@
     applyIncomingShare();
     setupCanvas();
     bindEvents();
+    switchMode(state.currentMode);
+    loadTags();
+    listenInstallPrompt();
     registerServiceWorker();
-    focusEditorSoon();
     setStatus('入力できます');
     setTimeout(flushPendingQueue, 120);
   }
 
   function bindElements() {
     [
-      'syncStatus', 'shortcutBtn', 'autoTagBtn', 'newMemoBtn', 'saveBtn', 'titleInput', 'tagsInput', 'editor',
-      'targetSheetInput', 'drawingCanvas', 'speechBtn', 'drawToggleBtn', 'colorInput', 'widthInput',
-      'markerBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
+      'syncStatus', 'listBtn', 'installBtn', 'autoTagBtn', 'newMemoBtn', 'saveBtn',
+      'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
+      'colorInput', 'widthInput', 'markerBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
+      'voiceRecordBtn', 'voicePauseBtn', 'voiceResumeBtn', 'voiceStopBtn',
+      'voicePanel', 'voiceTimer', 'voiceTranscript', 'voiceStatus',
+      'listView', 'listBackBtn', 'listSearch', 'listTagFilter', 'listContent', 'editorView',
     ].forEach((id) => { els[id] = document.getElementById(id); });
+    els.modeTabs = document.querySelectorAll('.qm-mode-tab');
+    els.toolbarGroups = document.querySelectorAll('.qm-toolbar-group');
+    els.toolbar = document.querySelector('.qm-toolbar');
   }
 
   function bindEvents() {
@@ -54,23 +70,61 @@
       });
     });
     ['input', 'keyup', 'paste'].forEach((eventName) => els.editor.addEventListener(eventName, scheduleSave));
+    els.editor.addEventListener('input', autoFillTitle);
     els.titleInput.addEventListener('input', scheduleSave);
-    els.tagsInput.addEventListener('input', scheduleSave);
-    els.targetSheetInput.addEventListener('change', handleTargetSheetChange);
-    els.targetSheetInput.addEventListener('blur', handleTargetSheetChange);
     els.saveBtn.addEventListener('click', () => saveNow({ manual: true }));
     els.autoTagBtn.addEventListener('click', () => saveNow({ manual: true, autoTag: true }));
     els.newMemoBtn.addEventListener('click', startNewMemo);
-    els.shortcutBtn.addEventListener('click', installShortcut);
-    els.speechBtn.addEventListener('click', toggleSpeechInput);
-    els.drawToggleBtn.addEventListener('click', toggleDrawMode);
     els.markerBtn.addEventListener('click', () => setDrawTool('marker'));
     els.fillBtn.addEventListener('click', fillDrawing);
     els.eraserBtn.addEventListener('click', () => setDrawTool('eraser'));
     els.clearDrawingBtn.addEventListener('click', clearDrawing);
+    els.modeTabs.forEach((tab) => {
+      tab.addEventListener('click', () => switchMode(tab.dataset.mode));
+    });
+    els.addTagBtn.addEventListener('click', addNewTag);
+    els.listBtn.addEventListener('click', showListView);
+    els.listBackBtn.addEventListener('click', hideListView);
+    els.listSearch.addEventListener('input', filterList);
+    els.listTagFilter.addEventListener('change', filterList);
+    els.installBtn.addEventListener('click', installToHome);
+    els.voiceRecordBtn.addEventListener('click', startVoiceRecording);
+    els.voicePauseBtn.addEventListener('click', pauseVoiceRecording);
+    els.voiceResumeBtn.addEventListener('click', resumeVoiceRecording);
+    els.voiceStopBtn.addEventListener('click', stopVoiceRecording);
     window.addEventListener('resize', resizeCanvas);
     window.addEventListener('online', flushPendingQueue);
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
+  }
+
+  function switchMode(mode) {
+    state.currentMode = mode;
+    els.modeTabs.forEach((tab) => tab.classList.toggle('is-active', tab.dataset.mode === mode));
+    els.editor.style.display = mode === 'text' ? '' : 'none';
+    els.drawingCanvas.style.display = mode === 'pen' ? '' : 'none';
+    els.voicePanel.style.display = mode === 'voice' ? '' : 'none';
+    let hasToolbarForMode = false;
+    els.toolbarGroups.forEach((group) => {
+      const shown = group.dataset.for === mode;
+      group.style.display = shown ? '' : 'none';
+      if (shown) hasToolbarForMode = true;
+    });
+    // 音声モードなど、そのモード用のツールバーが無い場合は空バーを残さず折りたたむ
+    if (els.toolbar) els.toolbar.style.display = hasToolbarForMode ? '' : 'none';
+    state.drawMode = mode === 'pen';
+    els.drawingCanvas.style.pointerEvents = mode === 'pen' ? 'auto' : 'none';
+    if (mode === 'pen') {
+      setTimeout(resizeCanvas, 50);
+    }
+    if (mode === 'text') {
+      focusEditorSoon();
+    }
+  }
+
+  function autoFillTitle() {
+    if (els.titleInput.value.trim()) return;
+    const firstLine = els.editor.innerText.trim().split(/\r?\n/)[0] || '';
+    els.titleInput.placeholder = firstLine ? firstLine.slice(0, 60) : 'タイトル（空なら本文の一行目）';
   }
 
   function focusEditorSoon() {
@@ -95,10 +149,11 @@
 
   function restoreDraft() {
     const draft = readJson(CURRENT_KEY, null);
-    els.targetSheetInput.value = draft?.target_sheet || localStorage.getItem(TARGET_SHEET_KEY) || '';
     if (!draft) return;
     els.titleInput.value = draft.title || '';
-    els.tagsInput.value = Array.isArray(draft.tags) ? draft.tags.join(', ') : (draft.tags || '');
+    state.selectedTags = Array.isArray(draft.tags) ? [...draft.tags] : parseTags(draft.tags || '');
+    _rememberTags(state.selectedTags);
+    renderTagChips();
     els.editor.innerHTML = sanitizeHtml(draft.html || '');
     state.share = {
       source_url: draft.source_url || '',
@@ -108,11 +163,16 @@
     if (draft.drawing_png) {
       const img = new Image();
       img.onload = () => {
-        resizeCanvas();
-        const rect = els.drawingCanvas.getBoundingClientRect();
-        const width = rect.width || (els.drawingCanvas.width / Math.max(1, devicePixelRatio || 1));
-        const height = rect.height || (els.drawingCanvas.height / Math.max(1, devicePixelRatio || 1));
-        context().drawImage(img, 0, 0, width, height);
+        // 手書き画像はモード切替で非表示中に復元されることがあるため、
+        // 表示サイズに依存せず画像自身の解像度でキャンバスへ描く。
+        // (表示時の resizeCanvas() が改めて表示サイズへ合わせて再スケールする)
+        const canvas = els.drawingCanvas;
+        canvas.width = img.naturalWidth || canvas.width;
+        canvas.height = img.naturalHeight || canvas.height;
+        const ctx = context();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
         state.hasDrawing = true;
       };
       img.src = draft.drawing_png;
@@ -128,12 +188,11 @@
       memo_id: memoId,
       client_id: draft.client_id || clientId(),
       server_path: draft.server_path || '',
-      title: els.titleInput.value.trim(),
-      tags: parseTags(els.tagsInput.value),
+      title: els.titleInput.value.trim() || (els.editor.innerText.trim().split(/\r?\n/)[0] || '').slice(0, 60),
+      tags: [...state.selectedTags],
       html: sanitizeHtml(els.editor.innerHTML),
       text: els.editor.innerText.trim(),
       drawing_png: drawing,
-      target_sheet: els.targetSheetInput.value.trim(),
       source_url: state.share?.source_url || draft.source_url || '',
       share_title: state.share?.share_title || draft.share_title || '',
       source_label: state.share?.source_label || draft.source_label || '',
@@ -145,36 +204,26 @@
     return memo;
   }
 
-  function handleTargetSheetChange() {
-    const target = els.targetSheetInput.value.trim();
-    try { localStorage.setItem(TARGET_SHEET_KEY, target); } catch {}
-    const draft = readJson(CURRENT_KEY, {});
-    if (draft && draft.target_sheet !== target) {
-      draft.target_sheet = target;
-      draft.server_path = '';
-      writeJson(CURRENT_KEY, draft);
-    }
-    scheduleSave();
-  }
-
   function startNewMemo() {
     const current = collectMemo();
     if (draftHasContent(current)) enqueueMemo(current);
     clearTimeout(state.saveTimer);
-    const target = els.targetSheetInput.value.trim();
+    _stopVoiceCapture();
     state.share = null;
     els.titleInput.value = '';
-    els.tagsInput.value = '';
+    els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
+    state.selectedTags = [];
+    renderTagChips();
     els.editor.innerHTML = '';
     resetDrawingCanvas();
     writeJson(CURRENT_KEY, {
       memo_id: newMemoId(),
       client_id: clientId(),
-      target_sheet: target,
       created_at: new Date().toISOString(),
     });
     state.dirty = false;
     setStatus('新規メモ');
+    switchMode('text');
     flushPendingQueue().then((ok) => {
       if (ok) setStatus('新規メモ');
     });
@@ -202,7 +251,6 @@
     writeJson(CURRENT_KEY, {
       memo_id: newMemoId('share'),
       client_id: clientId(),
-      target_sheet: els.targetSheetInput.value.trim(),
       created_at: new Date().toISOString(),
       source_url: state.share.source_url,
       share_title: state.share.share_title,
@@ -210,7 +258,11 @@
     });
     els.titleInput.value = shared.title || titleFromUrl(shared.url) || '';
     els.editor.innerHTML = sharedHtml(shared);
-    if (!els.tagsInput.value.trim()) els.tagsInput.value = '共有';
+    if (!state.selectedTags.length) {
+      state.selectedTags.push('共有');
+    }
+    _rememberTags(state.selectedTags);
+    renderTagChips();
     persistDraft(collectMemo());
     scheduleSave();
     clearIncomingShareQuery();
@@ -339,9 +391,9 @@
           current.target_sheet = result.target_sheet || current.target_sheet || item.target_sheet || '';
           if (Array.isArray(result.tags)) {
             current.tags = result.tags;
-            if (els.tagsInput && (item.auto_tag || document.activeElement !== els.tagsInput)) {
-              els.tagsInput.value = result.tags.join(', ');
-            }
+            state.selectedTags = [...result.tags];
+            _rememberTags(state.selectedTags);
+            renderTagChips();
           }
           delete current.auto_tag;
           writeJson(CURRENT_KEY, current);
@@ -404,13 +456,181 @@
     els.syncStatus.classList.toggle('qm-toast-error', !!isError);
   }
 
-  async function installShortcut() {
+  // --- タグチップ ---------------------------------------------------------
+
+  function _rememberTags(tags) {
+    if (!Array.isArray(tags) || !tags.length) return;
+    const cached = readJson(TAGS_CACHE_KEY, []);
+    state.allTags = [...new Set([...cached, ...state.allTags, ...tags])];
+    writeJson(TAGS_CACHE_KEY, state.allTags);
+  }
+
+  async function loadTags() {
+    // まずローカルキャッシュから即表示し、サーバー応答を待たずにチップを描く
+    state.allTags = [...new Set([...state.allTags, ...readJson(TAGS_CACHE_KEY, [])])];
+    renderTagChips();
     try {
-      const result = await postJson('/api/quick-memo/install-shortcut', {});
-      setStatus((result.hotkey || 'Ctrl+Alt+M') + ' で起動できます');
-    } catch {
-      setStatus('ショートカット作成はデスクトップ版で実行してください', true);
+      const res = await fetch(API_BASE + '/api/quick-memo/tags');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.tags)) {
+          // サーバー側のタグ一覧と、ローカルにしかない未同期タグをマージする
+          const localOnly = readJson(TAGS_CACHE_KEY, []).filter((tag) => !data.tags.includes(tag));
+          state.allTags = [...new Set([...data.tags, ...localOnly, ...state.selectedTags])];
+          writeJson(TAGS_CACHE_KEY, state.allTags);
+          renderTagChips();
+        }
+      }
+    } catch {}
+  }
+
+  function renderTagChips() {
+    const container = els.tagChips;
+    if (!container) return;
+    container.innerHTML = '';
+    const tags = [...new Set(state.allTags)];
+    tags.forEach((tag) => {
+      const chip = document.createElement('span');
+      chip.className = 'qm-tag-chip' + (state.selectedTags.includes(tag) ? ' is-selected' : '');
+      chip.textContent = tag;
+      chip.addEventListener('click', () => toggleTag(tag));
+      container.appendChild(chip);
+    });
+  }
+
+  function toggleTag(tag) {
+    const idx = state.selectedTags.indexOf(tag);
+    if (idx >= 0) state.selectedTags.splice(idx, 1);
+    else state.selectedTags.push(tag);
+    renderTagChips();
+    scheduleSave();
+  }
+
+  function addNewTag() {
+    const name = prompt('新しいタグ名を入力:');
+    if (!name || !name.trim()) return;
+    const tag = name.trim();
+    if (!state.allTags.includes(tag)) {
+      state.allTags.push(tag);
+      writeJson(TAGS_CACHE_KEY, state.allTags);
     }
+    if (!state.selectedTags.includes(tag)) {
+      state.selectedTags.push(tag);
+    }
+    renderTagChips();
+    scheduleSave();
+  }
+
+  // --- クイックメモ一覧 ----------------------------------------------------
+
+  async function showListView() {
+    els.editorView.style.display = 'none';
+    els.listView.style.display = '';
+    await loadMemoList();
+  }
+
+  function hideListView() {
+    els.listView.style.display = 'none';
+    els.editorView.style.display = '';
+  }
+
+  async function loadMemoList() {
+    els.listContent.innerHTML = '<div class="qm-list-empty">読み込み中...</div>';
+    try {
+      const res = await fetch(API_BASE + '/api/quick-memo/list');
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      if (!data.ok || !Array.isArray(data.memos)) throw new Error();
+      state.memoList = data.memos;
+      const allListTags = new Set();
+      data.memos.forEach((memo) => (memo.tags || []).forEach((tag) => allListTags.add(tag)));
+      els.listTagFilter.innerHTML = '<option value="">すべてのタグ</option>';
+      [...allListTags].sort().forEach((tag) => {
+        const opt = document.createElement('option');
+        opt.value = tag;
+        opt.textContent = tag;
+        els.listTagFilter.appendChild(opt);
+      });
+      renderMemoList(data.memos);
+    } catch {
+      els.listContent.innerHTML = '<div class="qm-list-empty">一覧を読み込めません。Meldexが起動しているか確認してください。</div>';
+    }
+  }
+
+  function renderMemoList(memos) {
+    if (!memos.length) {
+      els.listContent.innerHTML = '<div class="qm-list-empty">クイックメモはまだありません</div>';
+      return;
+    }
+    els.listContent.innerHTML = '';
+    memos.forEach((memo) => {
+      const item = document.createElement('div');
+      item.className = 'qm-list-item';
+      const tagsHtml = (memo.tags || []).map((tag) => '<span class="qm-list-tag">' + escHtml(tag) + '</span>').join('');
+      const date = (memo.modified || memo.created || '').slice(0, 16).replace('T', ' ');
+      item.innerHTML = '<div class="qm-list-item-title">' + escHtml(memo.title || '無題') + '</div>'
+        + '<div class="qm-list-item-preview">' + escHtml(memo.text_preview || '') + '</div>'
+        + '<div class="qm-list-item-meta"><span>' + escHtml(date) + '</span><div class="qm-list-item-tags">' + tagsHtml + '</div></div>';
+      item.addEventListener('click', () => openMemoFromList(memo));
+      els.listContent.appendChild(item);
+    });
+  }
+
+  function filterList() {
+    const query = (els.listSearch.value || '').trim().toLowerCase();
+    const tagFilter = els.listTagFilter.value;
+    const filtered = (state.memoList || []).filter((memo) => {
+      if (tagFilter && !(memo.tags || []).includes(tagFilter)) return false;
+      if (query) {
+        const text = ((memo.title || '') + ' ' + (memo.text_preview || '') + ' ' + (memo.tags || []).join(' ')).toLowerCase();
+        if (!text.includes(query)) return false;
+      }
+      return true;
+    });
+    renderMemoList(filtered);
+  }
+
+  function openMemoFromList(_memo) {
+    // 一覧からの選択は現状プレビューのみ。詳しい編集はMeldex本体で行う。
+    hideListView();
+  }
+
+  // --- ホーム画面に追加（PWAインストール） -----------------------------------
+
+  function listenInstallPrompt() {
+    window.addEventListener('beforeinstallprompt', (event) => {
+      event.preventDefault();
+      state.installPrompt = event;
+      els.installBtn.style.display = '';
+    });
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      els.installBtn.style.display = 'none';
+    }
+  }
+
+  async function installToHome() {
+    if (state.installPrompt) {
+      try {
+        await state.installPrompt.prompt();
+        const choice = await state.installPrompt.userChoice;
+        if (choice.outcome === 'accepted') {
+          setStatus('ホーム画面に追加しました');
+          els.installBtn.style.display = 'none';
+        }
+      } catch {}
+      state.installPrompt = null;
+      return;
+    }
+    const ua = navigator.userAgent || '';
+    let instructions = '';
+    if (/iPad|iPhone|iPod/.test(ua)) {
+      instructions = 'Safariの共有ボタン → 「ホーム画面に追加」をタップしてください';
+    } else if (/Android/.test(ua)) {
+      instructions = 'ブラウザのメニュー → 「ホーム画面に追加」をタップしてください';
+    } else {
+      instructions = 'アドレスバーのインストールアイコンをクリックしてください';
+    }
+    setStatus(instructions);
   }
 
   function setupCanvas() {
@@ -421,7 +641,6 @@
     canvas.addEventListener('pointerup', endDraw);
     canvas.addEventListener('pointercancel', endDraw);
     setDrawTool('pen');
-    syncDrawModeUi();
   }
 
   function resizeCanvas() {
@@ -499,17 +718,6 @@
     els.eraserBtn.classList.toggle('is-active', state.drawTool === 'eraser');
   }
 
-  function toggleDrawMode() {
-    state.drawMode = !state.drawMode;
-    syncDrawModeUi();
-    setStatus(state.drawMode ? 'ペン入力' : 'テキスト入力');
-  }
-
-  function syncDrawModeUi() {
-    els.drawToggleBtn.classList.toggle('is-active', state.drawMode);
-    els.drawingCanvas.style.pointerEvents = state.drawMode ? 'auto' : 'none';
-  }
-
   function clearDrawing() {
     context().clearRect(0, 0, els.drawingCanvas.width, els.drawingCanvas.height);
     state.hasDrawing = false;
@@ -528,60 +736,12 @@
     scheduleSave();
   }
 
-  function toggleSpeechInput() {
+  // --- 音声モード ----------------------------------------------------------
+
+  async function startVoiceRecording() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (Recognition) {
-      toggleBrowserSpeech(Recognition);
-      return;
-    }
-    toggleRecordedTranscription();
-  }
-
-  function toggleBrowserSpeech(Recognition) {
-    if (state.speech) {
-      state.speech.stop();
-      state.speech = null;
-      els.speechBtn.classList.remove('is-active');
-      setStatus('音声入力停止');
-      return;
-    }
-    const rec = new Recognition();
-    rec.lang = 'ja-JP';
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.onresult = (event) => {
-      let finalText = '';
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
-      }
-      if (finalText) {
-        insertText(finalText);
-        scheduleSave();
-      }
-    };
-    rec.onerror = () => setStatus('音声入力を利用できません', true);
-    rec.onend = () => {
-      els.speechBtn.classList.remove('is-active');
-      state.speech = null;
-    };
-    state.speech = rec;
-    els.speechBtn.classList.add('is-active');
-    rec.start();
-    setStatus('音声入力中');
-  }
-
-  async function toggleRecordedTranscription() {
-    if (state.recording) {
-      try {
-        if (state.recording.state !== 'inactive') {
-          state.recording.stop();
-          setStatus('文字起こし準備中...');
-        }
-      } catch {
-        state.recording = null;
-        els.speechBtn.classList.remove('is-active');
-        setStatus('録音を停止できません', true);
-      }
+      startBrowserSpeech(Recognition);
       return;
     }
     try {
@@ -594,21 +754,139 @@
       recorder.onstop = async () => {
         stream.getTracks().forEach((track) => track.stop());
         state.recording = null;
-        els.speechBtn.classList.remove('is-active');
+        updateVoiceUI('stopped');
         const blob = new Blob(state.recordChunks, { type: recorder.mimeType || 'audio/webm' });
         await transcribeBlob(blob);
       };
       state.recording = recorder;
       recorder.start();
-      els.speechBtn.classList.add('is-active');
-      setStatus('録音中。もう一度押すと文字起こし');
+      state.voiceStartTime = Date.now();
+      startVoiceTimer();
+      updateVoiceUI('recording');
     } catch {
-      setStatus('マイクを利用できません', true);
+      els.voiceStatus.textContent = 'マイクを利用できません';
+    }
+  }
+
+  function startBrowserSpeech(Recognition) {
+    const rec = new Recognition();
+    rec.lang = 'ja-JP';
+    rec.continuous = true;
+    rec.interimResults = true;
+    let accumulated = els.voiceTranscript.textContent || '';
+    rec.onresult = (event) => {
+      let finalText = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
+      }
+      if (finalText) {
+        accumulated += finalText + ' ';
+        els.voiceTranscript.textContent = accumulated;
+      }
+    };
+    rec.onerror = () => { els.voiceStatus.textContent = '音声認識エラー'; };
+    rec.onend = () => {
+      state.speech = null;
+      if (state.voicePausing) {
+        // 一時停止のための停止。UIは pauseVoiceRecording 側が既に更新済み
+        state.voicePausing = false;
+        return;
+      }
+      updateVoiceUI('stopped');
+      stopVoiceTimer();
+    };
+    state.speech = rec;
+    rec.start();
+    state.voiceStartTime = Date.now();
+    startVoiceTimer();
+    updateVoiceUI('recording');
+  }
+
+  function pauseVoiceRecording() {
+    if (state.recording && state.recording.state === 'recording') {
+      state.recording.pause();
+      updateVoiceUI('paused');
+      stopVoiceTimer();
+    } else if (state.speech) {
+      state.voicePausing = true;
+      state.speech.stop();
+      updateVoiceUI('paused');
+      stopVoiceTimer();
+    }
+  }
+
+  function resumeVoiceRecording() {
+    if (state.recording && state.recording.state === 'paused') {
+      state.recording.resume();
+      startVoiceTimer();
+      updateVoiceUI('recording');
+    } else if (!state.speech) {
+      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (Recognition) startBrowserSpeech(Recognition);
+    }
+  }
+
+  function stopVoiceRecording() {
+    stopVoiceTimer();
+    if (state.recording && state.recording.state !== 'inactive') {
+      state.recording.stop();
+    }
+    if (state.speech) {
+      state.voicePausing = false;
+      state.speech.stop();
+      state.speech = null;
+    }
+    updateVoiceUI('stopped');
+    const text = els.voiceTranscript.textContent.trim();
+    if (text) {
+      insertText(text);
+      scheduleSave();
+    }
+  }
+
+  function _stopVoiceCapture() {
+    stopVoiceTimer();
+    if (state.recording && state.recording.state !== 'inactive') {
+      try { state.recording.stop(); } catch {}
+    }
+    state.recording = null;
+    if (state.speech) {
+      state.voicePausing = false;
+      try { state.speech.stop(); } catch {}
+      state.speech = null;
+    }
+    if (els.voiceTranscript) els.voiceTranscript.textContent = '';
+    updateVoiceUI('stopped');
+  }
+
+  function updateVoiceUI(status) {
+    els.voiceRecordBtn.style.display = status === 'stopped' || !status ? '' : 'none';
+    els.voicePauseBtn.style.display = status === 'recording' ? '' : 'none';
+    els.voiceResumeBtn.style.display = status === 'paused' ? '' : 'none';
+    els.voiceStopBtn.style.display = status === 'recording' || status === 'paused' ? '' : 'none';
+    const labels = { recording: '録音中...', paused: '一時停止中', stopped: 'マイクの準備ができています' };
+    els.voiceStatus.textContent = labels[status] || '';
+  }
+
+  function startVoiceTimer() {
+    stopVoiceTimer();
+    state.voiceTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - state.voiceStartTime) / 1000);
+      const min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const sec = String(elapsed % 60).padStart(2, '0');
+      els.voiceTimer.textContent = min + ':' + sec;
+    }, 1000);
+  }
+
+  function stopVoiceTimer() {
+    if (state.voiceTimerInterval) {
+      clearInterval(state.voiceTimerInterval);
+      state.voiceTimerInterval = null;
     }
   }
 
   async function transcribeBlob(blob) {
-    setStatus('文字起こし中...');
+    els.voiceStatus.textContent = '文字起こし中...';
     try {
       const dataUrl = await blobToDataUrl(blob);
       const result = await postJson('/api/quick-memo/transcribe', {
@@ -616,12 +894,13 @@
         mime_type: blob.type || 'audio/webm',
       });
       if (result.text) {
+        els.voiceTranscript.textContent = (els.voiceTranscript.textContent + ' ' + result.text).trim();
         insertText(result.text);
         scheduleSave();
       }
-      setStatus('文字起こし完了');
+      els.voiceStatus.textContent = '文字起こし完了';
     } catch {
-      setStatus('OpenAI文字起こしを利用できません', true);
+      els.voiceStatus.textContent = 'OpenAI文字起こしを利用できません';
     }
   }
 

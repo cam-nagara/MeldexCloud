@@ -13,6 +13,7 @@
 // ============================================================
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
 let _apiFetchBrowseCacheGeneration = 0;
@@ -29,7 +30,7 @@ function _apiFetchClonePayload(payload) {
 }
 
 function _apiFetchBrowseCacheKey(path, opts) {
-  if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload' || opts?.signal) return '';
   try {
     const url = new URL(API_BASE.replace(/\/+$/, '') + path, window.location.origin || 'http://localhost');
     const apiBasePath = new URL(API_BASE, window.location.origin || 'http://localhost').pathname.replace(/\/+$/, '');
@@ -62,9 +63,12 @@ async function apiFetch(path, opts) {
     if (inFlight) return _apiFetchClonePayload(await inFlight);
   }
   let requestPromise = null;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
   try {
     requestPromise = (async () => {
-      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, opts);
+      const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
+      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, fetchOpts);
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       return await res.json();
     })();
@@ -80,9 +84,18 @@ async function apiFetch(path, opts) {
     }
     return _apiFetchClonePayload(payload);
   } catch (e) {
+    if (e.name === 'AbortError') {
+      // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
+      try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
+      const err = new Error('リクエストがタイムアウトしました');
+      err.name = 'AbortError';
+      err.isTimeout = true;
+      throw err;
+    }
     if (!opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
     throw e;
   } finally {
+    clearTimeout(timeoutId);
     if (cacheKey && _apiFetchBrowseInFlight.get(cacheKey) === requestPromise) _apiFetchBrowseInFlight.delete(cacheKey);
   }
 }
@@ -106,6 +119,12 @@ async function apiPost(path, body, options = {}) {
 
 async function apiDelete(path) {
   return apiFetch(path, { method: 'DELETE' });
+}
+
+// OSネイティブの「ファイルを開く」ダイアログを表示し、選択されたパスを返す（キャンセル時は空文字列）
+async function openFileDialog(title, initialdir, filetypes) {
+  const resp = await apiPost('/open-file-dialog', { title, initialdir, filetypes });
+  return resp?.path || '';
 }
 
 // ============================================================

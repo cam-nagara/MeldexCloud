@@ -3,6 +3,8 @@
 
   const rootId = 'external-import-settings-container';
   const runningSetIds = new Set();
+  const _scheduleWidgets = {};   // setId → widget
+  const TIMER_PREFIX = 'ext-import-';
   const ENEX_WARN_BYTES = 8 * 1024 * 1024;
   const ENEX_MAX_BYTES = 32 * 1024 * 1024;
   const PUREREF_WARN_BYTES = 64 * 1024 * 1024;
@@ -129,8 +131,69 @@
       row.appendChild(deleteBtn);
 
       card.appendChild(row);
+
+      const schedContainer = document.createElement('div');
+      schedContainer.className = 'gb-section gb-section--boxed';
+      schedContainer.style.cssText = 'margin-top:6px;padding:8px;';
+      card.appendChild(schedContainer);
+      if (window.MeldexScheduler && item.id) {
+        const w = window.MeldexScheduler.createWidget(schedContainer, item.schedule, (cfg) => {
+          _saveSetSchedule(item.id, cfg);
+        });
+        if (w) _scheduleWidgets[item.id] = w;
+      }
+
       list.appendChild(card);
     });
+  }
+
+  async function _saveSetSchedule(setId, cfg) {
+    try {
+      await apiPost(`/external-import/sets/${encodeURIComponent(setId)}`, { schedule: cfg }, { method: 'PATCH', silentError: true });
+      _applySetTimer(setId, cfg);
+    } catch (e) {
+      console.warn('Failed to save external import schedule:', e);
+    }
+  }
+
+  function _applySetTimer(setId, schedule) {
+    if (!window.MeldexScheduler) return;
+    const key = TIMER_PREFIX + setId;
+    const cfg = window.MeldexScheduler.normalize(schedule);
+    if (cfg.type === 'off') {
+      window.MeldexScheduler.destroyTimer(key);
+      return;
+    }
+    window.MeldexScheduler.createTimer(key, cfg, () => _scheduledRunSet(setId));
+  }
+
+  async function _scheduledRunSet(setId) {
+    if (!setId || runningSetIds.has(setId)) return;
+    runningSetIds.add(setId);
+    try {
+      const job = await apiPost(`/external-import/sets/${encodeURIComponent(setId)}/run`, {}, { silentError: true });
+      const result = await pollJob(job.job_id);
+      const total = (result?.created || 0) + (result?.updated || 0);
+      if (total > 0) {
+        if (typeof showStatus === 'function') showStatus(`外部取り込み自動実行: 新規${result.created || 0} / 更新${result.updated || 0}`);
+        if (typeof loadOutliner === 'function') loadOutliner();
+      }
+    } catch (e) {
+      console.warn('External import scheduled run failed:', setId, e);
+    } finally {
+      runningSetIds.delete(setId);
+    }
+  }
+
+  async function _initScheduleTimers() {
+    if (!window.MeldexScheduler) return;
+    try {
+      const data = await loadConfig();
+      const sets = Array.isArray(data?.sets) ? data.sets : [];
+      sets.forEach(item => {
+        if (item.id && item.schedule) _applySetTimer(item.id, item.schedule);
+      });
+    } catch {}
   }
 
   async function refresh() {
@@ -678,6 +741,12 @@
     `;
     bind();
     refresh();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_initScheduleTimers, 3000));
+  } else {
+    setTimeout(_initScheduleTimers, 3000);
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;

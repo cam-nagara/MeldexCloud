@@ -7,7 +7,7 @@
 
 // --- ボード状態オブジェクト ---
 const bd = {
-  path:'', _loadedBoardPath:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
+  path:'', _loadedBoardPath:'', _preservedFrontmatter:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
   dirty:false, zoom:1, panX:0, panY:0, rotation:0, _id:0,
   connecting:null, _activeNode:null, selectedConnId:'', selectedConnIds:new Set(),
   cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'',
@@ -481,9 +481,11 @@ function bdParseMd(raw) {
   raw = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'); // 改行コード統一
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+  let preservedFrontmatter = '';
   let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
   if (fmMatch) {
     const fm = fmMatch[1];
+    if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
     if (typeof bdParseLlmSemanticsFrontmatter === 'function') llmSemantics = bdParseLlmSemanticsFrontmatter(fm);
     if (typeof bdYamlNestedMap === 'function') {
       Object.entries(bdYamlNestedMap(fm, 'ids')).forEach(([id, value]) => {
@@ -961,7 +963,7 @@ function bdParseMd(raw) {
     ? bdNormalizeLoadedLlmSemantics(llmSemantics, idMap)
     : llmSemantics;
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(mappedConnections, null, parsedLlmSemantics);
-  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics };
+  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter };
 }
 
 // --- Markdown書き出し ---

@@ -72,6 +72,7 @@ function _outlinerNextFrame() {
 
 async function _appendOutlinerChildrenChunked(container, children, rootPath) {
   if (!container || !Array.isArray(children) || !children.length) return;
+  if (typeof _registerFileIds === 'function') _registerFileIds(children);
   const chunkSize = _outlinerChildRenderChunkSize(children.length);
   for (let i = 0; i < children.length; i += chunkSize) {
     const fragment = document.createDocumentFragment();
@@ -356,6 +357,247 @@ async function loadOutliner(options) {
   }
 }
 
+const _browseItemTypeResolutionInFlight = new Map();
+const _browseItemResolvedTypes = new Map();
+let _browseItemTypeResolutionQueue = Promise.resolve();
+const BROWSE_ITEM_VISIBLE_WAIT_TIMEOUT_MS = 5000;
+const BROWSE_ITEM_TYPE_CHECK_TIMEOUT_MS = 15000;
+const BROWSE_ITEM_TYPE_POST_VISIBLE_DELAY_MS = 250;
+
+function _browseItemNeedsTypeCheck(item) {
+  return !!(item?.type_resolved !== true && item?.needs_type_check === true && item?.path);
+}
+
+function _clearBrowseItemResolvedTypeCache() {
+  _browseItemResolvedTypes.clear();
+}
+
+function _browseItemPositiveTimeout(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(1, numeric) : fallback;
+}
+
+async function _requestBrowseItemTypeWithTimeout(path, timeoutMs) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const fetchOptions = { silentError: true };
+  if (controller) fetchOptions.signal = controller.signal;
+  let timeoutId = 0;
+  const requestOutcome = Promise.resolve()
+    .then(() => apiFetch('/check-type?path=' + encodeURIComponent(path), fetchOptions))
+    .then(result => ({ result }), error => ({ error }));
+  const timeoutOutcome = new Promise(resolve => {
+    timeoutId = setTimeout(() => {
+      try { controller?.abort(); } catch {}
+      resolve({ timedOut: true });
+    }, timeoutMs);
+  });
+  const outcome = await Promise.race([requestOutcome, timeoutOutcome]);
+  if (timeoutId) clearTimeout(timeoutId);
+  if (outcome?.timedOut || outcome?.error) return { resolved: false, type: '' };
+  const result = outcome?.result;
+  const type = typeof result?.type === 'string' ? result.type : '';
+  if (!type || result?.type_resolved === false || result?.needs_type_check === true) {
+    return { resolved: false, type: '' };
+  }
+  return { resolved: true, type };
+}
+
+async function _resolveBrowseItemTypeOnDemand(item, options) {
+  if (!_browseItemNeedsTypeCheck(item)) return item?.type || 'folder';
+  const path = String(item.path);
+  if (_browseItemResolvedTypes.has(path)) {
+    item.type = _browseItemResolvedTypes.get(path);
+    item.needs_type_check = false;
+    item.type_resolved = true;
+    return item.type;
+  }
+  let request = _browseItemTypeResolutionInFlight.get(path);
+  if (!request) {
+    const timeoutMs = _browseItemPositiveTimeout(options?.timeoutMs, BROWSE_ITEM_TYPE_CHECK_TIMEOUT_MS);
+    request = _requestBrowseItemTypeWithTimeout(path, timeoutMs);
+    _browseItemTypeResolutionInFlight.set(path, request);
+    request.finally(() => {
+      if (_browseItemTypeResolutionInFlight.get(path) === request) _browseItemTypeResolutionInFlight.delete(path);
+    });
+  }
+  const resolution = await request;
+  if (!resolution?.resolved || !resolution.type) return item?.type || 'folder';
+  _browseItemResolvedTypes.set(path, resolution.type);
+  item.type = resolution.type;
+  item.needs_type_check = false;
+  item.type_resolved = true;
+  if (typeof registerFileTypes === 'function') registerFileTypes([item]);
+  return item.type;
+}
+
+function _applyCachedBrowseItemType(item) {
+  if (!item?.path) return false;
+  const path = String(item.path);
+  if (item.type_resolved === true) {
+    _browseItemResolvedTypes.delete(path);
+    item.needs_type_check = false;
+    return false;
+  }
+  if (!_browseItemResolvedTypes.has(path)) return false;
+  item.type = _browseItemResolvedTypes.get(path);
+  item.needs_type_check = false;
+  item.type_resolved = true;
+  return true;
+}
+
+function _normalizeBrowseItemPanePath(path) {
+  return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _captureBrowseItemPaneSnapshot(expectedPath, options) {
+  const opts = options || {};
+  const paneContext = opts.paneContext
+    || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const paneId = paneContext?.paneId
+    || (typeof GBLayout !== 'undefined' ? (GBLayout.activePane || '') : '');
+  const activeTab = paneId && typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function'
+    ? GBTabs.getActiveTab(paneId)
+    : null;
+  return {
+    paneContext,
+    paneId,
+    tabId: activeTab?.id || '',
+    expectedPath: opts.requirePath === false ? '' : _normalizeBrowseItemPanePath(expectedPath || activeTab?.path || ''),
+  };
+}
+
+function _browseItemPaneSnapshotIsCurrent(snapshot) {
+  if (!snapshot) return true;
+  const paneId = snapshot.paneId || snapshot.paneContext?.paneId || '';
+  if (!paneId || typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined') return true;
+  if (typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, paneId)) return false;
+  if (!snapshot.tabId && !snapshot.expectedPath) return true;
+  if (typeof GBTabs.getActiveTab !== 'function') return true;
+  const activeTab = GBTabs.getActiveTab(paneId);
+  if (!activeTab) return false;
+  if (snapshot.tabId && activeTab.id !== snapshot.tabId) return false;
+  if (snapshot.expectedPath
+      && _normalizeBrowseItemPanePath(activeTab.path) !== snapshot.expectedPath) return false;
+  return true;
+}
+
+async function _openResolvedBrowseItemType(item, type, options) {
+  const opts = options || {};
+  const paneContext = opts.paneSnapshot?.paneContext || opts.paneContext || null;
+  const openOpts = { fromExplorer: true, skipHighlight: true, ...(opts.openOptions || {}) };
+  if (type === 'database' && typeof selectDatabase === 'function') {
+    await selectDatabase(item.path, paneContext, openOpts);
+    return true;
+  }
+  if (type === 'calendar' && typeof openCalendarFile === 'function') {
+    await openCalendarFile(item.name, item.path, { ...openOpts, paneContext });
+    return true;
+  }
+  return false;
+}
+
+function _browseItemResolutionIsStillActive(node, path, options) {
+  if (typeof options?.isStillActive === 'function') {
+    try { return options.isStillActive() === true; } catch { return false; }
+  }
+  const row = node?.querySelector?.(':scope > .tree-node-row');
+  if (row) return !!(row.isConnected && row.classList.contains('active'));
+  return typeof _folderPath !== 'undefined' && _folderPath === path;
+}
+
+async function _waitForBrowseItemVisible(afterVisiblePromise, timeoutMs) {
+  let timeoutId = 0;
+  const visibleOutcome = Promise.resolve(afterVisiblePromise).then(() => true, () => true);
+  const timeoutOutcome = new Promise(resolve => {
+    timeoutId = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const visible = await Promise.race([visibleOutcome, timeoutOutcome]);
+  if (timeoutId) clearTimeout(timeoutId);
+  return visible;
+}
+
+function _scheduleBrowseItemTypeResolution(node, item, afterVisiblePromise, options) {
+  if (!_browseItemNeedsTypeCheck(item)) return Promise.resolve({ skipped: 'not-needed' });
+  const opts = options || {};
+  const path = String(item.path);
+  const visibleWaitTimeoutMs = _browseItemPositiveTimeout(
+    opts.visibleWaitTimeoutMs,
+    BROWSE_ITEM_VISIBLE_WAIT_TIMEOUT_MS,
+  );
+  const postVisibleDelayMs = Number.isFinite(Number(opts.postVisibleDelayMs))
+    ? Math.max(0, Number(opts.postVisibleDelayMs))
+    : BROWSE_ITEM_TYPE_POST_VISIBLE_DELAY_MS;
+  return (async () => {
+    if (!_browseItemResolutionIsStillActive(node, path, opts)) return { skipped: 'inactive' };
+    // 表示待ちは直列キューの外。遅い/停止したフォルダが後続項目を塞がない。
+    const visible = await _waitForBrowseItemVisible(afterVisiblePromise, visibleWaitTimeoutMs);
+    if (!visible) return { skipped: 'visible-timeout' };
+    if (postVisibleDelayMs) await new Promise(resolve => setTimeout(resolve, postVisibleDelayMs));
+    if (!_browseItemResolutionIsStillActive(node, path, opts)) return { skipped: 'inactive' };
+
+    const queued = _browseItemTypeResolutionQueue
+      .catch(() => {})
+      .then(async () => {
+        try {
+          if (!_browseItemResolutionIsStillActive(node, path, opts)
+              || !_browseItemNeedsTypeCheck(item)) return { skipped: 'inactive' };
+          const type = await _resolveBrowseItemTypeOnDemand(item, { timeoutMs: opts.typeCheckTimeoutMs });
+          if (_browseItemNeedsTypeCheck(item)) return { skipped: 'unresolved' };
+          if (!_browseItemResolutionIsStillActive(node, path, opts)) return { skipped: 'inactive' };
+          if (node) _syncOutlinerResolvedItemType(node, item);
+          if (!_browseItemPaneSnapshotIsCurrent(opts.paneSnapshot)) return { skipped: 'pane-changed', type };
+          if (typeof opts.onResolved === 'function') {
+            const handled = await opts.onResolved({ item, type, paneSnapshot: opts.paneSnapshot || null });
+            if (handled !== false) return { resolved: true, type, handled: true };
+          }
+          const opened = await _openResolvedBrowseItemType(item, type, opts);
+          return { resolved: true, type, opened };
+        } catch (error) {
+          return { skipped: 'error', error: error?.message || String(error) };
+        }
+      });
+    _browseItemTypeResolutionQueue = queued.then(() => undefined, () => undefined);
+    return queued;
+  })();
+}
+
+function _syncOutlinerResolvedItemType(node, item) {
+  const row = node?.querySelector?.(':scope > .tree-node-row');
+  if (!row || !item) return;
+  const previousType = row.dataset.itemType || '';
+  row.dataset.itemType = item.type || '';
+  const toggle = row.querySelector('.tree-toggle');
+  const children = node.querySelector(':scope > .tree-children');
+  const isExpandable = item.needsMapping !== true && (item.type === 'folder' || item.type === 'database');
+  if (previousType && previousType !== item.type && children) {
+    children.replaceChildren();
+    children.dataset.loaded = 'false';
+    children.classList.add('collapsed');
+    if (toggle) {
+      toggle.classList.remove('expanded');
+      toggle.dataset.expanded = 'false';
+    }
+  }
+  if (toggle) {
+    if (isExpandable) {
+      if (!toggle.dataset.expanded) {
+        toggle.innerHTML = lucide('chevronRight', 16);
+        toggle.dataset.expanded = 'false';
+      }
+    } else {
+      toggle.classList.remove('expanded');
+      toggle.innerHTML = '';
+      delete toggle.dataset.expanded;
+      children?.classList.add('collapsed');
+    }
+  }
+  const icon = row.querySelector('.tree-icon');
+  if (icon) {
+    icon.innerHTML = _outlinerIconMarkup(item, 18);
+    if (item.linked) icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
+  }
+}
+
 function renderOutlinerLegacy(items) {
   const el = document.getElementById('outliner-tree');
   _unregisterTreeSubtree(el);
@@ -363,6 +605,7 @@ function renderOutlinerLegacy(items) {
   const visibleItems = (items || []).filter(item => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleItems);
+  if (typeof _registerFileIds === 'function') _registerFileIds(visibleItems);
   const fragment = document.createDocumentFragment();
   visibleItems.forEach(item => fragment.appendChild(createTreeNodeFromBrowse(item)));
   el.appendChild(fragment);
@@ -380,6 +623,7 @@ function renderOutlinerMultiRoot(roots) {
     && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(r.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleRoots);
+  if (typeof _registerFileIds === 'function') _registerFileIds(visibleRoots);
 
   // 各ルートを通常のフォルダノードとしてツリーに追加（_isRootフラグ付き）
   const fragment = document.createDocumentFragment();
@@ -395,6 +639,7 @@ function renderOutlinerMultiRoot(roots) {
       needsMapping: root.needsMapping === true,
       rootKind: root.kind || '',
       workspaceId: root.workspaceId || '',
+      file_id: root.file_id || '',
       _isRoot: true,
     };
     fragment.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
@@ -703,7 +948,9 @@ async function _ensureLocksLoaded(options = {}) {
     }
     if (!_fileLockRefreshTimer) {
       _fileLockRefreshTimer = setInterval(() => {
-        _ensureLocksLoaded({ force: true }).catch(() => {});
+        _ensureLocksLoaded({ force: true })
+          .then(() => window.MeldexFileLockBadge?.refreshAll?.())
+          .catch(() => {});
       }, 5 * 60 * 1000);
     }
     return _fileLockEntries;
@@ -812,6 +1059,7 @@ async function toggleItemLock(path) {
     const after = _fileLockHistorySnapshot(path);
     pushOutlinerFileLockHistory(path, before, after);
     await refreshOutliner();
+    window.MeldexFileLockBadge?.refreshAll?.();
     return true;
   } catch (error) {
     const message = error?.message ? String(error.message) : '更新に失敗しました';
@@ -966,6 +1214,7 @@ function _scheduleFileLockRefreshForOutliner() {
     .then(() => {
       refreshVisibleOutlinerLockState();
       if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
+      window.MeldexFileLockBadge?.refreshAll?.();
     })
     .catch(() => {})
     .finally(() => { _fileLockOutlinerRefreshPending = false; });

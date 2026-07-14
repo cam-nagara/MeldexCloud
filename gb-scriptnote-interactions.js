@@ -38,10 +38,25 @@ Object.assign(ScriptNoteEditor.prototype, {
         return this._runSearchShortcut();
       case 'scenario.deselectAll':
         return this._runDeselectAllShortcut();
-      case 'scenario.selectAll':
+      case 'scenario.selectAll': {
+        // セル内で Ctrl+A: 全行選択ではなくそのセルの内容全体を選択する
+        const cell = ae?.closest?.('.sn2-text[contenteditable], .sn2-custom-text[contenteditable]');
+        if (cell && this.host?.contains(cell)) {
+          // 過去のテキストセル範囲選択が残っていると、この後のDeleteで無関係なセルまで消えるため先に解除する
+          this._clearTextCellSelection?.();
+          const sel = window.getSelection();
+          if (sel) {
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return true;
+          }
+        }
         if (typeof this._selectAllRows !== 'function') return false;
         this._selectAllRows();
         return true;
+      }
       case 'scenario.moveUp':
         return this._runMoveRowShortcut(-1);
       case 'scenario.moveDown':
@@ -90,6 +105,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _runDeselectAllShortcut() {
     if (this._rowSelection?.size) this._clearRowSelection();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection();
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     this._lastSelectedIdx = -1;
     const sel = window.getSelection();
     if (sel?.rangeCount && !sel.isCollapsed) sel.collapseToStart();
@@ -243,15 +259,23 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _runEscapeShortcut() {
+    // セルナビゲーションで編集中の場合、まず編集モードを抜けるだけに留める
+    // （アクティブ状態は保持。もう一度Escapeでアクティブ解除まで進む）
+    if (this._cellEditMode && typeof this._exitEditMode === 'function') {
+      this._exitEditMode();
+      return true;
+    }
     if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup();
     document.querySelectorAll('.sn2-header-popup, .sn2-header-sub-popup, .gb-fmt-popup--bulk-edit').forEach(el => el.remove());
     if (typeof this._closeRoleMenu === 'function') this._closeRoleMenu();
     if (this._rowSelection?.size) this._clearRowSelection();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection();
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     return true;
   },
 
   _bindInteractionEvents(host) {
+    if (typeof this._initCellNavigation === 'function') this._initCellNavigation();
     this._bindWheelScroll(host);
     this._bindDragSelection(host);
     this._bindRowSelectionCopy();
@@ -268,7 +292,19 @@ Object.assign(ScriptNoteEditor.prototype, {
       const isWrap = !!this.doc.editor?.wrapMode;
       if (!e.deltaY || e.deltaX) return;
       const stored = parseFloat(localStorage.getItem('meldex-wheel-speed'));
-      const mul = (!isNaN(stored) && stored > 0) ? stored : 2.5;
+      let mul;
+      if (!isNaN(stored) && stored > 0) {
+        mul = stored;
+      } else {
+        const viewSize = sc.clientWidth;
+        if (e.deltaMode === 2) {
+          mul = viewSize * 0.8;
+        } else if (e.deltaMode === 1) {
+          mul = viewSize * 0.08;
+        } else {
+          mul = viewSize * 0.25 / 100;
+        }
+      }
       if (isWrap && !isVerticalMode) {
         e.preventDefault();
         sc.scrollBy({ left: e.deltaY * mul, behavior: 'smooth' });
@@ -321,7 +357,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (dragSelecting) {
         dragSelecting = false;
         removeDragRect();
-        this._updateRowSelectionUI();
+        this._updateTextCellSelectionUI?.();
       }
     };
     if (this._dragSelectionDocCleanup) this._dragSelectionDocCleanup();
@@ -373,13 +409,15 @@ Object.assign(ScriptNoteEditor.prototype, {
           dragPointerId = textDragPointerId;
           dragCtrl = e.ctrlKey || e.metaKey;
           dragShift = e.shiftKey;
-          if (!this._rowSelection) this._rowSelection = new Set();
-          if (!dragCtrl && !dragShift) this._rowSelection.clear();
+          // 行選択ではなくテキストセル範囲選択として確定する
+          this._beginTextCellDragSelection?.(startRowId);
+          if (!this._textCellSelection) this._textCellSelection = new Set();
+          if (!dragCtrl && !dragShift) this._textCellSelection.clear();
           try { window.getSelection()?.removeAllRanges(); } catch {}
           try { host.setPointerCapture(dragPointerId); } catch {}
-          this._rowSelection.add(startRowId);
-          this._rowSelection.add(overRow.dataset.rowId);
-          this._updateRowSelectionUI();
+          this._textCellSelection.add(startRowId);
+          this._textCellSelection.add(overRow.dataset.rowId);
+          this._updateTextCellSelectionUI?.();
         }
       }
       if (dragPending && !dragSelecting) {
@@ -388,15 +426,18 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
         dragPending = false;
         dragSelecting = true;
-        if (!this._rowSelection) this._rowSelection = new Set();
+        // 行選択ではなくテキストセル範囲選択として確定する
+        this._beginTextCellDragSelection?.();
+        if (!this._textCellSelection) this._textCellSelection = new Set();
         if (!dragCtrl && !dragShift) {
-          this._rowSelection.clear();
+          this._textCellSelection.clear();
         }
         host.setPointerCapture(dragPointerId);
         const startEl = document.elementFromPoint(dragStartX, dragStartY);
         const startRow = startEl?.closest('.sn2-row');
         if (startRow && host.contains(startRow) && startRow.dataset.rowId) {
-          this._rowSelection.add(startRow.dataset.rowId);
+          this._beginTextCellDragSelection?.(startRow.dataset.rowId);
+          this._textCellSelection.add(startRow.dataset.rowId);
         }
       }
       if (!dragSelecting) return;
@@ -411,31 +452,42 @@ Object.assign(ScriptNoteEditor.prototype, {
         const rr = row.getBoundingClientRect();
         if (rr.right / z >= rx1 && rr.left / z <= rx2 && rr.bottom / z >= ry1 && rr.top / z <= ry2) {
           const rowId = row.dataset.rowId;
-          if (rowId && !this._rowSelection.has(rowId)) {
-            this._rowSelection.add(rowId);
+          if (rowId && !this._textCellSelection.has(rowId)) {
+            this._textCellSelection.add(rowId);
             changed = true;
           }
         }
       });
-      if (changed) this._updateRowSelectionUI();
+      if (changed) this._updateTextCellSelectionUI?.();
     });
 
     host.addEventListener('pointerup', (e) => {
+      const wasTextCellClick = !!textDragRowId;
       textDragRowId = null;
       if (dragPending && !dragSelecting) {
         dragPending = false;
+        // ドラッグでない単クリック: すべての選択系を解除
         if (this._rowSelection?.size) {
           this._rowSelection.clear();
           this._updateRowSelectionUI();
         }
+        if (this._textCellSelection?.size) this._clearTextCellSelection?.();
+        if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
+        if (this._activeCellRowId) this._clearActiveCell?.();
         return;
+      }
+      // テキストセル上のドラッグでない単クリック: テキストセル範囲選択を解除
+      if (wasTextCellClick && !dragSelecting && this._textCellSelection?.size) {
+        this._clearTextCellSelection?.();
       }
       dragPending = false;
       removeDragRect();
       if (!dragSelecting) return;
       dragSelecting = false;
       host.releasePointerCapture(e.pointerId);
-      this._updateRowSelectionUI();
+      this._updateTextCellSelectionUI?.();
+      // Delete/Backspace を host で受けられるようにフォーカスを保証する
+      this._focusTextCellSelectionHost?.();
     });
 
     host.addEventListener('lostpointercapture', () => {
@@ -443,7 +495,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (dragSelecting) {
         dragSelecting = false;
         removeDragRect();
-        this._updateRowSelectionUI();
+        this._updateTextCellSelectionUI?.();
       }
       dragPending = false;
     });
@@ -451,7 +503,11 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _bindRowSelectionCopy() {
     this._copyHandler = (e) => {
-      if (!this._rowSelection || this._rowSelection.size === 0) return;
+      if (!this._rowSelection || this._rowSelection.size === 0) {
+        // 行選択が無い場合はテキストセル範囲選択のコピーを試す
+        if (typeof this._handleTextCellSelectionCopy === 'function') this._handleTextCellSelectionCopy(e);
+        return;
+      }
       if (!this.host || !this.host.isConnected) return;
       if (typeof this._sanitizeRowSelection === 'function') this._sanitizeRowSelection();
       if (!this._rowSelection || this._rowSelection.size === 0) return;

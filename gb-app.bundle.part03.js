@@ -1,3 +1,90 @@
+    : 'pivot';
+}
+function _normalizeDbTimelineTypeSpecific(timeline) {
+  const src = _cloneDbViewObject(timeline);
+  const out = {
+    timeProp: String(src.timeProp || ''),
+    endProp: String(src.endProp || ''),
+    rowProp: String(src.rowProp || '_entity'),
+    scale: String(src.scale || 'day'),
+    direction: String(src.direction || 'horizontal'),
+    displayStart: String(src.displayStart || ''),
+    displayEnd: String(src.displayEnd || ''),
+    timeStepMinutes: Math.max(1, Math.round(Number(src.timeStepMinutes || 1) || 1)),
+    calendarSystemId: String(src.calendarSystemId || 'gregorian'),
+    ...src,
+  };
+  out.colWidths = _cloneDbViewObject(src.colWidths);
+  out.rowHeights = _cloneDbViewObject(src.rowHeights);
+  out.cardProps = _cloneDbViewArray(src.cardProps);
+  out.calendarSystems = _cloneDbViewArray(src.calendarSystems);
+  out.displayStart = String(out.displayStart || '');
+  out.displayEnd = String(out.displayEnd || '');
+  out.timeStepMinutes = Math.max(1, Math.round(Number(out.timeStepMinutes || 1) || 1));
+  out.calendarSystemId = String(out.calendarSystemId || 'gregorian');
+  out.cardImageThumbCount = Math.max(1, Math.min(12, Math.round(Number(out.cardImageThumbCount || 3) || 3)));
+  out.cardPropLineCount = Math.max(1, Math.min(20, Math.round(Number(out.cardPropLineCount || 1) || 1)));
+  return out;
+}
+function _makeLegacyDbSavedView(cfg) {
+  const viewMode = _normalizeDbViewModeValue(cfg.currentViewMode || 'pivot');
+  return {
+    name: typeof _defaultDbSavedViewName === 'function' ? _defaultDbSavedViewName(viewMode, 0) : 'テーブル',
+    viewMode,
+    hiddenCols: _cloneDbViewArray(cfg.hiddenCols),
+    pinnedCols: _cloneDbViewArray(cfg.pinnedCols),
+    colOrder: cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null),
+    advancedFilters: _cloneDbViewArray(cfg.advancedFilters),
+    conditionalFormat: !!cfg.conditionalFormat,
+    conditionalColors: _cloneDbViewObject(cfg.conditionalColors),
+    filter: 'disabled',
+    sortConfig: cfg.sortConfig == null ? null : _cloneDbViewValue(cfg.sortConfig, null),
+    manualOrder: cfg.manualOrder == null ? null : _cloneDbViewValue(cfg.manualOrder, null),
+    showFooter: !!cfg.showFooter,
+    entityColumnPinned: cfg.entityColumnPinned !== false,
+    countTypes: _cloneDbViewObject(cfg.countTypes),
+    colWidths: _cloneDbViewObject(cfg.colWidths),
+    thumbnailSize: cfg.thumbnailSize || 'small',
+    typeSpecific: {
+      pivot: { groupBy: cfg.groupBy || null },
+      gallery: {},
+      kanban: { groupBy: cfg.kanbanGroupBy || '_status' },
+      calendar: { mapping: _cloneDbViewObject(cfg.calendarMapping) },
+      timeline: _normalizeDbTimelineTypeSpecific(cfg.timeline),
+      chart: _cloneDbViewObject(cfg.chartConfig),
+      graph: _cloneDbViewObject(cfg.graphConfig),
+      form: { formConfig: cfg.formConfig == null ? null : _cloneDbViewValue(cfg.formConfig, null) },
+    },
+  };
+}
+function _ensureDbViewTypeSpecific(view, cfg) {
+  const current = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
+  view.typeSpecific = current;
+  if (!_isDbViewPlainObject(current.pivot)) current.pivot = {};
+  if (current.pivot.groupBy == null) current.pivot.groupBy = view.groupBy || cfg.groupBy || null;
+  if (!_isDbViewPlainObject(current.gallery)) current.gallery = {};
+  if (!_isDbViewPlainObject(current.kanban)) current.kanban = {};
+  if (current.kanban.groupBy == null) current.kanban.groupBy = view.kanbanGroupBy || cfg.kanbanGroupBy || '_status';
+  if (!_isDbViewPlainObject(current.calendar)) current.calendar = {};
+  if (!_isDbViewPlainObject(current.calendar.mapping)) current.calendar.mapping = _cloneDbViewObject(cfg.calendarMapping);
+  current.timeline = _normalizeDbTimelineTypeSpecific(current.timeline || cfg.timeline);
+  if (!_isDbViewPlainObject(current.chart)) current.chart = _cloneDbViewObject(cfg.chartConfig);
+  if (!_isDbViewPlainObject(current.graph)) current.graph = _cloneDbViewObject(cfg.graphConfig);
+  if (!_isDbViewPlainObject(current.form)) current.form = {};
+  if (current.form.formConfig == null) {
+    current.form.formConfig = view.formConfig != null
+      ? _cloneDbViewValue(view.formConfig, null)
+      : (cfg.formConfig != null ? _cloneDbViewValue(cfg.formConfig, null) : null);
+  }
+}
+function _normalizeSavedDbViewForV2(view, cfg, index) {
+  const v = _isDbViewPlainObject(view) ? view : {};
+  v.viewMode = _normalizeDbViewModeValue(v.viewMode || cfg.currentViewMode || 'pivot');
+  if (!String(v.name || '').trim()) {
+    v.name = typeof _defaultDbSavedViewName === 'function'
+      ? _defaultDbSavedViewName(v.viewMode, index)
+      : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
+  }
   if (v.hiddenCols == null) v.hiddenCols = _cloneDbViewArray(cfg.hiddenCols);
   else v.hiddenCols = _cloneDbViewArray(v.hiddenCols);
   if (v.pinnedCols == null) v.pinnedCols = _cloneDbViewArray(cfg.pinnedCols);
@@ -66,6 +153,8 @@ function _hasMeaningfulDbTimelineState(timeline) {
   if (String(timeline.displayEnd || '')) return true;
   if (Math.max(1, Math.round(Number(timeline.timeStepMinutes || 1) || 1)) !== 1) return true;
   if (String(timeline.calendarSystemId || 'gregorian') !== 'gregorian') return true;
+  if (Math.max(1, Math.min(12, Math.round(Number(timeline.cardImageThumbCount || 3) || 3))) !== 3) return true;
+  if (Math.max(1, Math.min(20, Math.round(Number(timeline.cardPropLineCount || 1) || 1))) !== 1) return true;
   if (_hasDbViewObjectState(timeline.colWidths)) return true;
   if (_hasDbViewObjectState(timeline.rowHeights)) return true;
   if (_hasDbViewArrayState(timeline.cardProps)) return true;
@@ -73,6 +162,7 @@ function _hasMeaningfulDbTimelineState(timeline) {
   const defaults = new Set([
     'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
     'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
+    'cardImageThumbCount', 'cardPropLineCount',
   ]);
   return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
 }
@@ -624,19 +714,70 @@ function _apiFetchPerfInfo(path) {
 }
 
 const _apiFetchInFlightGets = new Map();
+const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
+const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+const _gbAppApiFetchBrowseCache = new Map();
+let _gbAppApiFetchCacheGeneration = 0;
 
-function _apiFetchInFlightKey(path, opts) {
-  const method = String(opts?.method || 'GET').toUpperCase();
-  if (method !== 'GET') return '';
-  const nonBenignKeys = Object.keys(opts || {}).filter(key => key !== 'silentError');
-  if (nonBenignKeys.length > 0) return '';
+function _gbAppApiFetchMethod(opts) {
+  return String(opts?.method || 'GET').toUpperCase();
+}
+
+function _gbAppApiFetchClonePayload(payload) {
+  if (typeof structuredClone === 'function') {
+    try { return structuredClone(payload); } catch {}
+  }
+  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
+}
+
+function _gbAppApiFetchCanonicalGetPath(path) {
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
-    const endpoint = url.pathname || '';
-    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return '';
-    return endpoint + '?' + url.searchParams.toString();
+    const params = [...url.searchParams.entries()]
+      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
+    const query = params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+    return url.pathname + (query ? '?' + query : '');
+  } catch {
+    return String(path || '');
+  }
+}
+
+function _apiFetchInFlightKey(path, opts) {
+  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.signal) return '';
+  const nonBenignKeys = Object.keys(opts || {}).filter(key => !['method', 'silentError', 'skipBrowseCache'].includes(key));
+  if (nonBenignKeys.length > 0) return '';
+  return _gbAppApiFetchCanonicalGetPath(path)
+    + '|silent=' + (opts?.silentError === true ? '1' : '0')
+    + '|skipBrowseCache=' + (opts?.skipBrowseCache === true ? '1' : '0');
+}
+
+function _gbAppApiFetchBrowseCacheKey(path, opts) {
+  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
   } catch {
     return '';
+  }
+}
+
+function _gbAppApiFetchInvalidateReadCaches() {
+  _gbAppApiFetchCacheGeneration += 1;
+  _gbAppApiFetchBrowseCache.clear();
+  _apiFetchInFlightGets.clear();
+  if (typeof _clearBrowseItemResolvedTypeCache === 'function') _clearBrowseItemResolvedTypeCache();
+}
+
+function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
+  _gbAppApiFetchBrowseCache.set(cacheKey, {
+    at: Date.now(),
+    payload: _gbAppApiFetchClonePayload(payload),
+  });
+  while (_gbAppApiFetchBrowseCache.size > GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES) {
+    const oldestKey = _gbAppApiFetchBrowseCache.keys().next().value;
+    if (!oldestKey) break;
+    _gbAppApiFetchBrowseCache.delete(oldestKey);
   }
 }
 
@@ -653,11 +794,11 @@ function _logPerfEvent(label, startedAt, detail) {
   try {
     const durationMs = _perfElapsedMs(startedAt);
     const payload = {
+      ...(detail || {}),
       message: `[perf] ${label}: ${durationMs}ms`,
       perf: true,
       label,
       durationMs,
-      ...(detail || {}),
     };
     if (typeof console !== 'undefined' && typeof console.info === 'function') {
       console.info('[Meldex perf] ' + payload.message, payload);
@@ -669,232 +810,91 @@ function _logPerfEvent(label, startedAt, detail) {
   }
 }
 
+function _gbAppApiFetchIsAbortError(e) {
+  return !!e && (e.name === 'AbortError' || e.code === 20);
+}
+
+// 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
+// タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
+async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
+  const controller = new AbortController();
+  const externalSignal = requestOpts?.signal || null;
+  let timedOut = false;
+  let onExternalAbort = null;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason);
+    } else {
+      onExternalAbort = () => controller.abort(externalSignal.reason);
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
+    return await fetch(url, { ...requestOpts, signal: controller.signal });
+  } catch (e) {
+    if (_gbAppApiFetchIsAbortError(e) && timedOut) {
+      const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
+      timeoutErr.name = 'AbortError';
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
 async function apiFetch(path, opts) {
+  const method = _gbAppApiFetchMethod(opts);
+  const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
+  const cacheGeneration = _gbAppApiFetchCacheGeneration;
+  if (browseCacheKey) {
+    const cached = _gbAppApiFetchBrowseCache.get(browseCacheKey);
+    if (cached && Date.now() - cached.at < GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS) {
+      return _gbAppApiFetchClonePayload(cached.payload);
+    }
+    _gbAppApiFetchBrowseCache.delete(browseCacheKey);
+  }
   const inFlightKey = _apiFetchInFlightKey(path, opts);
   if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
-    return _apiFetchInFlightGets.get(inFlightKey);
+    return _gbAppApiFetchClonePayload(await _apiFetchInFlightGets.get(inFlightKey));
   }
   const perfInfo = _apiFetchPerfInfo(path);
   const perfStartedAt = perfInfo ? _perfNowMs() : 0;
   const requestPromise = (async () => {
     try {
-      const res = await fetch(API_BASE + path, opts);
-      if (perfInfo) {
-        _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
-          ...perfInfo,
-          status: res.status,
-          contentLength: res.headers?.get?.('content-length') || '',
-        });
-      }
-      const backendPerf = _apiFetchBackendPerf(res);
-      if (!res.ok) {
-        let detail = res.statusText || '';
-        let payload = null;
-        try {
-          payload = await res.clone().json();
-          const rawDetail = payload?.error || payload?.detail || detail;
-          detail = rawDetail && typeof rawDetail === 'object'
-            ? (rawDetail.message || rawDetail.code || detail)
-            : rawDetail;
-        } catch {}
-        const error = new Error(`HTTP ${res.status}: ${detail}`);
-        error.status = res.status;
-        error.payload = payload;
-        error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
-        throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
-      }
-      const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
-      const data = await res.json();
-      if (perfInfo) {
-        _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
-          ...perfInfo,
-          backendPerf,
-        });
-      }
-      if (backendPerf && data && typeof data === 'object') {
-        try {
-          Object.defineProperty(data, '_backendPerf', {
-            value: backendPerf,
-            configurable: true,
+      let requestOpts = opts;
+      let retriedAfterMutation = false;
+      while (true) {
+        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, GB_APP_API_FETCH_TIMEOUT_MS);
+        if (perfInfo) {
+          _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+            ...perfInfo,
+            status: res.status,
+            contentLength: res.headers?.get?.('content-length') || '',
+            retriedAfterMutation,
           });
-        } catch {}
-      }
-      window.MeldexSaveSafety?.reportApiSuccess?.(path, opts);
-      if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf });
-      return data;
-    } catch (e) {
-      if (perfInfo) {
-        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
-          ...perfInfo,
-          error: e?.message || String(e),
-        });
-      }
-      if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
-      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
-        const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
-        showStatus('エラー: ' + text, true);
-      }
-      throw e;
-    }
-  })();
-  if (inFlightKey) {
-    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
-    requestPromise.then(
-      () => _apiFetchInFlightGets.delete(inFlightKey),
-      () => _apiFetchInFlightGets.delete(inFlightKey),
-    );
-  }
-  return requestPromise;
-}
-
-async function apiPut(path, body) {
-  return apiFetch(path, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-async function apiPost(path, body, options = {}) {
-  return apiFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(options || {}),
-  });
-}
-
-/* ==============================
-   初期化
-   ============================== */
-// 認証トークン管理
-// 旧認証変数（互換性のため残す — 他モジュールが参照）
-let _authToken = '';
-let _authUser = null;
-
-function _apiLockJsonBody(opts) {
-  const raw = opts?.body;
-  if (!raw) return {};
-  if (typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch { return {}; }
-  }
-  if (raw && typeof raw === 'object' && !(raw instanceof FormData)) return raw;
-  return {};
-}
-
-function _apiLockPathDir(path) {
-  const text = String(path || '').replace(/\\/g, '/');
-  const index = text.lastIndexOf('/');
-  return index > 0 ? text.slice(0, index) : '';
-}
-
-function _apiLockAddPath(paths, value) {
-  const text = String(value || '').trim();
-  if (text) paths.push(text);
-}
-
-function _apiLockWriteCandidatePaths(path, opts) {
-  const method = String(opts?.method || 'GET').toUpperCase();
-  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return [];
-  let url;
-  try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
-  const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
-  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
-  const body = _apiLockJsonBody(opts);
-  const query = url.searchParams;
-  const paths = [];
-  const addQuery = (key) => _apiLockAddPath(paths, query.get(key));
-  const addBody = (key) => _apiLockAddPath(paths, body?.[key]);
-  const addBoth = (key) => { addQuery(key); addBody(key); };
-
-  if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
-    addBoth('path');
-    addBody('entry_path');
-    addBody('folder_path');
-  } else if (route === '/upload-file') {
-    addBoth('path');
-    addBody('dir');
-  } else if (route === '/outliner/add') {
-    addBody('parent');
-  } else if (route === '/outliner/delete') {
-    addBody('path');
-  } else if (route === '/outliner/duplicate') {
-    const srcPath = String(body?.path || '').trim();
-    if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
-  } else if (route === '/outliner/save-as') {
-    addBody('path');
-    addBody('dest_folder');
-  } else if (route === '/outliner/delete-batch') {
-    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/outliner/move') {
-    addBody('path');
-    addBody('dest_folder');
-  } else if (route === '/outliner/rename') {
-    addBody('old_path');
-    const oldPath = String(body?.old_path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
-  } else if (route === '/entity/create') {
-    addBody('parent_path');
-  } else if (route === '/entity/rename') {
-    addBody('path');
-    const oldPath = String(body?.path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
-  } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
-    addBody('target_path');
-  } else if (route === '/entity/auto-name') {
-    addBody('db_path');
-    addBody('entry_path');
-    addBody('path');
-  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
-    addBody('folder_path');
-    addBody('file_path');
-  } else if (route === '/import-csv' || route === '/import-xlsx') {
-    addBody('csv_path');
-    addBody('xlsx_path');
-    addBody('db_path');
-  } else if (route === '/public-form/submit') {
-    addBody('db_path');
-  } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
-    addBoth('db_path');
-  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder') {
-    addBody('path');
-  }
-
-  return [...new Set(paths)];
-}
-
-function _apiLockBlockIfNeeded(path, opts) {
-  if (typeof isItemLocked !== 'function') return false;
-  const lockedPath = _apiLockWriteCandidatePaths(path, opts).find(p => {
-    try { return isItemLocked(p); } catch { return false; }
-  });
-  if (!lockedPath) return false;
-  const reason = typeof getItemLockReason === 'function' ? getItemLockReason(lockedPath) : '';
-  const message = reason
-    ? `編集ロック中のため編集できません（理由: ${reason}）`
-    : '編集ロック中のため編集できません';
-  if (typeof showStatus === 'function') showStatus(message, true);
-  throw new Error(message);
-}
-
-// apiFetchをオーバーライドしてユーザー名を付加
-const _origApiFetch = apiFetch;
-apiFetch = async function(path, opts) {
-  opts = opts || {};
-  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
-  _apiLockBlockIfNeeded(path, opts);
-  if (window.MeldexActiveLocks?.beforeApiFetch) {
-    opts = await window.MeldexActiveLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
-  }
-  // _user パラメータを自動付与（監査ログ・modified_by 用）
-  const user = getUsername();
-  if (user && user !== 'anonymous') {
-    const sep = path.includes('?') ? '&' : '?';
-    path += sep + '_user=' + encodeURIComponent(user);
-  }
-  return _origApiFetch(path, opts);
-};
-
-// チームプロフィール同期（起動時に全ソースフォルダの _Meldex_team.json に自分を登録）
+        }
+        const backendPerf = _apiFetchBackendPerf(res);
+        if (!res.ok) {
+          let detail = res.statusText || '';
+          let payload = null;
+          try {
+            payload = await res.clone().json();
+            const rawDetail = payload?.error || payload?.detail || detail;
+            detail = rawDetail && typeof rawDetail === 'object'
+              ? (rawDetail.message || rawDetail.code || detail)
+              : rawDetail;
+          } catch {}
+          const error = new Error(`HTTP ${res.status}: ${detail}`);
+          error.status = res.status;
+          error.payload = payload;
+          error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+          throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+        }
+        const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+        const data = await res.json();
+        if (perfInfo) {
+          _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {

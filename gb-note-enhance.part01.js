@@ -85,16 +85,13 @@ function _cloneFileStyleObject(style) {
   if (!style || typeof style !== 'object' || Array.isArray(style)) return {};
   return JSON.parse(JSON.stringify(style));
 }
-
 function _fileStylePersistableKey(key) {
   const value = String(key || '').trim();
   return value.startsWith('--') || /^__[A-Za-z0-9_-]+$/.test(value);
 }
-
 function _fileStyleYamlQuote(value) {
   return JSON.stringify(String(value == null ? '' : value));
 }
-
 function _fileStyleYamlScalar(raw) {
   const value = String(raw == null ? '' : raw).trim();
   if (!value) return '';
@@ -105,11 +102,9 @@ function _fileStyleYamlScalar(raw) {
   if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
   return value;
 }
-
 function _fileStyleBlockRegex() {
   return /style:\s*\n(?:\s+(?:--[\w-]+|__[A-Za-z0-9_-]+):[^\n]*\n?)*/m;
 }
-
 function _fileStyleToYaml(style) {
   if (!style || typeof style !== 'object' || Array.isArray(style) || Object.keys(style).length === 0) return '';
   let styleYaml = 'style:\n';
@@ -119,7 +114,6 @@ function _fileStyleToYaml(style) {
   }
   return styleYaml === 'style:\n' ? '' : styleYaml;
 }
-
 function _folderFileStyleStorageId(path) {
   const raw = String(path || '').trim();
   if (!raw) return '';
@@ -128,7 +122,6 @@ function _folderFileStyleStorageId(path) {
   } catch {}
   return raw;
 }
-
 function _readFolderFileStyleStore() {
   try {
     const parsed = JSON.parse(localStorage.getItem(_FOLDER_FILE_STYLE_KEY) || '{}');
@@ -137,20 +130,17 @@ function _readFolderFileStyleStore() {
     return {};
   }
 }
-
 function _writeFolderFileStyleStore(store) {
   const next = store && typeof store === 'object' && !Array.isArray(store) ? store : {};
   if (Object.keys(next).length > 0) localStorage.setItem(_FOLDER_FILE_STYLE_KEY, JSON.stringify(next));
   else localStorage.removeItem(_FOLDER_FILE_STYLE_KEY);
 }
-
 function _getFolderFileStyle(path) {
   const id = _folderFileStyleStorageId(path || (typeof _folderPath !== 'undefined' ? _folderPath : ''));
   if (!id) return {};
   const store = _readFolderFileStyleStore();
   return _cloneFileStyleObject(store[id] || {});
 }
-
 function _saveFolderFileStyle(style, path) {
   const id = _folderFileStyleStorageId(path || (typeof _folderPath !== 'undefined' ? _folderPath : ''));
   if (!id) return;

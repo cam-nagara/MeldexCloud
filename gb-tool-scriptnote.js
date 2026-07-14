@@ -678,6 +678,10 @@ class ScriptNoteComponent extends ToolComponent {
               }
               this._editor._path = res.new_path;
               this.state.scenarioPath = res.new_path;
+              window.dispatchEvent(new CustomEvent('meldex:file-path-renamed', {
+                detail: { oldPath, newPath: res.new_path, type: 'scriptnote' },
+              }));
+              window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
               if (typeof renameAppPathReferences === 'function') {
                 renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, type: 'scriptnote' });
               }
@@ -1125,6 +1129,7 @@ class ScriptNoteComponent extends ToolComponent {
       // UI反映
       const titleInput = this.el?.querySelector?.('#title-input');
       if (titleInput) titleInput.value = parsed.title || '';
+      window.MeldexFileLockBadge?.apply?.(titleInput, nextPath);
       const layoutSel = this.el?.querySelector?.('#scenario-note-layout-select');
       if (layoutSel) layoutSel.value = parsed.layoutMode || 'manga';
       this.state.noteLayoutMode = parsed.layoutMode || 'manga';

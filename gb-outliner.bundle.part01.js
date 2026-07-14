@@ -76,6 +76,7 @@ function _outlinerNextFrame() {
 
 async function _appendOutlinerChildrenChunked(container, children, rootPath) {
   if (!container || !Array.isArray(children) || !children.length) return;
+  if (typeof _registerFileIds === 'function') _registerFileIds(children);
   const chunkSize = _outlinerChildRenderChunkSize(children.length);
   for (let i = 0; i < children.length; i += chunkSize) {
     const fragment = document.createDocumentFragment();
@@ -360,6 +361,247 @@ async function loadOutliner(options) {
   }
 }
 
+const _browseItemTypeResolutionInFlight = new Map();
+const _browseItemResolvedTypes = new Map();
+let _browseItemTypeResolutionQueue = Promise.resolve();
+const BROWSE_ITEM_VISIBLE_WAIT_TIMEOUT_MS = 5000;
+const BROWSE_ITEM_TYPE_CHECK_TIMEOUT_MS = 15000;
+const BROWSE_ITEM_TYPE_POST_VISIBLE_DELAY_MS = 250;
+
+function _browseItemNeedsTypeCheck(item) {
+  return !!(item?.type_resolved !== true && item?.needs_type_check === true && item?.path);
+}
+
+function _clearBrowseItemResolvedTypeCache() {
+  _browseItemResolvedTypes.clear();
+}
+
+function _browseItemPositiveTimeout(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(1, numeric) : fallback;
+}
+
+async function _requestBrowseItemTypeWithTimeout(path, timeoutMs) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const fetchOptions = { silentError: true };
+  if (controller) fetchOptions.signal = controller.signal;
+  let timeoutId = 0;
+  const requestOutcome = Promise.resolve()
+    .then(() => apiFetch('/check-type?path=' + encodeURIComponent(path), fetchOptions))
+    .then(result => ({ result }), error => ({ error }));
+  const timeoutOutcome = new Promise(resolve => {
+    timeoutId = setTimeout(() => {
+      try { controller?.abort(); } catch {}
+      resolve({ timedOut: true });
+    }, timeoutMs);
+  });
+  const outcome = await Promise.race([requestOutcome, timeoutOutcome]);
+  if (timeoutId) clearTimeout(timeoutId);
+  if (outcome?.timedOut || outcome?.error) return { resolved: false, type: '' };
+  const result = outcome?.result;
+  const type = typeof result?.type === 'string' ? result.type : '';
+  if (!type || result?.type_resolved === false || result?.needs_type_check === true) {
+    return { resolved: false, type: '' };
+  }
+  return { resolved: true, type };
+}
+
+async function _resolveBrowseItemTypeOnDemand(item, options) {
+  if (!_browseItemNeedsTypeCheck(item)) return item?.type || 'folder';
+  const path = String(item.path);
+  if (_browseItemResolvedTypes.has(path)) {
+    item.type = _browseItemResolvedTypes.get(path);
+    item.needs_type_check = false;
+    item.type_resolved = true;
+    return item.type;
+  }
+  let request = _browseItemTypeResolutionInFlight.get(path);
+  if (!request) {
+    const timeoutMs = _browseItemPositiveTimeout(options?.timeoutMs, BROWSE_ITEM_TYPE_CHECK_TIMEOUT_MS);
+    request = _requestBrowseItemTypeWithTimeout(path, timeoutMs);
+    _browseItemTypeResolutionInFlight.set(path, request);
+    request.finally(() => {
+      if (_browseItemTypeResolutionInFlight.get(path) === request) _browseItemTypeResolutionInFlight.delete(path);
+    });
+  }
+  const resolution = await request;
+  if (!resolution?.resolved || !resolution.type) return item?.type || 'folder';
+  _browseItemResolvedTypes.set(path, resolution.type);
+  item.type = resolution.type;
+  item.needs_type_check = false;
+  item.type_resolved = true;
+  if (typeof registerFileTypes === 'function') registerFileTypes([item]);
+  return item.type;
+}
+
+function _applyCachedBrowseItemType(item) {
+  if (!item?.path) return false;
+  const path = String(item.path);
+  if (item.type_resolved === true) {
+    _browseItemResolvedTypes.delete(path);
+    item.needs_type_check = false;
+    return false;
+  }
+  if (!_browseItemResolvedTypes.has(path)) return false;
+  item.type = _browseItemResolvedTypes.get(path);
+  item.needs_type_check = false;
+  item.type_resolved = true;
+  return true;
+}
+
+function _normalizeBrowseItemPanePath(path) {
+  return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _captureBrowseItemPaneSnapshot(expectedPath, options) {
+  const opts = options || {};
+  const paneContext = opts.paneContext
+    || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const paneId = paneContext?.paneId
+    || (typeof GBLayout !== 'undefined' ? (GBLayout.activePane || '') : '');
+  const activeTab = paneId && typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function'
+    ? GBTabs.getActiveTab(paneId)
+    : null;
+  return {
+    paneContext,
+    paneId,
+    tabId: activeTab?.id || '',
+    expectedPath: opts.requirePath === false ? '' : _normalizeBrowseItemPanePath(expectedPath || activeTab?.path || ''),
+  };
+}
+
+function _browseItemPaneSnapshotIsCurrent(snapshot) {
+  if (!snapshot) return true;
+  const paneId = snapshot.paneId || snapshot.paneContext?.paneId || '';
+  if (!paneId || typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined') return true;
+  if (typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, paneId)) return false;
+  if (!snapshot.tabId && !snapshot.expectedPath) return true;
+  if (typeof GBTabs.getActiveTab !== 'function') return true;
+  const activeTab = GBTabs.getActiveTab(paneId);
+  if (!activeTab) return false;
+  if (snapshot.tabId && activeTab.id !== snapshot.tabId) return false;
+  if (snapshot.expectedPath
+      && _normalizeBrowseItemPanePath(activeTab.path) !== snapshot.expectedPath) return false;
+  return true;
+}
+
+async function _openResolvedBrowseItemType(item, type, options) {
+  const opts = options || {};
+  const paneContext = opts.paneSnapshot?.paneContext || opts.paneContext || null;
+  const openOpts = { fromExplorer: true, skipHighlight: true, ...(opts.openOptions || {}) };
+  if (type === 'database' && typeof selectDatabase === 'function') {
+    await selectDatabase(item.path, paneContext, openOpts);
+    return true;
+  }
+  if (type === 'calendar' && typeof openCalendarFile === 'function') {
+    await openCalendarFile(item.name, item.path, { ...openOpts, paneContext });
+    return true;
+  }
+  return false;
+}
+
+function _browseItemResolutionIsStillActive(node, path, options) {
+  if (typeof options?.isStillActive === 'function') {
+    try { return options.isStillActive() === true; } catch { return false; }
+  }
+  const row = node?.querySelector?.(':scope > .tree-node-row');
+  if (row) return !!(row.isConnected && row.classList.contains('active'));
+  return typeof _folderPath !== 'undefined' && _folderPath === path;
+}
+
+async function _waitForBrowseItemVisible(afterVisiblePromise, timeoutMs) {
+  let timeoutId = 0;
+  const visibleOutcome = Promise.resolve(afterVisiblePromise).then(() => true, () => true);
+  const timeoutOutcome = new Promise(resolve => {
+    timeoutId = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const visible = await Promise.race([visibleOutcome, timeoutOutcome]);
+  if (timeoutId) clearTimeout(timeoutId);
+  return visible;
+}
+
+function _scheduleBrowseItemTypeResolution(node, item, afterVisiblePromise, options) {
+  if (!_browseItemNeedsTypeCheck(item)) return Promise.resolve({ skipped: 'not-needed' });
+  const opts = options || {};
+  const path = String(item.path);
+  const visibleWaitTimeoutMs = _browseItemPositiveTimeout(
+    opts.visibleWaitTimeoutMs,
+    BROWSE_ITEM_VISIBLE_WAIT_TIMEOUT_MS,
+  );
+  const postVisibleDelayMs = Number.isFinite(Number(opts.postVisibleDelayMs))
+    ? Math.max(0, Number(opts.postVisibleDelayMs))
+    : BROWSE_ITEM_TYPE_POST_VISIBLE_DELAY_MS;
+  return (async () => {
+    if (!_browseItemResolutionIsStillActive(node, path, opts)) return { skipped: 'inactive' };
+    // 表示待ちは直列キューの外。遅い/停止したフォルダが後続項目を塞がない。
+    const visible = await _waitForBrowseItemVisible(afterVisiblePromise, visibleWaitTimeoutMs);
+    if (!visible) return { skipped: 'visible-timeout' };
+    if (postVisibleDelayMs) await new Promise(resolve => setTimeout(resolve, postVisibleDelayMs));
+    if (!_browseItemResolutionIsStillActive(node, path, opts)) return { skipped: 'inactive' };
+
+    const queued = _browseItemTypeResolutionQueue
+      .catch(() => {})
+      .then(async () => {
+        try {
+          if (!_browseItemResolutionIsStillActive(node, path, opts)
+              || !_browseItemNeedsTypeCheck(item)) return { skipped: 'inactive' };
+          const type = await _resolveBrowseItemTypeOnDemand(item, { timeoutMs: opts.typeCheckTimeoutMs });
+          if (_browseItemNeedsTypeCheck(item)) return { skipped: 'unresolved' };
+          if (!_browseItemResolutionIsStillActive(node, path, opts)) return { skipped: 'inactive' };
+          if (node) _syncOutlinerResolvedItemType(node, item);
+          if (!_browseItemPaneSnapshotIsCurrent(opts.paneSnapshot)) return { skipped: 'pane-changed', type };
+          if (typeof opts.onResolved === 'function') {
+            const handled = await opts.onResolved({ item, type, paneSnapshot: opts.paneSnapshot || null });
+            if (handled !== false) return { resolved: true, type, handled: true };
+          }
+          const opened = await _openResolvedBrowseItemType(item, type, opts);
+          return { resolved: true, type, opened };
+        } catch (error) {
+          return { skipped: 'error', error: error?.message || String(error) };
+        }
+      });
+    _browseItemTypeResolutionQueue = queued.then(() => undefined, () => undefined);
+    return queued;
+  })();
+}
+
+function _syncOutlinerResolvedItemType(node, item) {
+  const row = node?.querySelector?.(':scope > .tree-node-row');
+  if (!row || !item) return;
+  const previousType = row.dataset.itemType || '';
+  row.dataset.itemType = item.type || '';
+  const toggle = row.querySelector('.tree-toggle');
+  const children = node.querySelector(':scope > .tree-children');
+  const isExpandable = item.needsMapping !== true && (item.type === 'folder' || item.type === 'database');
+  if (previousType && previousType !== item.type && children) {
+    children.replaceChildren();
+    children.dataset.loaded = 'false';
+    children.classList.add('collapsed');
+    if (toggle) {
+      toggle.classList.remove('expanded');
+      toggle.dataset.expanded = 'false';
+    }
+  }
+  if (toggle) {
+    if (isExpandable) {
+      if (!toggle.dataset.expanded) {
+        toggle.innerHTML = lucide('chevronRight', 16);
+        toggle.dataset.expanded = 'false';
+      }
+    } else {
+      toggle.classList.remove('expanded');
+      toggle.innerHTML = '';
+      delete toggle.dataset.expanded;
+      children?.classList.add('collapsed');
+    }
+  }
+  const icon = row.querySelector('.tree-icon');
+  if (icon) {
+    icon.innerHTML = _outlinerIconMarkup(item, 18);
+    if (item.linked) icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
+  }
+}
+
 function renderOutlinerLegacy(items) {
   const el = document.getElementById('outliner-tree');
   _unregisterTreeSubtree(el);
@@ -367,6 +609,7 @@ function renderOutlinerLegacy(items) {
   const visibleItems = (items || []).filter(item => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleItems);
+  if (typeof _registerFileIds === 'function') _registerFileIds(visibleItems);
   const fragment = document.createDocumentFragment();
   visibleItems.forEach(item => fragment.appendChild(createTreeNodeFromBrowse(item)));
   el.appendChild(fragment);
@@ -384,6 +627,7 @@ function renderOutlinerMultiRoot(roots) {
     && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(r.path)));
   OUTLINER_CONFLICT_PATHS.clear();
   _registerOutlinerConflictPaths(visibleRoots);
+  if (typeof _registerFileIds === 'function') _registerFileIds(visibleRoots);
 
   // 各ルートを通常のフォルダノードとしてツリーに追加（_isRootフラグ付き）
   const fragment = document.createDocumentFragment();
@@ -399,6 +643,7 @@ function renderOutlinerMultiRoot(roots) {
       needsMapping: root.needsMapping === true,
       rootKind: root.kind || '',
       workspaceId: root.workspaceId || '',
+      file_id: root.file_id || '',
       _isRoot: true,
     };
     fragment.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
@@ -653,248 +898,3 @@ function _writeFileLockCache(entries) {
   try {
     localStorage.setItem(LOCKED_ITEMS_KEY, JSON.stringify({ entries: _fileLockEntries, cachedAt: Date.now() }));
   } catch {}
-}
-function _readCachedFileLocks() {
-  const data = _legacyLockedItems();
-  return Array.isArray(data.entries) ? data.entries : [];
-}
-function _primeFileLockCacheFromStorage() {
-  if (_fileLockLoaded || _fileLockEntries.length) return _fileLockEntries;
-  _fileLockEntries = _readCachedFileLocks();
-  return _fileLockEntries;
-}
-function _fileLockEntryFromEntries(entries, path) {
-  const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
-  const target = _normalizeLockedItemPath(path);
-  return (entries || []).find(entry => {
-    if (fid && entry?.file_id === fid) return true;
-    const base = _normalizeLockedItemPath(entry?.normalized_path || entry?.path || '');
-    return base && (target === base || target.startsWith(base + '/'));
-  }) || null;
-}
-async function _migrateLegacyLocksToServerIfOwner() {
-  if (_legacyFileLocksMigrated) return;
-  _legacyFileLocksMigrated = true;
-  await _ensureRoleLoaded();
-  if (!isFileLockOwner()) return;
-  const legacy = _legacyLockedItems();
-  if (!legacy || Array.isArray(legacy.entries)) return;
-  const pairs = Object.entries(legacy).filter(([, value]) => value === true);
-  if (!pairs.length) return;
-  for (const [key] of pairs) {
-    const path = (typeof _fileIdToPath === 'function' && _fileIdToPath(key)) || key;
-    if (!path || _isFileLockSystemExcluded(path)) continue;
-    try {
-      await _fileLockApi('/file-lock', {
-        method: 'PUT',
-        body: JSON.stringify({ path, file_id: path === key ? '' : key }),
-      });
-    } catch {}
-  }
-}
-async function _ensureLocksLoaded(options = {}) {
-  const force = !!options.force;
-  if (_fileLockLoaded && !force) return _fileLockEntries;
-  if (_fileLockLoadPromise && !force) return _fileLockLoadPromise;
-  _fileLockLoadPromise = (async () => {
-    await _ensureRoleLoaded();
-    await _migrateLegacyLocksToServerIfOwner();
-    try {
-      const data = await _fileLockApi('/file-lock');
-      _writeFileLockCache(data.entries || []);
-    } catch {
-      _writeFileLockCache(_readCachedFileLocks());
-    }
-    if (!_fileLockRefreshTimer) {
-      _fileLockRefreshTimer = setInterval(() => {
-        _ensureLocksLoaded({ force: true }).catch(() => {});
-      }, 5 * 60 * 1000);
-    }
-    return _fileLockEntries;
-  })();
-  try { return await _fileLockLoadPromise; }
-  finally { _fileLockLoadPromise = null; }
-}
-function getLockedItems() { return { entries: _fileLockEntries.slice() }; }
-function _fileLockEntryForPath(path) {
-  if (isSystemLockedItem(path)) return { system: true, path, lock_reason: 'システム保護' };
-  const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
-  if (_fileLockLoaded || _fileLockEntries.length) return _fileLockEntryFromEntries(_fileLockEntries, path);
-  const legacy = _legacyLockedItems();
-  if (fid && legacy[fid]) return { path, file_id: fid };
-  return legacy[path] ? { path } : null;
-}
-function isItemLocked(path) {
-  if (isSystemLockedItem(path)) return true;
-  return !!_fileLockEntryForPath(path);
-}
-function getItemLockReason(path) {
-  const entry = _fileLockEntryForPath(path);
-  return String(entry?.lock_reason || '').trim();
-}
-
-function _fileLockHistorySnapshot(path) {
-  const entry = _fileLockEntryForPath(path);
-  if (!entry || entry.system) return null;
-  return {
-    path: entry.path || path,
-    file_id: entry.file_id || ((typeof _pathToFileId === 'function' && _pathToFileId(path)) || ''),
-    lock_reason: entry.lock_reason || entry.reason || '',
-  };
-}
-
-function _sameFileLockHistorySnapshot(a, b) {
-  try { return JSON.stringify(a || null) === JSON.stringify(b || null); }
-  catch { return false; }
-}
-
-async function _restoreFileLockHistorySnapshot(path, snapshot) {
-  await _ensureRoleLoaded();
-  if (!isFileLockOwner()) {
-    if (typeof showStatus === 'function') showStatus('編集ロックの履歴復元は管理者のみ可能です', true);
-    return false;
-  }
-  if (snapshot) {
-    await _fileLockApi('/file-lock', {
-      method: 'PUT',
-      body: JSON.stringify({
-        path: snapshot.path || path,
-        file_id: snapshot.file_id || ((typeof _pathToFileId === 'function' && _pathToFileId(path)) || ''),
-        reason: snapshot.lock_reason || '',
-      }),
-    });
-  } else {
-    await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
-  }
-  await _ensureLocksLoaded({ force: true });
-  await refreshOutliner();
-  if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
-  return true;
-}
-
-function pushOutlinerFileLockHistory(path, beforeSnapshot, afterSnapshot) {
-  if (typeof historyPush !== 'function') return false;
-  if (_sameFileLockHistorySnapshot(beforeSnapshot, afterSnapshot)) return false;
-  const label = afterSnapshot ? 'フォルダツリー: 編集ロック' : 'フォルダツリー: 編集ロック解除';
-  historyPush(
-    label,
-    () => _restoreFileLockHistorySnapshot(path, beforeSnapshot),
-    () => _restoreFileLockHistorySnapshot(path, afterSnapshot),
-    'outliner:file-lock',
-    path || ''
-  );
-  return true;
-}
-
-async function toggleItemLock(path) {
-  try {
-    if (isSystemLockedItem(path)) return false;
-    if (_isFileLockSystemExcluded(path)) {
-      if (typeof showStatus === 'function') showStatus('システムフォルダは編集ロックできません', true);
-      return false;
-    }
-    await _ensureRoleLoaded();
-    if (!isFileLockOwner()) {
-      if (typeof showStatus === 'function') showStatus('編集ロックの設定は管理者のみ可能です', true);
-      return false;
-    }
-    await _ensureLocksLoaded();
-    const locked = isItemLocked(path);
-    const before = _fileLockHistorySnapshot(path);
-    if (locked) {
-      await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
-    } else {
-      // ダイアログ禁止原則: window.prompt は使わない。
-      // 編集ロックの理由は任意であり、後から付箋注釈・履歴ノートで補足できるため、
-      // ロック取得時点では空でセットし、必要なら後段で編集する運用にする。
-      await _fileLockApi('/file-lock', {
-        method: 'PUT',
-        body: JSON.stringify({ path, file_id: (typeof _pathToFileId === 'function' && _pathToFileId(path)) || '', reason: '' }),
-      });
-    }
-    await _ensureLocksLoaded({ force: true });
-    const after = _fileLockHistorySnapshot(path);
-    pushOutlinerFileLockHistory(path, before, after);
-    await refreshOutliner();
-    return true;
-  } catch (error) {
-    const message = error?.message ? String(error.message) : '更新に失敗しました';
-    if (typeof showStatus === 'function') showStatus('編集ロックの更新に失敗しました: ' + message, true);
-    try { await _ensureLocksLoaded({ force: true }); } catch {}
-    if (typeof refreshVisibleOutlinerLockState === 'function') refreshVisibleOutlinerLockState();
-    if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
-    return false;
-  }
-}
-
-function _applyOutlinerLockStateToNode(nodeEl) {
-  if (!nodeEl || !nodeEl._nodeData) return;
-  const item = nodeEl._nodeData;
-  const row = nodeEl.querySelector(':scope > .tree-node-row');
-  const label = row?.querySelector('.tree-label');
-  if (!row || !label || !item.path) return;
-  row.querySelector('.tree-lock-badge')?.remove();
-  const locked = isItemLocked(item.path);
-  row.draggable = !locked && !item._isRoot && item.type !== 'entity';
-  label.style.fontStyle = locked ? 'italic' : '';
-  _syncOutlinerAddHoverButton(nodeEl, item, locked);
-  if (!locked) {
-    row.removeAttribute('title');
-    delete row.dataset.gbTooltip;
-    return;
-  }
-  const lockBadge = document.createElement('span');
-  lockBadge.className = 'tree-lock-badge';
-  lockBadge.innerHTML = lucide('lock', 12);
-  const lockReason = typeof getItemLockReason === 'function' ? getItemLockReason(item.path) : '';
-  lockBadge.title = isSystemLockedItem(item.path) ? 'システム保護中です' : ('編集ロック中' + (lockReason ? ': ' + lockReason : ''));
-  lockBadge.dataset.gbTooltip = lockBadge.title;
-  lockBadge.style.cssText = 'display:inline-flex;align-items:center;opacity:0.65;margin-left:4px;flex-shrink:0;';
-  row.title = lockBadge.title;
-  row.dataset.gbTooltip = lockBadge.title;
-  row.appendChild(lockBadge);
-}
-
-const OUTLINER_CONFLICT_PATHS = new Set();
-
-function _normalizeOutlinerConflictPath(path) {
-  return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-}
-
-function _outlinerConflictBasename(path) {
-  const normalized = _normalizeOutlinerConflictPath(path).replace(/\/+$/, '');
-  const index = normalized.lastIndexOf('/');
-  return index >= 0 ? normalized.slice(index + 1) : normalized;
-}
-
-function _isOutlinerDropboxConflictName(name) {
-  const normalized = String(name || '').replace(/_/g, ' ');
-  return /\bconflicted\s+copy\b/i.test(normalized) || /競合.*コピー/.test(normalized);
-}
-
-function _outlinerOriginalPathForConflictPath(path) {
-  const normalized = _normalizeOutlinerConflictPath(path);
-  const index = normalized.lastIndexOf('/');
-  const dir = index >= 0 ? normalized.slice(0, index) : '';
-  const name = index >= 0 ? normalized.slice(index + 1) : normalized;
-  const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
-  if (!match) return '';
-  const originalName = `${match[1] || ''}${match[2] || ''}`.trim();
-  if (!originalName) return '';
-  return dir ? `${dir}/${originalName}` : originalName;
-}
-
-function _registerOutlinerConflictPaths(items) {
-  if (!Array.isArray(items)) return;
-  const paths = new Set(items.map(item => _normalizeOutlinerConflictPath(item?.path)).filter(Boolean));
-  items.forEach(item => {
-    const path = _normalizeOutlinerConflictPath(item?.path);
-    if (!path || !_isOutlinerDropboxConflictName(_outlinerConflictBasename(path))) return;
-    OUTLINER_CONFLICT_PATHS.add(path);
-    const originalPath = _outlinerOriginalPathForConflictPath(path);
-    if (originalPath && paths.has(originalPath)) OUTLINER_CONFLICT_PATHS.add(originalPath);
-  });
-}
-
-function _isOutlinerConflictPath(path) {
-  const normalized = _normalizeOutlinerConflictPath(path);

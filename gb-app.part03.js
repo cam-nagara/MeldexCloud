@@ -504,6 +504,7 @@ function openMedia(label, path, type, opts) {
 }
 
 function openCalendarFile(label, path, opts) {
+  const openOpts = opts || {};
   // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
   const cfg = getDbViewConfig(path);
   const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
@@ -515,7 +516,7 @@ function openCalendarFile(label, path, opts) {
     cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
     saveDbViewConfig(path, cfg, { skipHistory: true });
   }
-  return selectDatabase(path, null, opts);
+  return selectDatabase(path, openOpts.paneContext || openOpts.paneCtx || null, openOpts);
 }
 
 const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';

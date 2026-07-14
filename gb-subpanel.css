@@ -90,6 +90,30 @@
   color: var(--fg);
 }
 
+.gb-subpanel-button:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+.gb-subpanel-nav-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.gb-subpanel-pathbar {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg2);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
 .gb-subpanel-content {
   flex: 1 1 auto;
   min-width: 0;

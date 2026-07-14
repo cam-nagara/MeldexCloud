@@ -113,23 +113,121 @@
     return links;
   }
 
+  async function _allowedTrashRoots() {
+    const registry = window.MeldexSourceFolderRegistry;
+    const physicalTrashPath = (dropboxPath) => {
+      if (typeof registry?.normalizeDropboxPath !== 'function') return '';
+      const base = registry.normalizeDropboxPath(dropboxPath || '');
+      return base ? `${base === '/' ? '' : base}/_trash` : '';
+    };
+    const roots = [{
+      path: _normalizeFolderPath(PWA_TRASH_DIR),
+      name: 'Meldex',
+      physicalPath: physicalTrashPath(window.MeldexDropboxAuth?.getVaultPath?.()),
+    }];
+    if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
+    let payload;
+    try {
+      payload = await registry.loadRegistry({ writeIfMissing: false });
+    } catch (error) {
+      const wrapped = new Error('ソースフォルダのゴミ箱設定を確認できませんでした');
+      wrapped.code = 'trash_roots_unavailable';
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    const seen = new Set(roots.map((root) => root.path));
+    for (const source of Array.isArray(payload?.roots) ? payload.roots : []) {
+      if (!source || source.deleted === true || !source.id) continue;
+      const path = _normalizeFolderPath(registry.sourcePath(source.id, '_trash'));
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      roots.push({
+        path,
+        name: String(source.name || source.dropboxPath || source.id).trim() || String(source.id),
+        physicalPath: physicalTrashPath(source.dropboxPath),
+      });
+    }
+    return roots;
+  }
+
+  async function _resolveAllowedTrashRoot(rawRoot) {
+    const raw = String(rawRoot || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (raw.split('/').some((part) => part === '.' || part === '..')) {
+      const error = new Error('許可されていないゴミ箱です');
+      error.code = 'invalid_trash_root';
+      throw error;
+    }
+    const requested = _normalizeFolderPath(raw || PWA_TRASH_DIR);
+    const matched = (await _allowedTrashRoots()).find((root) => root.path === requested);
+    if (matched) return matched;
+    const error = new Error('許可されていないゴミ箱です');
+    error.code = 'invalid_trash_root';
+    throw error;
+  }
+
+  function _invalidTrashRestorePath() {
+    return Object.assign(new Error('元の保存先が安全な復元先ではありません'), {
+      code: 'invalid_trash_original_path', status: 400,
+    });
+  }
+
+  function _safeTrashRestoreRelativePath(rawPath) {
+    const raw = String(rawPath || '').trim().replace(/\\/g, '/');
+    const segments = raw.split('/');
+    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const normalized = _normalizeFolderPath(raw);
+    if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
+    return normalized;
+  }
+
+  async function _resolveValidatedTrashRestorePath(trashRoot, originalPath, fallbackPath = '') {
+    const registry = window.MeldexSourceFolderRegistry;
+    const rootPath = _normalizeFolderPath(trashRoot?.path || '');
+    const rawOriginal = String(originalPath || '').trim().replace(/\\/g, '/');
+    const candidate = rawOriginal || String(fallbackPath || '').trim().replace(/\\/g, '/');
+    if (!candidate || candidate.startsWith('/')) throw _invalidTrashRestorePath();
+    const parsedRoot = registry?.parseSourcePath?.(rootPath);
+    const parsedOriginal = registry?.parseSourcePath?.(candidate);
+    if (parsedRoot) {
+      if (parsedRoot.relativePath !== '_trash' || typeof registry?.sourcePath !== 'function') throw _invalidTrashRestorePath();
+      const relativePath = _safeTrashRestoreRelativePath(parsedOriginal ? parsedOriginal.relativePath : candidate);
+      return registry.sourcePath(parsedRoot.sourceId, relativePath);
+    }
+    if (rootPath !== _normalizeFolderPath(PWA_TRASH_DIR)) throw _invalidTrashRestorePath();
+    if (!parsedOriginal) return _safeTrashRestoreRelativePath(candidate);
+    const relativePath = _safeTrashRestoreRelativePath(parsedOriginal.relativePath);
+    const allowedSourceIds = new Set((await _allowedTrashRoots())
+      .map((root) => registry?.parseSourcePath?.(root.path)?.sourceId || '').filter(Boolean));
+    if (!allowedSourceIds.has(parsedOriginal.sourceId) || typeof registry?.sourcePath !== 'function') throw _invalidTrashRestorePath();
+    return registry.sourcePath(parsedOriginal.sourceId, relativePath);
+  }
+
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     const source = await _resolveEntryHandle(provider, targetPath);
     if (!source) return { ok: true };
-    await _directoryHandle(provider, PWA_TRASH_DIR, true);
+    const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(targetPath);
+    const trashDir = parsedSource
+      ? window.MeldexSourceFolderRegistry.sourcePath(parsedSource.sourceId, '_trash')
+      : PWA_TRASH_DIR;
+    await _directoryHandle(provider, trashDir, true);
     const originalName = _basename(targetPath);
     const split = _splitNameAndExt(originalName);
     let destName = originalName;
-    let destPath = _joinPath(PWA_TRASH_DIR, destName);
+    let destPath = _joinPath(trashDir, destName);
     for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
       destName = source.kind === 'file'
         ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
         : `${originalName}_${String(counter).padStart(4, '0')}`;
-      destPath = _joinPath(PWA_TRASH_DIR, destName);
+      destPath = _joinPath(trashDir, destName);
     }
     const metaPath = destPath + '._trash_meta.json';
-    await provider.writeJson(metaPath, { original_path: targetPath, deleted_at: new Date().toISOString() });
+    await provider.writeJson(metaPath, {
+      original_path: targetPath,
+      trash_root: trashDir,
+      deleted_at: new Date().toISOString(),
+    });
     try {
       await _moveEntry(provider, targetPath, destPath);
     } catch (error) {
@@ -149,7 +247,7 @@
       isFolder: source.kind === 'directory',
       trashPath: destPath,
     }));
-    return { ok: true, trash_name: destName, ..._resultWarnings(warnings) };
+    return { ok: true, trash_name: destName, trash_root: trashDir, ..._resultWarnings(warnings) };
   }
 
   async function _findPathByFileId(provider, fileId) {
@@ -800,101 +898,3 @@
     if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
     await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
     const data = await _readFileVersion(provider, normalized, version);
-    await provider.writeText(normalized, data.content || '');
-    return { ok: true };
-  }
-
-  async function _deleteFileVersion(provider, path, version) {
-    return _softDeleteVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), version, 'file');
-  }
-
-  async function _undeleteFileVersion(provider, path, token) {
-    return _restoreDeletedVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), token, 'file');
-  }
-
-  function _relativeToFolder(folderPath, filePath) {
-    const folder = _normalizeFolderPath(folderPath);
-    const file = _normalizeFolderPath(filePath);
-    if (!folder) return file;
-    return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
-  }
-
-  function _skipFolderVersionRelPath(relPath) {
-    const normalized = _normalizeFolderPath(relPath);
-    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
-  }
-
-  async function _collectFolderVersionFiles(provider, folderPath) {
-    const base = _normalizeFolderPath(folderPath);
-    const files = [];
-    async function walk(current) {
-      const entries = await _listDirectoryEntries(provider, current);
-      for (const entry of entries) {
-        if (!entry.name || entry.name.startsWith('.')) continue;
-        const fullPath = _joinPath(current, entry.name);
-        const relPath = _relativeToFolder(base, fullPath);
-        if (_skipFolderVersionRelPath(relPath)) continue;
-        if (entry.handle.kind === 'directory') {
-          await walk(fullPath);
-          continue;
-        }
-        const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
-        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
-        files.push({ rel_path: relPath, path: fullPath, size: stats.size || 0, modified: stats.modified || '' });
-      }
-    }
-    await walk(base);
-    return files;
-  }
-
-  async function _saveFolderVersion(provider, folderPath, options) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const folder = await _resolveEntryHandle(provider, normalized);
-    if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
-    const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
-    const kind = options?.auto ? 'auto' : 'manual';
-    const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
-    const versionDir = _joinPath(_folderVersionDir(normalized), versionName);
-    const filesDir = _joinPath(versionDir, 'files');
-    const files = await _collectFolderVersionFiles(provider, normalized);
-    let totalSize = 0;
-    try {
-      for (const file of files) {
-        totalSize += Number(file.size || 0);
-        await provider.copyPath(file.path, _joinPath(filesDir, file.rel_path));
-      }
-      await provider.writeJson(_joinPath(versionDir, '_meta.json'), {
-        folder_path: normalized,
-        created: _nowIso(),
-        label: options?.label || '',
-        auto: !!options?.auto,
-        files: files.map(({ rel_path, size, modified }) => ({ rel_path, size, modified })),
-        exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
-      });
-    } catch (error) {
-      await _removeEntry(provider, versionDir).catch(() => {});
-      throw error;
-    }
-    return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
-  }
-
-  async function _listFolderVersions(provider, folderPath) {
-    const dir = _folderVersionDir(_normalizeFolderPath(folderPath));
-    const entries = await _listEntriesSafe(provider, dir);
-    const versions = [];
-    for (const entry of entries) {
-      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_')) continue;
-      const meta = await _readJsonSafe(provider, _joinPath(dir, entry.name, '_meta.json'), {});
-      const files = Array.isArray(meta?.files) ? meta.files : [];
-      versions.push({
-        name: entry.name,
-        created: _versionCreatedFromName(entry.name) || meta?.created || '',
-        label: meta?.label || '',
-        auto: !!meta?.auto,
-        file_count: files.length,
-        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
-      });
-    }
-    versions.sort((a, b) => String(b.name).localeCompare(String(a.name)));
-    return versions;

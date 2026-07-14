@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="quick-memo.css">
 </head>
 <body>
-  <main class="qm-shell">
+  <main class="qm-shell" id="editorView">
     <header class="qm-header">
       <div class="qm-brand">
         <img src="Meldex_icon_32.png" alt="" width="24" height="24">
@@ -24,7 +24,8 @@
         </div>
       </div>
       <div class="qm-header-actions">
-        <button id="shortcutBtn" class="qm-ghost" type="button">Ctrl+Alt+M</button>
+        <button id="listBtn" class="qm-icon" type="button" title="一覧">☰</button>
+        <button id="installBtn" class="qm-ghost" type="button" title="ホームに追加">ホームに追加</button>
         <button id="autoTagBtn" class="qm-ghost qm-auto-tag" type="button">タグを自動付け</button>
         <button id="newMemoBtn" class="qm-icon" type="button" title="新規メモ">＋</button>
         <button id="saveBtn" class="qm-primary" type="button">保存</button>
@@ -32,33 +33,70 @@
     </header>
 
     <section class="qm-meta">
-      <input id="titleInput" type="text" placeholder="タイトル" spellcheck="false">
-      <input id="tagsInput" type="text" placeholder="タグ（カンマ区切り）" spellcheck="false">
-      <input id="targetSheetInput" type="text" placeholder="保存先シート（空ならメモ）" spellcheck="false" autocomplete="off">
+      <input id="titleInput" type="text" placeholder="タイトル（空なら本文の一行目）" spellcheck="false">
+      <div id="tagSelector" class="qm-tag-selector">
+        <div id="tagChips" class="qm-tag-chips"></div>
+        <button id="addTagBtn" class="qm-tag-add" type="button" title="新しいタグを追加">＋</button>
+      </div>
     </section>
 
-    <nav class="qm-toolbar" aria-label="書式と入力">
-      <button type="button" data-command="bold" title="太字"><b>B</b></button>
-      <button type="button" data-command="italic" title="斜体"><i>I</i></button>
-      <button type="button" data-command="underline" title="下線"><u>U</u></button>
-      <button type="button" data-command="insertUnorderedList" title="箇条書き">•</button>
-      <button type="button" data-command="removeFormat" title="書式解除">Tx</button>
-      <span class="qm-sep"></span>
-      <button id="speechBtn" type="button" title="音声入力">音声</button>
-      <button id="drawToggleBtn" type="button" title="ペン入力">ペン</button>
-      <label class="qm-color" title="色"><input id="colorInput" type="color" value="#4ec9b0"></label>
-      <input id="widthInput" type="range" min="2" max="24" value="4" title="線幅">
-      <button id="markerBtn" type="button" title="マーカー">マーカー</button>
-      <button id="fillBtn" type="button" title="薄く塗る">塗り</button>
-      <button id="eraserBtn" type="button" title="消しゴム">消しゴム</button>
-      <button id="clearDrawingBtn" type="button" title="手書きを消去">消去</button>
+    <nav class="qm-mode-tabs">
+      <button class="qm-mode-tab is-active" data-mode="text" type="button">テキスト</button>
+      <button class="qm-mode-tab" data-mode="pen" type="button">ペン</button>
+      <button class="qm-mode-tab" data-mode="voice" type="button">音声</button>
+    </nav>
+
+    <nav class="qm-toolbar" aria-label="ツールバー">
+      <div class="qm-toolbar-group" data-for="text">
+        <button type="button" data-command="bold" title="太字"><b>B</b></button>
+        <button type="button" data-command="italic" title="斜体"><i>I</i></button>
+        <button type="button" data-command="underline" title="下線"><u>U</u></button>
+        <button type="button" data-command="insertUnorderedList" title="箇条書き">•</button>
+        <button type="button" data-command="removeFormat" title="書式解除">Tx</button>
+      </div>
+      <div class="qm-toolbar-group" data-for="pen" style="display:none;">
+        <label class="qm-color" title="色"><input id="colorInput" type="color" value="#4ec9b0"></label>
+        <input id="widthInput" type="range" min="2" max="24" value="4" title="線幅">
+        <button id="markerBtn" type="button" title="マーカー">マーカー</button>
+        <button id="fillBtn" type="button" title="薄く塗る">塗り</button>
+        <button id="eraserBtn" type="button" title="消しゴム">消しゴム</button>
+        <button id="clearDrawingBtn" type="button" title="手書きを消去">消去</button>
+      </div>
     </nav>
 
     <section class="qm-surface">
       <div id="editor" class="qm-editor" contenteditable="true" spellcheck="false" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
-      <canvas id="drawingCanvas" class="qm-canvas" aria-label="手書きメモ"></canvas>
+      <canvas id="drawingCanvas" class="qm-canvas" aria-label="手書きメモ" style="display:none;"></canvas>
+      <div id="voicePanel" class="qm-voice" style="display:none;">
+        <div class="qm-voice-status" id="voiceStatus">マイクの準備ができています</div>
+        <div class="qm-voice-timer" id="voiceTimer">00:00</div>
+        <div class="qm-voice-controls">
+          <button id="voiceRecordBtn" class="qm-voice-btn qm-voice-record" type="button">録音開始</button>
+          <button id="voicePauseBtn" class="qm-voice-btn" type="button" style="display:none;">一時停止</button>
+          <button id="voiceResumeBtn" class="qm-voice-btn" type="button" style="display:none;">録音再開</button>
+          <button id="voiceStopBtn" class="qm-voice-btn qm-voice-stop" type="button" style="display:none;">録音終了</button>
+        </div>
+        <div id="voiceTranscript" class="qm-voice-transcript"></div>
+      </div>
     </section>
   </main>
+
+  <section id="listView" class="qm-shell qm-list-view" style="display:none;">
+    <header class="qm-header">
+      <div class="qm-brand">
+        <img src="Meldex_icon_32.png" alt="" width="24" height="24">
+        <div><strong>クイックメモ一覧</strong></div>
+      </div>
+      <div class="qm-header-actions">
+        <button id="listBackBtn" class="qm-icon" type="button" title="戻る">✕</button>
+      </div>
+    </header>
+    <section class="qm-list-filter">
+      <input id="listSearch" type="text" placeholder="検索" spellcheck="false">
+      <select id="listTagFilter"><option value="">すべてのタグ</option></select>
+    </section>
+    <section id="listContent" class="qm-list-content"></section>
+  </section>
 
   <script src="quick-memo.js"></script>
 </body>

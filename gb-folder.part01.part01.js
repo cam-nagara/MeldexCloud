@@ -18,8 +18,25 @@ function _isFolderFreeLayoutUiEnabled() {
     : true;
 }
 
+function _openFolderInMobileExplorer(label, path, openOpts) {
+  if (!path || !openOpts?.fromExplorer || openOpts.skipShowView || openOpts.skipMobileExplorer) return false;
+  if (!window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()) return false;
+  const explorer = window.MeldexCloudMobileExplorer;
+  if (!explorer?.selectFolderFromTree) return false;
+  const name = label || String(path).split(/[\\/]/).filter(Boolean).pop() || 'フォルダ';
+  explorer.selectFolderFromTree({ name, label: name, path, type: 'folder' }, {
+    renderList: true,
+    force: true,
+  });
+  window.MeldexCloudMobile?.openSidebar?.(false);
+  explorer.setMode?.('list', { syncFromTree: false, force: true });
+  explorer.renderCurrent?.({ force: true });
+  return true;
+}
+
 async function openFolder(label, path, opts) {
   const openOpts = opts || {};
+  if (_openFolderInMobileExplorer(label, path, openOpts)) return true;
   const showOpenLoading = !openOpts.silent
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
@@ -42,6 +59,7 @@ async function openFolder(label, path, opts) {
     if (!openOpts.skipGlobalUi && typeof applyFolderFileStyle === 'function') applyFolderFileStyle(path);
     const folderTitleEl = document.getElementById('folder-title');
     if (folderTitleEl) folderTitleEl.textContent = displayLabel;
+    window.MeldexFileLockBadge?.apply?.(folderTitleEl, path);
     const currentTitleEl = document.getElementById('current-title');
     if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = displayLabel;
     if (!openOpts.skipSaveLastView) saveLastView({type:'folder', label: displayLabel, path});
@@ -57,6 +75,7 @@ async function openFolder(label, path, opts) {
     }
     if (isStaleFolderLoad()) return;
     _folderItems = fetchedItems;
+    if (typeof _registerFileIds === 'function') _registerFileIds(_folderItems);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80 });
       if (isStaleFolderLoad()) return;
@@ -71,27 +90,6 @@ async function openFolder(label, path, opts) {
     if (folderCountEl) folderCountEl.textContent = _folderItems.length + ' 項目';
     if (!openOpts.skipGlobalUi) showStatus('フォルダ: ' + displayLabel);
     if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
-    // 非同期でDB/board/chat判定（browseは拡張子のみなのでcheck-typeで確定）
-    const checkTargets = _folderItems.filter(it => it.type === 'folder' || it.type === 'page' || it.type === 'scenario' || it.type === 'scriptnote');
-    const capturedPath = path;
-    if (checkTargets.length > 0) (async () => {
-      let changed = false;
-      for (let i = 0; i < checkTargets.length; i += 5) {
-        if (_folderPath !== capturedPath) return; // フォルダが変わったら中断
-        const batch = checkTargets.slice(i, i + 5);
-        await Promise.all(batch.map(async (item) => {
-          try {
-            const res = await apiFetch('/check-type?path=' + encodeURIComponent(item.path));
-            if (res.type !== item.type) { item.type = res.type; changed = true; }
-          } catch {}
-        }));
-      }
-      if (changed && _folderPath === capturedPath) {
-        const selectedPaths = _folderSelectedItems.map(item => item?.path).filter(Boolean);
-        registerFileTypes(_folderItems);
-        renderFolderGrid({ preserveSelectedPaths: selectedPaths });
-      }
-    })();
   } catch (e) {
     if (isStaleFolderLoad()) return;
     _folderItems = [];
@@ -124,6 +122,7 @@ function renderFolderInitialPrompt() {
   _folderSelectedItems = [];
   const titleEl = document.getElementById('folder-title');
   if (titleEl) titleEl.textContent = 'フォルダ';
+  window.MeldexFileLockBadge?.apply?.(titleEl, '');
   const currentTitleEl = document.getElementById('current-title');
   if (currentTitleEl) currentTitleEl.textContent = 'フォルダ';
   const countEl = document.getElementById('folder-item-count');

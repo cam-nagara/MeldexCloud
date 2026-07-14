@@ -349,6 +349,7 @@
   let touchLongPressTimer = 0;
   let touchLongPressEl = null;
   let suppressFocusTooltipUntil = 0;
+  let detachRaf = 0;
 
   function ensureTooltip() {
     if (tooltipEl && tooltipEl.isConnected) return tooltipEl;
@@ -739,6 +740,22 @@
     tip.classList.add('is-visible');
     tip.setAttribute('aria-hidden', 'false');
     positionTooltip(el);
+    startDetachCheck();
+  }
+
+  function startDetachCheck() {
+    if (detachRaf) return;
+    function check() {
+      const target = activeEl || pendingEl;
+      if (!target) { detachRaf = 0; return; }
+      if (!target.isConnected) { hideNow(); detachRaf = 0; return; }
+      detachRaf = requestAnimationFrame(check);
+    }
+    detachRaf = requestAnimationFrame(check);
+  }
+
+  function stopDetachCheck() {
+    if (detachRaf) { cancelAnimationFrame(detachRaf); detachRaf = 0; }
   }
 
   function isSuppressed(el) {
@@ -762,6 +779,7 @@
     const suppressUntilLeave = !!options?.suppressUntilLeave;
     const suppressTarget = suppressUntilLeave ? activeEl : null;
     clearTimers();
+    stopDetachCheck();
     activeEl = null;
     pendingEl = null;
     if (tooltipEl) {

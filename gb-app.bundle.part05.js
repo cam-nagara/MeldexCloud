@@ -1,3 +1,246 @@
+      items[(index + delta + items.length) % items.length]?.focus();
+    } else if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0]?.focus();
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items.at(-1)?.focus();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  });
+  pointerCloser = (ev) => {
+    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
+  };
+  keyCloser = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  };
+  document.addEventListener('pointerdown', pointerCloser, true);
+  document.addEventListener('keydown', keyCloser, true);
+  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
+}
+
+function _screenshotModeIsRegion(mode) {
+  return String(mode || '').includes('region');
+}
+
+async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
+  try {
+    const res = await fetch(API_BASE + '/app-window-visibility', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, hwnds: hwnds || [] }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function _hideMeldexWindowForScreenshot() {
+  const state = await _setMeldexWindowVisibilityForScreenshot('hide');
+  if (!state?.hidden) window.blur();
+  await new Promise(r => setTimeout(r, 500));
+  return state;
+}
+
+async function _restoreMeldexWindowForScreenshot(state) {
+  if (state?.hidden) await _setMeldexWindowVisibilityForScreenshot('restore', state.hwnds || []);
+  else window.focus();
+}
+
+function _cropScreenshotCanvas(canvas, region) {
+  const cropped = document.createElement('canvas');
+  cropped.width = Math.max(1, Math.round(region.width));
+  cropped.height = Math.max(1, Math.round(region.height));
+  cropped.getContext('2d').drawImage(
+    canvas,
+    Math.round(region.x),
+    Math.round(region.y),
+    cropped.width,
+    cropped.height,
+    0,
+    0,
+    cropped.width,
+    cropped.height
+  );
+  return cropped;
+}
+
+function _selectScreenshotRegionFromCanvas(canvas) {
+  return new Promise(resolve => {
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay screenshot-region-overlay';
+    overlay.dataset.modalShell = 'off';
+    overlay.dataset.e2eId = 'screenshot-region-overlay';
+    overlay.style.zIndex = '5000';
+
+    const shell = document.createElement('div');
+    shell.className = 'screenshot-region-shell';
+    shell.dataset.e2eId = 'screenshot-region-shell';
+    shell.tabIndex = -1;
+    shell.setAttribute('role', 'dialog');
+    shell.setAttribute('aria-modal', 'true');
+    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
+
+    const stage = document.createElement('div');
+    stage.className = 'screenshot-region-stage';
+    stage.dataset.e2eId = 'screenshot-region-stage';
+    stage.tabIndex = 0;
+    stage.setAttribute('role', 'group');
+    stage.setAttribute('aria-label', '保存する範囲');
+
+    const preview = document.createElement('canvas');
+    preview.className = 'screenshot-region-preview';
+    preview.setAttribute('aria-hidden', 'true');
+    preview.width = canvas.width;
+    preview.height = canvas.height;
+    preview.getContext('2d').drawImage(canvas, 0, 0);
+    const maxW = Math.max(1, Math.floor(window.innerWidth * 0.94));
+    const maxH = Math.max(1, Math.floor(window.innerHeight * 0.82));
+    const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
+    preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
+    preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
+
+    const selection = document.createElement('div');
+    selection.className = 'screenshot-region-selection';
+    selection.setAttribute('aria-hidden', 'true');
+    selection.style.display = 'none';
+
+    const actions = document.createElement('div');
+    actions.className = 'screenshot-region-actions';
+    actions.setAttribute('aria-label', '範囲選択の操作');
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'screenshot-region-cancel';
+    cancel.textContent = 'キャンセル';
+
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.dataset.e2eId = 'screenshot-region-save';
+    ok.textContent = '保存';
+
+    actions.append(cancel, ok);
+    stage.append(preview, selection);
+    shell.append(stage, actions);
+    overlay.append(shell);
+    document.body.appendChild(overlay);
+
+    let start = null;
+    let current = null;
+    let activePointerId = null;
+    let cleaned = false;
+
+    const cleanup = (value) => {
+      if (cleaned) return;
+      cleaned = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKeyDown);
+      if (restoreFocusTo?.isConnected && !restoreFocusTo.closest?.('.screenshot-region-overlay')) {
+        restoreFocusTo.focus?.();
+      }
+      resolve(value);
+    };
+    const pointFromEvent = (ev) => {
+      const rect = preview.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, ev.clientY - rect.top)),
+        rect,
+      };
+    };
+    const visibleRect = () => {
+      if (!start || !current) return null;
+      const left = Math.min(start.x, current.x);
+      const top = Math.min(start.y, current.y);
+      const width = Math.abs(current.x - start.x);
+      const height = Math.abs(current.y - start.y);
+      return { left, top, width, height };
+    };
+    const updateSelection = () => {
+      const rect = visibleRect();
+      if (!rect || rect.width < 1 || rect.height < 1) {
+        selection.style.display = 'none';
+        return;
+      }
+      selection.style.display = 'block';
+      selection.style.left = rect.left + 'px';
+      selection.style.top = rect.top + 'px';
+      selection.style.width = rect.width + 'px';
+      selection.style.height = rect.height + 'px';
+    };
+    const canvasRegion = () => {
+      const rect = visibleRect();
+      if (!rect || rect.width < 4 || rect.height < 4) return null;
+      const bounds = preview.getBoundingClientRect();
+      const scaleX = canvas.width / bounds.width;
+      const scaleY = canvas.height / bounds.height;
+      const x = Math.max(0, Math.min(canvas.width - 1, rect.left * scaleX));
+      const y = Math.max(0, Math.min(canvas.height - 1, rect.top * scaleY));
+      return {
+        x,
+        y,
+        width: Math.max(1, Math.min(canvas.width - x, rect.width * scaleX)),
+        height: Math.max(1, Math.min(canvas.height - y, rect.height * scaleY)),
+      };
+    };
+    function onKeyDown(ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        cleanup(null);
+      } else if (ev.key === 'Enter') {
+        const region = canvasRegion();
+        if (region) cleanup(region);
+      }
+    }
+    stage.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      stage.focus?.();
+      activePointerId = ev.pointerId;
+      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
+      start = pointFromEvent(ev);
+      current = start;
+      updateSelection();
+    });
+    stage.addEventListener('pointermove', (ev) => {
+      if (activePointerId == null || ev.pointerId !== activePointerId) return;
+      current = pointFromEvent(ev);
+      updateSelection();
+    });
+    stage.addEventListener('pointerup', (ev) => {
+      if (activePointerId == null || ev.pointerId !== activePointerId) return;
+      current = pointFromEvent(ev);
+      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
+      activePointerId = null;
+      updateSelection();
+    });
+    stage.addEventListener('pointercancel', (ev) => {
+      if (activePointerId != null && ev.pointerId === activePointerId) activePointerId = null;
+    });
+    cancel.addEventListener('click', () => cleanup(null));
+    ok.addEventListener('click', () => {
+      const region = canvasRegion();
+      if (!region) {
+        showStatus('範囲を選択してください', true);
+        return;
+      }
+      cleanup(region);
+    });
+    document.addEventListener('keydown', onKeyDown);
+    shell.focus();
+  });
+}
 
 async function captureScreenshot(mode) {
   let stream = null;
@@ -655,245 +898,3 @@ window.addEventListener('message', (e) => {
     }).catch((err) => {
       if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
         _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });
-      }
-      if (typeof showStatus === 'function') showStatus('注釈の保存に失敗しました: ' + (err?.message || err || ''), true);
-    });
-  }
-  if (msg.type === 'ann-delete') {
-    if (msg.annId) {
-      (async () => {
-        const before = typeof _fetchAnnotationHistoryRow === 'function'
-          ? await _fetchAnnotationHistoryRow(msg.annId).catch(() => null)
-          : null;
-        await apiDelete('/annotations/' + encodeURIComponent(msg.annId));
-        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, msg.annId);
-        reloadEmbeddedAnnotations();
-      })().catch(() => {});
-    }
-  }
-  if (msg.type === 'ann-delete-note') {
-    if (msg.annId && msg.data) {
-      if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, { data: msg.data }, '注釈: 削除', msg.annId)
-          .then(reloadEmbeddedAnnotations)
-          .catch(() => {});
-      } else {
-        apiPut('/annotations/' + encodeURIComponent(msg.annId), { data: msg.data }).then(reloadEmbeddedAnnotations).catch(() => {});
-      }
-    }
-  }
-  if (msg.type === 'ann-update-note') {
-    if (msg.annId && (msg.data || msg.color)) {
-      const body = msg.color ? { color: msg.color } : { data: msg.data };
-      const label = msg.color ? '注釈: 色変更' : '注釈: 付箋更新';
-      if (typeof _putAnnotationWithHistory === 'function') {
-        _putAnnotationWithHistory(msg.annId, body, label, msg.annId).catch(() => {});
-      } else {
-        apiPut('/annotations/' + encodeURIComponent(msg.annId), body).catch(() => {});
-      }
-    }
-  }
-  if (msg.type === 'ann-create-note') {
-    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
-    const embedded = typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView);
-    if (!embedded && !msg.targetPath && typeof createNote === 'function') {
-      const prevColor = ann.color;
-      const prevOpacity = ann.opacity;
-      if (msg.color) ann.color = msg.color;
-      ann.opacity = 1;
-      Promise.resolve(createNote(msg.x, msg.y, 'sticky')).finally(() => {
-        ann.color = prevColor;
-        ann.opacity = prevOpacity;
-      });
-      return;
-    }
-    const annClientId = msg.annClientId || ('pending-note-' + Date.now().toString(36));
-    const noteData = { x: msg.x, y: msg.y, width: 180, height: 100, text: '', html: '', user: getUsername() };
-    if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-      _dispatchEmbeddedAnnotationMessage({
-        type: 'ann-add-note',
-        item: {
-          id: annClientId,
-          type: 'comment',
-          shape: 'sticky',
-          data: noteData,
-          color: msg.color || ann.color,
-          opacity: 1,
-          user: getUsername(),
-          created: new Date().toISOString(),
-        },
-      });
-    }
-    apiPost('/annotations', {
-      target_path: msg.targetPath || ann.targetPath,
-      type: 'comment', shape: 'sticky',
-      data: noteData, color: msg.color || ann.color, opacity: 1, user: getUsername(),
-    }).then(res => {
-      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
-      }
-      if (embedded) reloadEmbeddedAnnotations();
-      else renderNote(res.id, 'sticky', noteData, msg.color || ann.color, 1, getUsername(), res.created);
-    }).catch(() => {
-      if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-        _dispatchEmbeddedAnnotationMessage({ type: 'ann-remove-note', annId: annClientId });
-      }
-    });
-  }
-});
-
-// Phase C: bdToMd/bdSave等のスタブは廃止 → gb-canvas-engine.js + gb-canvas-features.js に実装済み
-
-function bdOpenBgPalette(event) {
-  if (typeof openColorPalette !== 'function') return;
-  const swatch = document.getElementById('bd-bg-swatch');
-  const canvas = document.getElementById('bd-canvas');
-  if (!swatch || !canvas) return;
-  openColorPalette(swatch, (typeof bd !== 'undefined' && bd._bgColor) || '', function(v) {
-    canvas.style.background = v;
-    setColorSwatchValue(swatch, v);
-    if (typeof bd !== 'undefined') bd._bgColor = v || '';
-    if (typeof bdMarkExtrasDirty === 'function') {
-      bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-palette');
-      if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-    }
-  });
-}
-
-async function openBoard(label, path, opts) {
-  const openOpts = opts || {};
-  const showOpenLoading = !openOpts.silent
-    && !openOpts.skipGlobalUi
-    && typeof showLoading === 'function'
-    && typeof hideLoading === 'function';
-  const prevView = state.view;
-  const prevBoardPath = state.currentBoardPath;
-  const currentTitleEl = document.getElementById('current-title');
-  const prevTitle = currentTitleEl ? currentTitleEl.textContent : '';
-  const restorePreviousView = () => {
-    state.currentBoardPath = prevBoardPath || null;
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = prevTitle;
-    if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
-    else if (!openOpts.skipStateView) state.view = prevView || '';
-  };
-  if (showOpenLoading) showLoading('ボードを読み込み中...');
-  try {
-    if (!openOpts.skipStateView) state.view = 'board';
-    state.currentBoardPath = path;
-    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
-    if (!openOpts.skipShowView) showView('board');
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-    const opened = typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true;
-    if (opened === false) {
-      restorePreviousView();
-      return false;
-    }
-    if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
-    if (!openOpts.skipNavPush) {
-      const _navEntry = {type:'board', label, path};
-      navPush(_navEntry);
-    }
-    if (!openOpts.skipRecent) addRecent(label, path, 'board');
-    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-    return true;
-  } catch (err) {
-    restorePreviousView();
-    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
-    return false;
-  } finally {
-    if (showOpenLoading) {
-      hideLoading();
-      if (typeof hideLoadingMessage === 'function') {
-        hideLoadingMessage('ボードを読み込み中...');
-      }
-    }
-  }
-}
-
-function openMedia(label, path, type, opts) {
-  const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('media');
-  else if (!openOpts.skipStateView) state.view = 'media';
-  const mediaTitleEl = document.getElementById('media-title');
-  if (mediaTitleEl) mediaTitleEl.textContent = label;
-  const currentTitleEl = document.getElementById('current-title');
-  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-  if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
-  if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'media', label, path, mediaType: type};
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(label, path, 'media');
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  // 詳細パネルにファイル情報を表示
-  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
-  // ビューワーペインを更新
-  state.currentPagePath = path;
-  const container = document.getElementById('media-content');
-  const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
-  if (type === 'image') {
-    openViewer(openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
-    return;
-  } else if (type === 'pdf') {
-    openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
-    return;
-  } else if (!container) {
-    return;
-  } else if (type === 'video') {
-    container.innerHTML = '<video src="' + esc(url) + '" controls style="max-width:100%;max-height:80vh;border-radius:4px;">動画を再生できません</video>';
-  } else if (type === 'audio') {
-    container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
-  } else {
-    container.innerHTML = '<div class="gb-empty-state"><div class="gb-empty-message">このメディア形式は表示できません</div><div class="gb-empty-hint">' + esc(label || path || '') + '</div></div>';
-    if (!openOpts.skipGlobalUi) showStatus('このメディア形式は表示できません: ' + (label || type || path), true);
-    return;
-  }
-  if (!openOpts.skipGlobalUi) showStatus(type + ': ' + label);
-}
-
-function openCalendarFile(label, path, opts) {
-  // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
-  const cfg = getDbViewConfig(path);
-  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
-    ? _getCurrentDbViewConfigEntryFromConfig(cfg)
-    : null;
-  if (view) {
-    if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(view, cfg);
-    view.viewMode = 'timeline';
-    cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
-    saveDbViewConfig(path, cfg, { skipHistory: true });
-  }
-  return selectDatabase(path, null, opts);
-}
-
-const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';
-const _GB_EXTERNAL_HTML_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
-const _GB_TRUSTED_VIEWER_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
-
-function _gbIsTrustedInternalViewerUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return false;
-  try {
-    const parsed = new URL(text, window.location.origin);
-    const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
-    return parsed.origin === window.location.origin && /\/viewer(?:\.html)?$/.test(pathname);
-  } catch {
-    return false;
-  }
-}
-
-function _gbHtmlIframeSandboxForUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return _GB_UNTRUSTED_IFRAME_SANDBOX;
-  try {
-    const parsed = new URL(text, window.location.origin);
-    if (_gbIsTrustedInternalViewerUrl(parsed.href)) {
-      return _GB_TRUSTED_VIEWER_IFRAME_SANDBOX;
-    }
-    if (['http:', 'https:'].includes(parsed.protocol) && parsed.origin !== window.location.origin) {
-      return _GB_EXTERNAL_HTML_IFRAME_SANDBOX;
-    }
-  } catch {}
-  return _GB_UNTRUSTED_IFRAME_SANDBOX;
-}

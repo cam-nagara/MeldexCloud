@@ -2,10 +2,10 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.6.173",
+    "semver": "0.6.185",
     "variant": "cloud-beta"
   },
-  "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/Meldex.html",
+  "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
   "cloudBackupUrl": "",
   "betaFeedback": {
     "googleWebAppUrl": "https://script.google.com/macros/s/AKfycbwwt2QNHhABaxGOki7Gpw-Hm6Lnlqnc0uA1LwKncNrNilptWwj6U5-xQeWJj5cZQrzyRw/exec",
@@ -13,13 +13,20 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.152"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.185"
   },
   "desktop": {
-    "currentVersion": "0.6.152",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/Meldex-v0.6.152.zip",
+    "currentVersion": "0.6.185",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/Meldex-v0.6.185.zip",
     "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
     "versions": [
+      {
+        "version": "0.6.185",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/Meldex-v0.6.185.zip",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.185",
+        "publishedAt": "2026-07-14",
+        "assetName": "Meldex-v0.6.185.zip"
+      },
       {
         "version": "0.6.152",
         "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/Meldex-v0.6.152.zip",
@@ -31,8 +38,35 @@
       }
     ]
   },
+  "standaloneApps": {
+    "note": {
+      "cloudUrl": "apps/note/",
+      "windowsAsset": "MeldexNote.zip",
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/MeldexNote.zip"
+    },
+    "scenario": {
+      "cloudUrl": "apps/scenario/",
+      "windowsAsset": "MeldexScenario.zip",
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/MeldexScenario.zip"
+    },
+    "board": {
+      "cloudUrl": "apps/board/",
+      "windowsAsset": "MeldexBoard.zip",
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/MeldexBoard.zip"
+    },
+    "sheet": {
+      "cloudUrl": "apps/sheet/",
+      "windowsAsset": "MeldexSheet.zip",
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/MeldexSheet.zip"
+    },
+    "timer": {
+      "cloudUrl": "apps/timer/",
+      "windowsAsset": "MeldexTimer.zip",
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/MeldexTimer.zip"
+    }
+  },
   "samples": {
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/MeldexSamples.zip"
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/MeldexSamples.zip"
   },
   "dropbox": {
     "developerAppKey": "ovxy3vacegzu7nu"
@@ -59,6 +93,13 @@
       releasesUrl: String(config.desktop?.releasesUrl || ''),
       versions: Object.freeze(Array.isArray(config.desktop?.versions) ? config.desktop.versions : []),
     }),
+    standaloneApps: Object.freeze(Object.fromEntries(
+      Object.entries(config.standaloneApps || {}).map(([appId, app]) => [appId, Object.freeze({
+        cloudUrl: String(app?.cloudUrl || ''),
+        windowsAsset: String(app?.windowsAsset || ''),
+        downloadUrl: String(app?.downloadUrl || ''),
+      })])
+    )),
     samples: Object.freeze({
       downloadUrl: String(config.samples?.downloadUrl || ''),
     }),

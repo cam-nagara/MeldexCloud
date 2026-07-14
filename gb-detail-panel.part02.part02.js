@@ -47,6 +47,7 @@ function hideScriptnoteDetailTabs() {
   }
 }
 
+let _detailSyncSeq = 0;
 // 詳細パネルが表示中なら、現在のコンテンツに合わせて自動更新する
 async function _dpSavePendingBeforeDetailSwitch() {
   const el = document.getElementById('dp-editable');
@@ -56,8 +57,10 @@ async function _dpSavePendingBeforeDetailSwitch() {
 }
 
 async function _syncDetailPanel(label, path, type, opts) {
+  const seq = ++_detailSyncSeq;
   if (type === 'entity') {
     if (!await _dpSavePendingBeforeDetailSwitch()) return false;
+    if (seq !== _detailSyncSeq) return false;
     if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.clearDetailPaneShell === 'function') {
       GBPaneBridge.clearDetailPaneShell();
     }
@@ -74,6 +77,7 @@ async function _syncDetailPanel(label, path, type, opts) {
     shouldOpenDetailPanel = !!(rpDetail && typeof _openDetailRightPanel === 'function');
   }
   if (!await _dpSavePendingBeforeDetailSwitch()) return false;
+  if (seq !== _detailSyncSeq) return false;
   if (shouldOpenDetailPanel) _openDetailRightPanel();
   // タブシェルを確保（初回起動時の保険）
   if (rpDetail) _ensureDetailTabShell(rpDetail);
@@ -85,7 +89,7 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
   const noteEditorTypes = new Set(['page']);
   const dbTypes = new Set(['database']);
-  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db']);
+  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
@@ -116,6 +120,7 @@ async function _syncDetailPanel(label, path, type, opts) {
       <div>パス: ${esc(path)}</div>
       <div data-global-tags-target-path="${esc(path)}"></div>
     </div>`);
+    if (seq !== _detailSyncSeq) return false;
     if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
     await _showDatabaseInfoInDetailPanel(label, path);
@@ -129,7 +134,9 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
   _ensureDetailTabShell(el);
   const propSettings = el.querySelector('#detail-tab-db-property-settings');
   if (!propSettings) return;
+  const seq = _detailSyncSeq;
   if (!await _dpSavePending()) return;
+  if (seq !== _detailSyncSeq) return;
   if (typeof showDbTabs === 'function') showDbTabs(true);
   if (typeof switchDetailTab === 'function') {
     switchDetailTab(typeof _resolveDetailTabForType === 'function'

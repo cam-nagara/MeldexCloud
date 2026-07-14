@@ -106,12 +106,19 @@
   toggle.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!isExpandable) return;
+    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
+    const currentIsFolder = item.type === 'folder';
+    const currentIsDB = item.type === 'database';
+    if (!currentIsFolder && !currentIsDB) {
+      row.click();
+      return;
+    }
     const expanded = toggle.dataset.expanded === 'true';
     if (!expanded) {
       toggle.classList.add('expanded');
       toggle.dataset.expanded = 'true';
       // 作品フォルダ動的アイコン切替（icon-implementation-plan §D）
-      if (isFolder) {
+      if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
           const isWork = item.path === getWorkFolder();
@@ -139,13 +146,13 @@
         spinner.innerHTML = '<span style="color:var(--fg2);font-size:11px;padding:4px 24px;">読み込み中...</span>';
         childrenDiv.appendChild(spinner);
         try {
-          if (isDB) {
+          if (currentIsDB) {
             const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path));
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
             const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
             await _appendOutlinerChildrenChunked(childrenDiv, entityItems, rootPath);
-          } else if (isFolder) {
+          } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
             const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
@@ -160,34 +167,6 @@
             await _appendOutlinerChildrenChunked(childrenDiv, visibleChildren, rootPath);
             // マニュアルソート適用
             if (sortCfg.sort === 'manual') applyManualSort(childrenDiv, item.path);
-            // 非同期でDB/board判定（NAS高速化: browseは拡張子のみで判定し、後からcheck-typeで確定）
-            const checkTargets = visibleChildren.filter(c => c.type === 'folder' || c.type === 'page' || c.type === 'scenario' || c.type === 'scriptnote');
-            // NAS負荷軽減: 5件ずつバッチ処理
-            (async () => {
-              for (let i = 0; i < checkTargets.length; i += 5) {
-                const batch = checkTargets.slice(i, i + 5);
-                await Promise.all(batch.map(async child => {
-                  try {
-                    const res = await apiFetch('/check-type?path=' + encodeURIComponent(child.path));
-                    if (res.type !== child.type) {
-                      // タイプが変わった → ノードを再作成
-                      const oldNode = childrenDiv.querySelector(`[data-path="${child.path.replace(/"/g, '\\"')}"]`);
-                      if (oldNode) {
-                        child.type = res.type;
-                        const newNode = createTreeNodeFromBrowse(child, rootPath);
-                        oldNode.replaceWith(newNode);
-                        // 置換後のノードにグローバルフィルタを適用（常時）
-                        if (res.type === 'database') {
-                          newNode.style.display = _showDatabaseByGlobalFilter() ? '' : 'none';
-                        } else if (res.type !== 'folder') {
-                          newNode.style.display = _showRegularNodeByGlobalFilter(child) ? '' : 'none';
-                        }
-                      }
-                    }
-                  } catch(e) {}
-                }));
-              }
-            })();
           }
           childrenDiv.dataset.loaded = 'true';
           // グローバルフィルタを新規読み込みノードに適用（常時）
@@ -232,7 +211,7 @@
       childrenDiv.classList.add('collapsed');
       saveExpandedState(item.path, false);
       // 作品フォルダ動的アイコン切替（折畳み時）
-      if (isFolder) {
+      if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
           const isWork = item.path === getWorkFolder();
@@ -247,7 +226,7 @@
   _queueSavedOutlinerExpansion(item, toggle);
 
   // Row click: 選択＋コンテンツ表示
-  row.addEventListener('click', (e) => {
+  row.addEventListener('click', async (e) => {
     try { row.focus({ preventScroll: true }); } catch {}
     if (_outlinerSuppressNextTreeRowClick && (!_outlinerSuppressTreeRowClickNode || _outlinerSuppressTreeRowClickNode === div)) {
       _outlinerSuppressNextTreeRowClick = false;
@@ -278,16 +257,31 @@
     document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
     row.classList.add('active');
 
+    const clickPaneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+      ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
+      : null;
+    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
+    if (_browseItemNeedsTypeCheck(item) && item.type !== 'folder') {
+      await _resolveBrowseItemTypeOnDemand(item);
+      // 型判定待ちの間に別項目へ移動した場合、古いクリックを開かない。
+      if (!row.isConnected || !row.classList.contains('active')) return;
+      if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
+          && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
+      if (!_browseItemNeedsTypeCheck(item)) _syncOutlinerResolvedItemType(div, item);
+    }
+    const currentIsFolder = item.type === 'folder';
+    const currentIsDB = item.type === 'database';
+
     // スクロール位置保護は pointerdown 時点のグローバルガード (_treeScrollGuard) に委ねる
 
     // skipHighlight: クリック側で既に active クラスを付け終えているので、
     // open* 関数内の highlightOutlinerNode → scrollIntoView は不要かつスクロールジャンプ源。
     const _expOpts = { fromExplorer: true, skipHighlight: true };
     if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
-      _chatSetCurrentTargetPath(item.path, isFolder || isDB ? 'folder' : 'file', { reason: 'tree-click', deferAdoptSource: true });
+      _chatSetCurrentTargetPath(item.path, currentIsFolder || currentIsDB ? 'folder' : 'file', { reason: 'tree-click', deferAdoptSource: true });
     }
-    if (isDB) {
-      selectDatabase(item.path, null, _expOpts);
+    if (currentIsDB) {
+      selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts);
     } else if (item.type === 'entity') {
       selectEntity(item.path, _expOpts);
     } else if (item.type === 'page') {
@@ -297,7 +291,7 @@
     } else if (item.type === 'board') {
       openBoard(item.name, item.path, _expOpts);
     } else if (item.type === 'calendar') {
-      openCalendarFile(item.name, item.path, _expOpts);
+      openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null });
     } else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') {
       openMedia(item.name, item.path, item.type, _expOpts);
     } else if (item.type === 'html') {
@@ -307,9 +301,27 @@
       else openPage(item.name, item.path, _expOpts);
     } else if (item.type === 'smart-db') {
       if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts);
-    } else if (isFolder) {
-      openFolder(item.name, item.path, _expOpts);
+    } else if (currentIsFolder) {
+      let folderVisiblePromise = null;
+      const mobileExplorer = window.MeldexCloudMobileExplorer;
+      const handledByMobileExplorer = !!(
+        window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
+        && mobileExplorer?.selectFolderFromTree?.(item, { syncSelection: false })
+      );
+      if (!handledByMobileExplorer) folderVisiblePromise = openFolder(item.name, item.path, _expOpts);
       if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+      const paneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+        ? _captureBrowseItemPaneSnapshot(item.path, { requirePath: !handledByMobileExplorer })
+        : null;
+      _scheduleBrowseItemTypeResolution(div, item, folderVisiblePromise, {
+        paneSnapshot,
+        isStillActive: handledByMobileExplorer
+          ? () => mobileExplorer?.currentFolderTarget?.()?.path === item.path
+          : undefined,
+        onResolved: handledByMobileExplorer && typeof mobileExplorer?.handleResolvedItemType === 'function'
+          ? payload => mobileExplorer.handleResolvedItemType(payload)
+          : undefined,
+      });
     } else if (!NATIVE_TYPES.has(item.type)) {
       // ネイティブアプリ専用ファイル（psd, clip, 3d等）: メニューから開く案内
       showStatus(item.name + ' — 「…」または長押しメニューからアプリで開く');

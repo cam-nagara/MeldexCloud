@@ -1,3 +1,73 @@
+    media: 'currentPagePath',
+    board: 'currentBoardPath',
+  }[state.view] || null;
+
+  Object.keys(_fileIdCache).forEach(cachedPath => {
+    if (!_matchesDeletedPaths(cachedPath, deletedPaths)) return;
+    const fid = _fileIdCache[cachedPath];
+    delete _fileIdCache[cachedPath];
+    if (fid && _pathCache[fid] === cachedPath) delete _pathCache[fid];
+  });
+  _purgeStoredFileIdMapForDeletedPaths(deletedPaths);
+  _purgeStoredPathSettingForDeletedPaths('outliner-work-folder', 'outliner-work-folder-id', deletedPaths);
+  _purgeStoredPathSettingForDeletedPaths('main-calendar-path', 'main-calendar-id', deletedPaths);
+  _purgePublishStorageForDeletedPaths(deletedPaths);
+
+  try {
+    const recent = _readStorageArray(RECENT_KEY);
+    const nextRecent = recent.filter(entry => {
+      return !_entryMatchesDeletedPaths(entry, deletedPaths);
+    });
+    if (nextRecent.length !== recent.length) {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(nextRecent));
+      recentChanged = true;
+    }
+  } catch {}
+
+  try {
+    const lastView = JSON.parse(localStorage.getItem('lastView') || 'null');
+    if (lastView) {
+      if (_entryMatchesDeletedPaths(lastView, deletedPaths)) {
+        localStorage.removeItem('lastView');
+      }
+    }
+  } catch {}
+
+  for (let i = _tabs.length - 1; i >= 0; i -= 1) {
+    const tab = _tabs[i];
+    if (!_entryMatchesDeletedPaths(tab, deletedPaths)) continue;
+    if (_activeTabId === tab.id) _activeTabId = null;
+    _tabs.splice(i, 1);
+    legacyTabsChanged = true;
+  }
+  if (!_activeTabId && _tabs.length > 0) {
+    _activeTabId = _tabs[0].id;
+    legacyTabsChanged = true;
+  }
+
+  for (let i = _legacyNavHistory.length - 1; i >= 0; i -= 1) {
+    const entry = _legacyNavHistory[i];
+    if (_entryMatchesDeletedPaths(entry, deletedPaths)) {
+      _legacyNavHistory.splice(i, 1);
+      if (_legacyNavIndex >= i) _legacyNavIndex = Math.max(-1, _legacyNavIndex - 1);
+    }
+  }
+
+  const tabsToClose = [];
+  if (typeof GBLayout !== 'undefined' && typeof GBLayout.getAllPanes === 'function' && GBLayout.root) {
+    GBLayout.getAllPanes(GBLayout.root).forEach(pane => {
+      (pane.tabs || []).forEach(tab => {
+        if (_entryMatchesDeletedPaths(tab, deletedPaths) || _entryMatchesDeletedPaths(tab.state, deletedPaths)) {
+          tabsToClose.push({ paneId: pane.id, tabId: tab.id });
+        }
+      });
+      if (Array.isArray(pane.navHistory)) {
+        const prevLen = pane.navHistory.length;
+        pane.navHistory = pane.navHistory.filter(entry => !_entryMatchesDeletedPaths(entry, deletedPaths));
+        if (pane.navHistory.length !== prevLen) {
+          pane.navIndex = pane.navHistory.length ? Math.min(pane.navIndex, pane.navHistory.length - 1) : -1;
+          layoutChanged = true;
+        }
       }
     });
   }
@@ -629,9 +699,14 @@ function navBack(paneId) {
   navState.index -= 1;
   const entry = navState.history[navState.index];
   if (!entry) return false;
-  if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
   navNavigating = true;
-  _withNavFlag(navOpen(entry));
+  try {
+    if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+    _withNavFlag(navOpen(entry));
+  } catch (e) {
+    navNavigating = false;
+    throw e;
+  }
   if (navState.kind === 'legacy') {
     const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
     if (tab) { _activeTabId = tab.id; renderTabs(); }
@@ -646,9 +721,14 @@ function navForward(paneId) {
   navState.index += 1;
   const entry = navState.history[navState.index];
   if (!entry) return false;
-  if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
   navNavigating = true;
-  _withNavFlag(navOpen(entry));
+  try {
+    if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+    _withNavFlag(navOpen(entry));
+  } catch (e) {
+    navNavigating = false;
+    throw e;
+  }
   if (navState.kind === 'legacy') {
     const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
     if (tab) { _activeTabId = tab.id; renderTabs(); }
@@ -685,9 +765,14 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
     item.title = entry.path || '';
     item.addEventListener('click', () => {
       navState.index = index;
-      if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
       navNavigating = true;
-      _withNavFlag(navOpen(entry));
+      try {
+        if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+        _withNavFlag(navOpen(entry));
+      } catch (e) {
+        navNavigating = false;
+        throw e;
+      }
       _refreshPaneNavUi(navState.paneId);
       _persistPaneNavState(navState);
       closeDropdown(false);
@@ -813,88 +898,3 @@ function _normalizeDbViewModeValue(mode) {
   const value = String(mode || '').trim();
   return ['pivot', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
     ? value
-    : 'pivot';
-}
-function _normalizeDbTimelineTypeSpecific(timeline) {
-  const src = _cloneDbViewObject(timeline);
-  const out = {
-    timeProp: String(src.timeProp || ''),
-    endProp: String(src.endProp || ''),
-    rowProp: String(src.rowProp || '_entity'),
-    scale: String(src.scale || 'day'),
-    direction: String(src.direction || 'horizontal'),
-    displayStart: String(src.displayStart || ''),
-    displayEnd: String(src.displayEnd || ''),
-    timeStepMinutes: Math.max(1, Math.round(Number(src.timeStepMinutes || 1) || 1)),
-    calendarSystemId: String(src.calendarSystemId || 'gregorian'),
-    ...src,
-  };
-  out.colWidths = _cloneDbViewObject(src.colWidths);
-  out.rowHeights = _cloneDbViewObject(src.rowHeights);
-  out.cardProps = _cloneDbViewArray(src.cardProps);
-  out.calendarSystems = _cloneDbViewArray(src.calendarSystems);
-  out.displayStart = String(out.displayStart || '');
-  out.displayEnd = String(out.displayEnd || '');
-  out.timeStepMinutes = Math.max(1, Math.round(Number(out.timeStepMinutes || 1) || 1));
-  out.calendarSystemId = String(out.calendarSystemId || 'gregorian');
-  return out;
-}
-function _makeLegacyDbSavedView(cfg) {
-  const viewMode = _normalizeDbViewModeValue(cfg.currentViewMode || 'pivot');
-  return {
-    name: typeof _defaultDbSavedViewName === 'function' ? _defaultDbSavedViewName(viewMode, 0) : 'テーブル',
-    viewMode,
-    hiddenCols: _cloneDbViewArray(cfg.hiddenCols),
-    pinnedCols: _cloneDbViewArray(cfg.pinnedCols),
-    colOrder: cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null),
-    advancedFilters: _cloneDbViewArray(cfg.advancedFilters),
-    conditionalFormat: !!cfg.conditionalFormat,
-    conditionalColors: _cloneDbViewObject(cfg.conditionalColors),
-    filter: 'disabled',
-    sortConfig: cfg.sortConfig == null ? null : _cloneDbViewValue(cfg.sortConfig, null),
-    manualOrder: cfg.manualOrder == null ? null : _cloneDbViewValue(cfg.manualOrder, null),
-    showFooter: !!cfg.showFooter,
-    entityColumnPinned: cfg.entityColumnPinned !== false,
-    countTypes: _cloneDbViewObject(cfg.countTypes),
-    colWidths: _cloneDbViewObject(cfg.colWidths),
-    thumbnailSize: cfg.thumbnailSize || 'small',
-    typeSpecific: {
-      pivot: { groupBy: cfg.groupBy || null },
-      gallery: {},
-      kanban: { groupBy: cfg.kanbanGroupBy || '_status' },
-      calendar: { mapping: _cloneDbViewObject(cfg.calendarMapping) },
-      timeline: _normalizeDbTimelineTypeSpecific(cfg.timeline),
-      chart: _cloneDbViewObject(cfg.chartConfig),
-      graph: _cloneDbViewObject(cfg.graphConfig),
-      form: { formConfig: cfg.formConfig == null ? null : _cloneDbViewValue(cfg.formConfig, null) },
-    },
-  };
-}
-function _ensureDbViewTypeSpecific(view, cfg) {
-  const current = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
-  view.typeSpecific = current;
-  if (!_isDbViewPlainObject(current.pivot)) current.pivot = {};
-  if (current.pivot.groupBy == null) current.pivot.groupBy = view.groupBy || cfg.groupBy || null;
-  if (!_isDbViewPlainObject(current.gallery)) current.gallery = {};
-  if (!_isDbViewPlainObject(current.kanban)) current.kanban = {};
-  if (current.kanban.groupBy == null) current.kanban.groupBy = view.kanbanGroupBy || cfg.kanbanGroupBy || '_status';
-  if (!_isDbViewPlainObject(current.calendar)) current.calendar = {};
-  if (!_isDbViewPlainObject(current.calendar.mapping)) current.calendar.mapping = _cloneDbViewObject(cfg.calendarMapping);
-  current.timeline = _normalizeDbTimelineTypeSpecific(current.timeline || cfg.timeline);
-  if (!_isDbViewPlainObject(current.chart)) current.chart = _cloneDbViewObject(cfg.chartConfig);
-  if (!_isDbViewPlainObject(current.graph)) current.graph = _cloneDbViewObject(cfg.graphConfig);
-  if (!_isDbViewPlainObject(current.form)) current.form = {};
-  if (current.form.formConfig == null) {
-    current.form.formConfig = view.formConfig != null
-      ? _cloneDbViewValue(view.formConfig, null)
-      : (cfg.formConfig != null ? _cloneDbViewValue(cfg.formConfig, null) : null);
-  }
-}
-function _normalizeSavedDbViewForV2(view, cfg, index) {
-  const v = _isDbViewPlainObject(view) ? view : {};
-  v.viewMode = _normalizeDbViewModeValue(v.viewMode || cfg.currentViewMode || 'pivot');
-  if (!String(v.name || '').trim()) {
-    v.name = typeof _defaultDbSavedViewName === 'function'
-      ? _defaultDbSavedViewName(v.viewMode, index)
-      : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
-  }

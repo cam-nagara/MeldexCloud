@@ -263,6 +263,205 @@ function _galleryImageSrcFromValue(rawValue, dbPath, entityName) {
   return '/api/file-raw?path=' + encodeURIComponent(dbPath + '/' + entityName + '/' + text);
 }
 
+function _dbCardImageItemsFromValues(vals) {
+  if (typeof parseImagePropertyValue !== 'function') return [];
+  for (const val of vals || []) {
+    const items = parseImagePropertyValue(val?.value);
+    if (items.length) return items;
+  }
+  return [];
+}
+
+function _appendDbCardImagePreview(root, items, options = {}) {
+  if (!root || !Array.isArray(items) || !items.length || typeof _imageSrc !== 'function') return false;
+  const wrap = document.createElement('div');
+  wrap.className = 'db-card-image-preview ' + (options.className || '');
+  if (options.propName) wrap.title = options.propName;
+  const thumbCount = typeof _normalizeDbCardImageThumbCount === 'function'
+    ? _normalizeDbCardImageThumbCount(options.thumbCount)
+    : Math.max(1, Math.min(12, Math.round(Number(options.thumbCount || 3) || 3)));
+  const thumbColumns = Math.max(1, Math.min(4, Math.round(Number(options.columns || Math.min(3, thumbCount)) || 3)));
+  wrap.dataset.thumbCount = String(thumbCount);
+  wrap.style.setProperty('--db-card-thumb-columns', String(thumbColumns));
+  let appended = 0;
+  items.slice(0, thumbCount).forEach((item, idx) => {
+    const mediaKind = String(item?.asset_kind || item?.media_type || '').toLowerCase();
+    const hasPreview = !!(item?.thumb_url || item?.thumb || item?.preview_url || item?.preview_src || item?.preview_image_url);
+    if (mediaKind === 'video' && !hasPreview) {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'db-card-media-placeholder';
+      placeholder.dataset.imageIndex = String(idx);
+      placeholder.innerHTML = (typeof lucide === 'function' ? lucide('video', 16) : '') + '<span>動画</span>';
+      placeholder.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item);
+      });
+      wrap.appendChild(placeholder);
+      appended += 1;
+      return;
+    }
+    const src = _imageSrc(item, true);
+    if (!src) return;
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.fetchPriority = 'low';
+    img.src = src;
+    img.alt = item.caption || item.filename || options.propName || '画像';
+    img.dataset.imageIndex = String(idx);
+    img.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item);
+    });
+    wrap.appendChild(img);
+    appended += 1;
+  });
+  if (!appended) return false;
+  if (items.length > appended) {
+    const more = document.createElement('span');
+    more.className = 'db-card-image-more';
+    more.textContent = '+' + (items.length - appended);
+    wrap.appendChild(more);
+  }
+  root.appendChild(wrap);
+  return true;
+}
+
+function _appendFirstDbCardImagePreview(root, entityData, propNames, propTypes, ctx, options = {}) {
+  if (!root || !entityData || !Array.isArray(propNames)) return false;
+  const seen = new Set();
+  for (const propName of propNames) {
+    if (!propName || seen.has(propName)) continue;
+    seen.add(propName);
+    const ptc = propTypes?.[propName] || {};
+    if (ptc.type && ptc.type !== 'image') continue;
+    const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+    const imageItems = _dbCardImageItemsFromValues(vals);
+    if (imageItems.length && _appendDbCardImagePreview(root, imageItems, { ...options, propName })) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function _getGalleryConfig(dbPath, ctx) {
+  const cfg = getCurrentDbViewTypeSpecific(dbPath, 'gallery', { ctx }) || {};
+  const displayCfg = typeof _dbCardViewDisplayConfig === 'function'
+    ? _dbCardViewDisplayConfig(cfg)
+    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
+  return {
+    showEntryName: cfg.showEntryName !== false,
+    cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
+    ...displayCfg,
+  };
+}
+
+function _setGalleryDisplayProps(dbPath, cfg, options = {}) {
+  const next = {
+    ...cfg,
+    cardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : [],
+    showEntryName: cfg.showEntryName !== false,
+    ...(typeof _dbCardViewDisplayConfig === 'function' ? _dbCardViewDisplayConfig(cfg) : {}),
+  };
+  setCurrentDbViewTypeSpecific(dbPath, 'gallery', next, {
+    ctx: options.ctx || null,
+    historyLabel: options.label || 'シート表示: ギャラリー表示プロパティ',
+    detail: options.detail || '',
+    skipHistory: options.skipHistory === true,
+  });
+}
+
+function _galleryDefaultCardProps(visibleProps) {
+  return (visibleProps || []).slice(0, 4);
+}
+
+function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
+  document.querySelectorAll('.gallery-card-props-menu').forEach(el => el.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu tl-card-props-menu gallery-card-props-menu';
+  menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
+  let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
+  let showEntryName = cfg.showEntryName !== false;
+  let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
+    ? _dbCardViewDisplayConfig(cfg)
+    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
+  const save = (detail) => {
+    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
+    renderGallery(ctx);
+  };
+  if (typeof _appendDbDisplayPropOption === 'function') {
+    _appendDbDisplayPropOption(menu, 'エントリ名', showEntryName, {
+      onToggle(checked) {
+        showEntryName = checked;
+        save('エントリ名');
+      },
+    });
+    if (typeof _appendDbCardDisplayControls === 'function') {
+      _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
+        cardImageThumbCount = next.cardImageThumbCount;
+        cardPropLineCount = next.cardPropLineCount;
+        save(detail);
+      });
+    }
+    props.forEach(prop => {
+      _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
+        canMoveUp: ordered.indexOf(prop) > 0,
+        canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
+        onToggle(checked) {
+          ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
+          save(prop);
+        },
+        onMove(delta) {
+          const idx = ordered.indexOf(prop);
+          const nextIdx = idx + delta;
+          if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
+          [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
+          save(prop);
+        },
+      });
+    });
+  }
+  document.body.appendChild(menu);
+  if (typeof attachMeldexDropdownCloseButton === 'function') {
+    attachMeldexDropdownCloseButton(menu, {
+      trigger: anchor,
+      className: 'gallery-card-props-menu-close',
+      attr: 'data-gallery-card-props-close',
+    });
+  }
+  if (typeof _positionTimelineCardPropsMenu === 'function') _positionTimelineCardPropsMenu(menu, anchor);
+  else if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
+  setTimeout(() => {
+    const closer = (ev) => {
+      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
+        menu.remove();
+        document.removeEventListener('pointerdown', closer);
+      }
+    };
+    document.addEventListener('pointerdown', closer);
+  }, 0);
+}
+
+function _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps, ctx) {
+  const toolbar = document.createElement('div');
+  toolbar.className = 'db-card-view-toolbar gallery-card-view-toolbar';
+  const displayPropsBtn = document.createElement('button');
+  displayPropsBtn.type = 'button';
+  displayPropsBtn.className = 'tl-nav-btn db-card-view-toolbar-btn';
+  displayPropsBtn.title = 'カードに表示するプロパティ';
+  displayPropsBtn.dataset.e2eId = 'gallery-display-props';
+  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示プロパティ' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
+  displayPropsBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    _showGalleryDisplayPropsMenu(ev.currentTarget, dbPath, { ...galleryCfg, cardProps: activeCardProps }, visibleProps, ctx);
+  });
+  toolbar.appendChild(displayPropsBtn);
+  return toolbar;
+}
+
 function renderGallery(ctx) {
   ctx = ctx || _currentPaneState();
   const data = ctx.pivotData || state.pivotData;
@@ -298,7 +497,10 @@ function renderGallery(ctx) {
   data.properties.forEach(p => { if (!orderedProps.includes(p)) orderedProps.push(p); });
   if (typeof filterDeletedDbProperties === 'function') orderedProps = filterDeletedDbProperties(dbPath, orderedProps);
   const visibleProps = orderedProps.filter(p => !hiddenCols.includes(p));
+  const galleryCfg = _getGalleryConfig(dbPath, ctx);
+  const activeCardProps = Array.isArray(galleryCfg.cardProps) ? galleryCfg.cardProps : _galleryDefaultCardProps(visibleProps);
 
+  const toolbar = _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps, ctx);
   const grid = document.createElement('div');
   grid.className = 'gallery-grid';
 
@@ -326,38 +528,39 @@ function renderGallery(ctx) {
     moreBtn.style.cssText = 'position:absolute;top:4px;right:4px;cursor:pointer;font-size:14px;color:var(--fg2);padding:2px 4px;border-radius:3px;z-index:5;';
     moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showDbCardContextMenu(e, dbPath, entityName); });
     card.style.position = 'relative';
+    card.style.setProperty('--db-card-prop-lines', String(galleryCfg.cardPropLineCount));
     card.appendChild(moreBtn);
 
-    // タイトル
-    const title = document.createElement('div');
-    title.className = 'gallery-card-title';
-    title.textContent = entityName;
-    card.appendChild(title);
-
-    // 画像プロパティがあればサムネイル
-    for (const propName of visibleProps) {
-      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
-      for (const val of vals) {
-        const imgSrc = _galleryImageSrcFromValue(val.value, dbPath, entityName);
-        if (imgSrc) {
-          const img = document.createElement('img');
-          img.className = 'gallery-card-thumb';
-          img.src = imgSrc;
-          img.onerror = () => img.remove();
-          card.insertBefore(img, title.nextSibling);
-          break;
-        }
-      }
+    let title = null;
+    if (galleryCfg.showEntryName !== false) {
+      title = document.createElement('div');
+      title.className = 'gallery-card-title';
+      title.textContent = entityName;
+      card.appendChild(title);
     }
 
     // プロパティ一覧（先頭4件）
     const propsDiv = document.createElement('div');
     propsDiv.className = 'gallery-card-props';
     let shown = 0;
-    for (const propName of visibleProps) {
-      if (shown >= 4) break;
+    let imageRendered = false;
+    const cardPropNames = Array.isArray(galleryCfg.cardProps)
+      ? galleryCfg.cardProps.filter(propName => visibleProps.includes(propName))
+      : _galleryDefaultCardProps(visibleProps);
+    for (const propName of cardPropNames) {
       // sourceプロパティ: メタデータから表示
       const ptcG = propTypes[propName];
+      if (ptcG?.type === 'image') {
+        if (!imageRendered) {
+          imageRendered = _appendFirstDbCardImagePreview(card, entityData, [propName], propTypes, ctx, {
+            className: 'gallery-card-image-preview',
+            thumbCount: galleryCfg.cardImageThumbCount,
+            columns: Math.min(2, galleryCfg.cardImageThumbCount),
+          });
+        }
+        if (imageRendered) shown++;
+        continue;
+      }
       let displayVal = '';
       if (ptcG && ptcG.source) {
         const metaKey = '_' + ptcG.source;
@@ -387,6 +590,34 @@ function renderGallery(ctx) {
       propRow.appendChild(valSpan);
       propsDiv.appendChild(propRow);
       shown++;
+    }
+    if (!imageRendered) {
+      const fallbackImageProps = [...cardPropNames, ...visibleProps, ...orderedProps]
+        .filter(propName => propTypes[propName]?.type === 'image');
+      imageRendered = _appendFirstDbCardImagePreview(card, entityData, fallbackImageProps, propTypes, ctx, {
+        className: 'gallery-card-image-preview',
+        thumbCount: galleryCfg.cardImageThumbCount,
+        columns: Math.min(2, galleryCfg.cardImageThumbCount),
+      });
+    }
+    if (!imageRendered) {
+      for (const propName of visibleProps) {
+        const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+        for (const val of vals) {
+          const imgSrc = _galleryImageSrcFromValue(val.value, dbPath, entityName);
+          if (imgSrc) {
+            const img = document.createElement('img');
+            img.className = 'gallery-card-thumb';
+            img.src = imgSrc;
+            img.onerror = () => img.remove();
+            const anchor = title?.nextSibling || propsDiv;
+            card.insertBefore(img, anchor);
+            imageRendered = true;
+            break;
+          }
+        }
+        if (imageRendered) break;
+      }
     }
     card.appendChild(propsDiv);
 
@@ -420,6 +651,7 @@ function renderGallery(ctx) {
   });
 
   container.innerHTML = '';
+  container.appendChild(toolbar);
   container.appendChild(grid);
 }
 
@@ -440,10 +672,14 @@ function setKanbanGroupBy(dbPath, prop, options = {}) {
 
 function _getKanbanConfig(dbPath, ctx) {
   const cfg = getCurrentDbViewTypeSpecific(dbPath, 'kanban', { ctx }) || {};
+  const displayCfg = typeof _dbCardViewDisplayConfig === 'function'
+    ? _dbCardViewDisplayConfig(cfg)
+    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   return {
     groupBy: cfg.groupBy || '_status',
     showEntryName: cfg.showEntryName !== false,
     cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
+    ...displayCfg,
   };
 }
 
@@ -452,6 +688,7 @@ function _setKanbanDisplayProps(dbPath, cfg, options = {}) {
     ...cfg,
     cardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : [],
     showEntryName: cfg.showEntryName !== false,
+    ...(typeof _dbCardViewDisplayConfig === 'function' ? _dbCardViewDisplayConfig(cfg) : {}),
   };
   setCurrentDbViewTypeSpecific(dbPath, 'kanban', next, {
     ctx: options.ctx || null,
@@ -465,10 +702,24 @@ function _kanbanDefaultCardProps(visibleProps, groupByProp) {
   return (visibleProps || []).filter(propName => propName !== groupByProp).slice(0, 3);
 }
 
-function _renderKanbanCardProps(root, card, propNames, ctx) {
+function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
+  const dbPath = ctx?.dbPath || state.currentDbPath;
+  const propTypes = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
   propNames.forEach(propName => {
     const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
     if (vals.length === 0) return;
+    const ptc = propTypes[propName] || {};
+    if (ptc?.type === 'image') {
+      const imageItems = _dbCardImageItemsFromValues(vals);
+      if (imageItems.length) {
+        _appendDbCardImagePreview(root, imageItems, {
+          className: 'kanban-card-image-preview',
+          propName,
+          thumbCount: options.cardImageThumbCount,
+        });
+      }
+      return;
+    }
     const propRow = document.createElement('div');
     propRow.className = 'kanban-card-prop';
     const nameSpan = document.createElement('span');
@@ -491,8 +742,11 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
   let showEntryName = cfg.showEntryName !== false;
+  let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
+    ? _dbCardViewDisplayConfig(cfg)
+    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   const save = (detail) => {
-    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName }, { ctx, detail });
+    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
     renderKanban(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
@@ -502,6 +756,13 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
         save('エントリ名');
       },
     });
+    if (typeof _appendDbCardDisplayControls === 'function') {
+      _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
+        cardImageThumbCount = next.cardImageThumbCount;
+        cardPropLineCount = next.cardPropLineCount;
+        save(detail);
+      });
+    }
     props.forEach(prop => {
       _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
         canMoveUp: ordered.indexOf(prop) > 0,
@@ -539,6 +800,46 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
     };
     document.addEventListener('pointerdown', closer);
   }, 0);
+}
+
+function _buildKanbanToolbar(dbPath, groupByProp, visibleProps, kanbanCfg, activeCardProps, ctx) {
+  const toolbar = document.createElement('div');
+  toolbar.className = 'db-card-view-toolbar kanban-card-view-toolbar';
+  const label = document.createElement('span');
+  label.className = 'chart-label';
+  label.textContent = 'グループ化';
+  toolbar.appendChild(label);
+
+  const sel = document.createElement('select');
+  sel.className = 'chart-select';
+  sel.dataset.e2eId = 'kanban-group-by-select';
+  sel.setAttribute('aria-label', 'カンバンのグループ化');
+  const optStatus = document.createElement('option');
+  optStatus.value = '_status'; optStatus.textContent = 'ステータス';
+  if (groupByProp === '_status') optStatus.selected = true;
+  sel.appendChild(optStatus);
+  visibleProps.filter(p => _isKanbanGroupableProperty(dbPath, p)).forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p; opt.textContent = p;
+    if (groupByProp === p) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.onchange = () => { setKanbanGroupBy(dbPath, sel.value, { ctx }); renderKanban(ctx); };
+  toolbar.appendChild(sel);
+
+  const displayPropsBtn = document.createElement('button');
+  displayPropsBtn.type = 'button';
+  displayPropsBtn.className = 'tl-nav-btn db-card-view-toolbar-btn';
+  displayPropsBtn.title = 'カードに表示するプロパティ';
+  displayPropsBtn.dataset.e2eId = 'kanban-display-props';
+  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示プロパティ' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
+  displayPropsBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    _showKanbanDisplayPropsMenu(ev.currentTarget, dbPath, { ...kanbanCfg, groupBy: groupByProp, cardProps: activeCardProps }, visibleProps.filter(p => p !== groupByProp), ctx);
+  });
+  toolbar.appendChild(displayPropsBtn);
+  return toolbar;
 }
 
 function renderKanban(ctx) {
@@ -607,42 +908,8 @@ function renderKanban(ctx) {
     });
   }
 
-  // ヘッダー: グループ化プロパティ選択
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-shrink:0;align-self:flex-start;';
-  const label = document.createElement('span');
-  label.style.cssText = 'font-size:12px;color:var(--fg2);';
-  label.textContent = 'グループ化:';
-  header.appendChild(label);
-
-  const sel = document.createElement('select');
-  sel.className = 'gb-select';
-  sel.dataset.e2eId = 'kanban-group-by-select';
-  sel.setAttribute('aria-label', 'カンバンのグループ化');
-  const optStatus = document.createElement('option');
-  optStatus.value = '_status'; optStatus.textContent = 'ステータス';
-  if (groupByProp === '_status') optStatus.selected = true;
-  sel.appendChild(optStatus);
-  visibleProps.filter(p => _isKanbanGroupableProperty(dbPath, p)).forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p; opt.textContent = p;
-    if (groupByProp === p) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  sel.onchange = () => { setKanbanGroupBy(dbPath, sel.value, { ctx }); renderKanban(ctx); };
-  header.appendChild(sel);
-  const displayPropsBtn = document.createElement('button');
-  displayPropsBtn.type = 'button';
-  displayPropsBtn.className = 'tl-nav-btn';
-  displayPropsBtn.title = 'カードに表示するプロパティ';
   const activeCardProps = Array.isArray(kanbanCfg.cardProps) ? kanbanCfg.cardProps : _kanbanDefaultCardProps(visibleProps, groupByProp);
-  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示プロパティ' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
-  displayPropsBtn.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    _showKanbanDisplayPropsMenu(ev.currentTarget, dbPath, { ...kanbanCfg, groupBy: groupByProp, cardProps: activeCardProps }, visibleProps.filter(p => p !== groupByProp), ctx);
-  });
-  header.appendChild(displayPropsBtn);
+  const toolbar = _buildKanbanToolbar(dbPath, groupByProp, visibleProps, kanbanCfg, activeCardProps, ctx);
 
   // ボード描画
   const board = document.createElement('div');
@@ -834,6 +1101,7 @@ function renderKanban(ctx) {
       moreBtn.style.cssText = 'position:absolute;top:4px;right:4px;cursor:pointer;font-size:14px;color:var(--fg2);padding:2px 4px;border-radius:3px;z-index:5;';
       moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showDbCardContextMenu(e, dbPath, card.name); });
       cardEl.style.position = 'relative';
+      cardEl.style.setProperty('--db-card-prop-lines', String(kanbanCfg.cardPropLineCount));
       cardEl.appendChild(moreBtn);
 
       if (kanbanCfg.showEntryName !== false) {
@@ -848,7 +1116,9 @@ function renderKanban(ctx) {
       const cardPropNames = Array.isArray(kanbanCfg.cardProps)
         ? kanbanCfg.cardProps.filter(propName => visibleProps.includes(propName) && propName !== groupByProp)
         : _kanbanDefaultCardProps(visibleProps, groupByProp);
-      _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx);
+      _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx, {
+        cardImageThumbCount: kanbanCfg.cardImageThumbCount,
+      });
       cardEl.appendChild(propsDiv);
 
       colBody.appendChild(cardEl);
@@ -859,7 +1129,7 @@ function renderKanban(ctx) {
   });
 
   container.innerHTML = '';
-  container.appendChild(header);
+  container.appendChild(toolbar);
   container.appendChild(board);
 }
 

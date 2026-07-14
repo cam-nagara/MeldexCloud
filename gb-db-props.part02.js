@@ -187,7 +187,9 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       if (td) startCellInlineAdd(td, ep, entityName, propName);
     } }] : []),
     { icon: 'link2', label: 'パスをコピー', action: () => {
-      navigator.clipboard.writeText(ep).then(() => showStatus('パスをコピーしました'));
+      const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+      const copyPath = window.GBPathUtils?.resolveForClipboard?.(ep, base) ?? ep;
+      navigator.clipboard.writeText(copyPath).then(() => showStatus('パスをコピーしました'));
     }},
     { type: 'sep' },
     { icon: 'trash2', label: 'エントリを削除', danger: true, action: async () => {

@@ -7,4 +7,5 @@ __loadSplitScript('gb-app.bundle.js', [
   'gb-app.bundle.part04.js',
   'gb-app.bundle.part05.js',
   'gb-app.bundle.part06.js',
+  'gb-app.bundle.part07.js',
 ]);

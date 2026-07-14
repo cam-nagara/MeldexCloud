@@ -1,0 +1,702 @@
+/* gb-ui.part04.css: number inputs */
+
+:root {
+  --ui-scrollbar-track-bg: var(--bg2);
+  --ui-scrollbar-thumb-bg: var(--bg4);
+  --ui-scrollbar-thumb-hover-bg: var(--fg2);
+  --ui-pane-tabbar-bg: var(--bg2);
+  --ui-pane-tab-active-bg: var(--bg);
+  --ui-panelset-tabbar-bg: var(--ui-pane-tabbar-bg);
+  --ui-collapsed-tabbar-bg: var(--ui-pane-tabbar-bg);
+  --ui-dockbar-bg: var(--ui-pane-tabbar-bg);
+  --ui-tooltip-bg: var(--ui-popup-bg);
+  --ui-tooltip-fg: var(--ui-fg-default);
+  --ui-tooltip-border: var(--ui-border);
+}
+
+/* 数値入力 */
+.gb-num-input {
+  width: calc(6ch + 24px);
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-2);
+  font-size: var(--ui-font-11);
+  font-family: inherit;
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  text-align: right;
+  outline: none;
+  box-sizing: border-box;
+}
+.gb-num-input:focus { border-color: var(--ui-accent); }
+.gb-num-input[type=number] {
+  appearance: auto;
+  -moz-appearance: number-input;
+}
+.gb-num-input::-webkit-outer-spin-button,
+.gb-num-input::-webkit-inner-spin-button {
+  -webkit-appearance: auto;
+  opacity: 0;
+  margin-left: var(--ui-space-3);
+  transition: opacity 0.12s;
+}
+.gb-num-input:hover::-webkit-outer-spin-button,
+.gb-num-input:hover::-webkit-inner-spin-button,
+.gb-num-input:focus::-webkit-outer-spin-button,
+.gb-num-input:focus::-webkit-inner-spin-button { opacity: 1; }
+
+.gb-num-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+}
+.gb-num-unit > .unit {
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+  white-space: nowrap;
+}
+
+/* Disabled controls: swatches and checks must lose their source colors. */
+.gb-color-swatch:disabled,
+.gb-color-swatch[disabled],
+.gb-color-swatch[aria-disabled="true"],
+.gb-color-swatch.is-disabled,
+.gb-swatch:disabled,
+.gb-swatch[disabled],
+.gb-swatch[aria-disabled="true"],
+.gb-swatch.is-disabled,
+.gb-fmt-swatch:disabled,
+.gb-fmt-swatch[disabled],
+.gb-fmt-swatch[aria-disabled="true"],
+.gb-fmt-swatch.is-disabled,
+.gb-fmt-swatch-bg:disabled,
+.gb-fmt-swatch-bg[disabled],
+.gb-fmt-swatch-bg[aria-disabled="true"],
+.gb-fmt-swatch-bg.is-disabled,
+.gb-fmt-swatch-fg:disabled,
+.gb-fmt-swatch-fg[disabled],
+.gb-fmt-swatch-fg[aria-disabled="true"],
+.gb-fmt-swatch-fg.is-disabled {
+  background: var(--ui-disabled-bg) !important;
+  border-color: var(--ui-disabled-border) !important;
+  color: var(--ui-disabled-fg) !important;
+  filter: grayscale(1) saturate(0) !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}
+
+input[type="checkbox"]:disabled,
+input[type="checkbox"][aria-disabled="true"],
+input[type="radio"]:disabled,
+input[type="radio"][aria-disabled="true"] {
+  accent-color: var(--ui-disabled-accent) !important;
+  filter: grayscale(1) saturate(0) !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
+}
+
+label:has(input[type="checkbox"]:disabled),
+label:has(input[type="checkbox"][aria-disabled="true"]),
+label:has(input[type="radio"]:disabled),
+label:has(input[type="radio"][aria-disabled="true"]) {
+  color: var(--ui-disabled-fg) !important;
+}
+
+button:disabled,
+button[disabled],
+button[aria-disabled="true"] {
+  color: var(--ui-disabled-fg) !important;
+  border-color: var(--ui-disabled-border) !important;
+  filter: grayscale(1) saturate(0) !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
+}
+
+[role="button"][aria-disabled="true"],
+[role="button"][data-cloud-disabled="1"],
+[data-action][data-cloud-disabled="1"] {
+  color: var(--ui-disabled-fg) !important;
+  filter: grayscale(1) saturate(0) !important;
+  cursor: not-allowed !important;
+}
+
+.gb-input:disabled,
+.gb-textarea:disabled,
+.gb-select:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  color: var(--ui-disabled-fg) !important;
+  background: var(--ui-disabled-bg) !important;
+  border-color: var(--ui-disabled-border) !important;
+  opacity: 1 !important;
+  pointer-events: none;
+}
+
+.meldex-dropdown-close-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-2) 0;
+  margin-top: var(--ui-space-2);
+  border-top: 1px solid var(--ui-border);
+  cursor: default;
+}
+.gb-context-menu > .meldex-dropdown-close-row,
+.sn2-header-popup > .meldex-dropdown-close-row,
+.gb-fmt-popup > .meldex-dropdown-close-row,
+.sn2-role-menu > .meldex-dropdown-close-row { padding: var(--ui-space-2) var(--ui-space-2) 0; }
+.gb-context-menu > .meldex-dropdown-close-row:hover,
+.sn2-header-popup > .meldex-dropdown-close-row:hover,
+.gb-fmt-popup > .meldex-dropdown-close-row:hover,
+.sn2-role-menu > .meldex-dropdown-close-row:hover { background: transparent; }
+.meldex-dropdown-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--ui-h-sm);
+  height: var(--ui-h-sm);
+  padding: 0 var(--ui-space-2);
+  color: var(--ui-fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+}
+.meldex-dropdown-close-btn:hover,
+.meldex-dropdown-close-btn:focus-visible {
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-control-hover, rgba(255,255,255,0.08));
+  border-color: var(--ui-border);
+  outline: none;
+}
+
+/* Global tag management tab */
+.gb-tag-management-panel {
+  box-sizing: border-box;
+}
+.gb-tag-management-header {
+  letter-spacing: 0;
+}
+.gb-tag-management-preset-row {
+  min-width: 0;
+}
+.gb-tag-management-preset-select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.gb-tag-text-btn,
+.gb-tag-icon-btn {
+  flex-shrink: 0;
+  letter-spacing: 0;
+}
+.gb-tag-icon-btn svg,
+.gb-tag-text-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.gb-tag-tree-row {
+  outline-offset: -1px;
+}
+.gb-tag-tree-row:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  background: var(--ui-bg-control-hover, var(--bg3));
+}
+.gb-tag-tree-row.is-drop-target {
+  background: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+}
+.gb-tag-bulk-bar {
+  box-sizing: border-box;
+}
+.gb-tag-management-menu {
+  box-sizing: border-box;
+  background: var(--ui-popup-bg, var(--bg2)) !important;
+  border-color: var(--ui-border-strong, var(--border)) !important;
+  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+}
+.gb-tag-management-menu .gb-context-menu-item {
+  background: transparent !important;
+  border-radius: var(--ui-radius-xs);
+}
+.gb-tag-management-menu .gb-context-menu-item:hover,
+.gb-tag-management-menu .gb-context-menu-item:focus-visible {
+  background: var(--ui-bg-control-active) !important;
+}
+.gb-tag-management-menu .gb-context-menu-item.danger:hover,
+.gb-tag-management-menu .gb-context-menu-item.danger:focus-visible {
+  background: rgba(244,71,71,0.15) !important;
+}
+
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-body,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-body,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-body {
+  -webkit-overflow-scrolling: touch;
+}
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-preset-row,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-preset-row,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-preset-row {
+  grid-template-columns: minmax(0, 1fr) repeat(5, 44px) !important;
+  gap: 4px !important;
+}
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-preset-select,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-preset-select,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-preset-select,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-text-btn,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-text-btn,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-text-btn,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-icon-btn,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-icon-btn,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-icon-btn,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-tree-row,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-tree-row,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-tree-row,
+body[data-cloud-mobile="1"] .gb-tag-management-panel [data-tag-management-role="search-result"],
+body[data-mobile-ui="1"] .gb-tag-management-panel [data-tag-management-role="search-result"],
+body[data-mobile-ui-local="1"] .gb-tag-management-panel [data-tag-management-role="search-result"] {
+  min-height: 44px !important;
+  box-sizing: border-box;
+}
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-icon-btn,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-icon-btn,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-icon-btn {
+  min-width: 44px !important;
+  width: 44px !important;
+  padding: 0 !important;
+}
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-icon-btn svg,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-icon-btn svg,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Mode indicator status badge + read-only details popup */
+#meldex-mode-indicator.meldex-mode-indicator-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  line-height: 1.2;
+  letter-spacing: 0;
+  touch-action: manipulation;
+}
+#meldex-mode-indicator.meldex-mode-indicator-badge:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+#meldex-mode-indicator-popup.meldex-mode-indicator-popup {
+  box-sizing: border-box;
+  max-width: min(360px, calc(100vw - 16px));
+  color: var(--ui-fg-default);
+  outline: none;
+}
+#meldex-mode-indicator-popup.meldex-mode-indicator-popup > .meldex-mode-indicator-popup__content {
+  display: grid;
+  gap: var(--ui-space-1);
+  padding: 0;
+  cursor: default;
+  background: transparent;
+}
+#meldex-mode-indicator-popup.meldex-mode-indicator-popup > .meldex-mode-indicator-popup__content:hover {
+  background: transparent;
+}
+.meldex-mode-indicator-popup__title {
+  margin: 0 0 var(--ui-space-1);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-13);
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.meldex-mode-indicator-popup__row {
+  color: var(--ui-fg-muted, var(--fg2));
+  font-size: var(--ui-font-12);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+@media (pointer: coarse), (max-width: 768px) {
+  #status-bar {
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    overflow: visible;
+    line-height: 20px;
+  }
+  #meldex-mode-indicator.meldex-mode-indicator-badge {
+    min-width: 44px;
+    min-height: 44px;
+    padding-right: 10px !important;
+    padding-left: 10px !important;
+    font-size: 13px !important;
+  }
+  #meldex-mode-indicator-popup.meldex-mode-indicator-popup {
+    min-width: min(260px, calc(100vw - 16px)) !important;
+    max-width: calc(100vw - 16px) !important;
+    padding: 12px !important;
+  }
+  .meldex-mode-indicator-popup__title,
+  .meldex-mode-indicator-popup__row {
+    font-size: 14px;
+  }
+}
+
+/* Notion sync settings */
+.notion-sync-modal {
+  width: min(720px, calc(100vw - 32px));
+  min-width: min(620px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: 85vh;
+  overflow: auto;
+}
+#notion-sync-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.notion-sync-title {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.notion-sync-section {
+  margin-bottom: var(--ui-space-4);
+  padding: var(--ui-space-3);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+}
+.notion-sync-section-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  min-height: 32px;
+  font-size: var(--ui-font-13);
+  font-weight: 600;
+  color: var(--ui-fg-default);
+  cursor: pointer;
+}
+.notion-sync-state-ok,
+.notion-sync-state-danger {
+  font-size: var(--ui-font-12);
+  font-weight: 400;
+}
+.notion-sync-state-ok { color: var(--green); }
+.notion-sync-state-danger { color: var(--red); }
+.notion-sync-help {
+  margin-top: var(--ui-space-2);
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+  line-height: 1.6;
+}
+.notion-sync-help a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+}
+.notion-sync-heading-row,
+.notion-folder-card-head,
+.notion-sync-row,
+.notion-sync-controls-row,
+.notion-sync-actions-row,
+.notion-sync-inline-field,
+.notion-folder-picker-current-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.notion-sync-heading-row {
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+  margin-bottom: var(--ui-space-2);
+}
+.notion-sync-heading {
+  font-size: var(--ui-font-13);
+  font-weight: 600;
+  color: var(--ui-fg-default);
+}
+.notion-sync-row {
+  gap: var(--ui-space-1);
+  margin-bottom: var(--ui-space-2);
+}
+.notion-sync-token-row {
+  margin-top: var(--ui-space-2);
+}
+.notion-sync-label {
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+  white-space: nowrap;
+}
+.notion-sync-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  font-size: var(--ui-font-12);
+}
+.notion-sync-modal .notion-sync-input,
+.notion-folder-picker-modal .notion-sync-input {
+  width: auto;
+}
+.notion-token-input {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+.notion-sync-action {
+  flex-shrink: 0;
+}
+.notion-sync-modal .gb-btn,
+.notion-folder-picker-modal .gb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-1);
+  min-height: 28px;
+  padding: 0 var(--ui-space-3);
+  font-size: var(--ui-font-12);
+  line-height: 1;
+}
+.notion-sync-status-line,
+.notion-folder-status,
+.notion-sync-global-status,
+.notion-page-title-line,
+.notion-last-sync {
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+}
+.notion-sync-status-line {
+  min-height: 16px;
+  margin-top: var(--ui-space-1);
+}
+.notion-sync-global-status {
+  margin-bottom: var(--ui-space-2);
+}
+.notion-folder-card {
+  padding: var(--ui-space-3);
+  margin-bottom: var(--ui-space-2);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+}
+.notion-folder-card-head {
+  gap: var(--ui-space-2);
+  margin-bottom: var(--ui-space-2);
+}
+.notion-folder-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--ui-font-13);
+  flex: 0 0 18px;
+}
+.notion-folder-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-13);
+  font-weight: 600;
+}
+.notion-page-title-line {
+  margin-bottom: var(--ui-space-2);
+}
+.notion-page-title-line b {
+  color: var(--ui-fg-default);
+}
+.notion-sync-controls-row {
+  gap: var(--ui-space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--ui-space-2);
+}
+.notion-sync-inline-field {
+  gap: var(--ui-space-2);
+}
+.notion-sync-mode-field {
+  flex: 1 1 220px;
+}
+.notion-sync-mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-default);
+}
+.notion-last-sync {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.notion-sync-actions-row {
+  gap: var(--ui-space-1);
+  flex-wrap: wrap;
+}
+.notion-folder-status {
+  align-self: center;
+  margin-left: var(--ui-space-2);
+}
+.notion-folder-picker-modal {
+  width: min(520px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+}
+.notion-folder-picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.notion-folder-picker-current-row {
+  gap: var(--ui-space-2);
+}
+.notion-folder-picker-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: var(--ui-space-1) var(--ui-space-2);
+  color: var(--ui-fg-default);
+  background: var(--ui-bg-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+}
+.notion-folder-picker-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--ui-space-1);
+  background: var(--ui-bg-app);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+}
+.notion-folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  min-height: 28px;
+  padding: 5px var(--ui-space-2);
+  font-size: var(--ui-font-12);
+  white-space: nowrap;
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+}
+.notion-folder-picker-row.hover {
+  background: var(--ui-bg-control-hover);
+}
+.notion-folder-picker-icon,
+.notion-folder-picker-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.notion-folder-picker-icon {
+  width: 14px;
+}
+.notion-folder-picker-toggle {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  opacity: 0.7;
+  cursor: pointer;
+}
+.notion-folder-picker-toggle:hover,
+.notion-folder-picker-toggle:focus-visible {
+  opacity: 1;
+  background: var(--ui-bg-control-hover);
+  outline: 1px solid var(--ui-focus-ring, var(--ui-accent));
+  outline-offset: 1px;
+}
+.notion-folder-picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 430px) {
+  .notion-sync-modal,
+  .notion-folder-picker-modal {
+    width: calc(100vw - 16px);
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+  .notion-sync-modal {
+    height: calc(100vh - 16px);
+  }
+  .notion-sync-heading-row,
+  .notion-sync-token-row,
+  .notion-sync-row,
+  .notion-sync-actions-row,
+  .notion-folder-card-head,
+  .notion-sync-controls-row,
+  .notion-sync-inline-field,
+  .notion-folder-picker-current-row,
+  .notion-folder-picker-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .notion-sync-input,
+  .notion-sync-modal .gb-select,
+  .notion-folder-picker-modal .gb-select {
+    width: 100%;
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .notion-sync-section-summary,
+  .notion-sync-help a,
+  .notion-folder-picker-toggle {
+    min-height: 44px;
+  }
+  .notion-folder-picker-toggle {
+    width: 44px;
+    min-width: 44px;
+  }
+  .notion-sync-action,
+  .notion-sync-modal .gb-btn,
+  .notion-folder-picker-modal .gb-btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+    font-size: 14px;
+  }
+  .notion-sync-section,
+  .notion-folder-card {
+    padding: var(--ui-space-3);
+  }
+  .notion-folder-card-title,
+  .notion-last-sync,
+  .notion-folder-status {
+    margin-left: 0;
+    white-space: normal;
+  }
+  .notion-sync-mode-label {
+    white-space: normal;
+  }
+  .notion-folder-picker-row {
+    min-height: 44px;
+    font-size: 15px;
+  }
+}
+
+body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.notion-sync-modal {
+  height: calc(100% - var(--gb-mobile-dialog-top-gap, 10px)) !important;
+  max-height: calc(100% - var(--gb-mobile-dialog-top-gap, 10px)) !important;
+}
+
+body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet #notion-sync-modal-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: calc(64px + var(--cloud-mobile-safe-bottom, 0px));
+}

@@ -16,6 +16,7 @@
   let _layoutSaveHookInstalled = false;
   let _sanitizingLayout = false;
   let _lastTreeOpenAt = 0;
+  let _sidebarOpenGeneration = 0;
   let _paneBackObserverInstalled = false;
   let _sidebarDrawerReturnSlot = null;
   const _mobileCollapsedColumns = new Map();
@@ -99,7 +100,7 @@
       handle.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        closeSidebarDrawer();
+        closeSidebarDrawer({ reason: 'handle' });
       });
       sidebar.appendChild(handle);
     }
@@ -119,12 +120,12 @@
   }
 
   function _animateCloseSidebarDrawerFromGesture(sidebar) {
-    if (!sidebar) return closeSidebarDrawer();
+    if (!sidebar) return closeSidebarDrawer({ reason: 'gesture-missing-sidebar' });
     sidebar.style.setProperty('transition', 'transform 0.16s ease', 'important');
     sidebar.style.setProperty('transform', 'translateX(-105%)', 'important');
     setTimeout(() => {
       _clearSidebarDragOffset(sidebar);
-      closeSidebarDrawer();
+      closeSidebarDrawer({ reason: 'gesture' });
     }, 170);
     return true;
   }
@@ -141,7 +142,7 @@
   function _openMobileMenuSheet(event) {
     event?.preventDefault?.();
     event?.stopPropagation?.();
-    if (_isTreeScreenOpen()) closeSidebarDrawer();
+    if (_isTreeScreenOpen()) closeSidebarDrawer({ reason: 'mobile-menu' });
     if (window.MeldexCloudMobileEditBar?.openMenu) {
       window.MeldexCloudMobileEditBar.openMenu();
       return true;
@@ -164,7 +165,13 @@
     button.addEventListener('click', run);
   }
 
-  function closeSidebarDrawer() {
+  function closeSidebarDrawer(options = {}) {
+    if (
+      options.openGeneration != null
+      && Number(options.openGeneration) !== _sidebarOpenGeneration
+    ) {
+      return false;
+    }
     const { sidebar, backdrop } = _sidebarElements();
     if (!sidebar) return false;
     _clearSidebarDragOffset(sidebar);
@@ -184,6 +191,7 @@
   function openSidebarDrawer(withFolderView) {
     const { sidebar, backdrop } = _sidebarElements();
     if (!sidebar) return false;
+    _sidebarOpenGeneration += 1;
     _ensureTreeScreenHeader();
     _dockSidebarForDrawer(sidebar);
     _clearSidebarDragOffset(sidebar);
@@ -227,7 +235,7 @@
   function toggleSidebarDrawer(withFolderView) {
     if (!shouldUseSidebarDrawer()) return false;
     const { sidebar } = _sidebarElements();
-    if (sidebar?.classList?.contains('cloud-mobile-tree-screen-open') || sidebar?.classList?.contains('open')) closeSidebarDrawer();
+    if (sidebar?.classList?.contains('cloud-mobile-tree-screen-open') || sidebar?.classList?.contains('open')) closeSidebarDrawer({ reason: 'toggle' });
     else openSidebarDrawer(withFolderView);
     return true;
   }
@@ -722,7 +730,7 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      closeSidebarDrawer();
+      closeSidebarDrawer({ reason: 'backdrop' });
     }, true);
   }
 
@@ -771,12 +779,13 @@
       const type = String(data?.type || '').toLowerCase();
       if (!data && !row.matches?.('.fav-item, .sidebar-item')) return;
       if (data && type === 'folder') return;
-      setTimeout(closeSidebarDrawer, 180);
+      const generation = _sidebarOpenGeneration;
+      setTimeout(() => closeSidebarDrawer({ reason: 'tree-auto-close', openGeneration: generation }), 180);
     }, true);
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
       if (document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open')) {
-        closeSidebarDrawer();
+        closeSidebarDrawer({ reason: 'escape' });
       }
     });
   }
@@ -826,7 +835,7 @@
     document.dispatchEvent(new CustomEvent('meldex-cloud-mobile-viewport', { detail }));
     if (mobile) _scheduleLayoutSanitize();
     else {
-      closeSidebarDrawer();
+      closeSidebarDrawer({ reason: 'viewport-disabled' });
       _restoreMobileCollapsedColumns();
     }
   }
@@ -865,6 +874,7 @@
     getState: () => ({ ...(window.MeldexCloudMobileState || {}) }),
     openSidebar: openSidebarDrawer,
     closeSidebar: closeSidebarDrawer,
+    getSidebarOpenGeneration: () => _sidebarOpenGeneration,
     toggleSidebarDrawer,
     afterLayoutApplied: _scheduleLayoutSanitize,
   };

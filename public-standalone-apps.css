@@ -1,0 +1,26 @@
+.standalone-app {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.standalone-app-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.standalone-app-head img {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+}
+
+.standalone-app-head h3 {
+  margin: 0;
+}
+
+.standalone-app .mode-actions {
+  margin-top: auto;
+}

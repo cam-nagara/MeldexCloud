@@ -30,6 +30,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _guardRowBulkAction() {
     if (this._isRowSelectionOwnerActive()) return true;
     if (this._rowSelection) this._rowSelection.clear();
+    if (this._textCellSelection) this._textCellSelection.clear();
     if (this._rowBulkBar?.isConnected) this._rowBulkBar.remove();
     this._rowBulkBar = null;
     return false;
@@ -90,6 +91,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _toggleRowSelection(rowId, idx, shiftKey, ctrlKey) {
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
+    if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
+    if (this._activeCellRowId) this._clearActiveCell?.();
     if (!this._rowSelection) this._rowSelection = new Set();
     if (shiftKey && this._lastSelectedIdx >= 0) {
       const from = Math.min(this._lastSelectedIdx, idx);
@@ -118,6 +122,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _invertRowSelection() {
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._rowSelection) this._rowSelection = new Set();
     this._sanitizeRowSelection();
     this.doc.rows.forEach((row) => {
@@ -129,6 +134,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _selectAllRows() {
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._rowSelection) this._rowSelection = new Set();
     this._rowSelection.clear();
     this.doc.rows.forEach((row) => {
@@ -319,6 +325,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _setRowSelectionState(rowId, idx, selected) {
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
+    if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
+    if (this._activeCellRowId) this._clearActiveCell?.();
     if (!this._rowSelection) this._rowSelection = new Set();
     if (selected) this._rowSelection.add(rowId);
     else this._rowSelection.delete(rowId);
@@ -439,6 +448,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _setRoleCellRange(fromIdx, toIdx, baseSet = null) {
     if (this._rowSelection?.size) this._clearRowSelection();
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._roleCellSelection) this._roleCellSelection = new Set();
     const next = new Set(baseSet || []);
     const from = Math.max(0, Math.min(fromIdx, toIdx));
@@ -454,6 +464,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _selectRoleCell(rowId, idx, options = {}) {
     if (!rowId || idx < 0) return;
     if (this._rowSelection?.size) this._clearRowSelection();
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._roleCellSelection) this._roleCellSelection = new Set();
     const ctrl = !!options.ctrl;
     if (options.shift && this._lastRoleCellIdx >= 0) {
@@ -474,9 +485,15 @@ Object.assign(ScriptNoteEditor.prototype, {
   _handleRoleCellClick(roleBtn, e) {
     if (!roleBtn) return false;
     if (this._suppressRoleCellClick) { this._suppressRoleCellClick = false; return true; }
+    if (this._activeCellRowId) this._clearActiveCell?.();
     const rowId = roleBtn.dataset.rowId || '';
     const idx = this.doc.rows.findIndex(row => row.id === rowId);
     this._selectRoleCell(rowId, idx, { shift: e?.shiftKey, ctrl: e?.ctrlKey || e?.metaKey });
+    if (!e?.shiftKey && !(e?.ctrlKey || e?.metaKey)) {
+      this._activeCellRowId = rowId;
+      this._activeCellColId = '_role';
+      this._cellEditMode = false;
+    }
     roleBtn.focus();
     return true;
   },
@@ -598,6 +615,26 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       return true;
     }
+    const crossCol = isVertical
+      ? (key === 'ArrowUp' ? 'prev-col' : key === 'ArrowDown' ? 'next-col' : null)
+      : (key === 'ArrowLeft' ? 'prev-col' : key === 'ArrowRight' ? 'next-col' : null);
+    if (crossCol || key === 'Tab') {
+      e.preventDefault(); e.stopPropagation();
+      this._activeCellRowId = rowId;
+      this._activeCellColId = '_role';
+      this._cellEditMode = false;
+      if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
+      this._navigateCell(key === 'Tab' ? (e.shiftKey ? 'prev-col' : 'next-col') : crossCol);
+      return true;
+    }
+    if (key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
+      this._activeCellRowId = null;
+      this._activeCellColId = null;
+      this._cellEditMode = false;
+      return true;
+    }
     return false;
   },
 
@@ -620,12 +657,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       pointerId = e.pointerId;
       startIdx = this.doc.rows.findIndex(row => row.id === btn.dataset.rowId);
       baseSet = (e.ctrlKey || e.metaKey) ? new Set(this._roleCellSelection || []) : new Set();
-      try { host.setPointerCapture(pointerId); } catch {}
     });
     host.addEventListener('pointermove', (e) => {
       if (!pending) return;
       if (!dragging && Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < threshold) return;
       dragging = true;
+      try { host.setPointerCapture(pointerId); } catch {}
       const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('.sn2-role-btn');
       const overIdx = this.doc.rows.findIndex(row => row.id === over?.dataset.rowId);
       if (startIdx >= 0 && overIdx >= 0) this._setRoleCellRange(startIdx, overIdx, baseSet);

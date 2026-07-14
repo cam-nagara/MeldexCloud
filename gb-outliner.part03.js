@@ -281,21 +281,40 @@ function _outlinerKeyboardMediaType(item) {
   return '';
 }
 
-function _outlinerKeyboardOpenNode(nodeEl) {
+async function _outlinerKeyboardOpenNode(nodeEl) {
   const item = nodeEl?._nodeData || null;
   if (!item || !item.path || item.needsMapping === true) return false;
+  const paneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+    ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
+    : null;
+  if (typeof _applyCachedBrowseItemType === 'function') _applyCachedBrowseItemType(item);
+  if (typeof _resolveBrowseItemTypeOnDemand === 'function'
+      && typeof _browseItemNeedsTypeCheck === 'function' && _browseItemNeedsTypeCheck(item)) {
+    await _resolveBrowseItemTypeOnDemand(item);
+    if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
+        && !_browseItemPaneSnapshotIsCurrent(paneSnapshot)) return false;
+    if (typeof _syncOutlinerResolvedItemType === 'function') _syncOutlinerResolvedItemType(nodeEl, item);
+  }
   const opts = { fromExplorer: true, skipHighlight: true, noScrollHighlight: true };
   const type = item.type || '';
   const mediaType = _outlinerKeyboardMediaType(item);
-  if (type === 'folder' || item._isRoot) return openFolder(item.name, item.path, opts);
-  if (type === 'database') return selectDatabase(item.path, null, opts);
+  if (type === 'folder' || item._isRoot) {
+    if (
+      window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
+      && window.MeldexCloudMobileExplorer?.selectFolderFromTree?.(item, { syncSelection: false })
+    ) {
+      return true;
+    }
+    return openFolder(item.name, item.path, opts);
+  }
+  if (type === 'database') return selectDatabase(item.path, paneSnapshot?.paneContext || null, opts);
   if (type === 'entity') return selectEntity(item.path, opts);
   if (type === 'page') return openPage(item.name, item.path, opts);
   if (type === 'scriptnote' || type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
     return typeof openScenarioInScriptNote === 'function' ? openScenarioInScriptNote(item.path, item.name, opts) : false;
   }
   if (type === 'board') return openBoard(item.name, item.path, opts);
-  if (type === 'calendar') return openCalendarFile(item.name, item.path, opts);
+  if (type === 'calendar') return openCalendarFile(item.name, item.path, { ...opts, paneContext: paneSnapshot?.paneContext || null });
   if (mediaType) return openMedia(item.name, item.path, mediaType, opts);
   if (type === 'html') return openHtmlFile(item.name, item.path, opts);
   if (type === 'csv') {

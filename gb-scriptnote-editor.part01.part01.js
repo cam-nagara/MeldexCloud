@@ -201,6 +201,9 @@ class ScriptNoteEditor {
     if (typeof this._ensureStatusConfig === 'function') this._ensureStatusConfig();
     this._calcCache = null;
     this._lastPushedSnap = '';
+    // テキストセル範囲選択の残留を防止（別ファイルへ切替後に古い選択が再度有効化されるのを防ぐ）
+    this._textCellSelection = new Set();
+    this._textCellAnchorIdx = -1;
     // エディタレジストリに登録（マルチインスタンス対応）
     if (typeof _sn2Editors !== 'undefined') {
       if (previousRegisteredPath && previousRegisteredPath !== this._path && _sn2Editors[previousRegisteredPath] === this) {
@@ -231,7 +234,12 @@ class ScriptNoteEditor {
     const prevIds = this._lastSavedRowIds || new Set();
     const currIds = createScriptNoteRowIdSet(this.doc);
     try {
-      await apiPut('/file?path=' + encodeURIComponent(savePath), { content: json, skip_if_missing: true });
+      const saveResult = await apiPut('/file?path=' + encodeURIComponent(savePath), { content: json, skip_if_missing: true });
+      if (saveResult?.skipped || saveResult?.missing) {
+        this._dirty = true;
+        if (typeof showStatus === 'function') showStatus('保存先が見つかりません。名前を付けて保存してください', true);
+        return false;
+      }
       const unchanged = this._path === savePath && JSON.stringify(this.collectDoc(), null, 2) === json;
       if (this._path === savePath) {
         this._lastSavedRowIds = currIds;

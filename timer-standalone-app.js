@@ -1,0 +1,183 @@
+/* timer-standalone-app.js */
+(function () {
+  'use strict';
+
+  const app = {
+    path: '',
+    component: null,
+    dirty: false,
+    sourcePayload: null,
+  };
+
+  function qs(id) { return document.getElementById(id); }
+
+  function titleFromPath(path) {
+    const name = String(path || '').split('/').pop() || 'タイマー';
+    return name.replace(/(\.mel-timer|\.timer\.json)$/i, '') || 'タイマー';
+  }
+
+  function setDirty(flag) {
+    app.dirty = !!flag;
+    document.title = (app.dirty ? '* ' : '') + 'Meldex Timer';
+  }
+
+  function setPath(path) {
+    app.path = String(path || '').replace(/\\/g, '/');
+    MeldexStandaloneFS.setCurrentPath?.(app.path);
+    qs('timer-title-label').textContent = app.path ? titleFromPath(app.path) : 'タイマー';
+    qs('timer-path-label').textContent = app.path ? MeldexStandaloneFS.pathLabel(app.path) : '未保存';
+  }
+
+  function collectTimerFile() {
+    const source = app.sourcePayload && typeof app.sourcePayload === 'object' ? app.sourcePayload : {};
+    const sourceTimer = source.timer && typeof source.timer === 'object' ? source.timer : {};
+    const payload = {
+      ...source,
+      type: 'meldex-timer',
+      version: source.version || 1,
+      name: titleFromPath(app.path),
+      timer: { ...sourceTimer, ...(app.component?.getState?.() || {}) },
+    };
+    app.sourcePayload = payload;
+    return JSON.stringify(payload, null, 2) + '\n';
+  }
+
+  function restoreTimer(payload, path) {
+    app.sourcePayload = payload && typeof payload === 'object' ? payload : {};
+    const timerState = payload?.timer && typeof payload.timer === 'object' ? payload.timer : payload;
+    app.component.restoreState(timerState || {});
+    setPath(path || '');
+    setDirty(false);
+  }
+
+  async function newTimer() {
+    if (app.dirty && !(await cfConfirm('未保存の変更を破棄しますか？'))) return;
+    const content = await MeldexStandaloneFS.newContent('無題');
+    restoreTimer(JSON.parse(content), '');
+  }
+
+  async function openPath(path) {
+    if (!path) return;
+    showLoading('タイマーを読み込んでいます...');
+    try {
+      const data = await MeldexStandaloneFS.readText(path);
+      restoreTimer(JSON.parse(data.content || '{}'), path);
+      showStatus('タイマーを読み込みました');
+    } catch (error) {
+      if (MeldexStandaloneFS.currentPath?.() !== path) {
+        await MeldexStandaloneFS.releaseEditLock?.(path);
+        MeldexStandaloneFS.discardRememberedPath?.(path);
+      }
+      throw error;
+    } finally {
+      hideLoading();
+    }
+  }
+
+  async function openTimer() {
+    if (app.dirty && !(await cfConfirm('未保存の変更を破棄して開きますか？'))) {
+      MeldexStandaloneFS.discardQueuedOpen?.();
+      return;
+    }
+    const selected = await MeldexStandaloneFS.openFile();
+    if (selected?.path) await openPath(selected.path);
+  }
+
+  async function saveTimer() {
+    if (!app.path) {
+      await saveTimerAs();
+      return;
+    }
+    showLoading('タイマーを保存しています...');
+    try {
+      const res = await MeldexStandaloneFS.writeText(app.path, collectTimerFile(), { skip_if_missing: true });
+      if (res?.skipped || res?.missing) {
+        showStatus('保存先が見つかりません。名前を付けて保存してください', true);
+        await saveTimerAs();
+        return;
+      }
+      setDirty(false);
+      showStatus('保存しました');
+    } finally {
+      hideLoading();
+    }
+  }
+
+  async function saveTimerAs() {
+    const saved = await MeldexStandaloneFS.saveAs(collectTimerFile(), MeldexStandaloneFS.suggestedName(app.path, '無題.mel-timer'));
+    if (!saved?.path) return;
+    setPath(saved.path);
+    setDirty(false);
+    showStatus('保存しました');
+  }
+
+  function bindMenus() {
+    attachStandaloneMenu(qs('timer-menu-button'), qs('timer-menu'));
+    document.addEventListener('click', async event => {
+      const action = event.target.closest('[data-timer-file-action]')?.dataset.timerFileAction;
+      if (!action) return;
+      if (action === 'new') await window.runStandaloneFileAction('新規作成', newTimer);
+      if (action === 'open') await window.runStandaloneFileAction('タイマーを開くことが', openTimer);
+      if (action === 'save') await window.runStandaloneFileAction('保存', saveTimer);
+      if (action === 'saveAs') await window.runStandaloneFileAction('名前を付けて保存', saveTimerAs);
+    });
+  }
+
+  function bindShortcuts() {
+    document.addEventListener('keydown', async event => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === 's') {
+        event.preventDefault();
+        await window.runStandaloneFileAction('保存', saveTimer);
+      } else if (key === 'o') {
+        event.preventDefault();
+        await window.runStandaloneFileAction('タイマーを開くことが', openTimer);
+      } else if (key === 'n') {
+        event.preventDefault();
+        await window.runStandaloneFileAction('新規作成', newTimer);
+      }
+    });
+  }
+
+  function bindPathChanges() {
+    window.addEventListener('meldex:file-path-renamed', event => {
+      const oldPath = String(event?.detail?.oldPath || '').replace(/\\/g, '/');
+      const newPath = String(event?.detail?.newPath || '').replace(/\\/g, '/');
+      if (oldPath && newPath && app.path === oldPath) setPath(newPath);
+    });
+  }
+
+  function mountTimer() {
+    app.component = new TimerComponent('timer-standalone-pane', 'timer-standalone-tab');
+    qs('timer-root').appendChild(app.component.create());
+    app.component.activate();
+    requestAnimationFrame(() => app.component?._requestDrawTimer?.());
+    qs('timer-root').addEventListener('input', () => setDirty(true), true);
+    qs('timer-root').addEventListener('change', () => setDirty(true), true);
+    qs('timer-root').addEventListener('click', event => {
+      if (event.target.closest('[data-timer-action]')) setDirty(true);
+    }, true);
+  }
+
+  async function init() {
+    await MeldexStandaloneFS.init();
+    mountTimer();
+    bindMenus();
+    bindShortcuts();
+    bindPathChanges();
+    const initial = MeldexStandaloneFS.nativeInitialPath();
+    if (!initial) await newTimer();
+    else {
+      try { await openPath(initial); }
+      catch {
+        await newTimer();
+        showStatus('前回のタイマーを開けなかったため、新規タイマーで起動しました', true);
+      }
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    init().catch(error => showStatus('タイマーの初期化に失敗: ' + (error.message || error), true));
+  });
+})();

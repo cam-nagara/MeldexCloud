@@ -69,6 +69,7 @@
     _mountAllPanes();
     _syncStateView();
     _mountFloatingAnnotationUi();
+    if (typeof navNavigating !== 'undefined' && navNavigating) return;
     _syncDetailForActivePane(paneId);
   }
 

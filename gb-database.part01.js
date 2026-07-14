@@ -171,8 +171,9 @@ async function selectDatabase(dbPath, ctx, opts) {
   let loadingShown = false;
   try {
     if (showOpenLoading) { showLoading('シートを読み込み中...'); loadingShown = true; }
+    const _isDbSwitch = state.currentDbPath !== dbPath;
     // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
-    if (state.currentDbPath !== dbPath) {
+    if (_isDbSwitch) {
       const _ctxClear = ctx || _currentPaneState();
       if (_ctxClear && _ctxClear._selectedEntities) _ctxClear._selectedEntities.clear();
       const paneIdClr = (_ctxClear && _ctxClear.paneId) || 'main';
@@ -180,11 +181,13 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
   ctx.dbPath = dbPath;
   ctx.entityPath = null;
+  ctx.pivotData = null;
   // グローバルstate同期（非スコープ化コードの互換性）
   state.currentDbPath = dbPath;
   state.currentSmartDb = null;
   state.smartDbData = null;
   state.currentEntityPath = null;
+  state.pivotData = null;
   // スマートシートからの遷移時、smart-db-view の表示が残ると通常シートが見えなくなる。
   // pane-bridge の DB_SUB_VIEWS 切替が走らないケースに備えて明示的に隠す。
   const _smartDbViewEl = document.getElementById('smart-db-view');
@@ -264,6 +267,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       toolbarCategoryEl._dbRenameHandler = renameHandler;
       toolbarCategoryEl.addEventListener('dblclick', renameHandler);
     }
+    window.MeldexFileLockBadge?.apply?.(toolbarCategoryEl, dbPath);
     const currentTitleEl = document.getElementById('current-title');
     if (currentTitleEl) currentTitleEl.textContent = dbName;
     const sbCategoryEl = document.getElementById('sb-category');
@@ -280,6 +284,19 @@ async function selectDatabase(dbPath, ctx, opts) {
   let dbViewMode = getCurrentViewMode(dbPath, { ctx });
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
+
+  // 非同期フェッチ中に前のシートの古いコンテンツが見えないよう、
+  // サブビューの中身を即座にクリアする。renderXxx() が後で再描画する。
+  if (!openOpts.silent && _isDbSwitch) {
+    const _clearIds = ['gallery-view', 'kanban-view', 'chart-view', 'graph-view', 'form-view'];
+    const _containerScope = ctx?.containerEl || null;
+    for (const _cid of _clearIds) {
+      const _cel = _containerScope
+        ? (_containerScope.querySelector('#' + _cid) || _containerScope.querySelector('.' + _cid))
+        : document.getElementById(_cid);
+      if (_cel) _cel.innerHTML = '';
+    }
+  }
 
   // テーマ適用: クリア → DB自身のテーマ
   if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('db-view-container');

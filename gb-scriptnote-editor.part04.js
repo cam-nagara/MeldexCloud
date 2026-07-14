@@ -357,6 +357,8 @@
       const rubyText = span.dataset.ruby;
       if (!rubyText || baseSize <= 0) {
         span.style.removeProperty('--sn2-ruby-ls');
+        span.style.marginLeft = '';
+        span.style.marginTop = '';
         return;
       }
       const numChars = [...rubyText].length;
@@ -376,6 +378,17 @@
       } else {
         // 収まらない or 1文字: 字間なし（中央揃えではみ出す）
         span.style.removeProperty('--sn2-ruby-ls');
+      }
+      // ルビ(::after)は auto margin で中央揃えされ、対象文字列より広い場合は左右
+      // （縦書きは上下）に均等にはみ出す。base span は position:relative の基準枠だが
+      // 通常フローに参加する実体でもあるため、はみ出し量の半分を margin として
+      // base span 側に確保し、前方テキストとの重なりを防ぐ
+      if (rubyNatSize > baseSize) {
+        const overflow = (rubyNatSize - baseSize) / 2;
+        span.style[isVertical ? 'marginTop' : 'marginLeft'] = overflow + 'px';
+      } else {
+        span.style.marginLeft = '';
+        span.style.marginTop = '';
       }
     });
     measurer.remove();
@@ -707,6 +720,8 @@
     }
     // document.body上のフロートバー・一時UIを除去
     document.querySelectorAll('.sn2-row-bulk-bar, .gb-fmt-popup--bulk-edit, .sn2-drag-select-rect').forEach(el => el.remove());
+    // テキストセル範囲選択の表示クラスを除去（セル要素自体は残す。他インスタンスに影響しないようhost配下に限定）
+    this.host?.querySelectorAll('.sn2-text-cell-selected').forEach(el => el.classList.remove('sn2-text-cell-selected'));
     if (this.host) this.host.innerHTML = '';
     this._bound = false;
   }

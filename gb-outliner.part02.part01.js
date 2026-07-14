@@ -531,12 +531,15 @@ function closeTreeContextMenu() {
   document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
 }
 
+// gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。
 function _outlinerPathIsAbsolute(path) {
+  if (window.GBPathUtils?.isAbsolute) return window.GBPathUtils.isAbsolute(path);
   const value = String(path || '');
   return /^[a-zA-Z]:[\\/]/.test(value) || /^[/\\]{2}/.test(value) || value.startsWith('/');
 }
 
 function _outlinerJoinPath(base, rel) {
+  if (window.GBPathUtils?.join) return window.GBPathUtils.join(base, rel);
   const left = String(base || '').replace(/[\\/]+$/, '');
   const right = String(rel || '').replace(/^[\\/]+/, '');
   if (!left) return right;
@@ -545,9 +548,10 @@ function _outlinerJoinPath(base, rel) {
 }
 
 function _outlinerNativeClipboardPath(path) {
+  if (window.GBPathUtils?.toNativeClipboard) return window.GBPathUtils.toNativeClipboard(path);
   const value = String(path || '');
-  if (/^[a-zA-Z]:\//.test(value)) return value.replace(/\//g, '\\');
-  if (value.startsWith('//')) return '\\\\' + value.replace(/^\/+/, '').replace(/\//g, '\\');
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return value.replace(/\//g, '\\');
+  if (/^[/\\]{2}/.test(value)) return '\\\\' + value.replace(/^[/\\]+/, '').replace(/\//g, '\\');
   return value;
 }
 

@@ -426,7 +426,15 @@ async function bdSave() {
       });
     }
     return true;
-  } catch(e) { showStatus('ボードの保存に失敗しました', true); return false; }
+  } catch(e) {
+    const detail = String(e?.message || e || '不明なエラー');
+    if (e?.code === 'etag_conflict' || /etag[_ -]?conflict|外部.*更新|競合/i.test(detail)) {
+      showStatus('ボードは上書きされていません。別の端末で更新されています。最新のボードを開き直してから編集内容を反映してください', true);
+    } else {
+      showStatus('ボードを保存できません: ' + detail, true);
+    }
+    return false;
+  }
 }
 
 // --- コピー&ペースト ---

@@ -864,10 +864,29 @@ function updateRecentItems() {
     const iconName = _outlinerIconName(r.type, r.path, false);
     item.innerHTML = lucide(iconName, 14) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(name) + '</span>';
     item.title = r.path || '';
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.fav-more-btn')) return;
       const _expOpts = { fromExplorer: true };
       _openStoredOutlinerItem(r, _expOpts);
     });
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _showRecentItemMenu(e, r);
+    });
+    if (typeof addLongPressHandler === 'function') {
+      addLongPressHandler(item, (e) => _showRecentItemMenu(e, r));
+    }
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'fav-more-btn';
+    moreBtn.title = 'メニュー';
+    moreBtn.setAttribute('aria-label', '最近使った項目のメニューを開く');
+    moreBtn.draggable = false;
+    moreBtn.innerHTML = typeof lucide === 'function' ? lucide('ellipsis', 14) : '...';
+    moreBtn.addEventListener('click', (e) => { e.stopPropagation(); _showRecentItemMenu(e, r); });
+    moreBtn.addEventListener('dragstart', (e) => e.preventDefault());
+    item.appendChild(moreBtn);
     container.appendChild(item);
   });
   _restoreAfter();
@@ -977,6 +996,76 @@ function removeFavFolder(id) {
     }
     renderFavorites();
   }
+}
+
+function _showRecentItemMenu(event, entry) {
+  if (!entry) return;
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu';
+  const closeMenu = () => menu.remove();
+  const addItem = (label, fn, icon, danger) => {
+    const it = document.createElement('div');
+    it.className = 'gb-context-menu-item';
+    if (danger) it.classList.add('danger');
+    if (icon && typeof lucide === 'function') {
+      it.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + esc(label);
+    } else {
+      it.textContent = label;
+    }
+    it.addEventListener('click', async () => { closeMenu(); await fn(); });
+    menu.appendChild(it);
+  };
+  const name = entry.label || entry.name || entry.path?.split('/').pop() || '?';
+  const path = entry.path || '';
+  const openType = typeof _normalizeOpenTypeForNav === 'function'
+    ? _normalizeOpenTypeForNav(entry.type) : (entry.type || 'page');
+
+  addItem('開く', () => _openStoredOutlinerItem(entry, { fromExplorer: true }), 'folderOpen');
+  if (typeof _openInNewTab === 'function') {
+    addItem('新しいタブで開く', () => _openInNewTab(name, path, openType), 'externalLink');
+  }
+  if (typeof addToFavorites === 'function') {
+    addItem('お気に入りに追加', () => addToFavorites(name, path, entry.type), 'star');
+  }
+  if (path) {
+    addItem('パスをコピー', () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(path);
+      if (typeof showStatus === 'function') showStatus('パスをコピーしました');
+    }, 'copy');
+  }
+  if (path && typeof openNative === 'function') {
+    const folderPath = path.replace(/[/\\][^/\\]+$/, '');
+    addItem('エクスプローラーで表示', () => openNative(folderPath), 'folderOpen');
+  }
+  const sep = document.createElement('div');
+  sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0;';
+  menu.appendChild(sep);
+  addItem('最近使った項目から削除', () => {
+    const arr = _outlinerReadStorageArray('meldex-recent').filter(
+      item => item && typeof item === 'object' && item.path !== path
+    );
+    localStorage.setItem('meldex-recent', JSON.stringify(arr));
+    updateRecentItems();
+  }, 'x', true);
+
+  document.body.appendChild(menu);
+  const z = parseFloat(document.documentElement.style.zoom) || 1;
+  const x = Number.isFinite(event?.clientX) ? event.clientX / z : 24;
+  const y = Number.isFinite(event?.clientY) ? event.clientY / z : 64;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function closer(e) {
+      if (!menu.contains(e.target)) {
+        closeMenu();
+        document.removeEventListener('pointerdown', closer);
+      }
+    });
+  }, 0);
 }
 
 function _showFavoriteItemMenu(event, node, isFavFolder) {

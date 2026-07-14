@@ -85,6 +85,10 @@
     return !!data?.path && (data._isRoot || CONTAINER_TYPES.has(type));
   }
 
+  function _isTreeRowControlTarget(target) {
+    return !!target?.closest?.('.tree-toggle, .tree-hover-btn, button, a, input, textarea, select, [contenteditable="true"]');
+  }
+
   function _targetFromData(data) {
     return {
       path: data.path || '',
@@ -367,9 +371,10 @@
     return true;
   }
 
-  async function _fetchFolderItems(path) {
+  async function _fetchFolderItems(path, options = {}) {
     if (typeof apiFetch !== 'function') throw new Error('フォルダ一覧を取得できません');
-    let items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+    const fetchOptions = options.force === true ? { skipBrowseCache: true, cache: 'reload' } : undefined;
+    let items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true', fetchOptions);
     if (!Array.isArray(items)) items = Array.isArray(items?.items) ? items.items : [];
     if (typeof isOutlinerDeletePendingPath === 'function') {
       items = items.filter(item => !isOutlinerDeletePendingPath(item?.path));
@@ -464,7 +469,7 @@
     _syncListHeader(pane, _currentFolder, NaN);
     _setListState(pane, 'loading', '読み込み中...');
     try {
-      const items = _sortItemsForMobile(await _fetchFolderItems(_currentFolder.path));
+      const items = _sortItemsForMobile(await _fetchFolderItems(_currentFolder.path, { force: options.force === true }));
       if (seq !== _listSeq) return false;
       _currentItems = items;
       _syncListHeader(pane, _currentFolder, items.length);
@@ -531,6 +536,7 @@
   }
 
   function _itemRow(item) {
+    if (typeof _applyCachedBrowseItemType === 'function') _applyCachedBrowseItemType(item);
     const type = String(item?.type || '').toLowerCase();
     const isFolder = type === 'folder';
     const itemE2EId = _e2eIdPart(item?.path || item?.name || item?.label);
@@ -553,11 +559,15 @@
     _fillItemVisual(openButton.querySelector('.cloud-mobile-explorer-row-icon'), item);
     openButton.querySelector('.cloud-mobile-explorer-row-title').textContent = item?.name || item?.label || '無題';
     openButton.querySelector('.cloud-mobile-explorer-row-meta').textContent = _itemTypeLabel(item);
-    openButton.addEventListener('click', (event) => {
+    openButton.addEventListener('click', async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (isFolder) _openFolderInExplorer(item);
-      else _openFileFromExplorer(item);
+      try {
+        if (isFolder) await _openFolderInExplorer(item);
+        else await _openFileFromExplorer(item);
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '項目を開けませんでした', true);
+      }
     });
     row.appendChild(openButton);
     const action = document.createElement('button');
@@ -583,18 +593,66 @@
     return row;
   }
 
-  function _openFolderInExplorer(item) {
-    if (!item?.path) return;
-    _currentFolder = { path: item.path, name: item.name || item.label || 'フォルダ' };
-    _selectTreePath(item.path);
-    renderCurrent({ force: false });
+  function _mobileTypeResolutionPaneSnapshot() {
+    return typeof _captureBrowseItemPaneSnapshot === 'function'
+      ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
+      : null;
   }
 
-  function _openFileFromExplorer(item) {
-    if (!item?.path) return;
-    if (typeof openFolderItem === 'function') openFolderItem(item);
+  async function handleResolvedItemType(payload) {
+    const item = payload?.item;
+    const type = String(payload?.type || item?.type || '').toLowerCase();
+    if (!item?.path || !['database', 'calendar'].includes(type)) return true;
+    let opened = false;
+    if (typeof _openResolvedBrowseItemType === 'function') {
+      opened = await _openResolvedBrowseItemType(item, type, { paneSnapshot: payload?.paneSnapshot || null });
+    } else if (type === 'database' && typeof selectDatabase === 'function') {
+      await selectDatabase(item.path, payload?.paneSnapshot?.paneContext || null, { fromExplorer: true, skipHighlight: true });
+      opened = true;
+    } else if (type === 'calendar' && typeof openCalendarFile === 'function') {
+      await openCalendarFile(item.name, item.path, {
+        fromExplorer: true,
+        skipHighlight: true,
+        paneContext: payload?.paneSnapshot?.paneContext || null,
+      });
+      opened = true;
+    }
+    if (opened) _scheduleSidebarClose(120);
+    return true;
+  }
+
+  function _scheduleMobileFolderTypeResolution(item, visiblePromise, node) {
+    if (typeof _scheduleBrowseItemTypeResolution !== 'function'
+        || typeof _browseItemNeedsTypeCheck !== 'function'
+        || !_browseItemNeedsTypeCheck(item)) return Promise.resolve({ skipped: 'not-needed' });
+    const targetPath = _normalizePath(item.path);
+    return _scheduleBrowseItemTypeResolution(node || null, item, visiblePromise, {
+      paneSnapshot: _mobileTypeResolutionPaneSnapshot(),
+      isStillActive: () => _normalizePath(_currentFolder?.path) === targetPath,
+      onResolved: handleResolvedItemType,
+    });
+  }
+
+  async function _openFolderInExplorer(item) {
+    if (!item?.path) return false;
+    _currentFolder = { path: item.path, name: item.name || item.label || 'フォルダ' };
+    _selectTreePath(item.path);
+    const visiblePromise = renderCurrent({ force: false });
+    _scheduleMobileFolderTypeResolution(item, visiblePromise, _findTreeNodeByPath(item.path));
+    return visiblePromise;
+  }
+
+  async function _openFileFromExplorer(item) {
+    if (!item?.path) return false;
+    if (typeof openFolderItem === 'function') await openFolderItem(item);
     else if (typeof openNative === 'function') openNative(item.path);
-    setTimeout(() => window.MeldexCloudMobile?.closeSidebar?.(), 120);
+    _scheduleSidebarClose(120);
+    return true;
+  }
+
+  function _scheduleSidebarClose(delay) {
+    const generation = window.MeldexCloudMobile?.getSidebarOpenGeneration?.();
+    setTimeout(() => window.MeldexCloudMobile?.closeSidebar?.({ openGeneration: generation }), delay);
   }
 
   function _parentTargetForCurrent() {
@@ -615,6 +673,20 @@
     _currentFolder = parent;
     _selectTreePath(parent.path);
     renderCurrent({ force: false });
+    return true;
+  }
+
+  function selectFolderFromTree(item, options = {}) {
+    if (!item?.path) return false;
+    _currentFolder = {
+      path: item.path,
+      name: item.name || item.label || 'フォルダ',
+    };
+    if (options.syncSelection !== false) _selectTreePath(item.path);
+    _syncCreateButtonState();
+    if (_mode === 'list' || options.renderList === true) {
+      renderCurrent({ force: options.force === true });
+    }
     return true;
   }
 
@@ -859,7 +931,7 @@
             await renderCurrent({ force: true });
           } else {
             if (_mode === 'list') await renderCurrent({ force: true });
-            setTimeout(() => window.MeldexCloudMobile?.closeSidebar?.(), 80);
+            _scheduleSidebarClose(80);
           }
         }
       });
@@ -885,15 +957,22 @@
   function _installTreeClickBridge() {
     if (_treeClickBridgeInstalled) return;
     _treeClickBridgeInstalled = true;
-    document.addEventListener('click', (event) => {
+    const handleTreeClick = (event) => {
       const sidebar = _sidebar();
       if (!sidebar?.classList?.contains('cloud-mobile-tree-screen-open')) return;
       if (_mode !== 'tree') return;
+      if (_isTreeRowControlTarget(event.target)) return;
       const row = event.target?.closest?.('.tree-node-row');
       const node = row?.closest?.('.tree-node') || null;
       if (!_treeNodeCanActAsFolder(node?._nodeData)) return;
-      _currentFolder = _targetFromData(node._nodeData);
-    });
+      event.preventDefault();
+      event.stopPropagation();
+      selectFolderFromTree(node._nodeData);
+      const toggle = row.querySelector('.tree-toggle');
+      if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+      _scheduleMobileFolderTypeResolution(node._nodeData, Promise.resolve(true), node);
+    };
+    document.addEventListener('click', handleTreeClick, true);
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
         closeCreateSheet();
@@ -922,10 +1001,12 @@
     getLayout: () => _layout,
     syncLayoutFromFolder,
     renderCurrent,
+    selectFolderFromTree,
     openCreateSheet,
     closeCreateSheet,
     closeItemMenu,
     selectedFolderTarget,
     currentFolderTarget,
+    handleResolvedItemType,
   };
 })();

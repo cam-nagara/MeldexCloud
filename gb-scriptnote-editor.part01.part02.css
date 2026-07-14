@@ -1,0 +1,533 @@
+/* === 行 === */
+.sn2-editor {
+  --sn2-border-color: var(--border);
+  --sn2-border-width: 1px;
+}
+.sn2-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 32px;
+  width: fit-content;
+  box-sizing: border-box;
+  position: relative;
+  color: var(--sn2-base-text-color, var(--fg));
+  font-family: var(--sn2-base-text-font-family, var(--ui-font, inherit));
+  font-weight: var(--sn2-base-text-bold, normal);
+  font-style: var(--sn2-base-text-italic, normal);
+  font-size: var(--sn2-base-text-font-size, 13px);
+}
+
+/* 枠線モード */
+.sn2-editor[data-border="all"] .sn2-row { border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-editor[data-border="vertical"] .sn2-row { border-bottom: none; }
+.sn2-editor[data-border="none"] .sn2-row { border-bottom: none; }
+/* 横書き列間枠線（allまたはverticalのとき各セルにborder-right） */
+.sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
+.sn2-editor[data-border="vertical"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-right: var(--sn2-border-width) solid var(--sn2-border-color);
+}
+/* 縦書き枠線モード: 行間はborder-left（horizontal=行間枠線、vertical=列間枠線） */
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row { border-bottom: none; border-left: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: none; border-left: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="vertical"] .sn2-row { border-left: none; }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="none"] .sn2-row { border-left: none; }
+/* 縦書き: 列間枠線をborder-right→border-bottomに変換 */
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="vertical"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-right: none;
+  border-bottom: var(--sn2-border-width) solid var(--sn2-border-color);
+}
+
+/* 見開き区切り線（outline行との競合を避けるため詳細度を上げたルールも追加） */
+.sn2-row[data-spread-border],
+.sn2-row[data-outline][data-spread-border] { border-top: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+.sn2-scroll.sn2-vertical .sn2-row[data-spread-border],
+.sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] { border-top: none !important; border-right: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+
+.sn2-row:hover { background: var(--sn2-hover-bg, var(--bg2)); }
+.sn2-row.sn2-row-selected { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 35%, transparent); }
+.sn2-row.sn2-row-selected:hover { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 48%, transparent); }
+.sn2-row.sn2-row-selected::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 var(--sn2-selection-border-width, 2px) var(--sn2-selection-border-color, var(--sn2-caret-color, var(--accent, #4a90d9)));
+}
+/* 行選択中はテキストセルをネイティブ選択と同等の色で塗ってテキスト選択風に。
+   background ではなく inset box-shadow を使うことでキャラスタイルの
+   背景色を上書きせずにオーバーレイだけ乗せる */
+.sn2-row.sn2-row-selected .sn2-text {
+  box-shadow: inset 0 0 0 9999px var(--sn2-selection-color, color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 45%, transparent));
+}
+.sn2-row:focus-within { background: var(--sn2-hover-bg, var(--bg3)); }
+/* ホバー時: 背景色付きセルに半透明オーバーレイで明度変化（filter: brightness()はテキスト色まで
+   変えてしまうため使わない。::beforeをz-index:-1でテキストより背後・セル背景より前面に置くことで
+   背景だけを明るく見せる。z-index:0でこのセル自身にスタッキングコンテキストを作り、
+   ::beforeが行や祖先要素の背景まで突き抜けて不可視化しないようにする） */
+.sn2-row:hover > .sn2-gutter[style*="background"],
+.sn2-row:hover > .sn2-role-btn[style*="background"],
+.sn2-row:hover > .sn2-status-btn[style*="background"],
+.sn2-row:hover > .sn2-text[style*="background"],
+.sn2-row:hover > .sn2-custom-cell[style*="background"],
+.sn2-row:focus-within > .sn2-gutter[style*="background"],
+.sn2-row:focus-within > .sn2-role-btn[style*="background"],
+.sn2-row:focus-within > .sn2-status-btn[style*="background"],
+.sn2-row:focus-within > .sn2-text[style*="background"],
+.sn2-row:focus-within > .sn2-custom-cell[style*="background"] {
+  position: relative;
+  z-index: 0;
+}
+.sn2-row:hover > .sn2-cell-active[style*="background"],
+.sn2-row:focus-within > .sn2-cell-active[style*="background"] {
+  z-index: 7;
+}
+.sn2-row:hover > [style*="background"]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.12);
+  pointer-events: none;
+  z-index: -1;
+}
+.sn2-row:focus-within > [style*="background"]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.18);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* 行の右端スペーサー */
+.sn2-row-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg))) !important;
+  pointer-events: none;
+}
+
+/* ドラッグハンドル — 常にページ背景色、チェックボックス+グリップを内包 */
+.sn2-handle {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_handle, 36px);
+  padding: 4px 2px 0;
+  font-size: 12px;
+  color: transparent;
+  cursor: grab;
+  text-align: center;
+  user-select: none;
+  transition: color 0.15s;
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg))) !important;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+/* 行選択チェックボックス（ハンドルdiv内に配置） */
+.sn2-row-check {
+  flex: 0 0 auto; width: 14px;
+  margin: 0; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s;
+  accent-color: var(--ui-selection-bg, var(--blue, #4a90d9));
+}
+/* ドラッグ選択矩形（スタイルはJS側で全設定） */
+.sn2-drag-select-rect { pointer-events: none; }
+.sn2-row:hover .sn2-row-check,
+.sn2-row-check:checked { opacity: 1; }
+.sn2-row:hover .sn2-handle { color: var(--fg2); }
+.sn2-handle:hover { color: var(--fg) !important; }
+@media (hover: none), (pointer: coarse) {
+  .sn2-row-check { opacity: 1; }
+  .sn2-handle { color: var(--fg2); }
+}
+.sn2-row.sn2-dragging { opacity: 0.3; }
+/* 行入れ替えハイライト */
+.sn2-row.sn2-swap-highlight { animation: sn2-swap-flash 0.4s ease-out; }
+@keyframes sn2-swap-flash {
+  0% { outline: 2px solid var(--blue, #4a90d9); outline-offset: -2px; }
+  100% { outline: 2px solid transparent; outline-offset: -2px; }
+}
+/* ドロップインジケーター: ::afterで前面に描画（セル背景に隠れないようにする） */
+.sn2-row.sn2-drop-above::after,
+.sn2-row.sn2-drop-below::after {
+  content: ''; position: absolute; left: 0; right: 0; z-index: 5; pointer-events: none;
+  height: var(--sn2-drop-width, 2px);
+  background: var(--sn2-drop-color, var(--blue, #4a90d9));
+}
+.sn2-row.sn2-drop-above::after { top: 0; }
+.sn2-row.sn2-drop-below::after { bottom: 0; }
+/* 縦書き: ドロップインジケーターを左右に変更 */
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-above::after,
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-below::after {
+  top: 0; bottom: 0; left: auto; right: auto;
+  height: auto; width: var(--sn2-drop-width, 2px);
+}
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-above::after { right: 0; }
+.sn2-scroll.sn2-vertical .sn2-row.sn2-drop-below::after { left: 0; }
+
+/* ガター（大区切り：ページ番号等） */
+.sn2-gutter {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_gutter, 40px);
+  padding: 7px 4px 0;
+  font-size: 10px;
+  font-family: var(--sn2-base-text-font-family, var(--ui-font, inherit));
+  color: var(--fg2);
+  text-align: right;
+  user-select: none;
+  white-space: nowrap;
+}
+/* ガター2（小区切り：コマ番号等） */
+.sn2-gutter2 {
+  width: var(--sn2-col-_gutter2, 48px);
+}
+
+/* タイプボタン */
+.sn2-role-btn {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_role, 88px);
+  padding: 6px 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg2);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: stretch;
+}
+
+.sn2-status-btn {
+  flex: 0 0 auto;
+  width: var(--sn2-col-_status, 92px);
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg2);
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.sn2-status-btn:hover { background: var(--bg3); color: var(--fg); }
+.sn2-status-btn.is-empty { color: var(--fg2); }
+
+.sn2-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: transparent;
+  flex: 0 0 auto;
+}
+
+.sn2-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 列間枠線: 各列のborder-rightで実装（隣接列のborder-leftは不要 — 二重線防止） */
+.sn2-gutter[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-gutter2[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-role-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-status-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-text[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-custom-cell[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+/* 縦書き: 列間枠線をborder-bottomに変更 */
+.sn2-scroll.sn2-vertical .sn2-gutter[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-gutter2[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-status-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-text[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-custom-cell[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+
+.sn2-role-btn:hover { background: var(--bg3); color: var(--fg); }
+.sn2-role-btn.sn2-role-cell-selected {
+  outline: 2px solid var(--accent, #4a90d9);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22);
+  color: var(--fg);
+}
+.sn2-role-btn.sn2-role-cell-selected:not([style*="background"]) {
+  background: color-mix(in srgb, var(--accent, #4a90d9) 18%, transparent);
+}
+
+/* テキスト（contenteditable） */
+.sn2-text {
+  flex: var(--sn2-text-flex, 0 1 auto);
+  width: var(--sn2-col-_text, 300px);
+  min-width: 60px;
+  min-height: 28px;
+  padding: 6px 8px;
+  outline: none;
+  font-size: 14px;
+  line-height: var(--sn2-base-text-line-height, 1.6);
+  letter-spacing: var(--sn2-base-text-letter-spacing, normal);
+  color: var(--fg);
+  word-break: break-all;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  caret-color: transparent; /* ネイティブキャレットを非表示、カスタムキャレットを使用 */
+}
+.sn2-text::selection {
+  background: var(--sn2-selection-color, color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 45%, transparent));
+  color: var(--sn2-selection-fg, var(--ui-selection-fg, inherit));
+}
+/* カスタムキャレット */
+.sn2-custom-caret {
+  position: absolute;
+  width: var(--sn2-caret-width, var(--editor-caret-width, 2px));
+  height: auto;
+  background: var(--sn2-caret-color, var(--editor-caret-color, var(--accent, #4a90d9)));
+  pointer-events: none;
+  z-index: 5;
+  animation: sn2-caret-blink 1s step-end infinite;
+}
+/* 縦書き: キャレットは横線 */
+.sn2-scroll.sn2-vertical .sn2-custom-caret {
+  width: auto;
+  height: var(--sn2-caret-width, var(--editor-caret-width, 2px));
+}
+@keyframes sn2-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+
+.sn2-text:empty::before {
+  content: '　';
+  color: var(--fg2);
+  opacity: 0.2;
+}
+/* ルビ表示 */
+/* gb-tools.css のグローバル [data-ruby]::before を無効化（::after で独自表示するため） */
+.sn2-text span[data-ruby]::before,
+.sn2-custom-text span[data-ruby]::before { content: none; }
+.sn2-text span[data-ruby],
+.sn2-custom-text span[data-ruby] {
+  position: relative;
+  /* ベーステキストをセル端で折り返したときに ::after ルビが span の
+     途中で分断されて中央寄せ計算が壊れ、ルビがセル外へ飛び出すのを防ぐ。
+     inline-block にして span 全体を 1 行に収める (入りきらないときは
+     次の行に丸ごと送る)。*/
+  display: inline-block;
+  vertical-align: baseline;
+}
+.sn2-text span[data-ruby]::after,
+.sn2-custom-text span[data-ruby]::after {
+  content: attr(data-ruby);
+  position: absolute;
+  /* 横書き: テキスト上部に配置、左右はauto marginでセンタリング */
+  bottom: calc(100% - var(--sn2-ruby-offset, 3.5px));
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin-left: auto;
+  margin-right: auto;
+  transform: none;
+  font-size: var(--sn2-ruby-size, 0.55em);
+  line-height: 1;
+  color: inherit;
+  opacity: 0.75;
+  white-space: nowrap;
+  pointer-events: none;
+  letter-spacing: var(--sn2-ruby-ls, normal);
+  /* letter-spacing のトレーリングスペースと均等化して視覚的に中央揃え */
+  text-indent: var(--sn2-ruby-ls, 0px);
+}
+/* 自動リンク */
+.sn2-text .auto-link,
+.sn2-custom-text .auto-link {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--blue, #4a90d9);
+}
+.sn2-text .auto-link:hover,
+.sn2-custom-text .auto-link:hover {
+  background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 24%, transparent);
+}
+.sn2-search-popup input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.sn2-text .auto-link[data-ruby],
+.sn2-custom-text .auto-link[data-ruby] {
+  position: relative;
+  display: inline-block;
+  vertical-align: baseline;
+}
+.sn2-text .auto-link[data-ruby]::before,
+.sn2-custom-text .auto-link[data-ruby]::before { content: none; }
+.sn2-text .auto-link[data-ruby]::after,
+.sn2-custom-text .auto-link[data-ruby]::after {
+  content: attr(data-ruby);
+  position: absolute;
+  bottom: calc(100% - var(--sn2-ruby-offset, 3.5px));
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin-left: auto;
+  margin-right: auto;
+  transform: none;
+  font-size: var(--sn2-ruby-size, 0.55em);
+  line-height: 1;
+  color: inherit;
+  opacity: 0.75;
+  white-space: nowrap;
+  pointer-events: none;
+  letter-spacing: var(--sn2-ruby-ls, normal);
+  text-indent: var(--sn2-ruby-ls, 0px);
+}
+
+/* 縦書きルビ: 右側に配置、上下はauto marginでセンタリング */
+.sn2-scroll.sn2-vertical .sn2-text span[data-ruby],
+.sn2-scroll.sn2-vertical .sn2-custom-text span[data-ruby],
+.sn2-scroll.sn2-vertical .sn2-text .auto-link[data-ruby],
+.sn2-scroll.sn2-vertical .sn2-custom-text .auto-link[data-ruby] {
+  text-decoration: none;
+  /* 縦書きでは inline-block をやめて inline に戻す。inline-block だと
+     span のベースラインが周囲テキストのベースラインに合わされる過程で
+     セル先頭の文字が 1 文字分上へズレる現象が発生する。折返し時のルビ
+     分断問題は縦書きでは起きにくいので影響は許容 */
+  display: inline !important;
+}
+.sn2-scroll.sn2-vertical .sn2-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical .sn2-custom-text span[data-ruby]::after {
+  /* 横書き用のリセット */
+  bottom: auto;
+  right: auto;
+  width: auto;
+  margin-left: 0;
+  margin-right: 0;
+  /* テキストからの距離 */
+  left: calc(100% - var(--sn2-ruby-offset, 3.5px));
+  /* 縦書きセンタリング: auto margin方式 */
+  top: 0;
+  bottom: 0;
+  height: max-content;
+  margin-top: auto;
+  margin-bottom: auto;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: var(--sn2-ruby-ls, normal);
+  text-indent: var(--sn2-ruby-ls, 0px);
+}
+.sn2-scroll.sn2-vertical .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll.sn2-vertical .sn2-custom-text .auto-link[data-ruby]::after {
+  bottom: auto;
+  right: auto;
+  width: auto;
+  margin-left: 0;
+  margin-right: 0;
+  left: calc(100% - var(--sn2-ruby-offset, 3.5px));
+  top: 0;
+  bottom: 0;
+  height: max-content;
+  margin-top: auto;
+  margin-bottom: auto;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: var(--sn2-ruby-ls, normal);
+  text-indent: var(--sn2-ruby-ls, 0px);
+}
+
+/* テキスト前後文字列（タイプオプション） — テキスト列の色・書式を継承 */
+/* data-before がある場合、hanging indent で全行の先頭文字を水平方向に揃える:
+   - padding-left を 1em 追加 (prefix 領域を確保)
+   - text-indent: -1em で 1 行目だけ左に引き戻す (prefix はここに描画)
+   - ::before は inline-block で幅固定 1em。prefix 文字の実幅に関わらず
+     本文の先頭文字は常にパディング内側に揃う */
+.sn2-text[data-before]:not(:empty) {
+  padding-left: calc(8px + 1em);
+  text-indent: -1em;
+}
+.sn2-text[data-before]:not(:empty)::before {
+  content: attr(data-before);
+  display: inline-block;
+  width: 1em;
+  text-indent: 0;
+  color: inherit;
+  pointer-events: none;
+}
+/* 縦書きモードでは上下方向での揃えになる */
+.sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty) {
+  padding-left: 6px;
+  padding-top: 6px;
+  text-indent: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty)::before {
+  display: inline;
+  width: auto;
+  height: auto;
+}
+.sn2-text[data-after]:not(:empty)::after {
+  content: attr(data-after);
+  color: inherit;
+  pointer-events: none;
+}
+/* hover/focus-within 用オーバーレイ ::before が data-before の hanging-indent 用
+   ::before と衝突し position:absolute でテキスト位置がずれるのを防止する */
+.sn2-row:hover > .sn2-text[data-before][style*="background"]:not(:empty)::before,
+.sn2-row:focus-within > .sn2-text[data-before][style*="background"]:not(:empty)::before {
+  position: static;
+  inset: auto;
+  background: none;
+  z-index: auto;
+}
+
+/* 区切り行の直前に「1行ぶんの空白」相当の余白を追加（表示のみ。データ構造には影響しない）
+   横書き: 行の上側に margin-top、縦書き(vertical-rl): 行の右側に margin-right
+   親コンテナ内で同種(.sn2-row)の最初の要素（＝シナリオ先頭行）は打ち消して余白をつけない */
+.sn2-row[data-kind="break"] {
+  margin-top: 1.8em;
+}
+.sn2-row[data-kind="break"]:first-of-type {
+  margin-top: 0;
+}
+.sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
+  margin-top: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="break"] {
+  margin-top: 0;
+  margin-right: 1.8em;
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="break"]:first-of-type {
+  margin-right: 0;
+}
+.sn2-scroll.sn2-vertical .sn2-column-group > .sn2-header + .sn2-row[data-kind="break"] {
+  margin-right: 0;
+}
+.sn2-scroll.sn2-no-page-break-spacing .sn2-row[data-kind="break"] {
+  margin-top: 0;
+  margin-right: 0;
+}
+
+/* アクティブセル（Excel風ナビゲーション: 非編集状態のカーソル位置表示）
+   クリック直後や矢印/Tab移動で「選ばれているがまだ編集していない」セルを示す。
+   .sn2-text-cell-selected 等（クラス2つ）の方が詳細度が高く優先されるため、
+   別の選択系と同時に残っても見た目が競合しない。 */
+.sn2-cell-active {
+  position: relative;
+  z-index: 7;
+  box-shadow: inset 0 0 0 2px var(--accent, #4a90d9);
+  outline: none;
+}

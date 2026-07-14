@@ -275,6 +275,8 @@
       textDiv.contentEditable = 'true';
       textDiv.dataset.rowId = row.id;
       textDiv.dataset.e2eId = `sn-row-${row.id}-text`;
+      // 再描画をまたいでテキストセル範囲選択の表示を復元する
+      if (this._textCellSelection?.has(row.id)) textDiv.classList.add('sn2-text-cell-selected');
       // ルビマークアップ {漢字|ルビ} をDOMに復元。エスケープ（\{ \| \} \\）を逆変換する
       const rowText = row.text || '';
       const manualLinkFrag = rowText && rowText.includes('](ml:') && typeof this._buildManualLinkFragment === 'function'
@@ -636,6 +638,48 @@
     // === ホイール/矩形選択/行コピー/右ドラッグパン → gb-scriptnote-interactions.js に移動 ===
     this._bindInteractionEvents(host);
 
+    // === セルナビゲーション: クリックは「アクティブ化」のみ（即編集しない） ===
+    // キャプチャフェーズで先に処理する。実際のmousedown→クリックの間にブラウザが
+    // contentEditableへキャレットを置くが、この click ハンドラで contentEditable を
+    // false に戻すため、同一フレーム内で「編集開始」の見た目には遷移しない。
+    host.addEventListener('click', (e) => {
+      const textEl = e.target.closest?.('.sn2-text, .sn2-custom-text');
+      if (textEl && host.contains(textEl)) {
+        const rowEl = textEl.closest('.sn2-row');
+        if (!rowEl) return;
+        const rowId = rowEl.dataset.rowId;
+        const colId = textEl.dataset.colId || (textEl.closest('.sn2-custom-cell')?.dataset.colId) || '_text';
+        if (this._cellEditMode && this._activeCellRowId === rowId && this._activeCellColId === colId) return;
+        this._setActiveCell(rowId, colId, false);
+        return;
+      }
+      const nativeCtrl = e.target.closest?.('.sn2-custom-input, .sn2-custom-select');
+      if (nativeCtrl) {
+        const customCell = nativeCtrl.closest('.sn2-custom-cell');
+        const rowEl = nativeCtrl.closest('.sn2-row');
+        if (!customCell || !rowEl || !host.contains(customCell)) return;
+        const rowId = rowEl.dataset.rowId;
+        const colId = customCell.dataset.colId;
+        if (this._activeCellRowId === rowId && this._activeCellColId === colId) return;
+        if (this._activeCellRowId) this._clearActiveCell?.();
+        this._activeCellRowId = rowId;
+        this._activeCellColId = colId;
+        this._cellEditMode = true;
+        customCell.classList.add('sn2-cell-active');
+        nativeCtrl.focus();
+      }
+    }, true);
+
+    host.addEventListener('dblclick', (e) => {
+      const textEl = e.target.closest?.('.sn2-text, .sn2-custom-text');
+      if (!textEl || !host.contains(textEl)) return;
+      const rowEl = textEl.closest('.sn2-row');
+      if (!rowEl) return;
+      const rowId = rowEl.dataset.rowId;
+      const colId = textEl.dataset.colId || (textEl.closest('.sn2-custom-cell')?.dataset.colId) || '_text';
+      this._setActiveCell(rowId, colId, true);
+    });
+
     // カスタムキャレット（太い線）
     let caretEl = null;
     // ブラウザの range.getClientRects() が 0 サイズを返すケース
@@ -644,6 +688,13 @@
       const startContainer = range.startContainer;
       const startOffset = range.startOffset;
       const isVert = this.doc.editor?.viewMode === 'vertical';
+      // TCY (tate-chu-yoko) 内のキャレットは縦書きモードでも横書きと同じ縦線にする
+      let isInsideTcy = false;
+      if (isVert && startContainer) {
+        const el = startContainer.nodeType === 3 ? startContainer.parentElement : startContainer;
+        isInsideTcy = !!(el?.closest?.('.sn2-tcy') || el?.closest?.('.sn2-tcy-wide'));
+      }
+      const effectiveVert = isVert && !isInsideTcy;
       const cs = getComputedStyle(textEl);
       // getComputedStyle は CSS ピクセル (ズーム未適用) を返すが、
       // getBoundingClientRect は CSS zoom 適用後の描画座標を返すため、
@@ -655,11 +706,11 @@
       const padRight = (parseFloat(cs.paddingRight) || 0) * zFb;
       const tr = textEl.getBoundingClientRect();
       // 横書きカーソル(縦線)を rect の右側に置くヘルパー
-      const caretAfter = (r) => isVert
+      const caretAfter = (r) => effectiveVert
         ? { left: r.left, top: r.bottom, right: r.right, bottom: r.bottom + 2, width: r.width, height: 2 }
         : { left: r.right, top: r.top, right: r.right + 2, bottom: r.bottom, width: 2, height: r.height };
       // 横書きカーソル(縦線)を rect の左側に置くヘルパー
-      const caretBefore = (r) => isVert
+      const caretBefore = (r) => effectiveVert
         ? { left: r.left, top: r.top, right: r.right, bottom: r.top + 2, width: r.width, height: 2 }
         : { left: r.left, top: r.top, right: r.left + 2, bottom: r.bottom, width: 2, height: r.height };
       // 1 文字分の rect を取得するヘルパー
@@ -702,7 +753,7 @@
       // prev が BR なら次の行の先頭にカーソル
       if (prev && prev.nodeType === 1 && prev.tagName === 'BR') {
         const prr = prev.getBoundingClientRect();
-        if (isVert) {
+        if (effectiveVert) {
           const x = prr.left - lineH;
           const y = tr.top + padTop;
           return { left: x, top: y, right: x + lineH, bottom: y + 16, width: lineH, height: 16 };
@@ -712,7 +763,7 @@
         return { left: x, top: y, right: x + 2, bottom: y + lineH, width: 2, height: lineH };
       }
       // それ以外（空セル等）: textEl の左上(横書き) / 右上(縦書き)
-      if (isVert) {
+      if (effectiveVert) {
         const x = tr.right - padRight - lineH;
         const y = tr.top + padTop;
         return { left: x, top: y, right: x + lineH, bottom: y + 16, width: lineH, height: 16 };
@@ -749,16 +800,22 @@
       }
       if (caretEl.parentElement !== row) row.appendChild(caretEl);
       const isVert = this.doc.editor?.viewMode === 'vertical';
+      // TCY (tate-chu-yoko) 内のキャレットは縦書きモードでも横書きと同じ縦線にする
+      let isInsideTcy = false;
+      if (isVert && sel.anchorNode) {
+        const el = sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+        isInsideTcy = !!(el?.closest?.('.sn2-tcy') || el?.closest?.('.sn2-tcy-wide'));
+      }
       const dx = (rect.left - rowRect.left) / z;
       const dy = (rect.top - rowRect.top) / z;
-      if (isVert) {
+      if (isVert && !isInsideTcy) {
         // 縦書き: キャレットは横線
         caretEl.style.left = dx + 'px';
         caretEl.style.top = dy + 'px';
         caretEl.style.width = (rect.width || 16) / z + 'px';
         caretEl.style.height = '';
       } else {
-        // 横書き: キャレットは縦線
+        // 横書き or 縦中横内: キャレットは縦線
         caretEl.style.left = dx + 'px';
         caretEl.style.top = dy + 'px';
         caretEl.style.height = (rect.height || 16) / z + 'px';
@@ -850,6 +907,35 @@
 
     host.addEventListener('keydown', (e) => {
       if (e.isComposing) return;
+
+      // アクティブセル（クリックで強調表示のみ・未編集）に対する矢印/Tab/Enter/Escapeは
+      // ここでナビゲーションとして処理する。編集中のセルや無関係のターゲットには影響しない。
+      if (typeof this._isActiveNonEditingTarget === 'function' && this._isActiveNonEditingTarget(e.target)) {
+        if (this._handleNavigationKeydown(e)) return;
+      }
+
+      // ネイティブコントロール（数値入力・選択肢）が編集中のとき、Escape/Tab/Enterでセル編集を抜ける
+      if (this._cellEditMode && this._activeCellRowId) {
+        const nativeCtrl = e.target.closest?.('.sn2-custom-input, .sn2-custom-select');
+        if (nativeCtrl) {
+          if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)) {
+            e.preventDefault(); e.stopPropagation();
+            nativeCtrl.blur();
+            const wrapperEl = this._getCellElement(this._activeCellRowId, this._activeCellColId);
+            this._cellEditMode = false;
+            if (wrapperEl) { wrapperEl.classList.add('sn2-cell-active'); wrapperEl.tabIndex = 0; wrapperEl.focus(); }
+            return;
+          }
+          if (e.key === 'Tab') {
+            e.preventDefault(); e.stopPropagation();
+            nativeCtrl.blur();
+            this._cellEditMode = false;
+            this._navigateCell(e.shiftKey ? 'prev-col' : 'next-col');
+            return;
+          }
+        }
+      }
+
       const roleKeyTarget = e.target.closest?.('.sn2-role-btn');
       if (roleKeyTarget && typeof this._handleRoleCellKeydown === 'function' && this._handleRoleCellKeydown(roleKeyTarget, e)) return;
 
@@ -881,6 +967,7 @@
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.deselectAll', e)) return;
         e.preventDefault();
         if (this._rowSelection?.size) this._clearRowSelection();
+        if (this._textCellSelection?.size) this._clearTextCellSelection?.();
         this._lastSelectedIdx = -1;
         const dsel = window.getSelection();
         if (dsel?.rangeCount && !dsel.isCollapsed) dsel.collapseToStart();

@@ -72,13 +72,17 @@
       const content = String(body?.content ?? '');
       const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
       const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
+      const createOnly = !!(body?.create_only || body?.createOnly);
       const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
       if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
+      if ((createOnly && entry) || (expectedEtag && !entry && !forceOverwrite)) {
+        _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
+      }
       if (expectedEtag && entry && !forceOverwrite) {
         const currentEtag = await _fileEtag(provider, filePath, entry);
-        if (currentEtag && currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
+        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
@@ -553,15 +557,20 @@
     if (pathname === '/outliner/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const source = await _resolveEntryHandle(provider, _joinPath(PWA_TRASH_DIR, trashName));
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, trashName);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
       if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, _joinPath(PWA_TRASH_DIR, trashName + '._trash_meta.json'), {});
-      const originalPath = _normalizeFolderPath(meta?.original_path || '');
-      if (!originalPath) throw new Error('元のパスが不明です');
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
       if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, _joinPath(PWA_TRASH_DIR, trashName), originalPath);
-      await _removeEntry(provider, _joinPath(PWA_TRASH_DIR, trashName + '._trash_meta.json')).catch(() => {});
-      return { ok: true, restored_path: originalPath };
+      await _moveEntry(provider, trashPath, originalPath);
+      const warnings = [];
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
     }
 
     if (pathname === '/outliner/duplicate' && method === 'POST') {
@@ -649,36 +658,82 @@
 
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      const trashEntry = await _resolveEntryHandle(provider, PWA_TRASH_DIR);
-      if (!trashEntry || trashEntry.kind !== 'directory') return { items: [] };
-      const entries = await _listDirectoryEntries(provider, PWA_TRASH_DIR);
       const items = [];
-      for (const entry of entries) {
-        if (entry.name.endsWith('._trash_meta.json')) continue;
-        const entryPath = _joinPath(PWA_TRASH_DIR, entry.name);
-        const meta = await _readJsonSafe(provider, entryPath + '._trash_meta.json', {});
-        let size = 1;
-        if (entry.handle.kind === 'directory') {
-          size = await _countFolderEntriesIncludingTrash(provider, entryPath).catch(() => 0);
-        }
-        items.push({
-          name: entry.name,
-          type: entry.handle.kind === 'directory' ? 'folder' : 'file',
-          size,
-          original_path: String(meta?.original_path || ''),
-          deleted_at: String(meta?.deleted_at || ''),
+      const warnings = [];
+      let allowedRoots;
+      try {
+        allowedRoots = await _allowedTrashRoots();
+      } catch (error) {
+        allowedRoots = [{ path: _normalizeFolderPath(PWA_TRASH_DIR), name: 'Meldex', physicalPath: '' }];
+        warnings.push({
+          trash_root: '', trash_root_name: '', stage: 'trash-roots',
+          message: error?.message || String(error), code: error?.code || '',
         });
       }
-      return { items };
+      const rootsByPath = new Map(allowedRoots.map((root) => [root.path, root]));
+      const sourceRootsByPhysical = new Map(allowedRoots.filter((root) => (
+        window.MeldexSourceFolderRegistry?.parseSourcePath?.(root.path)
+      )).map((root) => [String(root.physicalPath || root.path).toLowerCase(), root]));
+      const listedPhysicalRoots = new Set();
+      for (const trashRoot of allowedRoots) {
+        const physicalKey = String(trashRoot.physicalPath || trashRoot.path).toLowerCase();
+        if (listedPhysicalRoots.has(physicalKey)) continue;
+        try {
+          const trashEntry = await _resolveEntryHandle(provider, trashRoot.path);
+          if (!trashEntry || trashEntry.kind !== 'directory') {
+            listedPhysicalRoots.add(physicalKey);
+            continue;
+          }
+          const entries = await _listDirectoryEntries(provider, trashRoot.path);
+          listedPhysicalRoots.add(physicalKey);
+          for (const entry of entries) {
+            if (entry.name.endsWith('._trash_meta.json')) continue;
+            const entryPath = _joinPath(trashRoot.path, entry.name);
+            const meta = await _readJsonSafe(provider, entryPath + '._trash_meta.json', {});
+            let size = 1;
+            if (entry.handle.kind === 'directory') {
+              size = await _countFolderEntriesIncludingTrash(provider, entryPath).catch(() => 0);
+            }
+            const metaHasVirtualSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(
+              meta?.trash_root || meta?.original_path || '',
+            );
+            const declaredTrashRoot = rootsByPath.get(_normalizeFolderPath(meta?.trash_root || ''));
+            const declaredPhysicalKey = String(declaredTrashRoot?.physicalPath || declaredTrashRoot?.path || '').toLowerCase();
+            const itemTrashRoot = (declaredTrashRoot && declaredPhysicalKey === physicalKey ? declaredTrashRoot : null)
+              || (metaHasVirtualSource ? sourceRootsByPhysical.get(physicalKey) : null)
+              || trashRoot;
+            items.push({
+              name: entry.name,
+              type: entry.handle.kind === 'directory' ? 'folder' : 'file',
+              size,
+              original_path: String(meta?.original_path || ''),
+              deleted_at: String(meta?.deleted_at || ''),
+              trash_root: itemTrashRoot.path,
+              trash_root_name: itemTrashRoot.name,
+            });
+          }
+        } catch (error) {
+          warnings.push({
+            trash_root: trashRoot.path, trash_root_name: trashRoot.name, stage: 'trash-list',
+            message: error?.message || String(error), code: error?.code || '',
+          });
+        }
+      }
+      return warnings.length
+        ? { items, warnings, partial: true, failed: warnings.length }
+        : { items };
     }
 
     if (pathname === '/trash/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const name = _validateItemName(body?.name || '', 'name');
-      const source = await _resolveEntryHandle(provider, _joinPath(PWA_TRASH_DIR, name));
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, name);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
       if (!source) throw new Error('ゴミ箱に見つかりません');
-      const originalPath = _normalizeFolderPath((await _readJsonSafe(provider, _joinPath(PWA_TRASH_DIR, name + '._trash_meta.json'), {}))?.original_path || '');
-      const baseDest = originalPath || name;
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
       let destPath = baseDest;
       if (await _pathExists(provider, destPath)) {
         const split = _splitNameAndExt(_basename(baseDest));
@@ -691,30 +746,85 @@
           destPath = _joinPath(baseDir, nextName);
         }
       }
-      await _moveEntry(provider, _joinPath(PWA_TRASH_DIR, name), destPath);
-      await _removeEntry(provider, _joinPath(PWA_TRASH_DIR, name + '._trash_meta.json')).catch(() => {});
-      return { ok: true, restored_to: destPath };
+      await _moveEntry(provider, trashPath, destPath);
+      const warnings = [];
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_to: destPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
     }
 
     if (pathname === '/trash/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const name = _validateItemName(body?.name || '', 'name');
-      const target = await _resolveEntryHandle(provider, _joinPath(PWA_TRASH_DIR, name));
-      if (!target) return { ok: true };
-      await _removeEntry(provider, _joinPath(PWA_TRASH_DIR, name));
-      await _removeEntry(provider, _joinPath(PWA_TRASH_DIR, name + '._trash_meta.json')).catch(() => {});
-      return { ok: true };
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, name);
+      const metaPath = trashPath + '._trash_meta.json';
+      if (await _resolveEntryHandle(provider, trashPath)) await _removeEntry(provider, trashPath);
+      const warnings = [];
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
     }
 
     if (pathname === '/trash/empty' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      const trash = await _resolveEntryHandle(provider, PWA_TRASH_DIR);
-      if (!trash || trash.kind !== 'directory') return { ok: true };
-      const entries = await _listDirectoryEntries(provider, PWA_TRASH_DIR);
-      for (const entry of entries) {
-        await _removeEntry(provider, _joinPath(PWA_TRASH_DIR, entry.name)).catch(() => {});
+      const requestedRoots = body?.trash_root
+        ? [await _resolveAllowedTrashRoot(body.trash_root)]
+        : await _allowedTrashRoots();
+      const seenPhysicalRoots = new Set();
+      const roots = requestedRoots.filter((root) => {
+        const key = String(root.physicalPath || root.path).toLowerCase();
+        if (seenPhysicalRoots.has(key)) return false;
+        seenPhysicalRoots.add(key);
+        return true;
+      });
+      const failures = [];
+      let removed = 0;
+      for (const trashRoot of roots) {
+        try {
+          const trash = await _resolveEntryHandle(provider, trashRoot.path);
+          if (!trash || trash.kind !== 'directory') continue;
+          const entries = await _listDirectoryEntries(provider, trashRoot.path);
+          const entryNames = new Set(entries.map((entry) => entry.name));
+          const handled = new Set();
+          for (const entry of entries) {
+            if (handled.has(entry.name)) continue;
+            const isMeta = entry.name.endsWith('._trash_meta.json');
+            const itemName = isMeta ? entry.name.slice(0, -'._trash_meta.json'.length) : entry.name;
+            if (isMeta && entryNames.has(itemName)) continue;
+            try {
+              await _removeEntry(provider, _joinPath(trashRoot.path, entry.name));
+              removed += 1;
+            } catch (error) {
+              failures.push({ trash_root: trashRoot.path, name: entry.name, error: error?.message || String(error) });
+              if (!isMeta) handled.add(entry.name + '._trash_meta.json');
+              continue;
+            }
+            if (isMeta) continue;
+            const metaName = entry.name + '._trash_meta.json';
+            handled.add(metaName);
+            if (!entryNames.has(metaName)) continue;
+            try {
+              await _removeEntry(provider, _joinPath(trashRoot.path, metaName));
+              removed += 1;
+            } catch (error) {
+              failures.push({ trash_root: trashRoot.path, name: metaName, error: error?.message || String(error) });
+            }
+          }
+        } catch (error) {
+          failures.push({ trash_root: trashRoot.path, name: '', error: error?.message || String(error) });
+        }
       }
-      return { ok: true };
+      if (failures.length) {
+        const error = new Error(`ゴミ箱を完全に空にできませんでした（${failures.length}件）`);
+        error.code = 'trash_empty_partial_failure';
+        error.failures = failures;
+        error.removed = removed;
+        throw error;
+      }
+      return { ok: true, removed, trash_roots: roots.map((root) => root.path) };
     }
 
     if (pathname === '/server-info' && method === 'GET') return { local_ip: 'ブラウザ版ではローカルIPは利用しません' };

@@ -1,0 +1,350 @@
+:root {
+  color-scheme: dark;
+  --sa-bg: #1b1c1f;
+  --sa-bg2: #222326;
+  --sa-bg3: #2b2d31;
+  --sa-border: #393b40;
+  --sa-fg: #e4e7ec;
+  --sa-muted: #9aa1ad;
+  --sa-accent: #5aa7e8;
+  --sa-danger: #d66161;
+  --sa-radius: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg, var(--sa-bg));
+  color: var(--fg, var(--sa-fg));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.sa-shell {
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+}
+
+.sa-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, var(--sa-border));
+  background: var(--bg2, var(--sa-bg2));
+}
+
+.sa-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.sa-icon-btn,
+.sa-text-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--sa-radius);
+  background: transparent;
+  color: var(--fg, var(--sa-fg));
+  cursor: pointer;
+}
+
+.sa-icon-btn {
+  width: 30px;
+  padding: 0;
+}
+
+.sa-text-btn {
+  padding: 0 10px;
+}
+
+.sa-icon-btn:hover,
+.sa-text-btn:hover,
+.sa-icon-btn.active,
+.sa-text-btn.active {
+  border-color: var(--border, var(--sa-border));
+  background: var(--bg3, var(--sa-bg3));
+}
+
+.sa-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sa-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(42vw, 620px);
+  color: var(--ui-fg-muted, var(--sa-muted));
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sa-menu {
+  position: fixed;
+  z-index: 10020;
+  display: none;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: var(--sa-radius);
+  background: var(--bg2, var(--sa-bg2));
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+}
+
+.sa-menu.open {
+  display: block;
+}
+
+.sa-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg, var(--sa-fg));
+  text-align: left;
+  cursor: pointer;
+}
+
+.sa-menu button:hover {
+  background: var(--bg3, var(--sa-bg3));
+}
+
+.sa-menu .danger {
+  color: var(--sa-danger);
+}
+
+.sa-menu-sep {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border, var(--sa-border));
+}
+
+.sa-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg, var(--sa-bg));
+}
+
+@media (pointer: coarse) {
+  .sa-shell {
+    grid-template-rows: 56px minmax(0, 1fr);
+  }
+
+  .sa-icon-btn,
+  .sa-text-btn {
+    min-height: 44px;
+  }
+
+  .sa-icon-btn {
+    width: 44px;
+  }
+
+  .sa-menu button,
+  .sa-context-menu button {
+    min-height: 44px;
+  }
+
+  .sa-toast {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 560px) {
+  .sa-shell {
+    grid-template-rows: 56px minmax(0, 1fr);
+  }
+
+  .sa-icon-btn,
+  .sa-text-btn {
+    min-height: 44px;
+  }
+
+  .sa-icon-btn {
+    width: 44px;
+  }
+
+  .sa-menu button,
+  .sa-context-menu button,
+  .sa-toast {
+    min-height: 44px;
+  }
+}
+
+.sa-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(1px);
+}
+
+.sa-loading.visible {
+  display: flex;
+}
+
+.sa-loading-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 240px;
+  padding: 16px 18px;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 8px;
+  background: var(--bg2, var(--sa-bg2));
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.38);
+}
+
+.sa-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border, var(--sa-border));
+  border-top-color: var(--accent, var(--sa-accent));
+  border-radius: 999px;
+  animation: sa-spin 0.8s linear infinite;
+}
+
+@keyframes sa-spin {
+  to { transform: rotate(360deg); }
+}
+
+.sa-toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 10030;
+  max-width: min(640px, calc(100vw - 24px));
+  padding: 9px 12px;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 7px;
+  background: var(--bg2, var(--sa-bg2));
+  color: var(--fg, var(--sa-fg));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.26);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.sa-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.sa-toast.error {
+  border-color: rgba(214, 97, 97, 0.7);
+}
+
+.sa-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--ui-fg-muted, var(--sa-muted));
+}
+
+.sa-field {
+  display: grid;
+  gap: 5px;
+}
+
+.sa-field span {
+  color: var(--ui-fg-muted, var(--sa-muted));
+  font-size: 12px;
+}
+
+.sa-field input,
+.sa-field select,
+.sa-field textarea {
+  width: 100%;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 5px;
+  background: var(--bg, var(--sa-bg));
+  color: var(--fg, var(--sa-fg));
+  padding: 7px 8px;
+}
+
+.sa-panel {
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: var(--sa-radius);
+  background: var(--bg2, var(--sa-bg2));
+}
+
+.sa-context-menu {
+  position: fixed;
+  z-index: 10025;
+  display: none;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 6px;
+  background: var(--bg2, var(--sa-bg2));
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+.sa-context-menu.open {
+  display: block;
+}
+
+.sa-context-menu button {
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg, var(--sa-fg));
+  text-align: left;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.sa-context-menu button:hover {
+  background: var(--bg3, var(--sa-bg3));
+}
+
+@media (pointer: coarse), (max-width: 560px) {
+  .sa-context-menu button {
+    min-height: 44px;
+  }
+}

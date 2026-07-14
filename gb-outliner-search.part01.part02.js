@@ -96,6 +96,7 @@ async function renderHomeFolderTree(options = {}) {
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
     container.innerHTML = '';
     registerFileTypes(children);
+    if (typeof _registerFileIds === 'function') _registerFileIds(children);
     if (typeof _registerOutlinerConflictPaths === 'function') _registerOutlinerConflictPaths(children);
     children.forEach(child => {
       container.appendChild(createTreeNodeFromBrowse(child, homePath));

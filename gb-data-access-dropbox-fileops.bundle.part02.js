@@ -1,3 +1,101 @@
+    await provider.writeText(normalized, data.content || '');
+    return { ok: true };
+  }
+
+  async function _deleteFileVersion(provider, path, version) {
+    return _softDeleteVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), version, 'file');
+  }
+
+  async function _undeleteFileVersion(provider, path, token) {
+    return _restoreDeletedVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), token, 'file');
+  }
+
+  function _relativeToFolder(folderPath, filePath) {
+    const folder = _normalizeFolderPath(folderPath);
+    const file = _normalizeFolderPath(filePath);
+    if (!folder) return file;
+    return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
+  }
+
+  function _skipFolderVersionRelPath(relPath) {
+    const normalized = _normalizeFolderPath(relPath);
+    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+  }
+
+  async function _collectFolderVersionFiles(provider, folderPath) {
+    const base = _normalizeFolderPath(folderPath);
+    const files = [];
+    async function walk(current) {
+      const entries = await _listDirectoryEntries(provider, current);
+      for (const entry of entries) {
+        if (!entry.name || entry.name.startsWith('.')) continue;
+        const fullPath = _joinPath(current, entry.name);
+        const relPath = _relativeToFolder(base, fullPath);
+        if (_skipFolderVersionRelPath(relPath)) continue;
+        if (entry.handle.kind === 'directory') {
+          await walk(fullPath);
+          continue;
+        }
+        const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
+        if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
+        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
+        files.push({ rel_path: relPath, path: fullPath, size: stats.size || 0, modified: stats.modified || '' });
+      }
+    }
+    await walk(base);
+    return files;
+  }
+
+  async function _saveFolderVersion(provider, folderPath, options) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const folder = await _resolveEntryHandle(provider, normalized);
+    if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
+    const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
+    const kind = options?.auto ? 'auto' : 'manual';
+    const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
+    const versionDir = _joinPath(_folderVersionDir(normalized), versionName);
+    const filesDir = _joinPath(versionDir, 'files');
+    const files = await _collectFolderVersionFiles(provider, normalized);
+    let totalSize = 0;
+    try {
+      for (const file of files) {
+        totalSize += Number(file.size || 0);
+        await provider.copyPath(file.path, _joinPath(filesDir, file.rel_path));
+      }
+      await provider.writeJson(_joinPath(versionDir, '_meta.json'), {
+        folder_path: normalized,
+        created: _nowIso(),
+        label: options?.label || '',
+        auto: !!options?.auto,
+        files: files.map(({ rel_path, size, modified }) => ({ rel_path, size, modified })),
+        exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
+      });
+    } catch (error) {
+      await _removeEntry(provider, versionDir).catch(() => {});
+      throw error;
+    }
+    return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
+  }
+
+  async function _listFolderVersions(provider, folderPath) {
+    const dir = _folderVersionDir(_normalizeFolderPath(folderPath));
+    const entries = await _listEntriesSafe(provider, dir);
+    const versions = [];
+    for (const entry of entries) {
+      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_')) continue;
+      const meta = await _readJsonSafe(provider, _joinPath(dir, entry.name, '_meta.json'), {});
+      const files = Array.isArray(meta?.files) ? meta.files : [];
+      versions.push({
+        name: entry.name,
+        created: _versionCreatedFromName(entry.name) || meta?.created || '',
+        label: meta?.label || '',
+        auto: !!meta?.auto,
+        file_count: files.length,
+        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
+      });
+    }
+    versions.sort((a, b) => String(b.name).localeCompare(String(a.name)));
+    return versions;
   }
 
   async function _readFolderVersion(provider, folderPath, version) {
@@ -304,13 +402,17 @@
       const content = String(body?.content ?? '');
       const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
       const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
+      const createOnly = !!(body?.create_only || body?.createOnly);
       const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
       if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
+      if ((createOnly && entry) || (expectedEtag && !entry && !forceOverwrite)) {
+        _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
+      }
       if (expectedEtag && entry && !forceOverwrite) {
         const currentEtag = await _fileEtag(provider, filePath, entry);
-        if (currentEtag && currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
+        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
@@ -785,116 +887,14 @@
     if (pathname === '/outliner/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const source = await _resolveEntryHandle(provider, _joinPath(PWA_TRASH_DIR, trashName));
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, trashName);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
       if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, _joinPath(PWA_TRASH_DIR, trashName + '._trash_meta.json'), {});
-      const originalPath = _normalizeFolderPath(meta?.original_path || '');
-      if (!originalPath) throw new Error('元のパスが不明です');
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
       if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, _joinPath(PWA_TRASH_DIR, trashName), originalPath);
-      await _removeEntry(provider, _joinPath(PWA_TRASH_DIR, trashName + '._trash_meta.json')).catch(() => {});
-      return { ok: true, restored_path: originalPath };
-    }
-
-    if (pathname === '/outliner/duplicate' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
-      const sourceName = _basename(sourcePath);
-      const sourceSplit = _splitNameAndExt(sourceName);
-      let destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${sourceSplit.ext}` : `${sourceName}_copy`;
-      let destPath = _joinPath(_dirname(sourcePath), destName);
-      for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
-        destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${counter}${sourceSplit.ext}` : `${sourceName}_copy${counter}`;
-        destPath = _joinPath(_dirname(sourcePath), destName);
-      }
-      const destDirHandle = await _directoryHandle(provider, _dirname(destPath), true);
-      await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      return { ok: true, new_path: destPath, new_name: destName };
-    }
-
-    if (pathname === '/outliner/save-as' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
-      const sourceName = _basename(sourcePath);
-      const sourceSplit = _splitNameAndExt(sourceName);
-      let newName = String(body?.new_name || (source.kind === 'file' ? sourceSplit.stem : sourceName)).replace(/[\\/]/g, '').replace(/\.\./g, '').trim();
-      newName = _validateItemName(newName, 'new_name');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || _dirname(sourcePath));
-      let destName = source.kind === 'file' ? newName + sourceSplit.ext : newName;
-      let destPath = _joinPath(destFolder, destName);
-      for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
-        destName = source.kind === 'file' ? `${newName}_${counter}${sourceSplit.ext}` : `${newName}_${counter}`;
-        destPath = _joinPath(destFolder, destName);
-      }
-      const destDirHandle = await _directoryHandle(provider, destFolder, true);
-      await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      return { ok: true, new_path: destPath, new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName };
-    }
-
-    if (pathname === '/outliner/move' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      const destEntry = await _resolveEntryHandle(provider, destFolder);
-      if (!source) throw new Error('見つかりません');
-      if (!destEntry || destEntry.kind !== 'directory') throw new Error(`移動先フォルダが見つかりません: ${destFolder}`);
-      if (source.kind === 'directory' && (destFolder === sourcePath || destFolder.startsWith(sourcePath + '/'))) throw new Error('フォルダ自身の中には移動できません');
-      if (destFolder === _dirname(sourcePath)) {
-        return {
-          ok: true,
-          unchanged: true,
-          new_path: sourcePath,
-          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
-          file_id: _fnvFileId(sourcePath),
-          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
-        };
-      }
-      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
-      await _moveEntry(provider, sourcePath, conflict.path);
+      await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
-      await _runPostMutationStep(warnings, 'stored-paths', () => (
-        typeof _rewriteStoredPathsForProvider === 'function'
-          ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')
-          : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
-      ));
-      await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
-      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, { action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }));
-      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-      await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');
-      });
-      return {
-        ok: true,
-        new_path: conflict.path,
-        new_name: source.kind === 'file' ? _splitNameAndExt(_basename(conflict.path)).stem : _basename(conflict.path),
-        file_id: _fnvFileId(conflict.path),
-        relocate,
-        ..._resultWarnings(warnings),
-      };
-    }
-
-    if (pathname === '/trash' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const trashEntry = await _resolveEntryHandle(provider, PWA_TRASH_DIR);
-      if (!trashEntry || trashEntry.kind !== 'directory') return { items: [] };
-      const entries = await _listDirectoryEntries(provider, PWA_TRASH_DIR);
-      const items = [];
-      for (const entry of entries) {
-        if (entry.name.endsWith('._trash_meta.json')) continue;
-        const entryPath = _joinPath(PWA_TRASH_DIR, entry.name);
-        const meta = await _readJsonSafe(provider, entryPath + '._trash_meta.json', {});
-        let size = 1;
-        if (entry.handle.kind === 'directory') {
-          size = await _countFolderEntriesIncludingTrash(provider, entryPath).catch(() => 0);
-        }
-        items.push({
-          name: entry.name,
-          type: entry.handle.kind === 'directory' ? 'folder' : 'file',
-          size,
-          original_path: String(meta?.original_path || ''),
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {

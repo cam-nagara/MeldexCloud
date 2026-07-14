@@ -257,6 +257,8 @@ async function bdOpenBoard(label, path, opts) {
     const parsed = bdParseMd(raw);
     bd.path = nextPath;
     bd._loadedBoardPath = nextPath;
+    bd._preservedFrontmatter = parsed.preservedFrontmatter || '';
+    window.MeldexFileLockBadge?.apply?.(titleEl, nextPath);
     bd.nodes = parsed.nodes || [];
     if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes);
     // 新規作成ボードの初期ルートカードには階層別スタイル (_autoStyle) とロジック図を既定で有効化する。
@@ -372,6 +374,7 @@ async function bdOpenBoard(label, path, opts) {
     bd.path = prevPath;
     bd._loadedBoardPath = prevLoadedBoardPath;
     if (titleEl) titleEl.textContent = rollback.title || '';
+    window.MeldexFileLockBadge?.apply?.(titleEl, prevPath);
     if (prevDump && typeof bdLoadState === 'function') {
       bdLoadState(prevDump);
       if (typeof bdRender === 'function') bdRender();

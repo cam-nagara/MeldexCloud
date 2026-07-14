@@ -43,7 +43,14 @@
       while (nextCtx) {
         PENDING_CONTEXTS.delete(key);
         if (nextCtx.status !== undefined && !_isCalendarSyncActiveStatus(nextCtx.status)) {
-          await _deleteSyncedEventForContext(nextCtx, ptc.calendarSync);
+          // 非アクティブ値の保存でも、同プロパティに採用値が残っていればイベントは残す（採用値で再同期）
+          const entityData = await _loadEntityData(nextCtx.dbPath, _entityNameFromPath(nextCtx.entityPath));
+          const remaining = _calendarSyncActiveValue(entityData?.[nextCtx.propName]);
+          if (remaining) {
+            await _syncOne({ ...nextCtx, newValue: remaining.value, status: remaining.status }, ptc.calendarSync);
+          } else {
+            await _deleteSyncedEventForContext(nextCtx, ptc.calendarSync);
+          }
         } else {
           await _syncOne(nextCtx, ptc.calendarSync);
         }

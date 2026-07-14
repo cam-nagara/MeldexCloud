@@ -184,7 +184,10 @@
   function _isExcludedWorkspacePath(path) {
     const normalized = _normalizeFolderPath(path);
     if (!normalized) return false;
-    return WORKSPACE_SCAN_EXCLUDE_PREFIXES.some((prefix) => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+    const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(normalized);
+    const relative = _normalizeFolderPath(parsedSource?.relativePath ?? normalized);
+    if (!relative) return false;
+    return WORKSPACE_SCAN_EXCLUDE_PREFIXES.some((prefix) => relative === prefix.replace(/\/$/, '') || relative.startsWith(prefix));
   }
 
   function _jsonHeaders(headers) {

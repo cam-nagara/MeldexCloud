@@ -783,3 +783,76 @@ ${clone.outerHTML}
     });
   }
 }
+
+// 行本文 (row.text) を Markdown 出力用のプレーンテキストへ変換する。
+// row.text の内部表現はエスケープ付きプレーンテキストで、ルビは {ベース|ルビ}、
+// 手動リンクは [ラベル](ml:target)、改行は \n で保持されている (HTML の <br> ではない)。
+// ここではルビ記法 {ベース|ルビ} をそのまま出力し、手動リンクはラベルのみに落とし、
+// エスケープ済みの生文字 (\{ \| \} \\ \[ \]) は素の文字へ戻す。
+function _sn2ScriptNoteRowTextForMarkdown(rawText) {
+  const raw = String(rawText || '');
+  if (typeof _sn2CollectVisibleSegments !== 'function') {
+    return typeof _sn2UnescapeScriptNotePlainText === 'function' ? _sn2UnescapeScriptNotePlainText(raw) : raw;
+  }
+  return _sn2CollectVisibleSegments(raw).map(segment => {
+    if (segment.type === 'ruby') return `{${segment.plain}|${segment.ruby}}`;
+    if (segment.type === 'manual-link') return segment.plain;
+    return typeof _sn2UnescapeScriptNotePlainText === 'function' ? _sn2UnescapeScriptNotePlainText(segment.raw) : segment.raw;
+  }).join('');
+}
+
+// シナリオの現在ビューを Markdown 形式のプレーンテキストとして保存する。
+// 役名 (タイプ) を持つ行は `**[役名]** 本文` の形式にし、区切り (ページ送り) 行は
+// セクション区切りの水平線 "---" に変換する。行内改行は Markdown のハードブレーク
+// (行末2スペース+改行) にして、素の Markdown ビューアでも改行が保たれるようにする。
+async function exportCurrentScriptNoteAsMarkdown() {
+  if (typeof _sn2GetActiveEditor !== 'function') {
+    if (typeof showStatus === 'function') showStatus('シナリオエディタが利用できません', true);
+    return;
+  }
+  const editor = _sn2GetActiveEditor();
+  if (!editor?.doc) {
+    if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
+    return;
+  }
+  try { editor._syncAllFromDom?.(); } catch {}
+
+  const doc = editor.doc;
+  const { breakNames } = typeof editor._getRoleFlagSets === 'function'
+    ? editor._getRoleFlagSets()
+    : { breakNames: new Set() };
+
+  const title = String(doc.title || '無題シナリオ').trim() || '無題シナリオ';
+  const rows = Array.isArray(doc.rows) ? doc.rows : [];
+  const blocks = [`# ${title}`];
+
+  rows.forEach((row, idx) => {
+    const role = String(row?.role || '').trim();
+    const rawBody = _sn2ScriptNoteRowTextForMarkdown(row?.text || '');
+    if (role && breakNames.has(role)) {
+      // 区切り（ページ送り）行はセクション区切りの水平線に変換する
+      if (idx > 0) blocks.push('---');
+      const trimmed = rawBody.trim();
+      if (trimmed) blocks.push(trimmed.split('\n').join('  \n'));
+      return;
+    }
+    const lines = rawBody.split('\n');
+    if (role) lines[0] = lines[0] ? `**[${role}]** ${lines[0]}` : `**[${role}]**`;
+    blocks.push(lines.join('  \n'));
+  });
+
+  const markdown = blocks.join('\n\n') + '\n';
+  const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
+
+  if (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveText === 'function') {
+    await MeldexExportSave.saveText(markdown, {
+      title: safeTitle,
+      extension: '.md',
+      dialogTitle: 'Markdownとして保存',
+      filetypes: [['Markdownファイル', '*.md'], ['すべてのファイル', '*.*']],
+      bom: true,
+      okMessage: 'Markdown として保存しました',
+      errorMessage: 'Markdown の保存に失敗しました',
+    });
+  }
+}

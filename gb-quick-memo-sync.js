@@ -55,12 +55,12 @@
   }
 
   function safeFileStem(value, fallback) {
-    const text = String(value || fallback || 'メモ')
+    const text = String(value || fallback || 'クイックメモ')
       .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 96);
-    return text || fallback || 'メモ';
+    return text || fallback || 'クイックメモ';
   }
 
   function targetSheetPath(item) {
@@ -70,12 +70,12 @@
       .map(part => safeFileStem(part, '').trim())
       .filter(Boolean)
       .join('/');
-    return clean || 'メモ';
+    return clean || 'クイックメモ';
   }
 
   function targetSheetName(item) {
     const path = targetSheetPath(item);
-    return path.split('/').filter(Boolean).pop() || 'メモ';
+    return path.split('/').filter(Boolean).pop() || 'クイックメモ';
   }
 
   function memoTitle(item) {
@@ -160,8 +160,8 @@
     };
   }
 
-  function smartDbDefinition(sheetPath = 'メモ') {
-    const name = sheetPath.split('/').filter(Boolean).pop() || 'メモ';
+  function smartDbDefinition(sheetPath = 'クイックメモ') {
+    const name = sheetPath.split('/').filter(Boolean).pop() || 'クイックメモ';
     return {
       type: 'smart-db',
       id: 'file:' + name + '.smart-db.json',
@@ -213,11 +213,11 @@
         },
       }),
     });
-    if (sheetPath !== 'メモ') return;
+    if (sheetPath !== 'クイックメモ') return;
     try {
-      await apiFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), { silentError: true });
+      await apiFetch('/file?path=' + encodeURIComponent('クイックメモ.smart-db.json'), { silentError: true });
     } catch {
-      await jsonFetch('/file?path=' + encodeURIComponent('メモ.smart-db.json'), {
+      await jsonFetch('/file?path=' + encodeURIComponent('クイックメモ.smart-db.json'), {
         method: 'POST',
         silentError: true,
         body: JSON.stringify({ content: JSON.stringify(smartDbDefinition(sheetPath), null, 2) }),

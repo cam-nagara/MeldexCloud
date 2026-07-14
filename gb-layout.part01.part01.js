@@ -52,6 +52,11 @@ const GBLayout = (() => {
     return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main');
   }
 
+  function _isSidebarPaneNode(node) {
+    const role = _paneRoleName(node);
+    return role === 'left-sidebar' || role === 'right-sidebar';
+  }
+
   function _activeTabForPaneNode(node) {
     if (!node || !Array.isArray(node.tabs) || node.tabs.length === 0) return null;
     const index = Number.isInteger(node.activeTabIndex) ? node.activeTabIndex : -1;
@@ -781,6 +786,37 @@ const GBLayout = (() => {
         }
       }
     }
+
+    // --- preserve inner split children's pixel widths ---
+    if (otherChild && otherChild.type === 'split' && otherChild.direction === 'horizontal'
+        && otherChild.children?.length === 2) {
+      const layoutW = _layoutEl?.clientWidth || window.innerWidth || 1600;
+      const handlePx = 4;
+      if (targetNode.collapsed) {
+        // Save inner ratio before adjustment
+        if (otherChild._savedInnerRatio == null) otherChild._savedInnerRatio = otherChild.ratio;
+        // Compute old contentSplit content area (before collapse)
+        const savedRatio = targetNode._savedRatio;
+        const oldSplitPct = childIndex === 0 ? (1 - savedRatio) : savedRatio;
+        const oldContentW = oldSplitPct * (layoutW - handlePx);
+        // New contentSplit width (flex:1 after collapse → layoutW - 32 - handlePx)
+        const newContentW = layoutW - 32 - handlePx;
+        const innerOld = oldContentW - handlePx;
+        const innerNew = newContentW - handlePx;
+        if (innerOld > 0 && innerNew > 0) {
+          // Keep right sidebar at same pixel width
+          const rightPx = (1 - otherChild._savedInnerRatio) * innerOld;
+          otherChild.ratio = Math.max(0.1, Math.min(0.95, 1 - rightPx / innerNew));
+        }
+      } else {
+        // Expanding: restore the saved inner ratio
+        if (otherChild._savedInnerRatio != null) {
+          otherChild.ratio = otherChild._savedInnerRatio;
+          delete otherChild._savedInnerRatio;
+        }
+      }
+    }
+
     if (!options?.skipRender) render();
   }
 
@@ -978,7 +1014,6 @@ const GBLayout = (() => {
             return;
           }
           GBTabs.activateTab(node.id, tab.id, { preserveActivePane: _isPassivePaneTab(tab, node) });
-          _showTabContextMenu(e, node.id, tab);
         });
 
         // 右クリックメニュー（デスクトップ）＋ 長押しで同メニュー（タッチ）
@@ -1058,7 +1093,7 @@ const GBLayout = (() => {
       if (typeof setActivePane === 'function') setActivePane(node.id);
       if (typeof showPanelMenu === 'function') showPanelMenu(e, { paneId: node.id });
     });
-    if (_showFreeLayoutUi()) tabsScroll.appendChild(addTabBtn);
+    if (!_isSidebarPaneNode(node)) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
     if (showPaneActionsButton) tabBar.appendChild(ctrls);

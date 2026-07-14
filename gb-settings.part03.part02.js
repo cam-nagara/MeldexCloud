@@ -70,6 +70,7 @@ async function loadFileLockListForSettings() {
           await apiFetch('/file-lock?path=' + encodeURIComponent(entry.path || ''), { method: 'DELETE' });
           if (typeof _ensureLocksLoaded === 'function') await _ensureLocksLoaded({ force: true });
           if (typeof refreshOutliner === 'function') await refreshOutliner();
+          window.MeldexFileLockBadge?.refreshAll?.();
           await loadFileLockListForSettings();
           showStatus('編集ロックを解除しました');
         } catch {

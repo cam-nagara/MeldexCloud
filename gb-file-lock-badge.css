@@ -1,0 +1,10 @@
+/* gb-file-lock-badge.css — ツールバータイトル直前の編集ロックバッジ
+   gb-file-lock-badge.js が挿入する .tb-lock-badge のスタイル。
+   ツールバーの flex 行で潰れないよう flex:0 0 auto を指定する。 */
+.tb-lock-badge {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-right: 4px;
+}

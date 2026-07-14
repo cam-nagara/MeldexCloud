@@ -1,0 +1,102 @@
+<!doctype html>
+<html data-standalone-app="note" data-standalone-cloud="note" data-meldex-cloud-app="note" lang="ja" spellcheck="false">
+<head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+  <base href="../../">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="theme-color" content="#181818">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Meldex Note">
+  <link rel="manifest" href="apps/note/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="MeldexNote_icon_256.png">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Meldex Note</title>
+  <link rel="icon" href="MeldexNote_icon_64.png" type="image/png">
+  <link rel="stylesheet" href="gb-fonts.css">
+  <link rel="stylesheet" href="gb-icon-assets.css">
+  <link rel="stylesheet" href="gb-theme.css">
+  <link rel="stylesheet" href="gb-ui.css">
+  <link rel="stylesheet" href="standalone-shell.css">
+  <link rel="stylesheet" href="standalone-workspace-tree.css">
+  <link rel="stylesheet" href="note-standalone.css">
+</head>
+<body>
+  <div class="sa-shell note-app">
+    <header class="sa-toolbar">
+      <div class="sa-menu-wrap">
+        <button id="note-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー" data-e2e-id="note-menu-button"><span class="ico ico-menu"></span></button>
+        <div id="note-menu" class="sa-menu" role="menu">
+          <button type="button" data-note-action="new" data-e2e-id="note-menu-new"><span class="ico ico-filePlus"></span>新規ノート</button>
+          <button type="button" data-note-action="open" data-e2e-id="note-menu-open"><span class="ico ico-folderOpen"></span>開く...</button>
+          <button type="button" data-note-action="save" data-e2e-id="note-menu-save"><span class="ico ico-save"></span>保存</button>
+          <button type="button" data-note-action="saveAs" data-e2e-id="note-menu-save-as"><span class="ico ico-saveAll"></span>名前を付けて保存...</button>
+          <div class="sa-menu-sep"></div>
+          <button type="button" data-note-action="insertLink" data-e2e-id="note-menu-insert-link"><span class="ico ico-link"></span>リンクを挿入</button>
+          <button type="button" data-note-action="toggleVertical" data-e2e-id="note-menu-toggle-vertical"><span class="ico ico-kanban"></span>縦書き切替</button>
+          <div class="sa-menu-sep"></div>
+          <button type="button" data-standalone-default-apps-open data-e2e-id="note-menu-default-app"><span class="ico ico-fileCog"></span>既定アプリに設定...</button>
+        </div>
+      </div>
+      <input id="note-title-input" class="note-title-input" type="text" value="無題" aria-label="ノート名" spellcheck="false">
+      <div id="note-path-label" class="sa-path">未保存</div>
+    </header>
+    <main class="sa-main note-main">
+      <article id="page-content" class="note-editor" contenteditable="true" spellcheck="false" data-path=""></article>
+      <div id="media-float-controls" class="note-media-controls" role="toolbar" aria-label="メディア操作" aria-hidden="true">
+        <button type="button" data-align="left" data-e2e-id="note-media-align-left" title="左寄せ" aria-label="メディアを左寄せ">左</button>
+        <button type="button" data-align="center" data-e2e-id="note-media-align-center" title="中央" aria-label="メディアを中央寄せ">中</button>
+        <button type="button" data-align="right" data-e2e-id="note-media-align-right" title="右寄せ" aria-label="メディアを右寄せ">右</button>
+        <button type="button" data-action="delete" data-e2e-id="note-media-delete" title="削除" aria-label="メディアを削除">削除</button>
+      </div>
+      <div id="media-resize-handle" class="note-media-resize" data-e2e-id="note-media-resize" aria-hidden="true"></div>
+    </main>
+  </div>
+
+  <div id="note-context-menu" class="sa-context-menu" role="menu" aria-hidden="true">
+    <button type="button" role="menuitem" data-note-action="save" data-e2e-id="note-context-save">保存</button>
+    <button type="button" role="menuitem" data-note-action="insertLink" data-e2e-id="note-context-insert-link">リンクを挿入</button>
+    <button type="button" role="menuitem" data-note-command="cut" data-e2e-id="note-context-cut">切り取り</button>
+    <button type="button" role="menuitem" data-note-command="copy" data-e2e-id="note-context-copy">コピー</button>
+    <button type="button" role="menuitem" data-note-command="selectAll" data-e2e-id="note-context-select-all">すべて選択</button>
+  </div>
+  <div id="standalone-loading" class="sa-loading" role="status" aria-live="polite" aria-busy="true">
+    <div class="sa-loading-box">
+      <div class="sa-spinner" aria-hidden="true"></div>
+      <div id="standalone-loading-text">読み込んでいます...</div>
+    </div>
+  </div>
+  <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite" data-e2e-id="note-standalone-toast"></div>
+  <script src="gb-cloud-runtime-config.js"></script>
+  <script src="gb-config.js"></script>
+  <script src="gb-runtime-adapter.js"></script>
+  <script src="gb-resource-url.js"></script>
+  <script src="gb-dropbox-auth.js"></script>
+  <script src="gb-source-folder-registry.js"></script>
+  <script src="offline-bundles/gb-storage-adapter.js"></script>
+  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-owner-key-store.js"></script>
+  <script src="gb-knowledge-signature.js"></script>
+  <script src="gb-file-lock-store.js"></script>
+  <script src="gb-active-lock-store.js"></script>
+  <script src="gb-active-locks.js"></script>
+  <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
+  <script src="vendor/lucide-icons.js"></script>
+  <script src="offline-bundles/meldex-core.js"></script>
+  <script src="gb-icon-assets.js"></script>
+  <script src="standalone-stubs.js"></script>
+  <script src="standalone-file-fs.js"></script>
+  <script src="standalone-default-apps.js"></script>
+  <script src="standalone-cloud-path-policy.js"></script>
+  <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-runtime.js"></script>
+  <script src="standalone-workspace-tree.js"></script>
+  <script src="standalone-pwa-install.js"></script>
+  <script src="note-standalone-markdown.js"></script>
+  <script src="note-standalone-app.js"></script>
+</body>
+</html>

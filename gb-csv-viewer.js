@@ -150,6 +150,7 @@ function _csvSyncSheetToolbar(label, path, openOpts) {
     toolbarCategoryEl.textContent = displayLabel;
     toolbarCategoryEl.title = 'CSVファイル';
     toolbarCategoryEl.style.cursor = '';
+    if (typeof window !== 'undefined') window.MeldexFileLockBadge?.apply?.(toolbarCategoryEl, path);
   }
   const currentTitleEl = document.getElementById('current-title');
   if (currentTitleEl && !openOpts?.skipGlobalUi) currentTitleEl.textContent = displayLabel;
@@ -230,6 +231,7 @@ async function openCsvFile(label, path, opts) {
   _csvPrepareVisibleSurface(label, path, openOpts);
   const csvTitleEl = document.getElementById('csv-title');
   if (csvTitleEl) csvTitleEl.textContent = label;
+  if (typeof window !== 'undefined') window.MeldexFileLockBadge?.apply?.(csvTitleEl, path);
   const currentTitleEl = document.getElementById('current-title');
   if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
   if (!openOpts.skipSaveLastView) saveLastView({ type: 'csv', label, path });

@@ -331,6 +331,7 @@ async function _bdRenameBoardFile(newName) {
   if (typeof state !== 'undefined') state.currentBoardPath = newPath;
   const titleEl = _bdToolbarControl(_bdToolbarRoot(), 'title', 'bd-title');
   if (titleEl) titleEl.textContent = nextName;
+  window.MeldexFileLockBadge?.apply?.(titleEl, newPath);
   if (typeof saveLastView === 'function') saveLastView({ type: 'board', label: nextName, path: newPath });
   _bdUpdateBoardTabMeta(oldPath, newPath, nextName);
   if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);

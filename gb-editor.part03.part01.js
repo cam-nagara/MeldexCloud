@@ -231,6 +231,52 @@ function _linkIcon(path) {
   return lucide('file', 12);
 }
 
+function _noteLinkifyBareUrls(html) {
+  if (!html || typeof document === 'undefined' || !/https?:\/\//i.test(html)) return html;
+  const root = document.createElement('span');
+  root.innerHTML = html;
+  const skipTags = new Set(['A', 'CODE', 'PRE', 'KBD', 'SAMP', 'SCRIPT', 'STYLE']);
+  const urlRe = /https?:\/\/[^\s<>"']+/gi;
+  const trailingRe = /[.,!?;:、。)]）}\]」』〉》]+$/;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || !urlRe.test(node.nodeValue || '')) return NodeFilter.FILTER_REJECT;
+      urlRe.lastIndex = 0;
+      if (parent.closest('a,.auto-link') || skipTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(node => {
+    const text = node.nodeValue || '';
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    text.replace(urlRe, (match, offset) => {
+      if (offset > last) frag.appendChild(document.createTextNode(text.slice(last, offset)));
+      let url = match;
+      let suffix = '';
+      const trailing = url.match(trailingRe);
+      if (trailing) {
+        suffix = trailing[0];
+        url = url.slice(0, -suffix.length);
+      }
+      const a = document.createElement('a');
+      a.href = url;
+      a.textContent = url;
+      a.style.color = 'var(--accent2)';
+      frag.appendChild(a);
+      if (suffix) frag.appendChild(document.createTextNode(suffix));
+      last = offset + match.length;
+      return match;
+    });
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.replaceWith(frag);
+  });
+  return root.innerHTML;
+}
+
 // インラインMarkdown変換
 function inlinemd(text) {
   let s = esc(text);
@@ -251,15 +297,23 @@ function inlinemd(text) {
     // 拡張alt解析: ![alt|w=300|path=...](src)
     const parts = altFull.split('|');
     const alt = parts[0];
-    let w = 0, dataPath = '';
+    let w = 0, dataPath = '', mediaType = '';
     for (let i = 1; i < parts.length; i++) {
       if (parts[i].startsWith('w=')) w = parseInt(parts[i].slice(2));
       if (parts[i].startsWith('path=')) dataPath = parts[i].slice(5);
+      if (parts[i].startsWith('type=')) mediaType = parts[i].slice(5).toLowerCase();
     }
     const wStyle = w ? `width:${w}px;` : 'max-width:100%;';
-    if (dataPath || src.includes('/file-raw?')) {
+    const isManagedMedia = dataPath || src.includes('/file-raw?') || src.includes('/media/file?');
+    if (isManagedMedia) {
       // embed-media構造を復元（リサイズハンドル対応）— altFull/srcは既にesc済み
-      return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}"><img src="${src}" alt="${alt}" style="${wStyle}"></div>`;
+      if (mediaType === 'video') {
+        return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="video"><video src="${src}" controls style="${wStyle}"></video></div>`;
+      }
+      if (mediaType === 'audio') {
+        return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="audio"><audio src="${src}" controls style="${wStyle}"></audio></div>`;
+      }
+      return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="image"><img src="${src}" alt="${alt}" style="${wStyle}"></div>`;
     }
     return `<img src="${src}" alt="${alt}" style="${wStyle}">`;
   });
@@ -290,7 +344,7 @@ function inlinemd(text) {
   // ルビ記法: {漢字|ルビ} → data-ruby属性のspanで表示
   // ルビ部分はひらがな・カタカナ・漢字・英数字のみ（プログラムの{x|y}との誤判定を防止）
   s = s.replace(/\{([^|{}]+)\|([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBFa-zA-Z0-9\u30FC\u3005\u3006\u3007ー\s]+)\}/g, '<span data-ruby="$2" style="position:relative;">$1</span>');
-  return s;
+  return _noteLinkifyBareUrls(s);
 }
 
 // HTML→Markdown変換
@@ -523,8 +577,24 @@ function htmlToMd(html) {
         const w = node.style.width ? parseInt(node.style.width) : (node.getAttribute('width') ? parseInt(node.getAttribute('width')) : 0);
         const embedDiv = node.closest('.embed-media');
         const dataPath = embedDiv?.dataset?.path || '';
+        const mediaType = embedDiv?.dataset?.type || '';
         // 幅・パス情報を保存: ![alt|w=300|path=...](src)
         let extra = '';
+        if (w) extra += '|w=' + w;
+        if (dataPath) extra += '|path=' + dataPath;
+        if (mediaType && mediaType !== 'image') extra += '|type=' + mediaType;
+        return `![${alt.replace(/\]/g, '\\]')}${extra}](${src})`;
+      }
+      case 'VIDEO':
+      case 'AUDIO': {
+        const src = node.getAttribute('src') || '';
+        const embedDiv = node.closest('.embed-media');
+        const dataPath = embedDiv?.dataset?.path || '';
+        const dataName = embedDiv?.dataset?.name || '';
+        const w = node.style.width ? parseInt(node.style.width) : (node.getAttribute('width') ? parseInt(node.getAttribute('width')) : 0);
+        const type = tag === 'VIDEO' ? 'video' : 'audio';
+        const alt = (dataName || src.split('/').pop() || type).replace(/\]/g, '\\]');
+        let extra = '|type=' + type;
         if (w) extra += '|w=' + w;
         if (dataPath) extra += '|path=' + dataPath;
         return `![${alt}${extra}](${src})`;

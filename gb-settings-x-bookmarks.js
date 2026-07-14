@@ -2,7 +2,10 @@
   'use strict';
 
   const rootId = 'x-bookmarks-settings-container';
+  const TIMER_KEY = 'x-bookmarks-auto';
   let syncInFlight = false;
+  let _currentSchedule = null;
+  let _scheduleWidget = null;
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -96,11 +99,56 @@
           ? syncSummary(last, '前回保存: ')
           : '前回保存: なし'
       );
+      _currentSchedule = config.schedule || null;
+      _initScheduleWidget(config.schedule);
+      _applyScheduleTimer(config.schedule, data.connected);
       if (!options?.preserveStatus) {
         setStatus(data.message || 'Xブックマーク保存を使えます。', !config.client_id_configured);
       }
     } catch (err) {
       setStatus('X連携の状態を取得できませんでした: ' + (err.userMessage || err.message || err), true);
+    }
+  }
+
+  function _initScheduleWidget(schedule) {
+    const container = document.getElementById('x-bookmarks-schedule-container');
+    if (!container || _scheduleWidget) return;
+    _scheduleWidget = window.MeldexScheduler?.createWidget(container, schedule, (cfg) => {
+      _currentSchedule = cfg;
+      saveConfig({ silentError: true });
+    });
+  }
+
+  function _applyScheduleTimer(schedule, connected) {
+    if (!window.MeldexScheduler) return;
+    const cfg = window.MeldexScheduler.normalize(schedule);
+    if (cfg.type === 'off' || !connected) {
+      window.MeldexScheduler.destroyTimer(TIMER_KEY);
+      return;
+    }
+    window.MeldexScheduler.createTimer(TIMER_KEY, cfg, _scheduledSync);
+  }
+
+  async function _scheduledSync() {
+    if (syncInFlight) return;
+    try {
+      const data = await apiFetch('/x-bookmarks/status', { silentError: true });
+      if (!data.connected) return;
+    } catch { return; }
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      const data = await apiPost('/x-bookmarks/sync', { mode: 'incremental', max_results: 100 }, { silentError: true });
+      const total = (data?.created || 0) + (data?.updated || 0);
+      if (total > 0 && typeof showStatus === 'function') {
+        showStatus(`Xブックマーク自動保存: 新規${data.created || 0} / 更新${data.updated || 0}`);
+      }
+      if (typeof loadOutliner === 'function') loadOutliner();
+    } catch (e) {
+      console.warn('X bookmarks scheduled sync failed:', e);
+    } finally {
+      syncInFlight = false;
+      setSyncBusy(false);
     }
   }
 
@@ -117,8 +165,9 @@
     const authUrl = getInputValue('x-bookmarks-auth-url');
     const tokenUrl = getInputValue('x-bookmarks-token-url');
     const apiBase = getInputValue('x-bookmarks-api-base');
+    const schedulePayload = _scheduleWidget ? _scheduleWidget.getCurrentConfig() : _currentSchedule;
     try {
-      await apiPost('/x-bookmarks/config', {
+      const body = {
         save_dir: saveDir,
         max_results: maxResults,
         client_id: clientId,
@@ -126,7 +175,9 @@
         auth_url: authUrl,
         token_url: tokenUrl,
         api_base: apiBase,
-      }, { silentError: true });
+      };
+      if (schedulePayload) body.schedule = schedulePayload;
+      await apiPost('/x-bookmarks/config', body, { silentError: true });
       if (options?.showSuccess) {
         await loadStatus();
         setStatus('X接続設定を保存しました。', false);
@@ -268,6 +319,7 @@
         </label>
       </details>
       <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
+      <div id="x-bookmarks-schedule-container" class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;"></div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
         <button type="button" id="x-bookmarks-save-config" class="gb-btn gb-btn-sm">${icon('save', 14)} 接続設定を保存</button>
         <button type="button" id="x-bookmarks-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Xに接続</button>

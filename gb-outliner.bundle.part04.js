@@ -1,3 +1,268 @@
+
+  // --- ファイルのチャット（ファイル/DB/エントリのみ） ---
+  if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot) {
+    addMenuItem('チャットを開く', () => {
+      closeTreeContextMenu();
+      openFileChat(nodeData.path);
+    }, null, 'messageSquare');
+  }
+
+  if (!isMulti
+    && nodeData.path
+    && nodeData.type !== 'folder'
+    && !nodeData._isRoot
+    && typeof openNative === 'function'
+    && !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type))) {
+    addMenuItem('アプリで開く', () => {
+      closeTreeContextMenu();
+      openNative(nodeData.path);
+    }, null, 'externalLink');
+  }
+
+  // --- 比較（ファイル全般） ---
+  if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot && typeof showCompareModal === 'function') {
+    addMenuItem('比較...', () => {
+      closeTreeContextMenu();
+      showCompareModal(nodeData.path);
+    }, null, 'columns');
+  }
+
+  // --- リンクをコピー ---
+  if (!isMulti && nodeData.path) {
+    addMenuItem('リンクをコピー', () => {
+      closeTreeContextMenu();
+      const linkPath = nodeData.path;
+      const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
+      if (typeof MeldexBroadcast !== 'undefined') {
+        MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type).then(ok => {
+          if (ok) showStatus('リンクをコピーしました');
+        });
+      }
+    }, null, 'link');
+  }
+
+  // --- リネーム（単一選択時のみ、エントリ以外、ロック中は無効） ---
+  if (!isMulti && !isEntity && !_locked && !nodeData._isRoot) {
+    addMenuItem('リネーム', () => {
+      closeTreeContextMenu();
+      startTreeLabelEdit(labelEl, nodeData);
+    }, null, 'pencil');
+  }
+
+  // --- 複製 ---
+  {
+    // nodeDataとnodeElをペアで保持し、フィルタ後もインデックスがずれないようにする
+    const dupPairs = isMulti
+      ? [...treeSelection.items].filter(n => n._nodeData && n._nodeData.path && !n._nodeData._isRoot).map(n => ({ data: n._nodeData, el: n }))
+      : (nodeData.path && !nodeData._isRoot ? [{ data: nodeData, el: nodeEl }] : []);
+    if (dupPairs.length > 0) {
+      const dupLabel = isMulti ? `複製（${dupPairs.length}件）` : '複製';
+      addMenuItem(dupLabel, async () => {
+        closeTreeContextMenu();
+        let count = 0;
+        for (const { data: d, el: srcEl } of dupPairs) {
+          try {
+            const res = await apiPost('/outliner/duplicate', { path: d.path });
+            count++;
+            const newItem = { ...d, name: res.new_name, path: res.new_path };
+            if (res.file_id) newItem.file_id = res.file_id;
+            else delete newItem.file_id;
+            const parentChildren = srcEl?.parentElement;
+            if (parentChildren) {
+              const rootPath = srcEl.closest('#outliner-tree > .tree-node')?._nodeData?.path;
+              const newNode = createTreeNodeFromBrowse(newItem, rootPath);
+              srcEl.nextSibling ? parentChildren.insertBefore(newNode, srcEl.nextSibling) : parentChildren.appendChild(newNode);
+            }
+          } catch {}
+        }
+        if (count > 0) showStatus(`${count}件を複製しました`);
+        else showStatus('複製に失敗しました', true);
+      }, null, 'copy');
+    }
+  }
+
+  // --- パスをコピー ---
+  {
+    const pathTargets = isMulti
+      ? [...treeSelection.items]
+          .map(node => ({ node, data: node._nodeData }))
+          .filter(item => item.data?.path)
+      : (nodeData.path ? [{ node: nodeEl, data: nodeData }] : []);
+    if (pathTargets.length > 0) {
+      const pathLabel = isMulti ? `パスをコピー（${pathTargets.length}件）` : 'パスをコピー';
+      addMenuItem(pathLabel, () => {
+        closeTreeContextMenu();
+        const copyPaths = pathTargets.map(item => _outlinerLocalCopyPath(item.node, item.data)).filter(Boolean);
+        const paths = copyPaths.join('\n');
+        const msg = pathTargets.length === 1
+          ? 'パスをコピーしました: ' + copyPaths[0]
+          : `パスをコピーしました（${pathTargets.length}件）`;
+        navigator.clipboard.writeText(paths).then(() => {
+          showStatus(msg);
+        }).catch(() => {
+          const ta = document.createElement('textarea');
+          ta.value = paths; document.body.appendChild(ta);
+          ta.select(); document.execCommand('copy'); ta.remove();
+          showStatus(msg);
+        });
+      }, null, 'clipboardList');
+    }
+  }
+
+  // --- 新しいウィンドウ/タブで開く ---
+  if (!isMulti && nodeData.path) {
+    const openType = typeof _normalizeOpenTypeForNav === 'function'
+      ? _normalizeOpenTypeForNav(nodeData.type)
+      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
+    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
+    addMenuItem('新しいタブで開く', () => {
+      closeTreeContextMenu();
+      _openInNewTab(nodeData.name || '', nodeData.path, openType);
+    }, null, 'externalLink');
+    addMenuItem('新しいウィンドウで開く', () => {
+      closeTreeContextMenu();
+      // Chrome --app モードの独立ウィンドウとして開く（Meldex の UI チェーン全体が載る）
+      // 通常の window.open だとブラウザのタブバー等が付いて「UI が古く見える」問題になるため、
+      // バックエンド経由の _open_app_window_js を優先利用する。
+      if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
+      else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
+    }, null, 'monitor');
+  }
+
+  // --- お気に入り ---
+  if (!isEntity && nodeData.path) {
+    const isFav = getFavorites().some(f => f.path === nodeData.path);
+    addMenuItem(isFav ? 'お気に入りを外す' : 'お気に入りに追加', () => {
+      closeTreeContextMenu();
+      if (isFav) removeFromFavorites(nodeData.path);
+      else addToFavorites(nodeData.name, nodeData.path, nodeData.type);
+    }, null, isFav ? 'starOff' : 'star');
+  }
+
+  // --- エクスポート ---
+  if (!isMulti && nodeData.path) {
+    const _expItems = [];
+    const pushExportItem = (label, url, extension, filetypes) => {
+      const baseName = (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.guessNameFromPath === 'function')
+        ? MeldexExportSave.guessNameFromPath(nodeData.path, nodeData.name || '無題')
+        : (nodeData.name || '無題');
+      const stem = String(baseName || '無題').replace(/\.[^.]+$/, '') || '無題';
+      _expItems.push({
+        label,
+        url,
+        filename: stem + extension,
+        extension,
+        filetypes,
+      });
+    };
+    if (nodeData.type === 'database') {
+      pushExportItem('CSV', '/export/db?path=' + encodeURIComponent(nodeData.path) + '&format=csv', '.csv', [['CSVファイル', '*.csv'], ['すべてのファイル', '*.*']]);
+      pushExportItem('HTML', '/export/db?path=' + encodeURIComponent(nodeData.path) + '&format=html', '.html', [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']]);
+      pushExportItem('Excel', '/export/db?path=' + encodeURIComponent(nodeData.path) + '&format=xlsx', '.xlsx', [['Excelファイル', '*.xlsx'], ['すべてのファイル', '*.*']]);
+    } else if (nodeData.type === 'board') {
+      pushExportItem('HTML', '/export/canvas?path=' + encodeURIComponent(nodeData.path) + '&format=html', '.html', [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']]);
+      pushExportItem('SVG画像', '/export/canvas?path=' + encodeURIComponent(nodeData.path) + '&format=svg', '.svg', [['SVGファイル', '*.svg'], ['すべてのファイル', '*.*']]);
+      pushExportItem('Markdown', '/export/canvas?path=' + encodeURIComponent(nodeData.path) + '&format=md', '.md', [['Markdownファイル', '*.md'], ['すべてのファイル', '*.*']]);
+    } else if (nodeData.type === 'page') {
+      pushExportItem('テキスト', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=txt', '.txt', [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']]);
+      pushExportItem('Markdown', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=md', '.md', [['Markdownファイル', '*.md'], ['すべてのファイル', '*.*']]);
+      pushExportItem('HTML', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=html', '.html', [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']]);
+      pushExportItem('Word', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=docx', '.docx', [['Wordファイル', '*.docx'], ['すべてのファイル', '*.*']]);
+    }
+    if (_expItems.length > 0) {
+      // エクスポートサブメニュー
+      const exportIconName = typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload';
+      const expPanel = _outlinerCreateSubmenu('エクスポート');
+      _outlinerAppendSubmenu(menu, 'エクスポート', exportIconName, expPanel);
+      _expItems.forEach(ei => {
+        _outlinerAppendMenuItem(expPanel, {
+          label: ei.label,
+          action: async () => {
+          closeTreeContextMenu();
+          if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
+            showStatus('保存ダイアログを初期化できませんでした', true);
+            return;
+          }
+          await MeldexExportSave.saveUrl(ei.url, {
+            filename: ei.filename,
+            extension: ei.extension,
+            dialogTitle: `${ei.label}として保存`,
+            filetypes: ei.filetypes,
+            okMessage: `${ei.label} として保存しました`,
+            errorMessage: `${ei.label} の保存に失敗しました`,
+            path: nodeData.path,
+            title: nodeData.name || '無題',
+          });
+          },
+        });
+      });
+      addSep();
+    }
+  }
+
+  // --- 所属フォルダ（リンク登録） ---
+  if (!isEntity && nodeData.path) {
+    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
+    addMenuItem(linkLabel, () => {
+      closeTreeContextMenu();
+      showAddFolderLinkModal(nodeData.path, null);
+    }, null, 'link2');
+  }
+
+  // --- 色設定 ---
+  addSep();
+  {
+    const currentColor = getNodeColor(nodeData.path);
+    const colorItem = _outlinerAppendMenuItem(menu, {
+      html: '',
+      action: () => {
+        openColorPalette(swatch, currentColor, (c) => {
+          closeTreeContextMenu();
+          applyColorToSelection(c || null);
+        });
+      },
+    });
+    const swatch = document.createElement('span');
+    swatch.className = 'gb-color-swatch gb-color-swatch--inline';
+    swatch.setAttribute('aria-hidden', 'true');
+    setColorSwatchValue(swatch, currentColor || 'var(--fg)');
+    colorItem.appendChild(swatch);
+    const clbl = document.createElement('span');
+    clbl.textContent = isMulti ? `色設定（${selectedCount}件）` : '色設定';
+    colorItem.appendChild(clbl);
+  }
+
+  // --- ワークスペースルート: ソースフォルダ用メニューは出さない ---
+  // （ワークスペースはソースフォルダ設定に保存されないため、出しても無効操作になる）
+  if (nodeData._isRoot && !isMulti && (nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
+    addSep();
+    addMenuItem('ワークスペースの管理...', () => {
+      closeTreeContextMenu();
+      if (typeof openWorkspaceSettings === 'function') openWorkspaceSettings();
+    }, null, 'usersRound');
+  }
+
+  // --- ルートフォルダのパス変更 ---
+  if (nodeData._isRoot && !isMulti && !(nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
+    addSep();
+    addMenuItem('パスを変更...', async () => {
+      closeTreeContextMenu();
+      showStatus('フォルダ選択ダイアログを開いています...');
+      try {
+        const res = await apiFetch('/pick-folder');
+        if (!res.path) { showStatus('キャンセルされました'); return; }
+        // outliner_rootsを更新
+        const roots = await apiFetch('/outliner-roots');
+        const root = roots.find(r => r.path === nodeData.path);
+        if (root) {
+          root.path = res.path;
+          root.name = res.path.split(/[/\\]/).pop();
+          await apiPut('/outliner-roots', { roots });
+          await loadOutliner();
+          showStatus('パスを変更しました: ' + res.path);
+        }
+      } catch (e) { showStatus('パス変更に失敗しました', true); }
+    }, null, 'folderPen');
     addMenuItem('名前を変更...', async () => {
       closeTreeContextMenu();
       const roots = await apiFetch('/outliner-roots');
@@ -633,268 +898,3 @@ function _outlinerKeyboardRestoreFocus(row, focusSeq) {
   if (focusSeq && focusSeq !== _outlinerKeyboardFocusSeq) return;
   if (!row?.isConnected) return;
   const active = document.activeElement;
-  if (active?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-  _outlinerKeyboardMarkActive();
-  try { row.focus({ preventScroll: true }); } catch {}
-}
-
-function _outlinerKeyboardNodePathExt(path) {
-  const name = String(path || '').replace(/\\/g, '/').split('/').pop() || '';
-  const index = name.lastIndexOf('.');
-  return index >= 0 ? name.slice(index).toLowerCase() : '';
-}
-
-function _outlinerKeyboardMediaType(item) {
-  const type = item?.type || '';
-  if (type === 'image' || type === 'video' || type === 'audio' || type === 'pdf') return type;
-  const ext = _outlinerKeyboardNodePathExt(item?.path || item?.name || '');
-  if (ext === '.pdf') return 'pdf';
-  if (OUTLINER_KEYBOARD_IMAGE_EXTS.has(ext)) return 'image';
-  if (OUTLINER_KEYBOARD_VIDEO_EXTS.has(ext)) return 'video';
-  if (OUTLINER_KEYBOARD_AUDIO_EXTS.has(ext)) return 'audio';
-  return '';
-}
-
-function _outlinerKeyboardOpenNode(nodeEl) {
-  const item = nodeEl?._nodeData || null;
-  if (!item || !item.path || item.needsMapping === true) return false;
-  const opts = { fromExplorer: true, skipHighlight: true, noScrollHighlight: true };
-  const type = item.type || '';
-  const mediaType = _outlinerKeyboardMediaType(item);
-  if (type === 'folder' || item._isRoot) return openFolder(item.name, item.path, opts);
-  if (type === 'database') return selectDatabase(item.path, null, opts);
-  if (type === 'entity') return selectEntity(item.path, opts);
-  if (type === 'page') return openPage(item.name, item.path, opts);
-  if (type === 'scriptnote' || type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
-    return typeof openScenarioInScriptNote === 'function' ? openScenarioInScriptNote(item.path, item.name, opts) : false;
-  }
-  if (type === 'board') return openBoard(item.name, item.path, opts);
-  if (type === 'calendar') return openCalendarFile(item.name, item.path, opts);
-  if (mediaType) return openMedia(item.name, item.path, mediaType, opts);
-  if (type === 'html') return openHtmlFile(item.name, item.path, opts);
-  if (type === 'csv') {
-    return typeof openCsvFile === 'function' ? openCsvFile(item.name, item.path, opts) : openPage(item.name, item.path, opts);
-  }
-  if (type === 'smart-db' && typeof openSmartDbFile === 'function') {
-    return openSmartDbFile(item.name, item.path, opts);
-  }
-  if (!(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(type)) && typeof showStatus === 'function') {
-    showStatus((item.name || item.path) + ' — 「…」または長押しメニューからアプリで開く');
-  }
-  return false;
-}
-
-function _outlinerKeyboardSelectNode(nodeEl, options = {}) {
-  const row = _outlinerKeyboardRow(nodeEl);
-  if (!nodeEl || !row) return false;
-  const focusSeq = ++_outlinerKeyboardFocusSeq;
-  treeSelection.clear();
-  treeSelection.add(nodeEl);
-  treeSelection.lastClicked = nodeEl;
-  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
-  row.classList.add('active');
-  _outlinerKeyboardRestoreFocus(row, focusSeq);
-  row.scrollIntoView({ block: 'nearest' });
-  if (options.openPanel !== false) {
-    try {
-      const opened = _outlinerKeyboardOpenNode(nodeEl);
-      Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
-    } catch (err) {
-      _outlinerKeyboardRestoreFocus(row, focusSeq);
-      throw err;
-    }
-  }
-  return true;
-}
-
-function _outlinerKeyboardScopeFromTarget(target) {
-  if (target?.closest?.('#body-home')) return '#body-home';
-  if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-  if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-  if (target?.id === 'tree-scroll-container') return '#outliner-tree';
-  return '';
-}
-
-function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
-  const direct = target?.closest?.('.tree-node') || null;
-  if (direct && (!scopeSelector || direct.closest(scopeSelector))) return direct;
-  if (treeSelection.lastClicked && (!scopeSelector || treeSelection.lastClicked.closest(scopeSelector))) return treeSelection.lastClicked;
-  const activeRow = document.querySelector(`${scopeSelector || '#outliner-tree'} .tree-node-row.active`);
-  return activeRow?.closest?.('.tree-node') || null;
-}
-
-function _outlinerKeyboardToggle(nodeEl, expand) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  if (!toggle || toggle.dataset.expanded === undefined) return false;
-  const expanded = toggle.dataset.expanded === 'true';
-  if (expand === true && !expanded) { toggle.click(); return true; }
-  if (expand === false && expanded) { toggle.click(); return true; }
-  return false;
-}
-
-function _handleOutlinerTreeKeydown(event) {
-  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-  const target = event.target;
-  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-  const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
-  if (!scopeSelector) return;
-  const current = _outlinerKeyboardNodeFromTarget(target, scopeSelector);
-  event.preventDefault();
-  event.stopPropagation();
-  _outlinerKeyboardMarkActive();
-  if (event.key === 'ArrowLeft') { _outlinerKeyboardToggle(current, false); return; }
-  if (event.key === 'ArrowRight') { _outlinerKeyboardToggle(current, true); return; }
-  const nodes = _getVisibleTreeNodes(scopeSelector);
-  if (!nodes.length) return;
-  const rawIndex = nodes.indexOf(current);
-  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
-  const nextIndex = event.key === 'ArrowUp'
-    ? Math.max(0, currentIndex - 1)
-    : Math.min(nodes.length - 1, currentIndex + 1);
-  _outlinerKeyboardSelectNode(nodes[nextIndex], { openPanel: true });
-}
-
-(function initOutlinerTreeKeyboardNavigation() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
-  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
-})();
-
-// ドラッグ中のホイールスクロール対応
-(function() {
-  let _isDragging = false;
-  document.addEventListener('dragstart', () => { _isDragging = true; });
-  document.addEventListener('dragend', () => { _isDragging = false; });
-  document.addEventListener('drop', () => { _isDragging = false; });
-  // ドラッグ中にホイールでスクロール可能にする
-  const scrollTargets = ['tree-scroll-container'];
-  scrollTargets.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('wheel', (e) => {
-      if (!_isDragging) return;
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    }, { passive: false });
-  });
-})();
-
-(function initOutlinerLassoSelection() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  const LASSO_DRAG_THRESHOLD = 4;
-  let active = false;
-  let tracking = false;
-  let box = null;
-  let startX = 0;
-  let startY = 0;
-  let startClientX = 0;
-  let startClientY = 0;
-  let selectionMode = 'replace';
-  let selectionScope = '#outliner-tree,#body-home';
-  let baseSelection = [];
-  let candidateRow = null;
-  let candidateRowDraggable = null;
-  let pointerId = null;
-  let pointerCaptured = false;
-  let _savedScrollerPosition = null;
-
-  function _outlinerLassoMode(event) {
-    if (event.ctrlKey || event.metaKey) return 'toggle';
-    if (event.shiftKey) return 'add';
-    return 'replace';
-  }
-
-  function _outlinerLassoScopeFromTarget(target) {
-    if (target?.closest?.('#body-home')) return '#body-home';
-    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-    if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-home') return '#body-home';
-    if (section?.id === 'section-workspaces') return '#body-workspaces';
-    if (section?.id === 'section-roots') return '#outliner-tree';
-    return '#outliner-tree,#body-home';
-  }
-
-  function _outlinerLassoBlockedTarget(target) {
-    return !!target?.closest?.('.tree-hover-btn, .tree-toggle, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]');
-  }
-
-  function _outlinerLassoAllowedTarget(target) {
-    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-workspaces') return true;
-    return section?.id === 'section-roots' || section?.id === 'section-home';
-  }
-
-  function _outlinerLassoCandidateRow(target, mode) {
-    const row = target?.closest?.('.tree-node-row');
-    if (!row) return null;
-    const node = row.closest('.tree-node');
-    if (!node) return null;
-    if (mode === 'replace' && treeSelection.has(node)) return null;
-    return row;
-  }
-
-  function _outlinerLassoRectForEvent(event) {
-    const rect = scroller.getBoundingClientRect();
-    const currentX = event.clientX - rect.left + scroller.scrollLeft;
-    const currentY = event.clientY - rect.top + scroller.scrollTop;
-    const left = Math.min(startX, currentX);
-    const top = Math.min(startY, currentY);
-    const width = Math.abs(currentX - startX);
-    const height = Math.abs(currentY - startY);
-    return { left, top, right: left + width, bottom: top + height, width, height };
-  }
-
-  function _outlinerLassoRowRect(row) {
-    const rowRect = row.getBoundingClientRect();
-    const scrollerRect = scroller.getBoundingClientRect();
-    return {
-      left: rowRect.left - scrollerRect.left + scroller.scrollLeft,
-      top: rowRect.top - scrollerRect.top + scroller.scrollTop,
-      right: rowRect.left - scrollerRect.left + scroller.scrollLeft + rowRect.width,
-      bottom: rowRect.top - scrollerRect.top + scroller.scrollTop + rowRect.height,
-    };
-  }
-
-  function _outlinerRectsOverlap(a, b) {
-    return !(b.right < a.left || b.left > a.right || b.bottom < a.top || b.top > a.bottom);
-  }
-
-  const updateSelection = (lassoRect) => {
-    const base = new Set(baseSelection.filter(node => node?.isConnected));
-    const hitNodes = [];
-    treeSelection.clear();
-    base.forEach(node => treeSelection.add(node));
-    _getVisibleTreeNodes(selectionScope).forEach(nodeEl => {
-      const row = nodeEl.querySelector('.tree-node-row');
-      if (!row) return;
-      if (!_outlinerRectsOverlap(lassoRect, _outlinerLassoRowRect(row))) return;
-      hitNodes.push(nodeEl);
-      if (selectionMode === 'toggle' && base.has(nodeEl)) treeSelection.remove(nodeEl);
-      else treeSelection.add(nodeEl);
-    });
-    treeSelection.lastClicked = hitNodes[hitNodes.length - 1] || [...treeSelection.items].pop() || treeSelection.lastClicked;
-    if (treeSelection.items.size > 1) showStatus(treeSelection.items.size + ' 件選択中');
-  };
-
-  const beginLasso = (event) => {
-    if (active) return;
-    active = true;
-    if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {
-      try {
-        scroller.setPointerCapture(pointerId);
-        pointerCaptured = true;
-      } catch {}
-    }
-    box = document.createElement('div');
-    box.className = 'outliner-lasso-box';
-    _savedScrollerPosition = scroller.style.position;
-    scroller.style.position = 'relative';
-    scroller.appendChild(box);
-    if (selectionMode === 'replace') treeSelection.clear();
-    updateSelection(_outlinerLassoRectForEvent(event));
-  };

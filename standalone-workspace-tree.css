@@ -1,0 +1,591 @@
+/* Shared mobile drawer for standalone Cloud apps. */
+:root {
+  --sa-visual-height: 100dvh;
+  --sa-cloud-launch-rail-height: calc(68px + env(safe-area-inset-bottom));
+  --sa-workspace-bg: #1f2024;
+  --sa-workspace-panel: #27292f;
+  --sa-workspace-panel-strong: #30333a;
+  --sa-workspace-border: #454952;
+  --sa-workspace-text: #f3f4f6;
+  --sa-workspace-muted: #b8bdc8;
+  --sa-workspace-accent: #6aa9e9;
+  --sa-workspace-accent-strong: #378bd8;
+  --sa-workspace-danger: #dc6b72;
+  --sa-workspace-focus: #8bc2f4;
+  --sa-workspace-shadow: 0 18px 54px rgb(0 0 0 / 48%);
+}
+
+/* Keep both fixed Cloud launch controls outside each app's editable surface. */
+html[data-standalone-cloud] .sa-shell,
+html[data-standalone-cloud] #board-standalone-shell {
+  height: calc(100dvh - var(--sa-cloud-launch-rail-height));
+}
+
+html[data-standalone-cloud] [data-standalone-default-apps-open],
+html[data-standalone-cloud] [data-scenario-action="sendBmanga"],
+html[data-standalone-cloud] .sa-default-apps-overlay,
+html[data-standalone-cloud] .sa-default-apps-dialog {
+  display: none !important;
+}
+
+html[data-standalone-cloud] body {
+  box-sizing: border-box;
+  padding-block-start: env(safe-area-inset-top);
+  padding-inline-end: env(safe-area-inset-right);
+  padding-block-end: env(safe-area-inset-bottom);
+  padding-inline-start: env(safe-area-inset-left);
+}
+
+.sa-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.sa-workspace-toggle {
+  position: fixed;
+  z-index: 9990;
+  inset-inline-start: max(12px, env(safe-area-inset-left));
+  inset-block-end: max(12px, env(safe-area-inset-bottom));
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid #5b616b;
+  border-radius: 999px;
+  background: #2e333b;
+  color: var(--sa-workspace-text);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 38%);
+  font: 600 13px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  touch-action: manipulation;
+}
+
+.sa-workspace-toggle::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  margin-inline-end: 7px;
+  border: 2px solid var(--sa-workspace-accent);
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+
+.sa-workspace-toggle:hover {
+  background: #3a414c;
+}
+
+.sa-workspace-backdrop,
+.sa-workspace-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9995;
+  background: rgb(4 6 10 / 62%);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.sa-workspace-drawer {
+  position: fixed;
+  z-index: 9996;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(440px, 94vw);
+  box-sizing: border-box;
+  height: min(var(--sa-visual-height), 100dvh);
+  max-height: 100dvh;
+  padding-block-start: env(safe-area-inset-top);
+  padding-inline-start: env(safe-area-inset-left);
+  background: var(--sa-workspace-bg);
+  color: var(--sa-workspace-text);
+  box-shadow: var(--sa-workspace-shadow);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  color-scheme: dark;
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.sa-workspace-drawer[hidden],
+.sa-workspace-backdrop[hidden],
+.sa-workspace-dialog[hidden],
+.sa-workspace-dialog-backdrop[hidden] {
+  display: none !important;
+}
+
+.sa-workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 10px 8px 16px;
+  border-bottom: 1px solid var(--sa-workspace-border);
+  background: #24262b;
+}
+
+.sa-workspace-header h2 {
+  min-width: 0;
+  margin: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+}
+
+.sa-workspace-close,
+.sa-workspace-icon-action,
+.sa-workspace-primary,
+.sa-workspace-secondary,
+.sa-workspace-danger,
+.sa-workspace-crumb,
+.sa-workspace-row-button {
+  min-height: 44px;
+  border: 1px solid var(--sa-workspace-border);
+  border-radius: 8px;
+  background: var(--sa-workspace-panel-strong);
+  color: var(--sa-workspace-text);
+  font: inherit;
+  touch-action: manipulation;
+}
+
+.sa-workspace-close,
+.sa-workspace-icon-action {
+  min-width: 44px;
+  padding: 8px 10px;
+}
+
+.sa-workspace-primary,
+.sa-workspace-secondary,
+.sa-workspace-danger {
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
+.sa-workspace-primary {
+  border-color: #3f8ed4;
+  background: #286faa;
+}
+
+.sa-workspace-danger {
+  border-color: #9c4d53;
+  background: #713a3f;
+}
+
+.sa-workspace-close:hover,
+.sa-workspace-icon-action:hover,
+.sa-workspace-secondary:hover,
+.sa-workspace-crumb:hover,
+.sa-workspace-row-button:hover {
+  background: #3b3f48;
+}
+
+.sa-workspace-primary:hover {
+  background: #3482c1;
+}
+
+.sa-workspace-danger:hover {
+  background: #87444a;
+}
+
+.sa-workspace-drawer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sa-workspace-drawer button:focus-visible,
+.sa-workspace-drawer input:focus-visible,
+.sa-workspace-drawer select:focus-visible,
+.sa-workspace-dialog button:focus-visible,
+.sa-workspace-dialog input:focus-visible,
+.sa-workspace-toggle:focus-visible {
+  outline: 3px solid var(--sa-workspace-focus);
+  outline-offset: 2px;
+}
+
+.sa-workspace-main {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto auto minmax(120px, 1fr) auto auto;
+  overflow: hidden;
+}
+
+.sa-workspace-main[hidden],
+.sa-workspace-auth[hidden] {
+  display: none !important;
+}
+
+.sa-workspace-auth {
+  align-self: start;
+  display: grid;
+  gap: 12px;
+  margin: 18px;
+  padding: 18px;
+  border: 1px solid var(--sa-workspace-border);
+  border-radius: 12px;
+  background: var(--sa-workspace-panel);
+}
+
+.sa-workspace-auth h3,
+.sa-workspace-auth p {
+  margin: 0;
+}
+
+.sa-workspace-auth p {
+  color: var(--sa-workspace-muted);
+}
+
+.sa-workspace-auth label,
+.sa-workspace-dialog label,
+.sa-workspace-picker label {
+  font-size: 12px;
+  color: var(--sa-workspace-muted);
+}
+
+.sa-workspace-auth input,
+.sa-workspace-search input,
+.sa-workspace-picker input,
+.sa-workspace-dialog input,
+.sa-workspace-source-bar select {
+  min-height: 44px;
+  box-sizing: border-box;
+  border: 1px solid var(--sa-workspace-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #191b20;
+  color: var(--sa-workspace-text);
+  font: inherit;
+}
+
+.sa-workspace-auth-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  color: #95caff;
+}
+
+.sa-workspace-auth-link[hidden] {
+  display: none !important;
+}
+
+.sa-workspace-source-bar,
+.sa-workspace-search,
+.sa-workspace-create-bar,
+.sa-workspace-item-actions,
+.sa-workspace-picker {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+.sa-workspace-source-bar {
+  border-bottom: 1px solid #383b43;
+}
+
+.sa-workspace-source-bar label {
+  color: var(--sa-workspace-muted);
+  font-size: 12px;
+}
+
+.sa-workspace-source-bar select {
+  min-width: 0;
+  flex: 1;
+}
+
+.sa-workspace-source-bar .sa-workspace-secondary {
+  white-space: nowrap;
+}
+
+.sa-workspace-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 48px;
+  padding: 4px 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid #383b43;
+  scrollbar-width: thin;
+}
+
+.sa-workspace-crumb {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 6px 9px;
+  border-color: transparent;
+  background: transparent;
+  color: #b7d9fa;
+}
+
+.sa-workspace-search input {
+  min-width: 0;
+  flex: 1;
+}
+
+.sa-workspace-create-bar {
+  border-bottom: 1px solid #383b43;
+}
+
+.sa-workspace-status {
+  min-height: 20px;
+  padding: 3px 12px;
+  color: var(--sa-workspace-muted);
+  font-size: 12px;
+}
+
+.sa-workspace-status.is-error {
+  color: #ff9ca2;
+}
+
+.sa-workspace-list {
+  min-height: 0;
+  padding: 4px 8px 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sa-workspace-row {
+  min-width: 0;
+  margin: 3px 0;
+  border-radius: 9px;
+}
+
+.sa-workspace-row.is-selected {
+  background: rgb(71 137 199 / 24%);
+}
+
+.sa-workspace-row-button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-color: transparent;
+  background: transparent;
+  text-align: start;
+}
+
+.sa-workspace-row.is-selected .sa-workspace-row-button {
+  border-color: #4f7fa9;
+  background: rgb(59 111 158 / 32%);
+}
+
+.sa-workspace-row-icon {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 14px;
+  text-align: center;
+}
+
+.sa-workspace-row-icon.is-folder {
+  height: 11px;
+  margin-block-start: 3px;
+  border: 2px solid var(--sa-workspace-accent);
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+
+.sa-workspace-row-icon.is-folder::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: -2px;
+  inset-block-start: -6px;
+  width: 8px;
+  height: 5px;
+  border: 2px solid var(--sa-workspace-accent);
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
+  box-sizing: border-box;
+}
+
+.sa-workspace-row-icon.is-file {
+  border: 2px solid var(--sa-workspace-muted);
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+
+.sa-workspace-row-icon.is-file::after {
+  content: "";
+  position: absolute;
+  inset-inline-start: 3px;
+  inset-inline-end: 3px;
+  inset-block-start: 4px;
+  height: 2px;
+  border-block: 1px solid var(--sa-workspace-muted);
+}
+
+.sa-workspace-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-workspace-row-type {
+  color: var(--sa-workspace-muted);
+  font-size: 11px;
+}
+
+.sa-workspace-empty {
+  padding: 28px 16px;
+  color: var(--sa-workspace-muted);
+  text-align: center;
+}
+
+.sa-workspace-empty[hidden] {
+  display: none !important;
+}
+
+.sa-workspace-item-actions {
+  flex-wrap: wrap;
+  border-top: 1px solid var(--sa-workspace-border);
+  background: var(--sa-workspace-panel);
+}
+
+.sa-workspace-picker {
+  flex-wrap: wrap;
+  padding-block-end: max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--sa-workspace-border);
+  background: #24262b;
+}
+
+.sa-workspace-picker[hidden] {
+  display: none !important;
+}
+
+.sa-workspace-picker label {
+  width: 100%;
+}
+
+.sa-workspace-picker input {
+  min-width: 120px;
+  flex: 1;
+}
+
+.sa-workspace-main.is-busy .sa-workspace-list {
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.sa-workspace-dialog-backdrop {
+  z-index: 10005;
+}
+
+.sa-workspace-dialog {
+  position: fixed;
+  z-index: 10006;
+  inset-inline-start: 50%;
+  inset-block-start: 50%;
+  translate: -50% -50%;
+  display: grid;
+  gap: 12px;
+  width: min(420px, calc(100vw - 28px));
+  max-height: min(640px, calc(var(--sa-visual-height) - 28px));
+  box-sizing: border-box;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid var(--sa-workspace-border);
+  border-radius: 14px;
+  background: #25272d;
+  color: var(--sa-workspace-text);
+  box-shadow: var(--sa-workspace-shadow);
+  color-scheme: dark;
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.sa-workspace-dialog h3,
+.sa-workspace-dialog p {
+  margin: 0;
+}
+
+.sa-workspace-dialog p {
+  color: var(--sa-workspace-muted);
+}
+
+.sa-workspace-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+body.sa-workspace-open {
+  overflow: hidden;
+}
+
+@media (max-width: 620px) {
+  .sa-workspace-toggle {
+    padding-inline: 12px;
+  }
+
+  .sa-workspace-drawer {
+    width: 100vw;
+    max-width: none;
+    padding-inline-end: env(safe-area-inset-right);
+  }
+
+  .sa-workspace-source-bar,
+  .sa-workspace-search,
+  .sa-workspace-create-bar,
+  .sa-workspace-item-actions {
+    flex-wrap: wrap;
+  }
+
+  .sa-workspace-source-bar label {
+    width: 100%;
+  }
+
+  .sa-workspace-source-bar select {
+    flex-basis: calc(100% - 116px);
+  }
+
+  .sa-workspace-search input {
+    flex-basis: 100%;
+  }
+
+  .sa-workspace-create-bar > button,
+  .sa-workspace-item-actions > button {
+    flex: 1 1 calc(50% - 8px);
+  }
+}
+
+@media (pointer: coarse) {
+  .sa-workspace-drawer button,
+  .sa-workspace-drawer input,
+  .sa-workspace-drawer select,
+  .sa-workspace-dialog button,
+  .sa-workspace-dialog input {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sa-workspace-drawer {
+    animation: sa-workspace-slide-in 160ms ease-out;
+  }
+
+  @keyframes sa-workspace-slide-in {
+    from { translate: -16px 0; opacity: 0.75; }
+    to { translate: 0 0; opacity: 1; }
+  }
+}
+
+@media (forced-colors: active) {
+  .sa-workspace-toggle,
+  .sa-workspace-drawer,
+  .sa-workspace-dialog,
+  .sa-workspace-row-button {
+    border: 1px solid CanvasText;
+  }
+}

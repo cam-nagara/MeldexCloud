@@ -1,16 +1,16 @@
 /* gb-split-loader.js: split script loader */
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '3e9c06314ccf', parts: { 'meldex-core.bundle.part01.js': '3e1704805509', 'meldex-core.bundle.part02.js': '3276e4443e57', 'meldex-core.bundle.part03.js': '471374a78787', 'meldex-core.bundle.part04.js': '623b66ba86a6' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '5f6a53fade1b', parts: { 'gb-app.bundle.part01.js': '683005cd8793', 'gb-app.bundle.part02.js': '11202517fe20', 'gb-app.bundle.part03.js': 'f2eb79cecce1', 'gb-app.bundle.part04.js': '58f04a6dcbae', 'gb-app.bundle.part05.js': '0190bef9642b', 'gb-app.bundle.part06.js': 'bea7c2486c64' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'b94e246ef06e', parts: { 'meldex-core.bundle.part01.js': '224c6a6c37e9', 'meldex-core.bundle.part02.js': '58253347b07c', 'meldex-core.bundle.part03.js': '265dd18c7c87', 'meldex-core.bundle.part04.js': '3b860519d54a' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '96fc6abb8f9a', parts: { 'gb-app.bundle.part01.js': 'e3f11e2a5d74', 'gb-app.bundle.part02.js': 'cae1d562cf50', 'gb-app.bundle.part03.js': 'bbc2177096e3', 'gb-app.bundle.part04.js': '84280101fba8', 'gb-app.bundle.part05.js': '786da3ac0d25', 'gb-app.bundle.part06.js': '43d3632c9ac7', 'gb-app.bundle.part07.js': '41cf87c67b5f' } },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'be556b9ef132', parts: { 'gb-theme-manager.bundle.part01.js': 'b27937ac630b', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': '287af8d88185', 'gb-theme-manager.bundle.part04.js': 'fd95778f4ad8' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '36a83f245dba', parts: { 'gb-outliner.bundle.part01.js': '45ed11b4308f', 'gb-outliner.bundle.part02.js': 'b6fc0f18c3b3', 'gb-outliner.bundle.part03.js': '44fd5d403586', 'gb-outliner.bundle.part04.js': 'e87026abdbf6', 'gb-outliner.bundle.part05.js': 'ffad7c61c47d' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'c770ff449954', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '4ec57fcbfecd', 'gb-data-access-dropbox-fileops.bundle.part02.js': 'aea4c7558f3a', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'ffc9856ef37a' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '1f47edaf5f49', parts: { 'gb-outliner.bundle.part01.js': '4d098ffc4129', 'gb-outliner.bundle.part02.js': '58706c00861b', 'gb-outliner.bundle.part03.js': '19bf96f48b74', 'gb-outliner.bundle.part04.js': '250428a9a3bd', 'gb-outliner.bundle.part05.js': '64ce186de591' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'dcbbbb29ff1c', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '05960c3aaf0e', 'gb-data-access-dropbox-fileops.bundle.part02.js': '442866339ab8', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'd0bc9d98446e' } },
     'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '6a3270ae5c28', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '36ea42b5e3a4', 'gb-cloud-mobile-editbar.bundle.part02.js': 'b7aeaf7e93c7' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
-    const base = currentScript?.src || window.location.href;
+    const base = currentScript?.src || document.baseURI || window.location.href;
     return new URL(chunkName, base).toString();
   }
 

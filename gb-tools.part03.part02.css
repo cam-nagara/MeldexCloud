@@ -127,6 +127,13 @@
   content: attr(data-placeholder);
   color: var(--ui-fg-muted);
 }
+/* 貼り付け等で混入したインライン書式（太字・斜体・フォント・文字色・背景色）を無効化し、
+   常にツールバー標準フォントで表示する。 */
+#page-rt-toolbar #page-title * {
+  font: inherit !important;
+  color: inherit !important;
+  background: none !important;
+}
 
 /* === Note styling: block drag handle === */
 #page-content .dragging { opacity: var(--page-dragging-opacity, 0.4); }

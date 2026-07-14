@@ -109,23 +109,121 @@
     return links;
   }
 
+  async function _allowedTrashRoots() {
+    const registry = window.MeldexSourceFolderRegistry;
+    const physicalTrashPath = (dropboxPath) => {
+      if (typeof registry?.normalizeDropboxPath !== 'function') return '';
+      const base = registry.normalizeDropboxPath(dropboxPath || '');
+      return base ? `${base === '/' ? '' : base}/_trash` : '';
+    };
+    const roots = [{
+      path: _normalizeFolderPath(PWA_TRASH_DIR),
+      name: 'Meldex',
+      physicalPath: physicalTrashPath(window.MeldexDropboxAuth?.getVaultPath?.()),
+    }];
+    if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
+    let payload;
+    try {
+      payload = await registry.loadRegistry({ writeIfMissing: false });
+    } catch (error) {
+      const wrapped = new Error('ソースフォルダのゴミ箱設定を確認できませんでした');
+      wrapped.code = 'trash_roots_unavailable';
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    const seen = new Set(roots.map((root) => root.path));
+    for (const source of Array.isArray(payload?.roots) ? payload.roots : []) {
+      if (!source || source.deleted === true || !source.id) continue;
+      const path = _normalizeFolderPath(registry.sourcePath(source.id, '_trash'));
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      roots.push({
+        path,
+        name: String(source.name || source.dropboxPath || source.id).trim() || String(source.id),
+        physicalPath: physicalTrashPath(source.dropboxPath),
+      });
+    }
+    return roots;
+  }
+
+  async function _resolveAllowedTrashRoot(rawRoot) {
+    const raw = String(rawRoot || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (raw.split('/').some((part) => part === '.' || part === '..')) {
+      const error = new Error('許可されていないゴミ箱です');
+      error.code = 'invalid_trash_root';
+      throw error;
+    }
+    const requested = _normalizeFolderPath(raw || PWA_TRASH_DIR);
+    const matched = (await _allowedTrashRoots()).find((root) => root.path === requested);
+    if (matched) return matched;
+    const error = new Error('許可されていないゴミ箱です');
+    error.code = 'invalid_trash_root';
+    throw error;
+  }
+
+  function _invalidTrashRestorePath() {
+    return Object.assign(new Error('元の保存先が安全な復元先ではありません'), {
+      code: 'invalid_trash_original_path', status: 400,
+    });
+  }
+
+  function _safeTrashRestoreRelativePath(rawPath) {
+    const raw = String(rawPath || '').trim().replace(/\\/g, '/');
+    const segments = raw.split('/');
+    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const normalized = _normalizeFolderPath(raw);
+    if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
+    return normalized;
+  }
+
+  async function _resolveValidatedTrashRestorePath(trashRoot, originalPath, fallbackPath = '') {
+    const registry = window.MeldexSourceFolderRegistry;
+    const rootPath = _normalizeFolderPath(trashRoot?.path || '');
+    const rawOriginal = String(originalPath || '').trim().replace(/\\/g, '/');
+    const candidate = rawOriginal || String(fallbackPath || '').trim().replace(/\\/g, '/');
+    if (!candidate || candidate.startsWith('/')) throw _invalidTrashRestorePath();
+    const parsedRoot = registry?.parseSourcePath?.(rootPath);
+    const parsedOriginal = registry?.parseSourcePath?.(candidate);
+    if (parsedRoot) {
+      if (parsedRoot.relativePath !== '_trash' || typeof registry?.sourcePath !== 'function') throw _invalidTrashRestorePath();
+      const relativePath = _safeTrashRestoreRelativePath(parsedOriginal ? parsedOriginal.relativePath : candidate);
+      return registry.sourcePath(parsedRoot.sourceId, relativePath);
+    }
+    if (rootPath !== _normalizeFolderPath(PWA_TRASH_DIR)) throw _invalidTrashRestorePath();
+    if (!parsedOriginal) return _safeTrashRestoreRelativePath(candidate);
+    const relativePath = _safeTrashRestoreRelativePath(parsedOriginal.relativePath);
+    const allowedSourceIds = new Set((await _allowedTrashRoots())
+      .map((root) => registry?.parseSourcePath?.(root.path)?.sourceId || '').filter(Boolean));
+    if (!allowedSourceIds.has(parsedOriginal.sourceId) || typeof registry?.sourcePath !== 'function') throw _invalidTrashRestorePath();
+    return registry.sourcePath(parsedOriginal.sourceId, relativePath);
+  }
+
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     const source = await _resolveEntryHandle(provider, targetPath);
     if (!source) return { ok: true };
-    await _directoryHandle(provider, PWA_TRASH_DIR, true);
+    const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(targetPath);
+    const trashDir = parsedSource
+      ? window.MeldexSourceFolderRegistry.sourcePath(parsedSource.sourceId, '_trash')
+      : PWA_TRASH_DIR;
+    await _directoryHandle(provider, trashDir, true);
     const originalName = _basename(targetPath);
     const split = _splitNameAndExt(originalName);
     let destName = originalName;
-    let destPath = _joinPath(PWA_TRASH_DIR, destName);
+    let destPath = _joinPath(trashDir, destName);
     for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
       destName = source.kind === 'file'
         ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
         : `${originalName}_${String(counter).padStart(4, '0')}`;
-      destPath = _joinPath(PWA_TRASH_DIR, destName);
+      destPath = _joinPath(trashDir, destName);
     }
     const metaPath = destPath + '._trash_meta.json';
-    await provider.writeJson(metaPath, { original_path: targetPath, deleted_at: new Date().toISOString() });
+    await provider.writeJson(metaPath, {
+      original_path: targetPath,
+      trash_root: trashDir,
+      deleted_at: new Date().toISOString(),
+    });
     try {
       await _moveEntry(provider, targetPath, destPath);
     } catch (error) {
@@ -145,7 +243,7 @@
       isFolder: source.kind === 'directory',
       trashPath: destPath,
     }));
-    return { ok: true, trash_name: destName, ..._resultWarnings(warnings) };
+    return { ok: true, trash_name: destName, trash_root: trashDir, ..._resultWarnings(warnings) };
   }
 
   async function _findPathByFileId(provider, fileId) {

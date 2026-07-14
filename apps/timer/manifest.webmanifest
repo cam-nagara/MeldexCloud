@@ -1,0 +1,26 @@
+{
+  "name": "Meldex Timer",
+  "short_name": "タイマー",
+  "description": "Meldex TimerをMeldex Cloudと同期して使います。",
+  "lang": "ja",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#181818",
+  "theme_color": "#181818",
+  "icons": [
+    {
+      "src": "../../MeldexTimer_icon_256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "../../MeldexTimer_icon_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

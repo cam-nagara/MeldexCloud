@@ -40,6 +40,45 @@
     return String(value || '').replace(/[\r\n]/g, ' ').trim().slice(0, maxLen || 160);
   }
 
+  function _cleanHolder(holder) {
+    const holderId = _cleanText(holder?.holder_id || holder?.holderId, 160);
+    const expiresAt = String(holder?.expires_at || holder?.expiresAt || '');
+    const expiresMs = Date.parse(expiresAt);
+    if (!holderId || !Number.isFinite(expiresMs) || expiresMs <= _nowMs()) return null;
+    const rawHeartbeat = String(holder?.heartbeat_at || holder?.heartbeatAt || '');
+    const heartbeatAt = Number.isFinite(Date.parse(rawHeartbeat)) ? rawHeartbeat : new Date().toISOString();
+    return {
+      holder_id: holderId,
+      heartbeat_at: heartbeatAt,
+      expires_at: expiresAt,
+    };
+  }
+
+  function _entryHolders(entry) {
+    if (Array.isArray(entry?.holders)) return entry.holders.map(_cleanHolder).filter(Boolean);
+    const expiresAt = String(entry?.expires_at || '');
+    const expiresMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresMs) || expiresMs <= _nowMs()) return [];
+    return [{
+      holder_id: 'legacy',
+      heartbeat_at: String(entry?.heartbeat_at || entry?.acquired_at || new Date().toISOString()),
+      expires_at: expiresAt,
+    }];
+  }
+
+  function _entryWithHolders(entry, holders) {
+    const cleaned = (holders || []).map(_cleanHolder).filter(Boolean);
+    if (!cleaned.length) return null;
+    const byExpiry = [...cleaned].sort((a, b) => Date.parse(b.expires_at) - Date.parse(a.expires_at));
+    const byHeartbeat = [...cleaned].sort((a, b) => Date.parse(b.heartbeat_at) - Date.parse(a.heartbeat_at));
+    return {
+      ...entry,
+      holders: cleaned.sort((a, b) => a.holder_id.localeCompare(b.holder_id)),
+      heartbeat_at: byHeartbeat[0]?.heartbeat_at || entry?.heartbeat_at,
+      expires_at: byExpiry[0]?.expires_at || entry?.expires_at,
+    };
+  }
+
   function _headerValue(headers, name) {
     if (!headers) return '';
     if (typeof Headers !== 'undefined' && headers instanceof Headers) return headers.get(name) || '';
@@ -73,8 +112,9 @@
     const normalized = _normalize(entry?.normalized_path || path);
     const tokenHash = String(entry?.token_hash || '').trim().toLowerCase();
     if (!path || !normalized || !tokenHash) return null;
-    const expiresAt = String(entry?.expires_at || '');
-    if (expiresAt && Date.parse(expiresAt) <= _nowMs()) return null;
+    const holders = _entryHolders(entry);
+    if (!holders.length) return null;
+    const withHolders = _entryWithHolders(entry, holders);
     return {
       path,
       normalized_path: normalized,
@@ -84,9 +124,11 @@
       device_id: _cleanText(entry?.device_id, 80),
       device_label: _cleanText(entry?.device_label, 120),
       kind: _cleanText(entry?.kind || 'edit', 40),
+      include_descendants: entry?.include_descendants === true || entry?.includeDescendants === true,
       acquired_at: String(entry?.acquired_at || new Date().toISOString()),
-      heartbeat_at: String(entry?.heartbeat_at || new Date().toISOString()),
-      expires_at: expiresAt || _expiresAt(LEASE_SECONDS),
+      heartbeat_at: String(withHolders?.heartbeat_at || new Date().toISOString()),
+      expires_at: String(withHolders?.expires_at || _expiresAt(LEASE_SECONDS)),
+      holders: withHolders.holders,
     };
   }
 
@@ -103,12 +145,39 @@
   }
 
   async function _writeStore(provider, entries) {
-    const payload = {
+    const payload = _storePayload(entries);
+    await provider.writeJson(STORE_PATH, payload);
+    return payload;
+  }
+
+  function _storePayload(entries) {
+    return {
       entries: entries.map(_cleanEntry).filter(Boolean).sort((a, b) => a.normalized_path.localeCompare(b.normalized_path)),
       updated_at: new Date().toISOString(),
     };
-    await provider.writeJson(STORE_PATH, payload);
-    return payload;
+  }
+
+  function _entriesFromStore(data) {
+    return (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
+  }
+
+  async function _mutateStore(provider, updater) {
+    if (typeof provider?.writeJsonMerged === 'function') {
+      let result;
+      await provider.writeJsonMerged(STORE_PATH, async current => {
+        const change = await updater(_entriesFromStore(current));
+        if (change === false) return false;
+        result = change?.result;
+        return _storePayload(Array.isArray(change?.entries) ? change.entries : []);
+      }, { fallbackValue: { entries: [], updated_at: '' } });
+      return result;
+    }
+
+    const store = await _readPruned(provider);
+    const change = await updater(store.entries);
+    if (change === false) return undefined;
+    await _writeStore(provider, Array.isArray(change?.entries) ? change.entries : []);
+    return change?.result;
   }
 
   async function _readPruned(provider) {
@@ -141,7 +210,14 @@
 
   function _entryPayload(path, body, tokenHash, existing) {
     const now = new Date().toISOString();
-    return {
+    const holderId = _cleanText(body?.holder_id || body?.holderId, 160) || 'legacy';
+    const holders = _entryHolders(existing).filter(holder => holder.holder_id !== holderId);
+    holders.push({
+      holder_id: holderId,
+      heartbeat_at: now,
+      expires_at: _expiresAt(body?.lease_seconds || body?.leaseSeconds),
+    });
+    return _entryWithHolders({
       path: _normalizeFolderPath(path),
       normalized_path: _normalize(path),
       token_hash: tokenHash,
@@ -150,10 +226,13 @@
       device_id: _cleanText(body?.device_id, 80),
       device_label: _cleanText(body?.device_label, 120),
       kind: _cleanText(body?.kind || 'edit', 40),
+      include_descendants: existing?.include_descendants === true
+        || body?.include_descendants === true
+        || body?.includeDescendants === true,
       acquired_at: existing?.acquired_at || now,
       heartbeat_at: now,
       expires_at: _expiresAt(body?.lease_seconds || body?.leaseSeconds),
-    };
+    }, holders);
   }
 
   async function list(provider) {
@@ -183,15 +262,17 @@
     if (!token) throw new Error('ロックトークンがありません');
     if (_isSystemExcluded(path)) throw new Error('システムフォルダは自動編集中ロックの対象外です');
     const tokenHash = await _tokenHash(token);
-    const store = await _readPruned(provider);
-    const conflict = _findConflict(store.entries, path, tokenHash);
-    if (conflict) throw _conflictError(conflict, path);
-    const existing = store.entries.find(entry => entry.token_hash === tokenHash && entry.normalized_path === _normalize(path));
-    const next = store.entries.filter(entry => !(entry.token_hash === tokenHash && entry.normalized_path === _normalize(path)));
-    const entry = _entryPayload(path, body, tokenHash, existing);
-    next.push(entry);
-    await _writeStore(provider, next);
-    return { ok: true, entry };
+    const includeDescendants = body?.include_descendants === true || body?.includeDescendants === true;
+    return _mutateStore(provider, entries => {
+      // writeJsonMerged の競合リトライごとに、必ずその時点の最新 entries で判定する。
+      const conflict = _findConflict(entries, path, tokenHash, { includeDescendants });
+      if (conflict) throw _conflictError(conflict, path);
+      const existing = entries.find(entry => entry.token_hash === tokenHash && entry.normalized_path === _normalize(path));
+      const next = entries.filter(entry => !(entry.token_hash === tokenHash && entry.normalized_path === _normalize(path)));
+      const entry = _entryPayload(path, body, tokenHash, existing);
+      next.push(entry);
+      return { entries: next, result: { ok: true, entry } };
+    });
   }
 
   async function heartbeat(provider, body = {}, headers) {
@@ -204,28 +285,56 @@
     return { ok: true, entries };
   }
 
-  async function release(provider, path, token) {
+  async function release(provider, path, token, holderId) {
     const normalized = _normalize(path);
     if (!normalized || !token) return { ok: true, removed: false };
     const tokenHash = await _tokenHash(token);
-    const store = await _readPruned(provider);
-    const next = store.entries.filter(entry => !(entry.token_hash === tokenHash && entry.normalized_path === normalized));
-    await _writeStore(provider, next);
-    return { ok: true, removed: next.length !== store.entries.length };
+    const holder = _cleanText(holderId, 160);
+    return _mutateStore(provider, entries => {
+      let removed = false;
+      const next = [];
+      for (const entry of entries) {
+        if (entry.token_hash !== tokenHash || entry.normalized_path !== normalized) {
+          next.push(entry);
+          continue;
+        }
+        if (!holder) {
+          removed = true;
+          continue;
+        }
+        const holders = _entryHolders(entry).filter(row => row.holder_id !== holder);
+        removed = removed || holders.length !== _entryHolders(entry).length;
+        const updated = _entryWithHolders(entry, holders);
+        if (updated) next.push(updated);
+      }
+      return { entries: next, result: { ok: true, removed } };
+    });
   }
 
-  async function releaseAll(provider, token) {
+  async function releaseAll(provider, token, holderId) {
     if (!token) return { ok: true, removed: 0 };
     const tokenHash = await _tokenHash(token);
-    const store = await _readPruned(provider);
-    const next = store.entries.filter(entry => entry.token_hash !== tokenHash);
-    await _writeStore(provider, next);
-    return { ok: true, removed: store.entries.length - next.length };
-  }
-
-  function _addPath(paths, value) {
-    const text = _normalizeFolderPath(value || '');
-    if (text) paths.push(text);
+    const holder = _cleanText(holderId, 160);
+    return _mutateStore(provider, entries => {
+      let removed = 0;
+      const next = [];
+      for (const entry of entries) {
+        if (entry.token_hash !== tokenHash) {
+          next.push(entry);
+          continue;
+        }
+        if (!holder) {
+          removed += 1;
+          continue;
+        }
+        const before = _entryHolders(entry);
+        const holders = before.filter(row => row.holder_id !== holder);
+        if (holders.length !== before.length) removed += 1;
+        const updated = _entryWithHolders(entry, holders);
+        if (updated) next.push(updated);
+      }
+      return { entries: next, result: { ok: true, removed } };
+    });
   }
 
   function _pathDir(path) {
@@ -234,11 +343,90 @@
     return index > 0 ? text.slice(0, index) : '';
   }
 
-  function _candidatePaths({ pathname, url, body }) {
-    const paths = [];
-    const query = key => _addPath(paths, url.searchParams.get(key));
-    const payload = key => _addPath(paths, body?.[key]);
-    const both = key => { query(key); payload(key); };
+  function _pathBase(path) {
+    const text = _normalizeFolderPath(path || '');
+    const index = text.lastIndexOf('/');
+    return index >= 0 ? text.slice(index + 1) : text;
+  }
+
+  function _joinPath(parent, child) {
+    return _normalizeFolderPath([parent, child].filter(Boolean).join('/'));
+  }
+
+  function _splitNameAndExtension(name) {
+    const text = String(name || '');
+    const index = text.lastIndexOf('.');
+    if (index <= 0) return { stem: text, extension: '' };
+    return { stem: text.slice(0, index), extension: text.slice(index) };
+  }
+
+  async function _entryKind(provider, path) {
+    if (!path) return '';
+    if (typeof provider?.statPath === 'function') return String((await provider.statPath(path))?.kind || '');
+    if (typeof internals._resolveEntryHandle === 'function') {
+      return String((await internals._resolveEntryHandle(provider, path))?.kind || '');
+    }
+    return '';
+  }
+
+  async function _moveTarget(provider, sourcePath, destFolder, isFile) {
+    if (!sourcePath || !destFolder) return '';
+    if (_pathDir(sourcePath) === destFolder) return sourcePath;
+    const sourceName = _pathBase(sourcePath);
+    const split = _splitNameAndExtension(sourceName);
+    const baseName = isFile ? split.stem : sourceName;
+    const extension = isFile ? split.extension : '';
+    let candidate = _joinPath(destFolder, baseName + extension);
+    if (!await _pathExists(provider, candidate)) return candidate;
+    for (let index = 1; index < 10000; index += 1) {
+      candidate = _joinPath(destFolder, `${baseName}_${String(index).padStart(4, '0')}${extension}`);
+      if (!await _pathExists(provider, candidate)) return candidate;
+    }
+    return _joinPath(destFolder, `${baseName}_${Date.now()}${extension}`);
+  }
+
+  function _renameTarget(sourcePath, newName, isFile) {
+    if (!sourcePath || !newName) return '';
+    const extension = isFile ? _splitNameAndExtension(_pathBase(sourcePath)).extension : '';
+    return _joinPath(_pathDir(sourcePath), String(newName).replace(/[\\/]/g, '').trim() + extension);
+  }
+
+  function _addCandidate(candidates, value, options = {}) {
+    const path = _normalizeFolderPath(value || '');
+    if (!path) return;
+    candidates.push({
+      path,
+      includeDescendants: options.includeDescendants === true,
+      purpose: String(options.purpose || ''),
+    });
+  }
+
+  function _uniqueCandidates(candidates) {
+    const byPath = new Map();
+    for (const candidate of candidates || []) {
+      const key = _normalize(candidate?.path || '');
+      if (!key) continue;
+      const previous = byPath.get(key);
+      byPath.set(key, previous ? {
+        ...previous,
+        includeDescendants: previous.includeDescendants || candidate.includeDescendants,
+      } : candidate);
+    }
+    return [...byPath.values()];
+  }
+
+  async function _candidatePaths({ pathname, url, body, provider }) {
+    const candidates = [];
+    const legacyIncludeDescendants = pathname.includes('folder') || pathname.includes('delete-batch');
+    const query = (key, options = {}) => _addCandidate(candidates, url.searchParams.get(key), {
+      includeDescendants: options.includeDescendants ?? legacyIncludeDescendants,
+      purpose: options.purpose,
+    });
+    const payload = (key, options = {}) => _addCandidate(candidates, body?.[key], {
+      includeDescendants: options.includeDescendants ?? legacyIncludeDescendants,
+      purpose: options.purpose,
+    });
+    const both = (key, options) => { query(key, options); payload(key, options); };
     if (pathname === '/file' || pathname === '/value' || pathname === '/db-metadata' || pathname === '/replace') {
       both('path');
       payload('entry_path');
@@ -249,23 +437,50 @@
     } else if (pathname === '/outliner/add') {
       payload('parent');
     } else if (pathname === '/outliner/delete') {
-      payload('path');
+      const sourcePath = _normalizeFolderPath(body?.path || '');
+      _addCandidate(candidates, sourcePath, {
+        includeDescendants: await _entryKind(provider, sourcePath) === 'directory',
+        purpose: 'source',
+      });
     } else if (pathname === '/outliner/delete-batch') {
-      (Array.isArray(body?.items) ? body.items : []).forEach(item => _addPath(paths, item?.path));
+      for (const item of Array.isArray(body?.items) ? body.items : []) {
+        const sourcePath = _normalizeFolderPath(item?.path || '');
+        _addCandidate(candidates, sourcePath, {
+          includeDescendants: await _entryKind(provider, sourcePath) === 'directory',
+          purpose: 'source',
+        });
+      }
     } else if (pathname === '/outliner/duplicate') {
       const srcPath = _normalizeFolderPath(body?.path || '');
-      if (srcPath) _addPath(paths, _pathDir(srcPath));
+      if (srcPath) _addCandidate(candidates, _pathDir(srcPath));
     } else if (pathname === '/outliner/save-as') {
       payload('path');
       payload('dest_folder');
     } else if (pathname === '/outliner/move') {
-      payload('path');
-      payload('dest_folder');
+      const sourcePath = _normalizeFolderPath(body?.path || '');
+      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
+      const sourceKind = await _entryKind(provider, sourcePath);
+      _addCandidate(candidates, sourcePath, {
+        includeDescendants: sourceKind === 'directory',
+        purpose: 'source',
+      });
+      _addCandidate(candidates, await _moveTarget(provider, sourcePath, destFolder, sourceKind === 'file'), {
+        includeDescendants: false,
+        purpose: 'destination',
+      });
     } else if (pathname === '/outliner/rename' || pathname === '/entity/rename') {
       const oldPath = _normalizeFolderPath(pathname === '/outliner/rename' ? body?.old_path : body?.path);
       const newName = String(body?.new_name || '').replace(/[\\/]/g, '').trim();
-      _addPath(paths, oldPath);
-      if (oldPath && newName) _addPath(paths, (_pathDir(oldPath) ? _pathDir(oldPath) + '/' : '') + newName);
+      const sourceKind = await _entryKind(provider, oldPath);
+      const isFile = sourceKind === 'file' || (sourceKind !== 'directory' && !!_splitNameAndExtension(_pathBase(oldPath)).extension);
+      _addCandidate(candidates, oldPath, {
+        includeDescendants: sourceKind === 'directory',
+        purpose: 'source',
+      });
+      _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
+        includeDescendants: false,
+        purpose: 'destination',
+      });
     } else if (pathname === '/entity/create') {
       payload('parent_path');
     } else if (pathname === '/entity/auto-name') {
@@ -288,19 +503,19 @@
     } else if (pathname === '/version/restore' || pathname === '/version/restore-db' || pathname === '/version/restore-folder' || pathname === '/version/delete-folder') {
       payload('path');
     }
-    return [...new Set(paths)];
+    return _uniqueCandidates(candidates);
   }
 
   async function guardMutationRequest({ method, body, url, pathname, headers }) {
     if (method === 'GET') return;
     if (pathname === '/active-lock' || pathname.startsWith('/active-lock/')) return;
-    const paths = _candidatePaths({ pathname, url, body });
-    if (!paths.length) return;
     const provider = await internals._requirePwaProvider('readwrite');
+    const candidates = await _candidatePaths({ pathname, url, body, provider });
+    if (!candidates.length) return;
     const token = _token(body || {}, headers);
-    for (const path of paths) {
-      await requireAvailable(provider, path, token, {
-        includeDescendants: pathname.includes('folder') || pathname.includes('delete-batch'),
+    for (const candidate of candidates) {
+      await requireAvailable(provider, candidate.path, token, {
+        includeDescendants: candidate.includeDescendants,
       });
     }
   }
@@ -326,11 +541,16 @@
     }
     if (pathname === '/active-lock/release-all' && method === 'POST') {
       const provider = await internals._requirePwaProvider('readwrite');
-      return releaseAll(provider, _token(body || {}, headers));
+      return releaseAll(provider, _token(body || {}, headers), body?.holder_id || body?.holderId || '');
     }
     if (pathname === '/active-lock' && method === 'DELETE') {
       const provider = await internals._requirePwaProvider('readwrite');
-      return release(provider, url.searchParams.get('path') || body?.path || '', _token(body || {}, headers));
+      return release(
+        provider,
+        url.searchParams.get('path') || body?.path || '',
+        _token(body || {}, headers),
+        url.searchParams.get('holder_id') || body?.holder_id || body?.holderId || '',
+      );
     }
     await guardMutationRequest({ method, body, url, pathname, headers });
     return NOT_HANDLED;
@@ -340,28 +560,29 @@
   window.__MeldexPwaPathMutationHooks.push(async event => {
     const provider = await internals._requirePwaProvider('readwrite').catch(() => null);
     if (!provider) return;
-    const store = await _readPruned(provider).catch(() => ({ entries: [] }));
     const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
     const newPath = _normalizeFolderPath(event?.newPath || '');
     if (!oldPath) return;
     const base = _normalize(oldPath);
-    const next = [];
-    let changed = false;
-    for (const row of store.entries) {
-      const cur = _normalize(row.path);
-      if (event?.action === 'delete' && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
-        changed = true;
-        continue;
+    await _mutateStore(provider, entries => {
+      const next = [];
+      let changed = false;
+      for (const row of entries) {
+        const cur = _normalize(row.path);
+        if (event?.action === 'delete' && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
+          changed = true;
+          continue;
+        }
+        if ((event?.action === 'rename' || event?.action === 'move') && newPath && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
+          const path = cur === base ? newPath : newPath + row.path.slice(oldPath.length);
+          next.push({ ...row, path: _normalizeFolderPath(path), normalized_path: _normalize(path) });
+          changed = true;
+        } else {
+          next.push(row);
+        }
       }
-      if ((event?.action === 'rename' || event?.action === 'move') && newPath && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
-        const path = cur === base ? newPath : newPath + row.path.slice(oldPath.length);
-        next.push({ ...row, path: _normalizeFolderPath(path), normalized_path: _normalize(path) });
-        changed = true;
-      } else {
-        next.push(row);
-      }
-    }
-    if (changed) await _writeStore(provider, next).catch(() => {});
+      return changed ? { entries: next, result: { ok: true } } : false;
+    }).catch(() => {});
   });
 
   window.MeldexActiveLockStore = {

@@ -20,6 +20,9 @@ const GBSubPanel = (() => {
   let _titleTextEl = null;
   let _actionsEl = null;
   let _minimizeBtn = null;
+  let _backBtn = null;
+  let _forwardBtn = null;
+  let _pathBarEl = null;
   let _pane = null;
   let _current = null;
   let _panelState = 'normal';
@@ -27,6 +30,9 @@ const GBSubPanel = (() => {
   let _drag = null;
   let _resize = null;
   let _entityRenderSeq = 0;
+  let _navHistory = [];
+  let _navIndex = -1;
+  let _navNavigating = false;
 
   function _readJson(key) {
     try {
@@ -438,7 +444,7 @@ const GBSubPanel = (() => {
     }
   }
 
-  function _renderEntityData(root, data, entityPath) {
+  function _renderEntityData(root, data, entityPath, propTypes) {
     root.innerHTML = '';
     root.dataset.path = entityPath;
     _appendEntityParentLink(root, entityPath);
@@ -455,6 +461,7 @@ const GBSubPanel = (() => {
       renderEntityPropsGridInto(grid, data, entityPath, {
         parentDb: _entityParentDir(entityPath),
         subPanel: true,
+        propTypes: propTypes || undefined,
       });
     } else {
       for (const [name, values] of Object.entries(data?.properties || {})) {
@@ -487,9 +494,13 @@ const GBSubPanel = (() => {
     root.innerHTML = '<div class="gb-subpanel-empty">エントリを読み込み中...</div>';
     try {
       if (typeof apiFetch !== 'function') throw new Error('apiFetch is not available');
-      const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+      const parentDb = _entityParentDir(entityPath);
+      const [data, meta] = await Promise.all([
+        apiFetch('/entity?path=' + encodeURIComponent(entityPath)),
+        parentDb ? apiFetch('/db-metadata?path=' + encodeURIComponent(parentDb), { silentError: true }).catch(() => null) : null,
+      ]);
       if (seq !== _entityRenderSeq || !root.isConnected || root.dataset.path !== entityPath) return;
-      _renderEntityData(root, data, entityPath);
+      _renderEntityData(root, data, entityPath, meta?.property_types);
     } catch (e) {
       if (seq !== _entityRenderSeq || !root.isConnected) return;
       root.innerHTML = '';
@@ -666,6 +677,62 @@ const GBSubPanel = (() => {
     _saveRect();
   }
 
+  function _updateNavUi() {
+    if (_backBtn) _backBtn.disabled = _navIndex <= 0;
+    if (_forwardBtn) _forwardBtn.disabled = _navIndex >= _navHistory.length - 1;
+    if (_pathBarEl) {
+      const entry = _navHistory[_navIndex];
+      _pathBarEl.textContent = entry?.path ? _basename(entry.path) : '';
+      _pathBarEl.title = entry?.path || '';
+      _pathBarEl.style.display = _navHistory.length > 1 ? '' : 'none';
+    }
+  }
+
+  function _navPush(toolType, options) {
+    if (_navNavigating) return;
+    _navHistory.length = _navIndex + 1;
+    _navHistory.push({
+      toolType,
+      path: options?.path || '',
+      label: options?.label || _titleFromOptions(toolType, options),
+      state: options?.state || null,
+    });
+    _navIndex = _navHistory.length - 1;
+    _updateNavUi();
+  }
+
+  function _navBack() {
+    if (_navIndex <= 0) return false;
+    _navIndex--;
+    const entry = _navHistory[_navIndex];
+    _navNavigating = true;
+    try {
+      _updateTitle(entry.toolType, _subpanelTitle(entry.toolType));
+      _updateContextActions(entry.toolType, entry);
+      _mountPane(entry.toolType, entry);
+    } finally {
+      _navNavigating = false;
+      _updateNavUi();
+    }
+    return true;
+  }
+
+  function _navForward() {
+    if (_navIndex >= _navHistory.length - 1) return false;
+    _navIndex++;
+    const entry = _navHistory[_navIndex];
+    _navNavigating = true;
+    try {
+      _updateTitle(entry.toolType, _subpanelTitle(entry.toolType));
+      _updateContextActions(entry.toolType, entry);
+      _mountPane(entry.toolType, entry);
+    } finally {
+      _navNavigating = false;
+      _updateNavUi();
+    }
+    return true;
+  }
+
   function _ensurePanel() {
     if (_panel) return;
     const panel = document.createElement('section');
@@ -695,6 +762,27 @@ const GBSubPanel = (() => {
     const actions = document.createElement('div');
     actions.className = 'gb-subpanel-actions';
     _actionsEl = actions;
+
+    _backBtn = document.createElement('button');
+    _backBtn.type = 'button';
+    _backBtn.className = 'gb-subpanel-button gb-subpanel-nav-btn';
+    _backBtn.dataset.testid = 'gb-subpanel-back';
+    _backBtn.title = '戻る';
+    _backBtn.setAttribute('aria-label', '戻る');
+    _backBtn.innerHTML = typeof lucide === 'function' ? lucide('chevron-left', 16) : '←';
+    _backBtn.disabled = true;
+    _backBtn.addEventListener('click', () => _navBack());
+
+    _forwardBtn = document.createElement('button');
+    _forwardBtn.type = 'button';
+    _forwardBtn.className = 'gb-subpanel-button gb-subpanel-nav-btn';
+    _forwardBtn.dataset.testid = 'gb-subpanel-forward';
+    _forwardBtn.title = '進む';
+    _forwardBtn.setAttribute('aria-label', '進む');
+    _forwardBtn.innerHTML = typeof lucide === 'function' ? lucide('chevron-right', 16) : '→';
+    _forwardBtn.disabled = true;
+    _forwardBtn.addEventListener('click', () => _navForward());
+
     _minimizeBtn = document.createElement('button');
     _minimizeBtn.type = 'button';
     _minimizeBtn.className = 'gb-subpanel-button';
@@ -708,8 +796,14 @@ const GBSubPanel = (() => {
     closeBtn.setAttribute('aria-label', '閉じる');
     closeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : 'x';
     closeBtn.addEventListener('click', () => close());
+    actions.appendChild(_backBtn);
+    actions.appendChild(_forwardBtn);
     actions.appendChild(_minimizeBtn);
     actions.appendChild(closeBtn);
+
+    _pathBarEl = document.createElement('div');
+    _pathBarEl.className = 'gb-subpanel-pathbar';
+    _pathBarEl.style.display = 'none';
 
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
@@ -718,6 +812,7 @@ const GBSubPanel = (() => {
     titlebar.appendChild(title);
     titlebar.appendChild(actions);
     panel.appendChild(titlebar);
+    panel.appendChild(_pathBarEl);
     panel.appendChild(_contentEl);
 
     RESIZE_DIRS.forEach((dir) => {
@@ -776,6 +871,7 @@ const GBSubPanel = (() => {
     const normalizedType = toolType || options.toolType || options.type || 'preview';
     if (_openMobileDrawer(normalizedType, options)) return true;
     _ensurePanel();
+    _navPush(normalizedType, options);
     _updateTitle(normalizedType, _subpanelTitle(normalizedType));
     _updateContextActions(normalizedType, options);
     _mountPane(normalizedType, options);
@@ -792,6 +888,9 @@ const GBSubPanel = (() => {
     _retractCurrentContent();
     _pane = null;
     _current = null;
+    _navHistory = [];
+    _navIndex = -1;
+    _navNavigating = false;
     document.removeEventListener('pointermove', _onPointerMove, true);
     document.removeEventListener('pointerup', _onPointerUp, true);
     window.removeEventListener('resize', _onWindowResize);
@@ -802,6 +901,9 @@ const GBSubPanel = (() => {
     _titleTextEl = null;
     _actionsEl = null;
     _minimizeBtn = null;
+    _backBtn = null;
+    _forwardBtn = null;
+    _pathBarEl = null;
     _drag = null;
     _resize = null;
     return true;
@@ -827,6 +929,8 @@ const GBSubPanel = (() => {
     close,
     toggle,
     isOpen,
+    navBack: _navBack,
+    navForward: _navForward,
     openEntityChat: _openEntityChat,
   };
 })();

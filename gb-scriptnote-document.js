@@ -22,6 +22,7 @@ function _scriptNoteNormalizeRows(rows, now) {
   const normalized = Array.isArray(rows) ? rows.map((row, index) => {
     const item = _scriptNotePlainObject(row);
     return {
+      ...item,
       id: item.id || `sn-${now}-${index}`,
       role: String(item.role || ''),
       status: String(item.status || ''),
@@ -46,6 +47,7 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
     if (editor.baseTextLetterSpacingV == null || editor.baseTextLetterSpacingV === '') editor.baseTextLetterSpacingV = editor.baseTextLetterSpacing;
   }
   return {
+    ...src,
     fileType: src.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),
     schema_version: Number.isFinite(Number(src.schema_version)) ? Number(src.schema_version) : 1,
     version: src.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
@@ -116,6 +118,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
 function serializeScriptNoteDoc(doc) {
   if (!doc || typeof doc !== 'object') return null;
   return {
+    ...doc,
     fileType: doc.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),
     schema_version: Number.isFinite(Number(doc.schema_version)) ? Number(doc.schema_version) : 1,
     version: doc.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),

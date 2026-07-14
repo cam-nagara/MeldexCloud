@@ -368,6 +368,7 @@ ${bodyHtml}
         case 'csv': html = await _exportCsv(); break;
         case 'smart-db': html = await _exportSmartDb(); break;
         case 'calendar': html = await _exportCalendar(); break;
+        case 'board': html = await _exportBoard(); break;
         default:
           showStatus('このビューのHTML出力は未対応です', true);
           return;
@@ -445,6 +446,10 @@ ${bodyHtml}
         return (typeof _csvPath !== 'undefined' ? _csvPath : '').split('/').pop()?.replace(/\.\w+$/, '') || 'CSV';
       case 'calendar':
         return 'カレンダー';
+      case 'board': {
+        const path = (typeof bd !== 'undefined' && bd?.path) || '';
+        return path.split('/').pop() || 'ボード';
+      }
       default:
         return '無題';
     }
@@ -591,6 +596,51 @@ ${bodyHtml}
       title: 'カレンダー',
       extraCss: calCss + '\nbody { padding: 16px; }',
       embedImages: false,
+    });
+  }
+
+  // --- ボード ---
+  // 座標が負値を含む絶対配置カード + SVGオーバーレイという構造上、そのまま複製すると
+  // 表示位置がずれる。PNG出力 (_bdExportImageBounds / _bdCreateExportStage, gb-canvas-features.part02.js)
+  // と同じ「全カード・全ライン・全フレームの外接矩形を求めて原点(0,0)基準に平行移動する」
+  // 方式を踏襲し、bounds計算は既存関数をそのまま再利用する（重複実装を避ける）。
+  async function _exportBoard() {
+    const canvasEl = document.getElementById('bd-canvas');
+    if (!canvasEl) { showStatus('ボードが開かれていません', true); return null; }
+    const bounds = (typeof _bdExportImageBounds === 'function') ? _bdExportImageBounds() : null;
+    if (!bounds) { showStatus('ボードにカードがありません', true); return null; }
+    return exportToHtml(canvasEl, {
+      title: _getViewTitle('board'),
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
+      extraCss: 'body { padding: 16px; }',
+      preTransform: (clone) => {
+        // #bd-canvas クローン自身を bounds サイズの静的コンテナ化する
+        clone.style.position = 'relative';
+        clone.style.flex = 'none';
+        clone.style.width = bounds.width + 'px';
+        clone.style.height = bounds.height + 'px';
+        clone.style.overflow = 'hidden';
+        const worldClone = clone.querySelector('[data-bd-role="world"]');
+        if (!worldClone) return;
+        // #bd-world クローンは現在のpan/zoomのtransformを引き継いでいるため上書きし、
+        // bounds.x0/y0 分だけ平行移動して負座標のカードも可視領域に収める
+        worldClone.style.position = 'absolute';
+        worldClone.style.left = '0';
+        worldClone.style.top = '0';
+        worldClone.style.transformOrigin = '0 0';
+        worldClone.style.transform = `translate(${-bounds.x0}px, ${-bounds.y0}px)`;
+        worldClone.querySelectorAll('[data-bd-role="svg"]').forEach(svg => {
+          svg.setAttribute('width', String(bounds.width));
+          svg.setAttribute('height', String(bounds.height));
+          svg.style.width = bounds.width + 'px';
+          svg.style.height = bounds.height + 'px';
+          svg.style.overflow = 'visible';
+        });
+        // 選択中カードのリサイズハンドル・選択枠・選択ハイライトは静的出力に不要なので除去
+        const resizeLayer = worldClone.querySelector('[data-bd-role="resize-layer"]');
+        if (resizeLayer) resizeLayer.innerHTML = '';
+        clone.querySelectorAll('.bd-selected').forEach(el => el.classList.remove('bd-selected'));
+      },
     });
   }
 

@@ -319,18 +319,20 @@ Object.assign(ScriptNoteEditor.prototype, {
             chara.name = newName;
             this._renameRoleInRows(oldName, chara.name);
             this._markDirty();
+            const focusIdx = nameInput.dataset.sn2DetailIndex;
             this.renderDetailPanel(panelContainer);
+            const restored = panelContainer.querySelector(`input[type="text"][data-sn2-detail-index="${focusIdx}"]`);
+            if (restored) { restored.focus(); restored.setSelectionRange(restored.value.length, restored.value.length); }
           });
           nameInput.addEventListener('click', (e) => e.stopPropagation());
           nameInput.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
               e.preventDefault();
-              const row = td.closest('.sn2-detail-item');
-              const sibling = e.key === 'ArrowUp' ? row?.previousElementSibling : row?.nextElementSibling;
-              if (sibling) {
-                const nextInput = sibling.querySelector('input[type="text"][placeholder="タイプ名"]');
-                if (nextInput) { nameInput.dispatchEvent(new Event('change')); nextInput.focus(); nextInput.select(); }
-              }
+              const currentIdx = parseInt(nameInput.dataset.sn2DetailIndex, 10);
+              const targetIdx = e.key === 'ArrowUp' ? currentIdx - 1 : currentIdx + 1;
+              nameInput.dispatchEvent(new Event('change'));
+              const target = panelContainer.querySelector(`input[type="text"][data-sn2-detail-index="${targetIdx}"]`);
+              if (target) { target.focus(); target.select(); }
             }
           });
           td.appendChild(nameInput);

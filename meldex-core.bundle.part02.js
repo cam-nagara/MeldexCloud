@@ -1,3 +1,22 @@
+    else if (cls.includes('ico-book')) name = 'book';
+    else if (cls.includes('ico-download')) name = 'download';
+    else if (cls.includes('ico-globe')) name = 'globe';
+    else if (cls.includes('ico-upload')) name = 'upload';
+    else if (cls.includes('ico-board')) name = 'presentation';
+    else if (cls.includes('ico-preview') || cls.includes('ico-tvMinimal')) name = 'tvMinimal';
+    else if (cls.includes('ico-detail')) name = 'slidersHorizontal';
+    else if (cls.includes('ico-info')) name = 'info';
+    else if (cls.includes('ico-settings2') || cls.includes('ico-slidersHorizontal')) name = 'slidersHorizontal';
+    else if (cls.includes('ico-gear') || cls.includes('ico-settings')) name = 'settings';
+    else if (cls.includes('ico-sync')) name = 'sync';
+    else if (cls.includes('ico-panelRight')) name = 'panelRight';
+    else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    else if (cls.includes('ico-layoutGrid')) name = 'layoutDashboard';
+    else if (cls.includes('ico-layoutList')) name = 'layoutList';
+    else if (cls.includes('ico-externalLink')) name = 'externalLink';
+    else if (cls.includes('ico-filter')) name = 'filter';
+    else if (cls.includes('ico-copy')) name = 'copy';
+    else if (cls.includes('ico-arrowUpDown')) name = 'arrowUpDown';
     else if (cls.includes('ico-arrowUp')) name = 'arrowUp';
     else if (cls.includes('ico-arrowDown')) name = 'arrowDown';
     else if (cls.includes('ico-play')) name = 'play';
@@ -879,31 +898,3 @@ function initIframeMarkup(scrollContainer) {
       document.removeEventListener('pointermove', onHeaderDragMove);
       document.removeEventListener('pointerup', onHeaderDragEnd);
       document.removeEventListener('pointercancel', onHeaderDragEnd);
-      persist();
-    };
-    header.addEventListener('pointerdown', (e) => {
-      // 削除 (x) / メニュー (…) ボタン上ではドラッグ開始しない
-      if (!_ann.active || e.target.closest('[data-ann-delete],button,.ann-note-resize-handle,.gb-fmt-popup')) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const pt = _toLocalCoords(e.clientX, e.clientY);
-      dragState = { startX: pt.x, startY: pt.y, x: data.x || 0, y: data.y || 0 };
-      document.addEventListener('pointermove', onHeaderDragMove, { passive: false });
-      document.addEventListener('pointerup', onHeaderDragEnd);
-      document.addEventListener('pointercancel', onHeaderDragEnd);
-    });
-    _installNoteResize(note, data, persist);
-    if (typeof AnnotationStickyTail !== 'undefined') {
-      AnnotationStickyTail.install(note, { data, persist, getColor: () => item.color || '#c48080' });
-    }
-
-    const _deleteEmbeddedNote = () => {
-      const payload = _notePayload(data, editor, note);
-      payload.deleted = true;
-      payload.deletedAt = new Date().toISOString();
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
-        item._pendingData = payload;
-        note.remove();
-        return;
-      }
-      if (_updateBoardAnnotation(item.id, { data: payload }, () => note.remove())) return;

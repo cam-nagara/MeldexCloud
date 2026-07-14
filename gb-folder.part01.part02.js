@@ -104,7 +104,12 @@
 
   // --- 管理 ---
   addSep();
-  addItem('パスをコピー', () => { navigator.clipboard.writeText(item.path); showStatus('パスをコピーしました'); }, null, 'clipboardList');
+  addItem('パスをコピー', () => {
+    const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+    const copyPath = window.GBPathUtils?.resolveForClipboard?.(item.path, base) ?? item.path;
+    navigator.clipboard.writeText(copyPath);
+    showStatus('パスをコピーしました');
+  }, null, 'clipboardList');
   const lockedForEdit = _folderMenuItemLocked(item);
   if (!blankTarget && !lockedForEdit) {
     addItem('リネーム', async () => {
@@ -642,11 +647,11 @@ function _positionFolderBulkPopup() {
   if (!bar || !bar.classList.contains('visible')) return;
   bar.style.maxHeight = '';
   bar.style.overflowY = '';
-  const host = document.body;
+  const anchor = _folderBulkAnchorElement();
+  const host = window.GBSelectionFloatMenu?.hostFor?.(anchor) || document.getElementById('folder-view') || document.body;
   if (window.GBSelectionFloatMenu) {
     window.GBSelectionFloatMenu.bindDrag(bar, { host });
-    window.GBSelectionFloatMenu.resetPosition(bar, { host, anchor: _folderBulkAnchorElement() });
-    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(bar);
+    window.GBSelectionFloatMenu.resetPosition(bar, { host, anchor });
   } else if (typeof positionPopup === 'function') {
     positionPopup(bar, _folderBulkAnchorRect(), { prefer: 'below', gap: 6 });
   }
@@ -656,7 +661,7 @@ function _ensureFolderBulkBarChrome(bar) {
   if (!bar) return;
   bar.classList.add('gb-selection-float-bar');
   if (window.GBSelectionFloatMenu) {
-    const host = document.body;
+    const host = window.GBSelectionFloatMenu?.hostFor?.(bar) || document.getElementById('folder-view') || document.body;
     if (!bar.querySelector('.gb-selection-float-drag')) {
       bar.insertBefore(window.GBSelectionFloatMenu.createDragHandle(), bar.firstChild);
     }
@@ -760,7 +765,10 @@ async function fvBulkDelete() {
 
 // 一括操作: パスをコピー
 function fvBulkCopyPath() {
-  const paths = _folderSelectedItems.map(i => i.path).join('\n');
+  const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+  const paths = _folderSelectedItems
+    .map(i => window.GBPathUtils?.resolveForClipboard?.(i.path, base) ?? i.path)
+    .join('\n');
   navigator.clipboard.writeText(paths);
   showStatus(_folderSelectedItems.length + ' 件のパスをコピーしました');
 }
@@ -921,17 +929,48 @@ document.getElementById('folder-grid').addEventListener('wheel', function(e) {
   applyFolderZoom();
 }, {passive: false});
 
-function openFolderItem(item) {
+async function openFolderItem(item) {
   _folderSelectedItems = [];
   _folderSelected = null;
   _updateFolderBulkBar();
   const _expOpts = { fromExplorer: true };
+  const clickPaneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+    ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
+    : null;
+  if (typeof _applyCachedBrowseItemType === 'function') _applyCachedBrowseItemType(item);
+  if (item.type === 'folder' && item.needs_type_check === true && typeof _scheduleBrowseItemTypeResolution === 'function') {
+    const mobileExplorer = window.MeldexCloudMobileExplorer;
+    const handledByMobileExplorer = !!(
+      window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
+      && mobileExplorer?.selectFolderFromTree
+    );
+    const folderVisiblePromise = openFolder(item.name, item.path, _expOpts);
+    const paneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+      ? _captureBrowseItemPaneSnapshot(item.path, { requirePath: !handledByMobileExplorer })
+      : null;
+    _scheduleBrowseItemTypeResolution(null, item, folderVisiblePromise, {
+      paneSnapshot,
+      isStillActive: handledByMobileExplorer
+        ? () => mobileExplorer?.currentFolderTarget?.()?.path === item.path
+        : undefined,
+      onResolved: handledByMobileExplorer && typeof mobileExplorer?.handleResolvedItemType === 'function'
+        ? payload => mobileExplorer.handleResolvedItemType(payload)
+        : undefined,
+    });
+    return folderVisiblePromise;
+  }
+  if (typeof _resolveBrowseItemTypeOnDemand === 'function' && typeof _browseItemNeedsTypeCheck === 'function'
+      && _browseItemNeedsTypeCheck(item)) {
+    await _resolveBrowseItemTypeOnDemand(item);
+    if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
+        && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
+  }
   if (item.type === 'folder') { openFolder(item.name, item.path, _expOpts); }
-  else if (item.type === 'database') { selectDatabase(item.path, null, _expOpts); }
+  else if (item.type === 'database') { selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts); }
   else if (item.type === 'page') { openPage(item.name, item.path, _expOpts); }
   else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name || item.path, _expOpts); }
   else if (item.type === 'board') { openBoard(item.name, item.path, _expOpts); }
-  else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, _expOpts); }
+  else if (item.type === 'calendar') { openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null }); }
   else if (item.type === 'chat') { openSavedChat(item.path); }
   else if (item.type === 'smart-db') { if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts); }
   else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') { openMedia(item.name, item.path, item.type, _expOpts); }

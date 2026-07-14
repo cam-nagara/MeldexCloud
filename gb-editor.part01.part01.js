@@ -29,6 +29,7 @@ function initPageTitle() {
       clearTimeout(window._noteAutoSaveTimer);
       state.currentPagePath = newPath;
       document.getElementById('page-content').dataset.path = newPath;
+      window.MeldexFileLockBadge?.apply?.(el, newPath);
       showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
       _pageTitleOld = nv;
       // フォルダツリーのノードを直接更新（loadOutlinerによる全再構築を避ける）
@@ -40,6 +41,31 @@ function initPageTitle() {
     } catch { el.textContent = _pageTitleOld; }
   });
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
+  // 貼り付けは常にプレーンテキストとして挿入する（他所からの太字・斜体・フォント等の書式を持ち込ませない）
+  el.addEventListener('paste', (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const text = cd.getData('text/plain');
+    if (text) {
+      e.preventDefault();
+      document.execCommand('insertText', false, text);
+    }
+  });
+  // ドラッグ&ドロップ等、paste以外の経路で書式付き要素が紛れ込んだ場合の保険。
+  // ルビ表示用の [data-ruby] 要素（_pageTitleRubyHandler 参照）は対象外。
+  el.addEventListener('input', () => {
+    if (!el.querySelector('*:not(br):not([data-ruby])')) return;
+    const text = el.textContent;
+    el.textContent = text;
+    const range = document.createRange();
+    const sel = window.getSelection();
+    if (el.firstChild) {
+      range.selectNodeContents(el);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  });
 }
 function startPageTitleEdit(el) { el.focus(); }
 
@@ -73,8 +99,11 @@ function flushPendingEditorAutosave() {
         req
           .then((res) => {
             if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
-            pc.dataset.lastSavedMd = md;
-            pc.dataset.lastSavedEtag = res.etag || '';
+            // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
+            if (pc.dataset.path === currentPath) {
+              pc.dataset.lastSavedMd = md;
+              pc.dataset.lastSavedEtag = res.etag || '';
+            }
             window.MeldexDraftRecovery?.markSynced?.(currentPath);
           })
           .catch((error) => {
@@ -230,7 +259,8 @@ function _showNoteConflictDialog(path, md, pc) {
     try {
       if (action === 'overwrite') {
         const res = await apiPut('/file?path=' + encodeURIComponent(path), _noteSavePayload(pc, md, { force_overwrite: true }));
-        if (pc) {
+        // ダイアログを開いた後にpc(singleton)が別ノートへ切り替わっていたら書き込まない（etag汚染防止）
+        if (pc && pc.dataset.path === path) {
           pc.dataset.lastSavedMd = md;
           pc.dataset.lastSavedEtag = res.etag || '';
         }
@@ -249,12 +279,13 @@ function _showNoteConflictDialog(path, md, pc) {
         const nextPath = await promptPromise;
         if (!nextPath) return;
         const res = await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: md });
-        if (pc) {
+        // ダイアログを開いた後にpc(singleton)が別ノートへ切り替わっていたら書き込まない（path/etag汚染防止）
+        if (pc && pc.dataset.path === path) {
           pc.dataset.path = nextPath;
           pc.dataset.lastSavedMd = md;
           pc.dataset.lastSavedEtag = res.etag || '';
+          state.currentPagePath = nextPath;
         }
-        state.currentPagePath = nextPath;
         window.MeldexSaveSafety?.clearConflict?.(path);
         showStatus('別名で保存しました');
       }
@@ -367,6 +398,7 @@ async function openPage(label, path, opts) {
   if (pageTitleEl) {
     pageTitleEl.textContent = label;
     pageTitleEl.contentEditable = isItemLocked(path) ? 'false' : 'true';
+    window.MeldexFileLockBadge?.apply?.(pageTitleEl, path);
   }
   initPageTitle();
   if (!openOpts.skipRecent) addRecent(label, path, 'page');
@@ -461,8 +493,11 @@ async function openPage(label, path, opts) {
       const res = await apiPut('/file?path=' + encodeURIComponent(currentPath), _noteSavePayload(this, md));
       if (_handleNoteSkippedMissingSave(res, currentPath, md, this)) return;
       _orphanRemovedNoteLines(prevMd, md, currentPath);
-      this.dataset.lastSavedMd = md;
-      this.dataset.lastSavedEtag = res.etag || '';
+      // ページ切替でthis(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
+      if (this.dataset.path === currentPath) {
+        this.dataset.lastSavedMd = md;
+        this.dataset.lastSavedEtag = res.etag || '';
+      }
       await window.MeldexDraftRecovery?.markSynced?.(currentPath);
       showStatus('ノートを保存しました', false, { passiveSave: true });
       // 操作履歴に記録（undo/redoはブラウザネイティブに任せる）
@@ -508,8 +543,11 @@ async function openPage(label, path, opts) {
         .then((res) => {
           if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
           _orphanRemovedNoteLines(_prevSavedForDiff, md, currentPath);
-          pc.dataset.lastSavedMd = md;
-          pc.dataset.lastSavedEtag = res.etag || '';
+          // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
+          if (pc.dataset.path === currentPath) {
+            pc.dataset.lastSavedMd = md;
+            pc.dataset.lastSavedEtag = res.etag || '';
+          }
           window.MeldexDraftRecovery?.markSynced?.(currentPath);
         })
         .catch((error) => {

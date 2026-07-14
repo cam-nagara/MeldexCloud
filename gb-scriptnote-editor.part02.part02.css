@@ -1,0 +1,297 @@
+/* ================================
+   テーマパネル
+   ================================ */
+
+/* 2026-04-17: detail-panel-section-unification-plan.md に基づき、下線方式からアクセントバー方式に統一 */
+.sn2-detail-theme-section {
+  padding: 0 var(--ui-space-5);
+  margin-top: var(--ui-space-5);
+}
+.sn2-detail-theme-section:first-child { margin-top: 0; }
+.sn2-detail-theme-section > *:not(.sn2-detail-theme-section-title) { margin-left: 1em; }
+.sn2-detail-theme-section-title {
+  font-size: var(--ui-font-11);
+  font-weight: 600;
+  color: var(--ui-fg-default);
+  border-left: 2px solid var(--ui-accent);
+  padding-left: var(--ui-space-3);
+  line-height: 1.2;
+  margin-bottom: var(--ui-space-2);
+}
+.sn2-detail-theme-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  flex-wrap: wrap;
+}
+.sn2-detail-theme-row + .sn2-detail-theme-row {
+  margin-top: var(--ui-space-2);
+}
+.sn2-detail-theme-swatch {
+  width: 20px; height: 20px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  cursor: pointer;
+}
+.sn2-detail-theme-num-sm {
+  width: 52px;
+  font-size: var(--ui-font-10);
+  padding: 1px 3px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-theme-num-md {
+  width: 60px;
+  font-size: var(--ui-font-10);
+  padding: 1px 3px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-theme-label {
+  font-size: var(--ui-font-10);
+  color: var(--ui-fg-muted);
+}
+.sn2-detail-theme-label--spaced {
+  margin-left: var(--ui-space-2);
+}
+.sn2-detail-theme-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-theme-header-strong {
+  font-weight: 600;
+  font-size: var(--ui-font-13);
+}
+.sn2-detail-theme-section--autocolor {
+  /* 2026-04-17: アクセントバー統一方針に合わせて上側の罫線を削除 */
+}
+
+/* 列間枠線UI（renderThemePanel 内） */
+.sn2-detail-colborder-lbl {
+  padding: 2px 4px;
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+  white-space: nowrap;
+}
+.sn2-detail-colborder-cb {
+  margin: 0 1px;
+  cursor: pointer;
+  accent-color: var(--ui-selection-bg, var(--blue, #4a90d9));
+}
+.sn2-detail-colborder-hit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  cursor: pointer;
+}
+.sn2-detail-colborder-ui {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  font-size: var(--ui-font-11);
+  flex-wrap: wrap;
+}
+
+/* DB 読み込みモーダル内 */
+.sn2-db-import-modal {
+  min-width: 400px;
+  max-width: 600px;
+}
+.sn2-db-import-body {
+  min-height: 200px;
+  max-height: 400px;
+  overflow: auto;
+}
+.sn2-db-import-group { margin-bottom: var(--ui-space-4); }
+.sn2-db-import-group-label {
+  font-weight: 600;
+  padding: var(--ui-space-2) 0;
+}
+.sn2-db-import-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  padding: 2px var(--ui-space-4);
+  cursor: pointer;
+}
+.sn2-db-import-tree { font-size: var(--ui-font-13); }
+.sn2-db-import-selected {
+  padding: var(--ui-space-4);
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+}
+
+/* _showBulkEditPopup 内の補助クラス */
+.sn2-bulk-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-4);
+}
+.sn2-bulk-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  font-size: var(--ui-font-11);
+}
+.sn2-bulk-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.sn2-bulk-input-num {
+  width: 48px;
+  padding: 2px var(--ui-space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+  text-align: center;
+}
+.sn2-bulk-input-num--sm { width: 40px; }
+.sn2-bulk-input-text {
+  flex: 1;
+  padding: 2px var(--ui-space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+}
+.sn2-bulk-sel {
+  font-size: var(--ui-font-11);
+  padding: 1px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+.sn2-bulk-section-divider {
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-2);
+  margin-top: var(--ui-space-2);
+}
+.sn2-bulk-section-title {
+  font-size: var(--ui-font-10);
+  font-weight: 600;
+  color: var(--ui-fg-muted);
+  margin-bottom: var(--ui-space-2);
+}
+.sn2-bulk-apply-row {
+  margin-top: var(--ui-space-2);
+  display: flex;
+  gap: var(--ui-space-2);
+  justify-content: flex-end;
+}
+
+/* _showRoleOptionsPopup 内の補助クラス */
+.sn2-role-opts-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-3);
+}
+.sn2-role-opts-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+  font-size: var(--ui-font-11);
+}
+.sn2-role-opts-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.sn2-role-opts-row--top {
+  margin-top: var(--ui-space-2);
+}
+.sn2-role-opts-row--wrap {
+  flex-wrap: wrap;
+}
+.sn2-role-opts-divider {
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-3);
+}
+.sn2-role-opts-divider-flex {
+  border-top: 1px solid var(--ui-border);
+  padding-top: var(--ui-space-3);
+  display: flex;
+  gap: var(--ui-space-2);
+}
+.sn2-role-opts-check-lbl {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+.sn2-role-opts-hint {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+}
+.sn2-role-opts-field-label {
+  color: var(--ui-fg-muted);
+  width: 72px;
+}
+.sn2-role-opts-input-num {
+  width: 48px;
+  padding: 2px var(--ui-space-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-11);
+  text-align: center;
+}
+.sn2-role-opts-input-num--sm { width: 36px; }
+.sn2-role-opts-sel {
+  font-size: var(--ui-font-11);
+  padding: 1px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-app);
+  color: var(--ui-fg-default);
+}
+/* .sn2-role-opts-swatch-sm は gb-fmt-swatch--sm に移行済み（E-2 フェーズ 2026-04-16） */
+.sn2-role-opts-flex1 { flex: 1; }
+.sn2-role-opts-del { color: var(--ui-danger); }
+.sn2-role-opts-unit {
+  color: var(--ui-fg-muted);
+}
+.sn2-role-opts-sep {
+  color: var(--ui-fg-muted);
+  margin-left: var(--ui-space-2);
+}
+
+/* 設定テーブル内 swatch サイズ 16x16 は gb-fmt-swatch--xs に移行済み（E-2 フェーズ 2026-04-16） */
+
+/* 設定行内 label 幅 48px（mkCountRow） */
+.sn2-detail-settings-label--w48 { width: 48px; }
+.sn2-detail-settings-label--mr2 { margin-right: 2px; }
+.sn2-detail-settings-label--ml0 { margin-left: 0; }
+.sn2-detail-settings-input--w56 { width: 56px; }
+.sn2-detail-settings-input--w48 { width: 48px; }
+.sn2-detail-settings-input--w36 { width: 36px; }
+.sn2-detail-settings-input--w28 { width: 28px; }
+.sn2-detail-ac-title {
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-fg-default);
+}
+.sn2-detail-ac-settings-label {
+  text-align: center;
+  flex: 1;
+  font-size: var(--ui-font-10);
+}
+.sn2-detail-ac-select {
+  font-size: var(--ui-font-10);
+  flex: 1;
+  min-width: 0;
+}

@@ -21,6 +21,10 @@ function getTimelineConfig(dbPath, options = {}) {
       displayEnd: cfg.displayEnd || '',
       timeStepMinutes: Math.max(1, Math.round(Number(cfg.timeStepMinutes || 1) || 1)),
       calendarSystemId: cfg.calendarSystemId || 'gregorian',
+      showEntryName: cfg.showEntryName !== false,
+      cardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : [],
+      cardImageThumbCount: _normalizeDbCardImageThumbCount(cfg.cardImageThumbCount),
+      cardPropLineCount: _normalizeDbCardPropLineCount(cfg.cardPropLineCount),
       calendarSystems: Array.isArray(cfg.calendarSystems) ? cfg.calendarSystems : [],
     };
 }
@@ -139,8 +143,87 @@ function _timelineShowsEntryName(cfg) {
   return cfg?.showEntryName !== false;
 }
 
+function _normalizeDbCardImageThumbCount(value) {
+  const n = Number(value == null || value === '' ? 3 : value);
+  return Math.max(1, Math.min(12, Math.round(Number.isFinite(n) ? n : 3)));
+}
+
+function _normalizeDbCardPropLineCount(value) {
+  const n = Number(value == null || value === '' ? 1 : value);
+  return Math.max(1, Math.min(20, Math.round(Number.isFinite(n) ? n : 1)));
+}
+
+function _dbCardViewDisplayConfig(cfg = {}) {
+  return {
+    cardImageThumbCount: _normalizeDbCardImageThumbCount(cfg.cardImageThumbCount),
+    cardPropLineCount: _normalizeDbCardPropLineCount(cfg.cardPropLineCount),
+  };
+}
+
+function _appendDbCardDisplayNumberControl(root, labelText, value, options = {}) {
+  const label = document.createElement('label');
+  label.className = 'db-card-props-number-option';
+  const text = document.createElement('span');
+  text.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.className = 'gb-input db-card-props-number-input';
+  input.min = String(options.min || 1);
+  input.max = String(options.max || 20);
+  input.step = '1';
+  input.value = String(value);
+  input.setAttribute('aria-label', labelText);
+  let committedValue = String(value);
+  const commit = () => {
+    const normalize = options.normalize || ((v) => Math.max(1, Math.round(Number(v) || 1)));
+    const next = normalize(input.value);
+    const nextText = String(next);
+    input.value = nextText;
+    if (nextText === committedValue) return;
+    committedValue = nextText;
+    options.onChange?.(next);
+  };
+  input.addEventListener('change', commit);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    commit();
+  });
+  label.append(text, input);
+  root.appendChild(label);
+  return input;
+}
+
+function _appendDbCardDisplayControls(menu, cfg, onChange) {
+  if (!menu) return;
+  const current = _dbCardViewDisplayConfig(cfg);
+  const section = document.createElement('div');
+  section.className = 'db-card-props-settings';
+  const title = document.createElement('div');
+  title.className = 'db-card-props-settings-title';
+  title.textContent = 'カード表示';
+  section.appendChild(title);
+  const save = (key, value, detail) => {
+    current[key] = value;
+    onChange?.({ ...current }, detail);
+  };
+  _appendDbCardDisplayNumberControl(section, '画像サムネ数', current.cardImageThumbCount, {
+    max: 12,
+    normalize: _normalizeDbCardImageThumbCount,
+    onChange: value => save('cardImageThumbCount', value, '画像サムネ数'),
+  });
+  _appendDbCardDisplayNumberControl(section, '値の行数', current.cardPropLineCount, {
+    max: 20,
+    normalize: _normalizeDbCardPropLineCount,
+    onChange: value => save('cardPropLineCount', value, '値の行数'),
+  });
+  menu.appendChild(section);
+}
+
 function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
   root.innerHTML = '';
+  const displayCfg = _dbCardViewDisplayConfig(cfg);
+  root.style.setProperty('--db-card-prop-lines', String(displayCfg.cardPropLineCount));
   if (_timelineShowsEntryName(cfg)) {
     const title = document.createElement('div');
     title.className = options.titleClass || 'tl-card-title';
@@ -162,6 +245,7 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
     name.textContent = propName + ':';
     const value = document.createElement('span');
     value.className = 'tl-card-prop-value';
+    if (propTypes[propName]?.type === 'image') value.classList.add('tl-card-prop-value--image');
     if (editable && typeof createTypedValueElement === 'function') {
       value.classList.add('tl-card-prop-value--editable');
       vals.forEach(val => {
@@ -169,6 +253,8 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
           dbPath: options.dbPath,
           ctx: options.ctx || null,
           filter: options.filter,
+          cardPreview: true,
+          imagePreviewCount: displayCfg.cardImageThumbCount,
         });
         if (valueEl) value.appendChild(valueEl);
       });
@@ -241,8 +327,9 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
   let ordered = Array.isArray(cfg.cardProps) ? cfg.cardProps.filter(prop => props.includes(prop)) : [];
   let showEntryName = _timelineShowsEntryName(cfg);
+  let { cardImageThumbCount, cardPropLineCount } = _dbCardViewDisplayConfig(cfg);
   const saveCardProps = (detail) => {
-    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName }, {
+    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, {
       label: 'シート表示: タイムライン表示プロパティ',
       detail,
       ctx,
@@ -254,6 +341,11 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
       showEntryName = checked;
       saveCardProps('エントリ名');
     },
+  });
+  _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
+    cardImageThumbCount = next.cardImageThumbCount;
+    cardPropLineCount = next.cardPropLineCount;
+    saveCardProps(detail);
   });
   props.forEach(prop => {
     _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {

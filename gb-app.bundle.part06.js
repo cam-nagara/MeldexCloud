@@ -1,3 +1,247 @@
+      }
+      if (typeof showStatus === 'function') showStatus('注釈の保存に失敗しました: ' + (err?.message || err || ''), true);
+    });
+  }
+  if (msg.type === 'ann-delete') {
+    if (msg.annId) {
+      (async () => {
+        const before = typeof _fetchAnnotationHistoryRow === 'function'
+          ? await _fetchAnnotationHistoryRow(msg.annId).catch(() => null)
+          : null;
+        await apiDelete('/annotations/' + encodeURIComponent(msg.annId));
+        if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, msg.annId);
+        reloadEmbeddedAnnotations();
+      })().catch(() => {});
+    }
+  }
+  if (msg.type === 'ann-delete-note') {
+    if (msg.annId && msg.data) {
+      if (typeof _putAnnotationWithHistory === 'function') {
+        _putAnnotationWithHistory(msg.annId, { data: msg.data }, '注釈: 削除', msg.annId)
+          .then(reloadEmbeddedAnnotations)
+          .catch(() => {});
+      } else {
+        apiPut('/annotations/' + encodeURIComponent(msg.annId), { data: msg.data }).then(reloadEmbeddedAnnotations).catch(() => {});
+      }
+    }
+  }
+  if (msg.type === 'ann-update-note') {
+    if (msg.annId && (msg.data || msg.color)) {
+      const body = msg.color ? { color: msg.color } : { data: msg.data };
+      const label = msg.color ? '注釈: 色変更' : '注釈: 付箋更新';
+      if (typeof _putAnnotationWithHistory === 'function') {
+        _putAnnotationWithHistory(msg.annId, body, label, msg.annId).catch(() => {});
+      } else {
+        apiPut('/annotations/' + encodeURIComponent(msg.annId), body).catch(() => {});
+      }
+    }
+  }
+  if (msg.type === 'ann-create-note') {
+    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
+    const embedded = typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView);
+    if (!embedded && !msg.targetPath && typeof createNote === 'function') {
+      const prevColor = ann.color;
+      const prevOpacity = ann.opacity;
+      if (msg.color) ann.color = msg.color;
+      ann.opacity = 1;
+      Promise.resolve(createNote(msg.x, msg.y, 'sticky')).finally(() => {
+        ann.color = prevColor;
+        ann.opacity = prevOpacity;
+      });
+      return;
+    }
+    const annClientId = msg.annClientId || ('pending-note-' + Date.now().toString(36));
+    const noteData = { x: msg.x, y: msg.y, width: 180, height: 100, text: '', html: '', user: getUsername() };
+    if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
+      _dispatchEmbeddedAnnotationMessage({
+        type: 'ann-add-note',
+        item: {
+          id: annClientId,
+          type: 'comment',
+          shape: 'sticky',
+          data: noteData,
+          color: msg.color || ann.color,
+          opacity: 1,
+          user: getUsername(),
+          created: new Date().toISOString(),
+        },
+      });
+    }
+    apiPost('/annotations', {
+      target_path: msg.targetPath || ann.targetPath,
+      type: 'comment', shape: 'sticky',
+      data: noteData, color: msg.color || ann.color, opacity: 1, user: getUsername(),
+    }).then(res => {
+      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
+        _pushAnnotationCreateHistory(res.id, '注釈: 付箋追加', msg.targetPath || ann.targetPath).catch(() => {});
+      }
+      if (embedded) reloadEmbeddedAnnotations();
+      else renderNote(res.id, 'sticky', noteData, msg.color || ann.color, 1, getUsername(), res.created);
+    }).catch(() => {
+      if (embedded && typeof _dispatchEmbeddedAnnotationMessage === 'function') {
+        _dispatchEmbeddedAnnotationMessage({ type: 'ann-remove-note', annId: annClientId });
+      }
+    });
+  }
+});
+
+// Phase C: bdToMd/bdSave等のスタブは廃止 → gb-canvas-engine.js + gb-canvas-features.js に実装済み
+
+function bdOpenBgPalette(event) {
+  if (typeof openColorPalette !== 'function') return;
+  const swatch = document.getElementById('bd-bg-swatch');
+  const canvas = document.getElementById('bd-canvas');
+  if (!swatch || !canvas) return;
+  openColorPalette(swatch, (typeof bd !== 'undefined' && bd._bgColor) || '', function(v) {
+    canvas.style.background = v;
+    setColorSwatchValue(swatch, v);
+    if (typeof bd !== 'undefined') bd._bgColor = v || '';
+    if (typeof bdMarkExtrasDirty === 'function') {
+      bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-palette');
+      if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
+    }
+  });
+}
+
+async function openBoard(label, path, opts) {
+  const openOpts = opts || {};
+  const showOpenLoading = !openOpts.silent
+    && !openOpts.skipGlobalUi
+    && typeof showLoading === 'function'
+    && typeof hideLoading === 'function';
+  const prevView = state.view;
+  const prevBoardPath = state.currentBoardPath;
+  const currentTitleEl = document.getElementById('current-title');
+  const prevTitle = currentTitleEl ? currentTitleEl.textContent : '';
+  const restorePreviousView = () => {
+    state.currentBoardPath = prevBoardPath || null;
+    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = prevTitle;
+    if (!openOpts.skipShowView && prevView && prevView !== 'board') showView(prevView);
+    else if (!openOpts.skipStateView) state.view = prevView || '';
+  };
+  if (showOpenLoading) showLoading('ボードを読み込み中...');
+  try {
+    if (!openOpts.skipStateView) state.view = 'board';
+    state.currentBoardPath = path;
+    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
+    if (!openOpts.skipShowView) showView('board');
+    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
+    const opened = typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, openOpts) : true;
+    if (opened === false) {
+      restorePreviousView();
+      return false;
+    }
+    if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
+    if (!openOpts.skipNavPush) {
+      const _navEntry = {type:'board', label, path};
+      navPush(_navEntry);
+    }
+    if (!openOpts.skipRecent) addRecent(label, path, 'board');
+    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
+    return true;
+  } catch (err) {
+    restorePreviousView();
+    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
+    return false;
+  } finally {
+    if (showOpenLoading) {
+      hideLoading();
+      if (typeof hideLoadingMessage === 'function') {
+        hideLoadingMessage('ボードを読み込み中...');
+      }
+    }
+  }
+}
+
+function openMedia(label, path, type, opts) {
+  const openOpts = opts || {};
+  if (!openOpts.skipShowView) showView('media');
+  else if (!openOpts.skipStateView) state.view = 'media';
+  const mediaTitleEl = document.getElementById('media-title');
+  if (mediaTitleEl) mediaTitleEl.textContent = label;
+  const currentTitleEl = document.getElementById('current-title');
+  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
+  if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
+  if (!openOpts.skipNavPush) {
+    const _navEntry = {type:'media', label, path, mediaType: type};
+    navPush(_navEntry);
+  }
+  if (!openOpts.skipRecent) addRecent(label, path, 'media');
+  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+  // 詳細パネルにファイル情報を表示
+  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
+  // ビューワーペインを更新
+  state.currentPagePath = path;
+  const container = document.getElementById('media-content');
+  const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
+  if (type === 'image') {
+    openViewer(openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
+    return;
+  } else if (type === 'pdf') {
+    openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
+    return;
+  } else if (!container) {
+    return;
+  } else if (type === 'video') {
+    container.innerHTML = '<video src="' + esc(url) + '" controls style="max-width:100%;max-height:80vh;border-radius:4px;">動画を再生できません</video>';
+  } else if (type === 'audio') {
+    container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
+  } else {
+    container.innerHTML = '<div class="gb-empty-state"><div class="gb-empty-message">このメディア形式は表示できません</div><div class="gb-empty-hint">' + esc(label || path || '') + '</div></div>';
+    if (!openOpts.skipGlobalUi) showStatus('このメディア形式は表示できません: ' + (label || type || path), true);
+    return;
+  }
+  if (!openOpts.skipGlobalUi) showStatus(type + ': ' + label);
+}
+
+function openCalendarFile(label, path, opts) {
+  const openOpts = opts || {};
+  // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
+  const cfg = getDbViewConfig(path);
+  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+    ? _getCurrentDbViewConfigEntryFromConfig(cfg)
+    : null;
+  if (view) {
+    if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(view, cfg);
+    view.viewMode = 'timeline';
+    cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
+    saveDbViewConfig(path, cfg, { skipHistory: true });
+  }
+  return selectDatabase(path, openOpts.paneContext || openOpts.paneCtx || null, openOpts);
+}
+
+const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';
+const _GB_EXTERNAL_HTML_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
+const _GB_TRUSTED_VIEWER_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
+
+function _gbIsTrustedInternalViewerUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return false;
+  try {
+    const parsed = new URL(text, window.location.origin);
+    const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    return parsed.origin === window.location.origin && /\/viewer(?:\.html)?$/.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+function _gbHtmlIframeSandboxForUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return _GB_UNTRUSTED_IFRAME_SANDBOX;
+  try {
+    const parsed = new URL(text, window.location.origin);
+    if (_gbIsTrustedInternalViewerUrl(parsed.href)) {
+      return _GB_TRUSTED_VIEWER_IFRAME_SANDBOX;
+    }
+    if (['http:', 'https:'].includes(parsed.protocol) && parsed.origin !== window.location.origin) {
+      return _GB_EXTERNAL_HTML_IFRAME_SANDBOX;
+    }
+  } catch {}
+  return _GB_UNTRUSTED_IFRAME_SANDBOX;
+}
+
 function _gbPrepareUntrustedIframe(iframe, rawUrl) {
   if (!iframe) return null;
   iframe.setAttribute('sandbox', _gbHtmlIframeSandboxForUrl(rawUrl || iframe.getAttribute('src') || iframe.src || ''));
@@ -654,108 +898,3 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
   _loadingMessage = _loadingText(msg);
   if (_loadingTimer) {
     clearTimeout(_loadingTimer);
-    _loadingTimer = null;
-  }
-  _renderLoadingUi(_loadingMessage);
-  await _loadingPaintDelay();
-}
-
-function showLoading(msg) {
-  _loadingCount++;
-  _loadingMessage = _loadingText(msg);
-  if (_loadingVisible) {
-    _renderLoadingUi(_loadingMessage);
-    return;
-  }
-  if (!_loadingTimer) {
-    _loadingTimer = setTimeout(() => {
-      _loadingTimer = null;
-      if (_loadingCount > 0) _renderLoadingUi(_loadingMessage);
-    }, 300);
-  }
-}
-
-function hideLoading() {
-  _loadingCount = Math.max(0, _loadingCount - 1);
-  if (_loadingCount === 0) {
-    clearTimeout(_loadingTimer);
-    _loadingTimer = null;
-    _loadingMessage = '';
-    _hideLoadingUi();
-  }
-}
-
-function hideLoadingMessage(msg) {
-  const expected = _loadingText(msg);
-  if (!_loadingVisible && !_loadingTimer) return false;
-  if (_loadingMessage && _loadingMessage !== expected) return false;
-  const floatingEl = document.getElementById('gb-global-loading');
-  const visibleText = (floatingEl?.textContent || '').trim();
-  if (visibleText && visibleText !== expected) return false;
-  _loadingCount = 0;
-  clearTimeout(_loadingTimer);
-  _loadingTimer = null;
-  _loadingMessage = '';
-  _hideLoadingUi();
-  return true;
-}
-
-function trackIframeLoading(iframe, msg, opts) {
-  const options = opts || {};
-  if (!iframe || options.silent || options.skipGlobalUi) return;
-  if (typeof showLoading !== 'function' || typeof hideLoading !== 'function') return;
-  showLoading(msg || 'ビューアを読み込み中...');
-  let done = false;
-  let timer = null;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    if (timer) clearTimeout(timer);
-    iframe.removeEventListener('load', finish);
-    iframe.removeEventListener('error', finish);
-    hideLoading();
-  };
-  iframe.addEventListener('load', finish);
-  iframe.addEventListener('error', finish);
-  timer = setTimeout(finish, Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000);
-}
-
-// サーバーへの定期ハートビート（exe版: ブラウザ閉じたらサーバー自動終了用）
-let _heartbeatTimer = null;
-
-function _isHeartbeatCloudMode() {
-  return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
-}
-
-function _sendHeartbeat() {
-  fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
-}
-
-function _startHeartbeat() {
-  _sendHeartbeat();
-  if (_heartbeatTimer) return;
-  _heartbeatTimer = setInterval(_sendHeartbeat, 10000);
-}
-
-function _stopHeartbeat() {
-  if (!_heartbeatTimer) return;
-  clearInterval(_heartbeatTimer);
-  _heartbeatTimer = null;
-}
-
-function _syncHeartbeatForVisibility() {
-  if (_isHeartbeatCloudMode()) {
-    _stopHeartbeat();
-    return;
-  }
-  _startHeartbeat();
-}
-
-document.addEventListener('visibilitychange', _syncHeartbeatForVisibility);
-if (document.body && typeof MutationObserver !== 'undefined') {
-  new MutationObserver(_syncHeartbeatForVisibility).observe(document.body, {
-    attributes: true,
-    attributeFilter: ['data-cloud-mode'],
-  });
-}
-_syncHeartbeatForVisibility();

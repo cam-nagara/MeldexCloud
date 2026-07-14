@@ -1,3 +1,246 @@
+            ...perfInfo,
+            backendPerf,
+            retriedAfterMutation,
+          });
+        }
+        // GET開始後に作成・保存・移動等が完了した場合、開始時点の古い一覧を
+        // 呼び出し元へ返さない。アプリ内キャッシュを迂回して1回だけ取り直す。
+        if (browseCacheKey && !retriedAfterMutation && cacheGeneration !== _gbAppApiFetchCacheGeneration) {
+          retriedAfterMutation = true;
+          requestOpts = { ...(opts || {}), skipBrowseCache: true, cache: 'reload' };
+          continue;
+        }
+        if (backendPerf && data && typeof data === 'object') {
+          try {
+            Object.defineProperty(data, '_backendPerf', {
+              value: backendPerf,
+              configurable: true,
+            });
+          } catch {}
+        }
+        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts);
+        if (method !== 'GET') {
+          _gbAppApiFetchInvalidateReadCaches();
+        } else if (browseCacheKey && cacheGeneration === _gbAppApiFetchCacheGeneration) {
+          _gbAppApiFetchRememberBrowse(browseCacheKey, data);
+        }
+        if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf, retriedAfterMutation });
+        return data;
+      }
+    } catch (e) {
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
+          ...perfInfo,
+          error: e?.message || String(e),
+        });
+      }
+      if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
+        if (_gbAppApiFetchIsAbortError(e) && method === 'GET') {
+          // GET中断/タイムアウトはエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
+          try { console.warn('[apiFetch] aborted:', path, e.message); } catch {}
+        } else {
+          const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
+          showStatus('エラー: ' + text, true);
+        }
+      }
+      throw e;
+    }
+  })();
+  if (inFlightKey) {
+    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
+    requestPromise.then(
+      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
+      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
+    );
+  }
+  return _gbAppApiFetchClonePayload(await requestPromise);
+}
+
+async function apiPut(path, body) {
+  return apiFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function apiPost(path, body, options = {}) {
+  return apiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(options || {}),
+  });
+}
+
+/* ==============================
+   初期化
+   ============================== */
+// 認証トークン管理
+// 旧認証変数（互換性のため残す — 他モジュールが参照）
+let _authToken = '';
+let _authUser = null;
+
+function _apiLockJsonBody(opts) {
+  const raw = opts?.body;
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+  if (raw && typeof raw === 'object' && !(raw instanceof FormData)) return raw;
+  return {};
+}
+
+function _apiLockPathDir(path) {
+  const text = String(path || '').replace(/\\/g, '/');
+  const index = text.lastIndexOf('/');
+  return index > 0 ? text.slice(0, index) : '';
+}
+
+function _apiLockRenameExtension(path) {
+  const text = String(path || '').replace(/\\/g, '/');
+  const name = text.slice(text.lastIndexOf('/') + 1);
+  if (!name || name.endsWith('.')) return '';
+  const visibleName = name.replace(/^\.+/, '');
+  const dotIndex = visibleName.indexOf('.');
+  return dotIndex >= 0 ? visibleName.slice(dotIndex) : '';
+}
+
+function _apiLockAddPath(paths, value) {
+  const text = String(value || '').trim();
+  if (text) paths.push(text);
+}
+
+function _apiLockWriteCandidatePaths(path, opts) {
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return [];
+  let url;
+  try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
+  const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
+  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
+  const body = _apiLockJsonBody(opts);
+  const query = url.searchParams;
+  const paths = [];
+  const addQuery = (key) => _apiLockAddPath(paths, query.get(key));
+  const addBody = (key) => _apiLockAddPath(paths, body?.[key]);
+  const addBoth = (key) => { addQuery(key); addBody(key); };
+
+  if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
+    addBoth('path');
+    addBody('entry_path');
+    addBody('folder_path');
+  } else if (route === '/upload-file') {
+    addBoth('path');
+    addBody('dir');
+  } else if (route === '/outliner/add') {
+    addBody('parent');
+  } else if (route === '/outliner/delete') {
+    addBody('path');
+  } else if (route === '/outliner/duplicate') {
+    const srcPath = String(body?.path || '').trim();
+    if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
+  } else if (route === '/outliner/save-as') {
+    addBody('path');
+    addBody('dest_folder');
+  } else if (route === '/outliner/delete-batch') {
+    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
+  } else if (route === '/outliner/move') {
+    addBody('path');
+    addBody('dest_folder');
+  } else if (route === '/outliner/rename') {
+    addBody('old_path');
+    const oldPath = String(body?.old_path || '');
+    const newName = String(body?.new_name || '').trim();
+    if (oldPath && newName) {
+      const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
+      _apiLockAddPath(paths, destinationBase);
+      const extension = _apiLockRenameExtension(oldPath);
+      if (extension) _apiLockAddPath(paths, destinationBase + extension);
+    }
+  } else if (route === '/entity/create') {
+    addBody('parent_path');
+  } else if (route === '/entity/rename') {
+    addBody('path');
+    const oldPath = String(body?.path || '');
+    const newName = String(body?.new_name || '').trim();
+    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
+  } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
+    addBody('target_path');
+  } else if (route === '/entity/auto-name') {
+    addBody('db_path');
+    addBody('entry_path');
+    addBody('path');
+  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
+    addBody('folder_path');
+    addBody('file_path');
+  } else if (route === '/import-csv' || route === '/import-xlsx') {
+    addBody('csv_path');
+    addBody('xlsx_path');
+    addBody('db_path');
+  } else if (route === '/public-form/submit') {
+    addBody('db_path');
+  } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
+    addBoth('db_path');
+  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder') {
+    addBody('path');
+  }
+
+  return [...new Set(paths)];
+}
+
+function _apiLockBlockIfNeeded(path, opts) {
+  if (typeof isItemLocked !== 'function') return false;
+  const lockedPath = _apiLockWriteCandidatePaths(path, opts).find(p => {
+    try { return isItemLocked(p); } catch { return false; }
+  });
+  if (!lockedPath) return false;
+  const reason = typeof getItemLockReason === 'function' ? getItemLockReason(lockedPath) : '';
+  const message = reason
+    ? `編集ロック中のため編集できません（理由: ${reason}）`
+    : '編集ロック中のため編集できません';
+  if (typeof showStatus === 'function') showStatus(message, true);
+  throw new Error(message);
+}
+
+function _apiUsesTransientActiveLock(path) {
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return false; }
+  return new Set([
+    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
+    '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
+    '/outliner/save-as', '/outliner/move', '/trash/restore',
+  ]).has(route);
+}
+
+// apiFetchをオーバーライドしてユーザー名を付加
+const _origApiFetch = apiFetch;
+apiFetch = async function(path, opts) {
+  opts = opts || {};
+  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+  _apiLockBlockIfNeeded(path, opts);
+  const activeLocks = window.MeldexActiveLocks;
+  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
+    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
+    : null;
+  try {
+    if (activeLocks?.beforeApiFetch) {
+      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
+    }
+    // _user パラメータを自動付与（監査ログ・modified_by 用）
+    const user = getUsername();
+    if (user && user !== 'anonymous') {
+      const sep = path.includes('?') ? '&' : '?';
+      path += sep + '_user=' + encodeURIComponent(user);
+    }
+    return await _origApiFetch(path, opts);
+  } finally {
+    await transientLease?.release?.();
+  }
+};
+
+// チームプロフィール同期（起動時に全ソースフォルダの _Meldex_team.json に自分を登録）
 // フォルダ別ロールを保持（DB列ロック等で参照）
 let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
 const _myTeamRoles = {};     // { folderPath: role }
@@ -655,246 +898,3 @@ function showScreenshotMenu(e) {
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
       ev.preventDefault();
       const delta = ev.key === 'ArrowDown' ? 1 : -1;
-      items[(index + delta + items.length) % items.length]?.focus();
-    } else if (ev.key === 'Home') {
-      ev.preventDefault();
-      items[0]?.focus();
-    } else if (ev.key === 'End') {
-      ev.preventDefault();
-      items.at(-1)?.focus();
-    } else if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeMenu(true);
-    }
-  });
-  pointerCloser = (ev) => {
-    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
-  };
-  keyCloser = (ev) => {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeMenu(true);
-    }
-  };
-  document.addEventListener('pointerdown', pointerCloser, true);
-  document.addEventListener('keydown', keyCloser, true);
-  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
-}
-
-function _screenshotModeIsRegion(mode) {
-  return String(mode || '').includes('region');
-}
-
-async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
-  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
-  try {
-    const res = await fetch(API_BASE + '/app-window-visibility', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, hwnds: hwnds || [] }),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function _hideMeldexWindowForScreenshot() {
-  const state = await _setMeldexWindowVisibilityForScreenshot('hide');
-  if (!state?.hidden) window.blur();
-  await new Promise(r => setTimeout(r, 500));
-  return state;
-}
-
-async function _restoreMeldexWindowForScreenshot(state) {
-  if (state?.hidden) await _setMeldexWindowVisibilityForScreenshot('restore', state.hwnds || []);
-  else window.focus();
-}
-
-function _cropScreenshotCanvas(canvas, region) {
-  const cropped = document.createElement('canvas');
-  cropped.width = Math.max(1, Math.round(region.width));
-  cropped.height = Math.max(1, Math.round(region.height));
-  cropped.getContext('2d').drawImage(
-    canvas,
-    Math.round(region.x),
-    Math.round(region.y),
-    cropped.width,
-    cropped.height,
-    0,
-    0,
-    cropped.width,
-    cropped.height
-  );
-  return cropped;
-}
-
-function _selectScreenshotRegionFromCanvas(canvas) {
-  return new Promise(resolve => {
-    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay screenshot-region-overlay';
-    overlay.dataset.modalShell = 'off';
-    overlay.dataset.e2eId = 'screenshot-region-overlay';
-    overlay.style.zIndex = '5000';
-
-    const shell = document.createElement('div');
-    shell.className = 'screenshot-region-shell';
-    shell.dataset.e2eId = 'screenshot-region-shell';
-    shell.tabIndex = -1;
-    shell.setAttribute('role', 'dialog');
-    shell.setAttribute('aria-modal', 'true');
-    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
-
-    const stage = document.createElement('div');
-    stage.className = 'screenshot-region-stage';
-    stage.dataset.e2eId = 'screenshot-region-stage';
-    stage.tabIndex = 0;
-    stage.setAttribute('role', 'group');
-    stage.setAttribute('aria-label', '保存する範囲');
-
-    const preview = document.createElement('canvas');
-    preview.className = 'screenshot-region-preview';
-    preview.setAttribute('aria-hidden', 'true');
-    preview.width = canvas.width;
-    preview.height = canvas.height;
-    preview.getContext('2d').drawImage(canvas, 0, 0);
-    const maxW = Math.max(1, Math.floor(window.innerWidth * 0.94));
-    const maxH = Math.max(1, Math.floor(window.innerHeight * 0.82));
-    const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
-    preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
-    preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
-
-    const selection = document.createElement('div');
-    selection.className = 'screenshot-region-selection';
-    selection.setAttribute('aria-hidden', 'true');
-    selection.style.display = 'none';
-
-    const actions = document.createElement('div');
-    actions.className = 'screenshot-region-actions';
-    actions.setAttribute('aria-label', '範囲選択の操作');
-
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'gb-btn gb-btn-sm';
-    cancel.dataset.e2eId = 'screenshot-region-cancel';
-    cancel.textContent = 'キャンセル';
-
-    const ok = document.createElement('button');
-    ok.type = 'button';
-    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
-    ok.dataset.e2eId = 'screenshot-region-save';
-    ok.textContent = '保存';
-
-    actions.append(cancel, ok);
-    stage.append(preview, selection);
-    shell.append(stage, actions);
-    overlay.append(shell);
-    document.body.appendChild(overlay);
-
-    let start = null;
-    let current = null;
-    let activePointerId = null;
-    let cleaned = false;
-
-    const cleanup = (value) => {
-      if (cleaned) return;
-      cleaned = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKeyDown);
-      if (restoreFocusTo?.isConnected && !restoreFocusTo.closest?.('.screenshot-region-overlay')) {
-        restoreFocusTo.focus?.();
-      }
-      resolve(value);
-    };
-    const pointFromEvent = (ev) => {
-      const rect = preview.getBoundingClientRect();
-      return {
-        x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
-        y: Math.max(0, Math.min(rect.height, ev.clientY - rect.top)),
-        rect,
-      };
-    };
-    const visibleRect = () => {
-      if (!start || !current) return null;
-      const left = Math.min(start.x, current.x);
-      const top = Math.min(start.y, current.y);
-      const width = Math.abs(current.x - start.x);
-      const height = Math.abs(current.y - start.y);
-      return { left, top, width, height };
-    };
-    const updateSelection = () => {
-      const rect = visibleRect();
-      if (!rect || rect.width < 1 || rect.height < 1) {
-        selection.style.display = 'none';
-        return;
-      }
-      selection.style.display = 'block';
-      selection.style.left = rect.left + 'px';
-      selection.style.top = rect.top + 'px';
-      selection.style.width = rect.width + 'px';
-      selection.style.height = rect.height + 'px';
-    };
-    const canvasRegion = () => {
-      const rect = visibleRect();
-      if (!rect || rect.width < 4 || rect.height < 4) return null;
-      const bounds = preview.getBoundingClientRect();
-      const scaleX = canvas.width / bounds.width;
-      const scaleY = canvas.height / bounds.height;
-      const x = Math.max(0, Math.min(canvas.width - 1, rect.left * scaleX));
-      const y = Math.max(0, Math.min(canvas.height - 1, rect.top * scaleY));
-      return {
-        x,
-        y,
-        width: Math.max(1, Math.min(canvas.width - x, rect.width * scaleX)),
-        height: Math.max(1, Math.min(canvas.height - y, rect.height * scaleY)),
-      };
-    };
-    function onKeyDown(ev) {
-      if (ev.key === 'Escape') {
-        ev.preventDefault();
-        cleanup(null);
-      } else if (ev.key === 'Enter') {
-        const region = canvasRegion();
-        if (region) cleanup(region);
-      }
-    }
-    stage.addEventListener('pointerdown', (ev) => {
-      if (ev.button !== 0) return;
-      ev.preventDefault();
-      stage.focus?.();
-      activePointerId = ev.pointerId;
-      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
-      start = pointFromEvent(ev);
-      current = start;
-      updateSelection();
-    });
-    stage.addEventListener('pointermove', (ev) => {
-      if (activePointerId == null || ev.pointerId !== activePointerId) return;
-      current = pointFromEvent(ev);
-      updateSelection();
-    });
-    stage.addEventListener('pointerup', (ev) => {
-      if (activePointerId == null || ev.pointerId !== activePointerId) return;
-      current = pointFromEvent(ev);
-      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
-      activePointerId = null;
-      updateSelection();
-    });
-    stage.addEventListener('pointercancel', (ev) => {
-      if (activePointerId != null && ev.pointerId === activePointerId) activePointerId = null;
-    });
-    cancel.addEventListener('click', () => cleanup(null));
-    ok.addEventListener('click', () => {
-      const region = canvasRegion();
-      if (!region) {
-        showStatus('範囲を選択してください', true);
-        return;
-      }
-      cleanup(region);
-    });
-    document.addEventListener('keydown', onKeyDown);
-    shell.focus();
-  });
-}

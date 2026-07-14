@@ -401,9 +401,11 @@
 
   function _isWorkspaceScanExcluded(path) {
     const normalized = _normalizeFolderPath(path);
-    const parts = normalized.split('/').filter(Boolean);
+    const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(normalized);
+    const relative = _normalizeFolderPath(parsedSource?.relativePath ?? normalized);
+    const parts = relative.split('/').filter(Boolean);
     if (parts.some(part => part.startsWith('.'))) return true;
-    return WORKSPACE_SCAN_EXCLUDES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+    return WORKSPACE_SCAN_EXCLUDES.some(prefix => relative === prefix.replace(/\/$/, '') || relative.startsWith(prefix));
   }
 
   function _safeVersionName(value) {

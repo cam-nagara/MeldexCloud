@@ -375,9 +375,13 @@
         if (toolType === 'detail') _syncDetailForActivePane(restorePaneId || activePane);
         _scheduleContentPaneRestore(restorePaneId);
       } else if (existing.panelsetNode) {
-        existing.panelsetNode.collapsed = true;
-        if (typeof GBLayout?.render === 'function') GBLayout.render();
-        if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+        if (typeof GBLayout?.setNodeCollapsed === 'function') {
+          GBLayout.setNodeCollapsed(existing.panelsetNode.id, true);
+        } else {
+          existing.panelsetNode.collapsed = true;
+          if (typeof GBLayout?.render === 'function') GBLayout.render();
+          if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+        }
       } else {
         GBTabs.closeTab(paneId, existing.tabId);
       }

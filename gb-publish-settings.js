@@ -24,6 +24,14 @@ function getCurrentPublishContext() {
     const p = state.currentDbPath || '';
     if (p) return { kind: 'calendar', label: p.split('/').pop() || 'カレンダー', path: p };
   }
+  // ボード / シナリオはタブ単位で複数開けるため、アクティブタブから対象を判定する
+  const tab = (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function') ? GBTabs.getActiveTab() : null;
+  if (tab?.type === 'board' && tab.path) {
+    return { kind: 'board', label: 'ボード', path: tab.path };
+  }
+  if (tab?.type === 'scriptnote' && tab.path) {
+    return { kind: 'scriptnote', label: 'シナリオ', path: tab.path };
+  }
   return { kind: '', label: '未選択', path: '' };
 }
 

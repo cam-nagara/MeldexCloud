@@ -17,6 +17,7 @@
 // ============================================================
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
 let _apiFetchBrowseCacheGeneration = 0;
@@ -33,7 +34,7 @@ function _apiFetchClonePayload(payload) {
 }
 
 function _apiFetchBrowseCacheKey(path, opts) {
-  if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  if (_apiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload' || opts?.signal) return '';
   try {
     const url = new URL(API_BASE.replace(/\/+$/, '') + path, window.location.origin || 'http://localhost');
     const apiBasePath = new URL(API_BASE, window.location.origin || 'http://localhost').pathname.replace(/\/+$/, '');
@@ -66,9 +67,12 @@ async function apiFetch(path, opts) {
     if (inFlight) return _apiFetchClonePayload(await inFlight);
   }
   let requestPromise = null;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
   try {
     requestPromise = (async () => {
-      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, opts);
+      const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
+      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, fetchOpts);
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       return await res.json();
     })();
@@ -84,9 +88,18 @@ async function apiFetch(path, opts) {
     }
     return _apiFetchClonePayload(payload);
   } catch (e) {
+    if (e.name === 'AbortError') {
+      // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
+      try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
+      const err = new Error('リクエストがタイムアウトしました');
+      err.name = 'AbortError';
+      err.isTimeout = true;
+      throw err;
+    }
     if (!opts?.silentError && typeof showStatus === 'function') showStatus('エラー: ' + e.message, true);
     throw e;
   } finally {
+    clearTimeout(timeoutId);
     if (cacheKey && _apiFetchBrowseInFlight.get(cacheKey) === requestPromise) _apiFetchBrowseInFlight.delete(cacheKey);
   }
 }
@@ -110,6 +123,12 @@ async function apiPost(path, body, options = {}) {
 
 async function apiDelete(path) {
   return apiFetch(path, { method: 'DELETE' });
+}
+
+// OSネイティブの「ファイルを開く」ダイアログを表示し、選択されたパスを返す（キャンセル時は空文字列）
+async function openFileDialog(title, initialdir, filetypes) {
+  const resp = await apiPost('/open-file-dialog', { title, initialdir, filetypes });
+  return resp?.path || '';
 }
 
 // ============================================================
@@ -879,22 +898,3 @@ function replaceIcons(root) {
     else if (cls.includes('ico-command')) name = 'command';
     else if (cls.includes('ico-search')) name = 'search';
     else if (cls.includes('ico-bookOpenText')) name = 'bookOpenText';
-    else if (cls.includes('ico-book')) name = 'book';
-    else if (cls.includes('ico-download')) name = 'download';
-    else if (cls.includes('ico-globe')) name = 'globe';
-    else if (cls.includes('ico-upload')) name = 'upload';
-    else if (cls.includes('ico-board')) name = 'presentation';
-    else if (cls.includes('ico-preview') || cls.includes('ico-tvMinimal')) name = 'tvMinimal';
-    else if (cls.includes('ico-detail')) name = 'slidersHorizontal';
-    else if (cls.includes('ico-info')) name = 'info';
-    else if (cls.includes('ico-settings2') || cls.includes('ico-slidersHorizontal')) name = 'slidersHorizontal';
-    else if (cls.includes('ico-gear') || cls.includes('ico-settings')) name = 'settings';
-    else if (cls.includes('ico-sync')) name = 'sync';
-    else if (cls.includes('ico-panelRight')) name = 'panelRight';
-    else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
-    else if (cls.includes('ico-layoutGrid')) name = 'layoutDashboard';
-    else if (cls.includes('ico-layoutList')) name = 'layoutList';
-    else if (cls.includes('ico-externalLink')) name = 'externalLink';
-    else if (cls.includes('ico-filter')) name = 'filter';
-    else if (cls.includes('ico-copy')) name = 'copy';
-    else if (cls.includes('ico-arrowUpDown')) name = 'arrowUpDown';

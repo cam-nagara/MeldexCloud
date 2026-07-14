@@ -3,8 +3,19 @@
 
 Object.assign(ScriptNoteEditor.prototype, {
 
-  _showRoleMenu(roleBtn) {
+  _showRoleMenu(roleBtn, opts) {
     this._closeRoleMenu();
+    const sel = window.getSelection();
+    this._roleMenuSavedRange = null;
+    if (sel && sel.rangeCount) {
+      const r = sel.getRangeAt(0);
+      const textEl = r.startContainer?.nodeType === 3
+        ? r.startContainer.parentElement?.closest?.('.sn2-text')
+        : r.startContainer?.closest?.('.sn2-text');
+      if (textEl && this.host?.contains(textEl)) {
+        this._roleMenuSavedRange = r.cloneRange();
+      }
+    }
     const rowEl = roleBtn.closest('.sn2-row');
     if (!rowEl) return;
     const rowId = rowEl.dataset.rowId;
@@ -28,8 +39,16 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._pushUndo('タイプ変更');
       this._setRowRole(idx, rowEl, val === '（なし）' ? '' : val);
       this._closeRoleMenu();
-      const textEl = rowEl.querySelector('.sn2-text');
-      if (textEl) textEl.focus();
+      if (opts?.fromNav) {
+        const btn = rowEl.querySelector('.sn2-role-btn');
+        if (btn && typeof this._setActiveCell === 'function') {
+          this._setActiveCell(rowId, '_role', false);
+        } else {
+          this._restoreRangeAfterRoleMenu(rowEl);
+        }
+      } else {
+        this._restoreRangeAfterRoleMenu(rowEl);
+      }
     };
 
     // タイプ管理に登録されているタイプのみ表示。
@@ -48,7 +67,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       { label: 'タイプ', items: groups.normal, directToInput: !groups.normal.length },
       { label: 'プロット', items: groups.summary },
       { label: '区切り', items: groups.break },
-      { label: 'なし', items: ['（なし）'] },
     ];
     let allButtons = [];
     let openSub = null;
@@ -109,10 +127,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       // 20以下: フラットリストで表示
       const flatItems = [];
       this.doc.characters.forEach(c => { if (!c.isDefault) flatItems.push(c.name); });
-      flatItems.push('（なし）');
       flatItems.forEach(t => {
         const btn = document.createElement('button');
-        btn.className = 'sn2-role-item' + (t === currentRole || (t === '（なし）' && !currentRole) ? ' active' : '');
+        btn.className = 'sn2-role-item' + (t === currentRole ? ' active' : '');
         btn.type = 'button';
         btn.setAttribute('role', 'menuitem');
         btn.textContent = t;
@@ -136,24 +153,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     input.className = 'sn2-role-input';
     input.placeholder = 'キャラ名を入力';
     input.setAttribute('aria-label', 'タイプ名を入力');
+    input.title = '';
     input.value = currentRole;
     inputWrap.appendChild(input);
     menu.appendChild(inputWrap);
-    const linkBtn = document.createElement('button');
-    linkBtn.type = 'button';
-    linkBtn.className = 'sn2-role-item sn2-role-link';
-    linkBtn.setAttribute('role', 'menuitem');
-    linkBtn.textContent = 'リンクを設定...';
-    linkBtn.addEventListener('click', () => {
-      const textEl = rowEl.querySelector('.sn2-text');
-      this._closeRoleMenu();
-      if (!textEl || typeof showLinkInsertModal !== 'function') return;
-      showLinkInsertModal(null, (result) => {
-        if (!textEl.isConnected || typeof this._insertLinkResultIntoText !== 'function') return;
-        this._insertLinkResultIntoText(textEl, null, result);
-      });
-    });
-    menu.appendChild(linkBtn);
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(menu, {
         trigger: roleBtn,
@@ -188,7 +191,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (e.key === 'Escape') {
         e.preventDefault();
         if (openSub) { closeSub(); if (catIdx >= 0) catBtns[catIdx].focus(); }
-        else { this._closeRoleMenu(); roleBtn.closest('.sn2-row')?.querySelector('.sn2-text')?.focus(); }
+        else {
+          this._closeRoleMenu();
+          this._restoreRangeAfterRoleMenu(roleBtn.closest('.sn2-row'));
+        }
         return;
       }
       const inMenu = menu.contains(document.activeElement) || document.activeElement?.closest?.('.sn2-role-sub-popup');
@@ -323,6 +329,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._roleMenu.remove();
       this._roleMenu = null;
       this._roleMenuRow = null;
+    }
+  },
+
+  _restoreRangeAfterRoleMenu(rowEl) {
+    const textEl = rowEl?.querySelector('.sn2-text');
+    if (!textEl) return;
+    textEl.focus();
+    if (this._roleMenuSavedRange) {
+      const sel = window.getSelection();
+      if (sel) { sel.removeAllRanges(); sel.addRange(this._roleMenuSavedRange); }
+      this._roleMenuSavedRange = null;
     }
   },
 

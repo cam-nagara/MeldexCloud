@@ -76,7 +76,7 @@ function _sn2SepConnect() {
           const w = document.getElementById('sb-warn') || document.getElementById('sb-msg');
           const colorMap = { countdown: 'var(--orange)', progress: 'var(--accent2)', done: 'var(--green)', status: 'var(--fg2)', error: 'var(--red)' };
           if (w) {
-            if (msg.type === 'countdown') w.textContent = `クリスタへ送信: ${msg.seconds}秒後にペースト開始...`;
+            if (msg.type === 'countdown') w.textContent = `CLIP STUDIO PAINTへ送信: ${msg.seconds}秒後にペースト開始...`;
             else w.textContent = msg.message || '';
             if (w.id === 'sb-warn') w.style.display = w.textContent ? '' : 'none';
             w.style.color = colorMap[msg.type] || '';
@@ -200,7 +200,7 @@ function sn2CopyForClipStudio() {
       }
     }
     const onCopied = () => {
-      if (typeof showStatus === 'function') showStatus('クリスタ用テキストをコピーしました');
+      if (typeof showStatus === 'function') showStatus('CLIP STUDIO PAINT用テキストをコピーしました');
     };
     const fallbackCopy = () => {
       const ta = document.createElement('textarea');
@@ -232,7 +232,7 @@ function _sn2ShowSepDialog(editor) {
   const o = document.createElement('div');
   o.className = 'modal-overlay';
   o.dataset.sn2Dialog = 'clipstudio-send';
-  o.innerHTML = `<div class="modal sn2-sep-modal" role="dialog" aria-modal="true" aria-labelledby="sn2-sep-title"><h3 id="sn2-sep-title">クリスタへ送信</h3>
+  o.innerHTML = `<div class="modal sn2-sep-modal" role="dialog" aria-modal="true" aria-labelledby="sn2-sep-title"><h3 id="sn2-sep-title">CLIP STUDIO PAINTへ送信</h3>
     <div class="field"><label>送信範囲</label><div class="sn2-sep-range-row">
       <label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="all"${allChecked}> 全行（${doc.rows.length}行）</label>${selectedOption}</div></div>
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-affix"> テキストの前後設定（「」（）等）を含める</label></div>
@@ -241,7 +241,7 @@ function _sn2ShowSepDialog(editor) {
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-skip-blank"> 空白行を出力しない</label></div>
     <div id="sn2-sep-countdown-slot"></div>
     <div id="sn2-sep-break-wait-slot"></div>
-    <p id="sn2-sep-help" class="sn2-sep-help">「送信」を押した後、カウントダウン中にクリスタのストーリーエディタをクリックしてください。</p>
+    <p id="sn2-sep-help" class="sn2-sep-help">「送信」を押した後、カウントダウン中にCLIP STUDIO PAINTのストーリーエディタをクリックしてください。</p>
     <div id="sn2-sep-status" class="sn2-sep-status"></div>
     <div class="btn-row"><button type="button" class="cancel-btn" data-sn2-role="cancel">キャンセル</button>
     <button type="button" class="sn2-sep-stop-btn" data-sn2-role="stop">中断</button>
@@ -381,7 +381,7 @@ function _sn2StartSep() {
     }
   }
   if (!_sn2SepWs || _sn2SepWs.readyState !== WebSocket.OPEN) {
-    if (typeof showStatus === 'function') showStatus('クリスタ連携が切断されています。再接続してから送信してください', true);
+    if (typeof showStatus === 'function') showStatus('CLIP STUDIO PAINT連携が切断されています。再接続してから送信してください', true);
     _sn2SepConnect();
     return;
   }
@@ -389,7 +389,7 @@ function _sn2StartSep() {
     _sn2SepWs.send(JSON.stringify({ command: 'paste', rows, countdown, breakWait }));
     _sn2EnterRunningMode(overlay);
   } catch {
-    if (typeof showStatus === 'function') showStatus('クリスタ連携への送信に失敗しました', true);
+    if (typeof showStatus === 'function') showStatus('CLIP STUDIO PAINT連携への送信に失敗しました', true);
   }
 }
 
@@ -410,7 +410,7 @@ function _sn2EnterRunningMode(dialogOverlay) {
   const title = document.createElement('div');
   title.id = 'sn2-sep-running-title';
   title.className = 'sn2-sep-running-title';
-  title.textContent = 'クリスタへ送信中';
+  title.textContent = 'CLIP STUDIO PAINTへ送信中';
   box.appendChild(title);
   const warn = document.createElement('div');
   warn.className = 'sn2-sep-running-warning';

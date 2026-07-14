@@ -20,6 +20,58 @@ function bdYamlScalar(raw) {
   return value;
 }
 
+const BD_MANAGED_FRONTMATTER_KEYS = new Set([
+  'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
+  'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
+  'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics',
+]);
+
+function bdPreserveUnknownFrontmatter(fm) {
+  const blocks = [];
+  let current = null;
+  String(fm || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').forEach(line => {
+    const key = bdFrontmatterTopLevelKey(line);
+    if (key !== null) {
+      if (current?.keep) blocks.push(current.lines.join('\n'));
+      current = { keep: !BD_MANAGED_FRONTMATTER_KEYS.has(key), lines: [line] };
+    } else if (current) {
+      current.lines.push(line);
+    } else if (/^[^\s#]/.test(line)) {
+      blocks.push(line);
+    }
+  });
+  if (current?.keep) blocks.push(current.lines.join('\n'));
+  return blocks.map(block => block.replace(/\n+$/, '')).filter(Boolean).join('\n');
+}
+
+function bdFrontmatterTopLevelKey(line) {
+  const text = String(line || '').replace(/\s+$/, '');
+  if (!text || /^[\s#%]/.test(text)) return null;
+  if (text[0] === '?') return '';
+  let quote = '';
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (quote === '"' && char === '\\') index += 1;
+      else if (char === quote) {
+        if (quote === "'" && text[index + 1] === "'") index += 1;
+        else quote = '';
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") { quote = char; continue; }
+    if (char !== ':' || (text[index + 1] && !/\s/.test(text[index + 1]))) continue;
+    const raw = text.slice(0, index).trim();
+    if (raw.startsWith('"') && raw.endsWith('"')) {
+      try { return JSON.parse(raw); } catch { return raw.slice(1, -1); }
+    }
+    if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1).replace(/''/g, "'");
+    return raw;
+  }
+  return null;
+}
+
 function bdYamlSplitFlowItems(raw) {
   const parts = [];
   let buf = '';

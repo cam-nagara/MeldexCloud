@@ -1,77 +1,127 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-07-07T20:05:46.636221+00:00",
-  "semver": "0.6.173",
+  "generatedAt": "2026-07-14T02:48:09.139815+00:00",
+  "semver": "0.6.185",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
   "automatedGateSummary": {
     "staticArtifactGenerated": true,
     "cloudSampleSeedBundled": true,
+    "standalonePwasBundled": true,
     "serverFilesExcludedByBuilder": true,
     "secretNamedFilesExcludedByBuilder": true,
     "requiredPublicEnvSourcesPresent": true,
     "externalValuesAreNotWrittenInThisLog": true
   },
   "missingRequiredPublicEnvSources": [],
+  "standaloneAppIds": [
+    "note",
+    "scenario",
+    "board",
+    "sheet",
+    "timer"
+  ],
   "externalValueSources": {
     "cloudPublicUrl": {
       "source": "MELDEX_CLOUD_PUBLIC_URL",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "cloudBackupUrl": {
       "source": "MELDEX_CLOUD_BACKUP_URL",
       "present": false,
+      "valid": false,
       "valueIncluded": false
     },
     "feedbackGoogleWebAppUrl": {
       "source": "MELDEX_FEEDBACK_GOOGLE_WEB_APP_URL",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "feedbackFormUrl": {
       "source": "MELDEX_FEEDBACK_FORM_URL",
       "present": false,
+      "valid": false,
       "valueIncluded": false
     },
     "updateJsonUrl": {
       "source": "MELDEX_UPDATE_JSON_URL",
       "present": false,
+      "valid": false,
       "valueIncluded": false
     },
     "updatePageUrl": {
       "source": "MELDEX_UPDATE_PAGE_URL",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "desktopDownloadUrl": {
       "source": "MELDEX_DESKTOP_DOWNLOAD_URL",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "desktopReleasesUrl": {
       "source": "MELDEX_DESKTOP_RELEASES_URL",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "desktopVersion": {
       "source": "MELDEX_DESKTOP_VERSION",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "desktopVersionsJson": {
       "source": "MELDEX_DESKTOP_VERSIONS_JSON",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "sampleDownloadUrl": {
       "source": "MELDEX_SAMPLE_DOWNLOAD_URL",
       "present": true,
+      "valid": true,
+      "valueIncluded": false
+    },
+    "noteDownloadUrl": {
+      "source": "MELDEX_NOTE_DOWNLOAD_URL",
+      "present": true,
+      "valid": true,
+      "valueIncluded": false
+    },
+    "scenarioDownloadUrl": {
+      "source": "MELDEX_SCENARIO_DOWNLOAD_URL",
+      "present": true,
+      "valid": true,
+      "valueIncluded": false
+    },
+    "boardDownloadUrl": {
+      "source": "MELDEX_BOARD_DOWNLOAD_URL",
+      "present": true,
+      "valid": true,
+      "valueIncluded": false
+    },
+    "sheetDownloadUrl": {
+      "source": "MELDEX_SHEET_DOWNLOAD_URL",
+      "present": true,
+      "valid": true,
+      "valueIncluded": false
+    },
+    "timerDownloadUrl": {
+      "source": "MELDEX_TIMER_DOWNLOAD_URL",
+      "present": true,
+      "valid": true,
       "valueIncluded": false
     },
     "dropboxDeveloperAppKey": {
       "source": "MELDEX_DROPBOX_APP_KEY",
       "present": true,
+      "valid": true,
       "valueIncluded": false
     }
   },
@@ -82,6 +132,10 @@
     },
     {
       "gate": "Windows / iPad Safari / iPhone Safari / Android Chrome の実機Cloud BETA起動確認",
+      "status": "manual-required"
+    },
+    {
+      "gate": "ノート / シナリオ / ボード / シート / タイマーを各端末で別々にホーム画面へ追加し、固有名・固有アイコン・起動先を確認",
       "status": "manual-required"
     },
     {
@@ -98,11 +152,46 @@
     }
   ],
   "artifactHashes": {
-    "Meldex.html": "66d3a73e1f7c2550dc96b0181879ae25508a84ddd176bab153a08532ea775d0a",
+    "index.html": "9eef58d741d33c94b19282643e16e5f250dde1f572d179a7392baca7e2159f53",
+    "public-standalone-apps.css": "76c5f5b575c6177bc85efcdd0adba31a7034dbbba018f08368b1a171d0ad7dd3",
+    "public-standalone-apps.js": "47fd5e4abf1c57acc73359482ad58e96264c9c582a5fc77f1df13c032d2d2822",
+    "Meldex.html": "39bdfa19b1f8d5af0c0d0268b521e6eeb3ce28da4d5af40c4293d29e09f9621e",
     "manifest.json": "e678db01adf50a58d4a6b5ae8a5d69305561bfe1d310e55ba27e8fcf957e085a",
     "sw.js": "d8e927701c55926e98dd4bce6c14a0d52f449ce4c05410073853f5cc410488b8",
     "gb-config.js": "3d175466b8ae55c5d708accb6a6f96a387bf953d55510fd208ec4bc278f0e996",
-    "gb-cloud-runtime-config.js": "faea7a2b21d8c80bf524d35bf0d40c67dcedeb59ae272efc814689ad8e39272e",
-    "cloud-samples/manifest.json": "b53b36fe303dcc48da8d5686faf52c46db204b77203e215e7c2b47168fed3ae4"
+    "gb-cloud-runtime-config.js": "25ccb0319033a643dfc22b8750ecb23f6b1fbfbaa672cb358c19e54617d83db1",
+    "cloud-samples/manifest.json": "5d68f15b5100e2af7b205dd8ce001f40aee433d85136c424106c86b7f82f4d56",
+    "apps/note/index.html": "d2a454b7f839e65a341192870da0e12e599ba28c450ec9bfe5c23fa862ece8b9",
+    "apps/note/manifest.webmanifest": "cf85db922ce6f0df9f1cdb3f8a1caeaa7efca76ec6512bedb212e779f320d871",
+    "apps/note/sw.js": "f2424bab19819898b6e8e92f33e44d91f7e4c13cbb1ae64590cdba6c6d5b56c5",
+    "apps/scenario/index.html": "7748b40f9014542717b52e89272f40401e665d16d3404d0e42b3f100fbec349a",
+    "apps/scenario/manifest.webmanifest": "f524f4ccf527ca327df25e6eeabaef8dc7d7acc86e7d9774d1c95d128a039002",
+    "apps/scenario/sw.js": "52d9b8eef0b01a05c56ab6926bb82b5751a7fe0945e5d656e45565bb61a733cf",
+    "apps/board/index.html": "a35dfd757b9264b1601a3e76049d886480a697036af9569f4d94b6dbe099adc4",
+    "apps/board/manifest.webmanifest": "b1f9057d8a7842e01aefc139cad199ad62483cf9054445a7b1238027e10e4b26",
+    "apps/board/sw.js": "9d3e9d3cb472becb6d5c339427de0624d834f4c33d879450ddc9e55ea997b86c",
+    "apps/sheet/index.html": "9e046ac1a74f516608d6df4d4feba4321025f77123f7e74f2cbb6ae4e0599bce",
+    "apps/sheet/manifest.webmanifest": "4476c40ef4a321b419ba91b15b6fe6c34fbfd991444b160624855efe0ea33a83",
+    "apps/sheet/sw.js": "f3102c8f77f77ef7d32ff7d77d1b6f08da3fa0259084cd954838f1483f3b4f21",
+    "apps/timer/index.html": "30696b251576a13f3b385d5108f23e28c8ab8dc3eb86af4553979d61392c25c9",
+    "apps/timer/manifest.webmanifest": "13cd5ade18c741c82f8852f8c1c71ff3c16365bf0d07450b5b91d04ddcd4e1c3",
+    "apps/timer/sw.js": "f226d982cb19241154070c330a49049da78b87eea6d9a3f099c492affce4da3c",
+    "offline-bundles/gb-annotations.js": "1f28852fb9abc1bb4938cb4edd470e267f5e902ceaa592f696bb208a46e96af2",
+    "offline-bundles/gb-board-style-manager.js": "2d9f1e6df0ee75b9779f393f502fd609570de33a6d37459be8e4c0c154170a97",
+    "offline-bundles/gb-board-ui.js": "a3bb9cadacba6cbd22568eac7d495e08f30a91e9a4d73a26c97cc76c448e19bd",
+    "offline-bundles/gb-canvas-engine.js": "b27b5bf7218ae68af9606af4ca805a3814bf63663f945e8fa7a716eba0f288e8",
+    "offline-bundles/gb-canvas-features.js": "4ab9dc4088bbe408fd09c53e7e8062c07b54c5b7fc05db1bf40b7212fa84904c",
+    "offline-bundles/gb-canvas-interact.js": "68358b24af44a242d90698fd6800f19e3b2475ea914d6216f5b14829ea939209",
+    "offline-bundles/gb-color-palette.js": "11ef9e33f90300bd975871076cd545d75120bb04a8d7068b79bfb0826a391682",
+    "offline-bundles/gb-data-access-dropbox-expanded.js": "67edd7dba05984a1bcc74e16c29c3f0d8be1888890e749d76f2dcc64e872ce24",
+    "offline-bundles/gb-data-access-dropbox-fileops.js": "c317629a07fee89d01832cea898c685f27bcc3f137e83a41f59efce50c2acb46",
+    "offline-bundles/gb-data-access.js": "d26929dc1d71eb171cb88f717b8893817eb6364b81cec5ad7640965bf9ff102e",
+    "offline-bundles/gb-detail-panel.js": "0d648cb1b87f9b41d8bf0abae0e27360b0fab231cac5fa500f0528272260e97a",
+    "offline-bundles/gb-scriptnote-detail.js": "bb71cb4eeca9921ca8ac1631b112e4b494ab21aa010405b105f738444469be29",
+    "offline-bundles/gb-scriptnote-editor.js": "63c59e38ec5af9c6239dc059b0184d609b7a866c9d37a87d3e2546061ff4ebd7",
+    "offline-bundles/gb-shortcuts.js": "55aa4d2a3d57d59590007710f1ff24bb852d25e57573f4867800129e44a72d7c",
+    "offline-bundles/gb-storage-adapter.js": "07640cf3be1265b6a78a89debaa5fc71dc20be96b8ec7622db691804a3c1ef85",
+    "offline-bundles/gb-tooltip.js": "af148e28c47ef4e03053054dd3eb8316e1af353a98a21847b69c215a1c5f9475",
+    "offline-bundles/meldex-core.js": "ffbeca6d60add27f652dbeb5d835893a716acee1058f1268ff4c857f3cfd0b4d"
   }
 }

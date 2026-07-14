@@ -71,31 +71,100 @@ window.addEventListener('unhandledrejection', (e) => {
 const _fileIdCache = {};  // { path: file_id }
 const _pathCache = {};    // { file_id: path }
 const FILE_ID_MAP_KEY = 'meldex-file-id-map';
+let _storedFileIdMapCache = null;
+
+function _normalizeStoredFileIdMap(map) {
+  return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+}
+
+function _readLatestStoredFileIdMap() {
+  return _normalizeStoredFileIdMap(_readStorageJson(FILE_ID_MAP_KEY, {}));
+}
+
+function _storedFileIdMap() {
+  if (_storedFileIdMapCache) return _storedFileIdMapCache;
+  _storedFileIdMapCache = _readLatestStoredFileIdMap();
+  return _storedFileIdMapCache;
+}
+
+function _rememberFileId(path, fileId) {
+  const previousId = _fileIdCache[path];
+  if (previousId && previousId !== fileId && _pathCache[previousId] === path) delete _pathCache[previousId];
+  _fileIdCache[path] = fileId;
+  _pathCache[fileId] = path;
+}
+
+function _registerFileIds(items) {
+  const entries = Array.isArray(items)
+    ? items.map(item => [item?.path, item?.file_id || item?.fileId])
+    : Object.entries(items || {});
+  if (!entries.length) return 0;
+  const validEntries = entries.filter(([path, fileId]) => !!(path && fileId));
+  if (!validEntries.length) return 0;
+  const hadStoredCache = _storedFileIdMapCache != null;
+  let map = _storedFileIdMap();
+  let changed = false;
+  let registered = 0;
+  for (const [path, fileId] of validEntries) {
+    _rememberFileId(path, fileId);
+    registered += 1;
+    if (map[path] !== fileId) changed = true;
+  }
+  if (changed) {
+    // 別ウィンドウが追加したキーを古いセッションキャッシュで消さないよう、
+    // 変更バッチの書き込み直前にだけ最新値を再読込する。初回バッチは
+    // _storedFileIdMap() の1回をそのまま使うため、I/Oは最大1 read + 1 write。
+    if (hadStoredCache) map = _readLatestStoredFileIdMap();
+    let persistedChanged = false;
+    for (const [path, fileId] of validEntries) {
+      if (map[path] === fileId) continue;
+      map[path] = fileId;
+      persistedChanged = true;
+    }
+    _storedFileIdMapCache = map;
+    if (persistedChanged) {
+      try { localStorage.setItem(FILE_ID_MAP_KEY, JSON.stringify(map)); } catch {}
+    }
+  }
+  return registered;
+}
 
 function _registerFileId(path, fileId) {
-  if (path && fileId) {
-    _fileIdCache[path] = fileId;
-    _pathCache[fileId] = path;
-    try {
-      const map = _readStorageJson(FILE_ID_MAP_KEY, {});
-      if (map[path] !== fileId) {
-        map[path] = fileId;
-        localStorage.setItem(FILE_ID_MAP_KEY, JSON.stringify(map));
-      }
-    } catch {}
-  }
+  if (!path || !fileId) return;
+  if (_fileIdCache[path] === fileId && _pathCache[fileId] === path) return;
+  _registerFileIds([{ path, file_id: fileId }]);
 }
 
 function _pathToFileId(path) {
   if (!path) return '';
   if (_fileIdCache[path]) return _fileIdCache[path];
-  const fileId = _readStorageJson(FILE_ID_MAP_KEY, {})[path] || '';
-  if (fileId) _registerFileId(path, fileId);
+  const fileId = _storedFileIdMap()[path] || '';
+  if (fileId) _rememberFileId(path, fileId);
   return fileId;
 }
 
 function _fileIdToPath(fileId) {
   return _pathCache[fileId] || '';
+}
+
+function _syncStoredFileIdMapFromStorageEvent(event) {
+  if (!event || event.key !== FILE_ID_MAP_KEY) return;
+  let next = {};
+  try { next = _normalizeStoredFileIdMap(event.newValue ? JSON.parse(event.newValue) : {}); } catch {}
+  const previous = _storedFileIdMapCache || {};
+  Object.entries(previous).forEach(([path, fileId]) => {
+    if (Object.prototype.hasOwnProperty.call(next, path)) return;
+    if (_fileIdCache[path] === fileId) delete _fileIdCache[path];
+    if (_pathCache[fileId] === path) delete _pathCache[fileId];
+  });
+  _storedFileIdMapCache = next;
+  Object.entries(next).forEach(([path, fileId]) => {
+    if (path && fileId) _rememberFileId(path, fileId);
+  });
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', _syncStoredFileIdMapFromStorageEvent);
 }
 
 function _readStorageJson(key, fallback) {
@@ -370,9 +439,7 @@ async function _migratePathsToFileIds() {
   if (mcp && idMap[mcp]) localStorage.setItem('main-calendar-id', idMap[mcp]);
 
   // キャッシュにも登録
-  for (const [path, fileId] of Object.entries(idMap)) {
-    if (fileId) _registerFileId(path, fileId);
-  }
+  _registerFileIds(idMap);
 
   localStorage.setItem('_file-id-migrated', '1');
   _refreshOutlinerStorageViewsAfterMigration();
@@ -525,13 +592,16 @@ function _updatePathRefs(entry, keys, oldPath, newPath) {
   return changed;
 }
 
-function _readFileIdMap() {
-  const map = _readStorageJson(FILE_ID_MAP_KEY, {});
-  return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+function _readFileIdMap(options) {
+  if (options?.fresh === true) {
+    _storedFileIdMapCache = _readLatestStoredFileIdMap();
+    return _storedFileIdMapCache;
+  }
+  return _storedFileIdMap();
 }
 
 function _rewriteStoredFileIdMapForRename(oldPath, newPath, fileId) {
-  const map = _readFileIdMap();
+  const map = _readFileIdMap({ fresh: true });
   let changed = false;
   Object.keys(map).forEach(path => {
     if (!_isSameOrChildPath(path, oldPath)) return;
@@ -549,7 +619,7 @@ function _rewriteStoredFileIdMapForRename(oldPath, newPath, fileId) {
 }
 
 function _purgeStoredFileIdMapForDeletedPaths(deletedPaths) {
-  const map = _readFileIdMap();
+  const map = _readFileIdMap({ fresh: true });
   let changed = false;
   Object.keys(map).forEach(path => {
     if (!_matchesDeletedPaths(path, deletedPaths)) return;
@@ -828,73 +898,3 @@ function purgeAppPathReferences(paths) {
     graph: 'currentDbPath',
     entity: 'currentEntityPath',
     page: 'currentPagePath',
-    media: 'currentPagePath',
-    board: 'currentBoardPath',
-  }[state.view] || null;
-
-  Object.keys(_fileIdCache).forEach(cachedPath => {
-    if (!_matchesDeletedPaths(cachedPath, deletedPaths)) return;
-    const fid = _fileIdCache[cachedPath];
-    delete _fileIdCache[cachedPath];
-    if (fid && _pathCache[fid] === cachedPath) delete _pathCache[fid];
-  });
-  _purgeStoredFileIdMapForDeletedPaths(deletedPaths);
-  _purgeStoredPathSettingForDeletedPaths('outliner-work-folder', 'outliner-work-folder-id', deletedPaths);
-  _purgeStoredPathSettingForDeletedPaths('main-calendar-path', 'main-calendar-id', deletedPaths);
-  _purgePublishStorageForDeletedPaths(deletedPaths);
-
-  try {
-    const recent = _readStorageArray(RECENT_KEY);
-    const nextRecent = recent.filter(entry => {
-      return !_entryMatchesDeletedPaths(entry, deletedPaths);
-    });
-    if (nextRecent.length !== recent.length) {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(nextRecent));
-      recentChanged = true;
-    }
-  } catch {}
-
-  try {
-    const lastView = JSON.parse(localStorage.getItem('lastView') || 'null');
-    if (lastView) {
-      if (_entryMatchesDeletedPaths(lastView, deletedPaths)) {
-        localStorage.removeItem('lastView');
-      }
-    }
-  } catch {}
-
-  for (let i = _tabs.length - 1; i >= 0; i -= 1) {
-    const tab = _tabs[i];
-    if (!_entryMatchesDeletedPaths(tab, deletedPaths)) continue;
-    if (_activeTabId === tab.id) _activeTabId = null;
-    _tabs.splice(i, 1);
-    legacyTabsChanged = true;
-  }
-  if (!_activeTabId && _tabs.length > 0) {
-    _activeTabId = _tabs[0].id;
-    legacyTabsChanged = true;
-  }
-
-  for (let i = _legacyNavHistory.length - 1; i >= 0; i -= 1) {
-    const entry = _legacyNavHistory[i];
-    if (_entryMatchesDeletedPaths(entry, deletedPaths)) {
-      _legacyNavHistory.splice(i, 1);
-      if (_legacyNavIndex >= i) _legacyNavIndex = Math.max(-1, _legacyNavIndex - 1);
-    }
-  }
-
-  const tabsToClose = [];
-  if (typeof GBLayout !== 'undefined' && typeof GBLayout.getAllPanes === 'function' && GBLayout.root) {
-    GBLayout.getAllPanes(GBLayout.root).forEach(pane => {
-      (pane.tabs || []).forEach(tab => {
-        if (_entryMatchesDeletedPaths(tab, deletedPaths) || _entryMatchesDeletedPaths(tab.state, deletedPaths)) {
-          tabsToClose.push({ paneId: pane.id, tabId: tab.id });
-        }
-      });
-      if (Array.isArray(pane.navHistory)) {
-        const prevLen = pane.navHistory.length;
-        pane.navHistory = pane.navHistory.filter(entry => !_entryMatchesDeletedPaths(entry, deletedPaths));
-        if (pane.navHistory.length !== prevLen) {
-          pane.navIndex = pane.navHistory.length ? Math.min(pane.navIndex, pane.navHistory.length - 1) : -1;
-          layoutChanged = true;
-        }

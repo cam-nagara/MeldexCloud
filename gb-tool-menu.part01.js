@@ -817,7 +817,9 @@ async function _exportDictFile() {
 function _copyCurrentFilePath() {
   const path = getCurrentFilePath();
   if (!path) return;
-  navigator.clipboard.writeText(path).then(() => {
+  const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+  const copyPath = window.GBPathUtils?.resolveForClipboard?.(path, base) ?? path;
+  navigator.clipboard.writeText(copyPath).then(() => {
     showStatus('パスをコピーしました');
   }).catch(() => {
     showStatus('パスのコピーに失敗しました', true);

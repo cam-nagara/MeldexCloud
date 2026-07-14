@@ -267,18 +267,7 @@
     const folderName = folder.path ? folder.path.split(/[/\\]/).pop() : '（未選択）';
     const notionTitle = folder.notion_page_title || '';
     const lastSync = folder.last_sync ? new Date(folder.last_sync).toLocaleString('ja-JP') : '未同期';
-    const syncInterval = folder.sync_interval || 0;
-
-    const intervalOptions = [
-      { value: 0, label: '手動のみ' },
-      { value: 5, label: '5分' },
-      { value: 15, label: '15分' },
-      { value: 30, label: '30分' },
-      { value: 60, label: '1時間' },
-    ];
-    const intervalSelect = intervalOptions.map(o =>
-      `<option value="${o.value}" ${syncInterval === o.value ? 'selected' : ''}>${o.label}</option>`
-    ).join('');
+    const folderSchedule = folder.schedule || (folder.sync_interval > 0 ? { type: 'interval', interval_minutes: folder.sync_interval } : null);
     card.innerHTML = `
       <div class="notion-folder-card-head">
         <span class="notion-folder-card-icon">${lucide('folder', 16)}</span>
@@ -297,10 +286,7 @@
       </div>
       ${notionTitle ? `<div class="notion-page-title-line">Notionページ: <b>${esc(notionTitle)}</b></div>` : ''}
       <div class="notion-sync-controls-row">
-        <label class="notion-sync-inline-field">
-          <span class="notion-sync-label">自動同期:</span>
-          <select class="notion-sync-interval gb-select gb-select-sm" aria-label="${esc(folderName)}のNotion自動同期間隔" data-e2e-id="notion-sync-interval-${index}" data-notion-card-action="sync-interval" data-notion-card-index="${index}">${intervalSelect}</select>
-        </label>
+        <div class="notion-sync-schedule-container" data-e2e-id="notion-sync-schedule-${index}"></div>
         <div class="notion-sync-inline-field notion-sync-mode-field">
           <span class="notion-sync-label">同期方向:</span>
           <span class="notion-sync-mode-label" data-notion-sync-mode="push">Meldex → Notion（片方向 push 専用）</span>
@@ -320,7 +306,13 @@
     card.querySelector('.notion-resolve-page').addEventListener('click', () => _resolveNotionPage(card));
     card.querySelector('.notion-save-folder').addEventListener('click', () => _saveFolderConfigFromCard(card, '設定を保存しました'));
     card.querySelector('.notion-sync-now').addEventListener('click', () => _syncFolder(card, index));
-    card.querySelector('.notion-sync-interval').addEventListener('change', (e) => _updateAutoSync(card, index, parseInt(e.target.value)));
+    const schedContainer = card.querySelector('.notion-sync-schedule-container');
+    if (schedContainer && window.MeldexScheduler) {
+      const w = window.MeldexScheduler.createWidget(schedContainer, folderSchedule, (cfg) => {
+        _updateAutoSyncSchedule(card, index, cfg);
+      });
+      card._scheduleWidget = w;
+    }
     card.querySelectorAll('.notion-folder-path, .notion-page-url').forEach(input => {
       input.addEventListener('change', () => _saveFolderConfigFromCard(card, '設定を保存しました'));
       input.addEventListener('keydown', (event) => {
@@ -556,7 +548,7 @@
     const index = parseInt(card.dataset.index);
     const path = card.querySelector('.notion-folder-path').value.trim();
     const notionUrl = card.querySelector('.notion-page-url').value.trim();
-    const interval = parseInt(card.querySelector('.notion-sync-interval').value);
+    const schedule = card._scheduleWidget ? card._scheduleWidget.getCurrentConfig() : null;
     const syncMode = 'push';
     const urlChanged = notionUrl !== (card.dataset.notionPageUrl || '');
     const extraPayload = extra || {};
@@ -565,9 +557,10 @@
       index,
       path,
       notion_page_url: notionUrl,
-      auto_sync: interval > 0,
-      sync_interval: interval,
+      auto_sync: schedule ? schedule.type !== 'off' : false,
+      sync_interval: schedule?.interval_minutes || 0,
       sync_mode: syncMode,
+      schedule: schedule || undefined,
       ...extraPayload,
     };
     if (urlChanged && !Object.prototype.hasOwnProperty.call(extraPayload, 'notion_page_id')) {
@@ -748,49 +741,39 @@
     }
   }
 
-  // === 自動同期設定更新 ===
-  async function _updateAutoSync(card, index, intervalMinutes) {
-    const select = card?.querySelector?.('.notion-sync-interval');
+  // === 自動同期スケジュール更新（MeldexScheduler ウィジェットから呼ばれる） ===
+  async function _updateAutoSyncSchedule(card, index, scheduleCfg) {
     const statusEl = card?.querySelector?.('.notion-folder-status');
-    const disableAutoSync = async (message) => {
-      if (select) select.value = '0';
-      if (statusEl) {
-        statusEl.textContent = message;
-        statusEl.style.color = 'var(--red)';
-      }
-      await _saveFolderConfig(card, {});
-      showStatus(message, true);
-    };
+    const isEnabled = scheduleCfg && scheduleCfg.type !== 'off';
     try {
-      if (intervalMinutes > 0) {
+      if (isEnabled) {
         const path = card.querySelector('.notion-folder-path').value.trim();
         const notionUrl = card.querySelector('.notion-page-url').value.trim();
         if (!path) {
-          await disableAutoSync('自動同期にはフォルダ指定が必要です');
+          showStatus('自動同期にはフォルダ指定が必要です', true);
           return;
         }
         if (!notionUrl) {
-          await disableAutoSync('自動同期にはNotionページURLが必要です');
+          showStatus('自動同期にはNotionページURLが必要です', true);
           return;
         }
         const cfg = await apiFetch('/notion/config');
         if (!cfg?.has_token) {
           card.dataset.notionHasToken = '0';
-          await disableAutoSync('自動同期にはNotionトークンの保存が必要です');
+          showStatus('自動同期にはNotionトークンの保存が必要です', true);
           return;
         }
         card.dataset.notionHasToken = '1';
         const ready = await _ensureNotionPageReady(card, statusEl);
         if (!ready) {
-          await disableAutoSync('Notionページを確認できないため、自動同期を無効にしました');
+          showStatus('Notionページを確認できないため、自動同期を無効にしました', true);
           return;
         }
       }
-      const saved = intervalMinutes > 0 ? true : await _saveFolderConfig(card, {});
-      if (!saved) return;
-
-      if (intervalMinutes > 0) {
-        showStatus(`自動同期を${intervalMinutes}分間隔に設定しました`);
+      await _saveFolderConfig(card, {});
+      if (isEnabled) {
+        const text = window.MeldexScheduler?.nextRunText?.(scheduleCfg) || '';
+        showStatus(`自動同期を設定しました: ${text}`);
       } else {
         showStatus('自動同期を無効にしました');
       }
@@ -803,29 +786,17 @@
     return [index, folder.path || '', folder.notion_page_id || '', folder.notion_page_url || ''].join('\u001f');
   }
 
-  // === 自動同期タイマー管理（設定行単位でキー管理） ===
-  function _resetAutoSyncTimer(timerKey, folder, intervalMinutes) {
-    if (!folder?.path) return; // 空パスは登録しない
-    if (_autoSyncTimers[timerKey]) {
-      clearInterval(_autoSyncTimers[timerKey]);
-      delete _autoSyncTimers[timerKey];
-    }
-    if (intervalMinutes > 0) {
-      _autoSyncTimers[timerKey] = setInterval(() => {
-        _autoSyncExecute(timerKey);
-      }, intervalMinutes * 60 * 1000);
-    }
-  }
-
   function _clearAllAutoSyncTimers() {
     Object.keys(_autoSyncTimers).forEach(k => {
-      clearInterval(_autoSyncTimers[k]);
+      if (window.MeldexScheduler) window.MeldexScheduler.destroyTimer(k);
+      else clearInterval(_autoSyncTimers[k]);
       delete _autoSyncTimers[k];
     });
   }
 
   // === タイマー一覧を現在の config と突き合わせて再構築 ===
   async function _reconcileTimers() {
+    if (!window.MeldexScheduler) return;
     try {
       const cfg = await apiFetch('/notion/config');
       const folders = cfg.folders || [];
@@ -835,18 +806,19 @@
         if (!p) return;
         const key = _timerKey(index, f);
         aliveKeys.add(key);
-        if (f.auto_sync && f.sync_interval > 0 && cfg.has_token && f.notion_page_id) {
-          // 設定変更が無くても clearInterval → setInterval で冪等に更新
-          _resetAutoSyncTimer(key, f, f.sync_interval);
+        const schedule = f.schedule || (f.auto_sync && f.sync_interval > 0 ? { type: 'interval', interval_minutes: f.sync_interval } : null);
+        const sched = window.MeldexScheduler.normalize(schedule);
+        if (sched.type !== 'off' && cfg.has_token && f.notion_page_id) {
+          window.MeldexScheduler.createTimer(key, sched, () => _autoSyncExecute(key));
+          _autoSyncTimers[key] = true;
         } else if (_autoSyncTimers[key]) {
-          clearInterval(_autoSyncTimers[key]);
+          window.MeldexScheduler.destroyTimer(key);
           delete _autoSyncTimers[key];
         }
       });
-      // config に存在しなくなった設定行のタイマーは片付ける
       Object.keys(_autoSyncTimers).forEach(k => {
         if (!aliveKeys.has(k)) {
-          clearInterval(_autoSyncTimers[k]);
+          window.MeldexScheduler.destroyTimer(k);
           delete _autoSyncTimers[k];
         }
       });
@@ -868,9 +840,8 @@
       currentIndex = folders.findIndex((f, index) => _timerKey(index, f) === timerKey);
       const folder = currentIndex >= 0 ? folders[currentIndex] : null;
       if (currentIndex < 0 || !cfg.has_token || !folder?.notion_page_id) {
-        // 該当設定行が削除されていた。自分のタイマーも片付ける
         if (_autoSyncTimers[timerKey]) {
-          clearInterval(_autoSyncTimers[timerKey]);
+          if (window.MeldexScheduler) window.MeldexScheduler.destroyTimer(timerKey);
           delete _autoSyncTimers[timerKey];
         }
         _releaseSyncLock(lockToken);

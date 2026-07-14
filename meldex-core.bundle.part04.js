@@ -1,3 +1,44 @@
+        Object.assign(data, previousData);
+        note.style.width = previousStyle.width;
+        note.style.minHeight = previousStyle.minHeight;
+        textarea.style.height = previousStyle.textareaHeight;
+        textarea.value = previousData.text || '';
+        _saReportSaveFailure(error);
+      }
+    };
+    note.appendChild(textarea);
+    let dx = 0, dy = 0;
+    note.addEventListener('pointerdown', (e) => {
+      if (_ann.active && _ann.tool === 'eraser') {
+        e.preventDefault();
+        e.stopPropagation();
+        _saDeleteNoteElement(note);
+        return;
+      }
+      if (e.target === textarea) return; e.preventDefault();
+      const rect = note.getBoundingClientRect();
+      dx = e.clientX - rect.left; dy = e.clientY - rect.top;
+      const previous = {
+        x: data.x || 0,
+        y: data.y || 0,
+        text: data.text || '',
+        width: data.width,
+        height: data.height,
+        left: note.style.left,
+        top: note.style.top,
+        noteWidth: note.style.width,
+        noteMinHeight: note.style.minHeight,
+        textareaHeight: textarea.style.height,
+      };
+      const onMove = (e2) => {
+        const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
+        note.style.left = pt.x + 'px';
+        note.style.top = pt.y + 'px';
+      };
+      const onUp = async () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        Object.assign(data, _saNotePayload(data, textarea, note), {
           x: parseFloat(note.style.left) || 0,
           y: parseFloat(note.style.top) || 0,
         });

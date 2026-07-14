@@ -37,7 +37,8 @@ function _imagePropCellSize(ptc) {
 }
 
 function _imageSrc(item, preferThumb) {
-  const rel = (preferThumb && (item.thumb_url || item.thumb)) || item.thumb_url || item.url || item.src || item.thumb || '';
+  const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))
+    || item.thumb_url || item.url || item.src || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
   if (!rel) return '';
   if (/^(https?:|data:|blob:)/.test(rel)) return rel;
   if (rel.startsWith('/')) return rel;
@@ -175,13 +176,17 @@ function openImagePropertyItemInViewer(item) {
   return false;
 }
 
-function createImagePropertyValueElement(val, entityPath, propName, thumbSize, ptc) {
+function createImagePropertyValueElement(val, entityPath, propName, thumbSize, ptc, options = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'gb-image-cell';
-  const options = _imagePropOptions(ptc);
-  wrap.style.setProperty('--gb-image-cell-size', options.cellSize + 'px');
+  if (options.cardPreview) wrap.classList.add('gb-image-cell-card-preview');
+  const imageOptions = _imagePropOptions(ptc);
+  wrap.style.setProperty('--gb-image-cell-size', imageOptions.cellSize + 'px');
   const items = parseImagePropertyValue(val?.value);
-  const previewCount = Math.min(3, items.length);
+  const configuredCount = typeof _normalizeDbCardImageThumbCount === 'function'
+    ? _normalizeDbCardImageThumbCount(options.imagePreviewCount)
+    : Math.max(1, Math.min(12, Math.round(Number(options.imagePreviewCount || 3) || 3)));
+  const previewCount = Math.min(configuredCount, items.length);
   if (!items.length) {
     wrap.classList.add('gb-image-cell-empty');
     wrap.innerHTML = (typeof lucide === 'function' ? lucide('imagePlus', 16) : '') + '<span>画像をドロップ</span>';

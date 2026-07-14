@@ -215,6 +215,7 @@
   if (typeof bdSerializeLlmSemanticsFrontmatter === 'function') {
     fm += bdSerializeLlmSemanticsFrontmatter(bd.llmSemantics, { nodeIdMap: m });
   }
+  if (bd._preservedFrontmatter) fm += bd._preservedFrontmatter.replace(/\n+$/, '') + '\n';
   fm += '---\n';
   const _escapeBoardHeadingText = (s) => String(s == null ? '' : s).replace(/^(\[img\])/, '\\$1');
   const _escapeBody = (s) => String(s == null ? '' : s).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(line => {

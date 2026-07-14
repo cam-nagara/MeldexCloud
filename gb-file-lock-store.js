@@ -46,6 +46,83 @@
     return parts.some(part => SYSTEM_EXCLUDED.has(part));
   }
 
+  async function _allowedTrashRoots() {
+    const roots = [{ path: _normalizeFolderPath(PWA_TRASH_DIR), name: 'Meldex' }];
+    const registry = window.MeldexSourceFolderRegistry;
+    if (typeof registry?.loadRegistry !== 'function' || typeof registry?.sourcePath !== 'function') return roots;
+    let payload;
+    try {
+      payload = await registry.loadRegistry({ writeIfMissing: false });
+    } catch (error) {
+      const wrapped = new Error('ソースフォルダのゴミ箱設定を確認できませんでした');
+      wrapped.code = 'trash_roots_unavailable';
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    const seen = new Set(roots.map((root) => root.path));
+    for (const source of Array.isArray(payload?.roots) ? payload.roots : []) {
+      if (!source || source.deleted === true || !source.id) continue;
+      const path = _normalizeFolderPath(registry.sourcePath(source.id, '_trash'));
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      roots.push({ path, name: String(source.name || source.dropboxPath || source.id) });
+    }
+    return roots;
+  }
+
+  async function _resolveAllowedTrashRoot(rawRoot) {
+    const raw = String(rawRoot || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (raw.split('/').some((part) => part === '.' || part === '..')) {
+      const error = new Error('許可されていないゴミ箱です');
+      error.code = 'invalid_trash_root';
+      throw error;
+    }
+    const requested = _normalizeFolderPath(raw || PWA_TRASH_DIR);
+    const matched = (await _allowedTrashRoots()).find((root) => root.path === requested);
+    if (matched) return matched;
+    const error = new Error('許可されていないゴミ箱です');
+    error.code = 'invalid_trash_root';
+    throw error;
+  }
+
+  function _invalidTrashRestorePath() {
+    return Object.assign(new Error('元の保存先が安全な復元先ではありません'), {
+      code: 'invalid_trash_original_path', status: 400,
+    });
+  }
+
+  function _safeTrashRestoreRelativePath(rawPath) {
+    const raw = String(rawPath || '').trim().replace(/\\/g, '/');
+    const segments = raw.split('/');
+    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const normalized = _normalizeFolderPath(raw);
+    if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
+    return normalized;
+  }
+
+  async function _resolveValidatedTrashRestorePath(trashRoot, originalPath, fallbackPath = '') {
+    const registry = window.MeldexSourceFolderRegistry;
+    const rootPath = _normalizeFolderPath(trashRoot?.path || '');
+    const rawOriginal = String(originalPath || '').trim().replace(/\\/g, '/');
+    const candidate = rawOriginal || String(fallbackPath || '').trim().replace(/\\/g, '/');
+    if (!candidate || candidate.startsWith('/')) throw _invalidTrashRestorePath();
+    const parsedRoot = registry?.parseSourcePath?.(rootPath);
+    const parsedOriginal = registry?.parseSourcePath?.(candidate);
+    if (parsedRoot) {
+      if (parsedRoot.relativePath !== '_trash' || typeof registry?.sourcePath !== 'function') throw _invalidTrashRestorePath();
+      const relativePath = _safeTrashRestoreRelativePath(parsedOriginal ? parsedOriginal.relativePath : candidate);
+      return registry.sourcePath(parsedRoot.sourceId, relativePath);
+    }
+    if (rootPath !== _normalizeFolderPath(PWA_TRASH_DIR)) throw _invalidTrashRestorePath();
+    if (!parsedOriginal) return _safeTrashRestoreRelativePath(candidate);
+    const relativePath = _safeTrashRestoreRelativePath(parsedOriginal.relativePath);
+    const allowedSourceIds = new Set((await _allowedTrashRoots())
+      .map((root) => registry?.parseSourcePath?.(root.path)?.sourceId || '').filter(Boolean));
+    if (!allowedSourceIds.has(parsedOriginal.sourceId) || typeof registry?.sourcePath !== 'function') throw _invalidTrashRestorePath();
+    return registry.sourcePath(parsedOriginal.sourceId, relativePath);
+  }
+
   function _pathOrAncestorEntry(entries, path) {
     const target = _normalize(path);
     if (!target) return null;
@@ -203,11 +280,12 @@
 
   async function _guardTrashRestore(provider, body) {
     const name = _validateItemName(body?.name || '', 'name');
-    const sourcePath = _joinPath(PWA_TRASH_DIR, name);
+    const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+    const sourcePath = _joinPath(trashRoot.path, name);
     const source = await _resolveEntryHandle(provider, sourcePath);
     if (!source) return;
-    const meta = await _readJsonSafe(provider, _joinPath(PWA_TRASH_DIR, name + '._trash_meta.json'), {});
-    const baseDest = _normalizeFolderPath(meta?.original_path || '') || name;
+    const meta = await _readJsonSafe(provider, sourcePath + '._trash_meta.json', {});
+    const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
     let destPath = baseDest;
     if (await _pathExists(provider, destPath)) {
       const split = _splitNameAndExt(_basename(baseDest));
@@ -224,11 +302,13 @@
 
   async function _guardOutlinerRestore(provider, body) {
     const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-    const source = await _resolveEntryHandle(provider, _joinPath(PWA_TRASH_DIR, trashName));
+    const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+    const sourcePath = _joinPath(trashRoot.path, trashName);
+    const source = await _resolveEntryHandle(provider, sourcePath);
     if (!source) return;
-    const meta = await _readJsonSafe(provider, _joinPath(PWA_TRASH_DIR, trashName + '._trash_meta.json'), {});
-    const originalPath = _normalizeFolderPath(meta?.original_path || '');
-    if (originalPath) await requireUnlocked(provider, originalPath, { action: 'restore', includeDescendants: source.kind === 'directory' });
+    const meta = await _readJsonSafe(provider, sourcePath + '._trash_meta.json', {});
+    const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+    await requireUnlocked(provider, originalPath, { action: 'restore', includeDescendants: source.kind === 'directory' });
   }
 
   async function _guardDuplicate(provider, body) {

@@ -1,3 +1,251 @@
+}
+function _readCachedFileLocks() {
+  const data = _legacyLockedItems();
+  return Array.isArray(data.entries) ? data.entries : [];
+}
+function _primeFileLockCacheFromStorage() {
+  if (_fileLockLoaded || _fileLockEntries.length) return _fileLockEntries;
+  _fileLockEntries = _readCachedFileLocks();
+  return _fileLockEntries;
+}
+function _fileLockEntryFromEntries(entries, path) {
+  const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
+  const target = _normalizeLockedItemPath(path);
+  return (entries || []).find(entry => {
+    if (fid && entry?.file_id === fid) return true;
+    const base = _normalizeLockedItemPath(entry?.normalized_path || entry?.path || '');
+    return base && (target === base || target.startsWith(base + '/'));
+  }) || null;
+}
+async function _migrateLegacyLocksToServerIfOwner() {
+  if (_legacyFileLocksMigrated) return;
+  _legacyFileLocksMigrated = true;
+  await _ensureRoleLoaded();
+  if (!isFileLockOwner()) return;
+  const legacy = _legacyLockedItems();
+  if (!legacy || Array.isArray(legacy.entries)) return;
+  const pairs = Object.entries(legacy).filter(([, value]) => value === true);
+  if (!pairs.length) return;
+  for (const [key] of pairs) {
+    const path = (typeof _fileIdToPath === 'function' && _fileIdToPath(key)) || key;
+    if (!path || _isFileLockSystemExcluded(path)) continue;
+    try {
+      await _fileLockApi('/file-lock', {
+        method: 'PUT',
+        body: JSON.stringify({ path, file_id: path === key ? '' : key }),
+      });
+    } catch {}
+  }
+}
+async function _ensureLocksLoaded(options = {}) {
+  const force = !!options.force;
+  if (_fileLockLoaded && !force) return _fileLockEntries;
+  if (_fileLockLoadPromise && !force) return _fileLockLoadPromise;
+  _fileLockLoadPromise = (async () => {
+    await _ensureRoleLoaded();
+    await _migrateLegacyLocksToServerIfOwner();
+    try {
+      const data = await _fileLockApi('/file-lock');
+      _writeFileLockCache(data.entries || []);
+    } catch {
+      _writeFileLockCache(_readCachedFileLocks());
+    }
+    if (!_fileLockRefreshTimer) {
+      _fileLockRefreshTimer = setInterval(() => {
+        _ensureLocksLoaded({ force: true })
+          .then(() => window.MeldexFileLockBadge?.refreshAll?.())
+          .catch(() => {});
+      }, 5 * 60 * 1000);
+    }
+    return _fileLockEntries;
+  })();
+  try { return await _fileLockLoadPromise; }
+  finally { _fileLockLoadPromise = null; }
+}
+function getLockedItems() { return { entries: _fileLockEntries.slice() }; }
+function _fileLockEntryForPath(path) {
+  if (isSystemLockedItem(path)) return { system: true, path, lock_reason: 'システム保護' };
+  const fid = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
+  if (_fileLockLoaded || _fileLockEntries.length) return _fileLockEntryFromEntries(_fileLockEntries, path);
+  const legacy = _legacyLockedItems();
+  if (fid && legacy[fid]) return { path, file_id: fid };
+  return legacy[path] ? { path } : null;
+}
+function isItemLocked(path) {
+  if (isSystemLockedItem(path)) return true;
+  return !!_fileLockEntryForPath(path);
+}
+function getItemLockReason(path) {
+  const entry = _fileLockEntryForPath(path);
+  return String(entry?.lock_reason || '').trim();
+}
+
+function _fileLockHistorySnapshot(path) {
+  const entry = _fileLockEntryForPath(path);
+  if (!entry || entry.system) return null;
+  return {
+    path: entry.path || path,
+    file_id: entry.file_id || ((typeof _pathToFileId === 'function' && _pathToFileId(path)) || ''),
+    lock_reason: entry.lock_reason || entry.reason || '',
+  };
+}
+
+function _sameFileLockHistorySnapshot(a, b) {
+  try { return JSON.stringify(a || null) === JSON.stringify(b || null); }
+  catch { return false; }
+}
+
+async function _restoreFileLockHistorySnapshot(path, snapshot) {
+  await _ensureRoleLoaded();
+  if (!isFileLockOwner()) {
+    if (typeof showStatus === 'function') showStatus('編集ロックの履歴復元は管理者のみ可能です', true);
+    return false;
+  }
+  if (snapshot) {
+    await _fileLockApi('/file-lock', {
+      method: 'PUT',
+      body: JSON.stringify({
+        path: snapshot.path || path,
+        file_id: snapshot.file_id || ((typeof _pathToFileId === 'function' && _pathToFileId(path)) || ''),
+        reason: snapshot.lock_reason || '',
+      }),
+    });
+  } else {
+    await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
+  }
+  await _ensureLocksLoaded({ force: true });
+  await refreshOutliner();
+  if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
+  return true;
+}
+
+function pushOutlinerFileLockHistory(path, beforeSnapshot, afterSnapshot) {
+  if (typeof historyPush !== 'function') return false;
+  if (_sameFileLockHistorySnapshot(beforeSnapshot, afterSnapshot)) return false;
+  const label = afterSnapshot ? 'フォルダツリー: 編集ロック' : 'フォルダツリー: 編集ロック解除';
+  historyPush(
+    label,
+    () => _restoreFileLockHistorySnapshot(path, beforeSnapshot),
+    () => _restoreFileLockHistorySnapshot(path, afterSnapshot),
+    'outliner:file-lock',
+    path || ''
+  );
+  return true;
+}
+
+async function toggleItemLock(path) {
+  try {
+    if (isSystemLockedItem(path)) return false;
+    if (_isFileLockSystemExcluded(path)) {
+      if (typeof showStatus === 'function') showStatus('システムフォルダは編集ロックできません', true);
+      return false;
+    }
+    await _ensureRoleLoaded();
+    if (!isFileLockOwner()) {
+      if (typeof showStatus === 'function') showStatus('編集ロックの設定は管理者のみ可能です', true);
+      return false;
+    }
+    await _ensureLocksLoaded();
+    const locked = isItemLocked(path);
+    const before = _fileLockHistorySnapshot(path);
+    if (locked) {
+      await _fileLockApi('/file-lock?path=' + encodeURIComponent(path), { method: 'DELETE' });
+    } else {
+      // ダイアログ禁止原則: window.prompt は使わない。
+      // 編集ロックの理由は任意であり、後から付箋注釈・履歴ノートで補足できるため、
+      // ロック取得時点では空でセットし、必要なら後段で編集する運用にする。
+      await _fileLockApi('/file-lock', {
+        method: 'PUT',
+        body: JSON.stringify({ path, file_id: (typeof _pathToFileId === 'function' && _pathToFileId(path)) || '', reason: '' }),
+      });
+    }
+    await _ensureLocksLoaded({ force: true });
+    const after = _fileLockHistorySnapshot(path);
+    pushOutlinerFileLockHistory(path, before, after);
+    await refreshOutliner();
+    window.MeldexFileLockBadge?.refreshAll?.();
+    return true;
+  } catch (error) {
+    const message = error?.message ? String(error.message) : '更新に失敗しました';
+    if (typeof showStatus === 'function') showStatus('編集ロックの更新に失敗しました: ' + message, true);
+    try { await _ensureLocksLoaded({ force: true }); } catch {}
+    if (typeof refreshVisibleOutlinerLockState === 'function') refreshVisibleOutlinerLockState();
+    if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
+    return false;
+  }
+}
+
+function _applyOutlinerLockStateToNode(nodeEl) {
+  if (!nodeEl || !nodeEl._nodeData) return;
+  const item = nodeEl._nodeData;
+  const row = nodeEl.querySelector(':scope > .tree-node-row');
+  const label = row?.querySelector('.tree-label');
+  if (!row || !label || !item.path) return;
+  row.querySelector('.tree-lock-badge')?.remove();
+  const locked = isItemLocked(item.path);
+  row.draggable = !locked && !item._isRoot && item.type !== 'entity';
+  label.style.fontStyle = locked ? 'italic' : '';
+  _syncOutlinerAddHoverButton(nodeEl, item, locked);
+  if (!locked) {
+    row.removeAttribute('title');
+    delete row.dataset.gbTooltip;
+    return;
+  }
+  const lockBadge = document.createElement('span');
+  lockBadge.className = 'tree-lock-badge';
+  lockBadge.innerHTML = lucide('lock', 12);
+  const lockReason = typeof getItemLockReason === 'function' ? getItemLockReason(item.path) : '';
+  lockBadge.title = isSystemLockedItem(item.path) ? 'システム保護中です' : ('編集ロック中' + (lockReason ? ': ' + lockReason : ''));
+  lockBadge.dataset.gbTooltip = lockBadge.title;
+  lockBadge.style.cssText = 'display:inline-flex;align-items:center;opacity:0.65;margin-left:4px;flex-shrink:0;';
+  row.title = lockBadge.title;
+  row.dataset.gbTooltip = lockBadge.title;
+  row.appendChild(lockBadge);
+}
+
+const OUTLINER_CONFLICT_PATHS = new Set();
+
+function _normalizeOutlinerConflictPath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function _outlinerConflictBasename(path) {
+  const normalized = _normalizeOutlinerConflictPath(path).replace(/\/+$/, '');
+  const index = normalized.lastIndexOf('/');
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
+}
+
+function _isOutlinerDropboxConflictName(name) {
+  const normalized = String(name || '').replace(/_/g, ' ');
+  return /\bconflicted\s+copy\b/i.test(normalized) || /競合.*コピー/.test(normalized);
+}
+
+function _outlinerOriginalPathForConflictPath(path) {
+  const normalized = _normalizeOutlinerConflictPath(path);
+  const index = normalized.lastIndexOf('/');
+  const dir = index >= 0 ? normalized.slice(0, index) : '';
+  const name = index >= 0 ? normalized.slice(index + 1) : normalized;
+  const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
+  if (!match) return '';
+  const originalName = `${match[1] || ''}${match[2] || ''}`.trim();
+  if (!originalName) return '';
+  return dir ? `${dir}/${originalName}` : originalName;
+}
+
+function _registerOutlinerConflictPaths(items) {
+  if (!Array.isArray(items)) return;
+  const paths = new Set(items.map(item => _normalizeOutlinerConflictPath(item?.path)).filter(Boolean));
+  items.forEach(item => {
+    const path = _normalizeOutlinerConflictPath(item?.path);
+    if (!path || !_isOutlinerDropboxConflictName(_outlinerConflictBasename(path))) return;
+    OUTLINER_CONFLICT_PATHS.add(path);
+    const originalPath = _outlinerOriginalPathForConflictPath(path);
+    if (originalPath && paths.has(originalPath)) OUTLINER_CONFLICT_PATHS.add(originalPath);
+  });
+}
+
+function _isOutlinerConflictPath(path) {
+  const normalized = _normalizeOutlinerConflictPath(path);
   if (!normalized) return false;
   return OUTLINER_CONFLICT_PATHS.has(normalized)
     || _isOutlinerDropboxConflictName(_outlinerConflictBasename(normalized))
@@ -70,6 +318,7 @@ function _scheduleFileLockRefreshForOutliner() {
     .then(() => {
       refreshVisibleOutlinerLockState();
       if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
+      window.MeldexFileLockBadge?.refreshAll?.();
     })
     .catch(() => {})
     .finally(() => { _fileLockOutlinerRefreshPending = false; });
@@ -317,12 +566,19 @@ function createTreeNodeFromBrowse(item, rootPath) {
   toggle.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!isExpandable) return;
+    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
+    const currentIsFolder = item.type === 'folder';
+    const currentIsDB = item.type === 'database';
+    if (!currentIsFolder && !currentIsDB) {
+      row.click();
+      return;
+    }
     const expanded = toggle.dataset.expanded === 'true';
     if (!expanded) {
       toggle.classList.add('expanded');
       toggle.dataset.expanded = 'true';
       // 作品フォルダ動的アイコン切替（icon-implementation-plan §D）
-      if (isFolder) {
+      if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
           const isWork = item.path === getWorkFolder();
@@ -350,13 +606,13 @@ function createTreeNodeFromBrowse(item, rootPath) {
         spinner.innerHTML = '<span style="color:var(--fg2);font-size:11px;padding:4px 24px;">読み込み中...</span>';
         childrenDiv.appendChild(spinner);
         try {
-          if (isDB) {
+          if (currentIsDB) {
             const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path));
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
             const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
             await _appendOutlinerChildrenChunked(childrenDiv, entityItems, rootPath);
-          } else if (isFolder) {
+          } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
             const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
@@ -371,34 +627,6 @@ function createTreeNodeFromBrowse(item, rootPath) {
             await _appendOutlinerChildrenChunked(childrenDiv, visibleChildren, rootPath);
             // マニュアルソート適用
             if (sortCfg.sort === 'manual') applyManualSort(childrenDiv, item.path);
-            // 非同期でDB/board判定（NAS高速化: browseは拡張子のみで判定し、後からcheck-typeで確定）
-            const checkTargets = visibleChildren.filter(c => c.type === 'folder' || c.type === 'page' || c.type === 'scenario' || c.type === 'scriptnote');
-            // NAS負荷軽減: 5件ずつバッチ処理
-            (async () => {
-              for (let i = 0; i < checkTargets.length; i += 5) {
-                const batch = checkTargets.slice(i, i + 5);
-                await Promise.all(batch.map(async child => {
-                  try {
-                    const res = await apiFetch('/check-type?path=' + encodeURIComponent(child.path));
-                    if (res.type !== child.type) {
-                      // タイプが変わった → ノードを再作成
-                      const oldNode = childrenDiv.querySelector(`[data-path="${child.path.replace(/"/g, '\\"')}"]`);
-                      if (oldNode) {
-                        child.type = res.type;
-                        const newNode = createTreeNodeFromBrowse(child, rootPath);
-                        oldNode.replaceWith(newNode);
-                        // 置換後のノードにグローバルフィルタを適用（常時）
-                        if (res.type === 'database') {
-                          newNode.style.display = _showDatabaseByGlobalFilter() ? '' : 'none';
-                        } else if (res.type !== 'folder') {
-                          newNode.style.display = _showRegularNodeByGlobalFilter(child) ? '' : 'none';
-                        }
-                      }
-                    }
-                  } catch(e) {}
-                }));
-              }
-            })();
           }
           childrenDiv.dataset.loaded = 'true';
           // グローバルフィルタを新規読み込みノードに適用（常時）
@@ -443,7 +671,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
       childrenDiv.classList.add('collapsed');
       saveExpandedState(item.path, false);
       // 作品フォルダ動的アイコン切替（折畳み時）
-      if (isFolder) {
+      if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
           const isWork = item.path === getWorkFolder();
@@ -458,7 +686,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   _queueSavedOutlinerExpansion(item, toggle);
 
   // Row click: 選択＋コンテンツ表示
-  row.addEventListener('click', (e) => {
+  row.addEventListener('click', async (e) => {
     try { row.focus({ preventScroll: true }); } catch {}
     if (_outlinerSuppressNextTreeRowClick && (!_outlinerSuppressTreeRowClickNode || _outlinerSuppressTreeRowClickNode === div)) {
       _outlinerSuppressNextTreeRowClick = false;
@@ -489,16 +717,31 @@ function createTreeNodeFromBrowse(item, rootPath) {
     document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
     row.classList.add('active');
 
+    const clickPaneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+      ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
+      : null;
+    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
+    if (_browseItemNeedsTypeCheck(item) && item.type !== 'folder') {
+      await _resolveBrowseItemTypeOnDemand(item);
+      // 型判定待ちの間に別項目へ移動した場合、古いクリックを開かない。
+      if (!row.isConnected || !row.classList.contains('active')) return;
+      if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
+          && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
+      if (!_browseItemNeedsTypeCheck(item)) _syncOutlinerResolvedItemType(div, item);
+    }
+    const currentIsFolder = item.type === 'folder';
+    const currentIsDB = item.type === 'database';
+
     // スクロール位置保護は pointerdown 時点のグローバルガード (_treeScrollGuard) に委ねる
 
     // skipHighlight: クリック側で既に active クラスを付け終えているので、
     // open* 関数内の highlightOutlinerNode → scrollIntoView は不要かつスクロールジャンプ源。
     const _expOpts = { fromExplorer: true, skipHighlight: true };
     if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
-      _chatSetCurrentTargetPath(item.path, isFolder || isDB ? 'folder' : 'file', { reason: 'tree-click', deferAdoptSource: true });
+      _chatSetCurrentTargetPath(item.path, currentIsFolder || currentIsDB ? 'folder' : 'file', { reason: 'tree-click', deferAdoptSource: true });
     }
-    if (isDB) {
-      selectDatabase(item.path, null, _expOpts);
+    if (currentIsDB) {
+      selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts);
     } else if (item.type === 'entity') {
       selectEntity(item.path, _expOpts);
     } else if (item.type === 'page') {
@@ -508,7 +751,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
     } else if (item.type === 'board') {
       openBoard(item.name, item.path, _expOpts);
     } else if (item.type === 'calendar') {
-      openCalendarFile(item.name, item.path, _expOpts);
+      openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null });
     } else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') {
       openMedia(item.name, item.path, item.type, _expOpts);
     } else if (item.type === 'html') {
@@ -518,9 +761,27 @@ function createTreeNodeFromBrowse(item, rootPath) {
       else openPage(item.name, item.path, _expOpts);
     } else if (item.type === 'smart-db') {
       if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts);
-    } else if (isFolder) {
-      openFolder(item.name, item.path, _expOpts);
+    } else if (currentIsFolder) {
+      let folderVisiblePromise = null;
+      const mobileExplorer = window.MeldexCloudMobileExplorer;
+      const handledByMobileExplorer = !!(
+        window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
+        && mobileExplorer?.selectFolderFromTree?.(item, { syncSelection: false })
+      );
+      if (!handledByMobileExplorer) folderVisiblePromise = openFolder(item.name, item.path, _expOpts);
       if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+      const paneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
+        ? _captureBrowseItemPaneSnapshot(item.path, { requirePath: !handledByMobileExplorer })
+        : null;
+      _scheduleBrowseItemTypeResolution(div, item, folderVisiblePromise, {
+        paneSnapshot,
+        isStillActive: handledByMobileExplorer
+          ? () => mobileExplorer?.currentFolderTarget?.()?.path === item.path
+          : undefined,
+        onResolved: handledByMobileExplorer && typeof mobileExplorer?.handleResolvedItemType === 'function'
+          ? payload => mobileExplorer.handleResolvedItemType(payload)
+          : undefined,
+      });
     } else if (!NATIVE_TYPES.has(item.type)) {
       // ネイティブアプリ専用ファイル（psd, clip, 3d等）: メニューから開く案内
       showStatus(item.name + ' — 「…」または長押しメニューからアプリで開く');
@@ -637,264 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
       if (y < h * 0.25) row.classList.add('drag-over-above');
       else if (y > h * 0.75) row.classList.add('drag-over-below');
       else row.classList.add('drag-over-inside');
-    } else {
-      if (y < h * 0.5) row.classList.add('drag-over-above');
-      else row.classList.add('drag-over-below');
-    }
-  });
-
-  row.addEventListener('dragleave', () => {
-    row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
-  });
-
-  row.addEventListener('drop', (e) => {
-    e.preventDefault();
-    // Ctrl+ドロップ: ツリー内移動を行わない（ペインで開く操作に委ねる）
-    if (e.ctrlKey) { clearDragIndicators(); return; }
-    if (!draggedNode || draggedNode === div) return;
-    const nodes = (draggedNodes || [draggedNode])
-      .filter(n => n !== div && !n.contains(div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
-    if (nodes.length === 0) return;
-    const orderBefore = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
-
-    // Alt+D&D: フォルダリンク登録（移動ではなくリンク）
-    if (e.altKey && (isFolder || isDB)) {
-      for (const n of nodes) {
-        const d = n._nodeData;
-        if (d && d.path) {
-          const addLink = typeof addFolderLinkWithHistory === 'function'
-            ? addFolderLinkWithHistory(d.path, item.path)
-            : apiPost('/folder-links/add', { file_path: d.path, folder_path: item.path });
-          Promise.resolve(addLink).then(() => {
-            showStatus(d.name + ' → ' + item.name + ' にリンク登録');
-          }).catch(() => showStatus('リンク登録に失敗', true));
-        }
-      }
-      clearDragIndicators();
-      loadOutliner();
-      return;
-    }
-
-    const position = row.classList.contains('drag-over-above') ? 'above'
-      : row.classList.contains('drag-over-inside') ? 'inside'
-      : 'below';
-    clearDragIndicators();
-
-    // ワークスペースセクションのルート行への上下ドロップは、並び替えではなく
-    // ルートフォルダ外（vaultルート）への実移動になってしまうため受け付けない
-    if (position !== 'inside' && item._isRoot && div.closest('#body-workspaces')) {
-      showStatus('ワークスペースの中に移動する場合は、ワークスペース名の上にドロップしてください');
-      return;
-    }
-
-    const targetParent = div.parentElement;
-
-    // リンクファイルチェック
-    const hasLinked = nodes.some(n => n._nodeData && n._nodeData.linked);
-    if (hasLinked) {
-      showStatus('リンクファイルは移動できません（Alt+D&Dでリンク先を変更）');
-      return;
-    }
-
-    // 移動先フォルダを決定
-    let destFolder = '';
-    if (position === 'inside' && (isFolder || isDB)) {
-      destFolder = item.path;
-    } else {
-      const parentNode = div.parentElement?.closest('.tree-node');
-      if (parentNode) {
-        destFolder = parentNode._nodeData?.path || '';
-      } else if (div.closest('#body-home') && _homeFolderPath) {
-        destFolder = _homeFolderPath;
-      } else {
-        destFolder = '';
-      }
-    }
-    if (destFolder && isItemLocked(destFolder)) {
-      showStatus('編集ロック中のフォルダには移動できません', true);
-      return;
-    }
-
-    // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
-    (async () => {
-      const moved = [];
-      let movedAcrossFolders = false;
-      for (const n of nodes) {
-        const dragData = n._nodeData;
-        if (!dragData || !dragData.path) { moved.push(n); continue; }
-        const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
-        if (destFolder === srcFolder) { moved.push(n); continue; }
-        movedAcrossFolders = true;
-        try {
-          const oldPath = dragData.path;
-          const res = await apiPost('/outliner/move', { path: dragData.path, dest_folder: destFolder });
-          if (res.new_path) {
-            if (typeof _renameTreeNode === 'function') {
-              _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
-            } else {
-              dragData.path = res.new_path;
-              dragData.name = res.new_name || dragData.name;
-              const lbl = n.querySelector('.tree-label');
-              if (lbl && res.new_name) lbl.textContent = res.new_name;
-            }
-            if (typeof renameAppPathReferences === 'function') {
-              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
-            }
-          }
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-          moved.push(n);
-        } catch {
-          showStatus(`${dragData.name} の移動に失敗`, true);
-        }
-      }
-      if (moved.length === 0) return;
-      // DOM上の移動（ドロップ位置に順番通り挿入）
-      if (position === 'inside' && (isFolder || isDB)) {
-        if (childrenDiv.dataset.loaded === 'false') {
-          moved.forEach(n => {
-            if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
-            n.remove();
-          });
-          if (toggle.dataset.expanded !== 'true') toggle.click();
-        } else {
-          moved.forEach(n => childrenDiv.appendChild(n));
-          if (toggle.dataset.expanded !== 'true') toggle.click();
-          setSortSetting(item.path, 'manual', 'asc');
-          saveManualOrderFromDOM(childrenDiv, item.path);
-          if (!movedAcrossFolders) {
-            pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, item.path, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
-          }
-        }
-      } else if (position === 'above') {
-        moved.forEach(n => targetParent.insertBefore(n, div));
-      } else {
-        let ref = div.nextSibling;
-        moved.forEach(n => { targetParent.insertBefore(n, ref); });
-      }
-      if (position !== 'inside') {
-        const parentNode = targetParent.closest('.tree-node');
-        const parentPath = parentNode?._nodeData?.path || '_root';
-        setSortSetting(parentPath, 'manual', 'asc');
-        saveManualOrderFromDOM(targetParent, parentPath);
-        if (!movedAcrossFolders) {
-          pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, parentPath, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
-        }
-      }
-    })();
-  });
-
-  _registerTreeNode(div);
-  return div;
-}
-
-function clearDragIndicators() {
-  document.querySelectorAll('.drag-over-above,.drag-over-below,.drag-over-inside').forEach(el => {
-    el.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
-  });
-}
-
-// DOMからツリー構造をJSON化
-function domToTree(container) {
-  const tree = [];
-  container.querySelectorAll(':scope > .tree-node').forEach(nodeEl => {
-    const data = nodeEl._nodeData;
-    if (!data) return;
-    const childrenContainer = nodeEl.querySelector(':scope > .tree-children');
-    const node = { ...data };
-    if (childrenContainer && childrenContainer.children.length > 0) {
-      const childNodes = domToTree(childrenContainer).filter(c => c.type !== 'entity');
-      if (data.type === 'folder' || data.type === 'database') {
-        node.children = childNodes;
-
-/* === gb-outliner.part02.js === */
-      }
-    } else if (data.children) {
-      node.children = data.children;
-    }
-    if (data.type !== 'entity') {
-      tree.push(node);
-    }
-  });
-  return tree;
-}
-
-async function saveOutlinerTree() {
-  // ルートフォルダベースではファイルシステムがツリー構造そのもの。
-  // D&Dによる並べ替えは localStorage のマニュアル順として永続化する。
-}
-
-function _normalizeOutlinerPathForCompare(path) {
-  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
-}
-
-function _isOutlinerPathWithin(path, basePath) {
-  const normalizedPath = _normalizeOutlinerPathForCompare(path);
-  const normalizedBase = _normalizeOutlinerPathForCompare(basePath);
-  if (!normalizedPath || !normalizedBase) return false;
-  if (normalizedPath === normalizedBase || normalizedPath.startsWith(normalizedBase + '/')) return true;
-  return false;
-}
-
-const _outlinerPendingDeletePaths = new Set();
-
-function _isOutlinerFreeLayoutUiEnabled() {
-  if (typeof GBLayout === 'undefined') return true;
-  return typeof GBLayout.isFreeLayoutUiEnabled === 'function'
-    ? !!GBLayout.isFreeLayoutUiEnabled()
-    : true;
-}
-
-function isOutlinerDeletePendingPath(path) {
-  const normalizedPath = _normalizeOutlinerPathForCompare(path);
-  if (!normalizedPath || !_outlinerPendingDeletePaths.size) return false;
-  for (const pendingPath of _outlinerPendingDeletePaths) {
-    if (_isOutlinerPathWithin(normalizedPath, pendingPath)) return true;
-  }
-  return false;
-}
-
-function _setOutlinerDeletePending(paths, pending) {
-  const normalizedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
-  normalizedPaths.forEach(path => {
-    if (pending) _outlinerPendingDeletePaths.add(path);
-    else _outlinerPendingDeletePaths.delete(path);
-  });
-  return normalizedPaths;
-}
-
-function _prepareOutlinerDeleteTargets(items) {
-  const seen = new Set();
-  const unique = (Array.isArray(items) ? items : [])
-    .filter(item => item && item.path)
-    .map(item => ({
-      name: item.name || item.label || String(item.path).split('/').pop() || '',
-      path: item.path,
-      type: item.type || 'page',
-      _comparePath: _normalizeOutlinerPathForCompare(item.path),
-    }))
-    .filter(item => {
-      if (!item._comparePath || seen.has(item._comparePath)) return false;
-      seen.add(item._comparePath);
-      return true;
-    })
-    .sort((a, b) => a._comparePath.split('/').length - b._comparePath.split('/').length);
-  const roots = [];
-  unique.forEach(item => {
-    if (roots.some(root => _isOutlinerPathWithin(item._comparePath, root._comparePath))) return;
-    roots.push(item);
-  });
-  return roots.map(({ _comparePath, ...item }) => item);
-}
-
-async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
-  const batchTargets = (Array.isArray(targets) ? targets : []).filter(item => item && item.path);
-  if (batchTargets.length) {
-    try {
-      const payload = await apiPost('/outliner/delete-batch', {
-        items: batchTargets.map(item => ({ path: item.path })),
-      });
-      const batchResults = Array.isArray(payload?.results) ? payload.results : [];
-      if (batchResults.length === batchTargets.length) {
-        return batchResults.map((entry, index) => {
-          const item = batchTargets[index];
-          if (entry?.ok) {

@@ -367,38 +367,51 @@ async function showTrashModal() {
 
   let items = [];
   let loadError = null;
+  let partial = false;
+  let partialFailed = 0;
   try {
     const data = await apiFetch('/trash');
-    items = data.items || [];
+    items = Array.isArray(data?.items) ? data.items : [];
+    const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+    const reportedFailed = Number(data?.failed);
+    const safeReportedFailed = Number.isFinite(reportedFailed) ? Math.max(0, Math.floor(reportedFailed)) : 0;
+    partial = data?.partial === true || warnings.length > 0 || safeReportedFailed > 0;
+    partialFailed = partial ? Math.min(9999, Math.max(1, warnings.length, safeReportedFailed)) : 0;
   } catch (e) {
     loadError = e;
     if (typeof showStatus === 'function') showStatus('ゴミ箱の読み込みに失敗しました', true);
   }
 
   function renderList() {
-    let html = '';
     if (loadError) {
-      html = `<div style="padding:16px;color:var(--red);text-align:center;">ゴミ箱の読み込みに失敗しました: ${esc(loadError.message || loadError)}</div>`;
-    } else if (items.length === 0) {
-      html = '<div style="padding:16px;color:var(--fg2);text-align:center;">ゴミ箱は空です</div>';
-    } else {
-      items.forEach((it, i) => {
-        const icon = it.type === 'folder' ? lucide('folder', 18) : lucide('page', 18);
-        const info = it.type === 'folder' ? `（${it.size}件）` : '';
-        const delDate = it.deleted_at ? new Date(it.deleted_at).toLocaleString('ja-JP') : '';
-        const origPath = it.original_path || '';
-        const rootName = it.trash_root_name || '';
-        html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid var(--border);font-size:13px;">
+      return `<div style="padding:16px;color:var(--red);text-align:center;">ゴミ箱の読み込みに失敗しました: ${esc(loadError.message || loadError)}</div>`;
+    }
+    const partialMessage = items.length
+      ? `一部の保存元を読み込めませんでした（失敗 ${partialFailed}件）。表示中の項目は操作できます。通信状態とDropboxのアクセス権を確認し、少し待ってからゴミ箱を開き直してください。`
+      : `保存元を読み込めなかったため、ゴミ箱が空かどうか確認できませんでした（失敗 ${partialFailed}件）。通信状態とDropboxのアクセス権を確認し、少し待ってからゴミ箱を開き直してください。`;
+    const partialHtml = partial
+      ? `<div role="alert" style="padding:10px 12px;color:var(--orange);background:color-mix(in srgb,var(--orange) 10%,var(--bg2));border-bottom:1px solid var(--border);line-height:1.5;">${esc(partialMessage)}</div>`
+      : '';
+    if (items.length === 0) {
+      return partialHtml || '<div style="padding:16px;color:var(--fg2);text-align:center;">ゴミ箱は空です</div>';
+    }
+    let html = partialHtml;
+    items.forEach((it, i) => {
+      const icon = it.type === 'folder' ? lucide('folder', 18) : lucide('page', 18);
+      const info = it.type === 'folder' ? `（${it.size}件）` : '';
+      const delDate = it.deleted_at ? new Date(it.deleted_at).toLocaleString('ja-JP') : '';
+      const origPath = it.original_path || '';
+      const rootName = it.trash_root_name || '';
+      html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid var(--border);font-size:13px;">
           <span>${icon}</span>
           <div style="flex:1;overflow:hidden;min-width:0;">
             <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.name)}${info}</div>
             <div style="font-size:11px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${rootName ? esc(rootName) + ' / ' : ''}${origPath ? '元: '+esc(origPath) : ''}${delDate ? ' | '+delDate : ''}</div>
           </div>
-          <button data-action="trashRestore(${i})" style="font-size:11px;padding:1px 6px;background:var(--bg3);color:var(--accent);border:1px solid var(--border);border-radius:3px;cursor:pointer;">復元</button>
-          <button data-action="trashDelete(${i})" style="font-size:11px;padding:1px 6px;background:var(--bg3);color:var(--red);border:1px solid var(--border);border-radius:3px;cursor:pointer;">削除</button>
+          <button data-action="trashRestore" data-args='${esc(JSON.stringify([i]))}' style="font-size:11px;padding:1px 6px;background:var(--bg3);color:var(--accent);border:1px solid var(--border);border-radius:3px;cursor:pointer;">復元</button>
+          <button data-action="trashDelete" data-args='${esc(JSON.stringify([i]))}' style="font-size:11px;padding:1px 6px;background:var(--bg3);color:var(--red);border:1px solid var(--border);border-radius:3px;cursor:pointer;">削除</button>
         </div>`;
-      });
-    }
+    });
     return html;
   }
 

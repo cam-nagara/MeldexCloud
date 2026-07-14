@@ -1,0 +1,133 @@
+.note-app {
+  grid-template-rows: 42px minmax(0, 1fr);
+}
+
+.note-title-input {
+  flex: 0 1 360px;
+  min-width: 120px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg, var(--sa-fg));
+  font-weight: 700;
+  padding: 5px 7px;
+}
+
+.note-title-input:focus {
+  outline: none;
+  border-color: var(--accent, var(--sa-accent));
+  background: var(--bg, var(--sa-bg));
+}
+
+.note-main {
+  position: relative;
+  overflow: auto;
+}
+
+.note-editor {
+  min-height: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px max(28px, 5vw) 120px;
+  color: var(--fg, var(--sa-fg));
+  line-height: 1.72;
+  font-size: 16px;
+  outline: none;
+  overflow-wrap: anywhere;
+}
+
+.note-editor:empty::before {
+  content: "ここに入力";
+  color: var(--ui-fg-muted, var(--sa-muted));
+}
+
+.note-editor h1,
+.note-editor h2,
+.note-editor h3 {
+  line-height: 1.35;
+}
+
+.note-editor a,
+.note-editor .auto-link {
+  color: var(--accent, var(--sa-accent));
+}
+
+.note-editor img,
+.note-editor video {
+  max-width: 100%;
+  height: auto;
+}
+
+.note-editor.vertical-writing {
+  writing-mode: vertical-rl;
+  max-width: none;
+  width: max-content;
+  min-width: 100%;
+  padding: 32px 80px;
+}
+
+.embed-media {
+  position: relative;
+  display: block;
+  max-width: 100%;
+  margin: 12px auto;
+}
+
+.note-media-controls {
+  position: fixed;
+  z-index: 80;
+  display: none;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 6px;
+  background: var(--bg2, var(--sa-bg2));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
+}
+
+.note-media-controls.visible {
+  display: flex;
+}
+
+.note-media-controls button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg, var(--sa-fg));
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.note-media-controls button:hover,
+.note-media-controls button.active {
+  background: var(--bg3, var(--sa-bg3));
+}
+
+.note-media-resize {
+  position: fixed;
+  z-index: 81;
+  display: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--accent, var(--sa-accent));
+  border-radius: 3px;
+  background: var(--bg, var(--sa-bg));
+  cursor: nwse-resize;
+}
+
+.note-media-resize.visible {
+  display: block;
+}
+
+@media (pointer: coarse), (max-width: 560px) {
+  .note-media-controls button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 10px;
+  }
+
+  .note-media-resize {
+    width: 24px;
+    height: 24px;
+  }
+}

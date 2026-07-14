@@ -81,7 +81,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   const type = propTypeConfig.type;
 
   if (type === 'image' && typeof createImagePropertyValueElement === 'function') {
-    row.appendChild(createImagePropertyValueElement(val, entityPath, propName, thumbSize, propTypeConfig));
+    row.appendChild(createImagePropertyValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options));
     return row;
   }
 

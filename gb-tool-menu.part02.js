@@ -40,8 +40,13 @@ function buildToolMenuItems(toolType) {
       export: [
         { label: 'シナリオ形式として保存...', action: () => { if (typeof promptSaveCurrentScriptNoteAs === 'function') promptSaveCurrentScriptNoteAs(); }, disabled: !hasFile },
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('scriptnote'); }, disabled: !hasFile },
+        { label: 'HTMLとして保存...', action: () => { if (typeof exportCurrentScriptNoteAsHtml === 'function') exportCurrentScriptNoteAsHtml(); }, disabled: !hasFile },
+        { label: 'Markdownとして保存...', action: () => { if (typeof exportCurrentScriptNoteAsMarkdown === 'function') exportCurrentScriptNoteAsMarkdown(); }, disabled: !hasFile },
         { separator: true },
-        { label: 'クリスタ送信', action: () => { if (typeof sn2CopyForClipStudio === 'function') sn2CopyForClipStudio(); }, disabled: !hasFile },
+        { label: 'CLIP STUDIO PAINTへ送信', action: () => { if (typeof sn2CopyForClipStudio === 'function') sn2CopyForClipStudio(); }, disabled: !hasFile },
+        ...(window.MeldexBManga?.isAvailable?.() ? [
+          { label: 'B-MANGAへ送信...', action: () => window.MeldexBManga.sendActiveScenario(), disabled: !hasFile },
+        ] : []),
       ],
     },
     database: {
@@ -62,6 +67,7 @@ function buildToolMenuItems(toolType) {
     board: {
       export: [
         { label: 'PNG画像として保存', action: () => { if (typeof bdExportImage === 'function') bdExportImage(); }, disabled: !hasFile },
+        { label: 'HTMLとして保存...', action: () => { if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.exportCurrentView('board'); }, disabled: !hasFile },
         { label: 'SVG画像として保存...', action: () => _exportFile('canvas', 'svg'), disabled: !hasFile },
         { label: 'Markdownとして保存...', action: () => _exportFile('canvas', 'md'), disabled: !hasFile },
       ],
@@ -234,6 +240,44 @@ function buildToolMenuItems(toolType) {
 
 function _showUnavailableToolMenuAction(label) {
   if (typeof showStatus === 'function') showStatus(`${label}を実行できませんでした`, true);
+}
+
+// ノート: 「インポート」→「Markdownファイルを開く...」
+async function importMarkdownFile() {
+  let path = '';
+  try {
+    path = await openFileDialog('Markdownファイルを開く', '', [['Markdown', '*.md'], ['すべてのファイル', '*.*']]);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('ファイル選択でエラーが発生しました: ' + (e?.userMessage || e?.message || e), true);
+    return;
+  }
+  if (!path) return;
+  if (typeof openPage !== 'function') { _showUnavailableToolMenuAction('Markdownファイルを開く'); return; }
+  const normalized = String(path).replace(/\\/g, '/');
+  const label = normalized.split('/').pop()?.replace(/\.md$/i, '') || 'Markdown';
+  await openPage(label, normalized);
+}
+
+// データベース: 「インポート」→「CSVからインポート...」（現在開いているシートにCSVの行を取り込む）
+async function importCsvToDb() {
+  const dbPath = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : null;
+  if (!dbPath) { _showUnavailableToolMenuAction('CSVからインポート'); return; }
+  let path = '';
+  try {
+    path = await openFileDialog('CSVファイルを選択', '', [['CSV', '*.csv'], ['すべてのファイル', '*.*']]);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('ファイル選択でエラーが発生しました: ' + (e?.userMessage || e?.message || e), true);
+    return;
+  }
+  if (!path) return;
+  try {
+    const result = await apiPost('/import-csv', { csv_path: path, db_path: dbPath });
+    const count = Number(result?.count || 0);
+    if (typeof showStatus === 'function') showStatus('CSVインポート完了（' + count + '件）');
+    if (typeof selectDatabase === 'function') selectDatabase(dbPath);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('CSVのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
+  }
 }
 
 function _getActiveToolComponent(toolType) {

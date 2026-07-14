@@ -1,3 +1,31 @@
+      persist();
+    };
+    header.addEventListener('pointerdown', (e) => {
+      // 削除 (x) / メニュー (…) ボタン上ではドラッグ開始しない
+      if (!_ann.active || e.target.closest('[data-ann-delete],button,.ann-note-resize-handle,.gb-fmt-popup')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const pt = _toLocalCoords(e.clientX, e.clientY);
+      dragState = { startX: pt.x, startY: pt.y, x: data.x || 0, y: data.y || 0 };
+      document.addEventListener('pointermove', onHeaderDragMove, { passive: false });
+      document.addEventListener('pointerup', onHeaderDragEnd);
+      document.addEventListener('pointercancel', onHeaderDragEnd);
+    });
+    _installNoteResize(note, data, persist);
+    if (typeof AnnotationStickyTail !== 'undefined') {
+      AnnotationStickyTail.install(note, { data, persist, getColor: () => item.color || '#c48080' });
+    }
+
+    const _deleteEmbeddedNote = () => {
+      const payload = _notePayload(data, editor, note);
+      payload.deleted = true;
+      payload.deletedAt = new Date().toISOString();
+      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+        item._pendingData = payload;
+        note.remove();
+        return;
+      }
+      if (_updateBoardAnnotation(item.id, { data: payload }, () => note.remove())) return;
       note.remove();
       _postToParent({ type: 'ann-delete-note', annId: item.id, data: payload });
     };
@@ -870,44 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
         await _saUpdateAnnotation(annId, { data: { ...data } });
       } catch (error) {
         Object.keys(data).forEach(key => { delete data[key]; });
-        Object.assign(data, previousData);
-        note.style.width = previousStyle.width;
-        note.style.minHeight = previousStyle.minHeight;
-        textarea.style.height = previousStyle.textareaHeight;
-        textarea.value = previousData.text || '';
-        _saReportSaveFailure(error);
-      }
-    };
-    note.appendChild(textarea);
-    let dx = 0, dy = 0;
-    note.addEventListener('pointerdown', (e) => {
-      if (_ann.active && _ann.tool === 'eraser') {
-        e.preventDefault();
-        e.stopPropagation();
-        _saDeleteNoteElement(note);
-        return;
-      }
-      if (e.target === textarea) return; e.preventDefault();
-      const rect = note.getBoundingClientRect();
-      dx = e.clientX - rect.left; dy = e.clientY - rect.top;
-      const previous = {
-        x: data.x || 0,
-        y: data.y || 0,
-        text: data.text || '',
-        width: data.width,
-        height: data.height,
-        left: note.style.left,
-        top: note.style.top,
-        noteWidth: note.style.width,
-        noteMinHeight: note.style.minHeight,
-        textareaHeight: textarea.style.height,
-      };
-      const onMove = (e2) => {
-        const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
-        note.style.left = pt.x + 'px';
-        note.style.top = pt.y + 'px';
-      };
-      const onUp = async () => {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
-        Object.assign(data, _saNotePayload(data, textarea, note), {
