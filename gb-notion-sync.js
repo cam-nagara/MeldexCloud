@@ -697,7 +697,12 @@
     syncBtn.disabled = true;
 
     try {
-      const res = await apiPost('/notion/sync', { folder_index: index, mode: 'push' });
+      const res = await runBackgroundJob('/notion/sync', { folder_index: index, mode: 'push' }, {
+        onProgress: (progress) => {
+          statusEl.textContent = formatJobProgress(progress, { unit: '件送信済み', defaultPhase: 'Notionへ送信中' });
+          statusEl.style.color = 'var(--accent)';
+        },
+      });
       const parts = _syncResultParts(res);
       const hasIssues = _syncResultHasIssues(res);
       statusEl.textContent = (hasIssues ? '同期に確認が必要 — ' : '同期完了 — ') + (parts.join(', ') || '変更なし') + _syncResultErrorMessage(res);
@@ -854,7 +859,7 @@
     }
     _syncInProgress = true;
     try {
-      const res = await apiPost('/notion/sync', { folder_index: currentIndex, mode: 'push' });
+      const res = await runBackgroundJob('/notion/sync', { folder_index: currentIndex, mode: 'push' });
       const total = _countValue(res.pushed);
       if (_syncResultHasIssues(res)) {
         showStatus(`Notion自動同期に未完了の項目があります${_syncResultErrorMessage(res)}`, true);

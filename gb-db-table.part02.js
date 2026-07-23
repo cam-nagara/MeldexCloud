@@ -494,13 +494,16 @@ function renderGroupHeaderRow(groupKey, names, visibleProps, groupByProp, ctx) {
   gtd.setAttribute('aria-label', `${groupByProp}: ${groupKey}、${names.length} 件`);
   gtd.colSpan = visibleProps.length + 2;
   const collapsed = _isGroupCollapsed(ctx, groupKey);
-  gtd.innerHTML = `<span class="group-toggle ${collapsed ? 'collapsed' : ''}">\u25BC</span>${esc(groupByProp)}: ${esc(groupKey)}<span class="group-count">${names.length} 件</span>`;
+  const dotHtml = typeof dbOptionColorDotHtmlForGroup === 'function'
+    ? dbOptionColorDotHtmlForGroup((ctx && ctx.dbPath) || (typeof state !== 'undefined' ? state.currentDbPath : ''), groupByProp, groupKey, ctx)
+    : '';
+  gtd.innerHTML = `<span class="group-toggle ${collapsed ? 'collapsed' : ''}">\u25BC</span>${dotHtml}${esc(groupByProp)}: ${esc(groupKey)}<span class="group-count">${names.length} 件</span>`;
   gtr.appendChild(gtd);
   return gtr;
 }
 
 function renderEntityCell(entityName, propName, ctx, options) {
-  const { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols } = options;
+  const { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, cellDisplayByCol } = options;
   const entityData = entitiesMap[entityName];
   const td = document.createElement('td');
   td.dataset.propName = propName;
@@ -511,6 +514,13 @@ function renderEntityCell(entityName, propName, ctx, options) {
   td.tabIndex = -1;
   td.setAttribute('aria-label', `${entityName} / ${propName}`);
   if ((selectedCols || []).includes(propName)) td.classList.add('col-selected');
+  // 列単位のセル折返し/切り詰め上書き（シート全体設定より優先。CSS側は td[data-cell-overflow] で特異度勝ち）。
+  // cellDisplayByCol が未設定(null)の大多数のケースでは即座に何もせず抜ける。
+  const colDisplay = typeof _dbColumnCellOverrideEntry === 'function' ? _dbColumnCellOverrideEntry(cellDisplayByCol, propName) : null;
+  if (colDisplay) {
+    td.dataset.cellOverflow = colDisplay.overflow;
+    td.style.setProperty('--db-cell-wrap-lines', String(colDisplay.lines));
+  }
   const rawValues = entityData && Object.prototype.hasOwnProperty.call(entityData, propName) && Array.isArray(entityData[propName])
     ? entityData[propName]
     : [];
@@ -707,13 +717,18 @@ function renderEntityCell(entityName, propName, ctx, options) {
   const cc = getCellColor(cellValues, propName, dbPath, ctx);
   if (cc) { td.style.background = cc.bg; td.style.color = cc.fg; }
 
+  // リンク型: サイドバーD&D（application/x-meldex-node）を受理する
+  if (ptc && ptc.type === 'link' && typeof decorateDbLinkCellDrop === 'function') {
+    decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath);
+  }
+
   // click は tbody 委譲で処理 (空セル/アクティブセル切替は _handleTbodyClick 内)
 
   return td;
 }
 
 function renderEntityRow(entityName, ctx, options) {
-  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned } = options;
+  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned, cellDisplayByCol } = options;
   const entityData = entitiesMap[entityName];
   const tr = document.createElement('tr');
   tr.dataset.entityName = entityName;
@@ -737,6 +752,13 @@ function renderEntityRow(entityName, ctx, options) {
   if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
   tdName.style.width = _entityW + 'px';
   tdName.style.minWidth = _entityW + 'px';
+  // エントリ名列の折り返し/切り詰め上書き（__entity__ キー）。通常列と同じ仕組み。
+  const _entityColDisplay = typeof _dbColumnCellOverrideEntry === 'function'
+    ? _dbColumnCellOverrideEntry(cellDisplayByCol, '__entity__') : null;
+  if (_entityColDisplay) {
+    tdName.dataset.cellOverflow = _entityColDisplay.overflow;
+    tdName.style.setProperty('--db-cell-wrap-lines', String(_entityColDisplay.lines));
+  }
 
   const nameMain = document.createElement('div');
   nameMain.className = 'entity-name-cell-main';
@@ -838,7 +860,7 @@ function renderEntityRow(entityName, ctx, options) {
 
   tr.appendChild(tdName);
 
-  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pLeftOffset: entityColumnPinned ? _entityW : 0 };
+  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pLeftOffset: entityColumnPinned ? _entityW : 0, cellDisplayByCol };
   visibleProps.forEach(propName => {
     tr.appendChild(renderEntityCell(entityName, propName, ctx, cellOpts));
   });

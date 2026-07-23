@@ -1,3 +1,49 @@
+// 共通タグ型セル表示: 値はタグID配列(カンマ区切り文字列)。タグの名前・色は
+// .meldex/global-tags.json 側のカタログを非同期取得して解決する（キャッシュ付き）。
+// 解除済み/削除済みのタグIDは表示をスキップする（積極的な掃除はしない）。
+function createCommonTagsValueElement(rawValue, entityPath, propName) {
+  const tagIds = String(rawValue || '').split(',').map(s => s.trim()).filter(Boolean);
+  const container = document.createElement('div');
+  container.className = 'multi-select-tags common-tags-cell';
+  container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;cursor:pointer;min-height:16px;';
+  const api = (typeof window !== 'undefined') ? window.MeldexGlobalTags : null;
+  if (tagIds.length && api && typeof api.loadTagsCached === 'function') {
+    api.loadTagsCached().then(data => {
+      if (!container.isConnected) return;
+      const allTags = Array.isArray(data?.tags) ? data.tags : [];
+      const groups = Array.isArray(data?.groups) ? data.groups : [];
+      const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
+      const tagsById = Object.fromEntries(allTags.map(t => [String(t.id), t]));
+      container.textContent = '';
+      tagIds.forEach(id => {
+        const tag = tagsById[id];
+        if (!tag) return; // 削除済み等の無効IDは表示をスキップ
+        const chip = document.createElement('span');
+        chip.className = 'multi-select-tag common-tags-tag';
+        chip.textContent = tag.name || '';
+        const color = typeof api.effectiveTagColor === 'function' ? api.effectiveTagColor(tag, groupsById) : '';
+        if (color && typeof applyDbOptionChipColor === 'function') applyDbOptionChipColor(chip, color);
+        container.appendChild(chip);
+      });
+    }).catch(() => {});
+  }
+  container.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const td = container.closest('td[data-prop-name]');
+    const tr = container.closest('tr[data-entity-name]');
+    if ((e.shiftKey || e.ctrlKey || e.metaKey) && td && typeof selectDbCellFromPointer === 'function') {
+      selectDbCellFromPointer(td, e);
+      return;
+    }
+    if (td && typeof setActiveCell === 'function') setActiveCell(td, { scroll: false });
+    if (td && tr && typeof startCellInlineAdd === 'function') {
+      const rowEntityName = tr.dataset.entityName || entityPath.replace(/\.md$/, '').split('/').pop();
+      startCellInlineAdd(td, entityPath, rowEntityName, propName);
+    }
+  });
+  return container;
+}
+
 function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options = {}) {
   const dbPath = options.dbPath || _valueEditorDbPath(entityPath);
   const filterMode = options.filter ?? options.ctx?.filter ?? (dbPath === state.currentDbPath ? state.filter : 'disabled');
@@ -237,11 +283,19 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     return row;
   }
 
+  if (type === 'link' && typeof createDbLinkValueElement === 'function') {
+    row.appendChild(createDbLinkValueElement(val, entityPath, propName, thumbSize, propTypeConfig, { ...options, dbPath }));
+    return row;
+  }
+
   if (type === 'select') {
     const span = document.createElement('span');
     span.className = 'cell-select-val';
     span.textContent = v;
     span.style.cursor = 'pointer';
+    if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
+      applyDbOptionChipColor(span, getDbOptionColor(propTypeConfig, v));
+    }
     span.addEventListener('click', (e) => {
       e.stopPropagation();
       const td = span.closest('td[data-prop-name]');
@@ -273,6 +327,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const tag = document.createElement('span');
       tag.className = 'multi-select-tag';
       tag.textContent = t;
+      if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
+        applyDbOptionChipColor(tag, getDbOptionColor(propTypeConfig, t));
+      }
       tagContainer.appendChild(tag);
     });
     tagContainer.addEventListener('click', (e) => {
@@ -290,6 +347,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       }
     });
     row.appendChild(tagContainer);
+    return row;
+  }
+
+  if (type === 'common-tags') {
+    row.appendChild(createCommonTagsValueElement(v, entityPath, propName));
     return row;
   }
 

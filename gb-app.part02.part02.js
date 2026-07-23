@@ -225,10 +225,27 @@ function getMyRoleForPath(filePath) {
   }
 })();
 
+// 起動時に正本「スタッフ管理シート」へ自分の行を fill-only 登録する
+// （ユーザーアカウント一元管理 計画書 Phase 2、§5.6）。行が既に存在するなら
+// 一切上書きしない（管理者がシートで編集した値は同期に負けない契約）。
+// 正本シート自体が未設定の場合はここで無ダイアログ自動作成される
+// （計画書§5.1「起動時同期」が自動作成のトリガーの一つ）。
+async function _primeStaffRegistrySelfUpsert() {
+  if (!window.MeldexUserRegistry) return;
+  const me = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
+  if (!me || me === 'anonymous') return;
+  try {
+    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true });
+  } catch (e) {
+    // ソースフォルダ未設定・オフライン等では起動処理を止めない。
+  }
+}
+
 async function init() {
   const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
   _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
+  _runStartupBackground('staff-registry-self-upsert', _primeStaffRegistrySelfUpsert());
 
   try {
     const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
@@ -524,7 +541,7 @@ function showView(viewName, ctx) {
     sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
   } else if (resolvedViewName === 'scriptnote') {
     if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
-    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
   } else {
     sc.textContent = '';
   }

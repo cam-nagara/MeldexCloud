@@ -224,20 +224,17 @@ function renderScriptNoteRulesTab(targetEl = null) {
   let html = '';
 
   html += '<div class="rules-section">';
-  html += '<div class="rules-section-title">入力設定</div>';
-  html += '<div class="rules-section-help">シナリオエディタで使う候補名と基本書式を設定します。ここではキャラ・特殊キャラ・行タイプだけを扱います。</div>';
+  html += `<div class="rules-section-title">入力設定 ${fieldHelp('シナリオエディタで使う候補名と基本書式を設定します。ここではキャラ・特殊キャラ・行タイプだけを扱います。')}</div>`;
   html += `<div class="rules-type-row rules-type-row--top">
-    <span class="rules-type-label rules-type-label--fixed">現在の書式</span>
+    <span class="rules-type-label rules-type-label--fixed">現在の書式 ${fieldHelp('表示方向・折返し・幅・行間・字間・フォントはシナリオエディタのツールバーで調整します。')}</span>
     <div class="rules-current-body">
       <div>シナリオ書式: <strong class="rules-current-name">${esc(getScenarioNoteLayoutLabel())}</strong></div>
-      <div>表示方向・折返し・幅・行間・字間・フォントはシナリオエディタのツールバーで調整します。</div>
     </div>
   </div>`;
   html += '</div>';
 
   html += '<div class="rules-section">';
-  html += '<div class="rules-section-title">キャラ設定</div>';
-  html += '<div class="rules-section-help">キャラ候補と基本書式です。シナリオエディタのキャラ選択候補へ反映されます。</div>';
+  html += `<div class="rules-section-title">キャラ設定 ${fieldHelp('キャラ候補と基本書式です。シナリオエディタのキャラ選択候補へ反映されます。')}</div>`;
   const charaDefaults = _rulesGetCharaStyleDefaults();
   const globalAutoTarget = _rulesGetCharaAutoColorTarget();
   const globalBold = (charaDefaults.fontWeight || 'bold') === 'bold';
@@ -295,8 +292,7 @@ function renderScriptNoteRulesTab(targetEl = null) {
   html += '</div>';
 
   html += '<div class="rules-section">';
-  html += '<div class="rules-section-title">特殊キャラ設定</div>';
-  html += '<div class="rules-section-help">ト書きやナレーションなど、シナリオ用の補助行候補です。</div>';
+  html += `<div class="rules-section-title">特殊キャラ設定 ${fieldHelp('ト書きやナレーションなど、シナリオ用の補助行候補です。')}</div>`;
   SPECIAL_CHARA.forEach((sc, i) => {
     const style = _rulesEnsureSpecialStyle(sc);
     const bgCol = style.bgColor || '';
@@ -327,8 +323,7 @@ function renderScriptNoteRulesTab(targetEl = null) {
   html += '</div>';
 
   html += '<div class="rules-section">';
-  html += '<div class="rules-section-title">行タイプ設定</div>';
-  html += '<div class="rules-section-help">柱や区切りなど、シナリオの段落種別候補です。色と書式に加えて接頭辞や区切り線も設定できます。</div>';
+  html += `<div class="rules-section-title">行タイプ設定 ${fieldHelp('柱や区切りなど、シナリオの段落種別候補です。色と書式に加えて接頭辞や区切り線も設定できます。')}</div>`;
   PAGE_SETTINGS.forEach((ps, i) => {
     const style = _rulesEnsureRowTypeStyle(ps);
     const behavior = ensurePageSettingBehavior(ps);

@@ -30,7 +30,6 @@ function _normalizeDetailTab(tab) {
     'sn2-ruby',
     'sn2-rowset',
     'file-style',
-    'tag-management',
   ]);
   return validTabs.has(tab) ? tab : null;
 }
@@ -46,7 +45,7 @@ function _resolveDetailTabForType(type, defaultTab) {
   if (cur === 'publish' && publishTypes.has(type)) return cur;
   const compatible = {
     page: ['note-editor', 'publish'],
-    folder: ['note-editor', 'tag-management'],
+    folder: ['note-editor'],
     database: ['db-property-settings', 'publish'],
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'],
     calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
@@ -80,7 +79,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish', 'tag-management'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -102,10 +101,6 @@ function switchDetailTab(tab) {
   }
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
-  }
-  if (tab === 'tag-management' && typeof renderTagManagementTab === 'function') {
-    const container = document.getElementById('detail-tab-tag-management');
-    if (container) renderTagManagementTab(container);
   }
   try {
     document.dispatchEvent(new CustomEvent('meldex:detail-tab-switched', { detail: { tab } }));
@@ -136,9 +131,9 @@ function _detailTabShellHtml() {
   return `
     <nav id="detail-tab-bar" class="gb-tabbar" role="tablist" aria-label="オプションパネルのタブ">
       ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', 'エディタ')}
-      ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', 'プロパティ設定')}
+      ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', '列設定')}
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
-      ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジューラー設定')}
+      ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジュール設定')}
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
       ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'カード')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
@@ -149,7 +144,6 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('board-line-style', 'detail-tab-board-style detail-tab-board-line-style', 'ラインスタイル')}
       ${_detailTabButtonHtml('board-depth-style', 'detail-tab-board-style detail-tab-board-depth-style', '階層別スタイル')}
       ${_detailTabButtonHtml('backlinks', 'detail-tab-backlinks', 'バックリンク')}
-      ${_detailTabButtonHtml('tag-management', 'detail-tab-tag-management', 'タグ管理')}
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
@@ -168,7 +162,6 @@ function _detailTabShellHtml() {
     <div id="detail-tab-file-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-backlinks" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-publish" class="gb-panel-body-scroll" hidden></div>
-    <div id="detail-tab-tag-management" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-empty" class="gb-empty-placeholder">選択中の項目がありません</div>`;
 }
 
@@ -419,16 +412,6 @@ function clearBoardDetailTabs() {
   showBoardTabs(false);
 }
 
-// タグ管理タブ（エクスプローラー専用）の表示切替
-function showTagManagementTab(visible) {
-  const rpDetail = document.getElementById('rp-detail');
-  if (rpDetail) _ensureDetailTabShell(rpDetail);
-  document.querySelectorAll('.detail-tab-tag-management').forEach(t => { t.hidden = !visible; });
-  if (!visible && _currentDetailTab === 'tag-management') {
-    switchDetailTab(null);
-  }
-}
-
 // ファイルテーマ タブ（全エディタ共通）の表示切替
 function showFileStyleTab(visible) {
   const rpDetail = document.getElementById('rp-detail');
@@ -628,8 +611,7 @@ const _FS_FIELDS = {
       { key: 'baseTextLineHeightV',   label: '縦 行間',         type: 'number', unit: '',   min: 1, max: 3,  step: 0.1, applyCustom: 'textSpacing' },
       { key: 'baseTextLetterSpacingH',label: '横 字間',         type: 'number', unit: 'em', min: -0.2, max: 1, step: 0.05, applyCustom: 'textSpacing' },
       { key: 'baseTextLetterSpacingV',label: '縦 字間',         type: 'number', unit: 'em', min: -0.2, max: 1, step: 0.05, applyCustom: 'textSpacing' },
-      { key: 'rubyFontSize',         label: 'ルビ サイズ',      type: 'number', unit: 'em', min: 0.3, max: 1.5, step: 0.05, cssVar: '--sn2-ruby-size',       target: 'scroll' },
-      { key: 'rubyOffset',           label: 'ルビ オフセット',  type: 'number', unit: 'px', min: -8, max: 8, step: 1,      cssVar: '--sn2-ruby-offset',     target: 'scroll' },
+      { key: 'rubyPresentation',     label: 'ルビ表示',          type: 'rubyPresentation' },
       { key: 'spreadBorderColor',    label: '見開き区切り色',   type: 'color',  cssVar: '--sn2-spread-border-color', target: 'editor' },
       { key: 'spreadBorderWidth',    label: '見開き区切り太さ', type: 'pxtext', cssVar: '--sn2-spread-border-width', target: 'editor' },
       { key: 'wrapMode',             label: '折り返し',         type: 'toggle', on: true, off: false, defaultOn: true, applyCustom: 'wrapMode' },
@@ -1105,6 +1087,16 @@ function _fsIsToggleOn(field, cur) {
 
 function _fsBuildControl(field, adapter, rowLabel) {
   const cur = _fsNormalizeFieldValue(field, _fsReadFieldValue(field, adapter));
+  if (field.type === 'rubyPresentation') {
+    const editor = typeof _getScriptNoteEditorForFileStyle === 'function' ? _getScriptNoteEditorForFileStyle() : null;
+    if (editor && typeof MeldexRubySettingsUI !== 'undefined') {
+      return MeldexRubySettingsUI.createEditorSettings(editor, { scope: 'file-theme' });
+    }
+    const unavailable = document.createElement('span');
+    unavailable.className = 'fs-muted';
+    unavailable.textContent = 'シナリオを開くと設定できます';
+    return unavailable;
+  }
   if (field.type === 'boardBgColorReset') {
     const btn = document.createElement('button');
     btn.type = 'button';

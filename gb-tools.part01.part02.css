@@ -59,12 +59,75 @@
 }
 #entity-parent-link a:hover { color: var(--accent); text-decoration: underline; }
 
-/* エントリプロパティグリッド (複数段表示・D&D 並べ替え) */
+/* エントリプロパティグリッド (複数段表示・D&D 並べ替え・開閉・列幅設定)
+   .entity-props-grid-container は renderEntityPropsGridInto がフルページ版(#entity-props-grid)・
+   サブパネル版(.gb-subpanel-entity-props)双方へ付与する共通クラス。列幅は --entity-prop-col-width
+   (既定300px, 列幅設定ポップアップで上書き) で揃える。 */
+.entity-props-grid-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--entity-prop-col-width, 300px), 1fr));
+  gap: 4px 12px;
+}
 #entity-props-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--entity-prop-col-width, 300px), 1fr));
   gap: 4px 12px;
   padding: 6px 12px 12px;
+}
+/* プロパティ一覧ヘッダー (開閉トグル + 列幅設定ボタン)。グリッドの先頭行として全幅を占める。 */
+.entity-props-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+.entity-props-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 2px;
+  border-radius: 3px;
+}
+.entity-props-toggle:hover { color: var(--fg); background: var(--bg3); }
+.entity-props-toggle-chevron { display: inline-flex; align-items: center; justify-content: center; transition: transform 0.15s; }
+.entity-props-toggle[aria-expanded="true"] .entity-props-toggle-chevron { transform: rotate(90deg); }
+.entity-props-col-width-btn { margin-left: auto; }
+@media (pointer: coarse), (max-width: 640px) {
+  .entity-props-toggle,
+  .entity-props-col-width-btn {
+    min-height: 44px !important;
+    min-width: 44px !important;
+  }
+}
+/* プロパティ本体 (並び替えツールバー + グループ見出し + カード)。display:contents で
+   ラッパー自体はレイアウトに関与させず、子要素を外側グリッドの直接の子として複数列に配置する。 */
+.entity-props-body { display: contents; }
+/* 列幅設定ポップアップ (.gb-context-menu 共通クラスに相乗り)。.gb-context-menu.entity-props-col-width-popup
+   と複合セレクタにして、CSS読み込み順に依存せず確実に padding 等を上書きする。 */
+.gb-context-menu.entity-props-col-width-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+  padding: 10px 12px;
+}
+.entity-props-col-width-popup-title { font-size: 12px; color: var(--fg2); }
+.entity-props-col-width-popup-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--fg); }
+.entity-props-col-width-popup-row input[type="number"] {
+  width: 72px;
+  padding: 3px 6px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
 }
 .entry-prop-card {
   display: flex; align-items: flex-start; gap: 6px;

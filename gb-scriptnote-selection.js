@@ -30,6 +30,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _guardRowBulkAction() {
     if (this._isRowSelectionOwnerActive()) return true;
     if (this._rowSelection) this._rowSelection.clear();
+    if (this._gridCellSelection) this._gridCellSelection.clear();
     if (this._textCellSelection) this._textCellSelection.clear();
     if (this._rowBulkBar?.isConnected) this._rowBulkBar.remove();
     this._rowBulkBar = null;
@@ -91,6 +92,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _toggleRowSelection(rowId, idx, shiftKey, ctrlKey) {
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
     if (this._activeCellRowId) this._clearActiveCell?.();
@@ -122,6 +124,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _invertRowSelection() {
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._rowSelection) this._rowSelection = new Set();
     this._sanitizeRowSelection();
@@ -134,6 +137,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _selectAllRows() {
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._rowSelection) this._rowSelection = new Set();
     this._rowSelection.clear();
@@ -325,6 +329,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _setRowSelectionState(rowId, idx, selected) {
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
     if (this._activeCellRowId) this._clearActiveCell?.();
@@ -447,6 +452,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _setRoleCellRange(fromIdx, toIdx, baseSet = null) {
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._rowSelection?.size) this._clearRowSelection();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._roleCellSelection) this._roleCellSelection = new Set();
@@ -463,6 +469,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _selectRoleCell(rowId, idx, options = {}) {
     if (!rowId || idx < 0) return;
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._rowSelection?.size) this._clearRowSelection();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (!this._roleCellSelection) this._roleCellSelection = new Set();
@@ -618,6 +625,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const crossCol = isVertical
       ? (key === 'ArrowUp' ? 'prev-col' : key === 'ArrowDown' ? 'next-col' : null)
       : (key === 'ArrowLeft' ? 'prev-col' : key === 'ArrowRight' ? 'next-col' : null);
+    // Tab はその行のタイプ選択メニューを開く（Shift+Tab は従来どおり前のセルへ移動）
+    if (key === 'Tab' && !e.shiftKey) {
+      e.preventDefault(); e.stopPropagation();
+      this._selectRoleCell(rowId, idx);
+      this._showRoleMenu(roleBtn);
+      return true;
+    }
     if (crossCol || key === 'Tab') {
       e.preventDefault(); e.stopPropagation();
       this._activeCellRowId = rowId;

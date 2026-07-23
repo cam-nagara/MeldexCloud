@@ -72,9 +72,8 @@
         </label>`;
       }).join('');
       field.innerHTML = `
-        <label>出退勤状況に表示するワークスペース</label>
-        <div class="cal-option-members" data-cal-attendance-source-list>${rows}</div>
-        <div class="gb-section-desc">チェックを外したワークスペースのメンバーは、出退勤状況に表示しません。</div>`;
+        <label>出退勤状況に表示するワークスペース ${fieldHelp('チェックを外したワークスペースのメンバーは、出退勤状況に表示しません。')}</label>
+        <div class="cal-option-members" data-cal-attendance-source-list>${rows}</div>`;
       field.querySelectorAll('[data-cal-attendance-source]').forEach(input => {
         input.addEventListener('change', () => {
           const before = _calAttCaptureSourceSettingsHistory();

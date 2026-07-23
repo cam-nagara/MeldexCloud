@@ -846,21 +846,21 @@ function _appendSelectField(parent, labelText, options, value, fieldOptions = {}
 function _renderSmartDbWidgetConfig(container, type, cfg) {
   container.innerHTML = '';
   if (type === 'stat') {
-    container.appendChild(_configText('wc-prop', 'プロパティ（空=エントリ数）', cfg.property || ''));
+    container.appendChild(_configText('wc-prop', '列（空=エントリ数）', cfg.property || ''));
     container.appendChild(_configSelect('wc-agg', '集計', ['count', 'sum', 'average', 'min', 'max'], cfg.aggregation || 'count'));
   } else if (type === 'progress') {
-    container.appendChild(_configText('wc-done-prop', '完了判定プロパティ', cfg.doneFilter?.property || '', '例: ステータス'));
+    container.appendChild(_configText('wc-done-prop', '完了判定列', cfg.doneFilter?.property || '', '例: ステータス'));
     container.appendChild(_configText('wc-done-val', '完了判定値', cfg.doneFilter?.value || '', '例: 掲載済み'));
   } else if (type === 'chart') {
     container.appendChild(_configSelect('wc-chart-type', 'チャートタイプ', ['bar', 'pie', 'line'], cfg.chartType || 'bar'));
-    container.appendChild(_configText('wc-xprop', 'X軸プロパティ', cfg.xProperty || ''));
-    container.appendChild(_configText('wc-yprop', 'Y軸プロパティ（任意）', cfg.yProperty || ''));
+    container.appendChild(_configText('wc-xprop', 'X軸の列', cfg.xProperty || ''));
+    container.appendChild(_configText('wc-yprop', 'Y軸の列（任意）', cfg.yProperty || ''));
     container.appendChild(_configSelect('wc-yagg', 'Y軸集計', ['count', 'sum', 'average', 'min', 'max'], cfg.yAggregation || 'count'));
   } else if (type === 'list') {
-    container.appendChild(_configText('wc-filter-prop', 'フィルタプロパティ', cfg.filter?.property || ''));
+    container.appendChild(_configText('wc-filter-prop', 'フィルタ列', cfg.filter?.property || ''));
     container.appendChild(_configSelect('wc-filter-op', 'フィルタ演算子', ['equals', 'not_equals', 'contains', 'not_contains', 'empty', 'not_empty'], cfg.filter?.operator || 'equals'));
     container.appendChild(_configText('wc-filter-val', 'フィルタ値', cfg.filter?.value || ''));
-    container.appendChild(_configText('wc-display-props', '表示プロパティ（カンマ区切り）', (cfg.displayProperties || []).join(', ')));
+    container.appendChild(_configText('wc-display-props', '表示列（カンマ区切り）', (cfg.displayProperties || []).join(', ')));
     container.appendChild(_configText('wc-max', '最大表示数', cfg.maxItems || 10));
   }
 }

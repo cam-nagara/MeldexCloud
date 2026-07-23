@@ -138,7 +138,7 @@
     syncInFlight = true;
     setSyncBusy(true);
     try {
-      const data = await apiPost('/x-bookmarks/sync', { mode: 'incremental', max_results: 100 }, { silentError: true });
+      const data = await runBackgroundJob('/x-bookmarks/sync', { mode: 'incremental', max_results: 100 });
       const total = (data?.created || 0) + (data?.updated || 0);
       if (total > 0 && typeof showStatus === 'function') {
         showStatus(`Xブックマーク自動保存: 新規${data.created || 0} / 更新${data.updated || 0}`);
@@ -232,11 +232,19 @@
       }
       setStatus('Xブックマークを保存しています...', false);
       const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
-      const data = await apiPost('/x-bookmarks/sync', { mode: mode || 'incremental', max_results: maxResults }, { silentError: true });
+      const data = await runBackgroundJob(
+        '/x-bookmarks/sync',
+        { mode: mode || 'incremental', max_results: maxResults },
+        {
+          onProgress: (progress) => {
+            setStatus(formatJobProgress(progress, { unit: '件保存済み', defaultPhase: '取得中' }), false);
+          },
+        }
+      );
       await loadStatus({ preserveStatus: true });
       setStatus(syncSummary(data, '保存しました。'), false);
     } catch (err) {
-      const payload = err.payload?.detail;
+      const payload = err.errorDetail || err.payload?.detail;
       if (payload?.retry_at) {
         setStatus(`${payload.message || 'X APIの取得上限に達しました'} 再実行目安: ${payload.retry_at}`, true);
         return;
@@ -276,7 +284,7 @@
     }
     container.dataset.rendered = '1';
     container.innerHTML = `
-      <div class="gb-section-desc">Xに接続すると、自分のXブックマークを画像つきのシートエントリとして保存できます。投稿、フォロー、いいね、DM送信は行いません。</div>
+      <div class="gb-section-desc">X連携では投稿・フォロー・いいね・DM送信は行いません。 ${fieldHelp('Xに接続すると、自分のXブックマークを画像つきのシートエントリとして保存できます。')}</div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
         <span id="x-bookmarks-connection" class="gb-section-desc">状態を確認中...</span>
         <span id="x-bookmarks-client-state" class="gb-section-desc"></span>
@@ -295,10 +303,9 @@
         </select>
       </label>
       <label class="gb-field">
-        <span class="gb-label">X接続用Client ID</span>
-        <input id="x-bookmarks-client-id" class="gb-input" type="text" autocomplete="off" placeholder="X Developer Portal の OAuth 2.0 Client ID">
+        <span class="gb-label">X接続用Client ID ${fieldHelp('Xブックマークを読むための接続IDです')}</span>
+        <input id="x-bookmarks-client-id" class="gb-input" type="text" autocomplete="off" placeholder="X Developer Portal で発行される接続ID">
       </label>
-      <div class="gb-section-desc">Xブックマークを読むためのOAuth 2.0 Client IDです。Client Secretは使いません。</div>
       <details class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;">
         <summary style="cursor:pointer;color:var(--fg);font-weight:600;">詳細接続設定</summary>
         <label class="gb-field" style="margin-top:8px;">

@@ -1,26 +1,28 @@
     addMenuItem('名前を変更...', async () => {
       closeTreeContextMenu();
       const roots = await apiFetch('/outliner-roots');
+      const baseRoots = _cloneOutlinerRootsForBase(roots);
       const root = roots.find(r => r.path === nodeData.path);
       if (!root) return;
       const newName = await cfPrompt('表示名を入力:', root.name);
       if (!newName) return;
       root.name = newName;
-      await apiPut('/outliner-roots', { roots });
+      await _putOutlinerRootsWithBase(roots, baseRoots);
       await loadOutliner();
       showStatus('名前を変更しました');
     }, null, 'pencil');
     addMenuItem('チーム管理...', async () => {
       closeTreeContextMenu();
-      showSettingsModal({ panel: 'ユーザー', teamFolder: nodeData.path });
+      showSettingsModal({ panel: 'ユーザー' });
     }, null, 'users');
     addSep();
     addMenuItem('このソースフォルダを削除', async () => {
       closeTreeContextMenu();
       if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」をフォルダツリーから削除しますか？\n（ファイルは削除されません）')) return;
       const roots = await apiFetch('/outliner-roots');
+      const baseRoots = _cloneOutlinerRootsForBase(roots);
       const newRoots = roots.filter(r => r.path !== nodeData.path);
-      await apiPut('/outliner-roots', { roots: newRoots });
+      await _putOutlinerRootsWithBase(newRoots, baseRoots);
       await loadOutliner();
       showStatus('ソースフォルダを削除しました');
     }, null, 'trash2');
@@ -203,6 +205,47 @@ function applyColorToSelection(color) {
   showStatus(color ? '色を設定しました' : '色をリセットしました');
 }
 
+/* ==============================
+   タイムアウト事後確認（作成・リネーム共通）
+   ============================== */
+// APIタイムアウト時のポーリング間隔。合計30秒で打ち切る
+const OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS = [2000, 4000, 8000, 16000];
+// 同一キーの事後確認ポーリングが二重に走らないようにする
+const _outlinerPostTimeoutConfirmInFlight = new Set();
+
+// E2Eから待機時間を短縮できるようにする（通常はundefinedで既定値）
+function _outlinerPostTimeoutConfirmDelays() {
+  const o = window.__outlinerPostTimeoutConfirmDelaysForE2E;
+  return (Array.isArray(o) && o.length) ? o : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
+}
+
+// 親フォルダの一覧をフロントキャッシュを避けて取得する（root/sourceIdはcontextNodeElの祖先から推定）
+async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl) {
+  const sourceId = contextNodeEl?._nodeData?.sourceId || '';
+  let rootPath = '';
+  let cur = contextNodeEl || null;
+  while (cur) {
+    if (cur._nodeData?._isRoot) { rootPath = cur._nodeData.path; break; }
+    cur = cur.parentElement ? cur.parentElement.closest('.tree-node') : null;
+  }
+  const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
+  const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
+  try {
+    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true',
+      { skipBrowseCache: true, cache: 'reload' });
+  } catch {
+    return null;
+  }
+}
+
+// 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
+// oldDisplayName は拡張子を含まない表示名（/browse の name と同じ規約）を渡すこと
+function _outlinerFindRenamedItem(items, oldDisplayName, newName) {
+  if (!Array.isArray(items)) return null;
+  if (oldDisplayName && oldDisplayName !== newName && items.some(it => it && it.name === oldDisplayName)) return null;
+  return items.find(it => it && it.name === newName) || null;
+}
+
 function _resolveOutlinerCreateInsertTarget(parentPath, options) {
   const expandUnloaded = options?.expandUnloaded !== false;
   let container;
@@ -226,6 +269,9 @@ function _resolveOutlinerCreateInsertTarget(parentPath, options) {
     if (!container && _homeFolderPath && parentPath === _homeFolderPath) {
       container = document.getElementById('body-home');
     }
+    // 親ノードがDOM上に見つからず、ホームフォルダにも該当しない場合はルートへ誤挿入せず
+    // 「挿入先不明」を返す。呼び出し元は誤挿入せず全体再読込に委ねる
+    if (!container && !deferTreeInsert) return { container: null, deferTreeInsert: false };
   }
   if (!container && !deferTreeInsert) container = document.getElementById('outliner-tree');
   return { container, deferTreeInsert };
@@ -290,6 +336,65 @@ function _openOutlinerCreatedNode(nd, name) {
   else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
 }
 
+// 追加API呼び出し前の既存子ノード名（事後確認での新規判定に使用）
+function _outlinerSnapshotChildNames(container) {
+  const names = new Set();
+  container.querySelectorAll(':scope > .tree-node').forEach(node => {
+    const d = node._nodeData;
+    if (d && !d._pendingCreate && d.name) names.add(d.name);
+  });
+  return names;
+}
+
+// 一覧からタイプが一致し事前集合に無い項目を探す（作成の事後確認用）。
+// 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
+function _outlinerFindNewItemInListing(items, type, existingNames) {
+  if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
+  return items.find(it => it && it.type === type && it.name && !existingNames.has(it.name)) || null;
+}
+
+// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
+function _outlinerApplyCreateSuccess(pendingNode, found) {
+  showStatus(`「${found.name}」を作成しました`);
+  if (!pendingNode || !pendingNode.parentNode) return;
+  const newNode = createTreeNodeFromBrowse(found);
+  pendingNode.replaceWith(newNode);
+  _selectOutlinerCreateNode(newNode);
+}
+
+// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+  if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+  await loadOutliner();
+  _openOutlinerCreatedNode(nd, name);
+}
+
+// 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
+async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames) {
+  const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
+  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
+  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  try {
+    showStatus('作成に時間がかかっています。結果を確認中…');
+    const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
+    for (const delay of _outlinerPostTimeoutConfirmDelays()) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+      const found = _outlinerFindNewItemInListing(items, type, existingNames);
+      if (found) { _outlinerApplyCreateSuccess(pendingNode, found); return; }
+    }
+    if (typeof loadOutliner === 'function') await loadOutliner();
+    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+    const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+    const found = _outlinerFindNewItemInListing(items, type, existingNames);
+    if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+    if (found) showStatus(`「${found.name}」を作成しました`);
+    else showStatus('作成の結果を確認できませんでした。フォルダツリーをご確認ください', true);
+  } finally {
+    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
+  }
+}
+
 // アイテムを指定パス配下に追加（部分更新、チラつき防止）
 async function addItemAt(parentPath, type) {
   if (_isCloudPhase1BlockedCreateType(type)) {
@@ -299,7 +404,9 @@ async function addItemAt(parentPath, type) {
   const label = '無題';
   const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false });
   let pendingNode = null;
+  let existingNames = null;
   if (!target.deferTreeInsert && target.container) {
+    existingNames = _outlinerSnapshotChildNames(target.container);
     pendingNode = _createOutlinerPendingCreateNode(type, label);
     _insertOutlinerCreateNode(target.container, pendingNode);
     pendingNode.scrollIntoView({ block: 'nearest' });
@@ -317,23 +424,34 @@ async function addItemAt(parentPath, type) {
     if (!insertTarget.deferTreeInsert && !insertTarget.container?.isConnected) {
       insertTarget = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
     }
+    const nd = res.node;
+    const name = nd.name || nd.label || label;
+    // 挿入先が最後まで解決できない場合はルート等へ誤挿入せず全体再読込に委ねる
+    if (!insertTarget.deferTreeInsert && !insertTarget.container) {
+      await _outlinerCreateFallbackToReload(pendingNode, nd, name);
+      return;
+    }
     const newNode = insertTarget.deferTreeInsert ? null : createTreeNodeFromBrowse(res.node);
 
     if (!insertTarget.deferTreeInsert && newNode) {
       if (pendingNode && pendingNode.parentNode) pendingNode.replaceWith(newNode);
       else _insertOutlinerCreateNode(insertTarget.container, newNode);
+      // 挿入直後に切断されている場合の軽い保険
+      if (!newNode.isConnected) loadOutliner();
     }
 
     if (!insertTarget.deferTreeInsert) newNode.scrollIntoView({ block: 'nearest' });
-    const nd = res.node;
-    const name = nd.name || nd.label || label;
     // 選択状態にする
     if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
     // コンテンツを開く
     _openOutlinerCreatedNode(nd, name);
   } catch (e) {
-    if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-    showStatus((e && e.message) || '追加に失敗しました', true);
+    if (e && e.isTimeout) {
+      await _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames);
+    } else {
+      if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+      showStatus((e && e.message) || '追加に失敗しました', true);
+    }
   }
 }
 

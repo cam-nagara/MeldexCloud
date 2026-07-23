@@ -51,95 +51,30 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     };
 
-    // タイプ管理に登録されているタイプのみ表示。
-    // 設定駆動: オプション設定の isBreak/isSummary でグルーピング、それ以外はすべて「タイプ」へ
-    const registered = new Set(this.doc.characters.map(c => c.name));
-    const groups = { normal: [], summary: [], break: [] };
+    // タイプ管理に登録されているタイプを、件数に関わらずすべてフラット表示する。
+    // （2026-07-17 ユーザー指示: カテゴリサブメニュー（タイプ/プロット/区切り）へ括らない）
     this.doc.characters.forEach(c => {
-      if (c.isDefault) return;
-      if (!c.name) return;
-      if (c.isBreak) groups.break.push(c.name);
-      else if (c.isSummary) groups.summary.push(c.name);
-      else groups.normal.push(c.name);
+      if (c.isDefault || !c.name) return;
+      const btn = document.createElement('button');
+      btn.className = 'sn2-role-item' + (c.name === currentRole ? ' active' : '');
+      btn.type = 'button';
+      btn.setAttribute('role', 'menuitem');
+      btn.textContent = c.name;
+      const style = this._getCharaStyle(c.name);
+      if (style) btn.style.cssText = style;
+      btn.addEventListener('click', () => select(c.name));
+      menu.appendChild(btn);
     });
-    // カテゴリ定義
-    const categories = [
-      { label: 'タイプ', items: groups.normal, directToInput: !groups.normal.length },
-      { label: 'プロット', items: groups.summary },
-      { label: '区切り', items: groups.break },
-    ];
-    let allButtons = [];
-    let openSub = null;
-    const closeSub = () => { if (openSub) { openSub.remove(); openSub = null; } };
-    const totalRoles = this.doc.characters.filter(c => !c.isDefault).length;
-    const useGrouped = totalRoles > 20;
 
-    if (useGrouped) {
-      // 20超: カテゴリ分類で表示
-      categories.forEach(cat => {
-        if (!cat.items.length && !cat.directToInput) return;
-        const catBtn = document.createElement('button');
-        catBtn.className = 'sn2-role-cat';
-        catBtn.type = 'button';
-        catBtn.setAttribute('role', 'menuitem');
-        catBtn.textContent = cat.label;
-        if (cat.items.length > 1 || cat.directToInput) {
-          const arrow = document.createElement('span');
-          arrow.className = 'sn2-role-cat-arrow';
-          arrow.innerHTML = lucide('chevronRight', 10);
-          catBtn.appendChild(arrow);
-        }
-        if (cat.items.includes(currentRole)) catBtn.classList.add('active');
-        catBtn.addEventListener('click', () => {
-          if (cat.directToInput) { closeSub(); input.focus(); input.select(); return; }
-          if (cat.items.length === 1) { select(cat.items[0]); return; }
-          if (openSub) { const prev = openSub; closeSub(); if (prev._catLabel === cat.label) return; }
-          const sub = document.createElement('div');
-          sub.className = 'sn2-role-sub-popup';
-          sub.setAttribute('role', 'menu');
-          sub.setAttribute('aria-label', `${cat.label}のタイプ`);
-          sub._catLabel = cat.label;
-          cat.items.forEach(t => {
-            const btn = document.createElement('button');
-            btn.className = 'sn2-role-item' + (t === currentRole ? ' active' : '');
-            btn.type = 'button';
-            btn.setAttribute('role', 'menuitem');
-            btn.textContent = t;
-            const style = this._getCharaStyle(t);
-            if (style) btn.style.cssText = style;
-            btn.addEventListener('click', () => select(t));
-            sub.appendChild(btn);
-            allButtons.push(btn);
-          });
-          const menuRect = menu.getBoundingClientRect();
-          const catRect = catBtn.getBoundingClientRect();
-          sub.style.cssText = 'position:fixed;z-index:10100;';
-          document.body.appendChild(sub);
-          positionPopup(sub, { left: menuRect.right, right: menuRect.right + 2, top: catRect.top, bottom: catRect.bottom }, { prefer: 'right' });
-          if (typeof requestAnimationFrame === 'function' && typeof clampPopupToViewport === 'function') {
-            requestAnimationFrame(() => { if (sub.isConnected) clampPopupToViewport(sub); });
-          }
-          openSub = sub;
-        });
-        menu.appendChild(catBtn);
-      });
-    } else {
-      // 20以下: フラットリストで表示
-      const flatItems = [];
-      this.doc.characters.forEach(c => { if (!c.isDefault) flatItems.push(c.name); });
-      flatItems.forEach(t => {
-        const btn = document.createElement('button');
-        btn.className = 'sn2-role-item' + (t === currentRole ? ' active' : '');
-        btn.type = 'button';
-        btn.setAttribute('role', 'menuitem');
-        btn.textContent = t;
-        const style = this._getCharaStyle(t);
-        if (style) btn.style.cssText = style;
-        btn.addEventListener('click', () => select(t));
-        menu.appendChild(btn);
-        allButtons.push(btn);
-      });
-    }
+    // 空欄タイプは管理画面の「（なし）」と同じ名称で、件数に関係なく常に選べる。
+    // 既存のArrowDown順（最初の通常タイプ）を変えないよう、通常候補の末尾へ置く。
+    const noneButton = document.createElement('button');
+    noneButton.className = 'sn2-role-item' + (!currentRole ? ' active' : '');
+    noneButton.type = 'button';
+    noneButton.setAttribute('role', 'menuitem');
+    noneButton.textContent = '（なし）';
+    noneButton.addEventListener('click', () => select(''));
+    menu.appendChild(noneButton);
 
     // 自由入力
     const inputWrap = document.createElement('div');
@@ -157,6 +92,19 @@ Object.assign(ScriptNoteEditor.prototype, {
     input.value = currentRole;
     inputWrap.appendChild(input);
     menu.appendChild(inputWrap);
+
+    // 行本文へ手動リンクを設定する（タイプ選択とは独立したアクション）
+    const linkButton = document.createElement('button');
+    linkButton.className = 'sn2-role-link';
+    linkButton.type = 'button';
+    linkButton.setAttribute('role', 'menuitem');
+    linkButton.textContent = 'リンクを設定';
+    linkButton.addEventListener('click', () => {
+      this._closeRoleMenu();
+      this._insertLinkFromRoleMenu(rowEl);
+    });
+    menu.appendChild(linkButton);
+
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(menu, {
         trigger: roleBtn,
@@ -164,111 +112,53 @@ Object.assign(ScriptNoteEditor.prototype, {
       });
     }
 
-    // キーボードナビゲーション
-    const catBtns = [...menu.querySelectorAll('.sn2-role-cat')];
-    // フラットリスト時はallButtonsで直接ナビゲーション
-    const flatBtns = !useGrouped ? [...menu.querySelectorAll('.sn2-role-item')] : [];
+    // キーボードナビゲーション（フラットリスト + 自由入力）
+    const flatBtns = [...menu.querySelectorAll('.sn2-role-item')];
     let flatIdx = -1;
-    let catIdx = -1; // カテゴリフォーカス
-    let subIdx = -1; // サブメニューアイテムフォーカス
-    const focusCat = (i) => {
-      if (i < 0 || i >= catBtns.length) return;
-      catIdx = i; subIdx = -1;
-      catBtns[i].focus();
-      catBtns[i].classList.add('focused');
-      catBtns.forEach((b, j) => { if (j !== i) b.classList.remove('focused'); });
-    };
-    const focusSubItem = (i) => {
-      if (!openSub) return;
-      const items = [...openSub.querySelectorAll('.sn2-role-item')];
-      if (i < 0 || i >= items.length) return;
-      subIdx = i;
-      items[i].focus();
-      items[i].scrollIntoView({ block: 'nearest' });
+    const focusFlat = (i) => {
+      if (i < 0 || i >= flatBtns.length) return;
+      flatIdx = i;
+      flatBtns[i].focus();
+      flatBtns[i].scrollIntoView({ block: 'nearest' });
     };
     const menuKeyHandler = (e) => {
       if (!this._roleMenu) return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        if (openSub) { closeSub(); if (catIdx >= 0) catBtns[catIdx].focus(); }
-        else {
-          this._closeRoleMenu();
-          this._restoreRangeAfterRoleMenu(roleBtn.closest('.sn2-row'));
-        }
+        this._closeRoleMenu();
+        this._restoreRangeAfterRoleMenu(roleBtn.closest('.sn2-row'));
         return;
       }
-      const inMenu = menu.contains(document.activeElement) || document.activeElement?.closest?.('.sn2-role-sub-popup');
+      const inMenu = menu.contains(document.activeElement);
       if (!inMenu) return;
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         const step = e.shiftKey ? 5 : 1;
-        if (flatBtns.length) {
-          // フラットリスト: 直接ボタン間移動
-          if (document.activeElement === input) {
-            flatIdx = Math.min(flatBtns.length - 1, step - 1);
-            flatBtns[flatIdx]?.focus();
-          } else if (flatIdx >= flatBtns.length - 1) {
-            input.focus(); input.select(); flatIdx = -1;
-          } else {
-            flatIdx = Math.min(flatBtns.length - 1, flatIdx + step);
-            flatBtns[flatIdx]?.focus();
-          }
-        } else if (openSub) {
-          const items = [...openSub.querySelectorAll('.sn2-role-item')];
-          focusSubItem(Math.min(items.length - 1, subIdx + step));
-        } else if (document.activeElement === input) {
-          focusCat(Math.min(catBtns.length - 1, step - 1));
+        if (document.activeElement === input) {
+          focusFlat(Math.min(flatBtns.length - 1, step - 1));
+        } else if (flatIdx >= flatBtns.length - 1) {
+          input.focus(); input.select(); flatIdx = -1;
         } else {
-          focusCat(Math.min(catBtns.length - 1, catIdx + step));
+          focusFlat(Math.min(flatBtns.length - 1, flatIdx + step));
         }
         return;
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         const step = e.shiftKey ? 5 : 1;
-        if (flatBtns.length) {
-          if (document.activeElement === input) {
-            flatIdx = Math.max(0, flatBtns.length - step);
-            flatBtns[flatIdx]?.focus();
-          } else if (flatIdx <= 0) {
-            input.focus(); input.select(); flatIdx = -1;
-          } else {
-            flatIdx = Math.max(0, flatIdx - step);
-            flatBtns[flatIdx]?.focus();
-          }
-        } else if (openSub) {
-          if (subIdx <= 0) { closeSub(); if (catIdx >= 0) catBtns[catIdx].focus(); }
-          else focusSubItem(Math.max(0, subIdx - step));
-        } else if (catIdx <= 0) {
-          input.focus(); input.select(); catIdx = -1;
+        if (document.activeElement === input) {
+          focusFlat(Math.max(0, flatBtns.length - step));
+        } else if (flatIdx <= 0) {
+          input.focus(); input.select(); flatIdx = -1;
         } else {
-          focusCat(Math.max(0, catIdx - step));
+          focusFlat(Math.max(0, flatIdx - step));
         }
-        return;
-      }
-      if (e.key === 'ArrowRight' && catIdx >= 0 && !openSub) {
-        e.preventDefault();
-        catBtns[catIdx].click(); // サブメニューを開く
-        setTimeout(() => { if (openSub) focusSubItem(0); }, 0);
-        return;
-      }
-      if (e.key === 'ArrowLeft' && openSub) {
-        e.preventDefault();
-        closeSub(); if (catIdx >= 0) catBtns[catIdx].focus();
         return;
       }
       if (e.key === 'Enter') {
         e.preventDefault();
         if (document.activeElement === input) { select(input.value.trim()); return; }
-        if (flatBtns.length && flatIdx >= 0 && flatBtns[flatIdx]) { flatBtns[flatIdx].click(); return; }
-        if (openSub && subIdx >= 0) {
-          const items = [...openSub.querySelectorAll('.sn2-role-item')];
-          if (items[subIdx]) { items[subIdx].click(); return; }
-        }
-        if (catIdx >= 0) {
-          catBtns[catIdx].click();
-          setTimeout(() => { if (openSub) focusSubItem(0); }, 0);
-        }
+        if (flatIdx >= 0 && flatBtns[flatIdx]) { flatBtns[flatIdx].click(); }
         return;
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -276,18 +166,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       if (e.key === 'Tab') {
         e.preventDefault();
-        if (flatBtns.length) {
-          if (document.activeElement === input) { flatIdx = 0; flatBtns[0]?.focus(); }
-          else { input.focus(); input.select(); flatIdx = -1; }
-        } else {
-          if (document.activeElement === input) focusCat(0);
-          else { input.focus(); input.select(); catIdx = -1; closeSub(); }
-        }
+        if (document.activeElement === input) { focusFlat(0); }
+        else { input.focus(); input.select(); flatIdx = -1; }
         return;
       }
       // 文字入力→入力欄にフォーカス移動
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && document.activeElement !== input) {
-        input.focus(); catIdx = -1; closeSub();
+        input.focus();
       }
     };
     document.addEventListener('keydown', menuKeyHandler);
@@ -306,7 +191,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._roleMenuCloseHandler = null;
     setTimeout(() => {
       const close = (ev) => {
-        if (!menu.contains(ev.target) && ev.target !== roleBtn && !ev.target.closest?.('.sn2-role-sub-popup')) this._closeRoleMenu();
+        if (!menu.contains(ev.target) && ev.target !== roleBtn) this._closeRoleMenu();
       };
       this._roleMenuCloseHandler = close;
       document.addEventListener('pointerdown', close, true);
@@ -324,7 +209,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       document.removeEventListener('keydown', this._roleMenuKeyHandler);
       this._roleMenuKeyHandler = null;
     }
-    document.querySelectorAll('.sn2-role-sub-popup').forEach(el => el.remove());
     if (this._roleMenu) {
       this._roleMenu.remove();
       this._roleMenu = null;
@@ -473,6 +357,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     return true;
   },
 
+  _insertLinkFromRoleMenu(rowEl) {
+    const textEl = rowEl?.querySelector('.sn2-text');
+    if (!textEl || typeof showLinkInsertModal !== 'function') return;
+    showLinkInsertModal(null, (result) => {
+      if (!textEl.isConnected) return;
+      this._insertLinkResultIntoText(textEl, null, result);
+    });
+  },
+
   _setRowRole(idx, rowEl, newRole) {
     this.doc.rows[idx].role = newRole;
     // dataset.kind: オプション設定 isBreak/isSummary/kind を反映
@@ -506,8 +399,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     // キャラクターリストに追加（タイプ管理に反映 + 自動配色）
     if (newRole && !this.doc.characters.some(c => !c.isDefault && c.name === newRole)) {
-      const newChara = { name: newRole };
-      this._assignAutoColor(newChara);
+      const newChara = this._createCharaFromTypeDefault(newRole);
       // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
       const defIdx = this.doc.characters.findIndex(c => c.isDefault);
       if (defIdx >= 0) this.doc.characters.splice(defIdx, 0, newChara);
@@ -526,18 +418,46 @@ Object.assign(ScriptNoteEditor.prototype, {
     const registered = new Set(this.doc.characters.map(c => c.name));
     this.doc.rows.forEach(r => {
       if (r.role && !registered.has(r.role)) {
-        const newChara = { name: r.role };
-        this._assignAutoColor(newChara);
+        const newChara = this._createCharaFromTypeDefault(r.role);
         this.doc.characters.push(newChara);
         registered.add(r.role);
       }
     });
   },
 
+  _ensureTypeDefaultChara() {
+    if (!this.doc) return null;
+    if (!this.doc.editor) this.doc.editor = {};
+    if (typeof ensureScriptNoteDefaultType === 'function') return ensureScriptNoteDefaultType(this.doc.editor);
+    if (!this.doc.editor.defaultType) {
+      this.doc.editor.defaultType = {
+        isTypeDefault: true,
+        name: '',
+        roleStyle: { bgColor: '#333333' },
+        textStyle: { bgColor: '#333333' },
+      };
+    }
+    return this.doc.editor.defaultType;
+  },
+
+  _createCharaFromTypeDefault(name) {
+    const source = this._ensureTypeDefaultChara() || {};
+    let chara;
+    try { chara = JSON.parse(JSON.stringify(source)); } catch { chara = { ...source }; }
+    delete chara.isTypeDefault;
+    delete chara.isDefault;
+    chara.name = String(name || '').trim();
+    // 「全行に適用（新規行にも反映）」の列ルールを新規タイプへ反映する
+    // （2523156b でひな形方式へ移行した際に呼び出しが欠落していた）
+    if (typeof this._applyColumnAllRules === 'function') this._applyColumnAllRules(chara);
+    return chara;
+  },
+
   // 役割が空の行に適用するデフォルトタイプ（isDefault: true）を末尾に常時 1 件保持する。
   // 複数あれば 1 件に統合し、末尾以外にあれば末尾へ移動する。
   _ensureDefaultChara() {
     if (!this.doc) return;
+    this._ensureTypeDefaultChara();
     if (!Array.isArray(this.doc.characters)) this.doc.characters = [];
     const chars = this.doc.characters;
     let def = null;
@@ -560,6 +480,20 @@ Object.assign(ScriptNoteEditor.prototype, {
         chars.splice(idx, 1);
         chars.push(def);
       }
+    }
+    // （なし）行の大区切り/小区切り背景の初期値は透明。
+    // bgColor キーが存在する場合（null=解除含む）はユーザー設定として保持する。
+    // 一元化移行前（gutterStyleScopeVersion<2）に補完すると、移行が補完値を
+    // 全タイプ共通スタイルとして editor.columnStyles へ昇格させるため、移行後のみ補完する。
+    if (Number(this.doc.editor?.gutterStyleScopeVersion || 0) >= 2) {
+      ['gutterStyle', 'gutter2Style'].forEach((key) => {
+        let style = def[key];
+        if (!style || typeof style !== 'object' || Array.isArray(style)) {
+          style = {};
+          def[key] = style;
+        }
+        if (!Object.prototype.hasOwnProperty.call(style, 'bgColor')) style.bgColor = 'transparent';
+      });
     }
   },
 

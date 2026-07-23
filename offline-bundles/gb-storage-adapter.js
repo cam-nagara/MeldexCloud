@@ -1104,6 +1104,9 @@
         allow_ownership_transfer: false,
       });
       this._forgetMeta(source);
+      // 移動元の親フォルダの一覧キャッシュも明示的に無効化する（移動先のみが無効化され、
+      // 移動元フォルダに最大3.5秒古い項目が残る問題の予防）
+      this._forgetListCache(_dirname(source));
       this._rememberMeta(target, payload.metadata || null);
       this._forgetListCache(_dirname(target));
       return payload;

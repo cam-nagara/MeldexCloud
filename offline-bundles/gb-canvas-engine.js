@@ -24,7 +24,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
-  'depthStyles', 'boardUi', 'connections', 'llmSemantics',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tags',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -765,7 +765,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '';
-  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
+  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, tags = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
   if (fmMatch) {
     const fm = fmMatch[1];
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
@@ -812,6 +812,14 @@ function bdParseMd(raw) {
     if (lnkBlock) lnkBlock[1].replace(/(\w+):\s*(.+)/g, (_, id, p) => { links[id] = p.trim(); });
     const lnkTypeBlock = fm.match(/linkTypes:\n((?:\s+\w+:.*\n?)*)/);
     if (lnkTypeBlock) lnkTypeBlock[1].replace(/(\w+):\s*([^\s]+)/g, (_, id, value) => { linkTypes[id] = value.trim(); });
+    // 共通タグ（タグID配列。タグ実体は .meldex/global-tags.json 側で一元管理）
+    if (typeof bdYamlNestedMap === 'function') {
+      Object.entries(bdYamlNestedMap(fm, 'tags')).forEach(([id, value]) => {
+        const list = Array.isArray(value) ? value : [];
+        const normalized = list.map(item => String(item == null ? '' : item).trim()).filter(Boolean);
+        if (normalized.length) tags[id] = normalized;
+      });
+    }
     // PureRef属性（transforms）
     const tfBlock = fm.match(/transforms:\n((?:\s+\w+:.*\n?)*)/);
     if (tfBlock) tfBlock[1].replace(/(\w+):\s*\{([^}]+)\}/g, (_, id, props) => {
@@ -1004,6 +1012,7 @@ function bdParseMd(raw) {
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
       const trm = boardUiBlock[1].match(/textRotateOnLine:\s*(true|false)/);
       const dfm = boardUiBlock[1].match(/displayFilters:\s*(\{[^\n]*\})/);
+      const tfm = boardUiBlock[1].match(/tagFilter:\s*(\[[^\n]*\])/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
       if (alm) boardUi.activeLineStyle = alm[1].trim();
       if (pvm) boardUi.stylePresetSeedVersion = parseInt(pvm[1], 10) || 0;
@@ -1015,6 +1024,14 @@ function bdParseMd(raw) {
           const parsedFilters = JSON.parse(dfm[1]);
           if (parsedFilters && typeof parsedFilters === 'object' && !Array.isArray(parsedFilters)) {
             boardUi.displayFilters = parsedFilters;
+          }
+        } catch {}
+      }
+      if (tfm) {
+        try {
+          const parsedTagFilter = JSON.parse(tfm[1]);
+          if (Array.isArray(parsedTagFilter)) {
+            boardUi.tagFilter = parsedTagFilter.map(id => String(id == null ? '' : id)).filter(Boolean);
           }
         } catch {}
       }
@@ -1132,6 +1149,9 @@ function bdParseMd(raw) {
         if (n.linkType) node.linkType = n.linkType;
         if (n.imageSourcePath) node.imageSourcePath = String(n.imageSourcePath).replace(/\\/g, '/');
         if (n.status) node.status = n.status;
+        if (Array.isArray(n.tags) && n.tags.length) {
+          node.tags = n.tags.map(t => String(t == null ? '' : t).trim()).filter(Boolean);
+        }
         if (n.parent) node._jsonParent = n.parent;
         if (n.container) node.container = true;
         if (n.contained) node.contained = true;
@@ -1233,6 +1253,7 @@ function bdParseMd(raw) {
     if (balloons[nid]) { n.balloon = true; n.tailX = balloons[nid].tailX; n.tailY = balloons[nid].tailY; n.balloonChild = balloons[nid].child; }
     if (links[nid]) n.link = links[nid];
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
+    if (tags[nid]) n.tags = tags[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);
   });
   if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(nodes);
@@ -1301,6 +1322,15 @@ function bdToMd() {
   if (hasLinkTypes) {
     fm += 'linkTypes:\n';
     bd.nodes.forEach((n,i) => { if (n.link && n.linkType) fm += `  n${i}: ${n.linkType}\n`; });
+  }
+  // 共通タグ（タグID配列。カード削除・複製と一緒に自然に付随/消滅させるため、
+  // カード本体へ直接埋め込む。タグ名・色・グループは .meldex/global-tags.json 側で一元管理）
+  const hasTags = bd.nodes.some(n => Array.isArray(n.tags) && n.tags.length);
+  if (hasTags) {
+    fm += 'tags:\n';
+    bd.nodes.forEach((n,i) => {
+      if (Array.isArray(n.tags) && n.tags.length) fm += `  n${i}: ${JSON.stringify(n.tags)}\n`;
+    });
   }
   // PureRef属性
   const hasTransforms = bd.nodes.some(n => n.flipH || n.flipV || n.rotate || (n.opacity != null && n.opacity < 1) || n.locked);
@@ -1429,7 +1459,8 @@ function bdToMd() {
   const defaultDisplayFilters = typeof BD_DEFAULT_DISPLAY_FILTERS !== 'undefined' ? BD_DEFAULT_DISPLAY_FILTERS : {};
   const hasDisplayFilterOverrides = !!displayFiltersForSave && Object.keys(displayFiltersForSave)
     .some(key => displayFiltersForSave[key] !== defaultDisplayFilters[key]);
-  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides) {
+  const tagFilterForSave = Array.isArray(bd.tagFilter) ? bd.tagFilter.map(id => String(id)).filter(Boolean) : [];
+  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides || tagFilterForSave.length) {
     fm += 'boardUi:\n';
     if (bd.activeCardStyle) fm += `  activeCardStyle: ${bd.activeCardStyle}\n`;
     if (bd.activeLineStyle) fm += `  activeLineStyle: ${bd.activeLineStyle}\n`;
@@ -1438,6 +1469,7 @@ function bdToMd() {
     if (bd._showShadow) fm += `  showShadow: true\n`;
     if (bd._textRotateOnLine) fm += `  textRotateOnLine: true\n`;
     if (hasDisplayFilterOverrides) fm += `  displayFilters: ${JSON.stringify(displayFiltersForSave)}\n`;
+    if (tagFilterForSave.length) fm += `  tagFilter: ${JSON.stringify(tagFilterForSave)}\n`;
   }
   if (bd.connections.length) {
     fm += 'connections:\n';
@@ -2180,6 +2212,15 @@ function bdRender() {
     if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(n, div);
     else { n._rw = div.offsetWidth; n._rh = div.offsetHeight; }
   });
+  // 共通タグによる絞り込み: 非該当カードを減光する（データそのものは変更しない）
+  if (Array.isArray(bd.tagFilter) && bd.tagFilter.length) {
+    const activeTagFilterIds = new Set(bd.tagFilter.map(String));
+    renderedNodes.forEach(({ n, div }) => {
+      const nodeTagIds = Array.isArray(n.tags) ? n.tags.map(String) : [];
+      const matchesFilter = nodeTagIds.some(id => activeTagFilterIds.has(id));
+      div.classList.toggle('bd-tag-filter-dim', !matchesFilter);
+    });
+  }
   if (typeof bdShouldDeferBoardExtras === 'function' && bdShouldDeferBoardExtras()) {
     if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(renderedNodes.map(item => item.n.id), 'render-deferred');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(renderedNodes.map(item => item.n.id));
@@ -4532,6 +4573,7 @@ function bdStatusNames() { return ['', ...bd.statuses.map(s=>s.name)]; }
 // --- グループ管理 ---
 if (!bd.groups) bd.groups = [];
 bd.statusFilter = ''; // 空=全表示
+bd.tagFilter = []; // 共通タグID配列。空=全表示（絞り込みは減光のみで、非表示にはしない）
 
 // --- 整列関数 ---
 function bdAlign(type) {
@@ -4958,7 +5000,7 @@ function bdCloneNodesWithOffset(sourceNodes, offset) {
     const copyAbsY = Number.isFinite(+_bdCopyAbsY) ? +_bdCopyAbsY : null;
     const nextX = parentCopied ? n.x : ((n.contained && copyAbsX != null) ? copyAbsX + offset : n.x + offset);
     const nextY = parentCopied ? n.y : ((n.contained && copyAbsY != null) ? copyAbsY + offset : n.y + offset);
-    const nn = bdNode(n.text, nextX, nextY, n.w, n.h, {...rest, markers: n.markers ? {...n.markers} : undefined});
+    const nn = bdNode(n.text, nextX, nextY, n.w, n.h, {...rest, markers: n.markers ? {...n.markers} : undefined, tags: Array.isArray(n.tags) ? [...n.tags] : undefined});
     idMap[n.id] = nn.id;
     return nn;
   });
@@ -5033,7 +5075,19 @@ function bdPaste() {
 }
 
 // --- アンドゥ/リドゥ ---
+// v0.6.198 フェーズ3-3: 本体アプリ（gb-history.js を読み込む環境）では bdPushUndo/bdUndo/
+// bdRedo/bdClearUndoStacks は 'board:<パス>' スコープの共通履歴（historyPush/historyUndo/
+// historyRedo）へ委譲し、履歴パネルとも連動する。単独起動アプリ（board-standalone.html 等、
+// gb-history.js を読み込まない）では historyPush 等が未定義のため、従来どおり
+// _bdUndoStack/_bdRedoStack の自己完結スタックにフォールバックする（挙動を変えない後方互換）。
 const _bdUndoStack = [], _bdRedoStack = [], _BD_UNDO_MAX = 30;
+function _bdHasCommonHistory() {
+  return typeof historyPush === 'function' && typeof historyUndo === 'function' && typeof historyRedo === 'function';
+}
+function _bdHistoryScope(path) {
+  const p = path != null ? path : (typeof bd !== 'undefined' ? bd.path : '');
+  return 'board:' + String(p || '').replace(/\\/g, '/');
+}
 function _bdSnapshot() {
   return JSON.stringify({
     nodes: bd.nodes,
@@ -5048,6 +5102,7 @@ function _bdSnapshot() {
     themeId: bd.themeId || '',
     statuses: bd.statuses,
     displayFilters: bd.displayFilters,
+    tagFilter: bd.tagFilter,
     globalStyleDefaults: typeof bdCaptureGlobalStyleDefaults === 'function' ? bdCaptureGlobalStyleDefaults() : null,
     _numbering: bd._numbering || false,
     _bgColor: bd._bgColor || '',
@@ -5060,13 +5115,30 @@ function _bdSnapshot() {
     autoAlign: bd.autoAlign !== false,
   });
 }
-function bdPushUndo() {
+function bdPushUndo(label) {
   const _bdUndoPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdPushUndo') : 0;
   if (typeof bdClearUndoCoalesce === 'function') bdClearUndoCoalesce();
-  _bdUndoStack.push(_bdSnapshot()); if(_bdUndoStack.length>_BD_UNDO_MAX) _bdUndoStack.shift(); _bdRedoStack.length=0;
+  if (_bdHasCommonHistory()) {
+    const snap = _bdSnapshot();
+    historyPush(label || 'ボード編集', () => {
+      _bdApplySnapshot(JSON.parse(snap));
+      if (typeof bdRender === 'function') bdRender();
+      if (typeof bdDirty === 'function') bdDirty();
+    }, null, _bdHistoryScope());
+  } else {
+    _bdUndoStack.push(_bdSnapshot()); if(_bdUndoStack.length>_BD_UNDO_MAX) _bdUndoStack.shift(); _bdRedoStack.length=0;
+  }
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdPushUndo', _bdUndoPerf);
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
-function bdClearUndoStacks() { _bdUndoStack.length = 0; _bdRedoStack.length = 0; }
+function bdClearUndoStacks(path) {
+  if (_bdHasCommonHistory() && typeof _historyStacks !== 'undefined') {
+    const stack = _historyStacks[_bdHistoryScope(path)];
+    if (stack) { stack.undo.length = 0; stack.redo.length = 0; }
+  }
+  _bdUndoStack.length = 0; _bdRedoStack.length = 0;
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+}
 function _bdApplySnapshot(s) {
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
   bd.cardStyles = s.cardStyles || bd.cardStyles;
@@ -5078,6 +5150,7 @@ function _bdApplySnapshot(s) {
   bd.themeId = s.themeId || '';
   if (s.statuses !== undefined) bd.statuses = s.statuses;
   if (s.displayFilters !== undefined) bd.displayFilters = s.displayFilters || {};
+  if (s.tagFilter !== undefined) bd.tagFilter = Array.isArray(s.tagFilter) ? s.tagFilter : [];
   if (s.globalStyleDefaults !== undefined && typeof bdRestoreGlobalStyleDefaults === 'function') {
     bdRestoreGlobalStyleDefaults(s.globalStyleDefaults);
   }
@@ -5106,18 +5179,22 @@ function _bdApplySnapshot(s) {
   bdEnsureConnectionRuntime(bd.connections);
 }
 function bdUndo() {
+  if (_bdHasCommonHistory()) { historyUndo(_bdHistoryScope()); return; }
   if (!_bdUndoStack.length) return;
   _bdRedoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdUndoStack.pop()));
   bdRender(); bdDirty();
   showStatus('\u5143\u306b\u623b\u3057\u307e\u3057\u305f');
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 function bdRedo() {
+  if (_bdHasCommonHistory()) { historyRedo(_bdHistoryScope()); return; }
   if (!_bdRedoStack.length) return;
   _bdUndoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdRedoStack.pop()));
   bdRender(); bdDirty();
   showStatus('\u3084\u308a\u76f4\u3057\u307e\u3057\u305f');
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 
 function bdIsCurrentBoardOpenRequest(path) {
@@ -5204,6 +5281,7 @@ async function bdOpenBoard(label, path, opts) {
   bd._numbering = false;
   bd.statuses = (typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : [];
   bd.statusFilter = '';
+  bd.tagFilter = [];
   bd.zoom = 1;
   bd.panX = bd.panY = 0;
   bd.rotation = 0;
@@ -5245,6 +5323,13 @@ async function bdOpenBoard(label, path, opts) {
     const parsed = bdParseMd(raw);
     bd.path = nextPath;
     bd._loadedBoardPath = nextPath;
+    // フェーズ3-3: 読み込み直後のパスで取り消し履歴スコープを確定させる
+    // （読み込み前に呼んだ bdClearUndoStacks() は「切替前のボード」のスコープを掃除するだけ
+    //  なので、ここで新パスのスコープも明示的に掃除し、履歴パネルのアクティブスコープを合わせる）。
+    if (typeof bdClearUndoStacks === 'function') bdClearUndoStacks(nextPath);
+    if (typeof historySetScope === 'function') {
+      historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(nextPath) : ('board:' + String(nextPath || '').replace(/\\/g, '/')));
+    }
     bd._preservedFrontmatter = parsed.preservedFrontmatter || '';
     window.MeldexFileLockBadge?.apply?.(titleEl, nextPath);
     bd.nodes = parsed.nodes || [];
@@ -5292,6 +5377,7 @@ async function bdOpenBoard(label, path, opts) {
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
     bd.displayFilters = parsed.boardUi?.displayFilters || {};
+    bd.tagFilter = Array.isArray(parsed.boardUi?.tagFilter) ? parsed.boardUi.tagFilter : [];
     bd._showShadow = !!parsed.boardUi?.showShadow;
     bd._textRotateOnLine = !!parsed.boardUi?.textRotateOnLine;
     if (typeof MeldexThemeMigration !== 'undefined' && typeof MeldexThemeMigration.migrateBoardState === 'function') {
@@ -5403,10 +5489,15 @@ function bdDumpState() {
     if (v instanceof Set) snap[k] = [...v];
     else snap[k] = v;
   }
+  // フェーズ3-3: 共通履歴が有効な環境（本体アプリ）では取り消し履歴は 'board:<パス>' スコープの
+  // 共通履歴（グローバルな _historyStacks）に保持され、タブごとにダンプ/復元する必要がない
+  // （スコープ文字列がボードごとに独立しているため、タブ切替時も自然に分離される）。
+  // 単独起動アプリ（共通履歴なし）のみ、従来どおり自己完結スタックをダンプする。
+  const hasCommonHistory = typeof historyPush === 'function' && typeof historyUndo === 'function' && typeof historyRedo === 'function';
   return {
     bd: snap,
-    undoStack: _bdUndoStack.slice(),
-    redoStack: _bdRedoStack.slice(),
+    undoStack: hasCommonHistory ? [] : _bdUndoStack.slice(),
+    redoStack: hasCommonHistory ? [] : _bdRedoStack.slice(),
     // gb-canvas-features.js のモジュールローカル state も dump
     drillRoot: (typeof _bdDrillRoot !== 'undefined') ? _bdDrillRoot : null,
     // v0.5.285: フォーカスモード廃止につき focusMode は捨てる。focusSaved はセッション内の復元用に残す。
@@ -5430,11 +5521,18 @@ function bdLoadState(dump) {
   if (!(bd.selectedConnIds instanceof Set)) bd.selectedConnIds = new Set();
   if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes || []);
   bdEnsureConnectionRuntime(bd.connections || []);
-  // undo/redo スタックを復元
+  // undo/redo スタックを復元（共通履歴が有効な環境ではスコープ別に独立して保持されるため、
+  // ここでは単独起動アプリ向けの自己完結スタックのみ復元する。dump.undoStack/redoStack は
+  // 共通履歴が有効な環境では常に空配列なので forEach は何もしない）。
   _bdUndoStack.length = 0;
   (dump.undoStack || []).forEach(s => _bdUndoStack.push(s));
   _bdRedoStack.length = 0;
   (dump.redoStack || []).forEach(s => _bdRedoStack.push(s));
+  // 共通履歴が有効な環境では、復元したボードのパスに合わせてアクティブスコープも切り替える
+  // （タブ切替時に historySetScope が呼ばれず履歴パネルが直前のタブのスコープのままになるのを防ぐ）。
+  if (typeof historySetScope === 'function' && bd.path) {
+    historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(bd.path) : ('board:' + String(bd.path).replace(/\\/g, '/')));
+  }
   // features.js 側の変数を復元
   if (typeof _bdDrillRoot !== 'undefined') _bdDrillRoot = dump.drillRoot || null;
   if (typeof _bdFocusSaved !== 'undefined') _bdFocusSaved = dump.focusSaved || null;

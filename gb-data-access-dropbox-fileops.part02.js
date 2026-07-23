@@ -69,7 +69,11 @@
       const provider = await _requirePwaProvider('readwrite');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
       if (!filePath) throw new Error('path は必須です');
+      if (_isProductionFolderNotePath(filePath)) {
+        throw new Error('制作管理の列定義ファイルは汎用ファイル保存から変更できません');
+      }
       const content = String(body?.content ?? '');
+      _rejectProductionLegacyEntryContent(filePath, content);
       const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
       const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
       const createOnly = !!(body?.create_only || body?.createOnly);
@@ -102,7 +106,14 @@
         targetName = `${split.stem}_${counter}${split.ext}`;
         targetPath = _joinPath(targetDir, targetName);
       }
-      await _writeBytes(provider, targetPath, _decodeUploadData(body?.data || ''));
+      if (_isProductionFolderNotePath(targetPath)) {
+        throw new Error('制作管理の列定義ファイルは汎用アップロードから変更できません');
+      }
+      const uploadBytes = _decodeUploadData(body?.data || '');
+      if (_productionReservedEntryProperties(targetPath).length && /\.md$/i.test(targetPath)) {
+        _rejectProductionLegacyEntryContent(targetPath, new TextDecoder().decode(uploadBytes));
+      }
+      await _writeBytes(provider, targetPath, uploadBytes);
       return { ok: true, path: targetPath, name: targetName };
     }
 
@@ -477,6 +488,10 @@
     if (pathname === '/outliner/rename' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const oldPath = _normalizeFolderPath(body?.old_path || '');
+      _rejectProductionStructureMutation(oldPath, '名前変更');
+      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
+        throw new Error('制作管理の管理リスト名はシート上のエントリ名から変更してください');
+      }
       const newName = _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
@@ -616,6 +631,10 @@
       const provider = await _requirePwaProvider('readwrite');
       const sourcePath = _normalizeFolderPath(body?.path || '');
       const destFolder = _normalizeFolderPath(body?.dest_folder || '');
+      _rejectProductionStructureMutation(sourcePath, '移動');
+      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
+        throw new Error('制作管理の管理リストエントリの配置は変更できません');
+      }
       const source = await _resolveEntryHandle(provider, sourcePath);
       const destEntry = await _resolveEntryHandle(provider, destFolder);
       if (!source) throw new Error('見つかりません');

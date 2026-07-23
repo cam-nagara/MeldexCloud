@@ -172,6 +172,12 @@ function _bdFontFamilyOptions() {
   return [{ v: '', l: '共通フォント', style: 'font-family:inherit;' }];
 }
 
+window.addEventListener('meldex:font-catalog-updated', () => {
+  document.querySelectorAll('select.bd-font-family-select').forEach(select => {
+    select._gbFmtSetOptions?.(_bdFontFamilyOptions(), select._gbFmtSelectedValue ?? select.value);
+  });
+});
+
 function _bdNormalizeFontFamily(value) {
   if (typeof normalizeFontFamilyValue === 'function') return normalizeFontFamilyValue(value);
   const raw = String(value == null ? '' : value).trim();
@@ -903,6 +909,7 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
     row1.appendChild(fmt.makeGroup([fmt.makeLabel('文字'), fontSizeInp, fmt.makeLabel('px')]));
     if (showFontFamily) {
       const fontFamilySel = fmt.makeSelect({ opts: _bdFontFamilyOptions(), value: _bdNormalizeFontFamily(style.fontFamily), onChange: (v) => setField('fontFamily', v) });
+      fontFamilySel.classList.add('bd-font-family-select');
       tag('fontFamily')(fontFamilySel);
       row1.appendChild(fmt.makeGroup([fmt.makeLabel('フォント'), fontFamilySel]));
     }

@@ -83,7 +83,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         el.contentEditable = 'true';
       }
     });
-    // 他の選択系（テキストセル範囲選択・行選択・タイプセル選択）とは相互排他
+    // 他の選択系（矩形セル・テキストセル・行・タイプセル選択）とは相互排他
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     if (this._rowSelection?.size) this._clearRowSelection?.();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
@@ -293,6 +294,14 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     if (e.key === 'Tab') {
       e.preventDefault();
+      // Tab はその行のタイプ選択メニューを開く（Shift+Tab は従来どおり前のセルへ移動）
+      if (!e.shiftKey) {
+        const roleBtn = this.host?.querySelector(`.sn2-row[data-row-id="${this._activeCellRowId}"] .sn2-role-btn`);
+        if (roleBtn && typeof this._showRoleMenu === 'function') {
+          this._showRoleMenu(roleBtn, { fromNav: true });
+          return true;
+        }
+      }
       this._navigateCell(e.shiftKey ? 'prev-col' : 'next-col');
       return true;
     }

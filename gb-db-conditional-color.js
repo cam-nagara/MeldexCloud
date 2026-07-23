@@ -141,7 +141,7 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null, trigge
   Object.keys(propTypes).forEach(add);
   const visibleProps = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
   if (visibleProps.length === 0) {
-    showStatus('条件付きカラーを設定できるプロパティがありません', true);
+    showStatus('条件付きカラーを設定できる列がありません', true);
     return;
   }
   const o = document.createElement('div');
@@ -153,8 +153,8 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null, trigge
   const descId = `cc-picker-desc-${seq}`;
   o.innerHTML = `<div class="modal cond-picker-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="conditional-color-picker-dialog" style="min-width:0;width:min(420px, calc(100vw - 32px));max-width:min(420px, calc(100vw - 32px));">
     <h3 id="${titleId}">条件付きカラー</h3>
-    <div id="${descId}" class="gb-visually-hidden">条件付きカラーを設定するプロパティの選択</div>
-    <div class="field gb-field"><label class="gb-label" for="cc-picker-prop">プロパティ</label>
+    <div id="${descId}" class="gb-visually-hidden">条件付きカラーを設定する列の選択</div>
+    <div class="field gb-field"><label class="gb-label" for="cc-picker-prop">列</label>
       <select id="cc-picker-prop" class="gb-select" data-e2e-id="cc-picker-prop" style="width:100%;box-sizing:border-box;">
         ${visibleProps.map(prop => `<option value="${esc(prop)}">${esc(prop)}</option>`).join('')}
       </select>

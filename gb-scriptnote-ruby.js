@@ -8,7 +8,7 @@ function _snRubyIcon(name, size, fallback) {
 
 function _snRubyConfirmDelete(message) {
   if (typeof cfConfirm === 'function') {
-    return Promise.resolve(cfConfirm(message, { danger: true, okLabel: '削除' })).then(Boolean);
+    return Promise.resolve(cfConfirm(message, { danger: true, okLabel: '解除' })).then(Boolean);
   }
   if (typeof showConfirmDialog === 'function') {
     return new Promise(resolve => showConfirmDialog(message, () => resolve(true), () => resolve(false)));
@@ -41,7 +41,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     header.appendChild(title);
     const headerBtns = document.createElement('div');
     headerBtns.className = 'sn2-ruby-header-actions';
-    const mkBtn = (label, title, onClick, e2eId) => {
+    const mkBtn = (label, title, onClick, e2eId, iconName = 'plus') => {
       const b = document.createElement('button');
       b.className = 'sn2-detail-add-btn gb-btn gb-btn-sm gb-btn-quiet sn2-ruby-add-rule';
       b.type = 'button';
@@ -51,7 +51,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       const icon = document.createElement('span');
       icon.className = 'sn2-ruby-btn-icon';
       icon.setAttribute('aria-hidden', 'true');
-      icon.innerHTML = _snRubyIcon('plus', 13, '+');
+      icon.innerHTML = _snRubyIcon(iconName, 13, label);
       const text = document.createElement('span');
       text.className = 'sn2-ruby-btn-label';
       text.textContent = label;
@@ -67,6 +67,23 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._markDirty({ skipUndo: true });
       this.renderRubyPanel(container);
     }, 'scriptnote-ruby-add-rule'));
+    headerBtns.appendChild(mkBtn('全解除', 'ファイル内ルビを全解除', async () => {
+      const hasRuby = this.doc.rows.some(row => {
+        const re = typeof _sn2NewRubyRegex === 'function' ? _sn2NewRubyRegex() : /\{([^|{}]+)\|([^|{}]+)\}/g;
+        return re.test(String(row.text || ''));
+      });
+      if (!hasRuby) return;
+      const ok = await _snRubyConfirmDelete('ファイル内の手動ルビをすべて解除しますか？');
+      if (!ok) return;
+      this._pushUndo('ルビ全解除');
+      this.doc.rows.forEach(row => {
+        const re = typeof _sn2NewRubyRegex === 'function' ? _sn2NewRubyRegex() : /\{([^|{}]+)\|([^|{}]+)\}/g;
+        row.text = String(row.text || '').replace(re, (_matched, base) => base);
+      });
+      this._render();
+      this._markDirty({ skipUndo: true });
+      this.renderRubyPanel(container);
+    }, 'scriptnote-ruby-clear-all', 'xCircle'));
     header.appendChild(headerBtns);
     wrap.appendChild(header);
 
@@ -75,72 +92,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     settingsLabel.className = 'sn2-detail-settings-label sn2-ruby-section-label';
     settingsLabel.textContent = '表示設定';
     wrap.appendChild(settingsLabel);
-    const settingsWrap = document.createElement('div');
-    settingsWrap.className = 'sn2-ruby-settings';
-    // ルビサイズ
-    const sizeRow = document.createElement('div');
-    sizeRow.className = 'sn2-ruby-field';
-    const sizeLabel = document.createElement('span');
-    sizeLabel.className = 'sn2-ruby-field-label';
-    sizeLabel.textContent = 'サイズ';
-    sizeRow.appendChild(sizeLabel);
-    const sizeInput = document.createElement('input');
-    sizeInput.type = 'number'; sizeInput.step = '0.05'; sizeInput.min = '0.2'; sizeInput.max = '1.5';
-    sizeInput.value = this.doc.editor?.rubyFontSize || '';
-    sizeInput.placeholder = '0.55';
-    sizeInput.dataset.e2eId = 'scriptnote-ruby-size-input';
-    sizeInput.setAttribute('aria-label', 'ルビサイズ');
-    sizeInput.title = 'ルビサイズ';
-    sizeInput.className = 'gb-num-input sn2-ruby-number-input';
-    sizeInput.addEventListener('change', () => {
-      this._pushUndo('ルビサイズ変更');
-      if (!this.doc.editor) this.doc.editor = {};
-      const v = parseFloat(sizeInput.value);
-      this.doc.editor.rubyFontSize = (v && v >= 0.2 && v <= 1.5) ? v : null;
-      // .sn2-scroll は host の子孫なので closest ではなく querySelector で取得する
-      const scroll = this.host?.querySelector('.sn2-scroll');
-      if (scroll) scroll.style.setProperty('--sn2-ruby-size', this.doc.editor.rubyFontSize ? this.doc.editor.rubyFontSize + 'em' : '');
-      this._adjustRubySpacing();
-      this._markDirty({ skipUndo: true });
-    });
-    sizeRow.appendChild(sizeInput);
-    const sizeUnit = document.createElement('span');
-    sizeUnit.className = 'sn2-ruby-unit';
-    sizeUnit.textContent = 'em';
-    sizeRow.appendChild(sizeUnit);
-    settingsWrap.appendChild(sizeRow);
-    // テキストとの距離（サイズの横に並べる）
-    const offsetRow = document.createElement('div');
-    offsetRow.className = 'sn2-ruby-field';
-    const offsetLabel = document.createElement('span');
-    offsetLabel.className = 'sn2-ruby-field-label';
-    offsetLabel.textContent = '距離';
-    offsetRow.appendChild(offsetLabel);
-    const offsetInput = document.createElement('input');
-    offsetInput.type = 'number'; offsetInput.step = '1'; offsetInput.min = '-10'; offsetInput.max = '20';
-    offsetInput.value = this.doc.editor?.rubyOffset ?? '';
-    offsetInput.placeholder = '3.5';
-    offsetInput.dataset.e2eId = 'scriptnote-ruby-offset-input';
-    offsetInput.setAttribute('aria-label', 'ルビ距離');
-    offsetInput.title = 'ルビ距離';
-    offsetInput.className = 'gb-num-input sn2-ruby-number-input';
-    offsetInput.addEventListener('change', () => {
-      this._pushUndo('ルビ距離変更');
-      if (!this.doc.editor) this.doc.editor = {};
-      const v = parseFloat(offsetInput.value);
-      this.doc.editor.rubyOffset = (!isNaN(v) && v >= -10 && v <= 20) ? v : null;
-      // .sn2-scroll は host の子孫なので closest ではなく querySelector で取得する
-      const scroll = this.host?.querySelector('.sn2-scroll');
-      if (scroll) scroll.style.setProperty('--sn2-ruby-offset', this.doc.editor.rubyOffset != null ? this.doc.editor.rubyOffset + 'px' : '');
-      this._markDirty({ skipUndo: true });
-    });
-    offsetRow.appendChild(offsetInput);
-    const offsetUnit = document.createElement('span');
-    offsetUnit.className = 'sn2-ruby-unit';
-    offsetUnit.textContent = 'px';
-    offsetRow.appendChild(offsetUnit);
-    settingsWrap.appendChild(offsetRow);
-    wrap.appendChild(settingsWrap);
+    if (typeof MeldexRubySettingsUI !== 'undefined') {
+      wrap.appendChild(MeldexRubySettingsUI.createEditorSettings(this, { scope: 'ruby-tab' }));
+    }
 
     // ── ファイル内ルビ一覧（テーブル形式） ──
     // gb-scriptnote-editor.js の _sn2NewRubyRegex / _sn2UnescapeRubyText を利用
@@ -153,7 +107,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       const unescape = typeof _sn2UnescapeRubyText === 'function' ? _sn2UnescapeRubyText : (s => s);
       let m;
       while ((m = re.exec(r.text)) !== null) {
-        fileRubies.push({ text: unescape(m[1]), ruby: unescape(m[2]), rowIdx: i, role: r.role });
+        fileRubies.push({
+          text: unescape(m[1]), ruby: unescape(m[2]), rowIdx: i, role: r.role,
+          rawIndex: m.index, rawLength: m[0].length,
+        });
       }
     });
 
@@ -168,7 +125,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       table.className = 'sn2-ruby-table';
       const thead = document.createElement('thead');
       const headRow = document.createElement('tr');
-      ['対象', 'ルビ', '位置'].forEach((text, index) => {
+      ['対象', 'ルビ', '位置', '操作'].forEach((text, index) => {
         const th = document.createElement('th');
         th.textContent = text;
         if (index === 2) th.className = 'sn2-ruby-file-pos';
@@ -192,7 +149,45 @@ Object.assign(ScriptNoteEditor.prototype, {
         const posCell = document.createElement('td');
         posCell.className = 'sn2-ruby-file-pos';
         posCell.textContent = fr.role || '行' + (fr.rowIdx + 1);
-        tr.append(baseCell, rubyCell, posCell);
+        const actionCell = document.createElement('td');
+        actionCell.className = 'sn2-ruby-file-actions';
+        const replaceRuby = nextRuby => {
+          const row = this.doc.rows[fr.rowIdx];
+          if (!row) return;
+          const raw = String(row.text || '');
+          const replacement = nextRuby
+            ? (typeof _sn2BuildRubyMarkup === 'function' ? _sn2BuildRubyMarkup(fr.text, nextRuby) : `{${fr.text}|${nextRuby}}`)
+            : (typeof _sn2EscapeScriptNotePlainText === 'function' ? _sn2EscapeScriptNotePlainText(fr.text) : fr.text);
+          this._pushUndo(nextRuby ? 'ルビ編集' : 'ルビ解除');
+          row.text = raw.slice(0, fr.rawIndex) + replacement + raw.slice(fr.rawIndex + fr.rawLength);
+          this._render();
+          this._markDirty({ skipUndo: true });
+          this.renderRubyPanel(container);
+        };
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+        editBtn.textContent = '編集';
+        editBtn.dataset.e2eId = 'scriptnote-ruby-file-edit-' + idx;
+        editBtn.addEventListener('click', async event => {
+          event.stopPropagation();
+          if (typeof cfPrompt !== 'function') return;
+          const next = await cfPrompt(`「${fr.text}」のルビ`, fr.ruby, { okLabel: '編集' });
+          if (next == null || !String(next).trim() || String(next).trim() === fr.ruby) return;
+          replaceRuby(String(next).trim());
+        });
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+        removeBtn.textContent = '解除';
+        removeBtn.dataset.e2eId = 'scriptnote-ruby-file-remove-' + idx;
+        removeBtn.addEventListener('click', async event => {
+          event.stopPropagation();
+          const ok = await _snRubyConfirmDelete(`「${fr.text}」のルビを解除しますか？`);
+          if (ok) replaceRuby('');
+        });
+        actionCell.append(editBtn, removeBtn);
+        tr.append(baseCell, rubyCell, posCell, actionCell);
         const jumpToRubyRow = () => {
           const row = this.doc.rows[fr.rowIdx];
           if (row) {
@@ -279,18 +274,18 @@ Object.assign(ScriptNoteEditor.prototype, {
       });
       item.appendChild(rubyInp);
 
-      // 削除ボタン（右端固定、改行しない）
+      // 解除ボタン（右端固定、改行しない）
       const delBtn = document.createElement('button');
       delBtn.className = 'gb-btn gb-btn-xs gb-btn-icon gb-btn-quiet sn2-ruby-delete-rule';
       delBtn.type = 'button';
-      delBtn.title = '削除';
+      delBtn.title = '解除';
       delBtn.dataset.e2eId = 'scriptnote-ruby-rule-delete-' + i;
-      delBtn.setAttribute('aria-label', '自動ルビルールを削除 ' + (i + 1));
-      delBtn.innerHTML = _snRubyIcon('trash2', 13, '削除');
+      delBtn.setAttribute('aria-label', '自動ルビルールを解除 ' + (i + 1));
+      delBtn.innerHTML = _snRubyIcon('trash2', 13, '解除');
       delBtn.addEventListener('click', async () => {
-        const ok = await _snRubyConfirmDelete(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を削除しますか？`);
+        const ok = await _snRubyConfirmDelete(`ルビルール「${rule.text || '(空)'}→${rule.ruby || '(空)'}」を解除しますか？`);
         if (!ok) return;
-        this._pushUndo('ルビルール削除');
+        this._pushUndo('ルビルール解除');
         autoRules.splice(i, 1);
         this._refreshAutoRubyDisplay();
         this._markDirty({ skipUndo: true });

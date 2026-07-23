@@ -25,14 +25,38 @@ function _setupDbColumnHeaderA11y(th, label) {
   th.setAttribute('aria-label', label || th.textContent?.trim() || '列');
 }
 
-function _dbEntityColumnDisplayLabel(dbPath) {
-  const path = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/g, '');
-  return path.endsWith('制作管理/シート/タスクリスト') ? 'タスク名' : 'エントリ名';
+// パスから決まる既定のエントリ名列ラベル（制作管理シートは固定名）
+function _dbDefaultEntityColumnLabel(dbPath) {
+  const parts = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/g, '').split('/').filter(Boolean);
+  if (parts.length < 3 || parts[parts.length - 3] !== '制作管理' || parts[parts.length - 2] !== 'シート') {
+    return 'エントリ名';
+  }
+  const sheetName = parts[parts.length - 1];
+  if (sheetName === 'タスクリスト' || sheetName.startsWith('タスクリスト_')) return 'タスク名';
+  return ({
+    '作品リスト': '作品名',
+    '作業対象リスト': '作業対象名',
+    '作業内容リスト': '作業内容名',
+    '作業規模リスト': '作業規模名',
+    'スタッフリスト': 'スタッフ名',
+  })[sheetName] || 'エントリ名';
+}
+
+// 表示用ラベル。制作管理以外のシートでは、ユーザーがビュー設定に保存した任意名を優先する。
+function _dbEntityColumnDisplayLabel(dbPath, options) {
+  const isProduction = typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(dbPath);
+  if (!isProduction && typeof getEntityColumnLabel === 'function') {
+    const custom = getEntityColumnLabel(dbPath, options || {});
+    if (custom) return custom;
+  }
+  return _dbDefaultEntityColumnLabel(dbPath);
 }
 
 function _dbDefaultEntityColumnWidth(dbPath) {
-  const path = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/g, '');
-  return path.endsWith('制作管理/シート/タスクリスト') ? 260 : 120;
+  // 幅の目安は既定ラベル基準（任意名を付けても既定の幅感を保つ）
+  const label = _dbDefaultEntityColumnLabel(dbPath);
+  return label === 'タスク名' ? 260 : (label === 'エントリ名' ? 120 : 180);
 }
 
 function _dbE2eToken(value) {
@@ -135,6 +159,30 @@ function _dbCellDisplayConfig(dbPath) {
   return { overflow, lines };
 }
 
+// 列単位のセル折返し/切り詰め上書き。
+// cellDisplayByColMap（getDbViewConfig(dbPath).cellDisplayByCol）に該当キーが無ければ
+// シート全体設定を継承する状態を表す null を返す。
+function _dbColumnCellOverrideEntry(cellDisplayByColMap, propName) {
+  const entry = cellDisplayByColMap && typeof cellDisplayByColMap === 'object' ? cellDisplayByColMap[propName] : null;
+  if (!entry || typeof entry !== 'object') return null;
+  if (entry.overflow !== 'wrap' && entry.overflow !== 'clip') return null;
+  return { overflow: entry.overflow, lines: _dbClampInt(entry.lines, 1, 10, 10) };
+}
+
+// 列メニュー等の単発参照用（dbPath から都度 getDbViewConfig するため、renderPivot の描画ループ内では使わない。
+// ループ内は renderPivot が一度だけ取得した cellDisplayByCol マップを options 経由で渡す）
+function getDbColumnCellDisplay(dbPath, propName) {
+  if (!dbPath || !propName) return null;
+  const cfg = getDbViewConfig(dbPath);
+  return _dbColumnCellOverrideEntry(cfg.cellDisplayByCol, propName);
+}
+
+function _dbHasColumnCellDisplayOverrides(dbPath) {
+  const cfg = getDbViewConfig(dbPath);
+  const map = cfg.cellDisplayByCol;
+  return !!(map && typeof map === 'object' && Object.keys(map).length);
+}
+
 function syncDbCellDisplayToolbar(dbPath) {
   const btn = document.getElementById('btn-db-cell-wrap');
   if (!btn) return;
@@ -143,8 +191,40 @@ function syncDbCellDisplayToolbar(dbPath) {
   const iconName = active ? 'wrapText' : 'scissors';
   btn.classList.toggle('active', active);
   btn.innerHTML = (typeof lucide === 'function') ? lucide(iconName, 16) : '';
-  btn.title = active ? `折返し (${cfg.lines}行まで)` : '切り詰め';
+  const hasColumnOverrides = _dbHasColumnCellDisplayOverrides(dbPath);
+  btn.title = (active ? `折返し (${cfg.lines}行まで)` : '切り詰め') + (hasColumnOverrides ? '（一部の列は個別設定）' : '');
   btn.setAttribute('aria-label', btn.title);
+}
+
+// 列ごとのセル折返し/切り詰めを設定する。overflow に null を渡すとその列の上書きを削除し、
+// シート全体設定（cellTextOverflow / cellWrapLines）へ継承を戻す。
+function setDbColumnCellTextDisplay(dbPath, propName, overflow, lines, options = {}) {
+  if (!dbPath || !propName) return;
+  const cfg = getDbViewConfig(dbPath);
+  const byCol = (cfg.cellDisplayByCol && typeof cfg.cellDisplayByCol === 'object') ? { ...cfg.cellDisplayByCol } : {};
+  const prevLines = byCol[propName]?.lines;
+  let detail;
+  if (overflow == null) {
+    delete byCol[propName];
+    detail = `${propName}: シート設定に従う`;
+  } else {
+    const nextOverflow = overflow === 'clip' ? 'clip' : 'wrap';
+    const nextLines = _dbClampInt(lines, 1, 10, prevLines || 10);
+    byCol[propName] = { overflow: nextOverflow, lines: nextLines };
+    detail = `${propName}: ${nextOverflow === 'wrap' ? `折り返し(${nextLines}行)` : '切り詰め'}`;
+  }
+  if (Object.keys(byCol).length) cfg.cellDisplayByCol = byCol;
+  else delete cfg.cellDisplayByCol;
+  saveDbViewConfig(dbPath, cfg, {
+    historyLabel: options.label || 'シート表示: 列の折返し',
+    historyDetail: detail,
+    skipHistory: options.skipHistory === true,
+  });
+  const ctx = options.ctx
+    || (typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(options.event, { dbPath }) : null)
+    || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+  else if (typeof renderPivot === 'function') renderPivot(ctx);
 }
 
 function setDbCellTextDisplay(dbPath, overflow, lines, options = {}) {
@@ -225,6 +305,11 @@ function showDbCellWrapMenu(event) {
   row.appendChild(input);
   menu.appendChild(row);
 
+  const note = document.createElement('div');
+  note.style.cssText = 'padding:4px 10px 6px;font-size:11px;color:var(--fg2);border-top:1px solid var(--border);margin-top:2px;';
+  note.textContent = '列ごとの設定は列メニューから';
+  menu.appendChild(note);
+
   const x = event?.clientX ?? 16;
   const y = event?.clientY ?? 16;
   const z = parseFloat(document.documentElement.style.zoom) || 1;
@@ -241,6 +326,73 @@ function showDbCellWrapMenu(event) {
     };
     document.addEventListener('pointerdown', closer);
   }, 0);
+}
+
+// 列ヘッダーメニューから開く、列単位の折返し/切り詰めポップアップ。
+// showDbCellWrapMenu（シート全体設定）と同じDOM流儀（フローティングdiv・クリック外側で閉じる）を踏襲し、
+// 「シート設定に従う（既定）」を追加した3択にする。
+// 列ヘッダーメニュー「折り返し設定」サブメニューの子項目を作る。
+// 親メニュー（列メニュー / エントリ名列メニュー）を閉じずにサブメニューとして開くため、
+// 別ポップアップは作らず {type:'submenu', children} に渡す配列だけを返す。
+// propName に '__entity__' を渡せばエントリ名列の折り返しも設定できる
+// （cellDisplayByCol は列名キーで __entity__ も受け付ける）。
+function _makeColumnWrapSubmenuItems(dbPath, propName, ctx) {
+  if (!dbPath || !propName) return [];
+  const sheetCfg = _dbCellDisplayConfig(dbPath);
+  const override = getDbColumnCellDisplay(dbPath, propName);
+  const effectiveLines = override ? override.lines : sheetCfg.lines;
+  return [
+    {
+      label: radioMark(!override) + 'シート設定に従う（既定）',
+      action: () => setDbColumnCellTextDisplay(dbPath, propName, null, null, { ctx }),
+    },
+    {
+      label: radioMark(!!override && override.overflow === 'wrap') + lucide('wrapText', 14) + ' 折り返し',
+      action: () => setDbColumnCellTextDisplay(dbPath, propName, 'wrap', effectiveLines, { ctx }),
+    },
+    {
+      label: radioMark(!!override && override.overflow === 'clip') + lucide('scissors', 14) + ' 切り詰め',
+      action: () => setDbColumnCellTextDisplay(dbPath, propName, 'clip', effectiveLines, { ctx }),
+    },
+    {
+      type: 'custom',
+      build: () => {
+        const row = document.createElement('label');
+        row.className = 'gb-menu-wrap-lines-row';
+        row.dataset.e2eId = 'db-column-cell-wrap-lines-row';
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;color:var(--fg);white-space:nowrap;';
+        const rowLabel = document.createElement('span');
+        rowLabel.textContent = '最大行数';
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '1';
+        input.max = '10';
+        input.value = String(effectiveLines);
+        input.dataset.e2eId = 'db-column-cell-wrap-lines-input';
+        input.style.cssText = 'width:56px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;';
+        const applyLines = () => {
+          const nextLines = _dbClampInt(input.value, 1, 10, effectiveLines);
+          input.value = String(nextLines);
+          setDbColumnCellTextDisplay(dbPath, propName, 'wrap', nextLines, { ctx });
+        };
+        input.addEventListener('change', applyLines);
+        input.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            applyLines();
+            if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
+          }
+        });
+        // 数値入力はサブメニュー（.gb-context-menu）配下にあり外側クリック判定に当たらないが、
+        // 念のため pointerdown の伝播は止めてメニューが閉じないようにする。
+        row.addEventListener('pointerdown', (e) => e.stopPropagation());
+        row.appendChild(rowLabel);
+        row.appendChild(input);
+        return row;
+      },
+    },
+  ];
 }
 
 function _dbTextLengthForWidth(text) {
@@ -294,8 +446,8 @@ function _dbAutoWidthCharsForTexts(texts, headerText) {
   return Math.min(50, Math.max(4, chars));
 }
 
-function _dbAutoWidthCharsForEntryNames(entityNames) {
-  const base = _dbAutoWidthCharsForTexts(entityNames, 'エントリ名');
+function _dbAutoWidthCharsForEntryNames(entityNames, headerText = 'エントリ名') {
+  const base = _dbAutoWidthCharsForTexts(entityNames, headerText);
   const maxNameLen = entityNames.length
     ? Math.max(...entityNames.map(name => _dbTextLengthForWidth(name)))
     : 0;
@@ -321,12 +473,12 @@ function _dbAutoImageColumnWidth(propName, ptc) {
   return Math.max(96, Math.min(260, Math.max(labelWidth, cellSize + 52)));
 }
 
-function autoFitCurrentSheetColumns(event) {
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
-    ? _dbPaneContextFromEvent(event, { dbPath: state.currentDbPath })
-    : _currentPaneState();
+function autoFitCurrentSheetColumns(event, ctxOverride, dbPathOverride) {
+  const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(event, { dbPath: dbPathOverride || state.currentDbPath })
+    : _currentPaneState());
   const data = ctx?.pivotData || state.pivotData;
-  const dbPath = ctx?.dbPath || state.currentDbPath;
+  const dbPath = dbPathOverride || ctx?.dbPath || state.currentDbPath;
   if (!dbPath || !data?.entities) return;
   const viewMode = typeof _dbCurrentViewModeForContext === 'function'
     ? _dbCurrentViewModeForContext(ctx, dbPath)
@@ -342,7 +494,7 @@ function autoFitCurrentSheetColumns(event) {
   const cfg = getDbViewConfig(dbPath);
   const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const hiddenCols = getHiddenCols(dbPath, { ctx });
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   const colOrder = getColOrder(dbPath, { ctx });
   let props = colOrder ? [...colOrder] : [...(data.properties || [])];
@@ -358,7 +510,7 @@ function autoFitCurrentSheetColumns(event) {
   const widthTarget = currentView || cfg;
 
   widthTarget.colWidths = { ...(widthTarget.colWidths || {}) };
-  const entityChars = _dbAutoWidthCharsForEntryNames(entityNames);
+  const entityChars = _dbAutoWidthCharsForEntryNames(entityNames, _dbEntityColumnDisplayLabel(dbPath));
   widthTarget.colWidths.__entity__ = _dbEntityWidthPxFromChars(entityChars);
   visibleProps.forEach(propName => {
     const ptc = propTypes?.[propName] || {};
@@ -370,7 +522,7 @@ function autoFitCurrentSheetColumns(event) {
     widthTarget.colWidths[propName] = _dbWidthPxFromChars(_dbAutoWidthCharsForTexts(texts, propName));
   });
   cfg.cellWrapLines = _dbClampInt(cfg.cellWrapLines, 1, 10, 10);
-  saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+  saveDbViewConfig(dbPath, cfg, { skipHistory: true, ctx });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, 'シート表示: 列幅自動調整', before, captureDbViewConfigHistory(dbPath), '全列');
   }
@@ -380,7 +532,7 @@ function autoFitCurrentSheetColumns(event) {
 
 function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   const entitiesMap = data?.entities || {};
-  const propTypes = options.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {});
+  const propTypes = options.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {});
   const advFilters = options.advFilters || (typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx }) : []);
   const filterMode = options.filterMode ?? ctx?.filter ?? (typeof state !== 'undefined' ? state.filter : undefined) ?? 'disabled';
   const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath, { ctx }) : getDbViewConfig(dbPath).sortConfig)
@@ -467,7 +619,7 @@ function renderPivot(ctx) {
   const thumbSize = getThumbnailSize(dbPath, { ctx });
   const savedWidths = getColWidths(dbPath, { ctx });
   const advFilters = getAdvancedFilters(dbPath, { ctx });
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const groupByProp = getGroupBy(dbPath);
 
   // カラム順序適用（非表示カラムは除外）
@@ -509,6 +661,10 @@ function renderPivot(ctx) {
   const gridCfg = getDbViewConfig(dbPath);
   const gridH = gridCfg.gridH || { width: '1px', color: '' };
   const gridV = gridCfg.gridV || { width: '1px', color: '' };
+  // 列ごとのセル折返し/切り詰め上書き。未設定なら null にして renderEntityCell 側の per-td 処理を丸ごとスキップさせる。
+  const cellDisplayByCol = (gridCfg.cellDisplayByCol && typeof gridCfg.cellDisplayByCol === 'object' && Object.keys(gridCfg.cellDisplayByCol).length)
+    ? gridCfg.cellDisplayByCol
+    : null;
   const entityColumnPinned = typeof getEntityColumnPinned === 'function'
     ? getEntityColumnPinned(dbPath, { ctx })
     : gridCfg.entityColumnPinned !== false;
@@ -561,14 +717,14 @@ function renderPivot(ctx) {
   th0MoreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
   th0MoreBtn.addEventListener('mouseenter', () => { th0MoreBtn.style.background = 'var(--bg4)'; });
   th0MoreBtn.addEventListener('mouseleave', () => { th0MoreBtn.style.background = 'var(--bg2)'; });
-  th0MoreBtn.addEventListener('click', (e) => { e.stopPropagation(); showEntityColMenu(e); });
+  th0MoreBtn.addEventListener('click', (e) => { e.stopPropagation(); showEntityColMenu(e, ctx, dbPath); });
   th0.appendChild(th0MoreBtn);
   th0.style.cursor = 'pointer';
   th0.addEventListener('mouseenter', () => { th0MoreBtn.style.opacity = '1'; });
   th0.addEventListener('mouseleave', () => { th0MoreBtn.style.opacity = '0'; });
-  th0.addEventListener('contextmenu', (e) => { e.preventDefault(); showEntityColMenu(e); });
+  th0.addEventListener('contextmenu', (e) => { e.preventDefault(); showEntityColMenu(e, ctx, dbPath); });
   if (typeof addLongPressHandler === 'function') {
-    addLongPressHandler(th0, (e) => showEntityColMenu(e));
+    addLongPressHandler(th0, (e) => showEntityColMenu(e, ctx, dbPath));
   }
   th0.addEventListener('click', (e) => {
     if (e.target.closest('.col-resize-handle, .th-more-btn')) return;
@@ -671,7 +827,7 @@ function renderPivot(ctx) {
     moreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
     moreBtn.addEventListener('mouseenter', () => { moreBtn.style.background = 'var(--bg4)'; });
     moreBtn.addEventListener('mouseleave', () => { moreBtn.style.background = 'var(--bg2)'; });
-    moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showColHeaderMenu(e, p, i); });
+    moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showColHeaderMenu(e, p, i, ctx, dbPath); });
     th.appendChild(moreBtn);
     th.style.position = 'relative';
     th.addEventListener('mouseenter', () => { moreBtn.style.opacity = '1'; });
@@ -771,13 +927,13 @@ function renderPivot(ctx) {
       if (e.target.closest('.col-resize-handle')) return;
       e.stopPropagation();
       closeColHeaderMenu();
-      startHeaderInlineRename(th, p, dbPath);
+      startHeaderInlineRename(th, p, dbPath, ctx);
     });
 
     // 右クリックメニュー ＋ 長押しで同メニュー（タッチ/ペン）
-    th.addEventListener('contextmenu', (e) => { e.preventDefault(); showColHeaderMenu(e, p, i); });
+    th.addEventListener('contextmenu', (e) => { e.preventDefault(); showColHeaderMenu(e, p, i, ctx, dbPath); });
     if (typeof addLongPressHandler === 'function') {
-      addLongPressHandler(th, (e) => showColHeaderMenu(e, p, i));
+      addLongPressHandler(th, (e) => showColHeaderMenu(e, p, i, ctx, dbPath));
     }
     headerRow.appendChild(th);
   });
@@ -786,9 +942,9 @@ function renderPivot(ctx) {
   const thAdd = document.createElement('th');
   thAdd.className = 'col-add-prop';
   thAdd.dataset.e2eId = _dbE2eId(ctx, 'column-add-prop');
-  _setupDbColumnHeaderA11y(thAdd, 'プロパティを追加');
+  _setupDbColumnHeaderA11y(thAdd, '列を追加');
   thAdd.style.cssText = 'width:36px;min-width:36px;text-align:center;cursor:pointer;color:var(--fg2);padding:0;';
-  thAdd.title = 'プロパティを追加';
+  thAdd.title = '列を追加';
   thAdd.innerHTML = lucide('plus', 16);
   thAdd.addEventListener('click', () => {
     const order = getColOrder(dbPath, { ctx }) || [...props];
@@ -798,8 +954,10 @@ function renderPivot(ctx) {
       ...(typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, data.properties || []) : (data.properties || [])),
       ...Object.keys(propTypes || {}),
     ]);
-    let idx = 1, name = 'プロパティ';
-    while (existingNames.has(name)) { idx++; name = 'プロパティ' + idx; }
+    // 新しい列の初期名は列タイプ名（この経路はテキスト列）
+    const base = (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel('text') : '') || 'テキスト';
+    let idx = 1, name = base;
+    while (existingNames.has(name)) { idx++; name = base + idx; }
     order.push(name);
     setColOrder(dbPath, order, { skipHistory: true, ctx });
     setPropertyType(dbPath, name, { type: 'text' });
@@ -854,6 +1012,7 @@ function renderPivot(ctx) {
     visibleProps, propTypes, entitiesMap, entityNames,
     dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols,
     selectedCols, _entityW, _tbl, _tblId, entityColumnPinned,
+    cellDisplayByCol,
   };
 
   // 行生成タスクをフラット化 (グループヘッダー + エントリ行を順序通りに並べる)

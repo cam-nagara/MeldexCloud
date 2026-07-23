@@ -1,19 +1,16 @@
         <input id="pt-calsync-target-db" type="text" value="${esc(safe.targetDb || '')}" placeholder="例: ShareDevelop/Meldex開発/カレンダー/AI修正スケジュール">
       </div>
-      <div class="field"><label>タイトルテンプレート</label>
+      <div class="field"><label>タイトルテンプレート ${fieldHelp('利用可能な変数: {entryName} / {entryPath} / {entryId}')}</label>
         <input id="pt-calsync-title-tmpl" type="text" value="${esc(safe.titleTemplate || '{entryName}')}" placeholder="{entryName}">
-        <div class="pt-hint">利用可能: {entryName} / {entryPath} / {entryId}</div>
       </div>
-      <div class="field"><label>説明テンプレート</label>
+      <div class="field"><label>説明テンプレート ${fieldHelp('テンプレ変数に加え、エントリの採用列名も {列名} で参照できます')}</label>
         <textarea id="pt-calsync-desc-tmpl" rows="3" placeholder="デバッグリストエントリ: {entryPath}">${esc(safe.descriptionTemplate || '')}</textarea>
-        <div class="pt-hint">テンプレ変数に加え、エントリの採用プロパティ名も {プロパティ名} で参照可能。</div>
       </div>
-      <div class="field"><label>色ルール (JSON 配列)</label>
+      <div class="field"><label>色ルール (JSON 配列) ${fieldHelp('上から順に評価し、最初にマッチしたルールの color を使います。default ルールがフォールバックになります')}</label>
         <textarea id="pt-calsync-color-rules" rows="5" placeholder='[
   { "when": { "prop": "進捗", "equals": "完了" }, "color": "#6a9955" },
   { "default": "#569cd6" }
 ]'>${esc(colorRulesJson)}</textarea>
-        <div class="pt-hint">上から評価。最初にマッチしたルールの color を使用。default ルールがフォールバック。</div>
       </div>
       <div class="field"><label>エントリ削除時の挙動</label>
         <select id="pt-calsync-on-entry-delete">
@@ -52,7 +49,7 @@ function _bindCalendarSyncEditor(root) {
   if (chk && body) {
     chk.addEventListener('change', () => { body.style.display = chk.checked ? '' : 'none'; });
   }
-  if (tgt && typeof _attachDbPicker === 'function') _attachDbPicker(tgt);
+  if (tgt && typeof _attachDbPicker === 'function') _attachDbPicker(tgt, _ptState(root)?.dbPath);
 }
 
 // applyPropertyType から呼ばれる。calendarSync セクションの入力値を収集して返す（無効時は null）。
@@ -110,7 +107,14 @@ function onPropertyTypeChange(root) {
     const opts = current.options || existing;
     optDiv.innerHTML = `<div class="field"><label>選択肢（1行1項目）</label>
       <textarea id="pt-select-options" rows="5">${esc(opts.join('\n'))}</textarea>
+    </div>
+    <div class="field"><label>選択肢の色 ${fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます（ドロップダウン内からの変更は非対応）')}</label>
+      <div id="pt-select-option-colors" class="pt-option-color-list"></div>
     </div>`;
+    scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };
+    if (typeof renderDbOptionColorEditor === 'function') {
+      renderDbOptionColorEditor(_ptGet('pt-select-option-colors', scope), scope);
+    }
   } else if (type === 'relation' || type === 'multi-relation') {
     // 現在のDBのリレーション型プロパティ一覧（カスケード元の候補）
     const relProps = [];

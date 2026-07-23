@@ -25,20 +25,18 @@ function initPageTitle() {
         const ext = path.substring(path.lastIndexOf('.'));
         return dir + '/' + nv + ext;
       })();
-      // 自動保存タイマーをキャンセル（旧パスへの保存を防止）
-      clearTimeout(window._noteAutoSaveTimer);
-      state.currentPagePath = newPath;
-      document.getElementById('page-content').dataset.path = newPath;
-      window.MeldexFileLockBadge?.apply?.(el, newPath);
-      showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
-      _pageTitleOld = nv;
-      // フォルダツリーのノードを直接更新（loadOutlinerによる全再構築を避ける）
-      _renameTreeNode(path, newPath, nv, res.file_id);
-      if (typeof renameAppPathReferences === 'function') {
-        renameAppPathReferences(path, newPath, { label: nv, fileId: res.file_id, type: 'page' });
-      }
+      _applyPageTitleRenameSuccess(el, path, newPath, nv, res.file_id);
       if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-    } catch { el.textContent = _pageTitleOld; }
+    } catch (e) {
+      if (e && e.isTimeout) {
+        await _pageTitleConfirmRenameAfterTimeout(el, path, nv);
+      } else {
+        // API失敗時はタイトルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+        el.textContent = _pageTitleOld;
+        const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+        showStatus(`「${_pageTitleOld}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
+      }
+    }
   });
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
   // 貼り付けは常にプレーンテキストとして挿入する（他所からの太字・斜体・フォント等の書式を持ち込ませない）
@@ -66,6 +64,60 @@ function initPageTitle() {
       sel.addRange(range);
     }
   });
+}
+
+// ノートタイトルのリネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
+function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId) {
+  // 自動保存タイマーをキャンセル（旧パスへの保存を防止）
+  clearTimeout(window._noteAutoSaveTimer);
+  state.currentPagePath = newPath;
+  document.getElementById('page-content').dataset.path = newPath;
+  window.MeldexFileLockBadge?.apply?.(el, newPath);
+  showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
+  _pageTitleOld = nv;
+  // フォルダツリーのノードを直接更新（loadOutlinerによる全再構築を避ける）
+  if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, nv, fileId);
+  if (typeof renameAppPathReferences === 'function') {
+    renameAppPathReferences(oldPath, newPath, { label: nv, fileId, type: 'page' });
+  }
+}
+
+// リネームAPIタイムアウト時の事後確認。フォルダツリー側（gb-outliner）の共通ヘルパーを再利用する
+async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
+  const oldName = _pageTitleOld;
+  showStatus('リネームに時間がかかっています。結果を確認中…');
+  const canConfirm = typeof _outlinerFetchFolderListingForConfirm === 'function'
+    && typeof _outlinerFindRenamedItem === 'function';
+  if (canConfirm) {
+    const parentPath = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+    const contextNodeEl = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null;
+    const delays = typeof _outlinerPostTimeoutConfirmDelays === 'function'
+      ? _outlinerPostTimeoutConfirmDelays()
+      : (typeof OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS !== 'undefined'
+        ? OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS : [2000, 4000, 8000, 16000]);
+    for (const delay of delays) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+      const found = _outlinerFindRenamedItem(items, oldName, nv);
+      if (found) {
+        if (state.currentPagePath === path) {
+          _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id);
+        } else {
+          // 確認中に別のノートへ移動していた場合はエディタ状態（現在パス・タイトル・
+          // 自動保存先）を触らず、ツリーと参照の更新だけ行う
+          if (typeof _renameTreeNode === 'function') _renameTreeNode(path, found.path, nv, found.file_id);
+          if (typeof renameAppPathReferences === 'function') {
+            renameAppPathReferences(path, found.path, { label: nv, fileId: found.file_id, type: 'page' });
+          }
+          showStatus('リネーム: ' + oldName + ' → ' + nv);
+        }
+        return;
+      }
+    }
+  }
+  // 確認中に別のノートへ移動していた場合、el は別ノートのタイトルを表示しているため戻さない
+  if (state.currentPagePath === path) el.textContent = oldName;
+  showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
 }
 function startPageTitleEdit(el) { el.focus(); }
 
@@ -414,6 +466,12 @@ async function openPage(label, path, opts) {
   window._openPageLoadSeq = pageLoadSeq;
   const isStalePageLoad = () => window._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
   pc.dataset.path = path;
+  // バージョン管理タブの追従同期。_getCurrentVersionTarget() は state.view==='page' の時
+  // #page-content の dataset.path を見るため、navPush() 呼び出し時点（この直前）ではまだ
+  // 古いパスのままで間に合わない。dataset.path を確定させたこの時点で同期する。
+  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.syncFollowingVersionTabs === 'function') {
+    GBPaneBridge.syncFollowingVersionTabs();
+  }
   // 編集ロック
   pc.contentEditable = isItemLocked(path) ? 'false' : 'true';
 

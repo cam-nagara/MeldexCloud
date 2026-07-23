@@ -763,12 +763,23 @@ async function triggerNewEntity(table, dataRows, focusCol) {
     else _waitForEntityRow(created.renderCtx || ctx, created.name, (newRow) => focusCreatedRow(newRow, created.name));
     try {
       const saved = await created.promise;
+      if (saved.name !== created.name && typeof _dbRenameOptimisticEntityLocally === 'function') {
+        _dbRenameOptimisticEntityLocally(created.renderCtx || ctx, _db, created.name, saved.name);
+      }
       if (typeof _dbScheduleEntityCreatePostSync === 'function') {
         _dbScheduleEntityCreatePostSync(_db, [{ name: saved.name, path: saved.path, response: saved.response }], created.renderCtx || ctx);
       }
     } catch (e) {
-      if (typeof _dbRemoveCreatedEntitiesLocally === 'function') _dbRemoveCreatedEntitiesLocally(created.renderCtx || ctx, _db, [created.name]);
-      if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+      // タイムアウト等でも作成済みのことがあるため、撤去前に確認する
+      const recovered = typeof _dbRecoverEntityCreateAfterError === 'function'
+        ? await _dbRecoverEntityCreateAfterError(created.renderCtx || ctx, _db, created)
+        : null;
+      if (recovered) {
+        if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+      } else {
+        if (typeof _dbRemoveCreatedEntitiesLocally === 'function') _dbRemoveCreatedEntitiesLocally(created.renderCtx || ctx, _db, [created.name]);
+        if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+      }
     }
     return;
   }
@@ -821,8 +832,10 @@ function triggerNewProperty(ctxOrDbPath) {
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : [...(pivotData?.properties || [])];
   const order = getColOrder(dbPath, { ctx }) || fallbackOrder;
-  let idx = 1, name = 'プロパティ';
-  while (order.includes(name)) { idx++; name = 'プロパティ' + idx; }
+  // 新しい列の初期名は列タイプ名（この経路はテキスト列）
+  const base = (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel('text') : '') || 'テキスト';
+  let idx = 1, name = base;
+  while (order.includes(name)) { idx++; name = base + idx; }
   order.push(name);
   setColOrder(dbPath, order, { skipHistory: true, ctx });
   setPropertyType(dbPath, name, { type: 'text' });
@@ -830,7 +843,10 @@ function triggerNewProperty(ctxOrDbPath) {
   setTimeout(() => {
     const _ctx2 = ctx || _currentPaneState();
     const th = _paneEl(_ctx2, '#' + (_ctx2.tableId || 'pivot-table') + ` thead th[data-prop="${name}"]`);
-    if (th) startHeaderInlineRename(th, name, dbPath);
+    // _ctx2 を渡さないと startHeaderInlineRename() が独自に ctx を再解決し、直前の
+    // setColOrder/setPropertyType が使った ctx/dbPath と食い違う経路が生まれる
+    // （embedded ctx を持つ埋め込みシートでは特に、メイン画面側へ誤爆しうる。2026-07-15 徹底チェックで発見）。
+    if (th) startHeaderInlineRename(th, name, dbPath, _ctx2);
   }, 30);
 }
 

@@ -1,9 +1,9 @@
 /* プロパティ型・値エディタ — gb-db-props.js から分離 */
 
-function getPropertyTypes(dbPath) {
+function getPropertyTypes(dbPath, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
   const localTypes = getDbViewConfig(targetPath).propertyTypes || {};
-  const targetMetadata = _ptMetadataForDbPath(targetPath);
+  const targetMetadata = _ptMetadataForDbPath(targetPath, ctxOverride);
   // バックエンド（フォルダノート）を優先: property_types キーが存在すればそれを使う
   if (targetMetadata && 'property_types' in targetMetadata && targetMetadata.property_types !== null) {
     const backendTypes = targetMetadata.property_types || {};
@@ -25,9 +25,14 @@ function _ptIsCurrentDbPath(dbPath) {
   return !target || !current || target === current;
 }
 
-function _ptMetadataForDbPath(dbPath) {
+function _ptMetadataForDbPath(dbPath, ctxOverride) {
   const target = _ptNormalizeDbPath(dbPath || state.currentDbPath || '');
-  if (_ptIsCurrentDbPath(target)) return state.dbMetadata || null;
+  if (ctxOverride
+    && (!target || _ptNormalizeDbPath(ctxOverride.dbPath || '') === target)
+    && ctxOverride.dbMetadata) {
+    return ctxOverride.dbMetadata;
+  }
+  if (_ptIsCurrentDbPath(target) && state.dbMetadata) return state.dbMetadata;
   if (typeof _dbFindPaneContextForPath === 'function' && target) {
     const ctx = _dbFindPaneContextForPath(target);
     if (ctx?.dbMetadata) return ctx.dbMetadata;
@@ -48,8 +53,16 @@ function _ptContextForDbPath(dbPath, ctx) {
   return ctx || null;
 }
 
-function setPropertyType(dbPath, propName, typeConfig) {
+function setPropertyType(dbPath, propName, typeConfig, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
+  const currentTypes = getPropertyTypes(targetPath, ctxOverride) || {};
+  const protectionLevel = _dbSchemaProtectionLevel(targetPath, propName);
+  if (protectionLevel
+    && Object.prototype.hasOwnProperty.call(currentTypes, propName)
+    && JSON.stringify(currentTypes[propName] || {}) !== JSON.stringify(typeConfig || {})) {
+    _showSchemaProtectionBlockedStatus(protectionLevel);
+    return false;
+  }
   // localStorage にキャッシュ（従来通り）
   const c = getDbViewConfig(targetPath);
   if (!c.propertyTypes) c.propertyTypes = {};
@@ -57,14 +70,14 @@ function setPropertyType(dbPath, propName, typeConfig) {
   _unmarkDbPropertyDeletedInConfig(c, propName);
   saveDbViewConfig(targetPath, c);
   // state.dbMetadata にも反映
-  const targetMetadata = _ptMetadataForDbPath(targetPath);
+  const targetMetadata = _ptMetadataForDbPath(targetPath, ctxOverride);
   if (targetMetadata) {
     if (!targetMetadata.property_types) targetMetadata.property_types = {};
     targetMetadata.property_types[propName] = typeConfig;
     if (_ptIsCurrentDbPath(targetPath)) state.dbMetadata = targetMetadata;
   }
   // バックエンドに永続保存
-  return _savePropertyTypesToBackend(targetPath);
+  return _savePropertyTypesToBackend(targetPath, undefined, ctxOverride);
 }
 
 const _ptBackendSaveQueues = {};
@@ -73,8 +86,36 @@ function _dbDeletedPropsArrayFromConfig(cfg) {
   return Array.isArray(cfg?.deletedProps) ? cfg.deletedProps : [];
 }
 
+function _isProductionManagementColumnDeletionBlocked(dbPath) {
+  return typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(dbPath || state.currentDbPath || '');
+}
+
+// スタッフ管理シート（正本）を含む列保護レベルの統一判定（実体は gb-db-core.js の
+// getSchemaProtectionLevel()。'all'=制作管理・全列ロック / 'required'=正本シートの
+// 必須列のみロック / null=無保護）。計画書§5.2「列保護（列単位の保護機構を新設）」。
+function _dbSchemaProtectionLevel(dbPath, propName) {
+  if (typeof getSchemaProtectionLevel === 'function') return getSchemaProtectionLevel(dbPath, propName);
+  return _isProductionManagementColumnDeletionBlocked(dbPath) ? 'all' : null;
+}
+
+function _showSchemaProtectionBlockedStatus(level) {
+  if (typeof showStatus !== 'function') return;
+  if (level === 'all') { showStatus('制作管理に必要な列は削除できません。非表示を利用してください', true); return; }
+  if (level === 'required') { showStatus('スタッフ管理に必要な列は削除できません。非表示を利用してください', true); }
+}
+
 function getDeletedDbProperties(dbPath) {
-  return _dbDeletedPropsArrayFromConfig(getDbViewConfig(dbPath));
+  // 旧版で付いた tombstone が残っていても、制作管理の必須列は表示対象へ戻す。
+  if (_isProductionManagementColumnDeletionBlocked(dbPath)) return [];
+  const raw = _dbDeletedPropsArrayFromConfig(getDbViewConfig(dbPath));
+  const targetPath = dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '';
+  if (raw.length && typeof window !== 'undefined' && window.MeldexUserRegistry?.isRegistryPathSync?.(targetPath)) {
+    // 正本シートは必須列のtombstoneだけ除去し、管理者追加列のtombstoneは残す
+    // （制作管理は全tombstone除去、正本は必須列のみ。計画書§5.2）。
+    return raw.filter((name) => !window.MeldexStaffRegistrySchema?.isRequiredProperty?.(name));
+  }
+  return raw;
 }
 
 function isDbPropertyDeleted(dbPath, propName) {
@@ -108,9 +149,14 @@ function _unmarkDbPropertyDeletedInConfig(cfg, propName) {
 // 列を削除（設定のみ）: 候補値データは各エントリに残る
 async function _deleteColumn(dbPath, propName, ctx) {
   if (!dbPath || !propName) return false;
+  const deleteProtectionLevel = _dbSchemaProtectionLevel(dbPath, propName);
+  if (deleteProtectionLevel) {
+    _showSchemaProtectionBlockedStatus(deleteProtectionLevel);
+    return false;
+  }
   const renderCtx = _ptContextForDbPath(dbPath, ctx);
   const ok = await cfConfirm(
-    `列「${propName}」を削除します。\n\n既存の候補値データはエントリに残りますが、表示されなくなります。\n（再度同名のプロパティを追加すれば値は復活します）\n\n削除しますか？`
+    `列「${propName}」を削除します。\n\n既存の候補値データはエントリに残りますが、表示されなくなります。\n（再度同名の列を追加すれば値は復活します）\n\n削除しますか？`
   );
   if (!ok) return false;
 
@@ -205,6 +251,11 @@ async function _deleteColumn(dbPath, propName, ctx) {
 // 確認なしで列削除（redo用）
 async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   if (!dbPath || !propName) return false;
+  const deleteProtectionLevel = _dbSchemaProtectionLevel(dbPath, propName);
+  if (deleteProtectionLevel) {
+    _showSchemaProtectionBlockedStatus(deleteProtectionLevel);
+    return false;
+  }
   const renderCtx = _ptContextForDbPath(dbPath, ctx);
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
   const c = getDbViewConfig(dbPath);
@@ -246,8 +297,10 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   return true;
 }
 
-async function _savePropertyTypesToBackend(dbPath, extraMetadata) {
+async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
+  if (typeof isProductionManagementWriteBlocked === 'function'
+      && isProductionManagementWriteBlocked(targetPath, ctxOverride)) return false;
   const key = _ptNormalizeDbPath(targetPath);
   const queue = _ptBackendSaveQueues[key] || (_ptBackendSaveQueues[key] = {
     dirty: false,
@@ -265,18 +318,22 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata) {
       while (queue.dirty) {
         queue.dirty = false;
         const payload = {
-          property_types: getPropertyTypes(targetPath)
+          property_types: getPropertyTypes(targetPath, ctxOverride)
         };
         if (queue.extraMetadata && typeof queue.extraMetadata === 'object') {
           Object.assign(payload, queue.extraMetadata);
           queue.extraMetadata = {};
         }
         try {
+          if (typeof isProductionManagementWriteBlocked === 'function'
+              && isProductionManagementWriteBlocked(targetPath, ctxOverride)) continue;
           await apiPut('/db-metadata?path=' + encodeURIComponent(targetPath), payload);
         } catch (e) {
           console.warn('プロパティ型設定のバックエンド保存に失敗:', e);
         }
       }
+      // ふりがな型の設定・解除はルビ辞書の内容を変えるため、保存確定後に再読込する
+      if (typeof loadLinkDict === 'function') loadLinkDict();
     } finally {
       queue.running = false;
       queue.promise = null;
@@ -487,11 +544,23 @@ function _renameViewConfigPropReferences(target, oldName, newName) {
   }
 }
 
-async function renameDbProperty(dbPath, oldName, newName) {
+// ctxOverride: 呼び出し側が既に持っているペインctxを直接渡すためのオプション引数。値の移設
+// （entities のcandidateを oldName から newName へ移す下の for ループ）は pivotData.entities
+// を辿るため、正しい ctx が無いと「登録済みペインの pivotData」ではなく state.pivotData
+// （現在グローバルにアクティブな別ペインの pivotData、または何も開いていなければ空）を誤って
+// 対象にしてしまう。埋め込みシート（グローバル _panes レジストリに未登録）から呼ぶ場合は特に
+// 必須（_dbFindPaneContextForPath() のレジストリ探索では見つからないため）。渡さない場合は
+// 従来通りの再解決にフォールバックする（挙動は変わらない）。2026-07-15 フェーズD1で確認。
+async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
   if (!dbPath || !oldName || !newName || oldName === newName) return false;
+  const renameProtectionLevel = _dbSchemaProtectionLevel(dbPath, oldName);
+  if (renameProtectionLevel) {
+    _showSchemaProtectionBlockedStatus(renameProtectionLevel);
+    return false;
+  }
   const beforeCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
   const beforePropertyTypes = JSON.parse(JSON.stringify((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : beforeCfg.propertyTypes) || {}));
-  const targetCtx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
+  const targetCtx = ctxOverride || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
   const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(targetCtx) : null) || (_ptIsCurrentDbPath(dbPath) ? state.pivotData : null);
   const c = getDbViewConfig(dbPath);
   const rawExistingProps = [
@@ -572,31 +641,86 @@ async function renameDbProperty(dbPath, oldName, newName) {
       try { await _apiPutValue(ref, { new_property: oldName }); } catch {}
     }
   };
-  for (const ent of Object.values(entities)) {
-    const vals = ent?.[oldName];
-    if (!Array.isArray(vals)) continue;
-    const moveVals = vals.slice().sort((a, b) => (Number(b?.candidate_index) || 0) - (Number(a?.candidate_index) || 0));
-    for (const val of moveVals) {
-      try {
-        await _apiPutValue(val, { new_property: newName });
-        val.property = newName;
-        movedValueRefs.push({ ...val, property: newName });
-      }
-      catch (e) { valueErrors.push(e); }
-    }
-    if (valueErrors.length) {
-      await rollbackMovedValues();
+  // SQLiteネイティブシートはサーバー側で列名を全エントリ一括変更する。
+  // 従来は1マスずつ PUT し、そのたびにシート全体のスナップショットを保存していたため
+  // 数百行の列で数百往復＋数百スナップショットになり、確定に数秒かかっていた。
+  let bulkRenamed = false;
+  try {
+    const bulk = await apiPut('/db-property/rename',
+      { db_path: dbPath, old_name: oldName, new_name: newName },
+      { silentError: true });
+    if (bulk && bulk.ok && !bulk.fallback) {
+      bulkRenamed = true;
+    } else if (bulk && bulk.conflict) {
       await restoreBeforeConfig();
-      const msg = valueErrors[0]?.message || valueErrors[0] || '値の更新に失敗しました';
-      showStatus('列名変更に失敗: ' + msg, true);
-      throw valueErrors[0] || new Error('rename value update failed');
+      showStatus('同じ名前の列が既にあります: ' + newName, true);
+      return false;
     }
-    movedEntities.push({ ent, vals });
+    // bulk.fallback（旧マークダウン形式）の場合は下の逐次経路へ
+  } catch (e) {
+    // 一括経路が使えない場合は従来の逐次経路へフォールバックする
   }
-  movedEntities.forEach(({ ent, vals }) => {
-    ent[newName] = vals.map(v => ({ ...v, property: newName }));
-    delete ent[oldName];
-  });
+
+  if (bulkRenamed) {
+    Object.values(entities).forEach(ent => {
+      if (ent && Array.isArray(ent[oldName])) {
+        ent[newName] = ent[oldName].map(v => ({ ...v, property: newName }));
+        delete ent[oldName];
+      }
+    });
+  } else {
+    for (const ent of Object.values(entities)) {
+      const vals = ent?.[oldName];
+      if (!Array.isArray(vals)) continue;
+      const moveVals = vals.slice().sort((a, b) => (Number(b?.candidate_index) || 0) - (Number(a?.candidate_index) || 0));
+      for (const val of moveVals) {
+        try {
+          await _apiPutValue(val, { new_property: newName });
+          val.property = newName;
+          movedValueRefs.push({ ...val, property: newName });
+        }
+        catch (e) { valueErrors.push(e); }
+      }
+      if (valueErrors.length) {
+        await rollbackMovedValues();
+        await restoreBeforeConfig();
+        const msg = valueErrors[0]?.message || valueErrors[0] || '値の更新に失敗しました';
+        showStatus('列名変更に失敗: ' + msg, true);
+        throw valueErrors[0] || new Error('rename value update failed');
+      }
+      movedEntities.push({ ent, vals });
+    }
+    movedEntities.forEach(({ ent, vals }) => {
+      ent[newName] = vals.map(v => ({ ...v, property: newName }));
+      delete ent[oldName];
+    });
+  }
+  // 描画に使う pivotData の列名を付け替える。properties 配列の付け替えが抜けていると、
+  // renderPivot() は colOrder ∪ pivotData.properties ∪ propertyTypes から列を組み立て
+  // 生キーをヘッダーに出すため、旧名がそのまま残り「リネームが反映されない」ように見える。
+  // entities も一緒に付け替える。properties だけ新名にして entities を旧名のまま残すと、
+  // その pivotData を描画するペインがヘッダー新名＋空セル（データ消失に見える）になる。
+  // value-move 済みの pivotData では entities 側は no-op（旧名キーが既に無い）＝冪等。
+  // 分割ビューで同一シートを別ペインに開いている場合の state.pivotdata（別オブジェクト）にも
+  // 同じ移行を適用し、そのペインが空セルにならないようにする。
+  const _renamePivotLocal = (pd) => {
+    if (!pd) return;
+    if (Array.isArray(pd.properties)) {
+      pd.properties = [...new Set(pd.properties.map(n => (n === oldName ? newName : n)))];
+    }
+    if (pd.entities && typeof pd.entities === 'object') {
+      Object.values(pd.entities).forEach(ent => {
+        if (ent && Array.isArray(ent[oldName])) {
+          ent[newName] = ent[oldName].map(v => ({ ...v, property: newName }));
+          delete ent[oldName];
+        }
+      });
+    }
+  };
+  _renamePivotLocal(pivotData);
+  if (_ptIsCurrentDbPath(dbPath) && state.pivotData && state.pivotData !== pivotData) {
+    _renamePivotLocal(state.pivotData);
+  }
   if (typeof updatePropertyLayoutForRename === 'function') {
     await updatePropertyLayoutForRename(dbPath, oldName, newName);
   }
@@ -631,9 +755,9 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
   o.className = 'modal-overlay';
   const scopeId = 'modal-' + Math.random().toString(36).slice(2, 8);
   o.innerHTML = `<div class="modal pt-modal" data-pt-root>
-    <h3>プロパティ型の設定</h3>
+    <h3>列タイプの設定</h3>
     <div class="modal-body">
-      <div class="gb-section-desc">プロパティ: ${esc(propName)}</div>
+      <div class="gb-section-desc">列: ${esc(propName)}</div>
       <div class="field"><label>型</label>
         <select id="pt-type" data-onchange="onPropertyTypeChange(this.closest('[data-pt-root]'))">
           ${renderPropertyTypeOptions(current.type)}
@@ -659,12 +783,93 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
 
 // DB一覧から選択するピッカー（relation参照先DB・MSRソース用）
 let _dbListCache = null;
-async function _getAllDatabases() {
-  if (_dbListCache) return _dbListCache;
-  try { _dbListCache = await apiFetch('/databases'); } catch { _dbListCache = []; }
+let _dbListCacheAt = 0;
+async function _getAllDatabases(force) {
+  // ピッカーを開くたびに最新化する（新規作成したシートが再読込まで候補に出ない問題を防ぐ）。
+  if (!force && _dbListCache && (Date.now() - _dbListCacheAt < 4000)) return _dbListCache;
+  try { _dbListCache = await apiFetch('/databases', { skipBrowseCache: true }); }
+  catch { _dbListCache = _dbListCache || []; }
+  _dbListCacheAt = Date.now();
   return _dbListCache;
 }
-function _attachDbPicker(input) {
+
+// パスを絶対（スラッシュ区切り）へ正規化。相対パスは vault を前置する。
+function _dbPickerNormAbs(p) {
+  let s = String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!s) return '';
+  if (/^[A-Za-z]:\//.test(s) || s.startsWith('/')) return s;
+  const vault = (typeof state !== 'undefined' && state?.vaultPath) ? String(state.vaultPath).replace(/\\/g, '/').replace(/\/+$/, '') : '';
+  return vault ? vault + '/' + s.replace(/^\/+/, '') : s;
+}
+function _dbPickerInside(childAbs, rootAbs) {
+  return !!childAbs && !!rootAbs && (childAbs === rootAbs || childAbs.startsWith(rootAbs + '/'));
+}
+function _dbPickerWorkFolderAbs() {
+  if (typeof getWorkFolder !== 'function') return '';
+  const wf = getWorkFolder();
+  return wf ? _dbPickerNormAbs(wf) : '';
+}
+function _dbPickerCurrentSheetAbs(dbPath) {
+  return _dbPickerNormAbs(dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '');
+}
+// 作品フォルダが設定され、編集中シートがその中にある場合のみ、候補を作品フォルダ配下へ絞る
+function _dbPickerScopeToWorkFolder(dbs, dbPath) {
+  const wfAbs = _dbPickerWorkFolderAbs();
+  if (!wfAbs) return { list: dbs, scoped: false };
+  const curAbs = _dbPickerCurrentSheetAbs(dbPath);
+  if (!curAbs || !_dbPickerInside(curAbs, wfAbs)) return { list: dbs, scoped: false };
+  const list = dbs.filter(d => _dbPickerInside(_dbPickerNormAbs(d.path), wfAbs));
+  return { list, scoped: true };
+}
+function _dbPickerRootKindLabel(kind) {
+  if (kind === 'home') return 'ホームフォルダ';
+  if (kind === 'workspace') return 'ワークスペース';
+  return 'ソースフォルダ';
+}
+// 作品フォルダによる絞り込みが効かない場合、編集中シートを含むルート（ワークスペース/ソースフォルダ/ホーム）へ絞る（最長前置一致）
+function _dbPickerScopeToRoot(dbs, dbPath, roots) {
+  if (!Array.isArray(roots) || !roots.length) return { list: dbs, scoped: false };
+  const curAbs = _dbPickerCurrentSheetAbs(dbPath);
+  if (!curAbs) return { list: dbs, scoped: false };
+  let bestRoot = null;
+  let bestRootAbs = '';
+  roots.forEach(root => {
+    const rootAbs = _dbPickerNormAbs(root.rootPath || root.path);
+    if (rootAbs && _dbPickerInside(curAbs, rootAbs) && rootAbs.length >= bestRootAbs.length) {
+      bestRoot = root;
+      bestRootAbs = rootAbs;
+    }
+  });
+  if (!bestRoot) return { list: dbs, scoped: false };
+  const list = dbs.filter(d => _dbPickerInside(_dbPickerNormAbs(d.path), bestRootAbs));
+  return { list, scoped: true, root: bestRoot };
+}
+
+// フラットな /databases 一覧から「ルート → フォルダ → シート」のツリーを組む
+function _dbPickerBuildTree(dbs) {
+  const roots = new Map();
+  const ensureRoot = (name) => {
+    if (!roots.has(name)) roots.set(name, { name, kind: 'root', folders: new Map(), sheets: [], id: 'root:' + name });
+    return roots.get(name);
+  };
+  dbs.forEach(d => {
+    const rootName = d.rootName || d.name || '(その他)';
+    const rel = String(d.relPath || d.name || '').replace(/\\/g, '/');
+    const segs = rel.split('/').filter(Boolean);
+    let node = ensureRoot(rootName);
+    const folderSegs = segs.slice(0, -1);
+    let idPath = node.id;
+    folderSegs.forEach(seg => {
+      idPath += '/' + seg;
+      if (!node.folders.has(seg)) node.folders.set(seg, { name: seg, kind: 'folder', folders: new Map(), sheets: [], id: idPath });
+      node = node.folders.get(seg);
+    });
+    node.sheets.push(d);
+  });
+  return roots;
+}
+
+function _attachDbPicker(input, dbPath) {
   // inputの隣にピッカーボタンを追加
   if (input.dataset.dbPickerAttached) return;
   input.dataset.dbPickerAttached = '1';
@@ -675,61 +880,188 @@ function _attachDbPicker(input) {
     input.parentNode.insertBefore(row, input);
     row.appendChild(input);
   }
+  // 作品フォルダ内のシートを候補（datalist）として提示する
+  const listId = 'db-picker-dl-' + Math.random().toString(36).slice(2, 8);
+  const datalist = document.createElement('datalist');
+  datalist.id = listId;
+  input.setAttribute('list', listId);
+  row.appendChild(datalist);
+  // 絞り込みが効いている間は、黙って全件出ないように一言添える（行き止まり感の防止）
+  const scopeHint = document.createElement('div');
+  scopeHint.className = 'db-picker-scope-hint';
+  scopeHint.hidden = true;
+  row.parentNode.insertBefore(scopeHint, row.nextSibling);
+  let _rootsCache = null;
+  const _ensureRoots = async () => {
+    if (_rootsCache) return _rootsCache;
+    if (typeof window.GBFolderPicker?.loadRoots === 'function') {
+      try { _rootsCache = await window.GBFolderPicker.loadRoots(); }
+      catch { _rootsCache = []; }
+    } else {
+      _rootsCache = [];
+    }
+    return _rootsCache;
+  };
+  const refreshCandidates = async () => {
+    const dbs = await _getAllDatabases();
+    let { list, scoped } = _dbPickerScopeToWorkFolder(dbs, dbPath);
+    let hintText = '';
+    if (scoped) {
+      const wfName = (_dbPickerWorkFolderAbs().split('/').pop() || '作品フォルダ');
+      hintText = `${wfName}（作品フォルダ）内のシートを表示中`;
+    } else {
+      const roots = await _ensureRoots();
+      const rootScope = _dbPickerScopeToRoot(dbs, dbPath, roots);
+      if (rootScope.scoped) {
+        list = rootScope.list;
+        scoped = true;
+        hintText = `${rootScope.root.name}（${_dbPickerRootKindLabel(rootScope.root.kind)}）内のシートを表示中`;
+      }
+    }
+    datalist.innerHTML = list.map(d => `<option value="${esc(d.path)}">${esc(d.name)}</option>`).join('');
+    if (scoped) {
+      scopeHint.textContent = hintText;
+      scopeHint.hidden = false;
+    } else {
+      scopeHint.hidden = true;
+    }
+  };
+  input.addEventListener('focus', () => { refreshCandidates(); });
+  refreshCandidates();
+
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'db-picker-btn';
-  btn.innerHTML = lucide('db', 14);
-  btn.title = 'シート一覧から選択';
-  btn.setAttribute('aria-label', 'シート一覧から選択');
+  btn.innerHTML = lucide('folderTree', 14);
+  btn.title = '一覧から選択';
+  btn.setAttribute('aria-label', '一覧から選択');
   btn.addEventListener('click', async (e) => {
     e.preventDefault(); e.stopPropagation();
     document.querySelectorAll('.db-picker-popup').forEach(el => el.remove());
-    const dbs = await _getAllDatabases();
-    const pop = document.createElement('div');
-    pop.className = 'db-picker-popup';
-    const search = document.createElement('input');
-    search.type = 'text'; search.placeholder = 'シート名で検索...';
-    pop.appendChild(search);
-    const list = document.createElement('div');
-    const render = (filter) => {
-      list.innerHTML = '';
-      const f = (filter || '').toLowerCase();
-      const filtered = f ? dbs.filter(d => d.path.toLowerCase().includes(f) || d.name.toLowerCase().includes(f)) : dbs;
-      if (filtered.length === 0) {
-        const m = document.createElement('div');
-        m.className = 'db-picker-empty';
-        m.textContent = '該当なし';
-        list.appendChild(m);
-        return;
-      }
-      filtered.forEach(d => {
-        const item = document.createElement('div');
-        item.className = 'dd-nav-item';
-        item.innerHTML = `<div class="db-picker-name">${lucide('db', 12)} ${esc(d.name)}</div>`
-          + `<div class="db-picker-path">${esc(d.path)}</div>`;
-        item.addEventListener('click', () => {
-          input.value = d.path;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          pop.remove();
-        });
-        list.appendChild(item);
+    if (typeof window.GBFolderPicker?.pickFolder === 'function') {
+      const selection = await window.GBFolderPicker.pickFolder({
+        title: 'シートを選択',
+        selectFiles: true,
+        fileTypes: ['database'],
+        emptyText: 'この階層にフォルダとシートはありません。',
+        searchProvider: () => _getAllDatabases(true),
+        searchPlaceholder: 'シート名で検索...',
+        revealPath: _dbPickerCurrentSheetAbs(dbPath),
       });
-    };
-    render('');
-    search.addEventListener('input', () => render(search.value));
-    pop.appendChild(list);
-    const rect = btn.getBoundingClientRect();
-    { const z = _getZoom(); pop.style.left = Math.min(rect.left / z, window.innerWidth / z - 440) + 'px'; pop.style.top = (rect.bottom / z + 4) + 'px'; }
-    document.body.appendChild(pop);
-    clampPopupToViewport(pop);
-    setTimeout(() => {
-      search.focus();
-      const closer = (ev) => { if (!pop.contains(ev.target) && ev.target !== btn) { pop.remove(); document.removeEventListener('pointerdown', closer); } };
-      document.addEventListener('pointerdown', closer);
-    }, 50);
+      if (selection && selection.path) {
+        input.value = selection.path;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return;
+    }
+    const dbs = await _getAllDatabases(true); // ツリーは開くたびに最新（GBFolderPicker未定義時のフォールバック）
+    _openDbTreePicker(btn, dbs, input, dbPath);
   });
   row.appendChild(btn);
+}
+
+// 「一覧から選択」: 全ワークスペース/ソース/ホームを横断するフォルダツリーからシートを選ぶ
+function _openDbTreePicker(anchorBtn, dbs, input, dbPath) {
+  const pop = document.createElement('div');
+  pop.className = 'db-picker-popup db-picker-tree';
+  const search = document.createElement('input');
+  search.type = 'text'; search.placeholder = 'シート名で検索...';
+  pop.appendChild(search);
+  const host = document.createElement('div');
+  host.className = 'db-picker-tree-host';
+  pop.appendChild(host);
+
+  const curAbs = _dbPickerCurrentSheetAbs(dbPath);
+  // 現在編集中シートの祖先フォルダIDを初期展開対象にする
+  const expanded = new Set();
+  {
+    const roots = _dbPickerBuildTree(dbs);
+    const markPath = (node, prefix) => {
+      node.sheets.forEach(d => {
+        if (_dbPickerNormAbs(d.path) === curAbs) {
+          // このシートに至る祖先フォルダをすべて展開
+          expanded.add(node.id);
+          prefix.forEach(id => expanded.add(id));
+        }
+      });
+      node.folders.forEach(child => markPath(child, [...prefix, node.id]));
+    };
+    roots.forEach(r => { markPath(r, []); });
+    // ルートは常に展開初期表示
+    roots.forEach(r => expanded.add(r.id));
+  }
+
+  const selectSheet = (d) => {
+    input.value = d.path;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    pop.remove();
+  };
+
+  const render = (filter) => {
+    host.innerHTML = '';
+    const f = String(filter || '').toLowerCase().trim();
+    const roots = _dbPickerBuildTree(dbs);
+    const matchSheet = (d) => !f || d.name.toLowerCase().includes(f) || String(d.path).toLowerCase().includes(f);
+    // ノードにフィルタ一致シートが子孫に存在するか
+    const hasMatch = (node) => node.sheets.some(matchSheet) || [...node.folders.values()].some(hasMatch);
+    let anyShown = false;
+    const renderNode = (node, depth) => {
+      if (f && !hasMatch(node)) return;
+      const isOpen = f ? true : expanded.has(node.id); // 検索中は全開
+      const rowEl = document.createElement('div');
+      rowEl.className = 'db-picker-tree-row db-picker-tree-' + node.kind;
+      rowEl.style.paddingLeft = (6 + depth * 14) + 'px';
+      const icon = 'folder';
+      rowEl.innerHTML = `<span class="db-picker-tw-caret">${isOpen ? '▾' : '▸'}</span>`
+        + `<span class="db-picker-tw-icon">${lucide(icon, 13)}</span>`
+        + `<span class="db-picker-tw-name">${esc(node.name)}</span>`;
+      rowEl.addEventListener('click', () => {
+        if (f) return; // 検索中はトグルしない
+        if (expanded.has(node.id)) expanded.delete(node.id); else expanded.add(node.id);
+        render(search.value);
+      });
+      host.appendChild(rowEl);
+      if (!isOpen) return;
+      // 子フォルダ → シートの順
+      [...node.folders.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach(child => renderNode(child, depth + 1));
+      node.sheets.filter(matchSheet).sort((a, b) => a.name.localeCompare(b.name)).forEach(d => {
+        anyShown = true;
+        const sheetEl = document.createElement('div');
+        const isCur = _dbPickerNormAbs(d.path) === curAbs;
+        sheetEl.className = 'db-picker-tree-row db-picker-tree-sheet' + (isCur ? ' is-current' : '');
+        sheetEl.style.paddingLeft = (6 + (depth + 1) * 14) + 'px';
+        sheetEl.innerHTML = `<span class="db-picker-tw-caret"></span>`
+          + `<span class="db-picker-tw-icon">${lucide('database', 13)}</span>`
+          + `<span class="db-picker-tw-name">${esc(d.name)}</span>`;
+        sheetEl.addEventListener('click', () => selectSheet(d));
+        host.appendChild(sheetEl);
+      });
+    };
+    [...roots.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach(r => renderNode(r, 0));
+    if (!anyShown && f) {
+      const m = document.createElement('div');
+      m.className = 'db-picker-empty';
+      m.textContent = '該当なし';
+      host.appendChild(m);
+    }
+  };
+  render('');
+  search.addEventListener('input', () => render(search.value));
+  if (typeof attachMeldexDropdownCloseButton === 'function') {
+    attachMeldexDropdownCloseButton(pop, { trigger: () => anchorBtn, close: () => pop.remove() });
+  }
+
+  const rect = anchorBtn.getBoundingClientRect();
+  { const z = _getZoom(); pop.style.left = Math.min(rect.left / z, window.innerWidth / z - 440) + 'px'; pop.style.top = (rect.bottom / z + 4) + 'px'; }
+  document.body.appendChild(pop);
+  clampPopupToViewport(pop);
+  setTimeout(() => {
+    search.focus();
+    const closer = (ev) => { if (!pop.contains(ev.target) && ev.target !== anchorBtn) { pop.remove(); document.removeEventListener('pointerdown', closer); } };
+    document.addEventListener('pointerdown', closer);
+  }, 50);
 }
 
 // マルチソースリレーション設定UI描画
@@ -756,7 +1088,7 @@ function _renderMsrSources(sources, mode, root) {
     dbInput.type = 'text'; dbInput.className = 'msr-db-input';
     dbInput.value = src.db || ''; dbInput.placeholder = '例: 開発/デバッグリスト';
     dbRow.appendChild(dbInput);
-    _attachDbPicker(dbInput);
+    _attachDbPicker(dbInput, _ptState(scope)?.dbPath);
     div.appendChild(dbRow);
 
     // ラベル
@@ -794,7 +1126,7 @@ function _renderMsrSources(sources, mode, root) {
         // 参照先プロパティ（テキスト入力）
         const remoteInput = document.createElement('input');
         remoteInput.type = 'text'; remoteInput.className = 'msr-remote-prop';
-        remoteInput.value = rule.remoteProp || ''; remoteInput.placeholder = 'プロパティ名';
+        remoteInput.value = rule.remoteProp || ''; remoteInput.placeholder = '列名';
         remoteInput.className = 'msr-remote-prop';
         ruleRow.appendChild(remoteInput);
 
@@ -1141,11 +1473,13 @@ function _renderCalendarSyncEditor(cs) {
   const colorRulesJson = rules.length ? JSON.stringify(rules, null, 2) : '';
   return `
     <div class="gb-section-head" style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">
-      <label class="pt-check-label">
-        <input id="pt-calsync-enabled" type="checkbox" ${enabled ? 'checked' : ''}>
-        カレンダー連動を有効にする
-      </label>
-      <div class="pt-hint">有効にすると、このプロパティに日時を設定したときに対象カレンダーシートへイベントが自動生成されます（Phase 1 §5.2）。</div>
+      <div class="gb-check-help-row">
+        <label class="pt-check-label">
+          <input id="pt-calsync-enabled" type="checkbox" ${enabled ? 'checked' : ''}>
+          カレンダー連動を有効にする
+        </label>
+        ${fieldHelp('オンにすると、この列に日時を設定したとき対象カレンダーシートへイベントが自動生成されます')}
+      </div>
     </div>
     <div id="pt-calsync-body" style="${enabled ? '' : 'display:none;'}padding-left:8px;border-left:2px solid var(--border);margin-top:6px;">
       <div class="field"><label>対象カレンダーシート（フォルダパス）</label>

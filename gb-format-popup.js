@@ -31,6 +31,14 @@
   const ALIGN_V_OPTS = [
     { v: '', l: '自動' }, { v: 'top', l: '上' }, { v: 'middle', l: '中' }, { v: 'bottom', l: '下' },
   ];
+  // 縦書き（vertical-rl）では text-align は上下方向（left=上）、valign は左右方向（top=右）に
+  // 対応するため、保存値はそのままに表記だけを縦書き向けへ差し替える
+  const ALIGN_H_OPTS_VERTICAL = [
+    { v: '', l: '自動' }, { v: 'left', l: '上' }, { v: 'center', l: '中' }, { v: 'right', l: '下' },
+  ];
+  const ALIGN_V_OPTS_VERTICAL = [
+    { v: '', l: '自動' }, { v: 'top', l: '右' }, { v: 'middle', l: '中' }, { v: 'bottom', l: '左' },
+  ];
   const OVERFLOW_OPTS = [
     { v: '', l: '自動' }, { v: 'wrap', l: '折返' }, { v: 'overflow', l: '溢出' }, { v: 'clip', l: '切詰' },
   ];
@@ -318,30 +326,49 @@
   function _makeSelect(opts, value, onChange) {
     const sel = document.createElement('select');
     sel.className = 'gb-fmt-sel';
-    let currentGroup = null;
-    let currentContainer = sel;
-    opts.forEach((o) => {
-      const grp = o.group || null;
-      if (grp !== currentGroup) {
-        if (grp) {
-          const og = document.createElement('optgroup');
-          og.label = grp;
-          sel.appendChild(og);
-          currentContainer = og;
-        } else {
-          currentContainer = sel;
+    sel._gbFmtSetOptions = (items, selectedValue) => {
+      sel._gbFmtSelectedValue = selectedValue == null ? '' : selectedValue;
+      sel.innerHTML = '';
+      let currentGroup = null;
+      let currentContainer = sel;
+      let hasSelectedValue = false;
+      items.forEach((o) => {
+        const grp = o.group || null;
+        if (grp !== currentGroup) {
+          if (grp) {
+            const og = document.createElement('optgroup');
+            og.label = grp;
+            sel.appendChild(og);
+            currentContainer = og;
+          } else {
+            currentContainer = sel;
+          }
+          currentGroup = grp;
         }
-        currentGroup = grp;
+        const opt = document.createElement('option');
+        opt.value = o.v;
+        opt.textContent = o.l;
+        if (o.style) opt.setAttribute('style', o.style);
+        if (o.title) opt.title = o.title;
+        if (selectedValue === o.v || (!selectedValue && !o.v)) {
+          opt.selected = true;
+          hasSelectedValue = true;
+        }
+        currentContainer.appendChild(opt);
+      });
+      if (selectedValue && !hasSelectedValue) {
+        const currentOption = document.createElement('option');
+        currentOption.value = selectedValue;
+        currentOption.textContent = `${selectedValue}（現在の設定）`;
+        currentOption.selected = true;
+        sel.appendChild(currentOption);
       }
-      const opt = document.createElement('option');
-      opt.value = o.v;
-      opt.textContent = o.l;
-      if (o.style) opt.setAttribute('style', o.style);
-      if (o.title) opt.title = o.title;
-      if (value === o.v || (!value && !o.v)) opt.selected = true;
-      currentContainer.appendChild(opt);
+    };
+    sel._gbFmtSetOptions(opts, value);
+    sel.addEventListener('change', () => {
+      sel._gbFmtSelectedValue = sel.value;
+      onChange(sel.value);
     });
-    sel.addEventListener('change', () => onChange(sel.value));
     return sel;
   }
 
@@ -364,11 +391,15 @@
    *   'textBefore'/'textAfter'/'textAlign'/'textValign'/'textOverflow'/'underline'/'strike'
    * @param {() => void} [options.onReset] リセット。省略時はリセットボタン非表示
    * @param {Object} [options.bulk] { enabled, label, onToggle(enabled) } 全行適用トグル
+   * @param {HTMLElement[]} [options.extraRowTop] ポップアップ最上段（全行より上）に追加する要素
    * @param {HTMLElement[]} [options.extraRow1] row1 末尾に追加する要素
    * @param {HTMLElement[]} [options.extraRow2] 専用設定の下段に追加する要素
    * @param {HTMLElement[]} [options.extraRow3] row3 末尾に追加する要素
+   * @param {HTMLElement[]} [options.extraRow4] row4（リセット行）のリセット直前に追加する要素
    * @param {boolean} [options.closeOnOutside=true] ポップアップ外クリックで閉じる
    * @param {string} [options.className] 追加クラス名（旧命名互換用）
+   * @param {boolean} [options.verticalWriting] 縦書き（vertical-rl）対象。textAlign/textValign の
+   *   ラベルと選択肢の表記を縦書きの方向（水平⇔垂直、左右⇔上下）へ切り替える。保存値は変えない
    * @returns {HTMLElement} 生成されたポップアップ要素
    */
   function openFormatPopup(anchorEl, options) {
@@ -405,6 +436,15 @@
       if (prop === 'bgColor') refreshTextBgSwatches();
       onChange(prop, value, popup);
     };
+
+    // --- Row Top: 最上段の追加行（ルビ入力など、書式行より上に置きたい要素）---
+    const topRowItems = Array.isArray(options.extraRowTop) ? options.extraRowTop.filter(Boolean) : [];
+    if (topRowItems.length) {
+      const rowTop = document.createElement('div');
+      rowTop.className = 'gb-fmt-popup-row gb-fmt-popup-row--top gb-fmt-popup-row--bordered';
+      topRowItems.forEach((el) => rowTop.appendChild(el));
+      popup.appendChild(rowTop);
+    }
 
     // --- Row 0: bulk（全行適用）---
     if (options.bulk && options.bulk.enabled != null) {
@@ -455,6 +495,13 @@
       const sel = _makeSelect(_fontFamilyOptions(), values.fontFamily || '', (v) => emit('fontFamily', v));
       sel.title = 'フォント';
       sel.classList.add('gb-fmt-sel--font');
+      const refreshFontOptions = () => sel._gbFmtSetOptions?.(_fontFamilyOptions(), sel._gbFmtSelectedValue);
+      window.addEventListener('meldex:font-catalog-updated', refreshFontOptions);
+      const previousCleanup = popup._gbFmtCleanup;
+      popup._gbFmtCleanup = () => {
+        window.removeEventListener('meldex:font-catalog-updated', refreshFontOptions);
+        previousCleanup?.();
+      };
       row1.appendChild(sel);
     }
 
@@ -509,8 +556,9 @@
       .some((f) => fields.has(f));
     const row4Extra = Array.isArray(options.extraRow2) ? options.extraRow2.filter(Boolean) : [];
     const hasRow4Extra = row4Extra.length > 0;
+    const row4Buttons = Array.isArray(options.extraRow4) ? options.extraRow4.filter(Boolean) : [];
     const hasReset = typeof options.onReset === 'function';
-    if (hasRow4Fields || hasReset) {
+    if (hasRow4Fields || hasReset || row4Buttons.length) {
       const row4 = document.createElement('div');
       row4.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap gb-fmt-popup-row--specific';
 
@@ -526,16 +574,17 @@
         lbl.title = inp.title = 'テキスト列の末尾に表示する文字を設定します';
         row4.appendChild(_makeGroup([lbl, inp]));
       }
+      const verticalWriting = !!options.verticalWriting;
       if (fields.has('textAlign')) {
-        const lbl = _makeLabel('水平');
-        const sel = _makeSelect(ALIGN_H_OPTS, values.textAlign || '', (v) => emit('textAlign', v));
-        lbl.title = sel.title = 'セル内の文字を左右方向に揃えます';
+        const lbl = _makeLabel(verticalWriting ? '垂直' : '水平');
+        const sel = _makeSelect(verticalWriting ? ALIGN_H_OPTS_VERTICAL : ALIGN_H_OPTS, values.textAlign || '', (v) => emit('textAlign', v));
+        lbl.title = sel.title = verticalWriting ? 'セル内の文字を上下方向に揃えます' : 'セル内の文字を左右方向に揃えます';
         row4.appendChild(_makeGroup([lbl, sel]));
       }
       if (fields.has('textValign')) {
-        const lbl = _makeLabel('垂直');
-        const sel = _makeSelect(ALIGN_V_OPTS, values.textValign || '', (v) => emit('textValign', v));
-        lbl.title = sel.title = 'セル内の文字を上下方向に揃えます';
+        const lbl = _makeLabel(verticalWriting ? '水平' : '垂直');
+        const sel = _makeSelect(verticalWriting ? ALIGN_V_OPTS_VERTICAL : ALIGN_V_OPTS, values.textValign || '', (v) => emit('textValign', v));
+        lbl.title = sel.title = verticalWriting ? 'セル内の文字を左右方向に揃えます' : 'セル内の文字を上下方向に揃えます';
         row4.appendChild(_makeGroup([lbl, sel]));
       }
       if (fields.has('textOverflow')) {
@@ -544,6 +593,8 @@
         lbl.title = sel.title = '長いテキストを折り返すか、はみ出し表示や切り詰めにするかを選びます';
         row4.appendChild(_makeGroup([lbl, sel]));
       }
+
+      row4Buttons.forEach((el) => row4.appendChild(el));
 
       if (hasReset) {
         const resetBtn = document.createElement('button');

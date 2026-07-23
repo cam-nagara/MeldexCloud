@@ -32,7 +32,9 @@
 
   <!-- exe版の外周シェル -->
   <link rel="stylesheet" href="standalone-workspace-tree.css">
+  <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="board-standalone.css">
+  <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
   <!--
@@ -115,6 +117,27 @@
           <div id="gb-preview-pane" class="bsa-viewer-pane">
             <div class="bsa-viewer-placeholder">ボード全体を表示します。リンク付きカードを選ぶと内容を確認できます。</div>
           </div>
+          <!-- コメント一覧（本体 #rp-annotation と同一のID/構造。gb-right-panel.js の
+               loadRpAnnotationList() 等をそのまま利用する。カードの右クリックメニュー
+               「コメント一覧を開く」（gb-canvas-features.js、本体と共有）から表示される。 -->
+          <div id="rp-annotation" class="bsa-viewer-pane bsa-annotation-pane" hidden style="align-items:stretch;justify-content:flex-start;padding:0;">
+            <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
+              <span style="font-size:13px;font-weight:bold;flex:1;">コメント一覧</span>
+              <button type="button" title="新規コメント" aria-label="新規コメント" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="newRpComment()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
+              <button type="button" title="更新" aria-label="更新" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="loadRpAnnotationList()"><span class="ico ico-refreshCw" style="width:12px;height:12px;"></span></button>
+              <button type="button" title="閉じる" aria-label="コメント一覧を閉じる" style="font-size:11px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="showBoardViewerPreview()"><span class="ico ico-x" style="width:12px;height:12px;"></span></button>
+            </div>
+            <div style="padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;gap:4px;flex-wrap:wrap;">
+              <input id="rp-ann-search" type="text" aria-label="注釈を検索" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
+              <select id="rp-ann-view" title="表示" aria-label="表示" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="preview">プレビュー</option><option value="list">リスト</option></select>
+              <select id="rp-ann-sort" title="並び替え" aria-label="並び替え" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="modified-desc">更新が新しい順</option><option value="created-desc">作成が新しい順</option><option value="created-asc">作成が古い順</option><option value="path-asc">ファイル名順</option><option value="type-asc">種類順</option><option value="user-asc">ユーザー順</option></select>
+              <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option></select>
+              <select id="rp-ann-scope" title="対象ファイル" aria-label="対象ファイル" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="current">現在のファイル</option><option value="all">全ファイル</option></select>
+              <select id="rp-ann-status" title="状態" aria-label="状態" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="open">未解決</option><option value="all">全て</option><option value="resolved">解決済み</option><option value="orphan">孤児</option><option value="deleted">削除済み</option></select>
+              <select id="rp-ann-user" title="ユーザー" aria-label="ユーザー" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全ユーザー</option></select>
+            </div>
+            <div id="rp-ann-list" style="flex:1;overflow-y:auto;padding:8px;"></div>
+          </div>
         </section>
 
         <div id="board-sidebar-splitter" class="bsa-sidebar-splitter" role="separator" aria-label="ビューワーとオプションの高さを調整" aria-orientation="horizontal" tabindex="0"></div>
@@ -175,6 +198,7 @@
   -->
 
   <!-- 1) 共通基盤 -->
+  <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
@@ -202,6 +226,8 @@
   <script src="gb-dropdown-dismiss.js"></script>
   <script src="offline-bundles/gb-color-palette.js"></script>
   <script src="gb-format-popup.js"></script>
+  <script src="gb-export-save.js"></script>
+  <script src="gb-export-html.js"></script>
   <script src="gb-events.js"></script>
 
   <!-- 2) 単独アプリ向けのスタブ（本体の必須グローバルを no-op で用意） -->
@@ -232,10 +258,15 @@
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="gb-dropbox-profile-sync.js"></script>
+  <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="standalone-pwa-install.js"></script>
   <script src="gb-annotation-tails.js"></script>
   <script src="offline-bundles/gb-annotations.js"></script>
+  <script src="offline-bundles/gb-comment-badges.js"></script>
+  <script src="offline-bundles/gb-right-panel.js"></script>
+  <script src="standalone-mobile-toolbar.js"></script>
 
   <!-- 5) 単独アプリのブートストラップ -->
   <script src="board-standalone-app.js"></script>

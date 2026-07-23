@@ -842,6 +842,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         const transSwatch = document.createElement('div');
         transSwatch.className = 'gb-swatch';
         transSwatch.dataset.type = 'transparent';
+        transSwatch.dataset.e2eId = 'color-palette-preset-transparent';
         transSwatch.style.cssText = 'background:linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%),linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%);background-size:6px 6px;background-position:0 0,3px 3px;';
         transSwatch.title = '透明';
         const selectTransparent = () => selectSwatch('#000000', true, -1, -1);
@@ -857,6 +858,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
         swatch.dataset.hex = c.toLowerCase();
         const presetIdx = all.indexOf(info);
         swatch.dataset.presetIdx = String(presetIdx);
+        // E2E/UI監査用の安定識別子（data-hex は監査の許可リスト外のため別途付与）
+        swatch.dataset.e2eId = 'color-palette-preset-' + c.replace('#', '').toLowerCase();
         swatch.style.background = c;
         swatch.title = info.title || c;
         const selectPreset = () => selectSwatch(c, false, -1, presetIdx);

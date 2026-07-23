@@ -1,3 +1,105 @@
+  const files = Array.isArray(items) ? items.filter(item => item && item.type !== 'folder') : [];
+  const images = files.filter(item => item.type === 'image' || _viewerFolderNavIsDisplayableFile(item.path || item.name || ''))
+    .filter(item => _viewerFolderNavExt(item.path || item.name || '') !== '.pdf');
+  const pdfs = files.filter(item => _viewerFolderNavExt(item.path || item.name || '') === '.pdf');
+  return {
+    has: images.length > 0 || pdfs.length > 0,
+    hasImage: images.length > 0,
+    firstImage: images[0] || null,
+    firstPdf: pdfs[0] || null,
+  };
+}
+
+async function _viewerFolderNavDisplayableInFolder(folderPath) {
+  const key = _viewerFolderNavCleanPath(folderPath);
+  if (!key) return { has: false, hasImage: false, firstImage: null, firstPdf: null };
+  if (_viewerFolderNavDisplayableCache.has(key)) return _viewerFolderNavDisplayableCache.get(key);
+  const result = await apiFetch('/browse?path=' + encodeURIComponent(key) + '&all_files=true')
+    .then(items => _viewerFolderNavDisplayableFromBrowseItems(items))
+    .catch(() => ({ has: false, hasImage: false, firstImage: null, firstPdf: null }));
+  _viewerFolderNavDisplayableCache.set(key, result);
+  return result;
+}
+
+function _viewerFolderNavOpenTarget(folderPath, result) {
+  const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
+  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
+  if (result?.hasImage) {
+    openViewer('/viewer?folder=' + encodeURIComponent(folderPath));
+  } else if (result?.firstPdf?.path) {
+    openViewer('/viewer?pdf=' + encodeURIComponent(result.firstPdf.path));
+  }
+}
+
+async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath) {
+  await _viewerFolderNavRevealCurrentFolder(currentFolderPath);
+  let cursorPath = currentFolderPath;
+  for (let guard = 0; guard < 400; guard++) {
+    const nodes = _viewerFolderNavFolderNodes();
+    if (!nodes.length) break;
+    let cursorIndex = _viewerFolderNavFindIndex(nodes, cursorPath);
+    if (cursorIndex < 0) cursorIndex = direction > 0 ? -1 : nodes.length;
+    const candidate = nodes[cursorIndex + direction];
+    if (!candidate) break;
+    await _viewerFolderNavEnsureAncestorsExpanded(candidate);
+    const candidatePath = _viewerFolderNavNodePath(candidate);
+    if (!candidatePath) {
+      cursorPath = '';
+      continue;
+    }
+    const result = await _viewerFolderNavDisplayableInFolder(candidatePath);
+    if (result.has) {
+      _viewerFolderNavOpenTarget(candidatePath, result);
+      return true;
+    }
+    const expanded = await _viewerFolderNavEnsureNodeExpanded(candidate);
+    if (expanded && direction < 0) continue;
+    cursorPath = candidatePath;
+  }
+  return false;
+}
+
+function _handleViewerFolderNavRequest(msg) {
+  const direction = Number(msg?.direction) < 0 ? -1 : 1;
+  const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);
+  _navigateViewerFolderByTreeOrder(direction, currentFolderPath).then(moved => {
+    if (!moved && typeof showStatus === 'function') {
+      showStatus('画像またはPDFがあるフォルダがありません', true);
+    }
+  }).catch(error => {
+    if (typeof showStatus === 'function') showStatus('フォルダ移動に失敗しました: ' + (error?.message || error || ''), true);
+  });
+}
+
+window.addEventListener('message', (e) => {
+  if (!_isTrustedEmbeddedMessage(e)) return;
+  const msg = e.data;
+  if (!msg || !msg.type) return;
+  if (msg.type === 'viewer-current-file-changed') { _syncViewerCurrentFileFromMessage(msg); return; }
+  if (msg.type === 'viewer-folder-nav-request') { _handleViewerFolderNavRequest(msg); return; }
+  const reloadEmbeddedAnnotations = () => {
+    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
+    if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
+      _loadAnnotationsToIframe();
+    }
+  };
+  // HTMLビューワーiframeからのステータス通知
+  if (msg.type === 'board-status') { showStatus(msg.message, msg.isError); }
+  // ヒストリー更新通知
+  if (msg.type === 'history-update') { renderHistoryList(); }
+  // HTMLビューワーiframe内メモからの保存依頼
+  if (msg.type === 'ann-save-stroke') {
+    apiPost('/annotations', {
+      target_path: msg.targetPath || ann.targetPath, type: msg.annType,
+      data: msg.data, color: msg.color, opacity: msg.opacity, user: getUsername(),
+    }).then(res => {
+      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
+        _pushAnnotationCreateHistory(res.id, '注釈: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
+      }
+      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-saved', annId: res.id, annClientId: msg.annClientId });
+    }).catch((err) => {
+      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
+        _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });
       }
       if (typeof showStatus === 'function') showStatus('注釈の保存に失敗しました: ' + (err?.message || err || ''), true);
     });
@@ -796,105 +898,3 @@ document.addEventListener('keydown', (e) => {
 // ============================================================
 // 空状態表示
 // ============================================================
-function renderEmptyState(container, icon, message, hint) {
-  container.innerHTML = `
-    <div class="gb-empty-state">
-      <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide(icon, 48) : ''}</div>
-      <div class="gb-empty-message">${esc(message)}</div>
-      ${hint ? `<div class="gb-empty-hint">${esc(hint)}</div>` : ''}
-    </div>`;
-}
-
-// ============================================================
-// ローディング表示
-// ============================================================
-let _loadingCount = 0;
-let _loadingTimer = null;
-let _loadingVisible = false;
-let _loadingMessage = '';
-
-function _loadingText(msg) {
-  return String(msg || _loadingMessage || '読み込み中...');
-}
-
-function _setLoadingNodeContent(el, msg) {
-  if (!el) return;
-  const spinner = document.createElement('span');
-  spinner.className = 'gb-spinner';
-  const label = document.createElement('span');
-  label.className = 'gb-loading-label';
-  label.textContent = _loadingText(msg);
-  el.replaceChildren(spinner, label);
-}
-
-function _ensureGlobalLoadingIndicator() {
-  let el = document.getElementById('gb-global-loading');
-  if (el) return el;
-  el = document.createElement('div');
-  el.id = 'gb-global-loading';
-  el.className = 'gb-global-loading';
-  el.setAttribute('role', 'status');
-  el.setAttribute('aria-live', 'polite');
-  el.setAttribute('aria-atomic', 'true');
-  el.hidden = true;
-  document.body.appendChild(el);
-  return el;
-}
-
-function _renderLoadingUi(msg) {
-  const text = _loadingText(msg);
-  const statusEl = document.getElementById('sb-loading');
-  if (statusEl) {
-    _setLoadingNodeContent(statusEl, text);
-    statusEl.style.display = '';
-  }
-  const floatingEl = _ensureGlobalLoadingIndicator();
-  if (floatingEl) {
-    _setLoadingNodeContent(floatingEl, text);
-    floatingEl.hidden = false;
-  }
-  _loadingVisible = true;
-}
-
-function _hideLoadingUi() {
-  const statusEl = document.getElementById('sb-loading');
-  if (statusEl) {
-    statusEl.replaceChildren();
-    statusEl.style.display = 'none';
-  }
-  const floatingEl = document.getElementById('gb-global-loading');
-  if (floatingEl) {
-    floatingEl.replaceChildren();
-    floatingEl.hidden = true;
-  }
-  _loadingVisible = false;
-}
-
-function _loadingPaintDelay() {
-  return new Promise(resolve => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
-      requestAnimationFrame(() => requestAnimationFrame(finish));
-      setTimeout(finish, 80);
-    } else {
-      setTimeout(finish, 0);
-    }
-  });
-}
-
-async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
-  const options = opts || {};
-  const threshold = Number.isFinite(options.threshold) ? options.threshold : 200000;
-  const size = typeof sizeOrText === 'number'
-    ? sizeOrText
-    : String(sizeOrText || '').length;
-  if (size < threshold) return;
-  if (_loadingCount <= 0 && !_loadingVisible) return;
-  _loadingMessage = _loadingText(msg);
-  if (_loadingTimer) {
-    clearTimeout(_loadingTimer);

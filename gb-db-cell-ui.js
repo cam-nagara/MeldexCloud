@@ -97,7 +97,7 @@ function _cellUiColumnLockMessage(dbPath, propName) {
 
 function _cellUiCanQuickRename(ptc) {
   const type = String(ptc?.type || 'text');
-  return type === 'text';
+  return type === 'text' || type === 'furigana';
 }
 
 function _cellUiIsDeletableCandidate(val, entityPath) {
@@ -501,7 +501,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
   const currentCtx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || null, { dbPath: currentDbPath })
     : null;
-  const _ptc = currentDbPath ? getPropertyTypes(currentDbPath)[propName] : null;
+  const _ptc = currentDbPath ? getPropertyTypes(currentDbPath, currentCtx)[propName] : null;
   const lockMsg = _cellUiColumnLockMessage(currentDbPath, propName);
   // 上部にリネーム入力欄: 値テキストを変更
   if (typeof _addMenuRenameInput === 'function' && !lockMsg && _cellUiCanQuickRename(_ptc)) {
@@ -583,6 +583,23 @@ function _showValueContextMenu(e, val, entityPath, propName) {
       sep.className = 'gb-context-menu-sep';
       menu.appendChild(sep);
     }
+  }
+  // link型: 「リンク先を変更」を追加
+  if (_ptc && _ptc.type === 'link') {
+    const changeItem = document.createElement('div');
+    changeItem.className = 'gb-context-menu-item';
+    changeItem.innerHTML = lucide('folderTree', 14) + ' リンク先を変更...';
+    changeItem.addEventListener('click', () => {
+      const anchorForRefresh = e?.target || null;
+      menu.remove();
+      if (typeof startDbLinkCellPick === 'function') {
+        startDbLinkCellPick(val, entityPath, propName, currentDbPath, currentCtx, anchorForRefresh);
+      }
+    });
+    menu.appendChild(changeItem);
+    const linkSep = document.createElement('div');
+    linkSep.className = 'gb-context-menu-sep';
+    menu.appendChild(linkSep);
   }
   // コメントを追加（Phase 2e-iii）
   {
@@ -789,7 +806,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   if (lockMsg) { showStatus(lockMsg); return; }
   if (span.querySelector('input,textarea,[contenteditable="true"]')) return;
   // user / multi-user 型: クリックでドロップダウンを表示
-  const ptc = dbPath ? getPropertyTypes(dbPath)[propName] : null;
+  const ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc && (ptc.type === 'user' || ptc.type === 'multi-user')) {
     _showUserDropdown(span, val, entityPath, propName, _cellUiValueToString(val.value), ptc.type === 'multi-user', { dbPath, ctx });
     return;
@@ -912,7 +929,8 @@ function startInlineEdit(span, val, entityPath, propName) {
       _cellUiScheduleAfterPaint(async () => {
         try {
           await _apiPutValue(saveRef, { new_value: nv, new_rich_html: nextRichHtml });
-          if (saveRef.file) val.file = saveRef.file;
+          if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
+          else if (saveRef.file) val.file = saveRef.file;
           _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
           showStatus('保存しました', false, { passiveSave: true });
           if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);

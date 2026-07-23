@@ -22,7 +22,7 @@
 }
 
 #status-bar[role="status"] #sb-msg[data-status-kind="error"]::before,
-#status-bar[role="status"] #sb-warn:not(:empty)::before {
+#status-bar[role="status"] #sb-warn[data-status-kind="error"]::before {
   content: "エラー: ";
   font-weight: 700;
 }

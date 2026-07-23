@@ -1402,6 +1402,12 @@ function bdInitBoardShell(root) {
       return;
     }
     switch (btn.dataset.bdAction) {
+      case 'undo':
+        if (typeof bdUndo === 'function') bdUndo();
+        break;
+      case 'redo':
+        if (typeof bdRedo === 'function') bdRedo();
+        break;
       case 'zoom-in':
         bdZoom(0.1);
         break;
@@ -1465,11 +1471,8 @@ function bdInitBoardShell(root) {
           break;
         }
         try {
-          const cfg = typeof _getDetailPanelCfg === 'function' ? _getDetailPanelCfg() : {};
-          if (cfg.visible !== true) {
-            if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
-            else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
-          }
+          if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
+          else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
         } catch {}
         if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         break;
@@ -1720,7 +1723,7 @@ function _bdStructureHintHtml(node) {
   const body = hasOwnStructure
     ? `このカード以下のサブツリーに「${esc(label)}」を適用します。親カードの構造には従いません。`
     : '親カードがある場合は親の構造を継承します。親がないカード、または親側にも設定がない場合は自由配置です。';
-  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)}</div><div class="bd-detail-hint-body">${body}</div></div>`;
+  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body)}</div></div>`;
 }
 
 function _bdCardStyleOptions(node) {
@@ -1886,6 +1889,10 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-field bd-detail-field-wide"><span>テキスト</span><textarea data-bd-field="text">${esc(node.text || '')}</textarea></label>
         <label class="bd-detail-field bd-detail-field-wide"><span>リンク先</span><input type="text" value="${_bdEscAttr(node.link || '')}" data-bd-field="link"></label>
         ${node.img ? `<label class="bd-detail-field bd-detail-field-wide"><span>画像</span><input type="text" value="${_bdEscAttr(node.img || '')}" data-bd-field="img"></label>` : ''}
+      </div>
+      <div class="bd-detail-section">
+        <div class="bd-detail-section-title">タグ</div>
+        <div data-bd-node-tags-editor data-e2e-id="bd-node-tags-editor"></div>
       </div>
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">カードスタイル</div>
@@ -2475,6 +2482,25 @@ function _bdBindNodeDetailPanel(nodeId) {
     root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', () => {
       if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
     });
+    const tagsEditorEl = root.querySelector('[data-bd-node-tags-editor]');
+    if (tagsEditorEl && typeof renderInlineTagEditor === 'function') {
+      renderInlineTagEditor(tagsEditorEl, {
+        compact: true,
+        getIds: () => {
+          const target = bd.nodes.find(item => item.id === nodeId);
+          return Array.isArray(target?.tags) ? target.tags : [];
+        },
+        setIds: (ids) => {
+          const target = bd.nodes.find(item => item.id === nodeId);
+          if (!target) return;
+          bdPushUndo();
+          target.tags = ids;
+          bdRender();
+          bdDirty();
+          if (typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
+        },
+      });
+    }
   });
 }
 

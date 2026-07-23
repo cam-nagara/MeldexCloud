@@ -10,6 +10,11 @@
   const OLD_PWA_ROOTS_KEY = 'meldex-cloud-outliner-roots';
   const SOURCE_PREFIX = '__dropbox_root__';
   let _lastRegistry = null;
+  // フェーズ3c: loadOutlinerRoots() が最後に合流させたワークスペース由来
+  // ルートの sourceId -> {dropboxPath} キャッシュ。_lastRegistry と同じ
+  // 「直近の読み込み結果を同期的に参照するための思想」で、_findRoot /
+  // virtualPathFromDropboxPath から使う。
+  let _lastWorkspaceRootsById = new Map();
 
   function _auth() {
     return window.MeldexDropboxAuth;
@@ -423,12 +428,76 @@
     return registry.roots;
   }
 
+  // フェーズ3c: アカウント台帳 + 参加中ワークスペースのフォルダ内台帳を
+  // MeldexWorkspaceSharedLedger.mergeSourceRoots() で統合し、フロント向け
+  // outliner root 形式へ変換する。
+  //
+  // 最重要の安全要件: アカウント由来（origin==='account'）の要素は、従来の
+  // toOutlinerRoot() と完全に同じ7キー構成で返す。これにより参加中
+  // ワークスペースが0件のユーザーは、この変更の前後で戻り値が完全に同一
+  // になる（回帰防止の最優先要件）。
   async function loadOutlinerRoots() {
     const registry = await loadRegistry({ writeIfMissing: true });
-    return registry.roots
-      .filter((root) => !root.deleted)
-      .map(toOutlinerRoot)
-      .filter(Boolean);
+
+    const joined = window.MeldexWorkspaceLedgerIO?.listJoinedWorkspaces?.() || [];
+    const workspacesForMerge = [];
+    for (const ws of joined) {
+      if (!ws?.id || !ws?.dropboxPath) continue;
+      let wsRoots = [];
+      try {
+        wsRoots = await window.MeldexWorkspaceLedgerIO.readWorkspaceLedger(ws.dropboxPath);
+      } catch (err) {
+        // 1つのワークスペースの読み込み失敗が、フォルダツリー全体の読み込みを
+        // 止めてはならない（best-effort。他のアカウント/ワークスペースは正常に出す）。
+        console.warn('[MeldexSourceFolderRegistry] ワークスペース台帳の読み込みに失敗:', ws.dropboxPath, err);
+        continue;
+      }
+      workspacesForMerge.push({ id: ws.id, dropboxPath: ws.dropboxPath, roots: wsRoots });
+    }
+
+    const merged = window.MeldexWorkspaceSharedLedger?.mergeSourceRoots
+      ? window.MeldexWorkspaceSharedLedger.mergeSourceRoots(registry.roots, workspacesForMerge)
+      : registry.roots.filter((root) => !root.deleted); // フォールバック: モジュール未読込時は従来どおり
+
+    const workspaceRootsById = new Map();
+    const outlinerRoots = [];
+    for (const entry of merged) {
+      const origin = String(entry?.origin || '');
+      if (origin.startsWith('ws:')) {
+        const dropboxPath = normalizeDropboxPath(entry.resolvedDropboxPath || '');
+        const workspaceId = String(entry?.workspaceId || '').trim();
+        if (!dropboxPath || !entry?.id || !workspaceId) continue;
+        // フェーズ3c-hotfix: entry.id（wsrc:...）はワークスペードの
+        // フォルダ内台帳ごとに独立採番される（parseWsLedger内でワークス
+        // ペード単位に新規生成）ため、2つの異なる参加ワークスペードが
+        // 同名フォルダ（例: 両方とも relPath:"第1話"）を持つと entry.id が
+        // 衝突する。ここで workspaceId を名前空間として付与し、
+        // ws:<workspaceId>:<entry.id> の形で最終idを一意化する
+        // （デスクトップ側 meldex_workspace_service.py の
+        // _normalize_joined_workspace_source_root と同一方式）。
+        // これにより悪意ある entry.id によるアカウントroot（dropbox:xxx）への
+        // なりすましも、workspaceIdプレフィックスがある限り構造的に不可能になる。
+        const namespacedId = `ws:${workspaceId}:${entry.id}`;
+        outlinerRoots.push({
+          id: namespacedId,
+          sourceId: namespacedId,
+          provider: 'dropbox',
+          dropboxPath,
+          path: sourcePath(namespacedId, ''),
+          name: entry.name,
+          visible: entry.visible,
+          deleted: false, // mergeSourceRootsは既にdeleted除外済み
+          origin: entry.origin,
+          workspaceId: entry.workspaceId,
+        });
+        workspaceRootsById.set(namespacedId, { dropboxPath });
+      } else {
+        const outlinerRoot = toOutlinerRoot(entry);
+        if (outlinerRoot) outlinerRoots.push(outlinerRoot);
+      }
+    }
+    _lastWorkspaceRootsById = workspaceRootsById;
+    return outlinerRoots;
   }
 
   async function saveOutlinerRoots(roots) {
@@ -437,6 +506,11 @@
     const usedIds = new Set(existing.roots.map((root) => root.id));
     const nextRoots = [];
     for (const root of source) {
+      // ワークスペース由来（フェーズ3c合流分）はアカウント台帳へ書き戻さない。
+      // 設定画面がGETしたワークスペース由来の項目を表示切替等でPUTし返した際、
+      // _normalizeRootが仮想パスをdropboxPathとして誤解釈しアカウント台帳
+      // (source-folders.v1.json)を破壊する事故を防ぐ。
+      if (typeof root?.origin === 'string' && root.origin.startsWith('ws:')) continue;
       if (root?.provider !== 'dropbox' && !root?.dropboxPath) continue;
       const normalized = _normalizeRoot(root, usedIds);
       if (!normalized) continue;
@@ -461,7 +535,15 @@
 
   function _findRoot(sourceId) {
     const registry = _lastRegistry || _registryFromCache();
-    return registry.roots.find((root) => root.id === sourceId && !root.deleted) || null;
+    const accountRoot = registry.roots.find((root) => root.id === sourceId && !root.deleted) || null;
+    if (accountRoot) return accountRoot;
+    // アカウント台帳に無ければ、直近の loadOutlinerRoots() が合流させた
+    // ワークスペース由来ルートを見る（フェーズ3c）。
+    const wsRoot = _lastWorkspaceRootsById?.get?.(sourceId);
+    if (wsRoot?.dropboxPath) {
+      return { id: sourceId, sourceId, provider: 'dropbox', dropboxPath: wsRoot.dropboxPath };
+    }
+    return null;
   }
 
   function resolveDropboxPath(path, fallbackVaultPath) {
@@ -481,6 +563,13 @@
     const normalized = normalizeDropboxPath(dropboxPath);
     const registry = _lastRegistry || _registryFromCache();
     const roots = registry.roots.filter((root) => !root.deleted);
+    // フェーズ3c: 直近の loadOutlinerRoots() が合流させたワークスペース由来
+    // ルートも逆引き候補に含める（_findRoot と対称に対応させる）。
+    if (_lastWorkspaceRootsById) {
+      for (const [id, info] of _lastWorkspaceRootsById.entries()) {
+        if (info?.dropboxPath) roots.push({ id, dropboxPath: info.dropboxPath });
+      }
+    }
     const candidates = (sourceId ? roots.filter((root) => root.id === sourceId) : roots)
       .sort((left, right) => normalizeDropboxPath(right.dropboxPath).length - normalizeDropboxPath(left.dropboxPath).length);
     for (const root of candidates) {

@@ -23,6 +23,9 @@
   let _savedRange = null;
   let _savedRoot = null;
   let _suppressUntil = 0;
+  // 選択操作の途中（マウスドラッグ中 / Shift押下中）はルビ入力欄へ自動フォーカスしない
+  let _pointerSelecting = false;
+  let _shiftSelecting = false;
 
   function _closeSelectionPopup() {
     document.querySelectorAll('.' + POPUP_CLASS).forEach(el => el.remove());
@@ -301,6 +304,116 @@
     return row;
   }
 
+  // シナリオのテキストセル選択なら、対象エディタ（ルビ挿入APIを持つもの）を返す
+  function _scriptnoteRubyEditor(root) {
+    if (!root?.matches?.('.sn2-text[contenteditable="true"]')) return null;
+    if (typeof getActiveScriptNoteComponent !== 'function') return null;
+    const ed = getActiveScriptNoteComponent()?._editor;
+    if (!ed || typeof ed._applyRubyToSelection !== 'function') return null;
+    if (!ed.host?.contains?.(root)) return null;
+    return ed;
+  }
+
+  function _focusSavedRoot() {
+    const root = _savedRoot;
+    if (!root?.isConnected) return;
+    const doFocus = () => {
+      // 遅延実行の間に別のポップアップ等がフォーカスを取った場合は奪い返さない
+      const ae = document.activeElement;
+      if (ae && ae !== document.body && ae !== root && !root.contains(ae)) return;
+      try { root.focus({ preventScroll: true }); } catch { try { root.focus(); } catch {} }
+    };
+    doFocus();
+    requestAnimationFrame(doFocus);
+  }
+
+  // ルビ入力行（シナリオのテキストセル選択時のみ書式設定ポップアップへ表示）
+  // 1行目: ラベル+入力欄+追加 / 2行目: 読み取得+自動ルビルール（追加ボタンの後で改行する）
+  function _selectionRubyRow(root) {
+    if (!_scriptnoteRubyEditor(root)) return null;
+    const row = document.createElement('div');
+    row.className = 'gb-text-selection-ruby-row';
+    row.dataset.e2eId = 'sn2-ruby-row';
+    const label = document.createElement('span');
+    label.className = 'gb-fmt-label';
+    label.textContent = 'ルビ';
+    label.title = '選択した文字にルビを追加します';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'gb-fmt-text gb-text-selection-ruby-input';
+    input.dataset.e2eId = 'sn2-ruby-input';
+    input.placeholder = 'ルビを入力...';
+    input.setAttribute('aria-label', '選択文字のルビ');
+    // 開くたびに自動フォーカスされるため、フォーカス由来のツールチップは出さない
+    input.setAttribute('data-gb-tooltip-disabled', 'true');
+    const okButton = document.createElement('button');
+    okButton.type = 'button';
+    okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary gb-text-selection-ruby-ok';
+    okButton.dataset.e2eId = 'sn2-ruby-ok';
+    okButton.textContent = '追加';
+    const autoButton = document.createElement('button');
+    autoButton.type = 'button';
+    autoButton.className = 'gb-btn gb-btn-sm gb-btn-quiet gb-text-selection-ruby-auto';
+    autoButton.dataset.e2eId = 'sn2-ruby-auto';
+    autoButton.textContent = '読み取得';
+    const addRuleLabel = document.createElement('label');
+    addRuleLabel.className = 'gb-check gb-text-selection-ruby-check';
+    addRuleLabel.dataset.e2eId = 'sn2-ruby-add-rule-label';
+    const addRuleInput = document.createElement('input');
+    addRuleInput.type = 'checkbox';
+    addRuleInput.className = 'gb-checkbox';
+    addRuleInput.dataset.e2eId = 'sn2-ruby-add-rule';
+    const addRuleText = document.createElement('span');
+    addRuleText.textContent = '自動ルビルールにも追加';
+    addRuleLabel.append(addRuleInput, addRuleText);
+    const applyRuby = () => {
+      const ruby = input.value.trim();
+      const ed = _scriptnoteRubyEditor(root);
+      _suppressUntil = Date.now() + 400;
+      if (ruby && ed && _restoreSelection()) {
+        const sel = window.getSelection();
+        if (sel?.rangeCount && !sel.isCollapsed) {
+          ed._applyRubyToSelection(sel.getRangeAt(0), root, ruby, addRuleInput.checked);
+        }
+      }
+      _closeSelectionPopup();
+      _focusSavedRoot();
+    };
+    okButton.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      applyRuby();
+    });
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        applyRuby();
+      }
+    });
+    autoButton.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const text = String(_savedRange?.toString?.() || '').trim();
+      if (!text) return;
+      try {
+        const res = await apiFetch('/ruby?text=' + encodeURIComponent(text));
+        if (res?.ruby) input.value = res.ruby;
+        else if (typeof showStatus === 'function') showStatus('自動ルビの取得に失敗しました', true);
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
+      }
+    });
+    const mainLine = document.createElement('div');
+    mainLine.className = 'gb-text-selection-ruby-line';
+    mainLine.append(label, input, okButton);
+    const optionLine = document.createElement('div');
+    optionLine.className = 'gb-text-selection-ruby-line';
+    optionLine.append(autoButton, addRuleLabel);
+    row.append(mainLine, optionLine);
+    return row;
+  }
+
   async function _runClipboardCommand(command) {
     if (!_restoreSelection()) return;
     const root = _savedRoot;
@@ -335,12 +448,19 @@
     return '操作';
   }
 
-  function _openForSelection() {
+  function _openForSelection(opts = {}) {
+    const force = !!opts.force;
     if (_isCloudMobileEditingUiActive()) {
       _closeSelectionPopup();
       return;
     }
-    if (Date.now() < _suppressUntil) return;
+    if (!force && Date.now() < _suppressUntil) return;
+    if (force) _suppressUntil = 0;
+    // ポップアップ内の入力欄（ルビ等）を操作中は、selectionchange で閉じ直さない
+    if (!force) {
+      const openPopup = document.querySelector('.' + POPUP_CLASS);
+      if (openPopup && openPopup.contains(document.activeElement)) return;
+    }
     if (typeof openFormatPopup !== 'function') return;
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount || sel.isCollapsed) {
@@ -357,6 +477,7 @@
     _savedRoot = root;
     _savedRange = range.cloneRange();
     const anchor = { getBoundingClientRect: () => rect };
+    const rubyRow = _selectionRubyRow(root);
     const popup = openFormatPopup(anchor, {
       fields: FIELDS,
       values: _computedValues(range),
@@ -364,6 +485,7 @@
       closeOnOutside: true,
       avoidRect: _rangeAvoidRect(range),
       focusTarget: root,
+      extraRowTop: [rubyRow].filter(Boolean),
       extraRow2: [_selectionClipboardRow()],
       onChange(prop, value) {
         const normalized = prop === 'bold' ? 'fontWeight'
@@ -378,6 +500,15 @@
     });
     popup?.setAttribute?.('role', 'dialog');
     popup?.setAttribute?.('aria-label', '選択範囲の書式設定');
+    // ルビ入力欄を初期フォーカスにする（2026-07-18 ユーザー指示）。
+    // ドラッグ選択中・Shift+矢印での選択拡張中はフォーカスを奪うと選択操作が
+    // 途切れるため、操作が終わったタイミング（pointerup / Shift解放）の再表示で当てる
+    if (rubyRow && (opts.focusRuby || (!_pointerSelecting && !_shiftSelecting))) {
+      const rubyInput = popup?.querySelector?.('[data-e2e-id="sn2-ruby-input"]');
+      if (rubyInput) {
+        try { rubyInput.focus({ preventScroll: true }); } catch { rubyInput.focus(); }
+      }
+    }
   }
 
   function _schedule() {
@@ -386,9 +517,45 @@
   }
 
   document.addEventListener('selectionchange', _schedule);
+  // Escape は共通ポップアップの汎用ハンドラより先（登録順）に受けて、編集中セルへ
+  // フォーカスを戻して閉じる（ルビ入力欄などフォーカスがポップアップ内にある場合の復帰経路）
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (!document.querySelector('.' + POPUP_CLASS)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
+    if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
+    else _closeSelectionPopup();
+    _suppressUntil = Date.now() + 250;
+    _focusSavedRoot();
+  }, true);
+  // ポップアップ表示中の Tab / Shift+Tab はポップアップ内の項目切り替えに割り当てる
+  // （編集セル側の Tab 動作＝タイプ選択メニュー等より優先する）。
+  // ルビ行が無いポップアップ（ノート本文などの選択書式のみ）は、フォーカスが
+  // ポップアップ内にある時だけ切り替え、編集エリア側の Tab 動作（インデント等）を保つ
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Shift') _shiftSelecting = true;
+    if (ev.key !== 'Tab') return;
+    const popup = document.querySelector('.' + POPUP_CLASS);
+    if (!popup) return;
+    const hasRubyRow = !!popup.querySelector('[data-e2e-id="sn2-ruby-row"]');
+    if (!hasRubyRow && !popup.contains(document.activeElement)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(popup, ev.shiftKey);
+  }, true);
+  document.addEventListener('pointerdown', (ev) => {
+    if (ev.button === 0 && !ev.target?.closest?.('.gb-fmt-popup, .gb-palette-popup')) _pointerSelecting = true;
+  }, true);
+  document.addEventListener('pointerup', () => { _pointerSelecting = false; }, true);
+  document.addEventListener('pointercancel', () => { _pointerSelecting = false; }, true);
+  // ウィンドウ非アクティブ化で keyup / pointerup を取りこぼしても状態を残さない
+  window.addEventListener('blur', () => { _pointerSelecting = false; _shiftSelecting = false; });
   document.addEventListener('mouseup', _schedule, true);
   document.addEventListener('keyup', (ev) => {
     const key = String(ev?.key || '');
+    if (key === 'Shift') _shiftSelecting = false;
     if (key.startsWith('Arrow') || key === 'Shift' || key === 'Home' || key === 'End') _schedule();
   }, true);
   document.addEventListener('pointerdown', (ev) => {

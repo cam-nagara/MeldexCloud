@@ -148,6 +148,20 @@ function uiTransferIcon(kind, size) {
   return name && typeof lucide === 'function' ? lucide(name, size || 14) : '';
 }
 
+// UI共通ルール: 基本UI（ダイアログ・オプションパネル・メインパネル等）には長い説明文を直接載せず、
+// ラベル横の小さなヘルプアイコンに集約し、実際の説明文はツールチップで見せる。
+// 使い方: `<label>時刻を入力できるようにする ${fieldHelp('オンにすると時分まで指定できます')}</label>`
+// text が空なら何も出さない（説明が不要なフィールドではアイコンを付けない）。
+function fieldHelp(text, opts) {
+  const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const size = (opts && opts.size) || 13;
+  const extra = (opts && opts.className) ? ' ' + opts.className : '';
+  const glyph = (typeof lucide === 'function') ? lucide('helpCircle', size) : '?';
+  return `<span class="gb-field-help${extra}" tabindex="0" role="img" data-gb-tooltip="${esc(t)}" aria-label="${esc(t)}">${glyph}</span>`;
+}
+if (typeof window !== 'undefined') window.fieldHelp = fieldHelp;
+
 // DOM 要素の安全な値設定ヘルパー（要素が未レンダリング時に null 参照で落ちないように）
 function _safeSetValue(id, value) {
   const el = document.getElementById(id);
@@ -807,6 +821,10 @@ const LUCIDE = {
   indentIncrease: '<polyline points="3 8 7 12 3 16"/><line x1="21" x2="11" y1="12" y2="12"/><line x1="21" x2="11" y1="6" y2="6"/><line x1="21" x2="11" y1="18" y2="18"/>',
   textQuote: '<path d="M17 6H3"/><path d="M21 12H8"/><path d="M21 18H8"/><path d="M3 12v6"/>',
   pipette: '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/>',
+  // 取り消し・やり直しボタン展開 v0.6.196（undo-redo-toolbar-plan フェーズ1-3）
+  undo2: '<path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
+  redo2: '<path d="m15 14 5-5-5-5" /><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />',
+  workflow: '<rect width="8" height="8" x="3" y="3" rx="2" /><path d="M7 11v4a2 2 0 0 0 2 2h4" /><rect width="8" height="8" x="13" y="13" rx="2" />',
 };
 // gb-icon-assets.js (hasLucideName) が独自アイコン (page / db / scenario 等) を
 // 解決できるよう、curated LUCIDE を window に公開する。これが無いと
@@ -992,6 +1010,13 @@ function replaceIcons(root) {
     else if (cls.includes('ico-kanban')) name = 'kanban';
     else if (cls.includes('ico-indentIncrease')) name = 'indentIncrease';
     else if (cls.includes('ico-textQuote')) name = 'textQuote';
+    // 取り消し・やり直しボタン展開 v0.6.196
+    else if (cls.includes('ico-undo2')) name = 'undo2';
+    else if (cls.includes('ico-redo2')) name = 'redo2';
+    // 単独アプリパリティ v0.6.200（シナリオ/ボードのエクスポートメニュー用アイコン）
+    else if (cls.includes('ico-image')) name = 'image';
+    else if (cls.includes('ico-fileCode')) name = 'fileCode';
+    else if (cls.includes('ico-clipboardCopy')) name = 'clipboardCopy';
     if (name) {
       // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
       const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');

@@ -1,3 +1,21 @@
+}
+
+function replaceIcons(root) {
+  const scope = root?.querySelectorAll ? root : document;
+  scope.querySelectorAll('.ico').forEach(el => {
+    const cls = el.className;
+    let name = '';
+    if (cls.includes('ico-folderTree')) name = 'folderTree';
+    else if (cls.includes('ico-folderPen')) name = 'folderPen';
+    else if (cls.includes('ico-folderOpen')) name = 'folderOpen';
+    else if (cls.includes('ico-folder')) name = 'folder';
+    else if (cls.includes('ico-page')) name = 'page';
+    else if (cls.includes('ico-db')) name = 'db';
+    else if (cls.includes('ico-scenario')) name = 'scenario';
+    else if (cls.includes('ico-databaseSearch')) name = 'databaseSearch';
+    else if (cls.includes('ico-command')) name = 'command';
+    else if (cls.includes('ico-search')) name = 'search';
+    else if (cls.includes('ico-bookOpenText')) name = 'bookOpenText';
     else if (cls.includes('ico-book')) name = 'book';
     else if (cls.includes('ico-download')) name = 'download';
     else if (cls.includes('ico-globe')) name = 'globe';
@@ -96,6 +114,13 @@
     else if (cls.includes('ico-kanban')) name = 'kanban';
     else if (cls.includes('ico-indentIncrease')) name = 'indentIncrease';
     else if (cls.includes('ico-textQuote')) name = 'textQuote';
+    // 取り消し・やり直しボタン展開 v0.6.196
+    else if (cls.includes('ico-undo2')) name = 'undo2';
+    else if (cls.includes('ico-redo2')) name = 'redo2';
+    // 単独アプリパリティ v0.6.200（シナリオ/ボードのエクスポートメニュー用アイコン）
+    else if (cls.includes('ico-image')) name = 'image';
+    else if (cls.includes('ico-fileCode')) name = 'fileCode';
+    else if (cls.includes('ico-clipboardCopy')) name = 'clipboardCopy';
     if (name) {
       // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
       const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');
@@ -873,28 +898,3 @@ function initIframeMarkup(scrollContainer) {
         item._pendingData = next;
         return;
       }
-      if (_updateBoardAnnotation(item.id, { data: next })) return;
-      _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
-    };
-    const scheduleSave = () => {
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(persist, 400);
-    };
-    editor = _createNoteEditor(data, scheduleSave, item.id);
-    note.appendChild(editor);
-
-    let dragState = null;
-    const onHeaderDragMove = (e) => {
-      if (!dragState) return;
-      e.preventDefault();
-      const pt = _toLocalCoords(e.clientX, e.clientY);
-      data.x = dragState.x + (pt.x - dragState.startX);
-      data.y = dragState.y + (pt.y - dragState.startY);
-      _applyNotePosition(note, data);
-    };
-    const onHeaderDragEnd = () => {
-      if (!dragState) return;
-      dragState = null;
-      document.removeEventListener('pointermove', onHeaderDragMove);
-      document.removeEventListener('pointerup', onHeaderDragEnd);
-      document.removeEventListener('pointercancel', onHeaderDragEnd);

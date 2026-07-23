@@ -154,10 +154,104 @@
       if (action === 'open') await window.runStandaloneFileAction('シナリオを開くことが', openScenario);
       if (action === 'save') await window.runStandaloneFileAction('保存', saveScenario);
       if (action === 'saveAs') await window.runStandaloneFileAction('名前を付けて保存', saveScenarioAs);
+      if (action === 'exportPng') await window.runStandaloneFileAction('PNG出力', exportPng);
+      if (action === 'exportHtml') await window.runStandaloneFileAction('HTML出力', exportHtml);
+      if (action === 'exportMarkdown') await window.runStandaloneFileAction('Markdown出力', exportMarkdown);
+      if (action === 'clipstudio') await window.runStandaloneFileAction('CLIP STUDIO PAINTへの送信', sendToClipStudio);
       if (action === 'sendBmanga') await window.MeldexBManga?.sendActiveScenario?.();
       if (action === 'undo') editor()?.undo?.();
       if (action === 'redo') editor()?.redo?.();
     });
+  }
+
+  // 本体のシナリオエディタは複数パネル（GBLayout）前提で「アクティブなパネルの
+  // シナリオエディタ」を探索するが、単独版は常にこの1インスタンスだけなので
+  // 単独版用に上書きする（gb-scriptnote-format.js / gb-export-image.js /
+  // gb-scriptnote-clipstudio.js の PNG・HTML・Markdown出力・CLIP STUDIO送信は
+  // すべてこの関数経由でエディタを取得するため、これだけでまとめて有効化できる）。
+  //
+  // _getScriptNoteEditorForFileStyle 等のファイルスタイル（オプションパネル「テーマ」
+  // タブ）共通基盤は本体では gb-note-enhance.js（ノート機能拡張ファイル）内に同居して
+  // 定義されているが、単独版シナリオはノートエディタ本体を同梱しないため未定義になる。
+  // gb-note-enhance.js 全体（スラッシュコマンド等ノート専用の大きな機能を含む）を
+  // 同梱するのは過剰なため、シナリオの「テーマ」タブが必要とする5つの定義だけを
+  // 本体(gb-note-enhance.part01.js)と同一内容でここに用意する。
+  // 本体側でこの一覧が変わった場合は追随が必要（app/AGENT_INBOX.md に記録済み）。
+  const SN2_FILE_STYLE_KEYS = [
+    'borderColor', 'borderWidth', 'baseTextColor', 'baseTextBold', 'baseTextItalic',
+    'baseTextFontFamily', 'baseTextFontSize', 'baseTextLineHeight', 'baseTextLetterSpacing',
+    'baseTextLineHeightH', 'baseTextLineHeightV', 'baseTextLetterSpacingH', 'baseTextLetterSpacingV',
+    'rubyFontSize', 'rubyOffset', 'spreadBorderColor', 'spreadBorderWidth', 'wrapMode',
+    'hoverBgColor', 'caretColor', 'caretWidth', 'dragSelectColor', 'selectionColor',
+    'selectionTextColor', 'dropIndicatorColor', 'dropIndicatorWidth', 'themeId',
+    '__themeName', '__themeSourceId', '__useOsAccentColor',
+    '--theme-palette-0', '--theme-palette-1', '--theme-palette-2', '--theme-palette-3',
+    '--theme-palette-4', '--theme-palette-5', '--theme-palette-6', '--theme-palette-7',
+    '--theme-palette-8', '--theme-palette-9',
+  ];
+
+  function initActiveEditorBridge() {
+    window._sn2GetActiveEditor = function () {
+      const ed = app.component?._editor;
+      return ed?.doc ? ed : null;
+    };
+    window._getScriptNoteEditorForFileStyle = window._sn2GetActiveEditor;
+    window._SCRIPTNOTE_FILE_STYLE_DEFAULTS = window._SCRIPTNOTE_FILE_STYLE_DEFAULTS || { wrapMode: true };
+    window._isScriptnoteFileStyleKey = window._isScriptnoteFileStyleKey || function (key) {
+      const value = String(key || '').trim();
+      return SN2_FILE_STYLE_KEYS.includes(value) || value.startsWith('--') || /^__[A-Za-z0-9_-]+$/.test(value);
+    };
+    window._filterScriptnoteFileStyle = window._filterScriptnoteFileStyle || function (style) {
+      if (!style || typeof style !== 'object' || Array.isArray(style)) return {};
+      const next = {};
+      Object.entries(style).forEach(([key, value]) => {
+        if (!window._isScriptnoteFileStyleKey(key)) return;
+        if (value === undefined || value === null || value === '') return;
+        next[key] = value;
+      });
+      return next;
+    };
+  }
+
+  async function exportPng() {
+    if (typeof MeldexExportImage === 'undefined') {
+      showStatus('PNG出力エンジンを読み込めませんでした', true);
+      return;
+    }
+    await MeldexExportImage.exportCurrentView('scriptnote');
+  }
+
+  async function exportHtml() {
+    if (typeof exportCurrentScriptNoteAsHtml !== 'function') {
+      showStatus('HTML出力エンジンを読み込めませんでした', true);
+      return;
+    }
+    await exportCurrentScriptNoteAsHtml();
+  }
+
+  async function exportMarkdown() {
+    if (typeof exportCurrentScriptNoteAsMarkdown !== 'function') {
+      showStatus('Markdown出力エンジンを読み込めませんでした', true);
+      return;
+    }
+    await exportCurrentScriptNoteAsMarkdown();
+  }
+
+  async function sendToClipStudio() {
+    if (typeof sn2CopyForClipStudio !== 'function') {
+      showStatus('CLIP STUDIO連携を読み込めませんでした', true);
+      return;
+    }
+    sn2CopyForClipStudio();
+  }
+
+  // CLIP STUDIO送信はデスクトップ前提の機能のため、Cloud/PWA版では非表示にする
+  // （要判断#3の決定）。
+  function updateClipStudioMenuVisibility() {
+    const item = qs('scenario-menu-clipstudio');
+    if (!item) return;
+    const isCloud = window.MeldexStandaloneCloud?.isCloudMode?.() === true;
+    item.hidden = isCloud;
   }
 
   function bindShortcuts() {
@@ -188,18 +282,42 @@
 
   function mountComponent() {
     app.component = new ScriptNoteComponent('scenario-standalone-pane', 'scenario-standalone-tab');
-    app.component._skipDetailSync = true;
     qs('scenario-root').appendChild(app.component.create());
     app.component.activate();
   }
 
+  // スマホ幅（≤820px）で優先操作だけを常時表示し、残りを「その他」ボトムシートへ畳む
+  // （計画書: standalone-mobile-toolbar_plan_2026-07-20.md §4）。
+  // #se-toolbar は本体共用の gb-tool-scriptnote.js が生成するため、生成側は無改変のまま
+  // ここから後付けで設定する（mountComponent() 完了後＝ #se-toolbar 生成後に呼ぶ）。
+  function initMobileToolbar() {
+    window.MeldexStandaloneMobileToolbar?.setup({
+      toolbar: '#se-toolbar',
+      priority: ['[data-sn-action="undo"]', '[data-sn-action="redo"]', '#btn-horizontal', '#btn-vertical', '#btn-filter', '[data-sn-action="search"]'],
+      keep: ['#title-input'],
+      sheetTitle: 'その他',
+    });
+  }
+
+  function initOptionPanel() {
+    window.MeldexStandaloneOptionPanel?.init({
+      storagePrefix: 'meldex-scenario',
+      toggleButtonIds: ['scenario-option-panel-button'],
+      defaultWidth: 360,
+    });
+  }
+
   async function init() {
     await MeldexStandaloneFS.init();
+    initActiveEditorBridge();
     mountComponent();
+    initMobileToolbar();
+    initOptionPanel();
     bindMenus();
     bindShortcuts();
     bindDirtyObserver();
     bindPathChanges();
+    updateClipStudioMenuVisibility();
     const initial = MeldexStandaloneFS.nativeInitialPath();
     if (!initial) await newScenario();
     else {

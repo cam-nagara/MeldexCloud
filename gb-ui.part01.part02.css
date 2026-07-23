@@ -17,6 +17,43 @@
   font-style: var(--ui-muted-italic, normal);
   color: var(--ui-fg-muted);
 }
+
+/* フィールド用ヘルプアイコン: ラベル横の小さな「?」。長い説明文は基本UIに直接載せず、
+   このアイコンのツールチップへ集約する（fieldHelp() が生成）。 */
+.gb-field-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -0.15em;
+  margin-left: var(--ui-space-1, 4px);
+  color: var(--ui-fg-muted);
+  opacity: 0.65;
+  cursor: help;
+  border-radius: 50%;
+  line-height: 0;
+  flex: none;
+}
+.gb-field-help:hover {
+  color: var(--ui-accent);
+  opacity: 1;
+}
+.gb-field-help:focus-visible {
+  color: var(--ui-accent);
+  opacity: 1;
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+.gb-field-help > svg { display: block; }
+
+/* チェックボックス/トグルの右にヘルプアイコンを添える横並びラッパー。
+   ラベル内に置くとアイコンのクリックでトグルが誤作動するため、ラベルの外に置く。 */
+.gb-check-help-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2, 6px);
+}
+.gb-check-help-row > label { margin-top: 0; margin-bottom: 0; }
+.gb-check-help-row > .gb-field-help { margin-left: 0; }
 /* セクション内インデント: タイトル以外は 1em インデント */
 .gb-section > *:not(.gb-section-title) {
   margin-left: 1em;

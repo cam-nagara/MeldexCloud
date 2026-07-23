@@ -60,7 +60,7 @@ function autoFitTimelineColumns(ctx, dbPath, options = {}) {
   if (!dbPath || !data?.entities) return;
   const cfg = getTimelineConfig(dbPath, { ctx });
   if (!cfg.timeProp) {
-    if (typeof showStatus === 'function') showStatus('時間軸プロパティを選択してください', true);
+    if (typeof showStatus === 'function') showStatus('時間軸の列を選択してください', true);
     return;
   }
   const entries = _collectTimelineAutoFitEntries(data, cfg, ctx?.filter);

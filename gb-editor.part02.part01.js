@@ -174,15 +174,37 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   grid.innerHTML = '';
   // grid container にもクラスを付けて CSS が当たるように
   grid.classList.add('entity-props-grid-container');
+
+  // 開閉状態・列幅は dbPath (エントリの親フォルダ) 単位で view_config に保存する。
+  // フルページ/サブパネル/モバイルドロワーいずれもこの共通関数を経由するため自動的に反映される。
+  const viewState = typeof _entityPropsViewState === 'function'
+    ? _entityPropsViewState(parentDb, entityPath)
+    : { collapsed: false, colWidth: 300 };
+  grid.style.setProperty('--entity-prop-col-width', viewState.colWidth + 'px');
+  // ヘッダーの表示可否は「プロパティが1つも定義されていないか」で判定する (allProps基準)。
+  // レイアウト編集で全プロパティを非表示にしただけの場合はヘッダー(と並び替えツールバーへの導線)を残す。
+  if (typeof _buildEntityPropsHeader === 'function') {
+    grid.appendChild(_buildEntityPropsHeader(grid, data, entityPath, options, parentDb, allProps.length > 0, viewState));
+  }
+
+  // プロパティ本体 (並び替えツールバー + グループ見出し + カード)。閉じている間は丸ごと隠す。
+  // display:contents にすることで、このラッパー自体はグリッドのレイアウトに関与せず、
+  // 子要素 (カード等) が引き続き外側グリッドの直接の子として複数列に配置される。
+  const body = document.createElement('div');
+  body.className = 'entity-props-body';
+  body.dataset.e2eId = 'entity-props-body';
+  body.style.display = viewState.collapsed ? 'none' : 'contents';
+  grid.appendChild(body);
+
   if (typeof renderPropertyLayoutToolbar === 'function') {
-    renderPropertyLayoutToolbar(grid, data, entityPath, options);
+    renderPropertyLayoutToolbar(grid, data, entityPath, options, body);
   }
   groupedProps.forEach(group => {
     if (group.title) {
       const title = document.createElement('h4');
       title.className = 'gb-prop-group-title';
       title.textContent = group.title;
-      grid.appendChild(title);
+      body.appendChild(title);
     }
     (group.props || []).forEach(propName => {
     const card = document.createElement('div');
@@ -226,7 +248,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       const hideBtn = document.createElement('button');
       hideBtn.type = 'button';
       hideBtn.className = 'gb-prop-hide-btn';
-      hideBtn.title = '詳細プロパティから非表示';
+      hideBtn.title = '列一覧から非表示';
       hideBtn.dataset.e2eId = _entityPropControlId('entity-prop-hide', propName);
       hideBtn.dataset.propName = propName;
       hideBtn.innerHTML = typeof lucide === 'function' ? lucide('eyeOff', 12) : '非表示';
@@ -299,7 +321,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       // 同じ container を再描画 (entity-view からも詳細パネルからも呼べる)
       renderEntityPropsGridInto(grid, data, entityPath, options);
     });
-    grid.appendChild(card);
+    body.appendChild(card);
   });
   });
 }

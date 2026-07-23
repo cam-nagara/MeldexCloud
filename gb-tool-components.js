@@ -537,7 +537,7 @@ class VersionComponent extends ToolComponent {
 
     return `<section class="gb-version-timeline" style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
-        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} スナップショットを作成</button>
+        <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 現バージョンを保存</button>
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
         <select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
           ${this._versionSelectOption('named,auto,edit', '全て', kind)}
@@ -642,9 +642,6 @@ class VersionComponent extends ToolComponent {
     const fileSection = `<details class="gb-version-section" open>
       <summary class="gb-version-section-header">${typeof lucide === 'function' ? lucide('file', 14) : ''} ファイルバージョン（${esc(fileName)}）</summary>
       <div class="gb-version-section-body">
-        <div style="margin-bottom:8px;">
-          <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('save', path, '', vType)}>+ 保存</button>
-        </div>
         ${fileListHtml}
       </div>
     </details>`;
@@ -667,6 +664,11 @@ class VersionComponent extends ToolComponent {
       versionType: this.state.versionType || 'file',
       timelineKind: this.state.timelineKind || 'named,auto,edit',
       timelineActorKind: this.state.timelineActorKind || '',
+      // 対象未指定で開いた（パネルメニュー/コマンドパレット/右レール由来の）タブは true。
+      // openVersionTab(path, type) 等でファイルを明示して開いたタブは false のままピン留めする。
+      // 保存済みレイアウトから復元される旧タブにはこのフィールドが無いため、
+      // restoreState 側で未指定時は false（=ピン留め扱い）に倒して互換性を保つ。
+      versionFollow: !!this.state.versionFollow,
     };
   }
 
@@ -677,6 +679,7 @@ class VersionComponent extends ToolComponent {
       this.state.versionType = s.versionType || 'file';
       this.state.timelineKind = s.timelineKind || 'named,auto,edit';
       this.state.timelineActorKind = s.timelineActorKind || '';
+      this.state.versionFollow = !!s.versionFollow;
     }
   }
 }

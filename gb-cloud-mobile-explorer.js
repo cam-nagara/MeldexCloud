@@ -143,6 +143,25 @@
     return firstRoot?._nodeData ? { node: firstRoot, data: firstRoot._nodeData } : null;
   }
 
+  function _openContainerInMainPanel(item, options = {}) {
+    const path = item?.path || '';
+    if (!path) return false;
+    const type = String(item?.type || 'folder').toLowerCase();
+    const name = item.name || item.label || String(path).split(/[\\/]/).pop() || 'フォルダ';
+    if (options.closeDrawer !== false) window.MeldexCloudMobile?.suppressNextSidebarOpen?.();
+    if (type === 'database' && typeof window.selectDatabase === 'function') {
+      Promise.resolve(window.selectDatabase(path, null, { fromExplorer: true, skipHighlight: true })).catch(() => {});
+    } else if (typeof window.openFolder === 'function') {
+      // gb-folder.js は編集禁止のため、fromExplorer の一体化リダイレクトを
+      // skipMobileExplorer で明示的にバイパスし、デスクトップ同様メインパネルへ表示する。
+      Promise.resolve(window.openFolder(name, path, { fromExplorer: true, skipMobileExplorer: true })).catch(() => {});
+    } else {
+      return false;
+    }
+    if (options.closeDrawer !== false) window.MeldexCloudMobile?.closeSidebar?.();
+    return true;
+  }
+
   function selectedFolderTarget() {
     const active = _activeTreeNodeData();
     if (_treeNodeCanActAsFolder(active?.data)) return _targetFromData(active.data);
@@ -305,13 +324,6 @@
     return true;
   }
 
-  function _syncHeaderModeButtons() {
-    document.querySelectorAll('#sidebar .cloud-mobile-tree-mode').forEach((button) => {
-      const mode = button.dataset.mode === 'panel' ? 'list' : button.dataset.mode;
-      button.setAttribute('aria-pressed', mode === _mode ? 'true' : 'false');
-    });
-  }
-
   function _syncLayoutButtons() {
     document.querySelectorAll('#sidebar .cloud-mobile-explorer-layout-button').forEach((button) => {
       button.setAttribute('aria-pressed', button.dataset.layout === _layout ? 'true' : 'false');
@@ -355,19 +367,16 @@
   }
 
   function setMode(mode, options = {}) {
+    // フォルダツリー/フォルダ一覧の一体化UIは廃止済み。'list' 指定は引き続き
+    // 受け付けるが常に 'tree' へ強制する（ドロワーはツリー専用）。
+    // 呼び出し口互換のため引数・関数自体は残す（gb-folder.js の
+    // _openFolderInMobileExplorer など編集禁止の外部コードが呼び出す）。
     if (!ensure()) return false;
-    _mode = mode === 'list' || mode === 'panel' ? 'list' : 'tree';
+    void mode;
+    _mode = 'tree';
     try { localStorage.setItem(MODE_STORAGE_KEY, _mode); } catch {}
     const sidebar = _sidebar();
     if (sidebar) sidebar.dataset.cloudMobileExplorerMode = _mode;
-    _syncHeaderModeButtons();
-    if (_mode === 'list') {
-      if (options.syncFromTree !== false || !_currentFolder) {
-        const target = selectedFolderTarget();
-        if (target?.path) _currentFolder = target;
-      }
-      renderCurrent({ force: options.force === true });
-    }
     return true;
   }
 
@@ -450,6 +459,9 @@
   }
 
   async function renderCurrent(options = {}) {
+    // 一覧モードのフォルダパネル一体化UIは廃止済み。呼び出し口が残っていても
+    // 何もしない（ファイル自体は互換のため残置）。
+    if (_mode !== 'list') return false;
     if (!ensure()) return false;
     const sidebar = _sidebar();
     const pane = sidebar?.querySelector('#cloud-mobile-explorer-list-pane');
@@ -684,8 +696,10 @@
     };
     if (options.syncSelection !== false) _selectTreePath(item.path);
     _syncCreateButtonState();
-    if (_mode === 'list' || options.renderList === true) {
-      renderCurrent({ force: options.force === true });
+    // フォルダツリーとフォルダパネルの一体化は廃止。フォルダ/シート行の選択は
+    // 常にデスクトップ同様メインパネルで開く（openPanel:false の場合のみ抑制）。
+    if (options.openPanel !== false) {
+      _openContainerInMainPanel(item, { closeDrawer: options.closeDrawer });
     }
     return true;
   }
@@ -926,11 +940,15 @@
         if (typeof addItemAt === 'function') {
           await addItemAt(target.path, type);
           if (type === 'folder') {
-            window.MeldexCloudMobile?.openSidebar?.(true);
-            setMode('list', { syncFromTree: true, force: true });
-            await renderCurrent({ force: true });
+            // addItemAt() はフォルダ作成時は自動で開かないため、作成直後に
+            // ツリーで選択状態になった新規フォルダをメインパネルへ明示的に開く。
+            const created = selectedFolderTarget();
+            if (created?.path && created.path !== target.path) {
+              _openContainerInMainPanel(created, { closeDrawer: true });
+            } else {
+              _scheduleSidebarClose(80);
+            }
           } else {
-            if (_mode === 'list') await renderCurrent({ force: true });
             _scheduleSidebarClose(80);
           }
         }
@@ -982,10 +1000,9 @@
   }
 
   function _bind() {
-    try {
-      const saved = localStorage.getItem(MODE_STORAGE_KEY);
-      if (saved === 'list' || saved === 'tree') _mode = saved;
-    } catch {}
+    // 一体化UI廃止に伴い、過去に保存された 'list' モードがあっても常にツリーで開く。
+    _mode = 'tree';
+    try { localStorage.setItem(MODE_STORAGE_KEY, _mode); } catch {}
     _layout = _normalizeLayout(_readLayoutStorage());
     ensure();
   }

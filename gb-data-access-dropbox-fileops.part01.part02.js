@@ -16,6 +16,20 @@
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
     const safeVersion = _safeVersionName(version);
     const meta = await _readFolderVersion(provider, normalized, safeVersion);
+    const protectedFile = (Array.isArray(meta.files) ? meta.files : []).find(file => {
+      const relPath = _normalizeFolderPath(file?.rel_path || '');
+      return relPath && _isProductionFolderNotePath(_joinPath(normalized, relPath));
+    });
+    if (protectedFile) {
+      throw new Error('制作管理の列定義を含むフォルダ履歴は汎用復元できません');
+    }
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      const dst = _joinPath(normalized, relPath);
+      if (!_productionReservedEntryProperties(dst).length) continue;
+      const src = _joinPath(_folderVersionDir(normalized), safeVersion, 'files', relPath);
+      _rejectProductionLegacyEntryContent(dst, await provider.readText(src));
+    }
     await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
     const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
     const versionFilesDir = _joinPath(_folderVersionDir(normalized), safeVersion, 'files');
@@ -174,6 +188,12 @@
       if (!['keep_original', 'keep_conflict'].includes(action)) throw new Error('競合解消アクションが不正です');
       const originalPath = _originalPathForConflict(conflictPath);
       if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
+      if (action === 'keep_conflict' && _isProductionFolderNotePath(originalPath)) {
+        throw new Error('制作管理の列定義へ競合コピーを適用できません');
+      }
+      if (action === 'keep_conflict' && _productionReservedEntryProperties(originalPath).length) {
+        _rejectProductionLegacyEntryContent(originalPath, await provider.readText(conflictPath));
+      }
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);

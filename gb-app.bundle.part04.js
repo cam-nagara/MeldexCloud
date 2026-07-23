@@ -1,3 +1,84 @@
+      // 理由付きabortはfetchが通常Errorを投げるため、呼び出し元キャンセルを
+      // 通信障害と誤判定しないよう内部signalは標準AbortErrorへ正規化する。
+      controller.abort();
+    } else {
+      onExternalAbort = () => controller.abort();
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
+    return await fetch(url, { ...fetchOpts, signal: controller.signal });
+  } catch (e) {
+    if (_gbAppApiFetchIsAbortError(e) && timedOut) {
+      const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
+      timeoutErr.name = 'AbortError';
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+async function apiFetch(path, opts) {
+  const method = _gbAppApiFetchMethod(opts);
+  const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
+  const cacheGeneration = _gbAppApiFetchCacheGeneration;
+  if (browseCacheKey) {
+    const cached = _gbAppApiFetchBrowseCache.get(browseCacheKey);
+    if (cached && Date.now() - cached.at < GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS) {
+      return _gbAppApiFetchClonePayload(cached.payload);
+    }
+    _gbAppApiFetchBrowseCache.delete(browseCacheKey);
+  }
+  const inFlightKey = _apiFetchInFlightKey(path, opts);
+  if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
+    return _gbAppApiFetchClonePayload(await _apiFetchInFlightGets.get(inFlightKey));
+  }
+  const perfInfo = _apiFetchPerfInfo(path);
+  const perfStartedAt = perfInfo ? _perfNowMs() : 0;
+  const requestPromise = (async () => {
+    try {
+      let requestOpts = opts;
+      let retriedAfterMutation = false;
+      while (true) {
+        const requestedTimeout = Number(requestOpts?.timeoutMs);
+        const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+          ? Math.min(requestedTimeout, 300000)
+          : GB_APP_API_FETCH_TIMEOUT_MS;
+        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
+        if (perfInfo) {
+          _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+            ...perfInfo,
+            status: res.status,
+            contentLength: res.headers?.get?.('content-length') || '',
+            retriedAfterMutation,
+          });
+        }
+        const backendPerf = _apiFetchBackendPerf(res);
+        if (!res.ok) {
+          let detail = res.statusText || '';
+          let payload = null;
+          try {
+            payload = await res.clone().json();
+            const rawDetail = payload?.error || payload?.detail || detail;
+            detail = rawDetail && typeof rawDetail === 'object'
+              ? (rawDetail.message || rawDetail.code || detail)
+              : rawDetail;
+          } catch {}
+          const error = new Error(`HTTP ${res.status}: ${detail}`);
+          error.status = res.status;
+          error.payload = payload;
+          error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+          throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+        }
+        const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+        const data = await res.json();
+        if (perfInfo) {
+          _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
             ...perfInfo,
             backendPerf,
             retriedAfterMutation,
@@ -34,9 +115,12 @@
           error: e?.message || String(e),
         });
       }
-      if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
+      if (!opts?.silentError && !quietReadAbort) {
+        window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      }
       if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
-        if (_gbAppApiFetchIsAbortError(e) && method === 'GET') {
+        if (quietReadAbort) {
           // GET中断/タイムアウトはエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
           try { console.warn('[apiFetch] aborted:', path, e.message); } catch {}
         } else {
@@ -57,11 +141,12 @@
   return _gbAppApiFetchClonePayload(await requestPromise);
 }
 
-async function apiPut(path, body) {
+async function apiPut(path, body, options = {}) {
   return apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    ...(options || {}),
   });
 }
 
@@ -491,10 +576,27 @@ function getMyRoleForPath(filePath) {
   }
 })();
 
+// 起動時に正本「スタッフ管理シート」へ自分の行を fill-only 登録する
+// （ユーザーアカウント一元管理 計画書 Phase 2、§5.6）。行が既に存在するなら
+// 一切上書きしない（管理者がシートで編集した値は同期に負けない契約）。
+// 正本シート自体が未設定の場合はここで無ダイアログ自動作成される
+// （計画書§5.1「起動時同期」が自動作成のトリガーの一つ）。
+async function _primeStaffRegistrySelfUpsert() {
+  if (!window.MeldexUserRegistry) return;
+  const me = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
+  if (!me || me === 'anonymous') return;
+  try {
+    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true });
+  } catch (e) {
+    // ソースフォルダ未設定・オフライン等では起動処理を止めない。
+  }
+}
+
 async function init() {
   const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
   _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
+  _runStartupBackground('staff-registry-self-upsert', _primeStaffRegistrySelfUpsert());
 
   try {
     const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
@@ -790,111 +892,9 @@ function showView(viewName, ctx) {
     sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
   } else if (resolvedViewName === 'scriptnote') {
     if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
-    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
   } else {
     sc.textContent = '';
   }
 
   state.view = viewName;
-
-  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
-  if (typeof ann !== 'undefined') {
-    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
-    if (newTarget !== ann.targetPath) {
-      ann.targetPath = newTarget;
-      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
-      // スタンドアロン側の loadAnnotations を呼ぶと同じ注釈が二重に描画される
-      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
-        && _usesEmbeddedAnnotationSurface(viewName);
-      if (embedded) {
-        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
-        const layer = document.getElementById('ann-layer');
-        if (layer) layer.innerHTML = '';
-        if (typeof _forEachStandaloneAnnotationNote === 'function') {
-          _forEachStandaloneAnnotationNote(el => el.remove());
-        }
-      } else if (typeof loadAnnotations === 'function') {
-        loadAnnotations();
-      }
-    }
-    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
-  }
-}
-// スクリーンショットメニュー
-function showScreenshotMenu(e) {
-  const btn = e?.target?.closest?.('button') || e?.target;
-  const existing = document.querySelector('.ab-dropdown.ss-menu');
-  if (existing) {
-    existing.remove();
-    btn?.setAttribute?.('aria-expanded', 'false');
-    return;
-  }
-  const menu = document.createElement('div');
-  menu.className = 'ab-dropdown ss-menu';
-  menu.id = 'screenshot-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'スクリーンショット');
-  if (btn?.setAttribute) {
-    btn.setAttribute('aria-haspopup', 'menu');
-    btn.setAttribute('aria-expanded', 'true');
-    btn.setAttribute('aria-controls', menu.id);
-  }
-  let closed = false;
-  let pointerCloser = null;
-  let keyCloser = null;
-  const closeMenu = (restoreFocus = false) => {
-    if (closed) return;
-    closed = true;
-    if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
-    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
-    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
-    menu.remove();
-    if (restoreFocus) btn?.focus?.();
-  };
-  function addItem(label, fn, mode) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'ab-dropdown-item';
-    item.setAttribute('role', 'menuitem');
-    if (mode) item.dataset.screenshotMode = mode;
-    item.textContent = label;
-    item.addEventListener('click', () => { closeMenu(false); fn(); });
-    menu.appendChild(item);
-  }
-  function addSep() {
-    const s = document.createElement('div');
-    s.className = 'ab-dropdown-sep';
-    s.setAttribute('role', 'separator');
-    menu.appendChild(s);
-  }
-  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
-  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
-  addSep();
-  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
-  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
-  addSep();
-  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
-  document.body.appendChild(menu);
-  const placeMenu = () => {
-    if (!btn?.getBoundingClientRect) return;
-    const rect = btn.getBoundingClientRect();
-    if (typeof positionPopup === 'function') {
-      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
-      return;
-    }
-    const z = _getZoom();
-    menu.style.left = (rect.right / z + 4) + 'px';
-    menu.style.top = (rect.top / z) + 'px';
-    requestAnimationFrame(() => {
-      const mr = menu.getBoundingClientRect();
-      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
-      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
-    });
-  };
-  placeMenu();
-  menu.addEventListener('keydown', (ev) => {
-    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
-    const index = items.indexOf(document.activeElement);
-    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
-      ev.preventDefault();
-      const delta = ev.key === 'ArrowDown' ? 1 : -1;

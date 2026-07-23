@@ -19,6 +19,7 @@
   let _sidebarOpenGeneration = 0;
   let _paneBackObserverInstalled = false;
   let _sidebarDrawerReturnSlot = null;
+  let _suppressNextSidebarOpen = false;
   const _mobileCollapsedColumns = new Map();
 
   function _isDropboxMode() {
@@ -188,7 +189,23 @@
     return true;
   }
 
+  function _consumeSuppressedSidebarOpen() {
+    if (!_suppressNextSidebarOpen) return false;
+    _suppressNextSidebarOpen = false;
+    return true;
+  }
+
+  function suppressNextSidebarOpen() {
+    // フォルダ/シートをメインパネルへ直接開いた直後、旧来の
+    // fromExplorer 経由 openFolder() 呼び出し（gb-folder.js、編集禁止）が
+    // 後追いで openSidebar(false) を呼んでもドロワーを再び開かせないための
+    // 一回限りの抑制フラグ。同期的に消費されなければ次tickで自動解除する。
+    _suppressNextSidebarOpen = true;
+    setTimeout(() => { _suppressNextSidebarOpen = false; }, 0);
+  }
+
   function openSidebarDrawer(withFolderView) {
+    if (_consumeSuppressedSidebarOpen()) return false;
     const { sidebar, backdrop } = _sidebarElements();
     if (!sidebar) return false;
     _sidebarOpenGeneration += 1;
@@ -204,7 +221,9 @@
       backdrop.classList.add('open');
     }
     window.MeldexCloudMobileExplorer?.ensure?.();
-    window.MeldexCloudMobileExplorer?.setMode?.(withFolderView ? 'list' : 'tree', { syncFromTree: true });
+    // withFolderView は一体化UI廃止後は使用しない（フォルダツリー専用ドロワー）。
+    // 引数は既存呼び出し元との互換のため残す。
+    window.MeldexCloudMobileExplorer?.setMode?.('tree', { syncFromTree: true });
     return true;
   }
 
@@ -250,8 +269,8 @@
       header.className = 'cloud-mobile-tree-screen-header';
       sidebar.prepend(header);
     }
-    if (header.dataset.cloudMobileHeaderVersion !== '6') {
-      header.dataset.cloudMobileHeaderVersion = '6';
+    if (header.dataset.cloudMobileHeaderVersion !== '7') {
+      header.dataset.cloudMobileHeaderVersion = '7';
       header.replaceChildren();
 
       const menuButton = document.createElement('button');
@@ -266,23 +285,6 @@
       const title = document.createElement('strong');
       title.className = 'cloud-mobile-tree-screen-title';
       title.textContent = 'フォルダ';
-
-      const modeSwitch = document.createElement('div');
-      modeSwitch.className = 'cloud-mobile-tree-mode-switch';
-      modeSwitch.setAttribute('role', 'group');
-      modeSwitch.setAttribute('aria-label', 'フォルダ表示の切り替え');
-      const treeModeButton = _mobileTreeModeButton('ツリー', 'tree', true);
-      const panelModeButton = _mobileTreeModeButton('一覧', 'list', false);
-      _bindMobileControlActivation(treeModeButton, (event) => {
-        event?.preventDefault?.();
-        event?.stopPropagation?.();
-        window.MeldexCloudMobileExplorer?.setMode?.('tree');
-      });
-      _bindMobileControlActivation(panelModeButton, () => {
-        window.MeldexCloudMobileExplorer?.setMode?.('list', { syncFromTree: true });
-      });
-      modeSwitch.appendChild(treeModeButton);
-      modeSwitch.appendChild(panelModeButton);
 
       const actions = document.createElement('div');
       actions.className = 'cloud-mobile-tree-actions';
@@ -315,21 +317,9 @@
       actions.appendChild(refreshButton);
       header.appendChild(menuButton);
       header.appendChild(title);
-      header.appendChild(modeSwitch);
       header.appendChild(actions);
     }
     _ensureSidebarDismissHandle(sidebar);
-  }
-
-  function _mobileTreeModeButton(label, mode, active) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'cloud-mobile-tree-mode';
-    button.dataset.mode = mode;
-    button.dataset.e2eId = `cloud-mobile-tree-mode-${mode}`;
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    button.textContent = label;
-    return button;
   }
 
   function _activeTreeNodeData() {
@@ -382,15 +372,6 @@
       return { path: rootData.path, name: rootData.name || rootData.path.split(/[\\/]/).pop() || 'フォルダ' };
     }
     return { path: '', name: '' };
-  }
-
-  function _openSelectedFolderPanelFromTree() {
-    if (window.MeldexCloudMobileExplorer?.setMode) {
-      window.MeldexCloudMobileExplorer.setMode('list', { syncFromTree: true });
-      return true;
-    }
-    if (typeof showStatus === 'function') showStatus('フォルダ一覧を読み込み中です', true);
-    return false;
   }
 
   function _openMobileTreeCreateMenu(event, anchor) {
@@ -776,9 +757,10 @@
       if (!row || !sidebar.contains(row)) return;
       const node = row.closest?.('.tree-node');
       const data = node?._nodeData || row._nodeData || null;
-      const type = String(data?.type || '').toLowerCase();
       if (!data && !row.matches?.('.fav-item, .sidebar-item')) return;
-      if (data && type === 'folder') return;
+      // フォルダ/シート行も含め、ツリー行タップは常にドロワーを閉じる
+      // （フォルダ/シートは selectFolderFromTree が主経路で即時クローズするが、
+      // これは取りこぼし時の安全網として機能する）。
       const generation = _sidebarOpenGeneration;
       setTimeout(() => closeSidebarDrawer({ reason: 'tree-auto-close', openGeneration: generation }), 180);
     }, true);
@@ -874,6 +856,7 @@
     getState: () => ({ ...(window.MeldexCloudMobileState || {}) }),
     openSidebar: openSidebarDrawer,
     closeSidebar: closeSidebarDrawer,
+    suppressNextSidebarOpen,
     getSidebarOpenGeneration: () => _sidebarOpenGeneration,
     toggleSidebarDrawer,
     afterLayoutApplied: _scheduleLayoutSanitize,

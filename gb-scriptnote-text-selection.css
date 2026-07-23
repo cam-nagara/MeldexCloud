@@ -1,4 +1,16 @@
-/* gb-scriptnote-text-selection.css: シナリオのテキストセル範囲選択の表示 */
+/* gb-scriptnote-text-selection.css: シナリオのセル範囲選択の表示 */
+
+/* 複数行×複数列の矩形選択。タイプ別のインライン背景・枠線より選択状態を優先する。 */
+.sn2-row > [data-col-id].sn2-grid-cell-selected {
+  box-shadow:
+    inset 0 0 0 9999px color-mix(in srgb, var(--accent, #4a90d9) 22%, transparent),
+    inset 0 0 0 1px var(--accent, #4a90d9) !important;
+}
+.sn2-row:hover > [data-col-id].sn2-grid-cell-selected {
+  box-shadow:
+    inset 0 0 0 9999px color-mix(in srgb, var(--accent, #4a90d9) 30%, transparent),
+    inset 0 0 0 1px var(--accent, #4a90d9) !important;
+}
 
 /* 選択中テキストセル: キャラスタイルの背景色を上書きしないよう
    inset box-shadow でアクセント色（テーマ変数）を薄く敷く */

@@ -11,7 +11,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   let ptc = dbPath ? getPropertyTypes(dbPath)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
-  const isPickerReplacementType = ['select', 'multi-select', 'relation', 'multi-relation', 'user', 'multi-user'].includes(type);
+  const isPickerReplacementType = ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(type);
   const existingInlineEditor = td.querySelector('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor');
   if (existingInlineEditor) {
     if (isPickerReplacementType) existingInlineEditor.remove();
@@ -449,6 +449,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       });
       if (nextValue) {
         await _apiPutValue(saveRef, { new_value: nextValue });
+        if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, existing);
         if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, existing, oldValue, nextValue);
       } else {
         await _apiPutValue(saveRef, { _delete: true });
@@ -568,6 +569,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         cb.type = 'checkbox';
         cb.checked = selected.has(opt);
         item.appendChild(cb);
+        if (typeof createDbOptionColorDot === 'function') {
+          const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
+          if (dot) item.appendChild(dot);
+        }
         item.appendChild(document.createTextNode(opt));
         item._ddActivate = () => toggleValue(opt);
         item.addEventListener('click', () => toggleValue(opt));
@@ -652,9 +657,208 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       document.addEventListener('pointerdown', pointerCloser);
     }, 0);
   };
+  // 共通タグ型: グローバルタグカタログ（.meldex/global-tags.json）から複数選択する
+  // ドロップダウン。候補は非同期取得。検索欄に一致するタグが無い場合はその場で新規タグを作成できる。
+  const openCommonTagsDropdown = () => {
+    document.querySelectorAll('.cell-inline-dd').forEach(el => el.remove());
+    document.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
+      if (!td.contains(btn)) {
+        btn.style.display = '';
+        delete btn.dataset.editingHidden;
+      }
+    });
+    const pivotData = (ctx && ctx.pivotData) || state.pivotData;
+    const entData = pivotData?.entities?.[entityName];
+    const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(rawValues) : null)
+      || rawValues.find(v => v && v.file)
+      || null;
+    const selectedIds = new Set(splitMultiSelectValue(existing?.value || ''));
+    const dd = document.createElement('div');
+    dd.className = 'cell-inline-dd status-dropdown';
+    dd.dataset.e2eId = 'db-common-tags-dropdown';
+    dd.style.cssText = 'max-height:300px;overflow-y:auto;min-width:200px;';
+    dd.addEventListener('pointerdown', e => e.stopPropagation());
+    dd.addEventListener('click', e => e.stopPropagation());
+    let pointerCloser = null;
+    const closeCommonTagsDropdown = (shouldCancel = false) => {
+      if (dd.parentNode) dd.remove();
+      if (pointerCloser) {
+        document.removeEventListener('pointerdown', pointerCloser);
+        pointerCloser = null;
+      }
+      if (shouldCancel) cancel();
+    };
+    dd.addEventListener('db-dropdown-cancel', () => closeCommonTagsDropdown(true));
+    const loadingMsg = document.createElement('div');
+    loadingMsg.style.cssText = 'padding:6px 8px;color:var(--fg2);font-size:12px;';
+    loadingMsg.textContent = 'タグを読み込んでいます...';
+    dd.appendChild(loadingMsg);
+    if (typeof _positionCellDropdown === 'function') {
+      _positionCellDropdown(dd, td, { gap: 2, minWidth: 200 });
+    } else {
+      const rect = td.getBoundingClientRect();
+      const _zm = _getZoom();
+      dd.style.position = 'fixed';
+      dd.style.left = (rect.left / _zm) + 'px';
+      dd.style.top = (rect.bottom / _zm + 2) + 'px';
+      document.body.appendChild(dd);
+      clampPopupToViewport(dd);
+    }
+    const tagsApi = window.MeldexGlobalTags;
+    if (!tagsApi || typeof tagsApi.loadTagsCached !== 'function') {
+      loadingMsg.textContent = 'タグ機能を利用できません';
+      return;
+    }
+    tagsApi.loadTagsCached().then(data => {
+      if (!dd.isConnected) return;
+      dd.textContent = '';
+      const allTags = Array.isArray(data?.tags) ? data.tags : [];
+      const groups = Array.isArray(data?.groups) ? data.groups : [];
+      const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'タグを検索・作成...';
+      search.style.cssText = 'width:100%;padding:3px 6px;margin-bottom:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;';
+      dd.appendChild(search);
+      const listDiv = document.createElement('div');
+      const toggleValue = (tagId) => {
+        if (!tagId) return;
+        const key = String(tagId);
+        if (selectedIds.has(key)) selectedIds.delete(key);
+        else selectedIds.add(key);
+        renderList(search.value);
+        if (dd.isConnected) search.focus({ preventScroll: true });
+      };
+      let creating = false;
+      const createAndToggle = async (name) => {
+        const trimmed = String(name || '').trim();
+        if (!trimmed || creating) return;
+        creating = true;
+        try {
+          const existingTag = allTags.find(t => String(t.name || '').trim().toLowerCase() === trimmed.toLowerCase());
+          let tag = existingTag;
+          if (!tag) {
+            const created = await tagsApi.createTag({ name: trimmed });
+            tag = created?.tag || null;
+            if (tag) allTags.push(tag);
+          }
+          if (tag) {
+            selectedIds.add(String(tag.id));
+            search.value = '';
+            renderList('');
+          }
+        } catch (err) {
+          if (typeof showStatus === 'function') showStatus('タグを作成できませんでした: ' + (err?.userMessage || err?.message || err), true);
+        } finally {
+          creating = false;
+        }
+      };
+      const renderList = (filter) => {
+        listDiv.innerHTML = '';
+        const query = String(filter || '').trim().toLowerCase();
+        const filtered = query ? allTags.filter(t => String(t.name || '').toLowerCase().includes(query)) : allTags;
+        filtered.forEach(tag => {
+          const item = document.createElement('div');
+          item.className = 'dd-nav-item status-dropdown-item';
+          item.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = selectedIds.has(String(tag.id));
+          item.appendChild(cb);
+          const dot = document.createElement('span');
+          const color = typeof tagsApi.effectiveTagColor === 'function' ? tagsApi.effectiveTagColor(tag, groupsById) : 'var(--accent)';
+          dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + color + ';';
+          item.appendChild(dot);
+          item.appendChild(document.createTextNode(tag.name || ''));
+          item._ddActivate = () => toggleValue(tag.id);
+          item.addEventListener('click', () => toggleValue(tag.id));
+          listDiv.appendChild(item);
+        });
+        if (query && !allTags.some(t => String(t.name || '').trim().toLowerCase() === query)) {
+          const addItem = document.createElement('div');
+          addItem.className = 'dd-nav-item status-dropdown-item';
+          addItem.dataset.ddAdd = '1';
+          addItem.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;color:var(--fg2);';
+          addItem.innerHTML = lucide('plus', 12) + ' 「' + esc(String(filter || '').trim()) + '」を新規タグとして追加';
+          addItem._ddActivate = () => createAndToggle(filter);
+          addItem.addEventListener('click', () => createAndToggle(filter));
+          listDiv.appendChild(addItem);
+        }
+        if (!listDiv.children.length) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'padding:6px 8px;color:var(--fg2);font-size:12px;font-style:italic;';
+          empty.textContent = 'タグがありません';
+          listDiv.appendChild(empty);
+        }
+      };
+      search.oninput = () => renderList(search.value);
+      renderList('');
+      dd.appendChild(listDiv);
+      const clearItem = document.createElement('div');
+      clearItem.className = 'status-dropdown-item status-dropdown-clear';
+      clearItem.style.cssText = 'padding:3px 8px;text-align:center;cursor:pointer;font-size:12px;color:var(--fg2);border-top:1px solid var(--border);';
+      clearItem.textContent = '選択を解除';
+      clearItem.addEventListener('click', () => {
+        closeCommonTagsDropdown(false);
+        saveMultiSelectAndRestore('', null);
+      });
+      dd.appendChild(clearItem);
+      const commitCommonTagsDropdown = () => {
+        closeCommonTagsDropdown(false);
+        const value = [...selectedIds].join(', ');
+        saveMultiSelectAndRestore(value, null);
+      };
+      const doneBtn = document.createElement('div');
+      doneBtn.className = 'dd-nav-item status-dropdown-item';
+      doneBtn.style.cssText = 'padding:3px 8px;text-align:center;cursor:pointer;font-size:12px;font-weight:bold;color:var(--accent);border-top:1px solid var(--border);';
+      doneBtn.innerHTML = lucide('check', 12) + ' 確定';
+      doneBtn._ddActivate = commitCommonTagsDropdown;
+      doneBtn.addEventListener('click', commitCommonTagsDropdown);
+      dd.appendChild(doneBtn);
+      search.addEventListener('keydown', (e) => {
+        if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return;
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.altKey)) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation?.();
+          commitCommonTagsDropdown();
+        }
+      });
+      if (typeof _enableDropdownKeyNav === 'function') _enableDropdownKeyNav(dd, '.dd-nav-item');
+      if (typeof clampPopupToViewport === 'function' && dd.isConnected) clampPopupToViewport(dd);
+      search.focus();
+    }).catch(() => {
+      if (dd.isConnected) loadingMsg.textContent = 'タグを読み込めませんでした';
+    });
+    setTimeout(() => {
+      pointerCloser = (e) => {
+        if (!dd.isConnected) {
+          document.removeEventListener('pointerdown', pointerCloser);
+          pointerCloser = null;
+          return;
+        }
+        if (!dd.contains(e.target)) closeCommonTagsDropdown(true);
+      };
+      document.addEventListener('pointerdown', pointerCloser);
+    }, 0);
+  };
   // --- チェックボックス: クリック即座にtrue/false ---
   if (type === 'checkbox') {
     saveAndRestore('true', null);
+    return;
+  }
+  // --- リンク: フォルダツリーのダイアログから選択 ---
+  if (type === 'link') {
+    if (typeof startDbLinkCellEdit === 'function') {
+      startDbLinkCellEdit({
+        td, entityPath, entityName, propName, ptc, ctx, dbPath,
+        cancel, closeInlineEditorShell, refreshCellDisplayNow,
+        restoreCellPos: () => _restoreCellPos(pos, null),
+      });
+    } else {
+      cancel();
+    }
     return;
   }
   // --- セレクト: ドロップダウン表示 ---
@@ -688,7 +892,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     (ptc.options || []).forEach(opt => {
       const item = document.createElement('div');
       item.className = 'status-dropdown-item';
-      item.textContent = opt;
+      if (typeof createDbOptionColorDot === 'function') {
+        const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
+        if (dot) item.appendChild(dot);
+      }
+      item.appendChild(document.createTextNode(opt));
       item.addEventListener('click', () => { closeSelectDropdown(false); saveSelectAndRestore(opt, null); });
       dd.appendChild(item);
     });
@@ -733,6 +941,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     openMultiSelectDropdown();
     return;
   }
+  // --- 共通タグ: グローバルタグカタログからドロップダウンで複数選択（新規作成も可） ---
+  if (type === 'common-tags') {
+    openCommonTagsDropdown();
+    return;
+  }
   // --- ユーザー: ドロップダウンでユーザー選択 ---
   if (type === 'user' || type === 'multi-user') {
     _showUserDropdown(td, null, entityPath, propName, '', type === 'multi-user', {
@@ -750,7 +963,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       const relDb = typeof _dbResolveRelationDbPath === 'function'
         ? _dbResolveRelationDbPath(dbPath, ptc)
         : (isSelfRef ? dbPath : (ptc.relationDb || ''));
-      if (!relDb) { showStatus('参照先シートが未設定です。プロパティ型設定で指定してください。', true); cancel(); return; }
+      if (!relDb) { showStatus('参照先シートが未設定です。列タイプ設定で指定してください。', true); cancel(); return; }
       // entry = { name, id }
       let entryList = [];
       let refEntities = {};
@@ -983,7 +1196,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   // --- テキスト / URL / その他: text input ---
   _createTextInput(type);
   function _createTextInput(forType) {
-    const isPlainText = !forType || forType === 'text';
+    const isPlainText = !forType || forType === 'text' || forType === 'furigana';
     const inp = document.createElement(isPlainText ? 'textarea' : 'input');
     inp.className = isPlainText ? 'cell-inline-input cell-inline-input--textarea' : 'cell-inline-input';
     if (!isPlainText) inp.type = 'text';

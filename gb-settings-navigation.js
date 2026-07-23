@@ -15,10 +15,18 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: '保存先・フォルダ',
-    desc: 'ホームフォルダ、保存先、ソースフォルダ、スマホ接続',
+    desc: 'ホームフォルダ、ソースフォルダ、Dropbox',
     icon: 'folder',
     pages: [
       { id: 'storage', label: '保存先・フォルダ', panels: ['全般'], view: 'storage' },
+    ],
+  },
+  {
+    id: '接続・共有サーバー',
+    desc: 'スマホ・タブレット接続、Meldex共有サーバー',
+    icon: 'radioTower',
+    pages: [
+      { id: 'connect', label: '接続・共有サーバー', panels: ['全般'], view: 'connect' },
     ],
   },
   {
@@ -64,11 +72,12 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'インポート',
-    desc: '外部ノート、Xブックマーク、Web Clipper、Notion同期、拡張機能',
+    desc: '外部ノート、Xブックマーク、Xアカウント、Web Clipper、Notion同期、拡張機能',
     icon: 'download',
     pages: [
       { id: 'external-import', label: '外部取り込み', panels: ['取り込み'], view: 'external-import' },
       { id: 'x-bookmarks', label: 'Xブックマーク', panels: ['取り込み'], view: 'x-bookmarks' },
+      { id: 'x-account-posts', label: 'Xアカウント保存', panels: ['取り込み'], view: 'x-account-posts' },
       { id: 'web-clipper', label: 'Web Clipper', panels: ['拡張機能'], view: 'web-clipper' },
       { id: 'notion-sync', label: 'Notion同期', panels: ['拡張機能'], view: 'notion-sync' },
       { id: 'extensions', label: '拡張機能', panels: ['拡張機能'], view: 'extensions' },
@@ -138,6 +147,10 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   '取り込み': { tabId: 'インポート', pageId: 'external-import' },
   '外部取り込み': { tabId: 'インポート', pageId: 'external-import' },
   'Xブックマーク': { tabId: 'インポート', pageId: 'x-bookmarks' },
+  'Xアカウント保存': { tabId: 'インポート', pageId: 'x-account-posts' },
+  'Web Clipper': { tabId: 'インポート', pageId: 'web-clipper' },
+  'ウェブクリップ': { tabId: 'インポート', pageId: 'web-clipper' },
+  'Chrome拡張機能': { tabId: 'インポート', pageId: 'web-clipper' },
   '連携': { tabId: 'インポート', pageId: 'web-clipper' },
   '拡張機能': { tabId: 'インポート', pageId: 'extensions' },
   'ゴミ箱': { tabId: 'ゴミ箱・データ保守', pageId: 'trash' },
@@ -226,23 +239,26 @@ function _settingsTagDirectChildren(panel, views) {
 
 function _tagSettingsNavigationSections(root = document) {
   const scope = root?.querySelector ? root : document;
+  // 【重要】このview配列は「全般」パネル直下childの出現順と1対1で一致させること。
+  // セクションを追加・削除・並べ替えたら、必ず同じ順序でここを更新する（ずれると別タブへ混ざる）。
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="全般"]'), [
-    'storage',
-    'storage',
-    'setup',
-    'storage',
-    'storage',
-    'setup',
-    'setup',
-    'history',
-    'display',
-    'display',
-    'display',
-    'history',
-    'history',
-    'history',
-    'history',
-    'history',
+    'storage',   // 0 ホームフォルダ
+    'storage',   // 1 ソースフォルダ
+    'setup',     // 2 サンプルデータ
+    'connect',   // 3 保存の仕組み・共有サーバー（旧「保存先」。接続タブへ移設）
+    'connect',   // 4 スマホ・タブレットからの接続（接続タブへ移設）
+    'setup',     // 5 ホーム画面に追加
+    'setup',     // 6 ファイルを開くアプリ
+    'history',   // 7 設定の引き継ぎ
+    'display',   // 8 表示サイズ
+    'display',   // 9 表示オプション
+    'display',   // 10 自動起動
+    'history',   // 11 ヒストリー（Undo/Redo）
+    'history',   // 12 自動バージョン保存
+    'history',   // 13 レイアウト
+    'history',   // 14 履歴データのエクスポート
+    'history',   // 15 全設定リセット
+    'storage',   // 16 #settings-cloud-link-card（Dropbox 状態カード）
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="LLM"]'), [
     'ai-keys',
@@ -254,10 +270,12 @@ function _tagSettingsNavigationSections(root = document) {
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="ユーザー"]'), [
     'profile',
     'members',
+    'members',
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="取り込み"]'), [
     'external-import',
     'x-bookmarks',
+    'x-account-posts',
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="拡張機能"]'), [
     'web-clipper',

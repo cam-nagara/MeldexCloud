@@ -321,6 +321,32 @@
     window.markAutoVersionDirty = function () {};
   }
 
+  // board-standalone は共通履歴（gb-history.js）を読み込まない（bdUndo/bdRedo が持つ
+  // 自己完結スタックへ意図的にフォールバックさせる設計、取り消し・やり直しボタン展開
+  // フェーズ3-3の完了記録を参照）。しかし Ctrl+Z/Ctrl+Y の中央ハンドラ（gb-shortcuts.js）
+  // は共通ルーター meldexUndo()/meldexRedo() を呼ぶため、それが未定義のままだと
+  // ツールバーのボタンは動くのにキーボードショートカットだけ反応しない状態になる。
+  // ここでは bdUndo/bdRedo（自己完結スタック版）へそのまま委譲する薄い実装を用意する
+  // （取り消し・やり直しボタン展開 フェーズ5、v0.6.205）。
+  if (typeof window.meldexUndo !== 'function') {
+    window.meldexUndo = function () { if (typeof bdUndo === 'function') bdUndo(); };
+  }
+  if (typeof window.meldexRedo !== 'function') {
+    window.meldexRedo = function () { if (typeof bdRedo === 'function') bdRedo(); };
+  }
+  // ツールバーの取り消し・やり直しボタン（data-undo-button / data-redo-button）の
+  // disabled 状態を _bdUndoStack/_bdRedoStack の長さから一括更新する。
+  // bdPushUndo/bdUndo/bdRedo/bdClearUndoStacks は既にこの名前の関数を呼ぶ実装になっている
+  // （gb-canvas-engine.part04.js）。
+  if (typeof window.updateUndoRedoButtonStates !== 'function') {
+    window.updateUndoRedoButtonStates = function () {
+      const canUndo = typeof _bdUndoStack !== 'undefined' && _bdUndoStack.length > 0;
+      const canRedo = typeof _bdRedoStack !== 'undefined' && _bdRedoStack.length > 0;
+      document.querySelectorAll('[data-undo-button]').forEach((btn) => { btn.disabled = !canUndo; });
+      document.querySelectorAll('[data-redo-button]').forEach((btn) => { btn.disabled = !canRedo; });
+    };
+  }
+
   // --- 詳細パネル系のダミー ---------------------------------------------------
   // ボードは選択カードの詳細を右側パネルに表示しようとする。
   // 単独アプリでは右側パネルが無いので、関連関数はすべて no-op で吸収。
@@ -354,16 +380,32 @@
     return pane;
   }
 
-  async function _renderStandaloneAnnotationList() {
+  // 右サイドバー「ビューワー」区画は、リンクプレビュー（#gb-preview-pane）と
+  // コメント一覧（#rp-annotation、本体と同じ構造。gb-right-panel.js 同梱で
+  // loadRpAnnotationList() 等をそのまま使う）を hidden 属性で切り替えて共有する。
+  function _showBoardViewerMode(mode) {
+    const preview = document.getElementById('gb-preview-pane');
+    const annotation = document.getElementById('rp-annotation');
+    if (preview) preview.hidden = mode === 'annotation';
+    if (annotation) annotation.hidden = mode !== 'annotation';
+  }
+
+  function _showBoardViewerPreview() {
+    _showBoardViewerMode('preview');
+  }
+  window.showBoardViewerPreview = _showBoardViewerPreview;
+
+  // 簡易フォールバック（本体版 loadRpAnnotationList/gb-right-panel.js が
+  // 何らかの理由で読み込まれていない場合の保険。通常は本体版が
+  // window.loadRpAnnotationList を上書きするため使われない）。
+  async function _renderStandaloneAnnotationListFallback() {
     _ensureStandaloneRightSidebar();
-    const pane = _clearPreviewPane();
-    if (!pane) return false;
+    _showBoardViewerMode('annotation');
+    const list = document.getElementById('rp-ann-list');
+    if (!list) return false;
+    list.textContent = '';
     const title = document.createElement('div');
     title.className = 'bd-preview-card';
-    const head = document.createElement('div');
-    head.className = 'bd-preview-title';
-    head.textContent = 'コメント一覧';
-    title.appendChild(head);
     const path = _standaloneCurrentBoardPath();
     let rows = [];
     try {
@@ -390,13 +432,16 @@
         title.appendChild(item);
       });
     }
-    pane.appendChild(title);
+    list.appendChild(title);
     return true;
   }
 
   function _openStandalonePanel(tabName) {
     if (tabName === 'annotation') {
-      _renderStandaloneAnnotationList();
+      _ensureStandaloneRightSidebar();
+      _showBoardViewerMode('annotation');
+      if (typeof window.loadRpAnnotationList === 'function') window.loadRpAnnotationList();
+      else _renderStandaloneAnnotationListFallback();
       return true;
     }
     if (tabName === 'preview' || tabName === 'detail') {
@@ -406,6 +451,14 @@
     return false;
   }
 
+  // gb-right-panel.js（loadRpAnnotationList等のコメント一覧本体ロジック目的で同梱）は
+  // 本体の3カラム右パネル（#right-panel, #right-resize-handle）の存在を前提に
+  // toggleRightPanelTab/openRightPanelTab を再定義してしまい、単独版ボードでは
+  // 存在しない要素への null 参照で例外になる。board-standalone-app.js（最後に読み込む）
+  // 側でこの関数を単独版向けに上書きし直すため、ここでは _openStandalonePanel を
+  // 公開しておく。
+  window._bsaOpenStandalonePanel = _openStandalonePanel;
+
   if (typeof window.openRightPanelTab !== 'function') {
     window.openRightPanelTab = function (tabName) { return _openStandalonePanel(tabName); };
   }
@@ -413,11 +466,12 @@
     window.toggleRightPanelTab = function (tabName) { return _openStandalonePanel(tabName); };
   }
   if (typeof window.loadRpAnnotationList !== 'function') {
-    window.loadRpAnnotationList = function () { return _renderStandaloneAnnotationList(); };
+    window.loadRpAnnotationList = function () { return _renderStandaloneAnnotationListFallback(); };
   }
 
   function _standaloneOpenLinkedPath(path, label, options) {
     _ensureStandaloneRightSidebar();
+    _showBoardViewerMode('preview');
     if (typeof window.bdShowLinkedSelectionPreview === 'function') {
       window.bdShowLinkedSelectionPreview(path, options?.linkType || options?.type || '');
       return true;

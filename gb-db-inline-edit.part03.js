@@ -1,6 +1,7 @@
 
 // 列をインラインで挿入（ダイアログなし）
-function insertPropertyInline(refProp, direction, ctxOrDbPath) {
+// typeConfig を渡すとその列タイプで作成する（未指定なら従来どおりテキスト列）
+function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   const ctx = (typeof ctxOrDbPath === 'object' && ctxOrDbPath)
     ? ctxOrDbPath
     : (typeof _dbPaneContextFromEvent === 'function'
@@ -13,8 +14,11 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath) {
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : [...(pivotData?.properties || [])];
   const order = getColOrder(dbPath, { ctx }) || fallbackOrder;
-  let idx = 1, name = 'プロパティ';
-  while (order.includes(name)) { idx++; name = 'プロパティ' + idx; }
+  // 新しい列の初期名は選んだ列タイプ名にする（型未指定はテキスト）。
+  const _newColType = (typeConfig && typeof typeConfig === 'object' && typeConfig.type) ? typeConfig.type : 'text';
+  const base = (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
+  let idx = 1, name = base;
+  while (order.includes(name)) { idx++; name = base + idx; }
   const refIdx = order.indexOf(refProp);
   if (refIdx >= 0) {
     const insertIdx = direction === 'left' ? refIdx : refIdx + 1;
@@ -23,13 +27,16 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath) {
     order.push(name);
   }
   setColOrder(dbPath, order, { skipHistory: true, ctx });
-  setPropertyType(dbPath, name, { type: 'text' });
+  setPropertyType(dbPath, name, (typeConfig && typeof typeConfig === 'object') ? typeConfig : { type: 'text' });
   renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
   setTimeout(() => {
     const _ctx = ctx || _currentPaneState();
     const th = _paneEl(_ctx, '#' + (_ctx.tableId || 'pivot-table') + ` thead th[data-prop="${name}"]`);
-    if (th) startHeaderInlineRename(th, name, dbPath);
+    // _ctx を渡さないと startHeaderInlineRename() が _dbPaneContextFromEvent() で再解決し、
+    // 埋め込みシート（グローバル _panes レジストリ未登録）の場合はメイン画面側の別ペインへ
+    // 誤って解決され得る（showColHeaderMenu 系と同根。2026-07-15 徹底チェックで発見）。
+    if (th) startHeaderInlineRename(th, name, dbPath, _ctx);
   }, 30);
 }
 
@@ -722,7 +729,7 @@ function _dbCellPropertyType(td, ctx) {
 
 function _dbCellUsesPickerEditor(ptc) {
   const type = String(ptc?.type || '').replace(/_/g, '-');
-  return !!ptc && ['select', 'multi-select', 'relation', 'multi-relation', 'user', 'multi-user'].includes(type);
+  return !!ptc && ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(type);
 }
 
 function _dbCellHasAnyValue(td, ctx) {
@@ -750,7 +757,7 @@ function _dbOpenExistingCellValueEditorFromData(td, ctx) {
     ? _entityPath(dbPath, entityName, (ctx && ctx.pivotData) || state.pivotData)
     : `${dbPath}/${entityName}.md`;
   const type = String(ptc.type || '').replace(/_/g, '-');
-  if ((type === 'select' || type === 'multi-select') && typeof startCellInlineAdd === 'function') {
+  if ((type === 'select' || type === 'multi-select' || type === 'link') && typeof startCellInlineAdd === 'function') {
     startCellInlineAdd(td, entityPath, entityName, propName);
     return true;
   }

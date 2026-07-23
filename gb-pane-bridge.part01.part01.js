@@ -13,6 +13,8 @@ const GBPaneBridge = (() => {
   let _initialized = false;
   let _bridgeUpdating = 0; // 再帰防止（入れ子対応）
   let _outlinerLoaded = false; // loadOutliner初回のみフラグ
+  let _chatModeInitDone = false; // チャットのモード決定（復元/team既定）は初回ライブマウント時のみフラグ
+  let _stickyTypeInitDone = false; // 付箋タブの種類フィルタ既定値適用は初回ライブマウント時のみフラグ
   let _appToolbarTemplateHtml = '';
 
   // ビュータイプ → レガシーコンテナ要素ID
@@ -58,6 +60,7 @@ const GBPaneBridge = (() => {
     annotation: 'rp-annotation',
     sticky:     'rp-annotation',
     history:    'rp-history',
+    tags:       'rp-tags',
   };
 
   // 特殊パネルコンテナ（サイドバー・詳細パネル等、丸ごとペインに移動）
@@ -70,12 +73,13 @@ const GBPaneBridge = (() => {
     outliner: 'フォルダツリー',
     detail: 'オプション',
     preview: 'ビューワー',
-    calendar: 'スケジューラー',
+    calendar: 'スケジュール',
     timer: 'タイマー',
     chat: 'チャット',
     annotation: '注釈',
     history: 'ヒストリー',
     sticky: '付箋',
+    tags: 'タグ',
     scriptnote: 'シナリオ',
     search: '検索',
     version: 'バージョン管理',
@@ -850,6 +854,11 @@ const GBPaneBridge = (() => {
           boundViewEl.dataset.gbLegacyView = viewName;
           boundViewEl.dataset.gbLegacyPath = path;
         }
+        // レガシー種別（page/entity/board/folder/csv/smart-db/database等）のタブは
+        // ここまで非同期（Promise.resolve().then）。この時点まで state.currentPagePath 等が
+        // 未更新のため、refreshPaneAfterTabSwitch 内の同期呼び出しは間に合わない
+        // （state更新前に走ってしまう）。実際に state が確定したこの完了時点で追従を同期する。
+        if (typeof _syncFollowingVersionTabs === 'function') _syncFollowingVersionTabs();
       } finally {
         _endBridgeUpdate();
       }

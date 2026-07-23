@@ -335,63 +335,121 @@
     }
   }
 
-  // ルビの字間調整: 対象文字列の幅/高さに収まるルビは字間を広げ、収まらないルビは中央揃えではみ出す
+  // B-MANGA と同じJIS系配置・隣接衝突解決をCSS座標へ反映する。
   _adjustRubySpacing() {
     if (!this.host) return;
-    const rubyEm = this.doc?.editor?.rubyFontSize || 0.55;
+    const model = typeof MeldexRubyPresentation !== 'undefined' ? MeldexRubyPresentation : null;
+    if (!model) return;
+    model.refreshRubyNodes(this);
+    const presentation = model.ensureDocument(this.doc);
     const isVertical = this.doc?.editor?.viewMode === 'vertical';
     const spans = this.host.querySelectorAll('.sn2-text [data-ruby]');
     if (!spans.length) return;
-    // 一括測定用の隠しコンテナ
-    const measurer = document.createElement('div');
-    measurer.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;white-space:nowrap;line-height:1;';
-    if (isVertical) { measurer.style.writingMode = 'vertical-rl'; measurer.style.textOrientation = 'upright'; }
-    this.host.appendChild(measurer);
-    // CSS zoom による二重スケーリング防止: getBoundingClientRect() は zoom 後の値を返すが、
-    // letter-spacing の CSS px 値は zoom で再スケーリングされるため、zoom で割って CSS 座標系に変換する
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-    spans.forEach(span => {
-      // センタリングは CSS auto margin で処理するため、ここでは letter-spacing のみ設定
-      const baseSizeRaw = isVertical ? span.getBoundingClientRect().height : span.getBoundingClientRect().width;
-      const baseSize = baseSizeRaw / z;
-      const rubyText = span.dataset.ruby;
-      if (!rubyText || baseSize <= 0) {
-        span.style.removeProperty('--sn2-ruby-ls');
-        span.style.marginLeft = '';
-        span.style.marginTop = '';
-        return;
-      }
-      const numChars = [...rubyText].length;
-      const spanFontSize = parseFloat(getComputedStyle(span).fontSize);
-      const temp = document.createElement('span');
-      temp.style.cssText = `font-size:${spanFontSize * rubyEm}px;line-height:1;`;
-      temp.textContent = rubyText;
-      measurer.appendChild(temp);
-      const rubyNatSizeRaw = isVertical ? temp.getBoundingClientRect().height : temp.getBoundingClientRect().width;
-      const rubyNatSize = rubyNatSizeRaw / z;
-      temp.remove();
-      const effectiveSize = baseSize * 0.9;
-      if (numChars > 1 && rubyNatSize < effectiveSize) {
-        // ルビが対象文字列幅に収まる: 字間を広げて対象文字列の90%幅に合わせる
-        const ls = (effectiveSize - rubyNatSize) / numChars;
-        span.style.setProperty('--sn2-ruby-ls', ls + 'px');
-      } else {
-        // 収まらない or 1文字: 字間なし（中央揃えではみ出す）
-        span.style.removeProperty('--sn2-ruby-ls');
-      }
-      // ルビ(::after)は auto margin で中央揃えされ、対象文字列より広い場合は左右
-      // （縦書きは上下）に均等にはみ出す。base span は position:relative の基準枠だが
-      // 通常フローに参加する実体でもあるため、はみ出し量の半分を margin として
-      // base span 側に確保し、前方テキストとの重なりを防ぐ
-      if (rubyNatSize > baseSize) {
-        const overflow = (rubyNatSize - baseSize) / 2;
-        span.style[isVertical ? 'marginTop' : 'marginLeft'] = overflow + 'px';
-      } else {
-        span.style.marginLeft = '';
-        span.style.marginTop = '';
-      }
+    const rows = new Map();
+    const spanToInfo = new Map();
+    spans.forEach((span, index) => {
+      const rect = span.getBoundingClientRect();
+      const parentStart = (isVertical ? rect.top : rect.left) / z;
+      const parentEnd = (isVertical ? rect.bottom : rect.right) / z;
+      const rubyText = span.dataset.rubyRendered || span.dataset.ruby;
+      const baseEm = parseFloat(getComputedStyle(span).fontSize) || 16;
+      const info = model.createRubyLayoutInfo({
+        parentStart,
+        parentEnd,
+        baseEm,
+        rubyText,
+        presentation,
+        style: span.dataset.rubyStyle,
+      });
+      info.span = span;
+      info.groupId = span.dataset.rubyGroupId || `span-${index}`;
+      const crossStart = (isVertical ? rect.left : rect.top) / z;
+      const lineKey = Math.round(crossStart * 2) / 2;
+      info._lineKey = lineKey;
+      if (!rows.has(lineKey)) rows.set(lineKey, []);
+      rows.get(lineKey).push(info);
+      spanToInfo.set(span, info);
+      const crossSize = (isVertical ? rect.width : rect.height) / z;
+      span.style.setProperty('--sn2-ruby-base-edge', ((crossSize + baseEm) * 0.5) + 'px');
+      span.style.marginLeft = '';
+      span.style.marginTop = '';
     });
-    measurer.remove();
+    this._appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z);
+    rows.forEach(infos => {
+      model.resolveRubyOverlaps(infos).forEach(info => {
+        if (!info.span) return;
+        const layout = model.finalizeRubyLayout(info);
+        if (!layout) return;
+        const style = info.span.style;
+        style.setProperty('--sn2-ruby-inline-start', layout.inlineStartPx + 'px');
+        style.setProperty('--sn2-ruby-layout-extent', layout.extentPx + 'px');
+        style.setProperty('--sn2-ruby-size-override', layout.fontSizePx + 'px');
+        style.setProperty('--sn2-ruby-effective-letter-spacing', layout.letterSpacingPx + 'px');
+        style.setProperty('--sn2-ruby-gap-px', layout.gapPx + 'px');
+      });
+    });
+  }
+
+  // 後の文字列（data-after）は::afterで描画され重なり解決の対象外だったため、
+  // 最終文字のルビが閉じ括弧等に被る不具合があった。占有幅を「動かせない境界」
+  // (span:null, minExtent===extent) として同じ行のresolveRubyOverlapsに参加させる。
+  _appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z) {
+    this.host.querySelectorAll('.sn2-text[data-after]:not(:empty)').forEach(textEl => {
+      const rubySpans = textEl.querySelectorAll('[data-ruby]');
+      if (!rubySpans.length) return;
+      const info = spanToInfo.get(rubySpans[rubySpans.length - 1]);
+      if (!info || info._lineKey === undefined) return;
+      const boundary = this._measureAfterTextRubyBoundary(textEl, isVertical, z);
+      if (boundary) rows.get(info._lineKey)?.push(boundary);
+    });
+  }
+
+  // data-after の実際の描画幅は::afterのため直接測れない。同じフォント文脈の
+  // 子要素として一時的に不可視計測し、直後に取り除く（DOM変更は無し扱い）。
+  _measureAfterTextRubyBoundary(textEl, isVertical, z) {
+    const afterText = textEl.dataset.after || '';
+    const lastChild = textEl.lastChild;
+    if (!afterText || !lastChild) return null;
+    // 末尾がルビ等のinline-block要素だと、その直後に collapse したRangeの矩形が
+    // 0になるブラウザ実装があるため、要素なら要素自身の矩形を終端とする。
+    let endRect;
+    if (lastChild.nodeType === Node.TEXT_NODE) {
+      const endRange = document.createRange();
+      endRange.selectNodeContents(textEl);
+      endRange.collapse(false);
+      endRect = endRange.getBoundingClientRect();
+    } else {
+      endRect = lastChild.getBoundingClientRect();
+    }
+    const probe = document.createElement('span');
+    probe.textContent = afterText;
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;';
+    textEl.appendChild(probe);
+    const probeRect = probe.getBoundingClientRect();
+    probe.remove();
+    const afterSize = (isVertical ? probeRect.height : probeRect.width) / z;
+    if (!(afterSize > 0)) return null;
+    const parentStart = (isVertical ? endRect.bottom : endRect.right) / z;
+    return {
+      parentStart,
+      parentEnd: parentStart + afterSize,
+      parentSpan: afterSize,
+      parentCenter: parentStart + afterSize / 2,
+      baseEm: 0,
+      rubyEm: 0,
+      count: 0,
+      text: '',
+      style: '',
+      align: 'start',
+      extent: afterSize,
+      minExtent: afterSize,
+      effectiveLetterSpacing: 0,
+      condense: 1,
+      gapPx: 0,
+      groupId: '__sn2-after-boundary__',
+      span: null,
+    };
   }
 
   // 自動ルビルールをテキスト要素に適用（表示のみ、data-auto-ruby属性で識別）
@@ -432,6 +490,10 @@
         if (earliest.pos > lastIdx) frag.appendChild(document.createTextNode(content.slice(lastIdx, earliest.pos)));
         const span = document.createElement('span');
         span.dataset.ruby = earliest.rule.ruby;
+        if (['group', 'mono', 'jukugo'].includes(earliest.rule.style)) {
+          span.dataset.rubyStyle = earliest.rule.style;
+          span.dataset.rubyStyleSource = 'rule';
+        }
         span.dataset.autoRuby = 'true';
         span.textContent = earliest.rule.text;
         frag.appendChild(span);
@@ -545,13 +607,69 @@
   // === ルビ ===
 
   _insertRuby() {
+    const context = this._rubySelectionContext();
+    if (!context) return;
+    // ルビ入力は文字列選択時の書式設定ポップアップへ統合済み。
+    // 書式設定ポップアップが使えない環境（単独シナリオアプリ、Cloudモバイル編集UI等）だけ
+    // 従来のルビ専用ポップアップを開く
+    if (window.GBTextSelectionFormat?.openForSelection) {
+      window.GBTextSelectionFormat.openForSelection({ focusRuby: true, force: true });
+      if (document.querySelector('.gb-text-selection-fmt [data-e2e-id="sn2-ruby-input"]')) return;
+    }
+    this._openLegacyRubyPopup(context);
+  }
+
+  // ルビ挿入可能な選択状態なら { sel, range, text, textEl } を返す（単一テキストセル内の非空選択のみ）
+  _rubySelectionContext() {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
     const text = sel.toString().trim();
-    if (!text) return;
+    if (!text) return null;
     const range = sel.getRangeAt(0);
     const textEl = range.startContainer.closest?.('.sn2-text') || range.startContainer.parentElement?.closest?.('.sn2-text');
-    if (!textEl || !this._rangeWithinElement(range, textEl)) return;
+    if (!textEl || !this._rangeWithinElement(range, textEl)) return null;
+    return { sel, range, text, textEl };
+  }
+
+  // 選択範囲をルビスパンへ置き換えて保存・表示を更新する（レガシーポップアップと
+  // 書式設定ポップアップ内ルビ入力の共通経路）。挿入できたら true
+  _applyRubyToSelection(range, textEl, ruby, addRule) {
+    if (!range || !textEl || !ruby) return false;
+    const text = range.toString().trim();
+    if (!text) return false;
+    this._pushUndo('ルビ追加');
+    // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
+    range.deleteContents();
+    const rubyNode = document.createElement('span');
+    rubyNode.dataset.ruby = ruby;
+    rubyNode.textContent = text;
+    range.insertNode(rubyNode);
+    // insertNodeが作る空テキストノードを除去して改行を防止
+    textEl.normalize();
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      const newRange = document.createRange();
+      newRange.setStartAfter(rubyNode);
+      newRange.collapse(true);
+      sel.addRange(newRange);
+    }
+    // DOMからrow.textに同期（ルビマークアップ {漢字|ルビ} をrow.textに保存）
+    this._syncRowFromDom(textEl, { skipUndo: true });
+    // 自動ルビルールにも追加
+    if (addRule) {
+      if (!this.doc.rubyRules) this.doc.rubyRules = [];
+      const exists = this.doc.rubyRules.some(r => r.text === text && r.ruby === ruby);
+      if (!exists) this.doc.rubyRules.push({ text, ruby, auto: true });
+    }
+    this._markDirty({ skipUndo: true });
+    if (typeof MeldexRubyPresentation !== 'undefined') MeldexRubyPresentation.refreshRubyNodes(this);
+    this._adjustRubySpacing();
+    return true;
+  }
+
+  _openLegacyRubyPopup(context) {
+    const { range, text, textEl } = context;
     if (typeof this._closeRubyPopup === 'function') this._closeRubyPopup({ restoreFocus: false });
     // ルビ入力ポップアップ
     const popup = document.createElement('div');
@@ -565,7 +683,7 @@
     title.id = 'sn2-ruby-label';
     title.className = 'sn2-ruby-popup-title';
     title.dataset.e2eId = 'sn2-ruby-label';
-    title.textContent = `「${text.slice(0, 20)}」にルビを設定`;
+    title.textContent = `「${text.slice(0, 20)}」にルビを追加`;
 
     const mainRow = document.createElement('div');
     mainRow.className = 'sn2-ruby-popup-main';
@@ -576,12 +694,14 @@
     input.dataset.e2eId = 'sn2-ruby-input';
     input.placeholder = 'ルビを入力...';
     input.setAttribute('aria-label', '選択文字のルビ');
+    // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
+    input.setAttribute('data-gb-tooltip-disabled', 'true');
     const okButton = document.createElement('button');
     okButton.type = 'button';
     okButton.id = 'sn2-ruby-ok';
     okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary sn2-ruby-popup-ok';
     okButton.dataset.e2eId = 'sn2-ruby-ok';
-    okButton.textContent = '設定';
+    okButton.textContent = '追加';
     mainRow.append(input, okButton);
 
     const optionRow = document.createElement('div');
@@ -603,7 +723,8 @@
     autoButton.className = 'gb-btn gb-btn-sm gb-btn-quiet sn2-ruby-popup-auto';
     autoButton.dataset.e2eId = 'sn2-ruby-auto';
     autoButton.textContent = '読み取得';
-    optionRow.append(addRuleLabel, autoButton);
+    // 選択時書式ポップアップのルビ行と同じ並び（読み取得 → ルール追加）に揃える
+    optionRow.append(autoButton, addRuleLabel);
     popup.append(title, mainRow, optionRow);
     const rr = range.getBoundingClientRect();
     popup.style.cssText += 'position:fixed;z-index:10000;min-width:240px;';
@@ -613,6 +734,9 @@
     let keyHandler = null;
     const restoreFocus = () => {
       if (!textEl?.isConnected) return;
+      // 遅延実行の間に別のポップアップ等がフォーカスを取った場合は奪い返さない
+      const ae = document.activeElement;
+      if (ae && ae !== document.body && ae !== textEl && !textEl.contains(ae)) return;
       try { textEl.focus({ preventScroll: true }); }
       catch { textEl.focus(); }
     };
@@ -633,33 +757,7 @@
     this._closeRubyPopup = closeRubyPopup;
     const apply = (ruby) => {
       if (!ruby) { closeRubyPopup(); return; }
-      const addRule = addRuleInput.checked;
-      // テキスト内にルビマークアップを挿入: {漢字|ルビ}
-      if (textEl) {
-        this._pushUndo('ルビ設定');
-        // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
-        range.deleteContents();
-        const rubyNode = document.createElement('span');
-        rubyNode.dataset.ruby = ruby;
-        rubyNode.textContent = text;
-        range.insertNode(rubyNode);
-        // insertNodeが作る空テキストノードを除去して改行を防止
-        textEl.normalize();
-        sel.removeAllRanges();
-        const newRange = document.createRange();
-        newRange.setStartAfter(rubyNode);
-        newRange.collapse(true);
-        sel.addRange(newRange);
-        // DOMからrow.textに同期（ルビマークアップ {漢字|ルビ} をrow.textに保存）
-        this._syncRowFromDom(textEl, { skipUndo: true });
-        // 自動ルビルールにも追加
-        if (addRule) {
-          if (!this.doc.rubyRules) this.doc.rubyRules = [];
-          const exists = this.doc.rubyRules.some(r => r.text === text && r.ruby === ruby);
-          if (!exists) this.doc.rubyRules.push({ text, ruby, auto: true });
-        }
-        this._markDirty({ skipUndo: true });
-      }
+      this._applyRubyToSelection(range, textEl, ruby, addRuleInput.checked);
       closeRubyPopup();
     };
     okButton.addEventListener('click', () => apply(input.value.trim()));
@@ -686,6 +784,13 @@
     });
     closeHandler = (ev) => { if (!popup.contains(ev.target)) closeRubyPopup(); };
     keyHandler = (ev) => {
+      // Tab / Shift+Tab はポップアップ内の項目切り替え（選択時書式ポップアップと同じ挙動）
+      if (ev.key === 'Tab') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(popup, ev.shiftKey);
+        return;
+      }
       if (ev.key !== 'Escape') return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -720,8 +825,10 @@
     }
     // document.body上のフロートバー・一時UIを除去
     document.querySelectorAll('.sn2-row-bulk-bar, .gb-fmt-popup--bulk-edit, .sn2-drag-select-rect').forEach(el => el.remove());
-    // テキストセル範囲選択の表示クラスを除去（セル要素自体は残す。他インスタンスに影響しないようhost配下に限定）
-    this.host?.querySelectorAll('.sn2-text-cell-selected').forEach(el => el.classList.remove('sn2-text-cell-selected'));
+    // セル範囲選択の表示クラスを除去（セル要素自体は残す。他インスタンスに影響しないようhost配下に限定）
+    this.host?.querySelectorAll('.sn2-text-cell-selected, .sn2-grid-cell-selected').forEach(el => {
+      el.classList.remove('sn2-text-cell-selected', 'sn2-grid-cell-selected');
+    });
     if (this.host) this.host.innerHTML = '';
     this._bound = false;
   }

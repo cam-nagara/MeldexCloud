@@ -181,12 +181,10 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
   const properties = data.properties || {};
   const seq = ++_dbActionModalSeq;
   const titleId = `db-action-modal-title-${seq}`;
-  const descId = `db-action-modal-desc-${seq}`;
 
   let html = '<div class="modal-overlay" data-db-action-modal="1">';
-  html += `<div class="modal db-action-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" style="width:min(500px, calc(100vw - 32px));max-height:min(80vh, calc(100vh - 32px));overflow:auto;">`;
+  html += `<div class="modal db-action-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1" style="width:min(500px, calc(100vw - 32px));max-height:min(80vh, calc(100vh - 32px));overflow:auto;">`;
   html += `<h3 id="${titleId}" class="gb-modal-title" style="margin:0 0 12px;">${esc(action.label || 'アクション実行')}</h3>`;
-  html += `<div id="${descId}" class="gb-section-desc" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">入力内容を確認して実行します。</div>`;
 
   // エントリ本文（操作手順等）をプレビュー表示
   if (data.page_content) {

@@ -442,13 +442,8 @@ async function _showDbConfigModal(dbPath, ctx) {
     <h3>シート設定</h3>
     <div class="modal-body db-config-modal-body">
       <div class="field">
-        <label>エントリ名テンプレート</label>
+        <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`)}</label>
         <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
-        <div style="font-size:11px;color:var(--fg2);margin-top:4px;">
-          プロパティ名を <code>{プロパティ名}</code> で囲むと、採用値で自動置換されます。<br>
-          空の場合はエントリ名の自動生成を行いません。<br>
-          使用可能: ${esc(propHints) || '(プロパティなし)'}
-        </div>
       </div>
       <div class="field" style="margin-top:8px;">
         <label>ステータス一覧</label>

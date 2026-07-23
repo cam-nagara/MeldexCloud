@@ -882,6 +882,8 @@ function updateRecentItems() {
     moreBtn.className = 'fav-more-btn';
     moreBtn.title = 'メニュー';
     moreBtn.setAttribute('aria-label', '最近使った項目のメニューを開く');
+    const recentE2eKey = encodeURIComponent(String(r.path || r.label || r.name || 'item')).replace(/%/g, '_');
+    moreBtn.setAttribute('data-e2e-id', `recent-item-menu-${recentE2eKey}`);
     moreBtn.draggable = false;
     moreBtn.innerHTML = typeof lucide === 'function' ? lucide('ellipsis', 14) : '...';
     moreBtn.addEventListener('click', (e) => { e.stopPropagation(); _showRecentItemMenu(e, r); });
@@ -1125,6 +1127,8 @@ function _createFavoriteMoreButton(node, isFavFolder) {
   button.className = 'fav-more-btn';
   button.title = 'メニュー';
   button.setAttribute('aria-label', 'お気に入りメニューを開く');
+  const favoriteE2eKey = encodeURIComponent(String(node?.path || node?.name || 'item')).replace(/%/g, '_');
+  button.setAttribute('data-e2e-id', `favorite-item-menu-${favoriteE2eKey}`);
   button.draggable = false;
   button.innerHTML = typeof lucide === 'function' ? lucide('ellipsis', 14) : '...';
   button.addEventListener('click', (event) => _showFavoriteItemMenu(event, node, isFavFolder));

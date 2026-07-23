@@ -125,7 +125,7 @@
     } catch {}
     if (beforeKey && beforeKey === afterKey) return false;
     historyPush(
-      'スケジューラー: 出退勤状況の表示変更',
+      'スケジュール: 出退勤状況の表示変更',
       () => restoreLocalStorageSettings(snapshots.before, _calAttRefreshSourceSettingsAfterHistory),
       () => restoreLocalStorageSettings(snapshots.after, _calAttRefreshSourceSettingsAfterHistory),
       'calendar:settings',
@@ -312,7 +312,11 @@
     try {
       const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
       if (seq !== this._loadEventsSeq) return; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
-      this._events = events;
+      // 全置換すると保存確定前（楽観追加/確認中/再試行中）のイベントが消えるため、
+      // サーバー未反映の保存未確定分だけを保持してマージする。
+      this._events = window.MeldexCalendarSaveQueue
+        ? window.MeldexCalendarSaveQueue.mergeServerEvents(events, this._events)
+        : events;
     } catch {
       if (seq !== this._loadEventsSeq) return;
       // 取得失敗時に表示中の予定を消さない（既存表示を維持してエラーを知らせる）

@@ -335,10 +335,13 @@
   justify-content: center;
   padding: 0;
 }
+/* 共通ダイアログの閉じるボタンは 2026-07-17 に 32px/アイコン20px へ統一済み
+   （gb-ui.part03.css の .gb-modal-close svg が !important で優先される）。
+   ここは実質デッドルールだが、クラス構成変更時の食い違い防止のため同値で同期する。 */
 .link-modal-close svg,
 .link-modal-close .ico {
-  width: var(--ui-icon-md, 16px);
-  height: var(--ui-icon-md, 16px);
+  width: var(--ui-icon-lg, 20px);
+  height: var(--ui-icon-lg, 20px);
   display: block;
 }
 
@@ -379,6 +382,7 @@
   overflow-y: auto;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-sm);
+  user-select: none; /* pointerドラッグ並べ替え中のテキスト選択を防ぐ */
 }
 .col-vis-item {
   display: flex;
@@ -389,6 +393,7 @@
   font-size: var(--ui-font-13);
 }
 .col-vis-item + .col-vis-item { border-top: 1px solid var(--ui-border-subtle, var(--ui-border)); }
+.col-vis-item:hover { background: var(--ui-bg-control-hover, var(--bg4)); }
 .col-vis-item.is-dragging { opacity: 0.4; }
 .col-vis-item.is-hidden { color: var(--ui-fg-muted); }
 .col-vis-handle {
@@ -397,6 +402,7 @@
   cursor: grab;
   display: inline-flex;
   align-items: center;
+  touch-action: none; /* タッチはハンドルから並べ替え（リスト本体はスクロール優先） */
 }
 .col-vis-label {
   flex: 1;
@@ -428,7 +434,9 @@
   height: min(640px, 80vh);
 }
 .pt-modal .modal-body {
-  padding-inline: var(--ui-space-1);
+  /* モーダル標準の16px。以前は padding-inline:2px で .modal の16pxに依存していたが、
+     gb-modal-shell が .modal を padding:0 にするため左右が2pxに潰れていた（2026-07-23修正）。 */
+  padding: var(--ui-space-6);
 }
 .pt-modal #pt-options { margin: var(--ui-space-4) 0; }
 .pt-radio-row {
@@ -440,6 +448,9 @@
 /* DBピッカー */
 .db-picker-input-row { display: flex; align-items: center; gap: var(--ui-space-2); width: 100%; }
 .db-picker-input-row input { flex: 1; min-width: 0; box-sizing: border-box; }
+.db-picker-scope-hint {
+  font-size: var(--ui-font-11); color: var(--ui-fg-muted); margin-top: var(--ui-space-1);
+}
 .db-picker-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: var(--ui-h-sm); height: var(--ui-h-sm); flex: 0 0 var(--ui-h-sm); padding: 0;
@@ -447,7 +458,10 @@
   border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs); cursor: pointer;
 }
 .db-picker-popup {
-  position: fixed; z-index: 9999;
+  /* クラウド/モバイルの全画面オーバーレイ帯(10000-10060)より上に出す。
+     9999 のままだとポップアップは DOM 上は開くがオーバーレイの裏に隠れ、
+     「一覧から選択を押しても何も起きない」ように見える。 */
+  position: fixed; z-index: 10080;
   background: var(--ui-popup-bg, var(--ui-bg-panel)); border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-md); box-shadow: var(--ui-shadow-lg);
   padding: var(--ui-space-3); min-width: 280px; max-width: 420px; max-height: 360px; overflow-y: auto;
@@ -468,6 +482,21 @@
 }
 .db-picker-popup .dd-nav-item .db-picker-name { font-weight: var(--ui-weight-medium); }
 .db-picker-popup .dd-nav-item .db-picker-path { color: var(--ui-fg-muted); font-size: var(--ui-font-11); margin-top: 1px; }
+/* 「一覧から選択」フォルダツリー */
+.db-picker-popup.db-picker-tree { min-width: 320px; max-width: 460px; }
+.db-picker-tree-host { max-height: 300px; overflow: auto; }
+.db-picker-tree-row {
+  display: flex; align-items: center; gap: var(--ui-space-2);
+  padding: 3px 4px; cursor: pointer; font-size: var(--ui-font-12);
+  border-radius: var(--ui-radius-xs); white-space: nowrap;
+}
+.db-picker-tree-row:hover { background: var(--ui-bg-control-hover); }
+.db-picker-tree-row.db-picker-tree-root { font-weight: var(--ui-weight-medium); }
+.db-picker-tree-row.db-picker-tree-sheet.is-current { color: var(--ui-accent, var(--blue)); font-weight: var(--ui-weight-medium); }
+.db-picker-tw-caret { width: 12px; flex: 0 0 12px; text-align: center; color: var(--ui-fg-muted); font-size: var(--ui-font-11); }
+.db-picker-tw-icon { display: inline-flex; align-items: center; color: var(--ui-fg-muted); }
+.db-picker-tree-row.db-picker-tree-sheet .db-picker-tw-icon { color: var(--ui-fg-default); }
+.db-picker-tw-name { overflow: hidden; text-overflow: ellipsis; }
 /* MSRソース行 */
 .msr-source-row {
   border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
@@ -580,6 +609,12 @@
   min-width: 500px;
   width: min(720px, 80vw);
   max-height: 80vh;
+}
+.cond-modal-body {
+  /* 条件付きカラー・各フィルタ系はモーダルボディに独自パディングが無く、
+     gb-modal-shell が .modal の16pxを消すため左右が詰まっていた（2026-07-23修正）。 */
+  padding: var(--ui-space-6);
+  box-sizing: border-box;
 }
 .global-index-filter-modal {
   min-width: min(580px, calc(100vw - 24px));

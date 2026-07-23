@@ -1,3 +1,20 @@
+    e.preventDefault();
+    if (!draggedNode) return;
+    // Ctrl+ドラッグ中はツリー内移動を行わない（ペインで開く操作に委ねる）
+    if (e.ctrlKey) { e.dataTransfer.dropEffect = 'copy'; return; }
+    // ドラッグ中のノード自体（複数選択含む）へのドロップを防止
+    if (draggedNodes && draggedNodes.includes(div) || draggedNode === div) return;
+    e.dataTransfer.dropEffect = 'move';
+    clearDragIndicators();
+
+    const rect = row.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const h = rect.height;
+
+    if (isFolder || isDB) {
+      if (y < h * 0.25) row.classList.add('drag-over-above');
+      else if (y > h * 0.75) row.classList.add('drag-over-below');
+      else row.classList.add('drag-over-inside');
     } else {
       if (y < h * 0.5) row.classList.add('drag-over-above');
       else row.classList.add('drag-over-below');
@@ -104,8 +121,10 @@
           }
           if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
           moved.push(n);
-        } catch {
-          showStatus(`${dragData.name} の移動に失敗`, true);
+        } catch (err) {
+          // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
+          const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
+          showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
         }
       }
       if (moved.length === 0) return;
@@ -194,6 +213,28 @@ function _isOutlinerPathWithin(path, basePath) {
   if (!normalizedPath || !normalizedBase) return false;
   if (normalizedPath === normalizedBase || normalizedPath.startsWith(normalizedBase + '/')) return true;
   return false;
+}
+
+// /outliner-roots のGET直後に呼び、以後の in-place 書き換え（名前変更・パス変更）に
+// 影響されないディープコピーの控えを作る。フォルダツリー右クリックの「名前を変更」
+// 「パスを変更」は取得した root オブジェクトを直接書き換えるため、浅いコピーでは
+// baseRoots が変更後の値と同じになってしまい、サーバー側の台帳削除印(tombstone)
+// 判定の基準として使えない。
+function _cloneOutlinerRootsForBase(roots) {
+  try {
+    return JSON.parse(JSON.stringify(Array.isArray(roots) ? roots : []));
+  } catch {
+    return [];
+  }
+}
+
+// フォルダツリー右クリック（名前を変更・このソースフォルダを削除・パスを変更）から
+// /outliner-roots を保存する共通ヘルパー。baseRoots には直前のGETで実際に見ていた
+// 一覧のディープコピー（_cloneOutlinerRootsForBase の戻り値）を渡すこと。
+// これを送らないと、共有台帳合流分（他端末・クラウド版が追加したroot）の削除が
+// サーバー側で検出できず、次回のフォルダツリー読み込みで復活してしまう。
+async function _putOutlinerRootsWithBase(nextRoots, baseRoots) {
+  return apiPut('/outliner-roots', { roots: nextRoots, baseRoots });
 }
 
 const _outlinerPendingDeletePaths = new Set();
@@ -857,44 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'save');
     addMenuItem('バージョン管理', () => {
       closeTreeContextMenu();
-      if (typeof openFolderVersionTab === 'function') openFolderVersionTab(nodeData.path);
-      else if (typeof openVersionTab === 'function') openVersionTab(nodeData.path, 'folder');
-    }, null, 'gitBranch');
-  }
-
-  // --- Notion同期（フォルダのみ） ---
-  if (!isMulti && isFolder && nodeData.path && typeof addNotionSyncFolder === 'function') {
-    addMenuItem('Notion同期フォルダに追加', () => {
-      closeTreeContextMenu();
-      addNotionSyncFolder(nodeData.path);
-    }, null, 'sync');
-  }
-
-  // --- 画像ツール（フォルダのみ） ---
-  if (!isMulti && (nodeData.type === 'folder' || nodeData._isRoot) && nodeData.path) {
-    addMenuItem('重複画像を検出', () => {
-      closeTreeContextMenu();
-      showDuplicateScanModal(nodeData.path);
-    }, null, 'search');
-    addMenuItem('画像インデックスを作成', () => {
-      closeTreeContextMenu();
-      clipIndexFolder(nodeData.path);
-    }, null, 'image');
-  }
-
-  // --- 台本で開く（シナリオのみ） ---
-  if (!isMulti && nodeData.path && ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path)))) {
-    addMenuItem('シナリオで開く', () => {
-      closeTreeContextMenu();
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
-  if (!isMulti && nodeData.type === 'scenario' && nodeData.path && !(typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path))) {
-    addMenuItem('シナリオへインポートして開く', () => {
-      closeTreeContextMenu();
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }

@@ -76,8 +76,11 @@
   function _renderUrlList(listEl, localUrl, urls, options = {}) {
     const localLabel = options.localLabel || 'このPCで開くURL';
     const rows = [];
+    const troubleshootHelp = (typeof global.fieldHelp === 'function')
+      ? global.fieldHelp('スマホから開けない場合は、PC側のMeldexが起動中か、ブラウザ版Meldex/共有URLを利用しているかを確認してください。')
+      : '';
     if (localUrl) {
-      rows.push(`<div>${_escapeHtml(localLabel)}: <code style="user-select:all;">${_escapeHtml(localUrl)}</code></div>`);
+      rows.push(`<div>${_escapeHtml(localLabel)}: <code style="user-select:all;">${_escapeHtml(localUrl)}</code> ${troubleshootHelp}</div>`);
     } else {
       rows.push('<div>接続URLを取得できませんでした。</div>');
     }
@@ -89,7 +92,6 @@
     } else {
       rows.push('<div style="margin-top:4px;">ネットワーク内で使えるIPアドレスを取得できませんでした。</div>');
     }
-    rows.push('<div style="margin-top:6px;">スマホから開けない場合は、PC側のMeldexが起動中か、ブラウザ版Meldex/共有URLを利用しているかを確認してください。</div>');
     listEl.innerHTML = rows.join('');
     listEl.querySelectorAll('[data-settings-mobile-url-index]').forEach(btn => {
       btn.addEventListener('click', () => {

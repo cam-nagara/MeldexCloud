@@ -1,3 +1,35 @@
+  // 書式コピー/貼り付けボタン（セル書式・列一括ポップアップ共通）
+  // getValues(): 現在表示中の書式値を返す / applyValues(clip, props): コピー値を適用する
+  _buildStyleCopyPasteControls(getValues, applyValues, props) {
+    const mk = (label, title, e2eId) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'gb-fmt-style-copy';
+      b.textContent = label;
+      b.title = title;
+      b.dataset.e2eId = e2eId;
+      return b;
+    };
+    const copyBtn = mk('コピー', '表示中の書式をコピー', 'scriptnote-style-copy');
+    const pasteBtn = mk('貼り付け', 'コピーした書式を貼り付け', 'scriptnote-style-paste');
+    const getClipboard = () => (typeof ScriptNoteEditor !== 'undefined' && ScriptNoteEditor._copiedCellStyle) || null;
+    pasteBtn.disabled = !getClipboard();
+    copyBtn.addEventListener('click', () => {
+      const values = getValues() || {};
+      const copied = {};
+      (props || []).forEach((p) => { copied[p] = values[p] ?? ''; });
+      ScriptNoteEditor._copiedCellStyle = copied;
+      pasteBtn.disabled = false;
+      if (typeof showStatus === 'function') showStatus('書式をコピーしました');
+    });
+    pasteBtn.addEventListener('click', () => {
+      const clip = getClipboard();
+      if (!clip) return;
+      applyValues(clip, props || []);
+    });
+    return [copyBtn, pasteBtn];
+  },
+
   // 列ヘッダー一括設定ポップアップ — openFormatPopup 経由
   _showColBulkPopup(anchorEl, colId, panelContainer) {
     if (typeof openFormatPopup !== 'function') return;
@@ -22,6 +54,8 @@
         });
       });
       if (applyAll) {
+        // undo スナップショット直列化では空の columnAllRules が整理されるため、取得直前に作り直す
+        if (!this.doc.editor.columnAllRules) this.doc.editor.columnAllRules = {};
         const rule = this.doc.editor.columnAllRules[colId] = this.doc.editor.columnAllRules[colId] || {};
         Object.entries(changes).forEach(([prop, val]) => {
           if (val === '' || val === null || val === undefined) delete rule[prop];
@@ -34,34 +68,63 @@
       this.renderDetailPanel(panelContainer);
     };
     const FULL_RENDER_PROPS = new Set(['textBefore', 'textAfter', 'textAlign', 'textValign', 'textOverflow']);
+    const popupValues = {
+      bgColor: rule0.bgColor || '',
+      textColor: rule0.textColor || '',
+      fontWeight: rule0.fontWeight || '',
+      fontStyle: rule0.fontStyle || '',
+      fontSize: rule0.fontSize || '',
+      fontFamily: rule0.fontFamily || '',
+      textStrokeColor: rule0.textStrokeColor || '',
+      textStrokeWidth: rule0.textStrokeWidth || '',
+      leftAccent: !!rule0.leftAccent,
+      underline: !!rule0.underline,
+      accentColor: rule0.accentColor || '',
+      textBefore: rule0.textBefore || '',
+      textAfter: rule0.textAfter || '',
+      textAlign: rule0.textAlign || '',
+      textValign: rule0.textValign || '',
+      textOverflow: rule0.textOverflow || '',
+    };
+    const STYLE_COPY_PROPS = Object.keys(popupValues);
+    // 貼り付けで applyChanges → renderDetailPanel が走るとヘッダー要素が作り直されるため、
+    // 開き直し用に現在のヘッダーセルを取り直す
+    const freshHeaderAnchor = () => {
+      const ids = ['_role', '_text', ...((this.doc.editor?.customColumns || []).map(c => c.id))];
+      const i = ids.indexOf(colId);
+      const ths = panelContainer?.querySelectorAll?.('.sn2-detail-th-col') || [];
+      return (i >= 0 && ths[i]) ? ths[i] : anchorEl;
+    };
     openFormatPopup(anchorEl, {
-      values: {
-        bgColor: rule0.bgColor || '',
-        textColor: rule0.textColor || '',
-        fontWeight: rule0.fontWeight || '',
-        fontStyle: rule0.fontStyle || '',
-        fontSize: rule0.fontSize || '',
-        fontFamily: rule0.fontFamily || '',
-        textStrokeColor: rule0.textStrokeColor || '',
-        textStrokeWidth: rule0.textStrokeWidth || '',
-        leftAccent: !!rule0.leftAccent,
-        underline: !!rule0.underline,
-        accentColor: rule0.accentColor || '',
-        textBefore: rule0.textBefore || '',
-        textAfter: rule0.textAfter || '',
-        textAlign: rule0.textAlign || '',
-        textValign: rule0.textValign || '',
-        textOverflow: rule0.textOverflow || '',
-      },
+      values: popupValues,
+      verticalWriting: this.doc.editor?.viewMode === 'vertical',
       className: 'gb-fmt-popup--colbulk',
       positionAnchor: this._detailMultiSelectionPositionAnchor?.(anchorEl, panelContainer),
       extraRow2: this._buildCountConfigFormatControls(colId, panelContainer),
+      extraRow4: this._buildStyleCopyPasteControls(
+        () => popupValues,
+        (clip, props) => {
+          const changes = {};
+          props.forEach((p) => {
+            if (!Object.prototype.hasOwnProperty.call(clip, p)) return;
+            const v = clip[p];
+            changes[p] = (v === false || v === null || v === undefined) ? '' : v;
+          });
+          if (!Object.keys(changes).length) return;
+          applyChanges(changes, { fullRender: true });
+          Object.assign(popupValues, changes);
+          this._showColBulkPopup(freshHeaderAnchor(), colId, panelContainer);
+        },
+        STYLE_COPY_PROPS,
+      ),
       bulk: {
         enabled: applyAll,
         label: '全行に適用（新規行にも反映）',
         onToggle: (v) => {
           this._pushUndo(v ? '全行適用ON' : '全行適用OFF');
           applyAll = v;
+          // undo スナップショット直列化では空の columnAllRules が整理されるため、取得直前に作り直す
+          if (!this.doc.editor.columnAllRules) this.doc.editor.columnAllRules = {};
           if (applyAll) {
             if (!this.doc.editor.columnAllRules[colId]) this.doc.editor.columnAllRules[colId] = {};
           } else {
@@ -73,6 +136,7 @@
       onChange: (prop, value) => {
         const change = {};
         change[prop] = value === null || value === undefined ? '' : value;
+        popupValues[prop] = change[prop];
         applyChanges(change, FULL_RENDER_PROPS.has(prop) ? { fullRender: true } : {});
       },
       onReset: () => {
@@ -85,7 +149,7 @@
           ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete s[p]);
           this._reapplyAutoColor(c);
         });
-        if (applyAll && this.doc.editor.columnAllRules[colId]) {
+        if (applyAll && this.doc.editor.columnAllRules?.[colId]) {
           delete this.doc.editor.columnAllRules[colId];
         }
         this._refreshRowStyles();
@@ -117,14 +181,12 @@
     };
     const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const ts = chara.textStyle || {};
-    const gs = chara.gutterStyle || {};
-    const gs2 = chara.gutter2Style || {};
     const indentNum = parseFloat(chara.indent) || '';
     const textShiftColsValue = Number.isFinite(Number(chara.textShiftCols)) ? Math.max(1, Math.min(10, Number(chara.textShiftCols))) : '';
     const outlineWidthValue = Number.isFinite(Number(chara.outlineWidth)) ? Math.max(0.5, Math.min(10, Number(chara.outlineWidth))) : 1;
-    popup.innerHTML = `
-      <div class="sn2-role-opts-title">オプション設定</div>
-      <div class="sn2-role-opts-body">
+    // （なし）行: タイプ空欄行はページ採番の対象外のため、区切り/見開き/プロットは表示しない
+    const isNoneType = !!chara.isDefault;
+    const breakOptsHtml = isNoneType ? '' : `
         <div class="sn2-role-opts-row sn2-role-opts-row--top">
           <label class="sn2-role-opts-check-lbl">
             <input type="checkbox" data-opt-check="isBreak"${chara.isBreak ? ' checked' : ''}> 区切り
@@ -135,15 +197,18 @@
           <label class="sn2-role-opts-check-lbl">
             <input type="checkbox" data-opt-check="isSpread"${chara.isSpread ? ' checked' : ''}> 見開き
           </label>
-          <span class="sn2-role-opts-hint">「区切り」ON時のみ有効。連続時の偶数回目はページ送りせずコマ送り扱い（クリスタ送信用）</span>
+          ${fieldHelp('「区切り」ON時のみ有効。連続時の偶数回目はページ送りせずコマ送り扱いになります')}
         </div>
         <div class="sn2-role-opts-row">
           <label class="sn2-role-opts-check-lbl">
             <input type="checkbox" data-opt-check="isSummary"${chara.isSummary ? ' checked' : ''}> プロット
           </label>
-          <span class="sn2-role-opts-hint">コマ番号を非表示にしリセット</span>
-        </div>
-        <div class="sn2-role-opts-row">
+          ${fieldHelp('コマ番号を非表示にしリセット')}
+        </div>`;
+    popup.innerHTML = `
+      <div class="sn2-role-opts-title">オプション設定</div>
+      <div class="sn2-role-opts-body">${breakOptsHtml}
+        <div class="sn2-role-opts-row${isNoneType ? ' sn2-role-opts-row--top' : ''}">
           <span class="sn2-role-opts-field-label">インデント</span>
           <input type="number" class="sn2-role-opts-input-num" data-opt="indent" value="${indentNum}" placeholder="0" min="0" max="20" step="0.5">
           <span class="sn2-role-opts-unit">em</span>
@@ -157,6 +222,18 @@
           </select>
           <input type="number" class="sn2-role-opts-input-num sn2-role-opts-input-num--sm" data-opt="textShiftCols" value="${e(textShiftColsValue)}" placeholder="1" min="1" max="10">
           <span class="sn2-role-opts-unit">列</span>
+        </div>
+        <div class="sn2-role-opts-divider sn2-role-opts-gutter-settings">
+          <div class="sn2-role-opts-row">
+            <span class="sn2-role-opts-field-label">大区切り</span>
+            <button type="button" class="sn2-detail-add-btn" data-role-gutter-style="_gutter" data-e2e-id="scriptnote-role-option-gutter-style">個別設定…</button>
+            <span class="sn2-role-opts-hint">${Object.keys(chara.gutterStyle || {}).length ? '個別設定あり' : '表示タブの設定を使用'}</span>
+          </div>
+          <div class="sn2-role-opts-row">
+            <span class="sn2-role-opts-field-label">小区切り</span>
+            <button type="button" class="sn2-detail-add-btn" data-role-gutter-style="_gutter2" data-e2e-id="scriptnote-role-option-gutter2-style">個別設定…</button>
+            <span class="sn2-role-opts-hint">${Object.keys(chara.gutter2Style || {}).length ? '個別設定あり' : '表示タブの設定を使用'}</span>
+          </div>
         </div>
         <div class="sn2-role-opts-divider">
           <div class="sn2-role-opts-row sn2-role-opts-row--wrap">
@@ -178,10 +255,26 @@
     // outlineColor swatch 初期背景 (インライン指定)
     const outlineBtn = popup.querySelector('[data-outline-color]');
     if (outlineBtn) Object.assign(outlineBtn.style, { background: chara.outlineColor || 'var(--border)' });
+    if (chara.isTypeDefault || chara.isDefault) {
+      popup.querySelector('[data-role-duplicate]')?.setAttribute('disabled', '');
+      popup.querySelector('[data-role-delete]')?.setAttribute('disabled', '');
+    }
+    popup.querySelectorAll('[data-role-gutter-style]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const colId = btn.dataset.roleGutterStyle;
+        const inheritedStyle = this.doc.editor?.columnStyles?.[colId] || {};
+        closePopup();
+        this._showCellStylePopup(anchorEl, chara, colId, panelContainer, {
+          includeCountConfig: false,
+          inheritedStyle,
+          typeOverride: true,
+        });
+      });
+    });
     // 複製ボタン
     popup.querySelector('[data-role-duplicate]')?.addEventListener('click', () => {
-      if (chara.isDefault) {
-        if (typeof showStatus === 'function') showStatus('デフォルトタイプは複製できません', true);
+      if (chara.isDefault || chara.isTypeDefault) {
+        if (typeof showStatus === 'function') showStatus('この初期設定は複製できません', true);
         return;
       }
       this._pushUndo('タイプ複製');
@@ -196,8 +289,8 @@
     });
     // 削除ボタン
     popup.querySelector('[data-role-delete]')?.addEventListener('click', () => {
-      if (chara.isDefault) {
-        if (typeof showStatus === 'function') showStatus('デフォルトタイプは削除できません', true);
+      if (chara.isDefault || chara.isTypeDefault) {
+        if (typeof showStatus === 'function') showStatus('この初期設定は削除できません', true);
         return;
       }
       const name = chara.name || '（名称未設定）';
@@ -496,6 +589,48 @@
     });
   },
 
+  _showUnifiedGutterStylePopup(anchorEl, colId, panelContainer) {
+    if (typeof openFormatPopup !== 'function') return;
+    if (!this.doc.editor) this.doc.editor = {};
+    if (!this.doc.editor.columnStyles) this.doc.editor.columnStyles = {};
+    const style = this.doc.editor.columnStyles[colId] = { ...(this.doc.editor.columnStyles[colId] || {}) };
+    const resetStyle = colId === '_gutter2' ? { bgColor: '#333333' } : {};
+    const fields = [
+      'textColor', 'fontSize', 'fontFamily', 'bold', 'italic',
+      'textStrokeColor', 'textStrokeWidth', 'bgColor', 'leftAccent', 'underline', 'accentColor',
+    ];
+    const values = {
+      bgColor: style.bgColor || '', textColor: style.textColor || '',
+      fontWeight: style.fontWeight || '', fontStyle: style.fontStyle || '',
+      fontSize: style.fontSize || '', fontFamily: style.fontFamily || '',
+      textStrokeColor: style.textStrokeColor || '', textStrokeWidth: style.textStrokeWidth || '',
+      leftAccent: !!style.leftAccent, underline: !!style.underline, accentColor: style.accentColor || '',
+    };
+    const refresh = () => {
+      anchorEl.style.background = style.bgColor || 'var(--bg3)';
+      this._render();
+      this._markDirty();
+    };
+    openFormatPopup(anchorEl, {
+      values,
+      fields,
+      className: 'gb-fmt-popup--unified-gutter',
+      extraRow2: this._buildCountConfigFormatControls(colId, panelContainer),
+      onChange: (prop, value) => {
+        this._pushUndo('区切り一元設定変更');
+        if (value === '' || value === null || value === undefined || value === false) delete style[prop];
+        else style[prop] = value;
+        refresh();
+      },
+      onReset: () => {
+        this._pushUndo('区切り一元設定リセット');
+        Object.keys(style).forEach(key => delete style[key]);
+        Object.assign(style, resetStyle);
+        refresh();
+      },
+    });
+  },
+
   renderThemePanel(container) {
     if (!container || !this.doc) return;
     container.innerHTML = '';
@@ -528,6 +663,7 @@
     const parsedBorderWidth = parseFloat(borderWidth);
     const borderWidthValue = Number.isFinite(parsedBorderWidth) ? String(parsedBorderWidth) : '';
     const editorMargin = this.doc.editor?.margin || '';
+    const editorWrapGap = String(this.doc.editor?.wrapGap ?? '');
     const mergeDisp = !!this.doc.editor?.mergeDisplay;
     const pageBreakSpacing = this.doc.editor?.pageBreakSpacing !== false;
     const rawWheelSpeed = parseFloat(localStorage.getItem('meldex-wheel-speed'));
@@ -559,7 +695,9 @@
         <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="borderWidth" data-e2e-id="scriptnote-theme-border-width" value="${e(borderWidthValue)}" placeholder="1" min="0" max="10" step="0.5">
         <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0">px</span>
         <label class="sn2-detail-settings-label">余白</label>
-        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="margin" data-e2e-id="scriptnote-theme-margin" value="${e(editorMargin)}" placeholder="16px" title="余白（折り返し時の段間隔にもなる）">
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="margin" data-e2e-id="scriptnote-theme-margin" value="${e(editorMargin)}" placeholder="16px" title="余白（段間隔が未指定の時は折り返しの段間隔にもなる）">
+        <label class="sn2-detail-settings-label">段間隔</label>
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="wrapGap" data-e2e-id="scriptnote-theme-wrap-gap" value="${e(editorWrapGap)}" placeholder="余白と同じ" title="折り返しで生じる段と段の間隔（未指定なら余白と同じ）">
       </div>
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
@@ -587,7 +725,19 @@
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label">列間枠線</label>
         <div id="sn2-col-border-ui" class="sn2-detail-colborder-ui"></div>
+      </div>
+      <div class="sn2-detail-settings-row">
+        <label class="sn2-detail-settings-label">大区切り</label>
+        <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter" data-e2e-id="scriptnote-theme-primary-style">書式設定…</button>
+        <label class="sn2-detail-settings-label">小区切り</label>
+        <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter2" data-e2e-id="scriptnote-theme-secondary-style">書式設定…</button>
       </div>`;
+    settings.querySelectorAll('[data-gutter-style]').forEach(button => {
+      const colId = button.dataset.gutterStyle;
+      const style = this.doc.editor?.columnStyles?.[colId] || {};
+      button.style.background = style.bgColor || 'var(--bg3)';
+      button.addEventListener('click', () => this._showUnifiedGutterStylePopup(button, colId, container));
+    });
     // 枠線色スウォッチの初期背景色
     const borderSwBtn = settings.querySelector('[data-setting-color="borderColor"]');
     if (borderSwBtn) borderSwBtn.style.background = borderColor || 'var(--border)';
@@ -651,6 +801,13 @@
         this.doc.editor.margin = mv;
         const mvCss = mv ? (/^\d+$/.test(mv) ? mv + 'px' : mv) : '';
         setScrollVar('--sn2-margin', mvCss);
+        this._render();
+      } else if (key === 'wrapGap') {
+        const wv = el.value.trim();
+        if (wv) this.doc.editor.wrapGap = wv;
+        else delete this.doc.editor.wrapGap;
+        const wvCss = wv ? (/^\d+$/.test(wv) ? wv + 'px' : wv) : '';
+        setScrollVar('--sn2-wrap-gap', wvCss);
         this._render();
       } else if (key === 'mergeDisplay') {
         this.doc.editor.mergeDisplay = el.checked;

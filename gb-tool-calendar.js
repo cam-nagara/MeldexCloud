@@ -7,6 +7,9 @@ class CalendarComponent extends ToolComponent {
   constructor(paneId, tabId) {
     super(paneId, tabId);
     this._view = 'month';
+    // _view は月・週・ToDoなどカレンダー内の表示形式を保持する。
+    // 制作タスクリストは同名の既存ToDoと混同しないよう、独立した surface で切り替える。
+    this._surface = 'calendar';
     this._date = new Date();
     this._events = [];
     this._tasks = [];
@@ -64,6 +67,7 @@ class CalendarComponent extends ToolComponent {
     this._clockBtnsEl = this.el.querySelector('.gb-cal-clock-buttons');
     this._clockStatusEl = null;
     this._bindToolbar();
+    if (typeof this._bindProductionTemplateDnD === 'function') this._bindProductionTemplateDnD();
     this._bindSidebarResize();
     this._initClockPanel();
     if (typeof this._applySidebarMode === 'function') this._applySidebarMode();
@@ -74,17 +78,27 @@ class CalendarComponent extends ToolComponent {
   static _buildHTML(startDay, multiDayCount) {
     void startDay;
     return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
-<div class="gb-toolbar gb-toolbar-cal" role="toolbar" aria-label="カレンダー">
+<div class="gb-toolbar gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
-  <button type="button" class="tb-icon-btn" data-cal-action="toggleSidebar" title="スケジューラーサイドバー" aria-label="スケジューラーサイドバー"><span class="ico ico-panelLeft"></span></button>
+  <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="toggleSidebar" title="スケジュールサイドバー" aria-label="スケジュールサイドバー"><span class="ico ico-panelLeft"></span></button>
   <div class="sep"></div>
-  <button type="button" class="tb-icon-btn" data-cal-action="today" title="今日に戻る" aria-label="今日に戻る">${lucide('calendar', 16)}</button>
-  <button type="button" class="tb-icon-btn" data-cal-action="prev" title="前へ" aria-label="前へ">${lucide('chevronLeft', 16)}</button>
-  <span class="tb-title gb-cal-title">---</span>
-  <button type="button" class="tb-icon-btn" data-cal-action="next" title="次へ" aria-label="次へ">${lucide('chevronRight', 16)}</button>
-  <div class="sep"></div>
-  <select class="tb-select gb-cal-view-select" title="表示" aria-label="表示" data-cal-setting="view">
+  <div class="gb-cal-surface-switch" role="tablist" aria-label="表示するシート">
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn gb-inner-tab-active" data-production-tab="calendar" data-cal-surface="calendar" data-e2e-id="gb-cal-surface-calendar" aria-selected="true" tabindex="0" title="カレンダーを表示">${lucide('calendarDays', 14)}<span class="gb-inner-tab-label">カレンダー</span></button>
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn" data-production-tab="tasks" data-cal-surface="productionTasks" data-e2e-id="gb-cal-surface-production-tasks" aria-selected="false" tabindex="-1" title="タスクリストを表示">${lucide('listTodo', 14)}<span class="gb-inner-tab-label">タスクリスト</span></button>
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn" data-production-tab="works" data-production-managed-list="works" data-e2e-id="gb-cal-surface-managed-works" aria-selected="false" tabindex="-1" title="作品設定を表示">${lucide('bookOpen', 14)}<span class="gb-inner-tab-label">作品設定</span></button>
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn" data-production-tab="targets" data-production-managed-list="targets" data-e2e-id="gb-cal-surface-managed-targets" aria-selected="false" tabindex="-1" title="作業対象を表示">${lucide('crosshair', 14)}<span class="gb-inner-tab-label">作業対象</span></button>
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn" data-production-tab="contents" data-production-managed-list="contents" data-e2e-id="gb-cal-surface-managed-contents" aria-selected="false" tabindex="-1" title="作業内容を表示">${lucide('listChecks', 14)}<span class="gb-inner-tab-label">作業内容</span></button>
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn" data-production-tab="scales" data-production-managed-list="scales" data-e2e-id="gb-cal-surface-managed-scales" aria-selected="false" tabindex="-1" title="作業規模を表示">${lucide('gauge', 14)}<span class="gb-inner-tab-label">作業規模</span></button>
+    <button type="button" role="tab" class="tb-text-btn gb-inner-tab gb-cal-surface-btn" data-production-tab="staff" data-production-managed-list="staff" data-e2e-id="gb-cal-surface-managed-staff" aria-selected="false" tabindex="-1" title="スタッフを表示">${lucide('users', 14)}<span class="gb-inner-tab-label">スタッフ</span></button>
+  </div>
+  <div class="sep gb-cal-calendar-control"></div>
+  <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="today" title="今日に戻る" aria-label="今日に戻る">${lucide('calendar', 16)}</button>
+  <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="prev" title="前へ" aria-label="前へ">${lucide('chevronLeft', 16)}</button>
+  <span class="tb-title gb-cal-title gb-cal-calendar-control">---</span>
+  <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="next" title="次へ" aria-label="次へ">${lucide('chevronRight', 16)}</button>
+  <div class="sep gb-cal-calendar-control"></div>
+  <select class="tb-select gb-cal-view-select gb-cal-calendar-control" title="表示" aria-label="表示" data-cal-setting="view">
     <option value="month">月</option>
     <option value="week">週</option>
     <option value="multi">複数日</option>
@@ -94,15 +108,28 @@ class CalendarComponent extends ToolComponent {
     <option value="clock12">アナログ時計（12時間）</option>
     <option value="clock24">アナログ時計（24時間）</option>
   </select>
-  <input class="tb-input gb-cal-multi-day-count" type="number" min="2" max="14" step="1" value="${multiDayCount || 3}" title="表示日数" aria-label="表示日数" data-cal-setting="multi-day-count" style="width:48px;" hidden>
+  <input class="tb-input gb-cal-multi-day-count gb-cal-calendar-control" type="number" min="2" max="14" step="1" value="${multiDayCount || 3}" title="表示日数" aria-label="表示日数" data-cal-setting="multi-day-count" style="width:48px;" hidden>
   <div class="tb-spacer"></div>
-  <button type="button" class="tb-icon-btn" data-cal-action="openProductionTaskList" title="タスクリストシートを開く" aria-label="タスクリストシートを開く">${lucide('listTodo', 16)}</button>
-  <button type="button" class="tb-icon-btn" data-cal-action="template" title="テンプレート" aria-label="テンプレート">${lucide('layoutTemplate', 16)}</button>
-  <button type="button" class="tb-icon-btn" data-cal-action="timer" title="タイマー" aria-label="タイマー">${lucide('timer', 16)}</button>
-  <div class="sep"></div>
-  <button type="button" class="tb-icon-btn" data-cal-action="reload" title="再読み込み" aria-label="再読み込み"><span class="ico ico-refreshCw"></span></button>
-  <button type="button" class="tb-icon-btn" data-cal-action="sync" title="同期" aria-label="同期"><span class="ico ico-refreshCw"></span></button>
-  <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-cal-action="detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
+  <div class="gb-cal-toolbar-actions">
+    <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button><span class="ico ico-undo2"></span></button>
+    <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button><span class="ico ico-redo2"></span></button>
+    <div class="sep gb-cal-calendar-control"></div>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="sheetAutoFit" data-e2e-id="gb-production-sheet-auto-fit" title="列幅自動調整" aria-label="列幅自動調整"><span class="ico ico-columns3"></span></button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="sheetColumnDisplayOrder" data-e2e-id="gb-production-sheet-column-display-order" title="列の表示と順序" aria-label="列の表示と順序"><span class="ico ico-listChecks"></span></button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="sheetFilter" data-e2e-id="gb-production-sheet-filter" title="フィルタ" aria-label="フィルタ"><span class="ico ico-filter"></span></button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="sheetSort" data-e2e-id="gb-production-sheet-sort" title="並び替え" aria-label="並び替え" aria-haspopup="menu"><span class="ico ico-arrowUpDown"></span></button>
+    <div class="sep gb-cal-production-control"></div>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="bulkCreateTasks" data-e2e-id="gb-production-bulk-create-open" data-production-write-action="1" title="タスクを一括作成" aria-label="タスクを一括作成">${lucide('listPlus', 16)}</button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="quickPlan" data-e2e-id="gb-production-quick-open" title="かんたん割当" aria-label="かんたん割当">${lucide('wandSparkles', 16)}</button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="recalculate" data-e2e-id="gb-production-task-recalculate" title="再計算" aria-label="再計算">${lucide('calculator', 16)}</button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="productionManagement" data-e2e-id="gb-production-management-open" title="管理操作" aria-label="管理操作">${lucide('settings2', 16)}</button>
+    <button type="button" class="tb-icon-btn" data-cal-action="template" title="テンプレート" aria-label="テンプレート" data-e2e-id="gb-production-open-templates">${lucide('layoutTemplate', 16)}</button>
+    <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="timer" title="タイマー" aria-label="タイマー">${lucide('timer', 16)}</button>
+    <div class="sep gb-cal-calendar-control"></div>
+    <button type="button" class="tb-icon-btn" data-cal-action="reload" title="再読み込み" aria-label="再読み込み" data-e2e-id="gb-production-task-refresh"><span class="ico ico-refreshCw"></span></button>
+    <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="sync" title="同期" aria-label="同期"><span class="ico ico-refreshCw"></span></button>
+    <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-cal-action="detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
+  </div>
 </div>
 <div class="gb-cal-main">
   <div class="gb-cal-sidebar">
@@ -147,6 +174,13 @@ class CalendarComponent extends ToolComponent {
     this.el.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-cal-action]');
       if (btn) { this._handleAction(btn.dataset.calAction, btn); return; }
+      const surfaceBtn = e.target.closest('button[data-production-tab]');
+      if (surfaceBtn) {
+        const key = surfaceBtn.dataset.productionTab;
+        if (typeof this._selectProductionTab === 'function') this._selectProductionTab(key);
+        else this.setSurface(key === 'calendar' ? 'calendar' : 'productionTasks');
+        return;
+      }
       const viewBtn = e.target.closest('[data-cal-view]');
       if (viewBtn) { this.setView(viewBtn.dataset.calView); return; }
       const clockBtn = e.target.closest('[data-clock]');
@@ -167,6 +201,20 @@ class CalendarComponent extends ToolComponent {
         else { this._syncMultiDayControls(); this._render(); this._renderMiniCal(); }
       });
     }
+    const surfaceSwitch = this.el.querySelector('.gb-cal-surface-switch');
+    surfaceSwitch?.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...surfaceSwitch.querySelectorAll('[role="tab"]')].filter(tab => !tab.disabled);
+      const current = event.target.closest('[role="tab"]');
+      const index = tabs.indexOf(current);
+      if (index < 0 || !tabs.length) return;
+      event.preventDefault();
+      const nextIndex = event.key === 'Home' ? 0
+        : event.key === 'End' ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[nextIndex].focus();
+      tabs[nextIndex].click();
+    });
   }
 
   _openDetailPanel() {
@@ -193,15 +241,46 @@ class CalendarComponent extends ToolComponent {
         break;
       case 'prev': this._goNav(-1); break;
       case 'next': this._goNav(1); break;
-      case 'template': this._showScheduleTemplateModal(); break;
+      case 'template':
+        if (this._surface === 'productionTasks' && window.MeldexProductionSidebar?.showTemplates) {
+          window.MeldexProductionSidebar.showTemplates(this);
+        } else {
+          this._showScheduleTemplateModal();
+        }
+        break;
+      case 'quickPlan':
+        if (this._surface === 'productionTasks' && typeof this._openProductionQuickPlan === 'function') {
+          this._openProductionQuickPlan(anchor);
+        }
+        break;
+      case 'bulkCreateTasks':
+        if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) break;
+        if (this._surface === 'productionTasks' && typeof this._openProductionTaskCreate === 'function') {
+          this._openProductionTaskCreate(anchor);
+        }
+        break;
+      case 'recalculate':
+        if (this._surface === 'productionTasks' && typeof this._openProductionRecalculate === 'function') {
+          this._openProductionRecalculate(anchor);
+        }
+        break;
+      case 'productionManagement':
+        if (this._surface === 'productionTasks') window.MeldexProductionSidebar?.showActions?.(this);
+        break;
+      case 'sheetAutoFit':
+      case 'sheetColumnDisplayOrder':
+      case 'sheetFilter':
+      case 'sheetSort':
+        if (this._surface === 'productionTasks' && typeof this._runProductionSheetDisplayAction === 'function') {
+          this._runProductionSheetDisplayAction(action, anchor);
+        }
+        break;
+      case 'undo': if (typeof meldexUndo === 'function') meldexUndo(); break;
+      case 'redo': if (typeof meldexRedo === 'function') meldexRedo(); break;
       case 'reload': this.reload(); break;
       case 'timer':
         if (typeof openTimerPanel === 'function') openTimerPanel();
         else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
-        break;
-      case 'openProductionTaskList':
-        if (typeof window.openProductionTaskListSheet === 'function') window.openProductionTaskListSheet();
-        else if (typeof showStatus === 'function') showStatus('タスクリストシートを開けませんでした', true);
         break;
       case 'sync': this._showSyncModal(); break;
       case 'toggleSidebar': this._toggleSidebar(); break;
@@ -279,6 +358,8 @@ class CalendarComponent extends ToolComponent {
     this._renderTodayTasks();
     this._updateClockStatus();
     this._ensureAlarmTimer();
+    if (typeof this._syncHistoryScope === 'function') this._syncHistoryScope();
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   }
 
   _ensureAlarmTimer() {
@@ -302,15 +383,19 @@ class CalendarComponent extends ToolComponent {
   getState() {
     return {
       view: this._view,
+      surface: this._surface,
       calendarPath: this.state.calendarPath || '',
       multiDayCount: this._multiDayCount,
       selectedMiniDates: this._selectedMiniDateList(),
+      productionTaskSelection: this.state.productionTaskSelection || null,
+      productionTaskLastSheetName: this.state.productionTaskLastSheetName || '',
     };
   }
   restoreState(s) {
     super.restoreState(s);
     if (s) {
       this._view = s.view || 'month';
+      this._surface = s.surface === 'productionTasks' ? 'productionTasks' : 'calendar';
       this.state.calendarPath = s.calendarPath || '';
       this._multiDayCount = this._normalizeMultiDayCount(s.multiDayCount || this._multiDayCount);
       this._selectedMiniDates = new Set(Array.isArray(s.selectedMiniDates) ? s.selectedMiniDates.filter(v => /^\d{4}-\d{2}-\d{2}$/.test(String(v))) : []);
@@ -321,7 +406,11 @@ class CalendarComponent extends ToolComponent {
   // === 公開API (postMessage置換) ===
   pushUndo(label) { this._pushUndo(label); }
   async reload() {
-    await Promise.all([this._loadEvents(), this._loadTasks(), this._loadCalendars()]);
+    const requests = [this._loadEvents(), this._loadTasks(), this._loadCalendars()];
+    if (this._surface === 'productionTasks' && typeof this._refreshProductionTaskEmbed === 'function') {
+      requests.push(this._refreshProductionTaskEmbed());
+    }
+    await Promise.all(requests);
     this._render();
     this._renderMiniCal();
     this._renderTodayTasks();
@@ -455,25 +544,48 @@ class CalendarComponent extends ToolComponent {
     const seq = (this._loadEventsSeq = (this._loadEventsSeq || 0) + 1);
     try {
       const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
-      if (seq !== this._loadEventsSeq) return; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
+      if (seq !== this._loadEventsSeq) return { ok: true, stale: true }; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
       this._events = events;
-    } catch {
-      if (seq !== this._loadEventsSeq) return;
+      return { ok: true, stale: false };
+    } catch (error) {
+      if (seq !== this._loadEventsSeq) return { ok: true, stale: true };
       if (!Array.isArray(this._events)) this._events = [];
       this._showStatus('予定の読み込みに失敗', true);
+      return { ok: false, stale: false, error };
     }
   }
 
   // 読み込み窓（表示期間）が変わったらアンドゥ履歴を破棄する。
   // 窓違いのスナップショット復元は、現在の窓にだけ存在する予定を巻き添え削除するため
   _guardUndoLoadWindow(windowKey, start, end) {
-    if (this._undoWindowKey && this._undoWindowKey !== windowKey && (this._undoStack.length || this._redoStack.length)) {
-      this._undoStack.length = 0;
-      this._redoStack.length = 0;
+    if (this._undoWindowKey && this._undoWindowKey !== windowKey && this._hasUndoHistoryEntries()) {
+      this._clearUndoStacks();
       this._notifyParentHistory();
     }
     this._undoWindowKey = windowKey;
     this._undoLoadWindow = { key: windowKey, start, end };
+  }
+
+  // 共通履歴（'schedule:<tabId>' スコープ）と自己完結スタックの両方をまたいで
+  // 「取り消せる/やり直せる操作が何かあるか」を判定する（表示期間変更時の破棄要否判定用）。
+  _hasUndoHistoryEntries() {
+    if (this._undoStack.length || this._redoStack.length) return true;
+    if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory() && typeof _historyStacks !== 'undefined') {
+      const stack = _historyStacks[_schedHistoryScope(this)];
+      if (stack && (stack.undo.length || stack.redo.length)) return true;
+    }
+    return false;
+  }
+
+  // 共通履歴のこのタブ用スコープと、自己完結スタックの両方をクリアする
+  // （ボードの bdClearUndoStacks() と同じ二重クリア方式。表示期間変更時に呼ばれる）。
+  _clearUndoStacks() {
+    if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory() && typeof _historyStacks !== 'undefined') {
+      const stack = _historyStacks[_schedHistoryScope(this)];
+      if (stack) { stack.undo.length = 0; stack.redo.length = 0; }
+    }
+    this._undoStack.length = 0;
+    this._redoStack.length = 0;
   }
 
   async _loadTasks() {
@@ -534,15 +646,35 @@ class CalendarComponent extends ToolComponent {
     return eventEnd >= windowStart && eventStart <= windowEnd;
   }
 
+  // v0.6.199: 共通履歴（gb-history.js）が読み込まれている環境（本体アプリ）では
+  // 'schedule:<tabId>' スコープの共通履歴（historyPush）へ委譲し、右パネルの操作履歴タブ・
+  // 操作履歴パネルの両方と連動する。共通履歴が無い環境（将来の単独起動・テストスタブ向けの保険。
+  // 現状このコンポーネントを読み込む単独起動アプリは存在しない）は、従来どおり
+  // this._undoStack/_redoStack の自己完結スタックへ自動フォールバックし挙動を変えない。
   _pushUndo(label) {
-    this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
-    if (this._undoStack.length > this._UNDO_MAX) this._undoStack.shift();
-    this._redoStack.length = 0;
+    if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
+      const snap = { events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() };
+      historyPush(label, () => this._restoreSnapshot(snap), null, _schedHistoryScope(this));
+    } else {
+      this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
+      if (this._undoStack.length > this._UNDO_MAX) this._undoStack.shift();
+      this._redoStack.length = 0;
+    }
     this._notifyParentHistory();
   }
 
   async _undo() {
-    // 復元はサーバーへの逐次API呼び出しを伴う長い処理のため、完了まで再入を受け付けない
+    // 復元はサーバーへの逐次API呼び出しを伴う長い処理のため、完了まで再入を受け付けない。
+    // 共通履歴経路でも「component._undo()/_redo() を経由する限り」このガードで多重実行を防ぐ
+    // （historyUndo() 自体は scope の stack.pop() を同期的に行うため、ガード無しで連打すると
+    // 2件目の復元が1件目と並行実行され、レストア対象のずれや redo スタックの不整合を招く）。
+    if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
+      if (this._undoBusy) return;
+      this._undoBusy = true;
+      try { await historyUndo(_schedHistoryScope(this)); }
+      finally { this._undoBusy = false; }
+      return;
+    }
     if (!this._undoStack.length || this._undoBusy) return;
     this._undoBusy = true;
     try {
@@ -555,6 +687,13 @@ class CalendarComponent extends ToolComponent {
   }
 
   async _redo() {
+    if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
+      if (this._undoBusy) return;
+      this._undoBusy = true;
+      try { await historyRedo(_schedHistoryScope(this)); }
+      finally { this._undoBusy = false; }
+      return;
+    }
     if (!this._redoStack.length || this._undoBusy) return;
     this._undoBusy = true;
     try {
@@ -568,8 +707,12 @@ class CalendarComponent extends ToolComponent {
 
   async _restoreSnapshot(snap) {
     try {
-      const snapEvents = (snap.events || []).filter(ev => this._eventIsUndoable(ev));
-      const curEvents = (this._events || []).filter(ev => this._eventIsUndoable(ev));
+      // 一時ID・保存未確定（saving/confirming/retrying/unsaved）のイベントは
+      // まだサーバーに存在しないか状態が確定していないため、アンドゥ/リドゥの
+      // DELETE・POST・PUT対象から除外する（送信するとサーバー側で不整合を招く）。
+      const isPending = ev => window.MeldexCalendarSaveQueue?.isPendingEvent?.(ev) || false;
+      const snapEvents = (snap.events || []).filter(ev => this._eventIsUndoable(ev) && !isPending(ev));
+      const curEvents = (this._events || []).filter(ev => this._eventIsUndoable(ev) && !isPending(ev));
       const snapEvIds = new Set(snapEvents.map(e => e.id));
       const curEvIds = new Set(curEvents.map(e => e.id));
       for (const ev of curEvents) {
@@ -607,6 +750,7 @@ class CalendarComponent extends ToolComponent {
   // === ビュー切り替え ===
   setView(v) {
     this._view = v;
+    this._surface = 'calendar';
     // タブの永続状態へ即時反映。パネル再マウント時に restoreState が
     // 古い activeTab.state で _view を上書きしてしまう問題を防ぐ。
     this._persistViewToTabState(v);
@@ -619,6 +763,51 @@ class CalendarComponent extends ToolComponent {
     this._render();
   }
 
+  setSurface(surface, onConfirmed) {
+    const next = surface === 'productionTasks' ? 'productionTasks' : 'calendar';
+    if (this._surface === next) {
+      this._syncSurfaceControls();
+      return true;
+    }
+    const applySurface = () => {
+      this._surface = next;
+      this._persistViewToTabState(this._view);
+      this._syncSurfaceControls();
+      this._render();
+      if (typeof this._syncHistoryScope === 'function') this._syncHistoryScope();
+      if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    };
+    if (next === 'productionTasks') {
+      const canSwitch = window.MeldexProductionSidebar?.prepareTaskListSurface?.(this, () => {
+        applySurface();
+        onConfirmed?.();
+      });
+      if (canSwitch === false) return false;
+    }
+    applySurface();
+    return true;
+  }
+
+  _syncSurfaceControls() {
+    if (!this.el) return;
+    this.el.dataset.calSurface = this._surface;
+    const activeKey = this._surface === 'calendar'
+      ? 'calendar'
+      : (typeof this._productionActiveTabKey === 'function' ? this._productionActiveTabKey() : 'tasks');
+    let activeButton = null;
+    this.el.querySelectorAll('[data-production-tab]').forEach(button => {
+      const active = button.dataset.productionTab === activeKey;
+      button.classList.toggle('gb-inner-tab-active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+      button.tabIndex = active ? 0 : -1;
+      if (active) activeButton = button;
+    });
+    // The tab list wraps like Sheet view tabs.  Do not retain a legacy horizontal
+    // scroll offset: every production surface remains visible at once.
+    const tablist = this.el.querySelector('.gb-cal-surface-switch');
+    if (activeButton && tablist) tablist.scrollLeft = 0;
+  }
+
   _persistViewToTabState(view) {
     if (typeof GBLayout === 'undefined' || !GBLayout.root) return;
     try {
@@ -627,14 +816,27 @@ class CalendarComponent extends ToolComponent {
       if (!tab) return;
       if (!tab.state) tab.state = {};
       tab.state.view = view;
+      tab.state.surface = this._surface;
       tab.state.multiDayCount = this._multiDayCount;
       tab.state.selectedMiniDates = this._selectedMiniDateList();
+      tab.state.productionTaskSelection = this.state.productionTaskSelection || null;
+      tab.state.productionTaskLastSheetName = this.state.productionTaskLastSheetName || '';
     } catch {}
   }
 
   // === メイン描画 ===
   _render() {
     const renderSeq = ++this._renderSeq;
+    this._syncSurfaceControls();
+    if (this._surface === 'productionTasks') {
+      this._titleEl.textContent = '';
+      this._syncMultiDayControls();
+      if (typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
+      if (typeof this._renderProductionTaskView === 'function') this._renderProductionTaskView();
+      else this._contentEl.textContent = 'タスクリストを初期化しています…';
+      return;
+    }
+    if (typeof this._hideProductionTaskEmbed === 'function') this._hideProductionTaskEmbed();
     const y = this._date.getFullYear(), m = this._date.getMonth(), d = this._date.getDate();
     this._titleEl.textContent =
       this._view === 'day' ? `${y}年${m+1}月${d}日` :
@@ -660,6 +862,61 @@ class CalendarComponent extends ToolComponent {
   // 以降の描画メソッドは gb-tool-calendar-views.js に定義
 }
 
+/* ==============================
+   v0.6.199: 「スケジュール」タブ本体（系統(A) CalendarComponent）の取り消し・やり直しを
+   共通履歴（gb-history.js）へ統合するための補助関数。
+
+   背景: 2026-07-19 に判明した既存不具合（AGENT_INBOX参照）— CalendarComponentは
+   独自の this._undoStack/_redoStack を持つが、Ctrl+Z・ツールバーボタンのどちらからも
+   到達できず、かつシートの「カレンダー表示モード」用の別系統(_calUndoStack, 系統(B))へ
+   誤ってルーティングされていた。本ファイルの _pushUndo/_undo/_redo（上記）を
+   'schedule:<tabId>' スコープの共通履歴へ統合し、gb-history.part02.js 側のルーターで
+   このスコープを優先解決することで、系統(A)自身の予定/ToDo編集がCtrl+Z・ツールバー
+   ボタン・履歴パネルの3経路すべてから機能するようにする（系統(B)は無変更）。
+
+   スコープの接頭辞は 'calendar:' ではなく 'schedule:' を採用する。理由:
+   gb-tool-calendar-options.js は既に 'calendar:settings'（サイドバー表示・週開始曜日等の
+   localStorage設定変更用スコープ）を使っており、historyRegisterSnapshotProvider の
+   マッチングは scope.startsWith(prefix) の前方一致で行われるため、'calendar:' を
+   プレフィックス登録すると 'calendar:settings' にも誤って一致してしまう
+   （設定変更のredoクロージャがスナップショット・プロバイダで上書きされ、
+   設定変更のやり直しが壊れる）。'schedule:' なら前方一致の衝突が無い。
+
+   tabId は getComponentInstance()/setComponentInstance() のキーと同一の値を使うため、
+   スコープ文字列からコンポーネントインスタンスを逆引きできる（複数のスケジュールタブを
+   同時に開いても、タブごとに独立した取り消し履歴になる）。
+   ============================== */
+function _schedHasCommonHistory() {
+  return typeof historyPush === 'function' && typeof historyUndo === 'function' && typeof historyRedo === 'function';
+}
+function _schedHistoryScope(component) {
+  return 'schedule:' + (component && component.tabId ? component.tabId : '');
+}
+function _schedComponentForScope(scope) {
+  if (!scope || typeof scope !== 'string' || !scope.startsWith('schedule:')) return null;
+  const tabId = scope.slice('schedule:'.length);
+  if (!tabId || typeof getComponentInstance !== 'function') return null;
+  const comp = getComponentInstance(tabId);
+  return (comp && typeof CalendarComponent !== 'undefined' && comp instanceof CalendarComponent) ? comp : null;
+}
+// gb-history.part02.js の historyRegisterSnapshotProvider('schedule:', {...}) から呼ばれる
+// capture/restore の実処理。既存の _snapshotXForUndo() 3点セット・_restoreSnapshot() を
+// そのまま再利用し、挙動（何を保存し何を復元するか）は自己完結スタック時代と変えていない。
+function _schedCaptureSnapshot(scope) {
+  const comp = _schedComponentForScope(scope);
+  if (!comp) return null;
+  return {
+    events: comp._snapshotEventsForUndo(),
+    tasks: comp._snapshotTasksForUndo(),
+    eventWindow: comp._snapshotEventWindowForUndo(),
+  };
+}
+async function _schedRestoreSnapshot(snap, scope) {
+  const comp = _schedComponentForScope(scope);
+  if (!comp || snap == null) return;
+  await comp._restoreSnapshot(snap);
+}
+
 // コンポーネントレジストリ更新
 window.CalendarComponent = CalendarComponent;
-registerToolComponent('calendar', { cls: CalendarComponent, icon: 'calendar', label: 'スケジューラー', multi: true, requiresViewLock: true });
+registerToolComponent('calendar', { cls: CalendarComponent, icon: 'calendar', label: 'スケジュール', multi: true, requiresViewLock: true });

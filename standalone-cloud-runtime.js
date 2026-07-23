@@ -32,6 +32,9 @@
       id: 'board', title: 'Meldex Board', defaultFilename: '無題.mel-board',
       defaultExtension: '.mel-board', extensions: ['.mel-board', '.board.md'],
     },
+    'quick-memo': {
+      id: 'quick-memo', title: 'Meldex クイックメモ', defaultFilename: '', defaultExtension: '', extensions: [],
+    },
   });
   const state = {
     initPromise: null,

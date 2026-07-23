@@ -170,8 +170,8 @@ button.gb-context-menu-item {
   min-width: 0;
 }
 .note-ruby-popup .note-ruby-input {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 1 140px;
+  min-width: 60px;
   height: var(--ui-h-md);
   box-sizing: border-box;
 }
@@ -199,6 +199,9 @@ button.gb-context-menu-item {
   }
   .note-ruby-popup-row {
     gap: var(--ui-space-3);
+  }
+  .note-ruby-popup .note-ruby-input {
+    flex: 1 1 auto; /* タッチ環境は操作面を優先して幅いっぱいに戻す */
   }
   .note-ruby-popup .note-ruby-input,
   .note-ruby-popup .note-ruby-ok {

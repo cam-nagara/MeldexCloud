@@ -127,7 +127,11 @@
           }
           if (_folderPath) openFolder(_folderPath.split('/').pop(), _folderPath);
           if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-        }).catch(() => showStatus('リネームに失敗', true));
+        }).catch((e) => {
+          // 失敗理由（使用中・ロック中・タイムアウト等）を握りつぶさず表示する
+          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          showStatus('リネームに失敗' + (reason ? `（${reason}）` : ''), true);
+        });
       }
     }, null, 'pencil');
     addItem('複製', async () => {

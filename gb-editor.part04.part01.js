@@ -327,6 +327,8 @@ function _pageTitleRubyHandler(e) {
   input.placeholder = 'ルビを入力...';
   input.setAttribute('aria-label', 'ページタイトルのルビ');
   input.dataset.e2eId = 'page-title-ruby-input';
+  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
+  input.setAttribute('data-gb-tooltip-disabled', 'true');
   const applyButton = document.createElement('button');
   applyButton.type = 'button';
   applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
@@ -446,6 +448,13 @@ function _pageTitleRubyHandler(e) {
     }
   };
   keyCloser = function onKey(ev) {
+    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(menu, ev.shiftKey);
+      return;
+    }
     if (ev.key === 'Escape') {
       ev.preventDefault();
       _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
@@ -708,6 +717,8 @@ function showNoteRubyPopup(editable, range) {
   input.placeholder = 'ルビを入力...';
   input.setAttribute('aria-label', 'ノート本文のルビ');
   input.dataset.e2eId = 'note-ruby-input';
+  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
+  input.setAttribute('data-gb-tooltip-disabled', 'true');
   const applyButton = document.createElement('button');
   applyButton.type = 'button';
   applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
@@ -770,6 +781,13 @@ function showNoteRubyPopup(editable, range) {
     if (!popup.contains(ev.target)) _closeEditorPopup(popup, cleanup, editable);
   };
   keyHandler = function onKeyDown(ev) {
+    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(popup, ev.shiftKey);
+      return;
+    }
     if (ev.key === 'Escape') {
       ev.preventDefault();
       _closeEditorPopup(popup, cleanup, editable);

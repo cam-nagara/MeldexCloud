@@ -430,6 +430,7 @@ function _calPushUndo(label) {
   if (_calUndoStack.length > _CAL_UNDO_MAX) _calUndoStack.shift();
   _calRedoStack.length = 0;
   if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 
 async function _calendarSnapshotForDb(targetDbPath, currentDbPath, currentData) {
@@ -453,6 +454,8 @@ async function _calUndo() {
   } catch (err) {
     try { if (targetDbPath) await selectDatabase(targetDbPath, ctx, { silent: true }); } catch {}
     showStatus('元に戻せませんでした: ' + (err?.message || err), true);
+  } finally {
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   }
 }
 
@@ -472,6 +475,8 @@ async function _calRedo() {
   } catch (err) {
     try { if (targetDbPath) await selectDatabase(targetDbPath, ctx, { silent: true }); } catch {}
     showStatus('やり直せませんでした: ' + (err?.message || err), true);
+  } finally {
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   }
 }
 

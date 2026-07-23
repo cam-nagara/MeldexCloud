@@ -43,7 +43,17 @@
         return;
       }
 
-      // テキストセル範囲選択中の Delete/Backspace: 行削除ではなく選択セルの内容をクリアする
+      // 矩形セル範囲選択中の Delete/Backspace: 行削除ではなく選択セルの内容をクリアする
+      if ((e.key === 'Delete' || e.key === 'Backspace')
+          && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+          && this._gridCellSelection?.size
+          && typeof this._clearSelectedGridCells === 'function') {
+        e.preventDefault();
+        this._clearSelectedGridCells();
+        return;
+      }
+
+      // テキスト列だけの従来範囲選択も同じく内容をクリアする
       if ((e.key === 'Delete' || e.key === 'Backspace')
           && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
           && this._textCellSelection?.size
@@ -422,16 +432,18 @@
     // pasteハンドラ: 改行で行を分割（空白行はタイプなし空行として追加）
     // Ctrl+Shift+V: セル内改行として貼り付け（行分割しない）
     host.addEventListener('paste', (e) => {
+      const pasteInCell = !!this._pasteInCellFlag;
+      this._pasteInCellFlag = false;
+      const plain = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+      if (!plain) return;
+      if (typeof this._handleGridCellPaste === 'function'
+          && this._handleGridCellPaste(e, plain, pasteInCell)) return;
       const textEl = e.target.closest?.('.sn2-text');
       if (!textEl) return;
       e.preventDefault();
       const activeSel = window.getSelection();
       const activeRange = activeSel?.rangeCount ? activeSel.getRangeAt(0) : null;
-      const pasteInCell = !!this._pasteInCellFlag;
-      this._pasteInCellFlag = false;
       if (activeRange && !this._rangeWithinElement(activeRange, textEl)) return;
-      const plain = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
-      if (!plain) return;
       // Ctrl+Shift+V（フラグ）または単一行: セル内にそのまま挿入
       const lines = plain.split('\n');
       if (pasteInCell || lines.length <= 1) {
@@ -728,8 +740,13 @@
 
     const pdragAutoScrollStep = () => {
       if (!pdragActive) { pdragAutoScrollRaf = null; return; }
-      const sc = document.elementFromPoint(pdragLastClientX, pdragLastClientY)?.closest?.('.sn2-scroll');
-      if (!sc || !host.contains(sc)) {
+      // ポインタが領域の端を超えて外へ出てもスクロールを止めない:
+      // 直下に .sn2-scroll が無ければ自エディタのスクロール領域へフォールバックする
+      const clampedX = Math.max(0, Math.min(window.innerWidth - 1, pdragLastClientX));
+      const clampedY = Math.max(0, Math.min(window.innerHeight - 1, pdragLastClientY));
+      const under = document.elementFromPoint(clampedX, clampedY)?.closest?.('.sn2-scroll');
+      const sc = (under && host.contains(under)) ? under : host.querySelector('.sn2-scroll');
+      if (!sc) {
         pdragAutoScrollRaf = requestAnimationFrame(pdragAutoScrollStep);
         return;
       }

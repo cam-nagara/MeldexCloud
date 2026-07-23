@@ -133,14 +133,47 @@ async function _chatWaitForLiveMessagesContainer() {
   return null;
 }
 
+// CLIチャットの「CLI既定（推奨）」を表す内部専用の値。表示ラベルはCHAT_CLI_MODEL_CATALOG側で持つ。
+// サーバーへ送信する直前に空文字列へ変換される（gb-right-panel-chat-cli.js参照）。
+// 先頭がアンダースコアのため、万一そのままサーバーへ送られてもCLI_CHAT_MODEL_VALUE_PATTERN
+// （先頭は英数字必須）に一致せず注入されない＝安全側に倒れる値にしてある。
+const CLI_CHAT_DEFAULT_MODEL_SENTINEL = '_cli_default_';
+
+// CLIチャットのモデル選択肢カタログ（サーバ側 meldex_cli_chat_model_args.py の
+// CLI_CHAT_PROVIDER_DEFAULTS と対）。モデル世代交代時はここを更新して新バージョンとして
+// リリースする。id が CLI_CHAT_DEFAULT_MODEL_SENTINEL の項目は「--modelを注入せずCLI自身の
+// 既定モデルに任せる」選択肢。
+const CHAT_CLI_MODEL_CATALOG = {
+  claude_code: [
+    { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'claude-fable-5', name: 'Fable 5' },
+    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
+    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
+    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+  ],
+  codex: [
+    { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gpt-5.6', name: 'GPT-5.6' },
+    { id: 'gpt-5.5', name: 'GPT-5.5' },
+  ],
+  gemini_cli: [
+    { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+  ],
+};
+
+// モデル世代交代時はここ（サーバ側 meldex_chat_models.py の RECOMMENDED_CHAT_MODEL_IDS と対）を
+// 更新して新バージョンとしてリリースする。更新時は CHAT_MODELS_CACHE_VERSION も上げ、
+// 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
   gemini: ['gemini-2.5-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-3.1-flash-lite-preview'],
-  anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
+  anthropic: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   openai: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-nano'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
-  codex: ['Codex CLI'],
-  claude_code: ['Claude Code'],
-  gemini_cli: ['Gemini CLI'],
+  codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
+  claude_code: CHAT_CLI_MODEL_CATALOG.claude_code.map(item => item.id),
+  gemini_cli: CHAT_CLI_MODEL_CATALOG.gemini_cli.map(item => item.id),
 };
 const CHAT_PROVIDER_META = {
   gemini: { label: 'Gemini', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
@@ -158,7 +191,7 @@ const CHAT_CLI_PROVIDERS = {
   gemini_cli: { label: 'Gemini CLI', command: 'gemini' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 3;
+const CHAT_MODELS_CACHE_VERSION = 4;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
     default: { input: 0.30, output: 2.50 },
@@ -371,6 +404,17 @@ function chatCustomInstructionSettings() {
   };
 }
 
+// 思考の深さの内部値一覧（オフ/低/中/高/最高/最大 + claude_code限定のUltracode）。
+const CHAT_REASONING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+
+// 旧3段階UI（オフ/標準/最大）からの移行。standardはmediumとして扱う。
+// gb-chat-generation-settings.js からも参照する（グローバル関数として定義）。
+function _chatNormalizeReasoningLevel(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'standard') return 'medium';
+  return CHAT_REASONING_LEVELS.includes(raw) ? raw : 'off';
+}
+
 function chatGenerationSettings() {
   const preset = localStorage.getItem('chat-param-preset') || 'standard';
   const presetTemperature = preset === 'creative' ? 1.2 : preset === 'strict' ? 0.2 : 0.7;
@@ -381,7 +425,7 @@ function chatGenerationSettings() {
   const maxTokens = maxTokensRaw ? Number(maxTokensRaw) : 8192;
   const topP = topPRaw !== null && topPRaw !== '' ? Number(topPRaw) : null;
   return {
-    reasoning_level: localStorage.getItem('chat-reasoning-level') || 'off',
+    reasoning_level: _chatNormalizeReasoningLevel(localStorage.getItem('chat-reasoning-level')),
     temperature: Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : presetTemperature,
     max_tokens: Number.isFinite(maxTokens) ? Math.max(1024, Math.min(32768, Math.floor(maxTokens))) : 8192,
     top_p: Number.isFinite(topP) ? Math.max(0, Math.min(1, topP)) : undefined,
@@ -650,9 +694,12 @@ async function loadProviderModels(provider, options = {}) {
   const key = _chatProviderKey(provider);
   const force = !!options.force;
   if (_chatIsCliProvider(key)) {
-    const model = _chatDefaultModel(key);
-    _chatState.modelsByProvider[key] = model ? [{ id: model, name: model }] : [];
-    return _chatState.modelsByProvider[key];
+    // gb-right-panel-chat-cli.js が読み込まれていれば、設定済みモデルの候補追加込みの
+    // patched loadProviderModels に差し替えられる。ここはその前提が崩れた場合のフォールバックで、
+    // コード内カタログ（CHAT_CLI_MODEL_CATALOG）をそのまま返す。
+    const models = (CHAT_CLI_MODEL_CATALOG[key] || []).map(item => ({ ...item }));
+    _chatState.modelsByProvider[key] = models;
+    return models;
   }
   if (!force && _chatState.modelsByProvider[key]?.length) return _chatState.modelsByProvider[key];
   if (!force) {

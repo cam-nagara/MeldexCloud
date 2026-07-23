@@ -208,6 +208,8 @@
   display: flex;
   align-items: center;
   gap: var(--ui-space-2);
+  /* ポップアップ幅半減（2026-07-17）に伴い、説明文などは折り返して表示する */
+  flex-wrap: wrap;
 }
 .sn2-role-opts-row--top {
   margin-top: var(--ui-space-2);
@@ -218,6 +220,14 @@
 .sn2-role-opts-divider {
   border-top: 1px solid var(--ui-border);
   padding-top: var(--ui-space-3);
+}
+.sn2-role-opts-gutter-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+}
+.sn2-role-opts-gutter-settings .sn2-detail-add-btn {
+  min-width: 88px;
 }
 .sn2-role-opts-divider-flex {
   border-top: 1px solid var(--ui-border);

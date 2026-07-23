@@ -2,11 +2,34 @@
 }
 
 function _isWorkspaceOutlinerRoot(root) {
-  return !!root && (root.kind === 'workspace' || !!root.workspaceId);
+  // kind==='workspace' はコラボワークスペース（既存機能）、
+  // origin が 'ws:' で始まるのはDropboxフォルダ単位共有②の参加中ワークスペード
+  // （フェーズ3c）。workspaceId はクラウド側の合流結果にのみ付与されるため
+  // 判定に使わない（デスクトップ側の合流結果には無く、それだけに頼ると
+  // デスクトップだけソースフォルダ一覧に共有ワークスペードが紛れ込む）。
+  return !!root && (root.kind === 'workspace' || typeof root.origin === 'string' && root.origin.startsWith('ws:'));
 }
 
 // ワークスペース由来ルートの控え（ソースフォルダ追加時の重複案内に使う）
 let _settingsWorkspaceOutlinerRoots = [];
+
+// クライアントが直近のGETで実際に見ていたソースフォルダ一覧（合流後スナップショット）の控え。
+// 保存時にサーバーへ送り返し、台帳への削除印(tombstone)判定の基準として使わせる。
+// 台帳にしか存在しないroot（他端末・クラウド版が追加したもの）を削除した場合でも、
+// この控えに含まれているため正しく削除印を付けられる（保存前の設定ファイルの中身
+// だけを基準にすると、台帳合流分の削除が検出できず次回読み込みで復活してしまう）。
+let _outlinerRootsBaseline = [];
+
+// _outlinerRoots は行編集（visible/name変更）でオブジェクトを直接ミューテートするため、
+// 参照を共有したまま控えると控え側まで書き換わってしまう。JSONの深いクローンで
+// 独立させる。roots はサーバーが返すプレーンなJSON値のみを想定する。
+function _cloneOutlinerRootsBaseline(roots) {
+  try {
+    return JSON.parse(JSON.stringify(Array.isArray(roots) ? roots : []));
+  } catch {
+    return [];
+  }
+}
 
 function _splitOutlinerRootsForSettings(roots) {
   const list = Array.isArray(roots) ? roots : [];
@@ -17,6 +40,7 @@ function _splitOutlinerRootsForSettings(roots) {
 async function loadOutlinerRootsForSettings() {
   try {
     const roots = await apiFetch('/outliner-roots');
+    _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(roots);
     // ワークスペース由来のルートは設定のワークスペースタブで管理するため、ソースフォルダ一覧には含めない
     _outlinerRoots = _splitOutlinerRootsForSettings(roots);
     window._settingsOutlinerRootsLoadFailed = false;
@@ -30,6 +54,54 @@ async function loadOutlinerRootsForSettings() {
 
 function _markOutlinerRootsSettingsDirty() {
   window._settingsOutlinerRootsDirty = true;
+}
+
+// 共有導線（共有切替・場所確認・保管庫共有）の完了後に呼ぶ。loadOutlinerRootsForSettings()
+// のようにサーバー応答で _outlinerRoots を丸ごと差し替えると、その導線を待つ間に
+// ユーザーが行った未保存の編集（削除・改名・表示切替）が黙って捨てられ、未保存
+// フラグ(dirty)まで false に戻ってしまう。ここではサーバー由来のフィールド
+// （provider/dropboxPath/sourceId/id/needsMapping/mapped/localPath/path）だけを
+// 既存のローカル行へマージし、name/visible とローカルの追加・削除はそのまま残す。
+// dirtyフラグには一切触らない。
+const _MERGE_SERVER_OUTLINER_ROOT_FIELDS = [
+  'provider', 'dropboxPath', 'sourceId', 'id', 'needsMapping', 'mapped', 'localPath', 'path',
+];
+
+async function mergeServerOutlinerRootsIntoSettings() {
+  const rawServerRoots = await apiFetch('/outliner-roots');
+  const serverRoots = _splitOutlinerRootsForSettings(rawServerRoots);
+  const byKey = new Map(serverRoots.map((r) => [_outlinerRootIdentityKey(r), r]));
+  _outlinerRoots.forEach((local) => {
+    const remote = byKey.get(_outlinerRootIdentityKey(local));
+    if (!remote) return;
+    _MERGE_SERVER_OUTLINER_ROOT_FIELDS.forEach((k) => {
+      if (k in remote) local[k] = remote[k];
+    });
+  });
+  // baseRootsの基準は loadOutlinerRootsForSettings と同じく未フィルタのサーバー応答
+  // （ワークスペース由来のrootも含む）を使う。保存時の台帳削除印(tombstone)判定が
+  // このrootの有無を基準にするため、フィルタ後の一覧だけを基準にすると
+  // ワークスペースrootの扱いがずれる。
+  _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(rawServerRoots);
+  renderOutlinerRootsSettings();
+}
+
+// 削除確認の待機中に一覧が再読み込みされると、_outlinerRoots が新しい配列
+// （新しいオブジェクト参照）に丸ごと差し替わることがあり、閉じ込めた添字(i)や
+// オブジェクト参照では別の行を消してしまう。sourceId/id、無ければ実パスの
+// 正規化一致で同一フォルダを再特定する。
+function _outlinerRootIdentityKey(root) {
+  if (!root) return '';
+  const id = root.sourceId || root.id;
+  if (id) return 'id:' + id;
+  const path = root.dropboxPath || root.localPath || root.path || '';
+  return 'path:' + String(path).trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function _findOutlinerRootIndex(target) {
+  const key = _outlinerRootIdentityKey(target);
+  if (!key) return -1;
+  return _outlinerRoots.findIndex(r => _outlinerRootIdentityKey(r) === key);
 }
 
 function renderOutlinerRootsSettings() {
@@ -49,7 +121,7 @@ function renderOutlinerRootsSettings() {
     container.append(msg, retry);
     return;
   }
-  if (_outlinerRoots.some(root => _isDropboxBackedSourcePath(root?.path, root))) {
+  if (_outlinerRoots.some(root => _isDropboxProviderRoot(root))) {
     container.appendChild(_createDropboxSourceFolderNotice());
   }
   _outlinerRoots.forEach((root, i) => {
@@ -74,11 +146,22 @@ function renderOutlinerRootsSettings() {
       _outlinerRoots[i].name = e.target.value;
       _markOutlinerRootsSettingsDirty();
     });
-    row.querySelector('.or-delete').addEventListener('click', () => {
-      _outlinerRoots.splice(i, 1);
+    row.querySelector('.or-delete').addEventListener('click', async () => {
+      // 共有中のフォルダは確認を挟む（委譲先: gb-settings-cloud-link.js）。
+      // 確認待ちの間に一覧が再描画される場合があるため、削除は待機後に
+      // パス/IDで再検索してから行う（固定添字だと別の行を消しかねない）。
+      const proceed = await window.MeldexSettingsCloudLink?.confirmDeleteSourceFolder?.(root);
+      if (proceed === false) return;
+      const idx = _findOutlinerRootIndex(root);
+      if (idx === -1) return;
+      _outlinerRoots.splice(idx, 1);
       _markOutlinerRootsSettingsDirty();
       renderOutlinerRootsSettings();
     });
+    // 状態カード側（gb-settings-cloud-link.js の _redecorateRootRowsOnce）が、状態
+    // 取得のたびに全再構築せず行DOMを直接掛け直せるよう、行へrootの参照を持たせる。
+    row.__msclRoot = root;
+    window.MeldexSettingsCloudLink?.decorateRootRow?.(row, root);
     container.appendChild(row);
   });
 }
@@ -217,6 +300,7 @@ async function _addOutlinerRootEntry(path, name, extra) {
   if (!inSettingsDialog) {
     try {
       const roots = await apiFetch('/outliner-roots');
+      _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(roots);
       _outlinerRoots = _splitOutlinerRootsForSettings(roots);
     } catch {
       showStatus('既存のソースフォルダ一覧を読み込めませんでした', true);
@@ -263,7 +347,13 @@ async function _addOutlinerRootEntry(path, name, extra) {
 async function saveOutlinerRoots() {
   if (window._settingsOutlinerRootsLoadFailed) return false;
   try {
-    await apiPut('/outliner-roots', { roots: _outlinerRoots });
+    // baseRoots: 直近のGETで実際に見ていた一覧（合流後スナップショット）を送り返し、
+    // サーバー側の台帳削除印(tombstone)判定の基準に使わせる（台帳のみに存在する
+    // rootの削除が正しく検出されるようにするため）。
+    await apiPut('/outliner-roots', { roots: _outlinerRoots, baseRoots: _outlinerRootsBaseline });
+    // 保存成功後は基準を今回送った内容へ合わせる（次の保存操作が、今回削除済みの
+    // rootを再び削除印の対象として誤検知しないように）。
+    _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(_outlinerRoots);
     return true;
   } catch (e) { return false; }
 }
@@ -356,7 +446,11 @@ async function _addDropboxOutlinerRootFromSettings() {
 async function _restoreOutlinerRootsSettingsSnapshot(snapshot) {
   const normalized = _normalizeOutlinerRootsSettingsSnapshot(snapshot);
   await apiPut('/vault', { path: normalized.vaultPath || '' });
-  await apiPut('/outliner-roots', { roots: normalized.roots });
+  // baseRoots: この呼び出し元（Undo/Redo）が最後に把握していた一覧を基準として送る
+  // （saveOutlinerRootsと同じ理由。台帳合流分のrootをUndo/Redoで消す操作でも
+  // 正しく削除印が付くようにするため）。
+  await apiPut('/outliner-roots', { roots: normalized.roots, baseRoots: _outlinerRootsBaseline });
+  _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(normalized.roots);
   if (typeof state !== 'undefined') state.vaultPath = normalized.vaultPath || '';
   _outlinerRoots = normalized.roots.map(root => ({ ...root }));
   renderOutlinerRootsSettings();
@@ -546,11 +640,18 @@ function _isFontInstalled(fontFamily) {
   return false;
 }
 
-let _detectedSystemFontsCache = null;
 function getDetectedSystemFonts() {
-  if (_detectedSystemFontsCache) return _detectedSystemFontsCache;
   const seen = new Set(UI_PRESET_FONTS.map(f => f && f.family).filter(Boolean));
   const detected = [];
+  const catalog = globalThis.MeldexFontCatalog;
+  if (globalThis.navigator?.userActivation?.isActive) void catalog?.refresh?.();
+  const catalogFamilies = catalog?.getFamilies?.() || [];
+  catalogFamilies.forEach(name => {
+    const family = `${JSON.stringify(String(name || '').trim())}, sans-serif`;
+    if (!name || seen.has(family)) return;
+    detected.push({ name, family });
+    seen.add(family);
+  });
   for (const candidate of _SYSTEM_FONT_CANDIDATES) {
     if (!candidate || !candidate.family) continue;
     if (seen.has(candidate.family)) continue;
@@ -562,7 +663,6 @@ function getDetectedSystemFonts() {
     } catch {}
   }
   detected.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-  _detectedSystemFontsCache = detected;
   return detected;
 }
 
@@ -575,25 +675,25 @@ function getUIFontOptions() {
   const current = document.documentElement.style.getPropertyValue('--ui-font') || '';
   const preset = UI_PRESET_FONTS.map(f => _renderFontOption(f, current)).join('');
   const detected = getDetectedSystemFonts();
-  if (!detected.length) return preset;
-  const detectedHtml = detected.map(f => _renderFontOption(f, current)).join('');
-  return preset + `<optgroup label="システムフォント">${detectedHtml}</optgroup>`;
+  const detectedHtml = detected.length
+    ? `<optgroup label="システムフォント">${detected.map(f => _renderFontOption(f, current)).join('')}</optgroup>`
+    : '';
+  const known = UI_PRESET_FONTS.some(item => item.family === current) || detected.some(item => item.family === current);
+  const currentHtml = current && !known
+    ? `<option value="${esc(current)}" style="font-family:${esc(current)};" selected>${esc(current)}（現在の設定）</option>`
+    : '';
+  return preset + detectedHtml + currentHtml;
 }
 
-let _fontFamilyOptionItemsCache = null;
-
 function getFontFamilyOptionItems() {
-  if (!_fontFamilyOptionItemsCache) {
-    const detected = getDetectedSystemFonts();
-    _fontFamilyOptionItemsCache = [
-      { v: '', l: '共通フォント', style: 'font-family:inherit;' },
-      ...UI_PRESET_FONTS
-        .filter(f => f && f.family)
-        .map(f => ({ v: f.family, l: f.name, style: `font-family:${f.family};` })),
-      ...detected.map(f => ({ v: f.family, l: f.name, style: `font-family:${f.family};`, group: 'システムフォント' })),
-    ];
-  }
-  return _fontFamilyOptionItemsCache;
+  const detected = getDetectedSystemFonts();
+  return [
+    { v: '', l: '共通フォント', style: 'font-family:inherit;' },
+    ...UI_PRESET_FONTS
+      .filter(f => f && f.family)
+      .map(f => ({ v: f.family, l: f.name, style: `font-family:${f.family};` })),
+    ...detected.map(f => ({ v: f.family, l: f.name, style: `font-family:${f.family};`, group: 'システムフォント' })),
+  ];
 }
 
 function normalizeFontFamilyValue(value) {
@@ -622,8 +722,29 @@ function getFontFamilyOptions(currentValue) {
     out += `<option value="${esc(item.v)}" style="${esc(item.style)}"${sel}>${esc(item.l)}</option>`;
   }
   if (currentGroup) out += '</optgroup>';
+  if (current && !items.some(item => item.v === current)) {
+    out += `<option value="${esc(current)}" style="font-family:${esc(current)};" selected>${esc(current)}（現在の設定）</option>`;
+  }
   return out;
 }
+
+window.addEventListener('meldex:font-catalog-updated', () => {
+  const select = document.getElementById('modal-font-family');
+  if (select) {
+    const current = normalizeFontFamilyValue(
+      document.documentElement.style.getPropertyValue('--ui-font') || select.value
+    );
+    select.innerHTML = getUIFontOptions();
+    select.value = current;
+  }
+  document.querySelectorAll('select.cs-font-select').forEach(fontSelect => {
+    const current = normalizeFontFamilyValue(
+      (typeof getCssVar === 'function' ? getCssVar(fontSelect.dataset.key) : '') || fontSelect.value
+    );
+    fontSelect.innerHTML = getFontFamilyOptions(current);
+    fontSelect.value = current;
+  });
+});
 
 
 // v0.5.130: Google Fonts 動的ロードを廃止。プリセットはローカル同梱フォントとシステムフォントのみ。

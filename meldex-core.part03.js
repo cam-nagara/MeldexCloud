@@ -905,10 +905,24 @@ function enableCheckboxDragToggle(container, scopeSelector) {
     cb.dispatchEvent(new Event('change', { bubbles: true }));
     container._cbDragState = { checked: newState };
     e.preventDefault();
+    // pointerdown で手動トグル済みのため、同じチェックボックスへ届く後続の
+    // ネイティブ click（既定のトグル動作）を1回だけ打ち消す。
+    // これが無いと「pointerdownでON→clickでOFF」と往復し、クリックで切り替わらなくなる
+    const suppressClick = (clickEv) => {
+      // チェックボックス本体だけでなく、包んでいる label 経由の activation も打ち消す
+      // （チェックボックスで押してラベル上で離した場合の二重トグル防止）
+      const label = cb.closest('label');
+      if (clickEv.target !== cb && !(label && label.contains(clickEv.target))) return;
+      clickEv.preventDefault();
+      clickEv.stopImmediatePropagation();
+    };
+    document.addEventListener('click', suppressClick, true);
     const onUp = () => {
       delete container._cbDragState;
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
+      // click は pointerup の後・同一タスク内で配送されるため、打ち消しは次のタスクで解除する
+      setTimeout(() => document.removeEventListener('click', suppressClick, true), 0);
     };
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);

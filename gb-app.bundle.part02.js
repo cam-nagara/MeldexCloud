@@ -1,3 +1,36 @@
+    });
+  }
+
+  if (legacyTabsChanged) renderTabs();
+  if (layoutChanged && typeof GBLayout !== 'undefined') {
+    if (typeof GBLayout.render === 'function') GBLayout.render();
+    if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
+  }
+  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
+}
+
+function purgeAppPathReferences(paths) {
+  const deletedPaths = (Array.isArray(paths) ? paths : [paths])
+    .map(path => String(path || '').trim())
+    .filter(Boolean);
+  if (!deletedPaths.length) return;
+  let recentChanged = false;
+  let layoutChanged = false;
+  let legacyTabsChanged = false;
+  let clearedCurrentView = false;
+  _cancelDeletedPathAutosaves(deletedPaths);
+  const activePathKey = {
+    pivot: 'currentDbPath',
+    gallery: 'currentDbPath',
+    kanban: 'currentDbPath',
+    timeline: 'currentDbPath',
+    calendar: 'currentDbPath',
+    tasks: 'currentDbPath',
+    shifts: 'currentDbPath',
+    chart: 'currentDbPath',
+    graph: 'currentDbPath',
+    entity: 'currentEntityPath',
+    page: 'currentPagePath',
     media: 'currentPagePath',
     board: 'currentBoardPath',
   }[state.view] || null;
@@ -60,15 +93,16 @@
         if (_entryMatchesDeletedPaths(tab, deletedPaths) || _entryMatchesDeletedPaths(tab.state, deletedPaths)) {
           tabsToClose.push({ paneId: pane.id, tabId: tab.id });
         }
-      });
-      if (Array.isArray(pane.navHistory)) {
-        const prevLen = pane.navHistory.length;
-        pane.navHistory = pane.navHistory.filter(entry => !_entryMatchesDeletedPaths(entry, deletedPaths));
-        if (pane.navHistory.length !== prevLen) {
-          pane.navIndex = pane.navHistory.length ? Math.min(pane.navIndex, pane.navHistory.length - 1) : -1;
-          layoutChanged = true;
+        // タブ単位の戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）: 削除済みパスを参照する履歴エントリを除去
+        if (Array.isArray(tab.navHistory)) {
+          const prevLen = tab.navHistory.length;
+          tab.navHistory = tab.navHistory.filter(entry => !_entryMatchesDeletedPaths(entry, deletedPaths));
+          if (tab.navHistory.length !== prevLen) {
+            tab.navIndex = tab.navHistory.length ? Math.min(tab.navIndex, tab.navHistory.length - 1) : -1;
+            layoutChanged = true;
+          }
         }
-      }
+      });
     });
   }
   tabsToClose.forEach(({ paneId, tabId }) => {
@@ -183,39 +217,53 @@
 
 function _resolveNavHistoryPaneId(paneId) {
   if (typeof GBLayout === 'undefined' || !GBLayout.root) return null;
-  return paneId || GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id || null;
+  // GBLayout に実在しないペインID（旧split用フォールバックctxの 'main'、制作管理
+  // 埋め込みシートの未登録合成ID、閉じたペインの残存ID等）は、truthy のまま通すと
+  // 後段の findNode 失敗でレガシー共有履歴へ静かに迷子になる。無指定と同じ扱いへ
+  // 降格し、アクティブペイン（→先頭ペイン）で解決する。
+  const paneExists = !!(paneId && typeof GBLayout.findNode === 'function' && GBLayout.findNode(GBLayout.root, paneId)?.node);
+  return (paneExists ? paneId : null) || GBLayout.activePane || GBLayout.findFirstPane?.(GBLayout.root)?.id || null;
 }
 
+// タブ単位の履歴へ解決できない場合（GBLayout未初期化・対象ペイン無し・タブ0枚等）の
+// フォールバック。旧フラットタブ配列（_tabs）時代の共有履歴を引き続き使う（現状維持）。
+function _legacyNavState() {
+  return {
+    kind: 'legacy',
+    paneId: null,
+    tabId: null,
+    history: _legacyNavHistory,
+    get index() { return _legacyNavIndex; },
+    set index(v) { _legacyNavIndex = v; },
+  };
+}
+
+// 戻る/進む履歴はタブ単位（②タブ別ナビ履歴、2026-07-21）。ペインではなく
+// 「対象ペインの、今アクティブなタブ」の navHistory/navIndex を解決して返す。
 function _getNavState(paneId) {
   const resolvedPaneId = _resolveNavHistoryPaneId(paneId);
   if (!resolvedPaneId || typeof GBLayout === 'undefined' || !GBLayout.root) {
-    return {
-      kind: 'legacy',
-      paneId: null,
-      history: _legacyNavHistory,
-      get index() { return _legacyNavIndex; },
-      set index(v) { _legacyNavIndex = v; },
-    };
+    return _legacyNavState();
   }
   const pane = GBLayout.findNode?.(GBLayout.root, resolvedPaneId)?.node || null;
-  if (!pane) {
-    return {
-      kind: 'legacy',
-      paneId: null,
-      history: _legacyNavHistory,
-      get index() { return _legacyNavIndex; },
-      set index(v) { _legacyNavIndex = v; },
-    };
+  if (!pane || !Array.isArray(pane.tabs) || pane.tabs.length === 0) {
+    return _legacyNavState();
   }
-  if (!Array.isArray(pane.navHistory)) pane.navHistory = [];
-  if (!Number.isInteger(pane.navIndex)) pane.navIndex = pane.navHistory.length ? pane.navHistory.length - 1 : -1;
-  if (pane.navIndex >= pane.navHistory.length) pane.navIndex = pane.navHistory.length - 1;
+  const tabIndex = (Number.isInteger(pane.activeTabIndex) && pane.activeTabIndex >= 0 && pane.activeTabIndex < pane.tabs.length)
+    ? pane.activeTabIndex
+    : 0;
+  const tab = pane.tabs[tabIndex];
+  if (!tab) return _legacyNavState();
+  if (!Array.isArray(tab.navHistory)) tab.navHistory = [];
+  if (!Number.isInteger(tab.navIndex)) tab.navIndex = tab.navHistory.length ? tab.navHistory.length - 1 : -1;
+  if (tab.navIndex >= tab.navHistory.length) tab.navIndex = tab.navHistory.length - 1;
   return {
-    kind: 'pane',
+    kind: 'tab',
     paneId: resolvedPaneId,
-    history: pane.navHistory,
-    get index() { return pane.navIndex; },
-    set index(v) { pane.navIndex = v; },
+    tabId: tab.id,
+    history: tab.navHistory,
+    get index() { return tab.navIndex; },
+    set index(v) { tab.navIndex = v; },
   };
 }
 
@@ -230,7 +278,7 @@ function _refreshPaneNavUi(paneId) {
 }
 
 function _persistPaneNavState(navState) {
-  if (navState?.kind === 'pane' && typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
+  if (navState?.kind === 'tab' && typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
     GBLayout.saveLayout();
   }
 }
@@ -266,17 +314,25 @@ function _forcedNavPush(entry, paneId) {
 
 function _getDbViewScrollContainer(ctx, viewMode) {
   const mode = ['calendar', 'tasks', 'shifts'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
-  const selectors = {
-    pivot: '.pivot-view',
-    gallery: '.gallery-view',
-    kanban: '.kanban-view',
-    timeline: '.timeline-view',
-    chart: '.chart-view',
-    graph: '.graph-view',
-    form: '.form-view',
+  const names = {
+    pivot: 'pivot-view',
+    gallery: 'gallery-view',
+    kanban: 'kanban-view',
+    timeline: 'timeline-view',
+    chart: 'chart-view',
+    graph: 'graph-view',
+    form: 'form-view',
   };
-  const selector = selectors[mode] || '.pivot-view';
-  return (typeof _paneEl === 'function' ? _paneEl(ctx, selector) : null) || document.querySelector(selector);
+  const name = names[mode] || 'pivot-view';
+  // メイン画面のビューコンテナは ID（#pivot-view 等。Meldex.html はクラスを持たない）、
+  // 制作管理の埋め込みシートはクラス（.pivot-view 等 + 接尾辞付きID）で識別される。
+  // クラスだけで探すと本体側が一度もヒットしない（スクロール保存が常に0・復元が素通り）。
+  // ctx.containerEl 内を ID→クラスの順で探し、document 全体へのフォールバックでも
+  // 埋め込み側の同クラス要素を誤って掴まないよう ID を優先する。
+  const scoped = typeof _paneEl === 'function'
+    ? (_paneEl(ctx, '#' + name) || _paneEl(ctx, '.' + name))
+    : null;
+  return scoped || document.getElementById(name) || document.querySelector('.' + name);
 }
 
 function _navPushWithViewState(ctx, entityName) {
@@ -842,59 +898,3 @@ let _pointerNavPaneId = null;
 
 function _handlePointerNavigationButtons(e) {
   if (e.button !== 3 && e.button !== 4) return;
-  const ae = document.activeElement;
-  if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
-  const paneId = _pointerNavPaneId || e.target?.closest?.('.gb-pane')?.dataset?.paneId || undefined;
-  _pointerNavPaneId = null;
-  if (e.button === 3) {
-    if (navBack(paneId)) e.preventDefault();
-  } else if (e.button === 4) {
-    if (navForward(paneId)) e.preventDefault();
-  }
-}
-
-window.addEventListener('mousedown', (e) => {
-  if (e.button === 3 || e.button === 4) {
-    _pointerNavPaneId = e.target?.closest?.('.gb-pane')?.dataset?.paneId || null;
-    e.preventDefault();
-  }
-}, true);
-window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
-window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, true);
-
-// DB表示設定（シートメタデータを正、localStorageを即時キャッシュとして使う）
-const _dbViewConfigBackendSaveTimers = new Map();
-
-function getDbViewConfigStorageKey(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  return 'dbViewConfig:' + (fileId || dbPath || '');
-}
-function _isDbViewPlainObject(value) {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-function _cloneDbViewValue(value, fallback) {
-  if (value == null) return fallback;
-  try {
-    return typeof structuredClone === 'function'
-      ? structuredClone(value)
-      : JSON.parse(JSON.stringify(value));
-  } catch {
-    try { return JSON.parse(JSON.stringify(value)); } catch { return fallback; }
-  }
-}
-function _cloneDbViewArray(value) {
-  return Array.isArray(value) ? _cloneDbViewValue(value, []) : [];
-}
-function _cloneDbViewObject(value) {
-  return _isDbViewPlainObject(value) ? _cloneDbViewValue(value, {}) : {};
-}
-function _hasDbViewArrayState(value) {
-  return Array.isArray(value) && value.length > 0;
-}
-function _hasDbViewObjectState(value) {
-  return _isDbViewPlainObject(value) && Object.keys(value).length > 0;
-}
-function _normalizeDbViewModeValue(mode) {
-  const value = String(mode || '').trim();
-  return ['pivot', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
-    ? value

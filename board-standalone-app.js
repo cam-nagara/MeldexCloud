@@ -587,6 +587,29 @@
   }
 
   // -------------------------------------------------------------------------
+  // エクスポート（PNG / HTML）
+  // 本体と同じ bdExportImage() / MeldexExportHtml.exportCurrentView('board') を
+  // そのまま使う。保存はサーバーのネイティブダイアログの代わりに
+  // gb-export-save.js の単独アプリ用フォールバック（File System Access API /
+  // ブラウザダウンロード）へ委譲される。
+  // -------------------------------------------------------------------------
+  async function _exportBoardPng() {
+    if (typeof window.bdExportImage !== 'function') {
+      _showError('PNG出力エンジンを読み込めませんでした');
+      return;
+    }
+    await window.bdExportImage();
+  }
+
+  async function _exportBoardHtml() {
+    if (typeof MeldexExportHtml === 'undefined' || typeof MeldexExportHtml.exportCurrentView !== 'function') {
+      _showError('HTML出力エンジンを読み込めませんでした');
+      return;
+    }
+    await MeldexExportHtml.exportCurrentView('board');
+  }
+
+  // -------------------------------------------------------------------------
   // 右サイドバー / ツールバーの単独アプリ用レイアウト
   // -------------------------------------------------------------------------
   function _clampNumber(value, min, max) {
@@ -597,7 +620,14 @@
 
   function _storedNumber(key, fallback) {
     try {
-      const value = Number(localStorage.getItem(key));
+      const raw = localStorage.getItem(key);
+      // localStorageに未保存（null）の場合に Number(null) === 0 を「保存済みの0」と
+      // 誤認しないよう、raw が無い場合は明示的に fallback を返す
+      // （P2バグ: 初回起動時にサイドバー幅/ビューワー高さが既定値ではなく最小幅へ
+      // 縮む不具合。standalone-option-panel.js の同名ヘルパーで先に修正済みの
+      // 同型バグをこちらにも適用する）。
+      if (raw === null || raw === '') return fallback;
+      const value = Number(raw);
       return Number.isFinite(value) ? value : fallback;
     } catch (e) {
       return fallback;
@@ -776,6 +806,32 @@
     });
   }
 
+  // スマホ幅（≤820px）で優先操作だけを常時表示し、残りを「その他」ボトムシートへ畳む
+  // （計画書: standalone-mobile-toolbar_plan_2026-07-20.md §4）。
+  // 上段ツールバー（toolbar-top）のみ対象。gb-board-presets.js の
+  // bdBuildBoardShellMarkup() は本体共用のため無改変のまま、生成後にここから設定する。
+  //
+  // 計画書は「オプションを開く」(data-bd-action="detail") も優先ボタンに挙げているが、
+  // このボタンは gb-layout.part01.css の
+  // `html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none !important; }`
+  // により幅に関係なく常時非表示（単独版は data-single-window を付与しない）。
+  // 既に機能していないボタンのため優先リストへは含めない（右サイドバー開閉は
+  // 標準メニューの「右サイドバーを開く/閉じる」から到達できる）。
+  function _initMobileToolbar(host) {
+    const toolbar = host.querySelector('[data-bd-role="toolbar-top"]');
+    if (!toolbar || !window.MeldexStandaloneMobileToolbar) return;
+    window.MeldexStandaloneMobileToolbar.setup({
+      toolbar,
+      priority: ['.tool-menu-btn', '[data-bd-action="undo"]', '[data-bd-action="redo"]', '[data-bd-tool="add-card"]', '[data-bd-tool="add-line"]'],
+      // [data-sa-profile-badge] はユーザー名・アイコンバッジ（standalone-profile.js が
+      // 挿入。gb-board-presets.js の生成markupには含まれず、後から追記されるため
+      // 初回 _classify() 実行後の挿入なら未分類のまま常時表示になるが、将来
+      // MeldexStandaloneMobileToolbar.refresh() が呼ばれた場合の保険として keep に含める。
+      keep: ['[data-bd-control="title"]', '[data-sa-profile-badge]'],
+      sheetTitle: 'その他',
+    });
+  }
+
   // -------------------------------------------------------------------------
   // ボードの DOM を初期化
   // -------------------------------------------------------------------------
@@ -811,6 +867,7 @@
       const canvas = host.querySelector('[data-bd-role="canvas"]');
       if (canvas) window.initIframeMarkup(canvas);
     }
+    _initMobileToolbar(host);
     // フォルダを選んだ時点で起動画面を消し、ボード本体（ツールバー含む）を表示する。
     // ファイルを未選択でもツールバーは出しておく。
     host.classList.remove('bsa-hidden');
@@ -883,6 +940,9 @@
       );
     }
     items.push(
+      _menuItem('', null, { separator: true }),
+      _menuItem('画像（PNG）として保存', () => _exportBoardPng(), { disabled: !hasPath }),
+      _menuItem('HTMLとして保存...', () => _exportBoardHtml(), { disabled: !hasPath }),
       _menuItem('', null, { separator: true }),
       _menuItem(_imageDropModeLabel(), () => _toggleImageDropMode()),
       _menuItem(_isOptionsPanelVisible() ? '右サイドバーを閉じる' : '右サイドバーを開く', () => _toggleOptionsPanel()),
@@ -977,6 +1037,19 @@
     setToolbarVisible: _setToolbarVisible,
     isToolbarVisible: _isToolbarVisible,
   };
+
+  // gb-right-panel.js（本体のコメント一覧ロジック目的で同梱）が
+  // toggleRightPanelTab/openRightPanelTab を本体の3カラム右パネル前提で
+  // 上書きしてしまうため、単独版ボードの右サイドバー実装へ差し戻す
+  // （board-standalone-stubs.js は先に読み込まれるため、そちらでの
+  // 上書きだけでは gb-right-panel.js 側に負けてしまう。最後に読み込まれる
+  // このファイルで確定させる）。
+  function _restoreStandaloneRightPanelDispatch() {
+    if (typeof window._bsaOpenStandalonePanel !== 'function') return;
+    window.openRightPanelTab = function (tabName) { return window._bsaOpenStandalonePanel(tabName); };
+    window.toggleRightPanelTab = window.openRightPanelTab;
+  }
+  _restoreStandaloneRightPanelDispatch();
 
   function _annotationTargetPath() {
     const state = _boardState();

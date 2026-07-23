@@ -57,7 +57,7 @@
       const maxSize = measureWrapViewportSize();
       let verticalMeasureHeader = null;
       if (viewMode === 'vertical') {
-        verticalMeasureHeader = buildHeader(false);
+        verticalMeasureHeader = buildHeader(false, 'measure');
         verticalMeasureHeader.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:0;top:0;';
         scroll.appendChild(verticalMeasureHeader);
         const headerHeight = verticalMeasureHeader.getBoundingClientRect().height / zPack;
@@ -92,10 +92,10 @@
       };
       const rebuildWrapColumns = (columnsToBuild) => {
         while (editor.firstChild) editor.removeChild(editor.firstChild);
-        columnsToBuild.forEach(colRows => {
+        columnsToBuild.forEach((colRows, groupIndex) => {
           const group = document.createElement('div');
           group.className = 'sn2-column-group';
-          group.appendChild(buildHeader(false));
+          group.appendChild(buildHeader(false, groupIndex === 0 ? '' : `wrap-${groupIndex + 1}`));
           colRows.forEach(el => group.appendChild(el));
           editor.appendChild(group);
         });

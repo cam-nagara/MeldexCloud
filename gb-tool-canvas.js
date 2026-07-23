@@ -53,6 +53,12 @@ class CanvasComponent extends ToolComponent {
       const activePath = this.state.boardPath || this._bdDump?.bd?.path || ((typeof bd !== 'undefined' && bd.path) ? bd.path : '');
       if (activePath) state.currentBoardPath = activePath;
       if (activePath && typeof startAutoVersion === 'function') startAutoVersion(activePath, 'file');
+      // フェーズ3-3: タブがアクティブになったタイミングで取り消し履歴のアクティブスコープを
+      // このボードへ切り替える（dump からの復元時は bdLoadState() 側でも同様に切り替わる）。
+      if (activePath && typeof historySetScope === 'function') {
+        historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(activePath) : ('board:' + String(activePath).replace(/\\/g, '/')));
+      }
+      if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
     }
     const canvas = this.el.querySelector('[data-bd-role="canvas"]');
     const world = this.el.querySelector('[data-bd-role="world"]') || document.getElementById('bd-world');

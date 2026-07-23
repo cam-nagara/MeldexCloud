@@ -367,6 +367,9 @@
 .bd-node.bd-container { min-width: 200px; min-height: 100px; padding-bottom: 20px; }
 .bd-node.bd-container .bd-inner-nodes { position: relative; margin-top: 8px; min-height: 40px; }
 .bd-node.bd-drop-target { outline: 3px dashed var(--accent) !important; background: color-mix(in srgb, var(--ui-selection-bg) 35%, transparent) !important; }
+/* タグによる絞り込み: 非該当カードは削除・非表示にせず減光のみ（クリック・選択は引き続き可能） */
+.bd-node.bd-tag-filter-dim { opacity: 0.25; filter: saturate(0.5); }
+.bd-node.bd-tag-filter-dim:hover { opacity: 0.55; }
 /* --- 検索・置換バー --- */
 .bd-find-bar { position: absolute; top: 8px; right: 16px; z-index: 200; background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 4px; font-size: 13px; min-width: 320px; }
 .bd-find-bar-row { display: flex; gap: 4px; align-items: center; }

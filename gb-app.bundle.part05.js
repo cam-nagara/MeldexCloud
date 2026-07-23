@@ -1,3 +1,105 @@
+
+  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
+  if (typeof ann !== 'undefined') {
+    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
+    if (newTarget !== ann.targetPath) {
+      ann.targetPath = newTarget;
+      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
+      // スタンドアロン側の loadAnnotations を呼ぶと同じ注釈が二重に描画される
+      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
+        && _usesEmbeddedAnnotationSurface(viewName);
+      if (embedded) {
+        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
+        const layer = document.getElementById('ann-layer');
+        if (layer) layer.innerHTML = '';
+        if (typeof _forEachStandaloneAnnotationNote === 'function') {
+          _forEachStandaloneAnnotationNote(el => el.remove());
+        }
+      } else if (typeof loadAnnotations === 'function') {
+        loadAnnotations();
+      }
+    }
+    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
+  }
+}
+// スクリーンショットメニュー
+function showScreenshotMenu(e) {
+  const btn = e?.target?.closest?.('button') || e?.target;
+  const existing = document.querySelector('.ab-dropdown.ss-menu');
+  if (existing) {
+    existing.remove();
+    btn?.setAttribute?.('aria-expanded', 'false');
+    return;
+  }
+  const menu = document.createElement('div');
+  menu.className = 'ab-dropdown ss-menu';
+  menu.id = 'screenshot-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スクリーンショット');
+  if (btn?.setAttribute) {
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'true');
+    btn.setAttribute('aria-controls', menu.id);
+  }
+  let closed = false;
+  let pointerCloser = null;
+  let keyCloser = null;
+  const closeMenu = (restoreFocus = false) => {
+    if (closed) return;
+    closed = true;
+    if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
+    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
+    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
+    menu.remove();
+    if (restoreFocus) btn?.focus?.();
+  };
+  function addItem(label, fn, mode) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
+    if (mode) item.dataset.screenshotMode = mode;
+    item.textContent = label;
+    item.addEventListener('click', () => { closeMenu(false); fn(); });
+    menu.appendChild(item);
+  }
+  function addSep() {
+    const s = document.createElement('div');
+    s.className = 'ab-dropdown-sep';
+    s.setAttribute('role', 'separator');
+    menu.appendChild(s);
+  }
+  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
+  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
+  addSep();
+  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
+  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
+  addSep();
+  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
+  document.body.appendChild(menu);
+  const placeMenu = () => {
+    if (!btn?.getBoundingClientRect) return;
+    const rect = btn.getBoundingClientRect();
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
+      return;
+    }
+    const z = _getZoom();
+    menu.style.left = (rect.right / z + 4) + 'px';
+    menu.style.top = (rect.top / z) + 'px';
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
+      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
+    });
+  };
+  placeMenu();
+  menu.addEventListener('keydown', (ev) => {
+    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
+    const index = items.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const delta = ev.key === 'ArrowDown' ? 1 : -1;
       items[(index + delta + items.length) % items.length]?.focus();
     } else if (ev.key === 'Home') {
       ev.preventDefault();
@@ -796,105 +898,3 @@ async function _viewerFolderNavRevealCurrentFolder(folderPath) {
 }
 
 function _viewerFolderNavDisplayableFromBrowseItems(items) {
-  const files = Array.isArray(items) ? items.filter(item => item && item.type !== 'folder') : [];
-  const images = files.filter(item => item.type === 'image' || _viewerFolderNavIsDisplayableFile(item.path || item.name || ''))
-    .filter(item => _viewerFolderNavExt(item.path || item.name || '') !== '.pdf');
-  const pdfs = files.filter(item => _viewerFolderNavExt(item.path || item.name || '') === '.pdf');
-  return {
-    has: images.length > 0 || pdfs.length > 0,
-    hasImage: images.length > 0,
-    firstImage: images[0] || null,
-    firstPdf: pdfs[0] || null,
-  };
-}
-
-async function _viewerFolderNavDisplayableInFolder(folderPath) {
-  const key = _viewerFolderNavCleanPath(folderPath);
-  if (!key) return { has: false, hasImage: false, firstImage: null, firstPdf: null };
-  if (_viewerFolderNavDisplayableCache.has(key)) return _viewerFolderNavDisplayableCache.get(key);
-  const result = await apiFetch('/browse?path=' + encodeURIComponent(key) + '&all_files=true')
-    .then(items => _viewerFolderNavDisplayableFromBrowseItems(items))
-    .catch(() => ({ has: false, hasImage: false, firstImage: null, firstPdf: null }));
-  _viewerFolderNavDisplayableCache.set(key, result);
-  return result;
-}
-
-function _viewerFolderNavOpenTarget(folderPath, result) {
-  const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
-  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
-  if (result?.hasImage) {
-    openViewer('/viewer?folder=' + encodeURIComponent(folderPath));
-  } else if (result?.firstPdf?.path) {
-    openViewer('/viewer?pdf=' + encodeURIComponent(result.firstPdf.path));
-  }
-}
-
-async function _navigateViewerFolderByTreeOrder(direction, currentFolderPath) {
-  await _viewerFolderNavRevealCurrentFolder(currentFolderPath);
-  let cursorPath = currentFolderPath;
-  for (let guard = 0; guard < 400; guard++) {
-    const nodes = _viewerFolderNavFolderNodes();
-    if (!nodes.length) break;
-    let cursorIndex = _viewerFolderNavFindIndex(nodes, cursorPath);
-    if (cursorIndex < 0) cursorIndex = direction > 0 ? -1 : nodes.length;
-    const candidate = nodes[cursorIndex + direction];
-    if (!candidate) break;
-    await _viewerFolderNavEnsureAncestorsExpanded(candidate);
-    const candidatePath = _viewerFolderNavNodePath(candidate);
-    if (!candidatePath) {
-      cursorPath = '';
-      continue;
-    }
-    const result = await _viewerFolderNavDisplayableInFolder(candidatePath);
-    if (result.has) {
-      _viewerFolderNavOpenTarget(candidatePath, result);
-      return true;
-    }
-    const expanded = await _viewerFolderNavEnsureNodeExpanded(candidate);
-    if (expanded && direction < 0) continue;
-    cursorPath = candidatePath;
-  }
-  return false;
-}
-
-function _handleViewerFolderNavRequest(msg) {
-  const direction = Number(msg?.direction) < 0 ? -1 : 1;
-  const currentFolderPath = _viewerFolderNavCurrentFolderFromMessage(msg);
-  _navigateViewerFolderByTreeOrder(direction, currentFolderPath).then(moved => {
-    if (!moved && typeof showStatus === 'function') {
-      showStatus('画像またはPDFがあるフォルダがありません', true);
-    }
-  }).catch(error => {
-    if (typeof showStatus === 'function') showStatus('フォルダ移動に失敗しました: ' + (error?.message || error || ''), true);
-  });
-}
-
-window.addEventListener('message', (e) => {
-  if (!_isTrustedEmbeddedMessage(e)) return;
-  const msg = e.data;
-  if (!msg || !msg.type) return;
-  if (msg.type === 'viewer-current-file-changed') { _syncViewerCurrentFileFromMessage(msg); return; }
-  if (msg.type === 'viewer-folder-nav-request') { _handleViewerFolderNavRequest(msg); return; }
-  const reloadEmbeddedAnnotations = () => {
-    const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
-    if (typeof _usesEmbeddedAnnotationSurface === 'function' && _usesEmbeddedAnnotationSurface(annotationView) && typeof _loadAnnotationsToIframe === 'function') {
-      _loadAnnotationsToIframe();
-    }
-  };
-  // HTMLビューワーiframeからのステータス通知
-  if (msg.type === 'board-status') { showStatus(msg.message, msg.isError); }
-  // ヒストリー更新通知
-  if (msg.type === 'history-update') { renderHistoryList(); }
-  // HTMLビューワーiframe内メモからの保存依頼
-  if (msg.type === 'ann-save-stroke') {
-    apiPost('/annotations', {
-      target_path: msg.targetPath || ann.targetPath, type: msg.annType,
-      data: msg.data, color: msg.color, opacity: msg.opacity, user: getUsername(),
-    }).then(res => {
-      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, '注釈: 描画追加', msg.targetPath || ann.targetPath).catch(() => {});
-      }
-      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-saved', annId: res.id, annClientId: msg.annClientId });
-    }).catch((err) => {
-      if (typeof _dispatchEmbeddedAnnotationMessage === 'function') {
-        _dispatchEmbeddedAnnotationMessage({ type: 'ann-stroke-save-failed', annClientId: msg.annClientId });

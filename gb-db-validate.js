@@ -550,10 +550,10 @@ function showValidationRuleEditor(dbPath, existingRule) {
   typeSel.dataset.e2eId = 'validation-editor-type';
   typeSel.setAttribute('aria-label', 'バリデーションルールタイプ');
   [
-    { key: 'range_check', label: 'プロパティ間の比較' },
+    { key: 'range_check', label: '列間の比較' },
     { key: 'reference_exists', label: 'リレーション先の存在確認' },
-    { key: 'cross_db_range', label: '他シートプロパティとの比較' },
-    { key: 'required', label: '必須プロパティ' },
+    { key: 'cross_db_range', label: '他シートの列との比較' },
+    { key: 'required', label: '必須列' },
   ].forEach(opt => {
     const o = document.createElement('option');
     o.value = opt.key; o.textContent = opt.label;
@@ -579,20 +579,20 @@ function showValidationRuleEditor(dbPath, existingRule) {
     const type = typeSel.value;
     configDiv.innerHTML = '';
     if (type === 'range_check') {
-      configDiv.innerHTML = _fieldSelect('プロパティ1', 'vr-prop1', props, rule.config.property) +
+      configDiv.innerHTML = _fieldSelect('列1', 'vr-prop1', props, rule.config.property) +
         _fieldSelect('比較演算子', 'vr-op', operators.map(o => o.key), rule.config.operator) +
-        _fieldSelect('プロパティ2', 'vr-prop2', props, rule.config.compareProperty);
+        _fieldSelect('列2', 'vr-prop2', props, rule.config.compareProperty);
     } else if (type === 'reference_exists') {
       const relProps = props.filter(p => { const pt = getPropertyTypes(dbPath)?.[p]; return pt && (pt.type === 'relation' || pt.type === 'multi-relation'); });
-      configDiv.innerHTML = _fieldSelect('リレーションプロパティ', 'vr-relprop', relProps, rule.config.relationProperty);
+      configDiv.innerHTML = _fieldSelect('リレーション列', 'vr-relprop', relProps, rule.config.relationProperty);
     } else if (type === 'cross_db_range') {
-      configDiv.innerHTML = _fieldSelect('プロパティ', 'vr-prop1', props, rule.config.property) +
+      configDiv.innerHTML = _fieldSelect('列', 'vr-prop1', props, rule.config.property) +
         _fieldSelect('演算子', 'vr-op', operators.map(o => o.key), rule.config.operator) +
         '<div class="field"><label>参照先シートパス</label><input id="vr-targetdb" type="text" value="' + esc(rule.config.targetDb || '') + '" placeholder="例: ストーリー/アーク"></div>' +
-        '<div class="field"><label>参照先プロパティ</label><input id="vr-targetprop" type="text" value="' + esc(rule.config.targetProperty || '') + '"></div>' +
+        '<div class="field"><label>参照先の列</label><input id="vr-targetprop" type="text" value="' + esc(rule.config.targetProperty || '') + '"></div>' +
         _fieldSelect('マッチリレーション', 'vr-matchrel', props, rule.config.matchRelation);
     } else if (type === 'required') {
-      configDiv.innerHTML = _fieldSelect('プロパティ', 'vr-prop1', props, rule.config.property) +
+      configDiv.innerHTML = _fieldSelect('列', 'vr-prop1', props, rule.config.property) +
         '<div class="field"><label>対象ステータス（空=全て）</label><input id="vr-status" type="text" value="' + esc(rule.config.statusFilter || '') + '" placeholder="例: 採用"></div>';
     }
   }
@@ -645,19 +645,19 @@ function _validationRuleConfigErrors(type, config, label) {
   const errors = [];
   if (!String(label || '').trim()) errors.push('ルール名を入力してください');
   if (type === 'range_check') {
-    if (!cfg.property) errors.push('プロパティ1を選択してください');
+    if (!cfg.property) errors.push('列1を選択してください');
     if (!cfg.operator) errors.push('比較演算子を選択してください');
-    if (!cfg.compareProperty) errors.push('プロパティ2を選択してください');
+    if (!cfg.compareProperty) errors.push('列2を選択してください');
   } else if (type === 'reference_exists') {
-    if (!cfg.relationProperty) errors.push('リレーションプロパティを選択してください');
+    if (!cfg.relationProperty) errors.push('リレーション列を選択してください');
   } else if (type === 'cross_db_range') {
-    if (!cfg.property) errors.push('プロパティを選択してください');
+    if (!cfg.property) errors.push('列を選択してください');
     if (!cfg.operator) errors.push('演算子を選択してください');
     if (!String(cfg.targetDb || '').trim()) errors.push('参照先シートパスを入力してください');
-    if (!String(cfg.targetProperty || '').trim()) errors.push('参照先プロパティを入力してください');
+    if (!String(cfg.targetProperty || '').trim()) errors.push('参照先の列を入力してください');
     if (!cfg.matchRelation) errors.push('マッチリレーションを選択してください');
   } else if (type === 'required') {
-    if (!cfg.property) errors.push('プロパティを選択してください');
+    if (!cfg.property) errors.push('列を選択してください');
   }
   return errors;
 }

@@ -75,9 +75,8 @@
             <select id="${sourceId}" class="gb-select bd-bulk-import-select" data-bdbl-source></select>
           </label>
           <label class="bd-bulk-import-field" for="${viewId}">
-            <span class="bd-bulk-import-label">ビュー</span>
+            <span class="bd-bulk-import-label">ビュー ${fieldHelp('選択したビューのフィルタを適用します')}</span>
             <select id="${viewId}" class="gb-select bd-bulk-import-select" data-bdbl-view></select>
-            <span class="bd-bulk-import-hint">選択したビューのフィルタを適用します。</span>
           </label>
           <div id="${statusId}" class="bd-bulk-import-status" data-bdbl-status role="status" aria-live="polite"></div>
         </div>

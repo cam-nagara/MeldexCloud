@@ -26,6 +26,28 @@ function _isOutlinerPathWithin(path, basePath) {
   return false;
 }
 
+// /outliner-roots のGET直後に呼び、以後の in-place 書き換え（名前変更・パス変更）に
+// 影響されないディープコピーの控えを作る。フォルダツリー右クリックの「名前を変更」
+// 「パスを変更」は取得した root オブジェクトを直接書き換えるため、浅いコピーでは
+// baseRoots が変更後の値と同じになってしまい、サーバー側の台帳削除印(tombstone)
+// 判定の基準として使えない。
+function _cloneOutlinerRootsForBase(roots) {
+  try {
+    return JSON.parse(JSON.stringify(Array.isArray(roots) ? roots : []));
+  } catch {
+    return [];
+  }
+}
+
+// フォルダツリー右クリック（名前を変更・このソースフォルダを削除・パスを変更）から
+// /outliner-roots を保存する共通ヘルパー。baseRoots には直前のGETで実際に見ていた
+// 一覧のディープコピー（_cloneOutlinerRootsForBase の戻り値）を渡すこと。
+// これを送らないと、共有台帳合流分（他端末・クラウド版が追加したroot）の削除が
+// サーバー側で検出できず、次回のフォルダツリー読み込みで復活してしまう。
+async function _putOutlinerRootsWithBase(nextRoots, baseRoots) {
+  return apiPut('/outliner-roots', { roots: nextRoots, baseRoots });
+}
+
 const _outlinerPendingDeletePaths = new Set();
 
 function _isOutlinerFreeLayoutUiEnabled() {
@@ -983,11 +1005,12 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         if (!res.path) { showStatus('キャンセルされました'); return; }
         // outliner_rootsを更新
         const roots = await apiFetch('/outliner-roots');
+        const baseRoots = _cloneOutlinerRootsForBase(roots);
         const root = roots.find(r => r.path === nodeData.path);
         if (root) {
           root.path = res.path;
           root.name = res.path.split(/[/\\]/).pop();
-          await apiPut('/outliner-roots', { roots });
+          await _putOutlinerRootsWithBase(roots, baseRoots);
           await loadOutliner();
           showStatus('パスを変更しました: ' + res.path);
         }

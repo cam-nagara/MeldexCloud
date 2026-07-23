@@ -12,37 +12,25 @@
 
     // ファイル/フォルダの実体をリネーム
     if (nodeData.path && nv !== old) {
+      const oldPath = nodeData.path;
       try {
         const res = await apiPost('/outliner/rename', {
-          old_path: nodeData.path,
+          old_path: oldPath,
           new_name: nv,
           type: nodeData.type || 'page'
         });
         if (!res || !res.new_path) throw new Error('rename failed');
-        const oldPath = nodeData.path;
-        // DOM・データ両方を更新（_renameTreeNodeで一括処理）
-        _renameTreeNode(oldPath, res.new_path, nv, res.file_id);
-        // アンドゥ対応
-        historyPush(`リネーム: ${old} → ${nv}`,
-          async () => {
-            const r2 = await apiPost('/outliner/rename', { old_path: res.new_path, new_name: old, type: nodeData.type || 'page' });
-            _renameTreeNode(res.new_path, oldPath, old, r2?.file_id);
-            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(res.new_path, oldPath, { label: old, fileId: r2?.file_id, type: nodeData.type || 'page' });
-          },
-          async () => {
-            const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: nv, type: nodeData.type || 'page' });
-            _renameTreeNode(oldPath, res.new_path, nv, r2?.file_id);
-            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: nv, fileId: r2?.file_id, type: nodeData.type || 'page' });
-          }
-        );
-        if (typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(oldPath, res.new_path, { label: nv, fileId: res.file_id, type: nodeData.type || 'page' });
-        }
-        showStatus(`「${old}」→「${nv}」にリネームしました`);
+        _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old);
         if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
       } catch (e) {
-        // API失敗時はラベルを元に戻す
-        labelEl.textContent = old;
+        if (e && e.isTimeout) {
+          await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
+        } else {
+          // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+          labelEl.textContent = old;
+          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
+        }
       }
     }
     if (onFinish) onFinish();
@@ -53,6 +41,58 @@
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
     if (e.key === 'Escape') { input.value = old; input.blur(); }
   });
+}
+
+// リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
+function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName) {
+  _renameTreeNode(oldPath, newPath, newName, fileId);
+  historyPush(`リネーム: ${oldName} → ${newName}`,
+    async () => {
+      const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page' });
+      _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
+      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(newPath, oldPath, { label: oldName, fileId: r2?.file_id, type: nodeData.type || 'page' });
+    },
+    async () => {
+      const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page' });
+      _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
+      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { label: newName, fileId: r2?.file_id, type: nodeData.type || 'page' });
+    }
+  );
+  if (typeof renameAppPathReferences === 'function') {
+    renameAppPathReferences(oldPath, newPath, { label: newName, fileId, type: nodeData.type || 'page' });
+  }
+  showStatus(`「${oldName}」→「${newName}」にリネームしました`);
+}
+
+// リネームAPIタイムアウト時の事後確認: 親フォルダを再取得し、旧名消滅・新名出現を確認する
+async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newName, oldPath) {
+  const confirmKey = 'rename:' + oldPath;
+  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
+  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  try {
+    showStatus('リネームに時間がかかっています。結果を確認中…');
+    const parentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : '';
+    const contextNodeEl = labelEl.closest('.tree-node');
+    const delays = typeof _outlinerPostTimeoutConfirmDelays === 'function'
+      ? _outlinerPostTimeoutConfirmDelays() : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
+    for (const delay of delays) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+      const found = _outlinerFindRenamedItem(items, oldName, newName);
+      if (found) {
+        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName);
+        return;
+      }
+    }
+    // 確認中に全体再読込等でノードが再生成されている場合に備え、旧パスの
+    // 現在のノードを探してラベルを戻す（元の labelEl は切断されている可能性がある）
+    const liveNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(oldPath) : null;
+    const liveLabel = liveNode ? liveNode.querySelector(':scope > .tree-node-row .tree-label') : null;
+    (liveLabel || labelEl).textContent = oldName;
+    showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
+  } finally {
+    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
+  }
 }
 
 function backToPivot() {

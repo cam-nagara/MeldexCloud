@@ -116,7 +116,8 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
     const save = async () => {
       try {
         await _apiPutValue(saveRef, { new_value: nv });
-        if (saveRef.file) val.file = saveRef.file;
+        if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
+        else if (saveRef.file) val.file = saveRef.file;
         if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv);
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
         restoreEditedCellSelection(true);

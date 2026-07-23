@@ -41,6 +41,7 @@ textarea {
   height: 100vh;
   height: 100dvh;
   min-width: 0;
+  --sa-option-width: 360px;
 }
 
 .sa-toolbar {
@@ -159,6 +160,135 @@ textarea {
   min-height: 0;
   overflow: hidden;
   background: var(--bg, var(--sa-bg));
+}
+
+/* --------------------------------------------------------------------
+ * 右サイドバー（オプションパネル）共通枠
+ * ボード単独版（board-standalone.css の #board-right-sidebar 系）と同じ考え方の
+ * 汎用版。.sa-main を含む行に .sa-option-resizer / .sa-option-panel を並べる。
+ * ボード自体はこのクラスを使わず既存実装のまま（回帰防止）。
+ * -------------------------------------------------------------------- */
+.sa-body {
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sa-body > .sa-main {
+  flex: 1 1 auto;
+}
+
+.sa-option-resizer {
+  flex: 0 0 6px;
+  width: 6px;
+  min-width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 6;
+  touch-action: none;
+}
+
+.sa-option-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+  background: transparent;
+}
+
+.sa-option-resizer:hover::before,
+.sa-option-resizer:focus-visible::before,
+body.sa-resizing-option-panel .sa-option-resizer::before {
+  background: var(--accent, var(--sa-accent));
+}
+
+body.sa-resizing-option-panel,
+body.sa-resizing-option-panel * {
+  user-select: none !important;
+}
+
+.sa-option-panel {
+  flex: 0 0 var(--sa-option-width, 360px);
+  width: var(--sa-option-width, 360px);
+  min-width: 260px;
+  max-width: min(760px, 70vw);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border, var(--sa-border));
+  background: var(--bg2, var(--sa-bg2));
+}
+
+.sa-option-header {
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, var(--sa-border));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg2, var(--sa-muted));
+}
+
+.sa-option-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sa-option-body #detail-tab-bar {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 4px 6px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+
+.sa-option-body .gb-panel-body,
+.sa-option-body .gb-panel-body-scroll {
+  height: calc(100% - 34px);
+  min-height: 0;
+}
+
+.sa-option-body .gb-panel-body-scroll {
+  padding: 10px;
+}
+
+.sa-shell.sa-options-collapsed .sa-option-panel,
+.sa-shell.sa-options-collapsed .sa-option-resizer {
+  display: none;
+}
+
+@media (max-width: 820px) {
+  .sa-shell {
+    --sa-option-width: min(320px, 46vw);
+  }
+
+  /* Cloud/PWA版の狭幅時はボード単独版と同じく右からのスライドインドロワーにする
+     （スマホ土台。優先ボタン+あふれメニュー化などの仕上げはPhase 5で行う）。 */
+  html[data-standalone-cloud] .sa-option-panel {
+    position: fixed;
+    z-index: 9980;
+    top: env(safe-area-inset-top, 0px);
+    right: 0;
+    bottom: 0;
+    width: min(360px, calc(100vw - 56px));
+    min-width: 0;
+    max-width: calc(100vw - 56px);
+    box-shadow: -14px 0 32px rgba(0, 0, 0, 0.38);
+  }
+
+  html[data-standalone-cloud] .sa-option-resizer {
+    display: none;
+  }
 }
 
 @media (pointer: coarse) {

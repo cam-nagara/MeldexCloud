@@ -439,6 +439,9 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
       <span id="${idFor('bd-title')}" class="tb-title tb-file-title bd-toolbar-title" data-bd-control="title"></span>
       <div class="sep"></div>
+      <button type="button" data-bd-action="undo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button>${_bdIcon('undo2', 16)}</button>
+      <button type="button" data-bd-action="redo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button>${_bdIcon('redo2', 16)}</button>
+      <div class="sep"></div>
       <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="カード追加" aria-label="カード追加">${_bdIcon('credit-card', 16)}</button>

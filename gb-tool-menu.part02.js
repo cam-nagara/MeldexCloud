@@ -109,6 +109,9 @@ function buildToolMenuItems(toolType) {
   if (ie.export && ie.export.length > 0) {
     submenus.push({ label: 'エクスポート', icon: (typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload'), submenu: ie.export });
   }
+  const productionCalendarItems = toolType === 'calendar'
+    ? (window.MeldexProductionManagementActions?.toolMenuItems?.() || [])
+    : [];
 
   // --- ツール固有の項目（サブメニュー以外） ---
   const specific = {
@@ -157,7 +160,7 @@ function buildToolMenuItems(toolType) {
     calendar: [
       { label: '新規イベント', action: () => _openCalendarEventFromMenu() },
       { separator: true },
-      { label: '制作管理パネル...', action: () => { if (typeof openProductionManagementPanel === 'function') openProductionManagementPanel(); } },
+      ...productionCalendarItems,
       { separator: true },
       { label: '同期設定...', action: () => _openCalendarSyncFromMenu() },
       { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },

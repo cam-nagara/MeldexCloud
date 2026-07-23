@@ -4,11 +4,16 @@ function _dbInlineIsComposing(e) {
   return !!(e && (e.isComposing || e.keyCode === 229));
 }
 
-function startHeaderInlineRename(th, oldName, dbPath) {
+// ctxOverride: 呼び出し側が既に持っているペインctxを直接渡すためのオプション引数。
+// 埋め込みシート（gb-tool-calendar-production-sheet-embed.js）はグローバル _panes
+// レジストリに未登録のため、_dbPaneContextFromEvent()（DOM祖先探索 + レジストリ参照）は
+// 常に解決に失敗し、メイン画面側の別ペイン（またはnull）へ誤って解決され得る
+// （showColHeaderMenu() と同根。2026-07-15 フェーズD1で確認）。
+function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   if (th.querySelector('.th-rename-input')) return;
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
+  const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(th, { dbPath })
-    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
   const targetDbPath = (ctx && ctx.dbPath) || dbPath || state.currentDbPath;
   const label = th.querySelector('.th-label');
   if (label) label.style.display = 'none';
@@ -62,17 +67,17 @@ function startHeaderInlineRename(th, oldName, dbPath) {
       ...Object.keys(getPropertyTypes(targetDbPath) || {}),
     ];
     if (existingProps.some(name => name === newName && name !== oldName)) {
-      showStatus('同名のプロパティが既にあります: ' + newName, true);
+      showStatus('同名の列が既にあります: ' + newName, true);
       renderPivot(ctx);
       restoreActiveCellByProp(oldName);
       return;
     }
     try {
       if (typeof renameDbProperty === 'function') {
-        await renameDbProperty(targetDbPath, oldName, newName);
+        await renameDbProperty(targetDbPath, oldName, newName, ctx);
       }
     } catch (err) {
-      showStatus('プロパティ名の変更に失敗: ' + (err?.message || err), true);
+      showStatus('列名の変更に失敗: ' + (err?.message || err), true);
       renderPivot(ctx);
       restoreActiveCellByProp(oldName);
       return;

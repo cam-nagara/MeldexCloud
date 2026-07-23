@@ -710,7 +710,7 @@ function _smartDbIdPath(id) {
   return current.startsWith('file:') ? current.slice('file:'.length) : current;
 }
 
-function _renameRuntimePathReferences(oldPath, newPath) {
+function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
   if (typeof _csvPath !== 'undefined' && _csvPath) {
     _csvPath = _mapRenamedPath(_csvPath, oldPath, newPath);
   }
@@ -723,7 +723,24 @@ function _renameRuntimePathReferences(oldPath, newPath) {
   }
   if (state.currentSmartDb) {
     if (state.currentSmartDb._filePath) {
-      state.currentSmartDb._filePath = _mapRenamedPath(state.currentSmartDb._filePath, oldPath, newPath);
+      const mappedSmartDbPath = _mapRenamedPath(state.currentSmartDb._filePath, oldPath, newPath);
+      // mappedSmartDbPath === newPath は「このスマートシート自体がリネームされた」
+      // 場合のみ真になる（親フォルダの移動/リネームでパスだけが変わった場合は除外）。
+      const isExactSmartDbRename = mappedSmartDbPath !== state.currentSmartDb._filePath && mappedSmartDbPath === newPath;
+      state.currentSmartDb._filePath = mappedSmartDbPath;
+      // ファイル名とファイルタイトルの一致（2026-07-21）: 内部 name フィールドの
+      // リネームAPI側の書換は済んでいるが、開いたままのクライアント状態
+      // （state.currentSmartDb.name）は追従していなかった。放置すると、次回
+      // フィルタ変更等で保存した際に stale な name で上書き保存してしまう。
+      if (isExactSmartDbRename && exactLabel != null && state.currentSmartDb.name !== exactLabel) {
+        state.currentSmartDb.name = exactLabel;
+        if (state.view === 'smart-db') {
+          const currentTitleEl = document.getElementById('current-title');
+          if (currentTitleEl) currentTitleEl.textContent = exactLabel;
+          const sbCategoryEl = document.getElementById('sb-category');
+          if (sbCategoryEl) sbCategoryEl.textContent = 'スマートシート: ' + exactLabel;
+        }
+      }
     }
     if (state.currentSmartDb.id) {
       state.currentSmartDb.id = _mapRenamedSmartDbId(state.currentSmartDb.id, oldPath, newPath);
@@ -830,13 +847,14 @@ function renameAppPathReferences(oldPath, newPath, opts) {
             layoutChanged = true;
           }
         }
+        // タブ単位の戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）: 各タブの navHistory も追随させる
+        if (Array.isArray(tab.navHistory)) {
+          tab.navHistory.forEach(entry => {
+            if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
+            if (entry.path === newPath && exactLabel != null) entry.label = exactLabel;
+          });
+        }
       });
-      if (Array.isArray(pane.navHistory)) {
-        pane.navHistory.forEach(entry => {
-          if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
-          if (entry.path === newPath && exactLabel != null) entry.label = exactLabel;
-        });
-      }
     });
   }
 
@@ -850,7 +868,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   ['currentDbPath', 'currentEntityPath', 'currentPagePath', 'currentBoardPath'].forEach(key => {
     state[key] = _mapRenamedPath(state[key], oldPath, newPath);
   });
-  _renameRuntimePathReferences(oldPath, newPath);
+  _renameRuntimePathReferences(oldPath, newPath, exactLabel);
 
   const pageContent = document.getElementById('page-content');
   if (pageContent?.dataset?.path) {
@@ -865,36 +883,18 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       delete _sn2Editors[path];
       if (editor) editor._path = mapped;
       _sn2Editors[mapped] = editor;
-    });
-  }
-
-  if (legacyTabsChanged) renderTabs();
-  if (layoutChanged && typeof GBLayout !== 'undefined') {
-    if (typeof GBLayout.render === 'function') GBLayout.render();
-    if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
-  }
-  _refreshRenamedCurrentDatabase(previousDbPath, state.currentDbPath);
-}
-
-function purgeAppPathReferences(paths) {
-  const deletedPaths = (Array.isArray(paths) ? paths : [paths])
-    .map(path => String(path || '').trim())
-    .filter(Boolean);
-  if (!deletedPaths.length) return;
-  let recentChanged = false;
-  let layoutChanged = false;
-  let legacyTabsChanged = false;
-  let clearedCurrentView = false;
-  _cancelDeletedPathAutosaves(deletedPaths);
-  const activePathKey = {
-    pivot: 'currentDbPath',
-    gallery: 'currentDbPath',
-    kanban: 'currentDbPath',
-    timeline: 'currentDbPath',
-    calendar: 'currentDbPath',
-    tasks: 'currentDbPath',
-    shifts: 'currentDbPath',
-    chart: 'currentDbPath',
-    graph: 'currentDbPath',
-    entity: 'currentEntityPath',
-    page: 'currentPagePath',
+      // ファイル名とファイルタイトルの一致（2026-07-21）: ツールバーからのタイトル
+      // 編集は既にリネームAPIと同期済みだが、ツリー側からの単独リネームでは
+      // doc.title と表示中の #title-input が追随していなかったため、ここで揃える。
+      // mapped === newPath は「このファイル自体がリネームされた」場合のみ真になり、
+      // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
+      if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
+        editor.doc.title = exactLabel;
+        const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
+          ? editor.host.closest('.gb-scriptnote-root')
+          : null;
+        const titleInput = scriptNoteRoot ? scriptNoteRoot.querySelector('#title-input') : null;
+        // プログラムによる value 代入は change イベントを発火しないため、
+        // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
+        if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
+      }

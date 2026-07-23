@@ -32,6 +32,28 @@
     _fnvFileId,
   } = internals;
 
+  function _productionStructurePathParts(path) {
+    return _normalizeFolderPath(path).split('/').filter(Boolean);
+  }
+
+  function _isProductionProtectedStructurePath(path) {
+    const parts = _productionStructurePathParts(path);
+    if (parts.length === 1 && parts[0] === '制作管理') return true;
+    if (parts.length === 2 && parts[0] === '制作管理' && parts[1] === 'シート') return true;
+    if (parts.length === 3 && parts[0] === '制作管理' && parts[1] === 'シート' && parts[2]) return true;
+    return parts.length === 4 && parts[0] === '制作管理' && parts[1] === 'シート'
+      && parts[2] && parts[3] === `${parts[2]}.md`;
+  }
+
+  function _rejectProductionStructureMutation(path, action = '変更') {
+    if (_isProductionProtectedStructurePath(path)) {
+      throw new Error(`制作管理のシート構造・列定義は${action}できません`);
+    }
+  }
+
+  internals._isProductionProtectedStructurePath = _isProductionProtectedStructurePath;
+  internals._rejectProductionStructureMutation = _rejectProductionStructureMutation;
+
   const SECRET_FILE = '_meldex/secrets/llm-api-keys.v1.json';
   const CALENDAR_STORE_DIR = '_calendar';
   const VERSION_FOLDER_DIR = '_meldex/versions/folders';
@@ -598,6 +620,10 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     const newProp = String(body?.new_property || prop).trim() || prop;
+    _rejectProductionReservedLegacyProperties(_dirname(path), [prop, newProp]);
+    if (newProp !== prop && _isProductionManagementSheetMetadataPath(_dirname(path))) {
+      throw new Error('制作管理に必要な列の名前は変更できません');
+    }
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
     let index = Number.isInteger(body?.candidate_index) ? body.candidate_index : Number(body?.candidate_index);
@@ -664,6 +690,7 @@
     if (!stored) throw new Error('settings-entry ではありません');
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
+    _rejectProductionReservedLegacyProperties(stored.dbPath, prop);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
@@ -712,6 +739,7 @@
     if (!entryPath) throw new Error('entry_path は必須です');
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
+    _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
@@ -737,6 +765,7 @@
     const parent = _normalizeFolderPath(body?.parent_path || '');
     const name = _safeFileStem(body?.name || '', '無題');
     if (!parent || !name) throw new Error('parent_path, name は必須です');
+    _rejectProductionReservedLegacyPropertyObject(parent, body?.properties);
     await _requireUnlocked(provider, parent, { action: 'create-entity-parent' });
     await _ensureFolderNote(provider, parent, 'settings-db');
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
@@ -764,6 +793,7 @@
     const path = _normalizeFolderPath(body?.path || '');
     const newName = _safeFileStem(body?.new_name || '', '');
     if (!path || !newName) throw new Error('path, new_name は必須です');
+    _rejectProductionStructureMutation(path, '名前変更');
     const stored = await _readSheetStoreEntry(provider, path).catch(() => null);
     if (stored) {
       const destName = _sheetStoreFileName(newName);
@@ -821,13 +851,135 @@
     };
   }
 
+  function _isProductionManagementSheetMetadataPath(path) {
+    const parts = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean);
+    if (parts.length < 3) return false;
+    const sheetIndex = parts.length - 3;
+    return parts[sheetIndex] === '制作管理'
+      && parts[sheetIndex + 1] === 'シート'
+      && !!parts[sheetIndex + 2];
+  }
+
+  const PRODUCTION_RESERVED_LEGACY_PROPERTIES = Object.freeze({
+    '作品リスト': Object.freeze(['作品タイトル_話数', '作品タイトル']),
+    '作業対象リスト': Object.freeze(['作業対象']),
+    '作業内容リスト': Object.freeze(['作業内容']),
+    '作業規模リスト': Object.freeze(['作業規模']),
+    'スタッフリスト': Object.freeze(['スタッフ名']),
+  });
+
+  function _productionManagementSheetName(path) {
+    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    const index = parts.findIndex((part, offset) => part === '制作管理' && parts[offset + 1] === 'シート');
+    return index >= 0 ? String(parts[index + 2] || '') : '';
+  }
+
+  function _productionReservedLegacyPropertiesForSheet(sheet) {
+    const name = String(sheet || '');
+    if (name === 'タスクリスト' || name === 'タスクリスト アーカイブ' || name.startsWith('タスクリスト_')) {
+      return ['タスク名'];
+    }
+    return PRODUCTION_RESERVED_LEGACY_PROPERTIES[name] || [];
+  }
+
+  function _isProductionManagementFolderNotePath(path) {
+    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    return parts.length === 4 && parts[0] === '制作管理' && parts[1] === 'シート'
+      && !!parts[2] && parts[3] === `${parts[2]}.md`;
+  }
+
+  function _rejectProductionReservedLegacyProperties(path, propertyNames) {
+    const sheet = _productionManagementSheetName(path);
+    const reserved = _productionReservedLegacyPropertiesForSheet(sheet);
+    const names = Array.isArray(propertyNames) ? propertyNames : [propertyNames];
+    const matched = names.map(name => String(name || '').trim()).find(name => reserved.includes(name));
+    if (matched) {
+      throw new Error(`「${matched}」列はエントリ名へ統合済みのため、${sheet}へ再作成できません`);
+    }
+  }
+
+  function _rejectProductionReservedLegacyPropertyObject(path, properties) {
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return;
+    _rejectProductionReservedLegacyProperties(path, Object.keys(properties));
+  }
+
+  function _dbMetadataDeletedProps(viewConfig) {
+    if (!viewConfig || typeof viewConfig !== 'object' || Array.isArray(viewConfig)) return new Set();
+    const raw = Array.isArray(viewConfig.deletedProps) ? viewConfig.deletedProps : [];
+    return new Set(raw.map(name => String(name || '').trim()).filter(Boolean));
+  }
+
+  function _rejectNewProductionDeletedProps(target, currentFrontmatter, body) {
+    if (!_isProductionManagementSheetMetadataPath(target)
+      || !body
+      || !Object.prototype.hasOwnProperty.call(body, 'view_config')) return;
+    const incoming = _dbMetadataDeletedProps(body.view_config);
+    const current = _dbMetadataDeletedProps(currentFrontmatter?.view_config);
+    const added = [...incoming].some(name => !current.has(name));
+    if (added) throw new Error('制作管理に必要な列は削除できません。非表示を利用してください');
+  }
+
+  function _rejectProductionPropertyTypeChanges(target, currentFrontmatter, body) {
+    if (!_isProductionManagementSheetMetadataPath(target)
+      || !body
+      || !Object.prototype.hasOwnProperty.call(body, 'property_types')) return;
+    _rejectProductionReservedLegacyPropertyObject(target, body.property_types);
+    const current = currentFrontmatter?.property_types && typeof currentFrontmatter.property_types === 'object'
+      ? currentFrontmatter.property_types
+      : {};
+    const incoming = body.property_types;
+    const changed = !incoming || typeof incoming !== 'object' || Array.isArray(incoming)
+      || Object.entries(current).some(([name, spec]) => !Object.prototype.hasOwnProperty.call(incoming, name)
+        || JSON.stringify(incoming[name] || {}) !== JSON.stringify(spec || {}));
+    if (changed) throw new Error('制作管理に必要な列の名前・種類・設定は変更できません');
+  }
+
+  function _sameProductionMetadataValue(left, right) {
+    const normalizedLeft = left === undefined ? null : left;
+    const normalizedRight = right === undefined ? null : right;
+    if (normalizedLeft === normalizedRight) return true;
+    if (Array.isArray(normalizedLeft) || Array.isArray(normalizedRight)) {
+      return Array.isArray(normalizedLeft)
+        && Array.isArray(normalizedRight)
+        && normalizedLeft.length === normalizedRight.length
+        && normalizedLeft.every((value, index) => _sameProductionMetadataValue(value, normalizedRight[index]));
+    }
+    if (!normalizedLeft || !normalizedRight
+      || typeof normalizedLeft !== 'object' || typeof normalizedRight !== 'object') return false;
+    const leftKeys = Object.keys(normalizedLeft).sort();
+    const rightKeys = Object.keys(normalizedRight).sort();
+    return leftKeys.length === rightKeys.length
+      && leftKeys.every((key, index) => key === rightKeys[index]
+        && _sameProductionMetadataValue(normalizedLeft[key], normalizedRight[key]));
+  }
+
+  function _rejectProductionStructuralMetadataChanges(target, currentFrontmatter, body) {
+    if (!_isProductionManagementSheetMetadataPath(target) || !body) return;
+    const fixedFields = ['type', 'category', 'storage', 'cloud_storage', 'calendar_mapping'];
+    const changed = fixedFields.some(field => Object.prototype.hasOwnProperty.call(body, field)
+      && !_sameProductionMetadataValue(body[field], currentFrontmatter?.[field]));
+    if (changed) throw new Error('制作管理の列定義（シート種別・分類・保存方式・カレンダー連携）は変更できません');
+  }
+
   async function _putDbMetadata(provider, path, body) {
     const target = _normalizeFolderPath(path);
+    _rejectProductionReservedLegacyPropertyObject(target, body?.property_types);
+    const preflightNote = _isProductionManagementSheetMetadataPath(target)
+      ? await _readFrontmatterFile(provider, _joinPath(target, _basename(target) + '.md'))
+      : null;
+    if (preflightNote) {
+      _rejectNewProductionDeletedProps(target, preflightNote.frontmatter, body);
+      _rejectProductionPropertyTypeChanges(target, preflightNote.frontmatter, body);
+      _rejectProductionStructuralMetadataChanges(target, preflightNote.frontmatter, body);
+    }
     await _requireUnlocked(provider, target, { action: 'db-metadata' });
     await _ensureFolderNote(provider, target, 'settings-db');
     const notePath = await _folderNotePath(provider, target);
     const parsed = await _readFrontmatterFile(provider, notePath);
     const fm = { ...(parsed.frontmatter || {}) };
+    _rejectNewProductionDeletedProps(target, fm, body);
+    _rejectProductionPropertyTypeChanges(target, fm, body);
+    _rejectProductionStructuralMetadataChanges(target, fm, body);
     [
       'type', 'category', 'roles', 'property_types', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',

@@ -45,7 +45,19 @@
 }
 
 // --- アンドゥ/リドゥ ---
+// v0.6.198 フェーズ3-3: 本体アプリ（gb-history.js を読み込む環境）では bdPushUndo/bdUndo/
+// bdRedo/bdClearUndoStacks は 'board:<パス>' スコープの共通履歴（historyPush/historyUndo/
+// historyRedo）へ委譲し、履歴パネルとも連動する。単独起動アプリ（board-standalone.html 等、
+// gb-history.js を読み込まない）では historyPush 等が未定義のため、従来どおり
+// _bdUndoStack/_bdRedoStack の自己完結スタックにフォールバックする（挙動を変えない後方互換）。
 const _bdUndoStack = [], _bdRedoStack = [], _BD_UNDO_MAX = 30;
+function _bdHasCommonHistory() {
+  return typeof historyPush === 'function' && typeof historyUndo === 'function' && typeof historyRedo === 'function';
+}
+function _bdHistoryScope(path) {
+  const p = path != null ? path : (typeof bd !== 'undefined' ? bd.path : '');
+  return 'board:' + String(p || '').replace(/\\/g, '/');
+}
 function _bdSnapshot() {
   return JSON.stringify({
     nodes: bd.nodes,
@@ -60,6 +72,7 @@ function _bdSnapshot() {
     themeId: bd.themeId || '',
     statuses: bd.statuses,
     displayFilters: bd.displayFilters,
+    tagFilter: bd.tagFilter,
     globalStyleDefaults: typeof bdCaptureGlobalStyleDefaults === 'function' ? bdCaptureGlobalStyleDefaults() : null,
     _numbering: bd._numbering || false,
     _bgColor: bd._bgColor || '',
@@ -72,13 +85,30 @@ function _bdSnapshot() {
     autoAlign: bd.autoAlign !== false,
   });
 }
-function bdPushUndo() {
+function bdPushUndo(label) {
   const _bdUndoPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdPushUndo') : 0;
   if (typeof bdClearUndoCoalesce === 'function') bdClearUndoCoalesce();
-  _bdUndoStack.push(_bdSnapshot()); if(_bdUndoStack.length>_BD_UNDO_MAX) _bdUndoStack.shift(); _bdRedoStack.length=0;
+  if (_bdHasCommonHistory()) {
+    const snap = _bdSnapshot();
+    historyPush(label || 'ボード編集', () => {
+      _bdApplySnapshot(JSON.parse(snap));
+      if (typeof bdRender === 'function') bdRender();
+      if (typeof bdDirty === 'function') bdDirty();
+    }, null, _bdHistoryScope());
+  } else {
+    _bdUndoStack.push(_bdSnapshot()); if(_bdUndoStack.length>_BD_UNDO_MAX) _bdUndoStack.shift(); _bdRedoStack.length=0;
+  }
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdPushUndo', _bdUndoPerf);
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
-function bdClearUndoStacks() { _bdUndoStack.length = 0; _bdRedoStack.length = 0; }
+function bdClearUndoStacks(path) {
+  if (_bdHasCommonHistory() && typeof _historyStacks !== 'undefined') {
+    const stack = _historyStacks[_bdHistoryScope(path)];
+    if (stack) { stack.undo.length = 0; stack.redo.length = 0; }
+  }
+  _bdUndoStack.length = 0; _bdRedoStack.length = 0;
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+}
 function _bdApplySnapshot(s) {
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
   bd.cardStyles = s.cardStyles || bd.cardStyles;
@@ -90,6 +120,7 @@ function _bdApplySnapshot(s) {
   bd.themeId = s.themeId || '';
   if (s.statuses !== undefined) bd.statuses = s.statuses;
   if (s.displayFilters !== undefined) bd.displayFilters = s.displayFilters || {};
+  if (s.tagFilter !== undefined) bd.tagFilter = Array.isArray(s.tagFilter) ? s.tagFilter : [];
   if (s.globalStyleDefaults !== undefined && typeof bdRestoreGlobalStyleDefaults === 'function') {
     bdRestoreGlobalStyleDefaults(s.globalStyleDefaults);
   }
@@ -118,18 +149,22 @@ function _bdApplySnapshot(s) {
   bdEnsureConnectionRuntime(bd.connections);
 }
 function bdUndo() {
+  if (_bdHasCommonHistory()) { historyUndo(_bdHistoryScope()); return; }
   if (!_bdUndoStack.length) return;
   _bdRedoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdUndoStack.pop()));
   bdRender(); bdDirty();
   showStatus('\u5143\u306b\u623b\u3057\u307e\u3057\u305f');
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 function bdRedo() {
+  if (_bdHasCommonHistory()) { historyRedo(_bdHistoryScope()); return; }
   if (!_bdRedoStack.length) return;
   _bdUndoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdRedoStack.pop()));
   bdRender(); bdDirty();
   showStatus('\u3084\u308a\u76f4\u3057\u307e\u3057\u305f');
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 
 function bdIsCurrentBoardOpenRequest(path) {
@@ -216,6 +251,7 @@ async function bdOpenBoard(label, path, opts) {
   bd._numbering = false;
   bd.statuses = (typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : [];
   bd.statusFilter = '';
+  bd.tagFilter = [];
   bd.zoom = 1;
   bd.panX = bd.panY = 0;
   bd.rotation = 0;
@@ -257,6 +293,13 @@ async function bdOpenBoard(label, path, opts) {
     const parsed = bdParseMd(raw);
     bd.path = nextPath;
     bd._loadedBoardPath = nextPath;
+    // フェーズ3-3: 読み込み直後のパスで取り消し履歴スコープを確定させる
+    // （読み込み前に呼んだ bdClearUndoStacks() は「切替前のボード」のスコープを掃除するだけ
+    //  なので、ここで新パスのスコープも明示的に掃除し、履歴パネルのアクティブスコープを合わせる）。
+    if (typeof bdClearUndoStacks === 'function') bdClearUndoStacks(nextPath);
+    if (typeof historySetScope === 'function') {
+      historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(nextPath) : ('board:' + String(nextPath || '').replace(/\\/g, '/')));
+    }
     bd._preservedFrontmatter = parsed.preservedFrontmatter || '';
     window.MeldexFileLockBadge?.apply?.(titleEl, nextPath);
     bd.nodes = parsed.nodes || [];
@@ -304,6 +347,7 @@ async function bdOpenBoard(label, path, opts) {
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
     bd.displayFilters = parsed.boardUi?.displayFilters || {};
+    bd.tagFilter = Array.isArray(parsed.boardUi?.tagFilter) ? parsed.boardUi.tagFilter : [];
     bd._showShadow = !!parsed.boardUi?.showShadow;
     bd._textRotateOnLine = !!parsed.boardUi?.textRotateOnLine;
     if (typeof MeldexThemeMigration !== 'undefined' && typeof MeldexThemeMigration.migrateBoardState === 'function') {
@@ -415,10 +459,15 @@ function bdDumpState() {
     if (v instanceof Set) snap[k] = [...v];
     else snap[k] = v;
   }
+  // フェーズ3-3: 共通履歴が有効な環境（本体アプリ）では取り消し履歴は 'board:<パス>' スコープの
+  // 共通履歴（グローバルな _historyStacks）に保持され、タブごとにダンプ/復元する必要がない
+  // （スコープ文字列がボードごとに独立しているため、タブ切替時も自然に分離される）。
+  // 単独起動アプリ（共通履歴なし）のみ、従来どおり自己完結スタックをダンプする。
+  const hasCommonHistory = typeof historyPush === 'function' && typeof historyUndo === 'function' && typeof historyRedo === 'function';
   return {
     bd: snap,
-    undoStack: _bdUndoStack.slice(),
-    redoStack: _bdRedoStack.slice(),
+    undoStack: hasCommonHistory ? [] : _bdUndoStack.slice(),
+    redoStack: hasCommonHistory ? [] : _bdRedoStack.slice(),
     // gb-canvas-features.js のモジュールローカル state も dump
     drillRoot: (typeof _bdDrillRoot !== 'undefined') ? _bdDrillRoot : null,
     // v0.5.285: フォーカスモード廃止につき focusMode は捨てる。focusSaved はセッション内の復元用に残す。
@@ -442,11 +491,18 @@ function bdLoadState(dump) {
   if (!(bd.selectedConnIds instanceof Set)) bd.selectedConnIds = new Set();
   if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes || []);
   bdEnsureConnectionRuntime(bd.connections || []);
-  // undo/redo スタックを復元
+  // undo/redo スタックを復元（共通履歴が有効な環境ではスコープ別に独立して保持されるため、
+  // ここでは単独起動アプリ向けの自己完結スタックのみ復元する。dump.undoStack/redoStack は
+  // 共通履歴が有効な環境では常に空配列なので forEach は何もしない）。
   _bdUndoStack.length = 0;
   (dump.undoStack || []).forEach(s => _bdUndoStack.push(s));
   _bdRedoStack.length = 0;
   (dump.redoStack || []).forEach(s => _bdRedoStack.push(s));
+  // 共通履歴が有効な環境では、復元したボードのパスに合わせてアクティブスコープも切り替える
+  // （タブ切替時に historySetScope が呼ばれず履歴パネルが直前のタブのスコープのままになるのを防ぐ）。
+  if (typeof historySetScope === 'function' && bd.path) {
+    historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(bd.path) : ('board:' + String(bd.path).replace(/\\/g, '/')));
+  }
   // features.js 側の変数を復元
   if (typeof _bdDrillRoot !== 'undefined') _bdDrillRoot = dump.drillRoot || null;
   if (typeof _bdFocusSaved !== 'undefined') _bdFocusSaved = dump.focusSaved || null;

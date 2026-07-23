@@ -10,6 +10,15 @@
     fm += 'linkTypes:\n';
     bd.nodes.forEach((n,i) => { if (n.link && n.linkType) fm += `  n${i}: ${n.linkType}\n`; });
   }
+  // 共通タグ（タグID配列。カード削除・複製と一緒に自然に付随/消滅させるため、
+  // カード本体へ直接埋め込む。タグ名・色・グループは .meldex/global-tags.json 側で一元管理）
+  const hasTags = bd.nodes.some(n => Array.isArray(n.tags) && n.tags.length);
+  if (hasTags) {
+    fm += 'tags:\n';
+    bd.nodes.forEach((n,i) => {
+      if (Array.isArray(n.tags) && n.tags.length) fm += `  n${i}: ${JSON.stringify(n.tags)}\n`;
+    });
+  }
   // PureRef属性
   const hasTransforms = bd.nodes.some(n => n.flipH || n.flipV || n.rotate || (n.opacity != null && n.opacity < 1) || n.locked);
   if (hasTransforms) {
@@ -137,7 +146,8 @@
   const defaultDisplayFilters = typeof BD_DEFAULT_DISPLAY_FILTERS !== 'undefined' ? BD_DEFAULT_DISPLAY_FILTERS : {};
   const hasDisplayFilterOverrides = !!displayFiltersForSave && Object.keys(displayFiltersForSave)
     .some(key => displayFiltersForSave[key] !== defaultDisplayFilters[key]);
-  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides) {
+  const tagFilterForSave = Array.isArray(bd.tagFilter) ? bd.tagFilter.map(id => String(id)).filter(Boolean) : [];
+  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides || tagFilterForSave.length) {
     fm += 'boardUi:\n';
     if (bd.activeCardStyle) fm += `  activeCardStyle: ${bd.activeCardStyle}\n`;
     if (bd.activeLineStyle) fm += `  activeLineStyle: ${bd.activeLineStyle}\n`;
@@ -146,6 +156,7 @@
     if (bd._showShadow) fm += `  showShadow: true\n`;
     if (bd._textRotateOnLine) fm += `  textRotateOnLine: true\n`;
     if (hasDisplayFilterOverrides) fm += `  displayFilters: ${JSON.stringify(displayFiltersForSave)}\n`;
+    if (tagFilterForSave.length) fm += `  tagFilter: ${JSON.stringify(tagFilterForSave)}\n`;
   }
   if (bd.connections.length) {
     fm += 'connections:\n';
@@ -888,6 +899,15 @@ function bdRender() {
     if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(n, div);
     else { n._rw = div.offsetWidth; n._rh = div.offsetHeight; }
   });
+  // 共通タグによる絞り込み: 非該当カードを減光する（データそのものは変更しない）
+  if (Array.isArray(bd.tagFilter) && bd.tagFilter.length) {
+    const activeTagFilterIds = new Set(bd.tagFilter.map(String));
+    renderedNodes.forEach(({ n, div }) => {
+      const nodeTagIds = Array.isArray(n.tags) ? n.tags.map(String) : [];
+      const matchesFilter = nodeTagIds.some(id => activeTagFilterIds.has(id));
+      div.classList.toggle('bd-tag-filter-dim', !matchesFilter);
+    });
+  }
   if (typeof bdShouldDeferBoardExtras === 'function' && bdShouldDeferBoardExtras()) {
     if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(renderedNodes.map(item => item.n.id), 'render-deferred');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(renderedNodes.map(item => item.n.id));

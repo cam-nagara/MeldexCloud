@@ -28,7 +28,16 @@
   }
 
   function _pmRequest(path, body) {
-    if (_pmDesktopOnly()) return Promise.resolve({ ok: false, unsupported: true });
+    const desktopOnly = /^\/production-management\/(?:recalculate\/|tasks\/lock(?:\?|$))/.test(String(path || ''));
+    if (desktopOnly && _pmDesktopOnly()) return Promise.resolve({ ok: false, unsupported: true });
+    if (body === undefined) {
+      if (typeof apiFetch === 'function') return apiFetch(path);
+      if (window.MeldexDataAccess?.requestJson) return window.MeldexDataAccess.requestJson(path);
+      return Promise.reject(new Error('制作管理APIを呼び出せません'));
+    }
+    if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) {
+      return Promise.resolve({ ok: false, blocked: true, write_blocked: true });
+    }
     if (typeof apiPost === 'function') return apiPost(path, body || {});
     if (window.MeldexDataAccess?.requestJson) return window.MeldexDataAccess.requestJson(path, { method: 'POST', body: body || {} });
     return Promise.reject(new Error('制作管理APIを呼び出せません'));
@@ -66,6 +75,45 @@
     input.placeholder = placeholder || '';
     input.className = 'gb-input gb-input-sm gb-production-input';
     return input;
+  }
+
+  // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
+  // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、
+  // §5.8-4）。この選択自体は正本「スタッフ管理シート」へ書き込む
+  // （制作管理フル統合Phase 4で完全統合済み。§5.9手順3）。
+  async function _pmPopulateWorkspaceUsers(list, options = {}) {
+    const names = new Set();
+    if (window.MeldexUserPicker) {
+      try {
+        (await window.MeldexUserPicker.getCandidates()).forEach(candidate => {
+          if (candidate?.name) names.add(candidate.name);
+        });
+      } catch {}
+    }
+    if (!names.size) {
+      const payload = await _pmRequest('/workspaces');
+      (payload?.workspaces || []).forEach(workspace => {
+        (workspace?.members || []).forEach(member => {
+          const name = String(typeof member === 'object' ? member?.name : member || '').trim();
+          if (name) names.add(name);
+        });
+      });
+    }
+    const current = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
+    if (current) names.add(current);
+    list.replaceChildren();
+    if (options.allowEmpty) {
+      const emptyOption = document.createElement('option');
+      emptyOption.value = '';
+      emptyOption.textContent = options.emptyLabel || 'ユーザーを選択';
+      list.appendChild(emptyOption);
+    }
+    [...names].sort((left, right) => left.localeCompare(right, 'ja')).forEach(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      list.appendChild(option);
+    });
   }
 
   function _pmTextarea(value, placeholder) {
@@ -150,6 +198,7 @@
   }
 
   function openProductionRecalculate(options = {}) {
+    if (_pmDesktopOnly()) return false;
     const { body, close } = _pmModal('再計算', '760px', {
       trigger: options?.trigger,
       e2eId: 'production-recalculate-dialog-overlay',
@@ -167,42 +216,172 @@
     applyButton.dataset.e2eId = 'production-recalculate-apply';
     applyButton.disabled = true;
     let rows = [];
-    // 期間を変えたら古いプレビュー結果を適用できないようにする（旧期間の計画の誤適用防止）
+    let lastScope = {};
+    let previewRequestId = 0;
+    // 期間や対象を変えたら古いプレビュー結果を適用できないようにする（旧計画の誤適用防止）
     const resetPreview = () => {
+      // 進行中のプレビュー応答（ネットワーク遅延中）が、後から届いて今回の変更を
+      // 上書きしないようにする（2026-07-15 徹底チェックで発見: 応答待ち中にスコープの
+      // チェックボックスだけを変更すると、日付は変わらないためサーバー側の陳腐化比較を
+      // 素通りし、古いスコープのまま「適用」できてしまっていた）。
+      previewRequestId += 1;
       rows = [];
       applyButton.disabled = true;
       resultBox.replaceChildren();
       const note = document.createElement('div');
       note.className = 'gb-production-preview-note';
-      note.textContent = '期間を変更しました。適用するには再度プレビューを作成してください。';
+      note.textContent = '期間や対象を変更しました。適用するには再度プレビューを作成してください。';
       resultBox.appendChild(note);
+      updateScopeValidity();
     };
     ['input', 'change'].forEach(eventName => {
       from.addEventListener(eventName, resetPreview);
       to.addEventListener(eventName, resetPreview);
     });
+
+    // --- 対象タスクリスト（作品ごとのシート）のスコープ選択（production-tasklist-redesign-plan
+    // 2026-07-15 6.2章）: 既定は全選択=従来どおり期間内全件。一部だけチェックすると
+    // work_titles で絞り込む。埋め込みシート側でチェックボックス選択がある場合は
+    // 下の「選択中のN件だけを対象にする」切替で task_paths 指定に切り替えられる。 ---
+    const scopeFieldset = document.createElement('fieldset');
+    scopeFieldset.className = 'gb-production-recalc-scope';
+    scopeFieldset.dataset.e2eId = 'production-recalculate-scope';
+    const legend = document.createElement('legend');
+    legend.textContent = '対象タスクリスト';
+    const scopeActions = document.createElement('div');
+    scopeActions.className = 'gb-production-recalc-scope-actions';
+    const selectAllBtn = _pmButton('全選択');
+    selectAllBtn.dataset.e2eId = 'production-recalculate-select-all';
+    const selectNoneBtn = _pmButton('全解除');
+    selectNoneBtn.dataset.e2eId = 'production-recalculate-select-none';
+    scopeActions.append(selectAllBtn, selectNoneBtn);
+    const scopeList = document.createElement('div');
+    scopeList.className = 'gb-production-recalc-scope-list';
+    const scopeHint = document.createElement('div');
+    scopeHint.className = 'gb-production-recalc-scope-hint';
+    scopeHint.textContent = '対象のタスクリストを1つ以上選択してください';
+    scopeHint.hidden = true;
+    scopeFieldset.append(legend, scopeActions, scopeList, scopeHint);
+
+    let sheetCheckboxes = [];
+
+    function updateScopeValidity() {
+      const usingSelection = !!(selectedOnlyToggle && selectedOnlyToggle.checked);
+      const noneSelected = !usingSelection && sheetCheckboxes.length > 0 && !sheetCheckboxes.some(item => item.checkbox.checked);
+      scopeHint.hidden = !noneSelected;
+      previewButton.disabled = noneSelected;
+    }
+
+    async function loadScopeSheets() {
+      scopeList.replaceChildren();
+      const loading = document.createElement('span');
+      loading.className = 'gb-production-recalc-scope-loading';
+      loading.textContent = 'タスクリストを読み込み中…';
+      scopeList.appendChild(loading);
+      try {
+        const data = await window.MeldexProductionApi.taskSheets();
+        const sheets = Array.isArray(data?.sheets) ? data.sheets : [];
+        scopeList.replaceChildren();
+        sheetCheckboxes = sheets.map(sheet => {
+          const sheetWorkTitle = sheet.work_title || sheet.sheet_name;
+          const item = document.createElement('label');
+          item.className = 'gb-production-recalc-scope-item';
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = true;
+          checkbox.dataset.e2eId = 'production-recalculate-sheet-' + String(sheet.sheet_name || '').replace(/[^\p{L}\p{N}_-]+/gu, '-');
+          checkbox.addEventListener('change', () => { updateScopeValidity(); resetPreview(); });
+          const text = document.createElement('span');
+          text.textContent = sheetWorkTitle;
+          item.append(checkbox, text);
+          scopeList.appendChild(item);
+          return { checkbox, workTitle: sheetWorkTitle };
+        });
+        if (!sheetCheckboxes.length) {
+          const empty = document.createElement('span');
+          empty.className = 'gb-production-recalc-scope-empty';
+          empty.textContent = 'タスクリストがありません';
+          scopeList.appendChild(empty);
+        }
+      } catch (error) {
+        scopeList.replaceChildren();
+        sheetCheckboxes = [];
+        const errorText = document.createElement('span');
+        errorText.className = 'gb-production-recalc-scope-error';
+        errorText.textContent = 'タスクリストの一覧を取得できませんでした。全リストを対象に実行します。';
+        scopeList.appendChild(errorText);
+      }
+      updateScopeValidity();
+    }
+    selectAllBtn.addEventListener('click', () => {
+      sheetCheckboxes.forEach(item => { item.checkbox.checked = true; });
+      updateScopeValidity();
+      resetPreview();
+    });
+    selectNoneBtn.addEventListener('click', () => {
+      sheetCheckboxes.forEach(item => { item.checkbox.checked = false; });
+      updateScopeValidity();
+      resetPreview();
+    });
+
+    // --- 選択中タスクだけを対象にする切替（呼び出し元が埋め込みシートの選択行を渡した場合のみ表示） ---
+    const selectedTaskPaths = Array.isArray(options.selectedTaskPaths) ? options.selectedTaskPaths.filter(Boolean) : [];
+    let selectedOnlyField = null;
+    let selectedOnlyToggle = null;
+    if (selectedTaskPaths.length) {
+      selectedOnlyToggle = document.createElement('input');
+      selectedOnlyToggle.type = 'checkbox';
+      selectedOnlyToggle.checked = true;
+      selectedOnlyToggle.dataset.e2eId = 'production-recalculate-selected-only';
+      selectedOnlyField = _pmField(`選択中の${selectedTaskPaths.length}件だけを対象にする`, selectedOnlyToggle);
+      selectedOnlyToggle.addEventListener('change', () => {
+        scopeFieldset.disabled = selectedOnlyToggle.checked;
+        updateScopeValidity();
+        resetPreview();
+      });
+      scopeFieldset.disabled = true;
+    }
+
+    function currentScopeBody() {
+      if (selectedOnlyToggle?.checked) return { task_paths: selectedTaskPaths };
+      const checked = sheetCheckboxes.filter(item => item.checkbox.checked).map(item => item.workTitle);
+      // 全選択(既定)、または一覧取得に失敗した場合は絞り込みなし(=従来どおり期間内全件)。
+      if (sheetCheckboxes.length && checked.length < sheetCheckboxes.length) return { work_titles: checked };
+      return {};
+    }
+
     previewButton.addEventListener('click', async () => {
       previewButton.disabled = true;
+      const requestId = ++previewRequestId;
       try {
-        const result = await _pmRequest('/production-management/recalculate/preview', { date_from: from.value, date_to: to.value });
+        const scope = currentScopeBody();
+        const result = await _pmRequest('/production-management/recalculate/preview', { date_from: from.value, date_to: to.value, ...scope });
+        if (requestId !== previewRequestId) return; // 待機中にスコープが変更され陳腐化した応答は破棄
         rows = result.rows || [];
+        lastScope = scope;
         _pmRenderPreview(resultBox, result);
         applyButton.disabled = !rows.length;
       } catch (error) {
+        if (requestId !== previewRequestId) return;
         // プレビュー失敗時は前回結果を残さない（古い計画の誤適用防止）
         rows = [];
         applyButton.disabled = true;
         _pmStatus(error?.message || String(error), true);
       } finally {
         previewButton.disabled = false;
+        updateScopeValidity();
       }
     });
     applyButton.addEventListener('click', async () => {
       applyButton.disabled = true;
       try {
-        const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows });
+        // プレビュー時と同じスコープ(work_titles/task_paths)を渡す: サーバー側の陳腐化検知は
+        // 同一bodyでプレビューを再計算して比較するため、スコープが変わると誤って409になる。
+        const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows, ...lastScope });
         _pmStatus(`再計算を適用しました: ${result.applied || 0}件`);
         _pmRefreshCalendars();
+        // 埋め込みタスクリスト(あれば)にも反映する。
+        document.dispatchEvent(new CustomEvent('meldex:production-task-updated', { detail: { reason: 'recalculate' } }));
         close();
       } catch (error) {
         _pmStatus(error?.message || String(error), true);
@@ -210,8 +389,15 @@
         applyButton.disabled = false;
       }
     });
-    body.append(_pmField('開始日', from), _pmField('終了日', to), resultBox);
+    body.append(
+      _pmField('開始日', from),
+      _pmField('終了日', to),
+      ...(selectedOnlyField ? [selectedOnlyField] : []),
+      scopeFieldset,
+      resultBox
+    );
     body.parentElement.append(_pmFooter(close, [previewButton, applyButton]));
+    loadScopeSheets();
   }
 
   function _pmRenderPreview(container, result) {
@@ -250,6 +436,7 @@
   }
 
   function openProductionStaffAdd(options = {}) {
+    if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return null;
     const { body, close } = _pmModal('メンバーを追加', '640px', {
       trigger: options?.trigger,
       e2eId: 'production-staff-add-dialog-overlay',
@@ -257,8 +444,17 @@
     });
     const name = _pmInput('text', '', 'メンバー名');
     name.dataset.e2eId = 'production-staff-name';
+    const user = document.createElement('select');
+    user.className = 'gb-select gb-select-sm gb-production-input';
+    user.dataset.e2eId = 'production-staff-user';
+    const userPlaceholder = document.createElement('option');
+    userPlaceholder.value = '';
+    userPlaceholder.textContent = 'ユーザーを選択（未連携も可）';
+    user.appendChild(userPlaceholder);
+    _pmPopulateWorkspaceUsers(user, { allowEmpty: true, emptyLabel: 'ユーザーを選択（未連携も可）' }).catch(error => {
+      console.warn('[ProductionManagement] ワークスペースのユーザー候補を読み込めませんでした', error);
+    });
     const display = _pmInput('text', '', '表示名');
-    const skills = _pmInput('text', '', 'ネーム,下描き');
     const workHours = _pmInput('text', '09:00-18:00', '09:00-18:00');
     const breakHours = _pmInput('text', '12:00-13:00', '12:00-13:00');
     const holidays = _pmInput('text', '土,日', '土,日,2026-05-03');
@@ -272,27 +468,40 @@
     syncEnabled.dataset.e2eId = 'production-staff-sync';
     const saveButton = _pmButton('追加', true);
     saveButton.dataset.e2eId = 'production-staff-add-save';
+    window.MeldexProductionUiAvailability?.markWriteControl?.(saveButton);
+    [name, user, display, workHours, breakHours, holidays, activeFrom, activeTo, googleUrl, caldavUrl, syncEnabled]
+      .forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     saveButton.addEventListener('click', async () => {
       saveButton.disabled = true;
       try {
         const staffName = name.value.trim();
+        const staffUser = user.value.trim();
         if (staffName) {
-          const list = await _pmRequest('/production-management/lists?sheet=' + encodeURIComponent('スタッフリスト') + '&limit=1000').catch(() => null);
-          const exists = (list?.rows || []).some(row => {
-            const props = row?.properties || {};
-            return String(props['スタッフ名'] || row?.name || '').trim() === staffName;
-          });
+          // 重複チェックは正本『スタッフ管理シート』（アカウント一元管理計画書
+          // Phase 4で制作管理フル統合済み）から取得する。
+          let staffList = [];
+          try { staffList = await window.MeldexUserRegistry?.listStaff?.() || []; } catch { staffList = []; }
+          const duplicateUser = staffUser && staffList.find(row => (
+            String(row?.user || '').trim() === staffUser
+            && String(row?.display || row?.entry_name || '').trim() !== staffName
+          ));
+          if (duplicateUser) {
+            const duplicateLabel = duplicateUser.display || duplicateUser.entry_name || duplicateUser.user;
+            _pmStatus(`ユーザー「${staffUser}」は「${duplicateLabel}」に連携済みです`, true);
+            user.focus();
+            return;
+          }
+          const exists = staffList.some(row => String(row?.display || row?.entry_name || '').trim() === staffName);
           if (exists && typeof cfConfirm === 'function') {
             const ok = await cfConfirm('同じ名前のメンバーがあります。入力内容で既存メンバーを更新しますか？');
             if (!ok) return;
           }
         }
         const result = await _pmRequest('/production-management/staff/add', {
-          name: name.value, display: display.value, skills: skills.value,
+          name: name.value, user: user.value, display: display.value,
           work_hours: workHours.value, break_hours: breakHours.value, holidays: holidays.value,
           active_from: activeFrom.value, active_to: activeTo.value,
           google_url: googleUrl.value, caldav_url: caldavUrl.value, sync_enabled: syncEnabled.checked,
-          _preserve_empty: true,
         });
         if (result.ok) {
           _pmStatus(`メンバーを追加しました: ${result.staff}`);
@@ -308,7 +517,8 @@
       }
     });
     body.append(
-      _pmField('メンバー名', name), _pmField('表示名', display), _pmField('担当できるタスク', skills),
+      _pmField('メンバー名', name), _pmField('ユーザー（未連携可）', user),
+      _pmField('表示名', display),
       _pmField('作業可能時間', workHours), _pmField('休憩時間', breakHours), _pmField('休日', holidays),
       _pmField('参加開始日', activeFrom), _pmField('参加終了日', activeTo),
       _pmField('外部カレンダーURL（Google）', googleUrl), _pmField('外部カレンダーURL（CalDAV）', caldavUrl),
@@ -319,6 +529,7 @@
   }
 
   async function toggleProductionTaskRecalcLock(taskPath, locked, eventId) {
+    if (_pmDesktopOnly()) return { ok: false, unsupported: true };
     const result = await _pmRequest('/production-management/tasks/lock', { task_path: taskPath || '', event_id: eventId || '', locked: !!locked });
     if (result.ok) {
       _pmStatus(locked ? '再計算で動かさないよう固定しました' : '再計算の固定を解除しました');
@@ -330,6 +541,7 @@
   }
 
   function _pmShowRecalcBanner() {
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
     document.querySelector('.gb-production-recalc-banner')?.remove();
     const banner = document.createElement('div');
     banner.className = 'gb-production-recalc-banner';
@@ -397,14 +609,24 @@
       menu.remove();
       if (restore) _pmRestoreFocus(sourceEl);
     };
+    const dropboxMode = !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
     const makeItem = (label, locked) => {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'gb-context-menu-item';
       item.setAttribute('role', 'menuitem');
       item.innerHTML = `<span class="menu-icon">${_pmIcon(locked ? 'lock' : 'unlock', 14)}</span><span class="gb-context-menu-item-label"></span>`;
-      item.querySelector('.gb-context-menu-item-label').textContent = label;
-      item.addEventListener('click', () => { closeMenu(false); toggleProductionTaskRecalcLock(taskPath, locked, eventId); });
+      item.querySelector('.gb-context-menu-item-label').textContent = dropboxMode ? `${label}（デスクトップ版のみ）` : label;
+      item.disabled = dropboxMode;
+      if (dropboxMode) {
+        item.setAttribute('aria-disabled', 'true');
+        item.title = '再計算の固定はデスクトップ版で実行してください';
+      }
+      item.addEventListener('click', () => {
+        if (dropboxMode) return;
+        closeMenu(false);
+        toggleProductionTaskRecalcLock(taskPath, locked, eventId);
+      });
       return item;
     };
     const lock = makeItem('再計算で固定', true);

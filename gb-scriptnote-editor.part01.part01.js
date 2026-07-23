@@ -177,6 +177,8 @@ class ScriptNoteEditor {
     this._wrapResizeWindowHandler = null;
     this._wrapResizeInterval = null;
     this._wrapResizeLastSize = 0;
+    this._gridCellSelection = new Set();
+    this._gridCellAnchor = null;
   }
 
   // === ドキュメント操作 ===
@@ -198,10 +200,14 @@ class ScriptNoteEditor {
     applyLegacyScriptNoteDocMigrations(this.doc, {
       legacyDetectKindByName: (name) => this._legacyDetectKindByName(name),
     });
+    // 一元化移行の完了後にのみ補完される初期値（（なし）行の区切り背景=透明）を初回描画前に確定させる
+    this._ensureDefaultChara();
     if (typeof this._ensureStatusConfig === 'function') this._ensureStatusConfig();
     this._calcCache = null;
     this._lastPushedSnap = '';
-    // テキストセル範囲選択の残留を防止（別ファイルへ切替後に古い選択が再度有効化されるのを防ぐ）
+    // セル範囲選択の残留を防止（別ファイルへ切替後に古い選択が再度有効化されるのを防ぐ）
+    this._gridCellSelection = new Set();
+    this._gridCellAnchor = null;
     this._textCellSelection = new Set();
     this._textCellAnchorIdx = -1;
     // エディタレジストリに登録（マルチインスタンス対応）
@@ -486,6 +492,26 @@ class ScriptNoteEditor {
         accentColor: pick(roleStyle?.accentColor, colStyle?.accentColor),
       };
     };
+    const resolveScopedOverride = (colStyle, roleStyle) => {
+      const read = (key, fallback = '') => (
+        roleStyle && Object.prototype.hasOwnProperty.call(roleStyle, key)
+          ? roleStyle[key]
+          : (colStyle?.[key] ?? fallback)
+      );
+      return {
+        bgColor: read('bgColor'),
+        textColor: read('textColor'),
+        fontWeight: read('fontWeight'),
+        fontStyle: read('fontStyle'),
+        fontSize: read('fontSize'),
+        fontFamily: read('fontFamily'),
+        textStrokeColor: read('textStrokeColor'),
+        textStrokeWidth: read('textStrokeWidth'),
+        leftAccent: !!read('leftAccent', false),
+        underline: !!read('underline', false),
+        accentColor: read('accentColor'),
+      };
+    };
     // 背景未設定時はページ背景色にフォールバック（行のhover/focusグレーが透けるのを防止）
     const pageBg = 'var(--sn2-page-bg, var(--content-bg, var(--bg)))';
     const baseTextColor = 'var(--sn2-base-text-color, var(--fg))';
@@ -509,11 +535,9 @@ class ScriptNoteEditor {
     // ガターのスタイル適用ヘルパー
     const applyGutterStyle = (el, colStyleKey) => {
       if (!el) return;
-      const ec = this._resolveCharaColors(chara, colStyleKey);
-      // 列別タイプスタイル（最優先）→ autoColor → 列全体スタイル
-      const gs = colStyleKey === '_gutter2' ? (chara?.gutter2Style || {}) : (chara?.gutterStyle || {});
-      const roleGutter = { bgColor: gs.bgColor || ec.bgColor, textColor: gs.textColor || ec.textColor, fontWeight: gs.fontWeight, fontStyle: gs.fontStyle, fontSize: gs.fontSize, fontFamily: gs.fontFamily, textStrokeColor: gs.textStrokeColor, textStrokeWidth: gs.textStrokeWidth, leftAccent: gs.leftAccent, underline: gs.underline, accentColor: gs.accentColor };
-      const r = resolve(colStyles[colStyleKey], roleGutter);
+      // 表示タブの全体設定を既定値とし、タイプのオプション設定を優先上書きする。
+      const roleGutter = colStyleKey === '_gutter2' ? chara?.gutter2Style : chara?.gutterStyle;
+      const r = resolveScopedOverride(colStyles[colStyleKey], roleGutter);
       const ccBg = el.dataset.ccBg || '';
       const ccColor = el.dataset.ccColor || '';
       const ccWeight = el.dataset.ccWeight || '';
@@ -534,18 +558,44 @@ class ScriptNoteEditor {
       el.style.textDecorationColor = r.underline ? accentColor : '';
       if (align) el.style.textAlign = align;
     };
+    // 配置・折返の適用: タイプ管理の列別スタイル（textAlign/textValign/textOverflow）を優先し、
+    // 未設定（自動）なら列ヘッダーメニューの列設定（align/valign/overflow）へフォールバックする
+    const stdColSettings = this.doc.editor?.standardColumnSettings || {};
+    const customColDefs = this.doc.editor?.customColumns || [];
+    const alignmentColSettings = (colId) => (
+      colId.startsWith('_') ? (stdColSettings[colId] || {}) : (customColDefs.find(c => c.id === colId) || {})
+    );
+    const applyCellAlignment = (el, roleStyle, colId, opts = {}) => {
+      if (!el) return;
+      const colSet = alignmentColSettings(colId);
+      const align = roleStyle?.textAlign || colSet.align || '';
+      const valign = roleStyle?.textValign || colSet.valign || '';
+      const overflow = roleStyle?.textOverflow || colSet.overflow || '';
+      el.style.textAlign = align;
+      if (opts.alignDataset) {
+        if (align) el.dataset.align = align; else delete el.dataset.align;
+      }
+      if (valign) el.dataset.valign = valign; else delete el.dataset.valign;
+      const overflowEl = 'overflowEl' in opts ? opts.overflowEl : el;
+      if (overflowEl) {
+        if (overflow) overflowEl.dataset.overflow = overflow; else delete overflowEl.dataset.overflow;
+      }
+    };
     // 行背景は設定しない（ハンドル列はCSS側でページ背景色を使う）
     rowEl.style.background = '';
     // ガター列（大区切り）
     applyGutterStyle(gutterEl, '_gutter');
+    applyCellAlignment(gutterEl, chara?.gutterStyle, '_gutter');
     // ガター2列（小区切り）
     applyGutterStyle(gutter2El, '_gutter2');
+    applyCellAlignment(gutter2El, chara?.gutter2Style, '_gutter2');
     // タイプ列
     if (roleBtn) {
       const ecRole = this._resolveCharaColors(chara, '_role');
       const rs = chara?.roleStyle || {};
       const roleRole = { bgColor: rs.bgColor || ecRole.bgColor, textColor: rs.textColor || ecRole.textColor, fontWeight: rs.fontWeight, fontStyle: rs.fontStyle, fontSize: rs.fontSize, fontFamily: rs.fontFamily, textStrokeColor: rs.textStrokeColor, textStrokeWidth: rs.textStrokeWidth, leftAccent: rs.leftAccent, underline: rs.underline, accentColor: rs.accentColor || chara?.accentColor };
       setStyle(roleBtn, resolve(colStyles._role, roleRole), true);
+      applyCellAlignment(roleBtn, rs, '_role');
     }
     // テキスト列
     if (textEl) {
@@ -568,11 +618,13 @@ class ScriptNoteEditor {
       const effAfter = ts.textAfter ?? chara?.textAfter;
       if (effAfter) textEl.dataset.after = effAfter; else delete textEl.dataset.after;
       // タイプ固有の配置・折り返し（textStyle優先、なければcharaレベル。?? で空文字=明示リセットを尊重）
-      const effAlign = ts.textAlign ?? chara?.textAlign;
+      // タイプ側が未設定（自動）の場合は列ヘッダーメニューの列設定を消さずにフォールバックする
+      const textColSet = alignmentColSettings('_text');
+      const effAlign = (ts.textAlign ?? chara?.textAlign) || textColSet.align;
       if (effAlign) textEl.dataset.align = effAlign; else delete textEl.dataset.align;
-      const effValign = ts.textValign ?? chara?.textValign;
+      const effValign = (ts.textValign ?? chara?.textValign) || textColSet.valign;
       if (effValign) textEl.dataset.valign = effValign; else delete textEl.dataset.valign;
-      const effOverflow = ts.textOverflow ?? chara?.textOverflow;
+      const effOverflow = (ts.textOverflow ?? chara?.textOverflow) || textColSet.overflow;
       if (effOverflow) textEl.dataset.overflow = effOverflow; else delete textEl.dataset.overflow;
       // テキスト位置オフセット（1列 = 隣接セルの設定幅）
       // 横書き: translateX、縦書き: translateY で描画位置だけをずらす（レイアウト・枠線位置は固定）
@@ -667,6 +719,7 @@ class ScriptNoteEditor {
       cell.style.boxShadow = r.leftAccent ? `inset 3px 0 0 ${accentColor}` : '';
       cell.style.textDecorationLine = r.underline ? 'underline' : '';
       cell.style.textDecorationColor = r.underline ? accentColor : '';
+      applyCellAlignment(cell, rs, colId, { alignDataset: true, overflowEl: cell.querySelector('.sn2-custom-text') });
     });
   }
 
@@ -787,6 +840,10 @@ class ScriptNoteEditor {
     const marginRaw = this.doc.editor?.margin || '';
     const marginVal = marginRaw ? (/^\d+$/.test(marginRaw) ? marginRaw + 'px' : marginRaw) : '';
     if (marginVal) scroll.style.setProperty('--sn2-margin', marginVal);
+    // 段間隔（折り返しの段と段の間。未指定なら余白と同じ）
+    const wrapGapRaw = String(this.doc.editor?.wrapGap ?? '').trim();
+    const wrapGapVal = wrapGapRaw ? (/^\d+$/.test(wrapGapRaw) ? wrapGapRaw + 'px' : wrapGapRaw) : '';
+    if (wrapGapVal) scroll.style.setProperty('--sn2-wrap-gap', wrapGapVal);
     const editor = document.createElement('div');
     editor.className = 'sn2-editor';
     // 縦書き時のテキスト行数制限
@@ -856,9 +913,12 @@ class ScriptNoteEditor {
       const ls = String(letterSpacing);
       scroll.style.setProperty('--sn2-base-text-letter-spacing', /^-?\d+(\.\d+)?$/.test(ls) ? ls + 'em' : ls);
     }
-    // ルビ設定
-    if (this.doc.editor?.rubyFontSize) scroll.style.setProperty('--sn2-ruby-size', this.doc.editor.rubyFontSize + 'em');
-    if (this.doc.editor?.rubyOffset != null) scroll.style.setProperty('--sn2-ruby-offset', this.doc.editor.rubyOffset + 'px');
+    // ルビ設定（3つの設定入口で共有するRubyPresentationを一度だけ適用）
+    if (typeof MeldexRubyPresentation !== 'undefined') MeldexRubyPresentation.applyToEditor(this, scroll);
+    else {
+      if (this.doc.editor?.rubyFontSize) scroll.style.setProperty('--sn2-ruby-size', this.doc.editor.rubyFontSize + 'em');
+      if (this.doc.editor?.rubyOffset != null) scroll.style.setProperty('--sn2-ruby-offset', this.doc.editor.rubyOffset + 'px');
+    }
 
     // ヘッダー生成
     const textWidth = colWidths._text || 0;
@@ -893,10 +953,11 @@ class ScriptNoteEditor {
       });
       return handleCol ? [handleCol, ...rest] : rest;
     })() : unsortedCols;
-    const buildHeader = (withResizer = true) => {
+    const buildHeader = (withResizer = true, instanceKey = '') => {
       const h = document.createElement('div');
       h.className = 'sn2-header' + (viewMode === 'vertical' ? ' sn2-header-vertical' : '');
       const safeId = (value) => String(value || 'col').replace(/[^a-zA-Z0-9_-]/g, '-');
+      const e2eSuffix = instanceKey ? `-${safeId(instanceKey)}` : '';
       const colLabel = (col) => String(col?.label || defaultLabels[col?.id] || '列').trim() || '列';
       cols.forEach((col, ci) => {
         // リサイザーをセルの前に配置（前のセルとの境界）
@@ -905,7 +966,7 @@ class ScriptNoteEditor {
           const resizer = document.createElement('div');
           resizer.className = 'sn2-col-resizer';
           resizer.dataset.colId = resizeCol.id;
-          resizer.dataset.e2eId = `sn2-col-resizer-${safeId(resizeCol.id)}`;
+          resizer.dataset.e2eId = `sn2-col-resizer-${safeId(resizeCol.id)}${e2eSuffix}`;
           resizer.tabIndex = 0;
           resizer.setAttribute('role', 'separator');
           resizer.setAttribute('aria-orientation', viewMode === 'vertical' ? 'horizontal' : 'vertical');
@@ -920,7 +981,7 @@ class ScriptNoteEditor {
         cell.className = 'sn2-header-cell' + (isTextFlex ? ' sn2-header-flex' : '');
         cell.textContent = col.label;
         cell.dataset.colId = col.id;
-        cell.dataset.e2eId = `sn2-header-cell-${safeId(col.id)}`;
+        cell.dataset.e2eId = `sn2-header-cell-${safeId(col.id)}${e2eSuffix}`;
         if (viewMode === 'vertical' && col.id !== '_handle') this._wrapTcy(cell);
         if (col.width) cell.style.width = viewMode === 'vertical' ? '' : `var(--sn2-col-${col.id}, ${col.width}px)`;
         // ヘッダーセルのD&D並べ替え（_handle以外）
@@ -955,17 +1016,16 @@ class ScriptNoteEditor {
         // ハンドル列ヘッダー: クリックで全選択/全解除メニュー
         if (col.id === '_handle') {
           cell.style.cursor = 'pointer';
-          cell.title = '選択メニュー';
           cell.tabIndex = 0;
           cell.setAttribute('role', 'button');
           cell.setAttribute('aria-label', '行選択メニュー');
           cell.setAttribute('aria-haspopup', 'menu');
           cell.setAttribute('aria-expanded', 'false');
-          cell.dataset.e2eId = 'sn2-header-select-menu-trigger';
+          cell.dataset.e2eId = 'sn2-header-select-menu-trigger' + e2eSuffix;
           const openSelectMenu = (ev) => {
             ev.stopPropagation();
             document.querySelectorAll('.sn2-header-popup').forEach(el => el.remove());
-            document.querySelectorAll('[data-e2e-id="sn2-header-select-menu-trigger"][aria-expanded="true"]').forEach(el => {
+            document.querySelectorAll('[data-e2e-id^="sn2-header-select-menu-trigger"][aria-expanded="true"]').forEach(el => {
               el.setAttribute('aria-expanded', 'false');
             });
             const popup = document.createElement('div');
@@ -1063,7 +1123,7 @@ class ScriptNoteEditor {
         const resizer = document.createElement('div');
         resizer.className = 'sn2-col-resizer';
         resizer.dataset.colId = lastCol.id;
-        resizer.dataset.e2eId = `sn2-col-resizer-${safeId(lastCol.id)}`;
+        resizer.dataset.e2eId = `sn2-col-resizer-${safeId(lastCol.id)}${e2eSuffix}`;
         resizer.tabIndex = 0;
         resizer.setAttribute('role', 'separator');
         resizer.setAttribute('aria-orientation', viewMode === 'vertical' ? 'horizontal' : 'vertical');

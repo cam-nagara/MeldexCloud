@@ -350,13 +350,44 @@
     return { ok: true, cloud: true };
   }
 
+  // 思考の深さの内部値。off/low/medium/high/xhigh/max/ultracode の7値
+  // （ultracodeはclaude_code CLI限定の概念のため、このAPI直叩き経路には基本現れない）。
+  // 旧3段階UI（オフ/標準/最大）からの移行のため standard は medium として扱う。
+  const REASONING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+
   function _reasoningLevel(body) {
-    const value = String(body?.reasoning_level || 'off').trim().toLowerCase();
-    return ['off', 'standard', 'max'].includes(value) ? value : 'off';
+    const raw = String(body?.reasoning_level || 'off').trim().toLowerCase();
+    const value = raw === 'standard' ? 'medium' : raw;
+    return REASONING_LEVELS.includes(value) ? value : 'off';
   }
 
+  // Anthropic旧世代（budget_tokens方式）向けの思考トークン予算。
+  const ANTHROPIC_LEGACY_THINKING_BUDGET_BY_LEVEL = {
+    low: 1024, medium: 2048, high: 4096, xhigh: 8192, max: 16384, ultracode: 16384,
+  };
+  // Gemini向けの思考トークン予算。Anthropicとは別テーブル（調整可能）。
+  const GEMINI_THINKING_BUDGET_BY_LEVEL = {
+    low: 1024, medium: 4000, high: 8000, xhigh: 12000, max: 16384, ultracode: 16384,
+  };
+  // OpenAI(reasoning_effort/reasoning.effort)向け。4段階のみのためmax/ultracodeはxhighへ丸める。
+  const OPENAI_REASONING_EFFORT_BY_LEVEL = {
+    low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh', ultracode: 'xhigh',
+  };
+  // adaptive thinking世代（output_config.effort）向け。
+  const ANTHROPIC_ADAPTIVE_EFFORT_BY_LEVEL = {
+    low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max', ultracode: 'max',
+  };
+
   function _reasoningBudget(level) {
-    return level === 'max' ? 16000 : 2000;
+    return ANTHROPIC_LEGACY_THINKING_BUDGET_BY_LEVEL[level] ?? 2048;
+  }
+
+  function _geminiThinkingBudget(level) {
+    return GEMINI_THINKING_BUDGET_BY_LEVEL[level] ?? 4000;
+  }
+
+  function _openAiReasoningEffort(level) {
+    return OPENAI_REASONING_EFFORT_BY_LEVEL[level] || 'medium';
   }
 
   function _anthropicThinkingLimits(level, maxTokens) {
@@ -366,6 +397,33 @@
       maxTokens: adjustedMax,
       budgetTokens: Math.max(1024, budget),
     };
+  }
+
+  // Claudeモデルの思考設定方式は世代で異なる（meldex_chat_stream_support.pyの
+  // _anthropic_thinking_generation と対で管理すること）。
+  // - "adaptiveFull": budget_tokensが400エラーになる世代。thinkingは{type:'adaptive'}のみを送り、
+  //   深さはoutput_config.effortで指定する（disabledは送らない）。この世代はtemperature/top_p/
+  //   top_kも既定値以外だと400になるため常に省略する。
+  // - "adaptiveNoXhigh": 上と同じadaptive方式だがeffort='xhigh'は未対応（highへクランプ）。
+  // - どちらにも一致しないモデルは従来のbudget_tokens方式を使う。
+  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5'];
+  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6'];
+
+  function _anthropicThinkingGeneration(model) {
+    const name = String(model || '').trim().toLowerCase();
+    if (ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL.some(prefix => name.startsWith(prefix))) return 'adaptiveFull';
+    if (ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_NO_XHIGH.some(prefix => name.startsWith(prefix))) return 'adaptiveNoXhigh';
+    return 'legacyBudget';
+  }
+
+  function _anthropicSupportsSamplingParams(model) {
+    return _anthropicThinkingGeneration(model) !== 'adaptiveFull';
+  }
+
+  function _anthropicReasoningEffort(level, generation) {
+    let effort = ANTHROPIC_ADAPTIVE_EFFORT_BY_LEVEL[level] || 'medium';
+    if (generation === 'adaptiveNoXhigh' && effort === 'xhigh') effort = 'high';
+    return effort;
   }
 
   function _cloneChatMessage(message) {
@@ -527,7 +585,7 @@
 
   function _defaultModel(provider, model) {
     if (model) return model;
-    if (provider === 'anthropic') return 'claude-sonnet-4-6';
+    if (provider === 'anthropic') return 'claude-sonnet-5';
     if (provider === 'openai') return 'gpt-5.4-mini';
     return 'gemini-2.5-flash';
   }
@@ -536,6 +594,7 @@
     const model = _defaultModel('anthropic', body.model);
     const maxTokens = Math.floor(_generationNumber(body, 'max_tokens', 8192, 1024, 32768));
     const reasoningLevel = _reasoningLevel(body);
+    const thinkingGeneration = _anthropicThinkingGeneration(model);
     const payload = {
       model,
       system: String(body.system_prompt || ''),
@@ -547,10 +606,17 @@
       stream: true,
     };
     if (reasoningLevel !== 'off') {
-      const limits = _anthropicThinkingLimits(reasoningLevel, maxTokens);
-      payload.max_tokens = limits.maxTokens;
-      payload.thinking = { type: 'enabled', budget_tokens: limits.budgetTokens };
-    } else {
+      if (thinkingGeneration === 'legacyBudget') {
+        const limits = _anthropicThinkingLimits(reasoningLevel, maxTokens);
+        payload.max_tokens = limits.maxTokens;
+        payload.thinking = { type: 'enabled', budget_tokens: limits.budgetTokens };
+      } else {
+        // adaptive thinking世代。budget_tokensは400エラーになるため使わない。disabledも送らない
+        // （fable-5はthinkingを送らなくても常時ONのため、オフ選択時はこのifに入らず省略する）。
+        payload.thinking = { type: 'adaptive' };
+        payload.output_config = { effort: _anthropicReasoningEffort(reasoningLevel, thinkingGeneration) };
+      }
+    } else if (_anthropicSupportsSamplingParams(model)) {
       payload.temperature = _generationNumber(body, 'temperature', 0.7, 0, 1);
       if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     }
@@ -618,10 +684,13 @@
           send({ type: 'internal_notice', content: 'このClaudeモデルはWeb検索に未対応のため、検索なしで続行します。' });
           continue;
         }
-        if (payload.thinking && (text.includes('thinking') || text.includes('budget') || text.includes('temperature'))) {
+        if (payload.thinking && (text.includes('thinking') || text.includes('budget') || text.includes('temperature') || text.includes('output_config'))) {
           delete payload.thinking;
-          payload.temperature = _generationNumber(body, 'temperature', 0.7, 0, 1);
-          if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
+          delete payload.output_config;
+          if (_anthropicSupportsSamplingParams(model)) {
+            payload.temperature = _generationNumber(body, 'temperature', 0.7, 0, 1);
+            if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
+          }
           send({ type: 'internal_notice', content: 'このClaudeモデルは思考設定に未対応のため、思考設定なしで続行します。' });
           continue;
         }
@@ -686,7 +755,7 @@
     };
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     const reasoningLevel = _reasoningLevel(body);
-    if (reasoningLevel !== 'off') payload.reasoning_effort = reasoningLevel === 'max' ? 'high' : 'medium';
+    if (reasoningLevel !== 'off') payload.reasoning_effort = _openAiReasoningEffort(reasoningLevel);
     let sawResponseEvent = false;
     const request = async () => {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -762,7 +831,7 @@
     if (Number.isFinite(Number(body.temperature))) payload.temperature = _generationNumber(body, 'temperature', 0.7, 0, 2);
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     const reasoningLevel = _reasoningLevel(body);
-    if (reasoningLevel !== 'off') payload.reasoning = { effort: reasoningLevel === 'max' ? 'high' : 'medium' };
+    if (reasoningLevel !== 'off') payload.reasoning = { effort: _openAiReasoningEffort(reasoningLevel) };
     let emittedCodeStart = false;
     const seenCitations = new Set();
     let sawResponseEvent = false;
@@ -874,7 +943,7 @@
     if (tools.length) payload.tools = tools;
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') {
-      payload.generationConfig.thinkingConfig = { thinkingBudget: _reasoningBudget(reasoningLevel) };
+      payload.generationConfig.thinkingConfig = { thinkingBudget: _geminiThinkingBudget(reasoningLevel) };
     }
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model)
       + ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(apiKey);

@@ -1,3 +1,28 @@
+    }
+    return type === 'note' || type === 'sticky';
+  }
+
+  function _renderNote(annId, data, color) {
+    const note = document.createElement('div');
+    note.className = 'sa-note'; note.dataset.annId = annId;
+    note.style.cssText = `position:absolute;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
+    const textarea = document.createElement('textarea');
+    textarea.value = data.text || '';
+    textarea.style.cssText = 'width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
+    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
+    _applyStandaloneNoteSize(note, textarea, data);
+    textarea.onblur = async () => {
+      const previousData = { ...data };
+      const previousStyle = {
+        width: note.style.width,
+        minHeight: note.style.minHeight,
+        textareaHeight: textarea.style.height,
+      };
+      Object.assign(data, _saNotePayload(data, textarea, note));
+      try {
+        await _saUpdateAnnotation(annId, { data: { ...data } });
+      } catch (error) {
+        Object.keys(data).forEach(key => { delete data[key]; });
         Object.assign(data, previousData);
         note.style.width = previousStyle.width;
         note.style.minHeight = previousStyle.minHeight;
@@ -701,10 +726,24 @@ function enableCheckboxDragToggle(container, scopeSelector) {
     cb.dispatchEvent(new Event('change', { bubbles: true }));
     container._cbDragState = { checked: newState };
     e.preventDefault();
+    // pointerdown で手動トグル済みのため、同じチェックボックスへ届く後続の
+    // ネイティブ click（既定のトグル動作）を1回だけ打ち消す。
+    // これが無いと「pointerdownでON→clickでOFF」と往復し、クリックで切り替わらなくなる
+    const suppressClick = (clickEv) => {
+      // チェックボックス本体だけでなく、包んでいる label 経由の activation も打ち消す
+      // （チェックボックスで押してラベル上で離した場合の二重トグル防止）
+      const label = cb.closest('label');
+      if (clickEv.target !== cb && !(label && label.contains(clickEv.target))) return;
+      clickEv.preventDefault();
+      clickEv.stopImmediatePropagation();
+    };
+    document.addEventListener('click', suppressClick, true);
     const onUp = () => {
       delete container._cbDragState;
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
+      // click は pointerup の後・同一タスク内で配送されるため、打ち消しは次のタスクで解除する
+      setTimeout(() => document.removeEventListener('click', suppressClick, true), 0);
     };
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);

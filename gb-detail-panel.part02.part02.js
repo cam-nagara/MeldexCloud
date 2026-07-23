@@ -7,7 +7,7 @@ function showCalendarDetailTabs(visible) {
   document.querySelectorAll('.detail-tab-calendar').forEach(t => {
     t.hidden = !visible;
   });
-  // 非表示化時に現在のタブがスケジューラー系ならコンテナも隠すためnullに切り替え
+  // 非表示化時に現在のタブがスケジュール系ならコンテナも隠すためnullに切り替え
   if (!visible && ['calendar-today', 'calendar-settings', 'calendar-production'].includes(_currentDetailTab)) {
     switchDetailTab(null);
   }
@@ -93,8 +93,6 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
-  // タグ管理タブはエクスプローラー（folder-view）アクティブ時のみ表示
-  if (typeof showTagManagementTab === 'function') showTagManagementTab(type === 'folder');
   // ファイルテーマタブは編集可能な主要タイプで共通表示
   const styleTypes = new Set(['folder', 'page', 'database', 'board', 'scriptnote']);
   if (typeof showFileStyleTab === 'function') {
@@ -153,7 +151,7 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
     renderDbPropertySettingsPanel(path, selected || '', propSettings);
   } else {
     propSettings.innerHTML = `<div class="gb-section-desc" style="padding:var(--ui-space-4);">
-      ${esc(label || path.split('/').pop())} のプロパティ設定を読み込めませんでした
+      ${esc(label || path.split('/').pop())} の列設定を読み込めませんでした
     </div>`;
   }
 }

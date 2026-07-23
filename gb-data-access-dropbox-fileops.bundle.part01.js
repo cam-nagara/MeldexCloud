@@ -58,6 +58,65 @@
     _fnvFileId,
   } = internals;
 
+  function _productionSheetPathParts(path) {
+    return _normalizeFolderPath(path).split('/').filter(Boolean);
+  }
+
+  function _isProductionFolderNotePath(path) {
+    const parts = _productionSheetPathParts(path);
+    return parts.length === 4 && parts[0] === '制作管理' && parts[1] === 'シート'
+      && !!parts[2] && parts[3] === `${parts[2]}.md`;
+  }
+
+  const _rejectProductionStructureMutation = internals._rejectProductionStructureMutation || ((path, action = '変更') => {
+    const parts = _productionSheetPathParts(path);
+    const protectedPath = (parts.length === 1 && parts[0] === '制作管理')
+      || (parts.length === 2 && parts[0] === '制作管理' && parts[1] === 'シート')
+      || (parts.length === 3 && parts[0] === '制作管理' && parts[1] === 'シート' && !!parts[2])
+      || _isProductionFolderNotePath(path);
+    if (protectedPath) throw new Error(`制作管理のシート構造・列定義は${action}できません`);
+  });
+
+  const PRODUCTION_RESERVED_ENTRY_PROPERTIES = Object.freeze({
+    '作品リスト': Object.freeze(['作品タイトル_話数', '作品タイトル']),
+    '作業対象リスト': Object.freeze(['作業対象']),
+    '作業内容リスト': Object.freeze(['作業内容']),
+    '作業規模リスト': Object.freeze(['作業規模']),
+    'スタッフリスト': Object.freeze(['スタッフ名']),
+  });
+
+  function _productionReservedEntryProperties(path) {
+    const parts = _productionSheetPathParts(path);
+    if (parts.length !== 4 || parts[0] !== '制作管理' || parts[1] !== 'シート'
+      || !/\.md$/i.test(parts[3]) || parts[3] === `${parts[2]}.md`) return [];
+    if (parts[2] === 'タスクリスト' || parts[2] === 'タスクリスト アーカイブ'
+      || parts[2].startsWith('タスクリスト_')) return ['タスク名'];
+    return PRODUCTION_RESERVED_ENTRY_PROPERTIES[parts[2]] || [];
+  }
+
+  function _frontmatterContainsProperty(text, property) {
+    const match = String(text || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    if (!match || !property) return false;
+    const frontmatter = match[1];
+    const inline = frontmatter.match(/^properties:\s*(\{.*\})\s*$/m);
+    if (inline) {
+      try {
+        const properties = JSON.parse(inline[1]);
+        if (properties && typeof properties === 'object' && Object.prototype.hasOwnProperty.call(properties, property)) return true;
+      } catch {}
+    }
+    const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^\\s+["']?${escaped}["']?\\s*:`, 'm').test(frontmatter);
+  }
+
+  function _rejectProductionLegacyEntryContent(path, text) {
+    const reserved = _productionReservedEntryProperties(path)
+      .find(property => _frontmatterContainsProperty(text, property));
+    if (reserved) {
+      throw new Error(`「${reserved}」列はエントリ名へ統合済みのため再作成できません`);
+    }
+  }
+
   async function _runPathMutationHooks(event) {
     const errors = [];
     for (const hook of pathMutationHooks) {
@@ -205,6 +264,7 @@
 
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
+    _rejectProductionStructureMutation(targetPath, '削除');
     const source = await _resolveEntryHandle(provider, targetPath);
     if (!source) return { ok: true };
     const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(targetPath);
@@ -838,63 +898,3 @@
 
   function _safeVersionName(value) {
     const name = _decodePathPart(value).trim();
-    if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
-    return name;
-  }
-
-  function _deletedVersionToken() {
-    return `d_${_versionTimestamp()}`;
-  }
-
-  function _deletedVersionsDir(baseDir) {
-    return _joinPath(baseDir, '_deleted');
-  }
-
-  async function _softDeleteVersionEntry(provider, baseDir, version, kind) {
-    const safeName = _safeVersionName(version);
-    const sourcePath = _joinPath(baseDir, safeName);
-    const source = await _resolveEntryHandle(provider, sourcePath);
-    const expectedKind = kind === 'folder' ? 'directory' : 'file';
-    if (!source || source.kind !== expectedKind) throw new Error('バージョンが見つかりません');
-    const token = _safeVersionName(_deletedVersionToken());
-    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), token);
-    await provider.movePath(sourcePath, _joinPath(deletedDir, safeName));
-    await provider.writeJson(_joinPath(deletedDir, '_meta.json'), {
-      kind,
-      version: safeName,
-      deleted_at: _nowIso(),
-    });
-    return { ok: true, token, version: safeName };
-  }
-
-  async function _restoreDeletedVersionEntry(provider, baseDir, token, kind) {
-    const safeToken = _safeVersionName(token);
-    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), safeToken);
-    const meta = await _readJsonSafe(provider, _joinPath(deletedDir, '_meta.json'), null);
-    if (!meta || meta.kind !== kind) throw new Error('削除済みバージョンが見つかりません');
-    const versionName = _safeVersionName(meta.version || '');
-    const sourcePath = _joinPath(deletedDir, versionName);
-    const expectedKind = kind === 'folder' ? 'directory' : 'file';
-    const source = await _resolveEntryHandle(provider, sourcePath);
-    if (!source || source.kind !== expectedKind) throw new Error('削除済みバージョンが見つかりません');
-    const target = await _moveConflictName(provider, baseDir, versionName, kind !== 'folder');
-    await provider.movePath(sourcePath, target.path);
-    await provider.deletePath(deletedDir).catch(() => {});
-    return { ok: true, version: _basename(target.path) };
-  }
-
-  async function _readFileVersion(provider, path, version) {
-    const normalized = _normalizeFolderPath(path);
-    const name = _safeVersionName(version);
-    const versionPath = _joinPath(_fileVersionDir(normalized), name);
-    const entry = await _resolveEntryHandle(provider, versionPath);
-    if (!entry || entry.kind !== 'file') throw new Error('バージョンが見つかりません');
-    return { content: await provider.readText(versionPath), name };
-  }
-
-  async function _restoreFileVersion(provider, path, version) {
-    const normalized = _normalizeFolderPath(path);
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-    const data = await _readFileVersion(provider, normalized, version);

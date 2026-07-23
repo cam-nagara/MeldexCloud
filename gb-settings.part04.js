@@ -50,7 +50,7 @@
     localStorage.setItem('meldex-user', JSON.stringify({ name: username }));
     // チームファイルのメンバー名を更新
     if (oldUsername && oldUsername !== username) {
-      await apiPost('/team/remove', { name: oldUsername }).catch(() => {});
+      await _removeOldTeamNameFromAllRoots(oldUsername);
     }
     const avatar = localStorage.getItem('meldex-avatar') || '';
     if (window.MeldexDropboxProfileSync?.afterLocalProfileChanged) {
@@ -198,6 +198,30 @@
   }
 }
 
+// 名前変更時、既定フォルダだけでなく可視の全ソースフォルダのチームファイルからも
+// 旧名エントリを削除する（複数ソースフォルダ運用で、フォルダごとに残る
+// 旧名ゴーストエントリを防ぐ）。1件の失敗でループ全体を止めない。
+async function _removeOldTeamNameFromAllRoots(oldUsername) {
+  await apiPost('/team/remove', { name: oldUsername }).catch((e) => {
+    console.warn('[settings] /team/remove failed (default folder)', e);
+  });
+  let roots = [];
+  try {
+    roots = await apiFetch('/outliner-roots');
+  } catch (e) {
+    console.warn('[settings] /outliner-roots fetch failed while cleaning up old team name', e);
+    return;
+  }
+  const visibleRoots = (Array.isArray(roots) ? roots : []).filter(r => r?.visible && r?.path);
+  for (const root of visibleRoots) {
+    try {
+      await apiPost('/team/remove', { name: oldUsername, folder: root.path });
+    } catch (e) {
+      console.warn('[settings] /team/remove failed for root', root.path, e);
+    }
+  }
+}
+
 function _isSettingsLocalVaultPath(path) {
   const value = String(path || '').trim();
   if (!value || value === '.') return false;
@@ -238,19 +262,38 @@ function _settingsCliProviderRows(config) {
     claude_code: 'Claude Code',
     gemini_cli: 'Gemini CLI',
   };
+  // モデル世代交代時はここ（既定値とcodexの代表候補）を更新して新バージョンとしてリリースする。
   const defaultModels = {
-    codex: 'gpt-5.5',
+    codex: 'gpt-5.6',
     claude_code: 'Claude Code',
     gemini_cli: 'Gemini CLI',
+  };
+  // モデル入力欄のdatalist代表候補。自由入力も引き続き可能。
+  const modelCandidates = {
+    codex: ['gpt-5.6', 'gpt-5.5'],
+    claude_code: ['sonnet', 'opus', 'haiku'],
+    gemini_cli: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  };
+  const modelTitles = {
+    codex: 'CLIへ渡すモデル名（空欄の場合はMeldexの既定モデルを使います）',
+    claude_code: 'CLIへ渡すモデル名（例: sonnet / opus / haiku。空欄はCLI側の既定モデルを使います）',
+    gemini_cli: 'CLIへ渡すモデル名（空欄はCLI側の既定モデルを使います）',
   };
   return order.map(key => {
     const item = providers[key] || {};
     const label = item.label || labels[key] || key;
     const command = item.command || (key === 'claude_code' ? 'claude' : key === 'gemini_cli' ? 'gemini' : 'codex');
-    const model = item.model || defaultModels[key] || label;
+    const placeholderModel = defaultModels[key] || label;
+    const rawModel = String(item.model || '').trim();
+    // valueは実設定値のみ（未設定・プレースホルダ既定ラベルと同じ場合は空欄）にし、
+    // ラベルはplaceholder属性へ回す。value側にも既定ラベルを入れてしまうと、datalistの
+    // 絞り込み候補がその文字列でフィルタされ、他候補がほぼ見えなくなる不具合があった。
+    const modelValue = (!rawModel || rawModel === placeholderModel) ? '' : rawModel;
     const available = item.available !== false;
     const statusText = available ? '検出済み' : '未検出';
     const statusColor = available ? 'var(--accent)' : 'var(--red)';
+    const datalistId = `settings-cli-chat-${_settingsCliEsc(key)}-model-list`;
+    const datalistOptions = (modelCandidates[key] || []).map(value => `<option value="${_settingsCliEsc(value)}"></option>`).join('');
     return `
       <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
         <label class="gb-check" style="min-width:0;">
@@ -258,7 +301,8 @@ function _settingsCliProviderRows(config) {
           <span>${_settingsCliEsc(label)}</span>
         </label>
         <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
-        <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(model)}" placeholder="${_settingsCliEsc(defaultModels[key] || label)}" title="CLIへ渡すモデル名">
+        <input class="gb-input" list="${datalistId}" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(modelValue)}" placeholder="${_settingsCliEsc(placeholderModel)}" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル名')}">
+        <datalist id="${datalistId}">${datalistOptions}</datalist>
         <span style="font-size:11px;color:${statusColor};white-space:nowrap;">${_settingsCliEsc(statusText)}</span>
       </div>`;
   }).join('');
@@ -267,11 +311,13 @@ function _settingsCliProviderRows(config) {
 function _renderCliChatSettingsContainer(container, config) {
   if (!container) return;
   container.innerHTML = `
-    <label class="gb-check" style="margin-top:4px;">
-      <input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}>
-      <span>CLIチャットを有効にする</span>
-    </label>
-    <div class="gb-section-desc" style="margin-top:6px;">コマンド名は、ターミナルで実行する名前と同じにしてください。例: <code>codex</code> / <code>claude</code> / <code>gemini</code></div>
+    <div class="gb-check-help-row" style="margin-top:4px;">
+      <label class="gb-check">
+        <input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}>
+        <span>CLIチャットを有効にする</span>
+      </label>
+      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / gemini')}
+    </div>
     <div style="margin-top:4px;">${_settingsCliProviderRows(config)}</div>
     <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">
       <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-refresh">${_settingsCliIcon('refreshCw',14)} 状態を更新</button>
@@ -510,7 +556,7 @@ async function renderTrashSettings(root) {
         </label>
         <div class="gb-section-desc">現在: ${status.trash?.items || 0}件 / ${_formatBytes(status.trash?.bytes || 0)}</div>
         ${trashPathHtml}
-        <div class="gb-section-desc">Dropbox内のソースフォルダを使う場合、_trash フォルダも同期対象です。Dropbox側で削除するとMeldexから復元できません。</div>
+        <div class="gb-section-desc">Dropbox側で削除するとMeldexから復元できません。 ${fieldHelp('Dropbox内のソースフォルダを使う場合、ゴミ箱の中身も同期対象です。')}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
           <button type="button" class="gb-btn gb-btn-sm" id="settings-trash-save">保持日数を保存</button>
           <button type="button" class="gb-btn gb-btn-sm" id="settings-trash-cleanup">期限切れを削除</button>
@@ -711,8 +757,7 @@ async function renderChatCostSettings(root) {
     }).join('');
     container.innerHTML = `
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('gauge',14)} AI API使用量</div>
-        <div class="gb-section-desc">Meldex本体の課金ではありません。登録したAI APIキーで各社APIを使った場合の推定使用量です。</div>
+        <div class="gb-section-title">${lucide('gauge',14)} AI API使用量 ${fieldHelp('Meldex本体の課金ではありません。登録したAI APIキーで各社APIを使った場合の推定使用量です。')}</div>
         <div class="gb-section-desc">今日: ${_formatUsd(totals.day?.cost_usd)} / 今月: ${_formatUsd(totals.month?.cost_usd)}</div>
         <div class="gb-section-desc">AI API単価表レビュー日: ${esc(settings.pricing_last_reviewed || '')}</div>
       </section>
@@ -803,7 +848,7 @@ const _UI_CONFIG_KEYS = [
   'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
   // カレンダー / チャット
-  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
+  'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-recommendations-enabled', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
   'meldex-knowledge-automation-settings-v1',
   // カスタマイズ
   'meldex-custom-shortcuts', 'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set', 'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',

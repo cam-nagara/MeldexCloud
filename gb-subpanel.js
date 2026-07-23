@@ -83,7 +83,7 @@ const GBSubPanel = (() => {
       outliner: 'フォルダツリー',
       detail: 'オプション',
       preview: 'ビューワー',
-      calendar: 'スケジューラー',
+      calendar: 'スケジュール',
       timer: 'タイマー',
       chat: 'チャット',
       annotation: '注釈',

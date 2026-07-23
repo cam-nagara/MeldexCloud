@@ -87,7 +87,18 @@
       cut: document.getElementById('folder-toolbar-cut'),
       paste: document.getElementById('folder-toolbar-paste'),
       delete: document.getElementById('folder-toolbar-delete'),
+      undo: document.getElementById('folder-toolbar-undo'),
+      redo: document.getElementById('folder-toolbar-redo'),
     };
+  }
+
+  // フォルダ操作はグローバルスコープの共通履歴を使う（meldexUndo/meldexRedoに委譲）
+  function folderToolbarUndo() {
+    if (typeof meldexUndo === 'function') meldexUndo();
+  }
+
+  function folderToolbarRedo() {
+    if (typeof meldexRedo === 'function') meldexRedo();
   }
 
   function _folderToolbarScheduleUpdate() {
@@ -111,6 +122,9 @@
     buttons.paste.disabled = !_folderToolbarClipboard?.items?.length || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
     buttons.add.setAttribute('aria-expanded', document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false');
+    // 取り消し・やり直しボタン展開: フォルダ操作はグローバルスコープの共通履歴を使うため、
+    // ここでも一緒に有効/無効を更新する（data-undo-button/data-redo-button経由の一括更新と重複してもよい）
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   }
 
   async function _folderToolbarRefresh(preservePaths = []) {
@@ -374,6 +388,8 @@
     _folderToolbarBindButton(buttons.cut, 'scissors', folderToolbarCutSelection);
     _folderToolbarBindButton(buttons.paste, 'clipboardPaste', folderToolbarPasteSelection);
     _folderToolbarBindButton(buttons.delete, 'trash2', folderToolbarDeleteSelection);
+    _folderToolbarBindButton(buttons.undo, 'undo2', folderToolbarUndo);
+    _folderToolbarBindButton(buttons.redo, 'redo2', folderToolbarRedo);
     _folderToolbarWrapBulkBarUpdate();
     const grid = document.getElementById('folder-grid');
     if (grid && grid.dataset.folderToolbarSelectionBound !== '1') {

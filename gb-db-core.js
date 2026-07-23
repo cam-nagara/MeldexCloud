@@ -72,6 +72,77 @@ function _dbNormalizePath(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
+// 制作管理の各シートは列名と型設定を契約として相互参照しているため、既存列の
+// 削除・改名・型変更を許可しない。ヴォールト相対パスだけでなく、ソースフォルダ名やドライブ名を含む
+// 絶対パスでも末尾の「制作管理/シート/<シート名>」を同じように判定する。
+function isProductionManagementSheetPath(path) {
+  const parts = _dbNormalizePath(path).split('/').filter(Boolean);
+  if (parts.length < 3) return false;
+  const sheetIndex = parts.length - 3;
+  return parts[sheetIndex] === '制作管理'
+    && parts[sheetIndex + 1] === 'シート'
+    && !!parts[sheetIndex + 2];
+}
+
+// スタッフ管理シート（正本）の列保護レベルを判定する。
+// 返り値: 'all'（制作管理シート・従来動作を維持、全列ロック）/
+//         'required'（正本シートの必須列。名前・型変更と削除のみ拒否、
+//         管理者追加の任意列は自由に削除・改名・型変更できる）/ null（無保護）。
+// 置き場所が設定で変更できる正本シートは固定パスパターンでは判定できないため、
+// primeConfigCache() でウォームアップ済みの設定キャッシュに対する dbPath の
+// 一致で判定する（バックエンド側は meldex_registry マーカーで同等の判定をする。
+// 計画書§5.1・§5.2参照）。
+function getSchemaProtectionLevel(dbPath, propName) {
+  const targetPath = dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '';
+  if (isProductionManagementSheetPath(targetPath)) return 'all';
+  if (typeof window === 'undefined') return null;
+  if (window.MeldexUserRegistry?.isRegistryPathSync?.(targetPath)) {
+    return window.MeldexStaffRegistrySchema?.isRequiredProperty?.(propName) ? 'required' : null;
+  }
+  return null;
+}
+
+function _dbDeleteCalendarSyncWarningMessage(responses) {
+  const items = Array.isArray(responses) ? responses : [responses];
+  const warningCount = items.filter(item => {
+    if (!item || typeof item !== 'object') return false;
+    return item.calendar_sync_warning === true || item.value?.calendar_sync_warning === true;
+  }).length;
+  if (!warningCount) return '';
+  const subject = warningCount === 1 ? 'タスクの削除自体' : `${warningCount}件のタスク削除自体`;
+  return `${subject}は完了しましたが、スケジュールとの同期に失敗しました。スケジュールを再読み込みし、残っている予定を確認してください。`;
+}
+
+// 制作管理の表示設定はローカルで変更できる一方、Cloud の閲覧専用・容量制限中、
+// または埋め込み先ファイルの編集ロック中はバックエンドへ書き込まない。
+function isProductionManagementWriteBlocked(dbPath, ctx) {
+  if (!isProductionManagementSheetPath(dbPath)) return false;
+  const availability = typeof window !== 'undefined'
+    ? window.MeldexProductionUiAvailability?.current?.()
+    : null;
+  if (availability?.blocked) return true;
+  if (ctx) return !!ctx.writeBlocked;
+  // 古い表示操作には ctx を引き回さない呼び出しも残る。通常ペインと埋め込みが
+  // 同じシートを開いている場合に先頭の通常ペインだけを見て保存を許可しないよう、
+  // パスに結び付く全コンテキストのうち一つでもロック中なら書き込みを止める。
+  return _dbPaneContextsForPath(dbPath).some(candidate => !!candidate?.writeBlocked);
+}
+
+function showProductionManagementSchemaLockedStatus() {
+  if (typeof showStatus === 'function') {
+    showStatus('制作管理に必要な列の名前・種類・設定は変更できません。表示順、列幅、フィルタ、並べ替え、非表示は変更できます', true);
+  }
+}
+
+// 旧版で既に削除扱いになった制作管理列も復帰できるよう、読み込んだ表示設定から
+// 列削除の tombstone だけを除去する。非表示・順序・ソート等の表示設定は触らない。
+function repairProductionManagementDbViewConfig(dbPath, cfg) {
+  if (!isProductionManagementSheetPath(dbPath) || !cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return false;
+  if (!Object.prototype.hasOwnProperty.call(cfg, 'deletedProps')) return false;
+  delete cfg.deletedProps;
+  return true;
+}
+
 function _dbPathContains(path, rootPath) {
   const p = _dbNormalizePath(path);
   const root = _dbNormalizePath(rootPath);
@@ -317,6 +388,20 @@ async function _apiPutValue(valObj, updates) {
   return res;
 }
 
+// _apiPutValue は書き込みに使ったオブジェクト自身へ新しい entry_revision 等を書き戻す。
+// セル編集UIの一部は「保存中に表示済みの値を書き換えない」ため saveRef = { ...val } のような
+// コピーを作って書き込みに使うが、コピーへ返ってきたリビジョンを val 側へ反映し忘れると、
+// 直後に登録される取り消し（Undo）クロージャが val の古いリビジョンで書き込みを行い、
+// サーバー側のリビジョン競合チェックに409で弾かれる。コピーを使う呼び出し側は、保存成功後に
+// 必ずこのヘルパーで saveRef → 取り消しクロージャが参照する側のオブジェクトへ同期すること。
+function _syncValueRefAfterSave(saveRef, target) {
+  if (!saveRef || !target || saveRef === target) return;
+  if (saveRef.file !== undefined) target.file = saveRef.file;
+  if (saveRef.property !== undefined) target.property = saveRef.property;
+  if (saveRef.candidate_index !== undefined) target.candidate_index = saveRef.candidate_index;
+  if (saveRef.entry_revision !== undefined) target.entry_revision = saveRef.entry_revision;
+}
+
 async function _apiPostValue(entityPath, propName, value, status, note, richHtml, extra) {
   const key = entityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
   const body = { [key]: entityPath, property: propName, value, status, note: note || '' };
@@ -446,6 +531,15 @@ function _shouldRunFrontendAutoFillOnCreate(response) {
 
 async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {}) {
   const used = new Set((existingNames || []).map(name => String(name || '')));
+  // 進行中（未完了）の作成名も衝突候補へ含める。連続クリック時に再試行同士が
+  // 同じ候補名へ収束し、409 が連鎖して「同名エントリが多数」に至るのを防ぐ。
+  const dbKey = _dbNormalizePath(dbPath);
+  _dbPendingEntityCreates.forEach((_value, key) => {
+    const splitAt = key.indexOf('\n');
+    if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
+    const name = key.slice(splitAt + 1);
+    if (name) used.add(name);
+  });
   const bodyExtra = options.body && typeof options.body === 'object' ? options.body : {};
   const baseName = String(options.baseName || options.name || '無題').trim() || '無題';
   let index = 1;
@@ -463,7 +557,10 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
       const response = await apiPost(
         '/entity/create',
         { ...bodyExtra, parent_path: dbPath, name },
-        { silentError: true }
+        // 大きなシートや Dropbox 上では作成時のシート全体スナップショット等で
+        // 既定の 15 秒を超えることがある。ブラウザ側の打ち切りで実際は成功した作成が
+        // 失敗扱いになり行が消えるのを防ぐため、作成には十分長い上限を与える。
+        { silentError: true, timeoutMs: 120000 }
       );
       const path = (response && (response.path || response.entry_path)) || `${dbPath}/${name}.md`;
       return { response, name, path };
@@ -512,14 +609,25 @@ function _setSelectedColumns(dbPath, props, anchor) {
 }
 
 function _dbFindPaneContextForPath(dbPath) {
-  if (typeof getAllPanes !== 'function') return null;
   const target = _dbNormalizePath(dbPath);
-  try {
-    const panes = getAllPanes() || {};
-    for (const ctx of Object.values(panes)) {
+  if (typeof getAllPanes === 'function') {
+    try {
+      const panes = getAllPanes() || {};
+      for (const ctx of Object.values(panes)) {
+        if (ctx && (!target || _dbNormalizePath(ctx.dbPath) === target)) return ctx;
+      }
+    } catch {}
+  }
+  // 制作管理の埋め込みシートは、アクティブペインを汚染しないため GBLayout の
+  // ペインレジストリへ意図的に登録していない。DOM に紐付けた ctx も明示的な
+  // dbPath が一致する場合だけ候補に含め、再描画後も列型情報を正しく参照する。
+  if (typeof document !== 'undefined') {
+    const embeds = document.querySelectorAll?.('.gb-production-sheet-embed') || [];
+    for (const embed of embeds) {
+      const ctx = embed?._dbPaneContext;
       if (ctx && (!target || _dbNormalizePath(ctx.dbPath) === target)) return ctx;
     }
-  } catch {}
+  }
   return null;
 }
 
@@ -536,6 +644,11 @@ function _dbPaneContextsForPath(dbPath) {
       Object.values(getAllPanes() || {}).forEach(add);
     } catch {}
   }
+  if (typeof document !== 'undefined') {
+    try {
+      document.querySelectorAll('.gb-production-sheet-embed').forEach(embed => add(embed?._dbPaneContext));
+    } catch {}
+  }
   if (typeof _currentPaneState === 'function') add(_currentPaneState());
   return contexts;
 }
@@ -544,6 +657,11 @@ function _dbPaneContextFromEvent(eventOrElement, options = {}) {
   const fallbackDbPath = typeof state !== 'undefined' ? state.currentDbPath : '';
   const dbPath = options.dbPath || fallbackDbPath || '';
   const target = eventOrElement?.currentTarget || eventOrElement?.target || eventOrElement;
+  const embeddedEl = target?.closest?.('.gb-production-sheet-embed');
+  const embeddedCtx = embeddedEl?._dbPaneContext;
+  if (embeddedCtx && (!dbPath || _dbNormalizePath(embeddedCtx.dbPath) === _dbNormalizePath(dbPath))) {
+    return embeddedCtx;
+  }
   const paneEl = target?.closest?.('.gb-pane[data-pane-id]') || target?.closest?.('.gb-pane');
   const paneId = paneEl?.dataset?.paneId || '';
   if (paneId && typeof getPaneContext === 'function') {
@@ -621,6 +739,9 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       if (typeof _dbCreateEntityOptimistic === 'function') {
         created = _dbCreateEntityOptimistic(renderCtx, dbPath, { baseName: options.baseName || '無題' });
         const saved = await created.promise;
+        if (saved.name !== created.name && typeof _dbRenameOptimisticEntityLocally === 'function') {
+          _dbRenameOptimisticEntityLocally(created.renderCtx || renderCtx, dbPath, created.name, saved.name);
+        }
         if (typeof _dbScheduleEntityCreatePostSync === 'function') {
           _dbScheduleEntityCreatePostSync(dbPath, [{ name: saved.name, path: saved.path, response: saved.response }], created.renderCtx || renderCtx);
         }
@@ -630,13 +751,21 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       }
       if (typeof showStatus === 'function') showStatus('エントリを追加しました');
     } catch (e) {
-      // 楽観的に追加した未保存エントリを表示から取り除く
-      if (created && typeof _dbRemoveCreatedEntitiesLocally === 'function') {
-        _dbRemoveCreatedEntitiesLocally(created.renderCtx || renderCtx, dbPath, [created.name]);
+      // タイムアウト等でも実際は作成済みのことがあるため、撤去前に確認する
+      const recovered = created && typeof _dbRecoverEntityCreateAfterError === 'function'
+        ? await _dbRecoverEntityCreateAfterError(created.renderCtx || renderCtx, dbPath, created)
+        : null;
+      if (recovered) {
+        if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+      } else {
+        // 楽観的に追加した未保存エントリを表示から取り除く
+        if (created && typeof _dbRemoveCreatedEntitiesLocally === 'function') {
+          _dbRemoveCreatedEntitiesLocally(created.renderCtx || renderCtx, dbPath, [created.name]);
+        }
+        if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+        if (label) label.textContent = 'エントリを追加';
+        btn.disabled = false;
       }
-      if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
-      if (label) label.textContent = 'エントリを追加';
-      btn.disabled = false;
     }
   });
   actions.appendChild(btn);

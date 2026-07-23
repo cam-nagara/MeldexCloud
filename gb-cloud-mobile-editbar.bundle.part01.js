@@ -56,6 +56,7 @@
     { id: 'version', label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
     { id: 'annotation', label: '注釈', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
     { id: 'history', label: 'ヒストリー', icon: 'history', action: () => _openToolPanel('history') },
+    { id: 'tags', label: 'タグ', icon: 'tags', action: () => _openToolPanel('tags') },
   ];
   const TOOL_ITEMS = [
     { id: 'create', label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
@@ -261,7 +262,7 @@
 
   function _openVersionPanel() {
     if (_activateExistingPaneTab('version', '')) return true;
-    if (typeof openVersionTab === 'function') return !!openVersionTab('', 'file');
+    if (typeof openVersionTab === 'function') return !!openVersionTab('', 'file', { follow: true });
     if (typeof addPanelMenuVersion === 'function') return !!addPanelMenuVersion();
     if (typeof showStatus === 'function') showStatus('バージョン管理を開けませんでした', true);
     return false;
@@ -295,7 +296,7 @@
       database: 'シート',
       board: 'ボード',
       scriptnote: 'シナリオ',
-      calendar: 'カレンダー',
+      calendar: 'スケジュール',
       csv: 'CSV',
       'smart-db': 'スマートシート',
     })[toolType] || 'メニュー';
@@ -443,7 +444,14 @@
         { id: 'manage-filters', label: 'フィルタを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageFilters') },
       ];
     }
-    return _desktopToolMenuItemsForMobile(toolType);
+    const desktopItems = _desktopToolMenuItemsForMobile(toolType);
+    if (toolType !== 'calendar') return desktopItems;
+    // 制作タスクリスト面では、汎用カレンダー操作を混在させず制作操作だけを表示する。
+    // 「カレンダーに戻る」が同面を識別する安定した印になる。
+    const productionTaskSurface = desktopItems.some(item => item?.id === 'production-calendar');
+    return productionTaskSurface
+      ? desktopItems.filter(item => String(item?.id || '').startsWith('production-'))
+      : desktopItems;
   }
 
   function _editableFromNode(node) {
@@ -890,11 +898,3 @@
     const editable = _activeEditable || _getActiveEditable();
     if (_isLegacyRichTextEditable(editable) && typeof rtHeading === 'function' && tag !== 'P') rtHeading(tag);
     else document.execCommand('formatBlock', false, tag);
-    _dispatchInput();
-    _saveSelection();
-  }
-
-  function _openColor(anchor, command) {
-    _restoreSelection();
-    if (typeof openColorPalette !== 'function') return;
-    const fallback = command === 'hiliteColor' ? '#ffff88' : '#ffffff';

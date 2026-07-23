@@ -203,6 +203,23 @@ body.bsa-resizing-sidebar * {
   overflow-wrap: anywhere;
 }
 
+/* コメント一覧（本体 #rp-annotation と同じ内容。#gb-preview-pane と同じ「ビューワー」
+   区画を共有し、hidden 属性で切り替える）。 */
+#rp-annotation.bsa-annotation-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--preview-bg, #1f2023);
+  color: var(--preview-fg, var(--fg, #e4e4e4));
+  box-sizing: border-box;
+}
+
+#rp-annotation.bsa-annotation-pane[hidden] {
+  display: none;
+}
+
 .bsa-options-panel {
   display: flex;
   flex-direction: column;

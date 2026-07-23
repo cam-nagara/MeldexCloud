@@ -140,6 +140,28 @@
     return true;
   };
   window.historySetScope = window.historySetScope || function () {};
+
+  // gb-shortcuts.js（Ctrl+Z/Ctrl+Y の中央ハンドラ）と取り消し・やり直しツールバーボタンが
+  // 共通で呼ぶ薄いルーター。共通履歴（gb-history.js）を同梱しない単独アプリ（board-standalone等）
+  // では、その単独アプリが持つ自己完結スタック（bdUndo/bdRedo等）へそのまま委譲する
+  // （取り消し・やり直しボタン展開 フェーズ5, v0.6.205）。gb-history.js を同梱するアプリ
+  // （sheet-standalone等）では実装済みの本物が既に window に定義済みのため、この既定値は使われない。
+  window.meldexUndo = window.meldexUndo || function () {
+    if (typeof bdUndo === 'function') { bdUndo(); return; }
+    if (typeof historyUndo === 'function') historyUndo();
+  };
+  window.meldexRedo = window.meldexRedo || function () {
+    if (typeof bdRedo === 'function') { bdRedo(); return; }
+    if (typeof historyRedo === 'function') historyRedo();
+  };
+  // ツールバーの取り消し・やり直しボタン（data-undo-button / data-redo-button）の disabled 状態を
+  // 一括更新する既定実装。共通履歴を持つアプリでは gb-history.js 側の本実装が上書きする。
+  window.updateUndoRedoButtonStates = window.updateUndoRedoButtonStates || function () {
+    const canUndo = typeof _bdUndoStack !== 'undefined' && _bdUndoStack.length > 0;
+    const canRedo = typeof _bdRedoStack !== 'undefined' && _bdRedoStack.length > 0;
+    document.querySelectorAll('[data-undo-button]').forEach(btn => { btn.disabled = !canUndo; });
+    document.querySelectorAll('[data-redo-button]').forEach(btn => { btn.disabled = !canRedo; });
+  };
   window.captureLocalStorageSettings = window.captureLocalStorageSettings || function () { return {}; };
   window.restoreLocalStorageSettings = window.restoreLocalStorageSettings || function () {};
   window._normalizeLocalStorageSettingsSnapshots = window._normalizeLocalStorageSettingsSnapshots || function (before, after) {

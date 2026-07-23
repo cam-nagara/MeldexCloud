@@ -4,34 +4,33 @@
     const cascadeOpts = relProps.map(p => `<option value="${esc(p)}"${p===(current.cascadeFrom||'')?'selected':''}>${esc(p)}</option>`).join('');
     // ペア候補: 同DB内の他のリレーションプロパティ
     const pairOpts = relProps.map(p => `<option value="${esc(p)}"${p===(current.pairWith||'')?'selected':''}>${esc(p)}</option>`).join('');
-    optDiv.innerHTML = `<div class="field"><label>参照先シートフォルダのパス</label>
+    optDiv.innerHTML = `<div class="field"><label>参照先シート ${fieldHelp(`指定したシート内のエントリ名がドロップダウンに表示されます。${type==='relation'?'単一選択（1つだけ選べます）':'複数選択（カンマ区切りで複数選べます）'}`)}</label>
       <input id="pt-relation-db" type="text" value="${esc(current.relationDb||'')}" placeholder="例: 設定/キャラ（空欄 = 自分自身のシート）">
     </div>
-    <div class="field"><label>同一シート内の相互反映先プロパティ</label>
+    <div class="field"><label>同一シート内の相互反映先の列 ${fieldHelp('同一シート内の自己参照リレーションで、片方を変更したとき相手側の列にも自動反映します')}</label>
       <select id="pt-pair-with">
         <option value="">(なし)</option>
         ${pairOpts}
       </select>
-      <div class="pt-hint">同一シート内の自己参照リレーションで、片方を変更した時に相手側プロパティにも自動反映します</div>
     </div>
-    <div class="field"><label>タイムライン依存方向</label>
+    <div class="field"><label>タイムライン依存方向 ${fieldHelp('タイムラインの依存矢印で、列名に依存せず向きを決めます')}</label>
       <select id="pt-dependency-direction">
         <option value="" ${!current.dependencyDirection?'selected':''}>依存矢印に使わない</option>
         <option value="target-to-entry" ${current.dependencyDirection==='target-to-entry'?'selected':''}>参照先 → このエントリ</option>
         <option value="entry-to-target" ${current.dependencyDirection==='entry-to-target'?'selected':''}>このエントリ → 参照先</option>
       </select>
-      <div class="pt-hint">タイムラインの依存矢印で、プロパティ名に依存せず向きを決めます</div>
     </div>
     <div class="field">
-      <label class="pt-check-label">
-        <input id="pt-bidirectional-enabled" type="checkbox" ${current.bidirectional ? 'checked' : ''}>
-        双方向リレーション
-      </label>
-      <div class="pt-hint">参照先シート側にも対応プロパティを持たせ、どちら側の編集でも相手シートへ反映します。初期値はオフです</div>
+      <div class="gb-check-help-row">
+        <label class="pt-check-label">
+          <input id="pt-bidirectional-enabled" type="checkbox" ${current.bidirectional ? 'checked' : ''}>
+          双方向リレーション
+        </label>
+        ${fieldHelp('参照先シート側にも対応する列を持たせ、どちら側の編集でも相手シートへ反映します。初期値はオフです')}
+      </div>
     </div>
-    <div id="pt-bidirectional-prop-row" class="field"${current.bidirectional ? '' : ' style="display:none;"'}><label>参照先シート側の対応プロパティ</label>
+    <div id="pt-bidirectional-prop-row" class="field"${current.bidirectional ? '' : ' style="display:none;"'}><label>参照先シート側の対応列 ${fieldHelp('未作成なら自動で作成し、既存なら双方向設定を付与します')}</label>
       <input id="pt-bidirectional-prop" type="text" value="${esc(current.bidirectionalProp || statePropName || '')}" placeholder="空欄なら同名">
-      <div class="pt-hint">未作成なら自動で作成し、既存なら双方向設定を付与します</div>
     </div>
     <div class="field"><label>絞り込み（カスケード）</label>
       <select id="pt-cascade-from">
@@ -39,16 +38,11 @@
         ${cascadeOpts}
       </select>
     </div>
-    <div id="pt-cascade-key-row" class="field"${current.cascadeFrom?'':' style="display:none;"'}><label>参照先シート側の絞り込みプロパティ</label>
-      <input id="pt-cascade-key" type="text" value="${esc(current.cascadeKey||current.cascadeFrom||'')}" placeholder="参照先シート側で照合に使うプロパティ名">
-      <div class="pt-hint">参照先シートの各エントリについて、このプロパティの値が依存元の選択値と一致するものだけを候補に出します</div>
-    </div>
-    <div class="pt-hint">
-      指定したシートフォルダ内のエントリ名がドロップダウンに表示されます。
-      ${type==='relation'?'単一選択（1つだけ選べます）':'複数選択（カンマ区切りで複数選べます）'}
+    <div id="pt-cascade-key-row" class="field"${current.cascadeFrom?'':' style="display:none;"'}><label>参照先シート側の絞り込み列 ${fieldHelp('参照先シートの各エントリについて、この列の値が依存元の選択値と一致するものだけを候補に出します')}</label>
+      <input id="pt-cascade-key" type="text" value="${esc(current.cascadeKey||current.cascadeFrom||'')}" placeholder="参照先シート側で照合に使う列名">
     </div>`;
     // DBピッカーを参照先DB入力に取り付け
-    setTimeout(() => { const dbInput = _ptGet('pt-relation-db', scope); if (dbInput) _attachDbPicker(dbInput); }, 0);
+    setTimeout(() => { const dbInput = _ptGet('pt-relation-db', scope); if (dbInput) _attachDbPicker(dbInput, _ptState(scope)?.dbPath); }, 0);
     _ptGet('pt-bidirectional-enabled', scope)?.addEventListener('change', function() {
       const row = _ptGet('pt-bidirectional-prop-row', scope);
       const propInput = _ptGet('pt-bidirectional-prop', scope);
@@ -78,11 +72,8 @@
   } else if (type === 'formula') {
     optDiv.innerHTML = typeof _ptBuildFormulaOptionsHtml === 'function'
       ? _ptBuildFormulaOptionsHtml(current, scope)
-      : `<div class="field"><label>数式（Notion互換構文）</label>
+      : `<div class="field"><label>数式（Notion互換構文） ${fieldHelp('使用可能: prop("名前"), if(条件, 真, 偽), let/lets(変数, 値, ..., 本体), and, or, not, empty, contains, replace, floor, round, mod, toNumber, format, year, month, day, dateBetween, dateSubtract, now, +, -, *, /, >, <, ==, !=')}</label>
         <textarea id="pt-formula-src" class="pt-formula-textarea" rows="8">${esc(current.formula||'')}</textarea>
-        <div class="pt-hint">
-          使用可能: prop("名前"), if(条件, 真, 偽), let/lets(変数, 値, ..., 本体), and, or, not, empty, contains, replace, floor, round, mod, toNumber, format, year, month, day, dateBetween, dateSubtract, now, +, -, *, /, >, <, ==, !=
-        </div>
       </div>
       <div class="field">
         <button data-action="testFormula(this.closest('[data-pt-root]'))" class="pt-small-btn">テスト</button>

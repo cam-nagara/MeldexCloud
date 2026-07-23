@@ -106,6 +106,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.doc.characterDb = data.characterDb;
       this.doc.notes = data.notes;
       this.doc.rubyRules = data.rubyRules || [];
+      this.doc.rubyPresentation = data.rubyPresentation;
       this.doc.rows = data.rows;
       this.doc.source = data.source;
       this._ensureDefaultChara();

@@ -11,9 +11,17 @@ function _resolveDatabasePaneContext(ctx, options) {
   const resolveOpts = options || {};
   const explicitCtx = !!ctx;
   let candidate = ctx || _currentPaneState();
-  const paneMissing = !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
   const containerDetached = !!(candidate?.containerEl && !document.body.contains(candidate.containerEl));
-  const shouldUseActivePane = !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
+  // 埋め込みシート（MeldexProductionSheetEmbed 等）は GBLayout のレイアウトツリーへ
+  // 意図的に未登録の専用 ctx を使う（グローバル副作用ゼロの設計）。そのため paneId は
+  // 常に findNode で見つからず、以下の paneMissing 判定だけに頼ると埋め込み側の ctx が
+  // 毎回メイン画面側の「現在アクティブなペイン」の ctx へ差し替えられ、描画先とデータ
+  // 格納先がすれ違う（P0バグ）。ctx.embedded フラグが立っており、かつ containerEl が
+  // document に接続されている間はこの差し替えをスキップする。containerEl が切断された
+  // 場合（destroy 後の取り違え等）は従来どおり安全側（メイン画面ctx）へフォールバックする。
+  const isConnectedEmbeddedCtx = !!(candidate?.embedded && !containerDetached);
+  const paneMissing = !isConnectedEmbeddedCtx && !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
+  const shouldUseActivePane = !isConnectedEmbeddedCtx && !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
   if (paneMissing || containerDetached || shouldUseActivePane) candidate = _currentPaneState();
   if (!explicitCtx && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
     candidate = _globalPaneState();
@@ -51,7 +59,13 @@ function _renderDbViewTabsSafely(ctx) {
 
 function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
   if (!scrollState) return;
-  requestAnimationFrame(() => {
+  // rAF単独待ちだと、フレームが生成されない状況（バックグラウンドタブ、
+  // ヘッドレス実行等）で復元が一度も走らない。_nextFrame と同じ
+  // 「rAF or タイムアウト」の競争で必ず1回だけ適用する。
+  let applied = false;
+  const apply = () => {
+    if (applied) return;
+    applied = true;
     const container = typeof _getDbViewScrollContainer === 'function'
       ? _getDbViewScrollContainer(ctx, viewMode)
       : null;
@@ -67,7 +81,9 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
     target.classList.add('db-view-focused-entity');
     target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     setTimeout(() => target.classList.remove('db-view-focused-entity'), 1600);
-  });
+  };
+  requestAnimationFrame(apply);
+  setTimeout(apply, 120);
 }
 
 function _renderDbLoadError(ctx, error) {
@@ -104,12 +120,17 @@ function _normalizeBackendDbViewConfig(dbPath, viewConfig) {
     : JSON.parse(JSON.stringify(viewConfig || {}));
   if (typeof _migrateLegacyViewConfig === 'function') {
     const migrated = _migrateLegacyViewConfig(dbPath, cloned);
-    return { cfg: migrated.cfg || cloned, changed: migrated.changed === true };
+    const normalized = migrated.cfg || cloned;
+    const productionRepaired = typeof repairProductionManagementDbViewConfig === 'function'
+      && repairProductionManagementDbViewConfig(dbPath, normalized);
+    return { cfg: normalized, changed: migrated.changed === true || productionRepaired };
   }
-  return { cfg: cloned, changed: false };
+  const productionRepaired = typeof repairProductionManagementDbViewConfig === 'function'
+    && repairProductionManagementDbViewConfig(dbPath, cloned);
+  return { cfg: cloned, changed: productionRepaired };
 }
 
-function _applyBackendDbViewConfig(dbPath, viewConfig) {
+function _applyBackendDbViewConfig(dbPath, viewConfig, ctx) {
   const normalizedResult = _normalizeBackendDbViewConfig(dbPath, viewConfig);
   if (!normalizedResult) return false;
   if (typeof _hasPendingDbViewConfigBackendSave === 'function' && _hasPendingDbViewConfigBackendSave(dbPath)) return false;
@@ -123,13 +144,15 @@ function _applyBackendDbViewConfig(dbPath, viewConfig) {
     localStorage.setItem('dbViewConfig:' + (dbPath || ''), JSON.stringify(normalized));
   }
   if (normalizedResult.changed && typeof _persistDbViewConfigToBackend === 'function') {
-    _persistDbViewConfigToBackend(dbPath, normalized);
+    _persistDbViewConfigToBackend(dbPath, normalized, { ctx });
   }
   return changed;
 }
 
 async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
   if (!dbPath || typeof getDbViewConfig !== 'function' || typeof apiPut !== 'function') return null;
+  if (typeof isProductionManagementWriteBlocked === 'function'
+      && isProductionManagementWriteBlocked(dbPath, options.ctx)) return null;
   if (options.requireExistingLocalCache === true && options.hadLocalCache !== true) return null;
   const localConfig = getDbViewConfig(dbPath) || {};
   const payload = typeof _sanitizeDbViewConfigForBackend === 'function'
@@ -147,6 +170,9 @@ async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
 
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
+  // 埋め込みシートは pane-local ctx を正とし、メイン画面の state を同期しない。
+  // 既定は従来どおり同期するため、通常シートの挙動は変わらない。
+  const syncGlobalState = openOpts.skipGlobalState !== true;
   const dbPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   const dbPerfTargetLabel = String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || '');
   ctx = _resolveDatabasePaneContext(ctx);
@@ -171,7 +197,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   let loadingShown = false;
   try {
     if (showOpenLoading) { showLoading('シートを読み込み中...'); loadingShown = true; }
-    const _isDbSwitch = state.currentDbPath !== dbPath;
+    const _isDbSwitch = (syncGlobalState ? state.currentDbPath : ctx.dbPath) !== dbPath;
     // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
     if (_isDbSwitch) {
       const _ctxClear = ctx || _currentPaneState();
@@ -182,17 +208,23 @@ async function selectDatabase(dbPath, ctx, opts) {
   ctx.dbPath = dbPath;
   ctx.entityPath = null;
   ctx.pivotData = null;
+  ctx.smartDb = null;
+  ctx.smartDbData = null;
   // グローバルstate同期（非スコープ化コードの互換性）
-  state.currentDbPath = dbPath;
-  state.currentSmartDb = null;
-  state.smartDbData = null;
-  state.currentEntityPath = null;
-  state.pivotData = null;
+  if (syncGlobalState) {
+    state.currentDbPath = dbPath;
+    state.currentSmartDb = null;
+    state.smartDbData = null;
+    state.currentEntityPath = null;
+    state.pivotData = null;
+  }
   // スマートシートからの遷移時、smart-db-view の表示が残ると通常シートが見えなくなる。
   // pane-bridge の DB_SUB_VIEWS 切替が走らないケースに備えて明示的に隠す。
-  const _smartDbViewEl = document.getElementById('smart-db-view');
-  if (_smartDbViewEl && _smartDbViewEl.style.display !== 'none') {
-    _smartDbViewEl.style.display = 'none';
+  if (!openOpts.skipGlobalUi) {
+    const _smartDbViewEl = document.getElementById('smart-db-view');
+    if (_smartDbViewEl && _smartDbViewEl.style.display !== 'none') {
+      _smartDbViewEl.style.display = 'none';
+    }
   }
   const dbLoadSeq = (ctx._dbLoadSeq || 0) + 1;
   ctx._dbLoadSeq = dbLoadSeq;
@@ -302,24 +334,26 @@ async function selectDatabase(dbPath, ctx, opts) {
   if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('db-view-container');
 
   // DBメタデータ（actions/backlinks/theme）を取得
-  state.dbMetadata = null;
+  ctx.dbMetadata = null;
+  if (syncGlobalState) state.dbMetadata = null;
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
     if (isStaleDbLoad()) return;
-    state.dbMetadata = dbMetadata;
     ctx.dbMetadata = dbMetadata;
-    const backendViewConfig = state.dbMetadata?.view_config;
+    if (syncGlobalState) state.dbMetadata = dbMetadata;
+    const backendViewConfig = ctx.dbMetadata?.view_config;
     let backendViewConfigApplied = false;
     if (_hasBackendDbViewConfigData(backendViewConfig)) {
-      backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig);
+      backendViewConfigApplied = _applyBackendDbViewConfig(dbPath, backendViewConfig, ctx);
     } else {
       const migratedViewConfig = await _migrateDbViewConfigToBackend(dbPath, {
         requireExistingLocalCache: true,
         hadLocalCache: hadLocalViewConfigBeforeOpen,
+        ctx,
       });
       if (isStaleDbLoad()) return;
-      if (migratedViewConfig && state.dbMetadata) state.dbMetadata.view_config = migratedViewConfig;
+      if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
     }
     if (backendViewConfigApplied) {
       const latestMode = getCurrentViewMode(dbPath, { ctx });
@@ -330,7 +364,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       }
     }
     // DB自身のスタイル（style: 優先、旧 theme: も後方互換で読む）は DB パネルにのみ適用
-    const _dbStyle = state.dbMetadata && (state.dbMetadata.style || state.dbMetadata.theme);
+    const _dbStyle = ctx.dbMetadata && (ctx.dbMetadata.style || ctx.dbMetadata.theme);
     if (!openOpts.skipGlobalUi && _dbStyle && typeof applyFileStyleToPanel === 'function') {
       applyFileStyleToPanel(_dbStyle, 'db-view-container');
     }
@@ -342,8 +376,9 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
   } catch {
     if (isStaleDbLoad()) return;
-    state.dbMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
-    ctx.dbMetadata = state.dbMetadata;
+    const emptyMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
+    ctx.dbMetadata = emptyMetadata;
+    if (syncGlobalState) state.dbMetadata = emptyMetadata;
     if (typeof _logPerfEvent === 'function') {
       _logPerfEvent('sheet.metadata.error', metadataPerfStartedAt, { targetLabel: dbPerfTargetLabel });
     }
@@ -351,11 +386,12 @@ async function selectDatabase(dbPath, ctx, opts) {
 
   // localStorage → バックエンドへの自動マイグレーション（property_types）
   // バックエンドの property_types が未設定（undefined/null）かつ localStorage に設定がある場合のみ
-  if (state.dbMetadata && state.dbMetadata.property_types != null && Object.keys(state.dbMetadata.property_types).length === 0) {
+  if (ctx.dbMetadata && ctx.dbMetadata.property_types != null && Object.keys(ctx.dbMetadata.property_types).length === 0) {
     const localPt = getDbViewConfig(dbPath).propertyTypes;
     if (localPt && Object.keys(localPt).length > 0) {
-      state.dbMetadata.property_types = localPt;
-      _savePropertyTypesToBackend(dbPath);
+      ctx.dbMetadata.property_types = localPt;
+      if (!(typeof isProductionManagementWriteBlocked === 'function'
+          && isProductionManagementWriteBlocked(dbPath, ctx))) _savePropertyTypesToBackend(dbPath, undefined, ctx);
     }
   }
 
@@ -366,14 +402,14 @@ async function selectDatabase(dbPath, ctx, opts) {
       : null;
     ctx.filter = activeViewForFilter && Object.prototype.hasOwnProperty.call(activeViewForFilter, 'filter')
       ? (activeViewForFilter.filter || 'disabled')
-      : (ctx.filter || state.filter || 'disabled');
-    state.filter = ctx.filter;
+      : (ctx.filter || (syncGlobalState ? state.filter : '') || 'disabled');
+    if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
     const pivotData = await apiFetch(url);
     if (isStaleDbLoad()) return;
     ctx.pivotData = pivotData;
-    state.pivotData = ctx.pivotData; // グローバル同期
+    if (syncGlobalState) state.pivotData = ctx.pivotData; // グローバル同期
     const entityCountForPerf = Object.keys(ctx.pivotData.entities || {}).length;
     const propertyCountForPerf = Array.isArray(ctx.pivotData.properties) ? ctx.pivotData.properties.length : 0;
     if (typeof _logPerfEvent === 'function') {
@@ -449,8 +485,11 @@ async function selectDatabase(dbPath, ctx, opts) {
   } catch (e) {
     if (isStaleDbLoad()) return;
     ctx.pivotData = null;
-    state.pivotData = null;
-    state.dbMetadata = null;
+    ctx.dbMetadata = null;
+    if (syncGlobalState) {
+      state.pivotData = null;
+      state.dbMetadata = null;
+    }
     _renderDbLoadError(ctx, e);
     if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
       showStatus('シート読み込みエラー: ' + (e?.message || e), true);

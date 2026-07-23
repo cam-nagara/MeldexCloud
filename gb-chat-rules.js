@@ -4,7 +4,14 @@
 (function() {
   'use strict';
 
+  // HEADER_LINE はバックエンド（meldex_chat_rules_store.py の CHAT_RULES_HEADER）へ
+  // 実際に注入される見出し文言と一致させておくための定数
+  // （test_chat_rules_dialog_matches_skills_priority_wording が整合を検査する）。
+  // UI共通ルール: 基本UIには生のMarkdown見出し記法をそのまま出さないため、
+  // 画面表示は簡潔な見出し + ツールチップ（HEADER_TITLE / HEADER_HELP）にする。
   const HEADER_LINE = '## ユーザー定義ルール（ソースフォルダ用の指示の次に優先）';
+  const HEADER_TITLE = 'ユーザー定義ルール';
+  const HEADER_HELP = 'ソースフォルダに書いた指示の次に優先して適用されます。';
   const stateByContainer = new WeakMap();
 
   function crEsc(value) {
@@ -100,8 +107,7 @@
       <section class="gb-section gb-section--boxed">
         <div class="gb-field-row" style="justify-content:space-between;gap:8px;">
           <div>
-            <div class="gb-section-title">${crIcon('clipboardList', 14)} チャットルール</div>
-            <div class="gb-section-desc">ここで有効なルールはバックエンドでチャットプロンプトに自動注入されます。</div>
+            <div class="gb-section-title">${crIcon('clipboardList', 14)} チャットルール ${fieldHelp('有効なルールはチャットに自動で反映されます。')}</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
             ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-cr-action="add" data-e2e-id="chat-rules-add">${crIcon('plus', 14)} 追加</button>` : ''}
@@ -111,7 +117,7 @@
       </section>
       <div data-cr-alert></div>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-desc">${crEsc(HEADER_LINE)}</div>
+        <div class="gb-section-desc">${crEsc(HEADER_TITLE)} ${fieldHelp(HEADER_HELP)}</div>
         <div data-cr-list class="chat-rules-list"></div>
       </section>
     `;

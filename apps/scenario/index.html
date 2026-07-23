@@ -26,7 +26,9 @@
   <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
+  <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="scenario-standalone.css">
+  <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
   <div class="sa-shell scenario-app">
@@ -38,6 +40,12 @@
           <button type="button" data-scenario-action="open"><span class="ico ico-folderOpen"></span>開く...</button>
           <button type="button" data-scenario-action="save"><span class="ico ico-save"></span>保存</button>
           <button type="button" data-scenario-action="saveAs"><span class="ico ico-saveAll"></span>名前を付けて保存...</button>
+          <div class="sa-menu-sep"></div>
+          <button type="button" data-scenario-action="exportPng"><span class="ico ico-image"></span>画像（PNG）として保存...</button>
+          <button type="button" data-scenario-action="exportHtml"><span class="ico ico-fileCode"></span>HTMLとして保存...</button>
+          <button type="button" data-scenario-action="exportMarkdown"><span class="ico ico-fileText"></span>Markdownとして保存...</button>
+          <div class="sa-menu-sep"></div>
+          <button type="button" data-scenario-action="clipstudio" id="scenario-menu-clipstudio"><span class="ico ico-clipboardCopy"></span>CLIP STUDIO PAINTへ送信</button>
           <button type="button" data-scenario-action="sendBmanga"><span class="ico ico-upload"></span>B-MANGAへ送信...</button>
           <div class="sa-menu-sep"></div>
           <button type="button" data-scenario-action="undo"><span class="ico ico-undo2"></span>元に戻す</button>
@@ -48,8 +56,16 @@
       </div>
       <div id="scenario-title-label" class="sa-title">新規シナリオ</div>
       <div id="scenario-path-label" class="sa-path">未保存</div>
+      <button id="scenario-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="scenario-option-panel-button"><span class="ico ico-slidersHorizontal"></span></button>
     </header>
-    <main id="scenario-root" class="sa-main scenario-main"></main>
+    <div class="sa-body">
+      <main id="scenario-root" class="sa-main scenario-main"></main>
+      <div id="scenario-option-resizer" class="sa-option-resizer" role="separator" aria-label="オプションパネルの幅を調整" aria-orientation="vertical" tabindex="0"></div>
+      <aside id="scenario-option-panel" class="sa-option-panel" aria-label="オプションパネル">
+        <div class="sa-option-header"><span>オプション</span></div>
+        <div id="rp-detail" class="sa-option-body"></div>
+      </aside>
+    </div>
   </div>
 
   <div id="standalone-loading" class="sa-loading" role="status" aria-live="polite" aria-busy="true">
@@ -59,6 +75,7 @@
     </div>
   </div>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
+  <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
@@ -79,19 +96,28 @@
   <script src="gb-icon-assets.js"></script>
   <script src="gb-ui.js"></script>
   <script src="gb-modal-shell.js"></script>
+  <script src="offline-bundles/gb-color-palette.js"></script>
+  <script src="gb-format-popup.js"></script>
   <script src="standalone-stubs.js"></script>
+  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-format-style-ui.js"></script>
+  <script src="standalone-option-panel.js"></script>
 <script src="standalone-file-fs.js"></script>
 <script src="standalone-default-apps.js"></script>
 <script src="standalone-cloud-path-policy.js"></script>
 <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="gb-dropbox-profile-sync.js"></script>
+  <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="standalone-pwa-install.js"></script>
   <script src="gb-component.js"></script>
   <script src="gb-scriptnote-format.js"></script>
+  <script src="gb-scriptnote-ruby-presentation.js"></script>
   <script src="gb-scriptnote-document.js"></script>
   <script src="offline-bundles/gb-scriptnote-editor.js"></script>
   <script src="gb-scriptnote-history.js"></script>
+  <script src="gb-scriptnote-ruby-settings-ui.js"></script>
   <script src="gb-scriptnote-selection.js"></script>
   <script src="gb-scriptnote-navigation.js"></script>
   <script src="gb-scriptnote-text-selection.js"></script>
@@ -103,10 +129,14 @@
   <script src="gb-scriptnote-search.js"></script>
   <script src="gb-scriptnote-ruby.js"></script>
   <script src="gb-scriptnote-bmanga.js"></script>
+  <script src="gb-scriptnote-clipstudio.js"></script>
   <script src="gb-scriptnote-rules.js"></script>
   <script src="gb-scriptnote-rowset.js"></script>
   <script src="offline-bundles/gb-scriptnote-detail.js"></script>
   <script src="gb-tool-scriptnote.js"></script>
+  <script src="gb-export-save.js"></script>
+  <script src="gb-export-image.js"></script>
+  <script src="standalone-mobile-toolbar.js"></script>
   <script src="scenario-standalone-app.js"></script>
 </body>
 </html>

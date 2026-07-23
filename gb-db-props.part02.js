@@ -1,7 +1,10 @@
   }
 
-  items.push({ type: 'sep' });
-  items.push({ label: lucide('trash2', 14) + ' プロパティを削除', danger: true, action: () => _deleteColumn(dbPath, propName, ctx) });
+  // 制作管理シートでは、必須列を誤って削除できる導線自体を表示しない。
+  if (!(typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(dbPath))) {
+    items.push({ type: 'sep' });
+    items.push({ label: lucide('trash2', 14) + ' 列を削除', danger: true, action: () => _deleteColumn(dbPath, propName, ctx) });
+  }
 
   _renderColMenuItems(menu, items);
 
@@ -58,6 +61,10 @@ function _getDefaultEntryNameAutoProperties(props) {
 function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPath = '' } = {}) {
   const targetDbPath = dbPath || ctx?.dbPath || state.currentDbPath;
   if (!targetDbPath) return;
+  if (typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(targetDbPath)) {
+    showStatus('制作管理シートではエントリ名の自動生成を使用できません', true);
+    return;
+  }
   const props = _getEntryNameAutoPropertyColumns(targetDbPath, ctx);
   if (!props.length) {
     showStatus('名前に使える列がありません', true);
@@ -145,6 +152,8 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath })
     : null;
   const targetDbPath = ctx?.dbPath || dbPath || state.currentDbPath;
+  const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(targetDbPath);
   const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || state.pivotData;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
@@ -162,9 +171,9 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   const pts = getPropertyTypes(targetDbPath);
   const hasDeps = _hasDependencyPairProps(pts);
   const items = [
-    { icon: 'sparkles', label: 'エントリ名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
+    ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'エントリ名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
-    } },
+    } }] : []),
     { type: 'sep' },
     { icon: 'fileText', label: '詳細を開く', action: () => {
       if (typeof openEntityInSplit === 'function') openEntityInSplit(ep, entityName);
@@ -194,15 +203,18 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     { type: 'sep' },
     { icon: 'trash2', label: 'エントリを削除', danger: true, action: async () => {
       if (!await cfConfirm(entityName + ' を削除しますか？')) return;
-      apiPost('/outliner/delete', { path: ep }).then(async () => {
+      apiPost('/outliner/delete', { path: ep }).then(async (response) => {
         // Phase 2 §5.3: 連動カレンダーイベントを削除/orphan
         try {
           if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
             await window.GbDbCalendarSync.onEntryDeleted(targetDbPath, ep);
           }
         } catch {}
-        showStatus('削除しました');
         selectDatabase(targetDbPath, ctx);
+        const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
+          ? _dbDeleteCalendarSyncWarningMessage(response)
+          : '';
+        showStatus(calendarWarning || '削除しました', !!calendarWarning);
       }).catch(() => showStatus('削除に失敗', true));
     }},
   ];
@@ -347,37 +359,33 @@ function showGridBorderModal(ctxOrDbPath) {
   });
 }
 
-function showEntityColMenu(e) {
+function showEntityColMenu(e, ctxOverride, dbPathOverride) {
   closeColHeaderMenu();
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
-    ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: state.currentDbPath })
-    : null;
-  const dbPath = ctx?.dbPath || state.currentDbPath;
+  const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: dbPathOverride || state.currentDbPath })
+    : null);
+  const dbPath = dbPathOverride || ctx?.dbPath || state.currentDbPath;
+  const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(dbPath);
+  const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function'
+    && isProductionManagementWriteBlocked(dbPath, ctx);
 
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
-  // 上部にリネーム入力欄: DB 名変更
-  if (dbPath) {
-    const dbName = (dbPath.split('/').pop() || '');
-    _addMenuRenameInput(menu, dbName, async (newName) => {
-      try {
-        const res = await apiPost('/outliner/rename', { old_path: dbPath, new_name: newName, type: 'database' });
-        showStatus('シート名を変更しました');
-        if (typeof refreshOutliner === 'function') refreshOutliner();
-        const newPath = res?.new_path || dbPath.replace(/[^/]+$/, newName);
-        if (typeof renameAppPathReferences === 'function') {
-          renameAppPathReferences(dbPath, newPath, { label: newName, fileId: res?.file_id, type: 'database' });
-        }
-        if (typeof selectDatabase === 'function') {
-          selectDatabase(newPath, ctx, {
-            silent: true,
-            skipRecent: true,
-            skipNavPush: true,
-            skipSaveLastView: false,
-          });
-        }
-      } catch (err) { showStatus('シート名変更失敗: ' + (err.message || err), true); }
-    }, { placeholder: 'シート名を変更...' });
+  // 上部にリネーム入力欄: エントリ名列の列名変更（シート名の変更はフォルダツリー/タブから行う）
+  if (dbPath && !productionSchemaLocked) {
+    const currentLabel = typeof _dbEntityColumnDisplayLabel === 'function'
+      ? _dbEntityColumnDisplayLabel(dbPath, { ctx })
+      : 'エントリ名';
+    _addMenuRenameInput(menu, currentLabel, async (newName) => {
+      const clean = String(newName || '').trim();
+      if (!clean) return;
+      if (typeof setEntityColumnLabel === 'function') {
+        setEntityColumnLabel(dbPath, clean, { ctx });
+        showStatus('列名を変更しました');
+        if (typeof renderPivot === 'function') renderPivot(ctx);
+      }
+    }, { placeholder: 'エントリ名列の名前を変更...' });
   }
 
   const pinnedColsList = getPinnedCols(dbPath, { ctx });
@@ -389,13 +397,12 @@ function showEntityColMenu(e) {
     // 互換テスト用: showUnifiedFilterModal()
     { label: 'フィルタ...', action: () => showUnifiedFilterModal({ ctx }) },
     { type: 'sep' },
-    { label: lucide('sparkles', 14) + ' エントリ名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
+    ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' エントリ名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });
-    } },
-    { type: 'sep' },
+    } }, { type: 'sep' }] : []),
     { type: 'submenu', label: lucide('columns', 14) + ' 列操作', children: [
       { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal('__entity__', ctx || dbPath) },
-      { label: lucide('listChecks', 14) + ' 列の表示と順序...', action: () => showColumnDisplayOrderModal(ctx) },
+      // 「列の表示と順序...」はツールバーへ移設（2026-07-19 ユーザー指示）
       { type: 'submenu', label: '列を固定', children: [
         { label: (entityPinned ? radioMark(true) : '　') + '固定する', action: () => {
           if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, true, { ctx });
@@ -412,7 +419,14 @@ function showEntityColMenu(e) {
         children: _makeHiddenColumnMenuItems(dbPath, ctx),
       },
     ] },
-    { label: '+ 依存関係プロパティ', action: () => _addDependencyPairProps(dbPath, ctx) },
+    // エントリ名列の折り返し設定（通常列と同じサブメニュー。キーは __entity__）
+    { type: 'submenu', label: lucide('wrapText', 14) + ' 折り返し設定',
+      children: typeof _makeColumnWrapSubmenuItems === 'function'
+        ? _makeColumnWrapSubmenuItems(dbPath, '__entity__', ctx)
+        : [] },
+    ...(!productionSchemaLocked && !productionWriteBlocked
+      ? [{ label: '+ 依存関係の列', action: () => _addDependencyPairProps(dbPath, ctx) }]
+      : []),
     ...(pinnedColsList.length > 0 ? [{
       type: 'sep'
     }, {
@@ -490,7 +504,7 @@ function _addDependencyPairProps(dbPath, ctx) {
   const pts = getPropertyTypes(dbPath);
   // 既に存在する場合はスキップ
   if (pts['先行'] || pts['後続']) {
-    showStatus('依存関係プロパティは既に存在します');
+    showStatus('依存関係の列は既に存在します');
     return;
   }
   setPropertyType(dbPath, '先行', {
@@ -499,7 +513,7 @@ function _addDependencyPairProps(dbPath, ctx) {
   setPropertyType(dbPath, '後続', {
     type: 'multi-relation', relationDb: '', pairWith: '先行', dependencyDirection: 'entry-to-target'
   });
-  showStatus('依存関係プロパティを追加しました（先行 / 後続）');
+  showStatus('依存関係の列を追加しました（先行 / 後続）');
   renderPivot(ctx);
 }
 
@@ -710,7 +724,8 @@ function _addColumnDisplayOrderItem(root, propName, checked, afterItem) {
   const listEl = root?.querySelector?.('#col-vis-list');
   if (!listEl || !propName) return null;
   const item = document.createElement('div');
-  item.draggable = true;
+  // 並べ替えは pointer events 実装（showColumnDisplayOrderModal 側）。
+  // draggable=true にすると HTML5 ドラッグが先に始まり pointer events が止まるため付けない
   item.dataset.prop = propName;
   item.className = 'col-vis-item';
   const handle = document.createElement('span');
@@ -727,12 +742,17 @@ function _addColumnDisplayOrderItem(root, propName, checked, afterItem) {
   label.className = 'col-vis-label';
   const actions = document.createElement('span');
   actions.className = 'col-vis-actions';
-  const copyBtn = _dbColumnActionButton('copy', '列を複製: ' + propName, '', '複製');
-  const delBtn = _dbColumnActionButton('trash2', '列を削除: ' + propName, 'danger', '削除');
-  copyBtn.addEventListener('click', () => _duplicateColumnFromDisplayOrderModal(root, propName, item));
-  delBtn.addEventListener('click', () => _deleteColumnFromDisplayOrderModal(root, propName, item));
-  actions.appendChild(copyBtn);
-  actions.appendChild(delBtn);
+  if (!root?._productionWriteBlocked) {
+    const copyBtn = _dbColumnActionButton('copy', '列を複製: ' + propName, '', '複製');
+    copyBtn.addEventListener('click', () => _duplicateColumnFromDisplayOrderModal(root, propName, item));
+    actions.appendChild(copyBtn);
+  }
+  if (!root?._productionWriteBlocked
+      && !(typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(root?._dbPath || ''))) {
+    const delBtn = _dbColumnActionButton('trash2', '列を削除: ' + propName, 'danger', '削除');
+    delBtn.addEventListener('click', () => _deleteColumnFromDisplayOrderModal(root, propName, item));
+    actions.appendChild(delBtn);
+  }
   item.appendChild(handle);
   item.appendChild(cb);
   item.appendChild(label);
@@ -762,7 +782,7 @@ function _saveColumnDisplayOrderState(root, label) {
   const target = view || c;
   target.hiddenCols = hidden;
   target.colOrder = newOrder;
-  saveDbViewConfig(dbPath, c, { skipHistory: true });
+  saveDbViewConfig(dbPath, c, { skipHistory: true, ctx });
   if (label && typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, label, before, captureDbViewConfigHistory(dbPath), '', () => {
       if (typeof selectDatabase === 'function') return selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true, skipSaveLastView: true });
@@ -858,6 +878,8 @@ function showColumnDisplayOrderModal(ctxOrDbPath) {
   if (!dbPath || !pivotData) return;
   const hiddenCols = getHiddenCols(dbPath, { ctx });
   const colOrder = _dbColumnDisplayOrderList(dbPath, ctx);
+  const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function'
+    && isProductionManagementWriteBlocked(dbPath, ctx);
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
@@ -865,7 +887,7 @@ function showColumnDisplayOrderModal(ctxOrDbPath) {
 
   o.innerHTML = `<div class="modal col-vis-modal">
     <h3>列の表示と順序</h3>
-    <div class="col-vis-toolbar">
+    <div class="col-vis-toolbar" ${productionWriteBlocked ? 'hidden' : ''}>
       <label class="col-vis-new-label" for="col-vis-new-name">列名</label>
       <input id="col-vis-new-name" type="text" placeholder="新しい列名">
       <button type="button" id="col-vis-add">${typeof lucide === 'function' ? lucide('plus', 14) : ''} 追加</button>
@@ -880,6 +902,7 @@ function showColumnDisplayOrderModal(ctxOrDbPath) {
   document.body.appendChild(o);
   o._dbPath = dbPath;
   o._dbCtx = ctx || null;
+  o._productionWriteBlocked = productionWriteBlocked;
   o.querySelector('#col-vis-close')?.addEventListener('click', () => o.remove());
   o.querySelector('#col-vis-apply')?.addEventListener('click', () => applyColVisibility(o));
   o.querySelector('#col-vis-add')?.addEventListener('click', async (ev) => {
@@ -899,15 +922,61 @@ function showColumnDisplayOrderModal(ctxOrDbPath) {
   colOrder.forEach(p => {
     _addColumnDisplayOrderItem(o, p, !hiddenCols.includes(p));
   });
-  // D&D
-  let dragItem = null;
-  listEl.addEventListener('dragstart', (e) => {
-    if (e.target.closest('button,input')) { e.preventDefault(); return; }
-    dragItem = e.target.closest('.col-vis-item[data-prop]');
-    if (dragItem) dragItem.classList.add('is-dragging');
+  // 並べ替え: pointer events 版。
+  // HTML5 DnD はドラッグ中に wheel イベントが届かない仕様のため、
+  // 「端超えでもスクロール継続 + ドラッグ中ホイールスクロール」を満たす pointer 実装にする
+  // （自動スクロールは MeldexDragAutoScroll 共通基盤）
+  let pdrag = null; // { item, pointerId, startX, startY, started }
+  const PDRAG_THRESHOLD = 4;
+  listEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button,input')) return;
+    // タッチはリストのスクロール操作と競合するため、ハンドルからのみ並べ替え開始
+    if (e.pointerType === 'touch' && !e.target.closest('.col-vis-handle')) return;
+    const item = e.target.closest('.col-vis-item[data-prop]');
+    if (!item) return;
+    pdrag = { item, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, started: false };
+    // preventDefault はしない（クリック・チェックボックス操作を殺さない）
   });
-  listEl.addEventListener('dragover', (e) => { e.preventDefault(); const t = e.target.closest('.col-vis-item[data-prop]'); if (dragItem && t && t !== dragItem) { const r = t.getBoundingClientRect(); if (e.clientY < r.top + r.height / 2) t.before(dragItem); else t.after(dragItem); }});
-  listEl.addEventListener('dragend', () => { if (dragItem) dragItem.classList.remove('is-dragging'); dragItem = null; });
+  listEl.addEventListener('pointermove', (e) => {
+    if (!pdrag || e.pointerId !== pdrag.pointerId) return;
+    if (!pdrag.started) {
+      if (Math.abs(e.clientX - pdrag.startX) + Math.abs(e.clientY - pdrag.startY) < PDRAG_THRESHOLD) return;
+      pdrag.started = true;
+      pdrag.item.classList.add('is-dragging');
+      try { listEl.setPointerCapture(e.pointerId); } catch {}
+      window.MeldexDragAutoScroll?.beginPointerSession?.(e.clientX, e.clientY);
+    }
+    window.MeldexDragAutoScroll?.updatePointer?.(e.clientX, e.clientY);
+    // 挿入位置はポインタのY座標基準（リスト外へはみ出している間は先頭/末尾へ寄せる）
+    const items = [...listEl.querySelectorAll('.col-vis-item[data-prop]')].filter(it => it !== pdrag.item);
+    if (!items.length) return;
+    const y = e.clientY;
+    const hit = items.find(it => {
+      const r = it.getBoundingClientRect();
+      return y >= r.top && y <= r.bottom;
+    });
+    if (hit) {
+      const r = hit.getBoundingClientRect();
+      if (y < r.top + r.height / 2) hit.before(pdrag.item);
+      else hit.after(pdrag.item);
+    } else if (y < items[0].getBoundingClientRect().top) {
+      items[0].before(pdrag.item);
+    } else if (y > items[items.length - 1].getBoundingClientRect().bottom) {
+      items[items.length - 1].after(pdrag.item);
+    }
+  });
+  const pdragEnd = (e) => {
+    if (!pdrag || (e && e.pointerId !== pdrag.pointerId)) return;
+    if (pdrag.started) {
+      pdrag.item.classList.remove('is-dragging');
+      try { listEl.releasePointerCapture(pdrag.pointerId); } catch {}
+      window.MeldexDragAutoScroll?.endPointerSession?.();
+    }
+    pdrag = null;
+  };
+  listEl.addEventListener('pointerup', pdragEnd);
+  listEl.addEventListener('pointercancel', pdragEnd);
   _updateColumnDisplayOrderModalState(o);
 }
 

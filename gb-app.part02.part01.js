@@ -569,7 +569,10 @@ function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
   if (!dbPath || typeof apiPut !== 'function') return Promise.resolve(false);
   const payload = _sanitizeDbViewConfigForBackend(cfg);
   const key = String(dbPath || '');
-  const run = () => apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
+  const writeBlocked = () => typeof isProductionManagementWriteBlocked === 'function'
+    && isProductionManagementWriteBlocked(dbPath, options.ctx);
+  if (writeBlocked()) return Promise.resolve(false);
+  const run = () => writeBlocked() ? Promise.resolve(false) : apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
     .then(() => true)
     .catch((error) => {
       console.warn('[Meldex] シート表示設定を保存できませんでした', error);
@@ -603,7 +606,9 @@ function getDbViewConfig(dbPath) {
     } catch {}
   }
   const migrated = _migrateLegacyViewConfig(dbPath, cfg);
-  if (migrated.changed) _persistMigratedDbViewConfig(dbPath, migrated.cfg);
+  const productionRepaired = typeof repairProductionManagementDbViewConfig === 'function'
+    && repairProductionManagementDbViewConfig(dbPath, migrated.cfg);
+  if (migrated.changed || productionRepaired) _persistMigratedDbViewConfig(dbPath, migrated.cfg);
   return migrated.cfg;
 }
 function _dbViewConfigHistoryScope(dbPath) {
@@ -682,7 +687,7 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
   const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
   localStorage.setItem(key, JSON.stringify(cfg || {}));
   if (options.skipBackend !== true) {
-    _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: options.flushBackend === true });
+    _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: options.flushBackend === true, ctx: options.ctx });
   }
   if (label && options.skipHistory !== true) {
     pushDbViewConfigHistory(
@@ -728,6 +733,7 @@ function _saveCurrentDbViewField(dbPath, label, detail, options, mutator) {
     historyLabel: label || '',
     historyDetail: detail || '',
     skipHistory: options?.skipHistory === true || !label,
+    ctx: options?.ctx,
   });
   return true;
 }
@@ -782,6 +788,17 @@ function getEntityColumnPinned(dbPath, options = {}) {
 }
 function setEntityColumnPinned(dbPath, on, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: エントリ名列固定', options.detail || (on ? '固定' : '解除'), options, (v) => { v.entityColumnPinned = on !== false; });
+}
+// エントリ名列の表示名（未設定ならパス由来の既定名を使う）
+function getEntityColumnLabel(dbPath, options = {}) {
+  const view = getCurrentDbViewConfigEntry(dbPath, options);
+  return view && typeof view.entityColumnLabel === 'string' ? view.entityColumnLabel.trim() : '';
+}
+function setEntityColumnLabel(dbPath, label, options = {}) {
+  const clean = String(label == null ? '' : label).trim();
+  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: エントリ名列名', options.detail || clean, options, (v) => {
+    if (clean) v.entityColumnLabel = clean; else delete v.entityColumnLabel;
+  });
 }
 // ステータス機能ON/OFF（既定OFF。OFF時は候補値追加・ステータスドット・一括編集ステータスを非表示）
 function getStatusEnabled(dbPath) { return getDbViewConfig(dbPath).statusEnabled === true; }
@@ -1124,19 +1141,23 @@ function _gbAppApiFetchIsAbortError(e) {
 async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
   const controller = new AbortController();
   const externalSignal = requestOpts?.signal || null;
+  const fetchOpts = { ...(requestOpts || {}) };
+  delete fetchOpts.timeoutMs;
   let timedOut = false;
   let onExternalAbort = null;
   if (externalSignal) {
     if (externalSignal.aborted) {
-      controller.abort(externalSignal.reason);
+      // 理由付きabortはfetchが通常Errorを投げるため、呼び出し元キャンセルを
+      // 通信障害と誤判定しないよう内部signalは標準AbortErrorへ正規化する。
+      controller.abort();
     } else {
-      onExternalAbort = () => controller.abort(externalSignal.reason);
+      onExternalAbort = () => controller.abort();
       externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
   }
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
-    return await fetch(url, { ...requestOpts, signal: controller.signal });
+    return await fetch(url, { ...fetchOpts, signal: controller.signal });
   } catch (e) {
     if (_gbAppApiFetchIsAbortError(e) && timedOut) {
       const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
@@ -1173,7 +1194,11 @@ async function apiFetch(path, opts) {
       let requestOpts = opts;
       let retriedAfterMutation = false;
       while (true) {
-        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, GB_APP_API_FETCH_TIMEOUT_MS);
+        const requestedTimeout = Number(requestOpts?.timeoutMs);
+        const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+          ? Math.min(requestedTimeout, 300000)
+          : GB_APP_API_FETCH_TIMEOUT_MS;
+        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
         if (perfInfo) {
           _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
             ...perfInfo,
@@ -1239,9 +1264,12 @@ async function apiFetch(path, opts) {
           error: e?.message || String(e),
         });
       }
-      if (!opts?.silentError) window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
+      if (!opts?.silentError && !quietReadAbort) {
+        window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      }
       if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
-        if (_gbAppApiFetchIsAbortError(e) && method === 'GET') {
+        if (quietReadAbort) {
           // GET中断/タイムアウトはエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
           try { console.warn('[apiFetch] aborted:', path, e.message); } catch {}
         } else {
@@ -1262,11 +1290,12 @@ async function apiFetch(path, opts) {
   return _gbAppApiFetchClonePayload(await requestPromise);
 }
 
-async function apiPut(path, body) {
+async function apiPut(path, body, options = {}) {
   return apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    ...(options || {}),
   });
 }
 

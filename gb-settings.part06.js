@@ -57,7 +57,7 @@ function _renderDiscordBotSettingsContainer(container, settings) {
         <input id="discord-bot-master-enabled" type="checkbox" ${settings?.master_enabled ? 'checked' : ''}>
         <span>このPCでDiscord Botを起動する</span>
       </label>
-      <div class="gb-section-desc">Bot TokenとLLM APIキーはこの端末内で暗号化保存します。APIレスポンスには復号値を返しません。</div>
+      <div class="gb-section-desc">この端末内で暗号化して保存します。 ${fieldHelp('保存したBot TokenやAPIキーの中身は、あとから画面に表示されません。')}</div>
       <div class="gb-section-desc">暗号化方式: ${_discordBotEsc(settings?.encryption_backend || '')}</div>
       <div class="gb-field-row" style="justify-content:flex-start;gap:8px;flex-wrap:wrap;">
         <button type="button" class="gb-btn gb-btn-sm" id="discord-bot-add">${_discordBotIcon('plus',14)} Bot追加</button>

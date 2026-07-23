@@ -38,7 +38,11 @@
     notice.className = 'tree-source-mapping-badge';
     notice.textContent = '場所を確認';
     notice.title = 'このPCでDropbox同期フォルダの場所を確認してください';
-    notice.style.cssText = 'margin-left:6px;color:var(--fg2);font-size:11px;white-space:nowrap;';
+    notice.style.cssText = 'margin-left:6px;color:var(--fg2);font-size:11px;white-space:nowrap;cursor:pointer;';
+    notice.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.MeldexSettingsCloudLink?.confirmSourceFolderLocation?.(item);
+    });
     row.title = notice.title;
     row.dataset.gbTooltip = notice.title;
     row.appendChild(notice);
@@ -199,7 +203,20 @@
             });
           }
           childrenDiv.dataset.loaded = 'true';
-        } catch (e) { /* error shown — dataset.loaded を 'false' のまま残してリトライ可能にする */ }
+        } catch (e) {
+          // 握りつぶさず理由を表示する。部分的に追加済みの子ノードを取り除き、
+          // 折りたたみ直して再クリックすればリロードが走る状態に戻す
+          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          showStatus(`「${item.name}」の読み込みに失敗` + (reason ? `（${reason}）` : ''), true);
+          childrenDiv.querySelectorAll(':scope > .tree-node').forEach(n => {
+            if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
+            n.remove();
+          });
+          toggle.classList.remove('expanded');
+          toggle.dataset.expanded = 'false';
+          childrenDiv.classList.add('collapsed');
+          saveExpandedState(item.path, false);
+        }
         finally {
           delete childrenDiv.dataset.loading;
           spinner.remove();
@@ -544,8 +561,10 @@
           }
           if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
           moved.push(n);
-        } catch {
-          showStatus(`${dragData.name} の移動に失敗`, true);
+        } catch (err) {
+          // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
+          const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
+          showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
         }
       }
       if (moved.length === 0) return;

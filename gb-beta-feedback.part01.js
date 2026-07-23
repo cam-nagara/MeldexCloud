@@ -824,10 +824,10 @@
     const title = document.createElement('div');
     title.className = 'gb-section-title';
     title.textContent = 'フィードバック';
-    const desc = document.createElement('div');
-    desc.className = 'gb-section-desc';
-    desc.textContent = 'ベータ版の不具合・要望・質問を送信するためのフォームと、Meldex内の保管シートを管理します。';
-    section.append(title, desc);
+    if (typeof fieldHelp === 'function') {
+      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('ベータ版の不具合・要望・質問を送信するためのフォームと、Meldex内の保管シートを管理します'));
+    }
+    section.append(title);
 
     const urlRow = document.createElement('label');
     urlRow.className = 'gb-field-row';

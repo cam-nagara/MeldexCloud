@@ -30,6 +30,11 @@ const GBTabs = (() => {
       path: path || '',
       icon: tabIcon(type),
       state: state || {},
+      // タブごとの戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）。
+      // 旧版は pane.navHistory/pane.navIndex を使用していたが、タブ複数時に
+      // 履歴が混線するため廃止し、タブ単位で保持する。
+      navHistory: [],
+      navIndex: -1,
     };
   }
 

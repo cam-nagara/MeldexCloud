@@ -49,7 +49,7 @@
         { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote' },
         { label: 'シート', icon: 'database', type: 'database' },
         { label: 'ボード', icon: 'presentation', type: 'board' },
-        { label: 'スケジューラー', icon: 'calendar', type: 'calendar' },
+        { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
         { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
       ],
     },

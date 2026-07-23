@@ -63,9 +63,8 @@
   autoFillBlock.className = 'gb-section-head';
   autoFillBlock.style.cssText = 'margin-top:12px;border-top:1px solid var(--border);padding-top:8px;';
   autoFillBlock.innerHTML = `
-    <div class="field"><label>新規エントリ作成時の初期値</label>
+    <div class="field"><label>新規エントリ作成時の初期値 ${fieldHelp('$today / $now / $currentUser / $version が使えます。空欄なら自動入力しません')}</label>
       <input id="pt-auto-fill-on-create" type="text" value="${esc(curAutoCreate)}" placeholder="例: $now / $currentUser / $version / 提案">
-      <div class="pt-hint">$today / $now / $currentUser / $version が使えます。空欄なら自動入力しません。</div>
     </div>
   `;
   optDiv.appendChild(autoFillBlock);
@@ -197,6 +196,10 @@ async function applyPropertyType(propName, root, options = {}) {
   if (type === 'select' || type === 'multi-select') {
     const textarea = _ptGet('pt-select-options', scope);
     if (textarea) config.options = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+    if (typeof collectDbOptionColors === 'function') {
+      const optionColors = collectDbOptionColors(scope, prev.optionColors, config.options);
+      if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
+    }
   } else if (type === 'relation' || type === 'multi-relation') {
     const dbInput = _ptGet('pt-relation-db', scope);
     if (dbInput) config.relationDb = dbInput.value.trim();
@@ -302,7 +305,7 @@ async function applyPropertyType(propName, root, options = {}) {
   try {
     await savePromise;
   } catch (e) {
-    showStatus('プロパティ設定の保存に失敗: ' + (e?.message || e), true);
+    showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
   return config;
@@ -356,18 +359,15 @@ function _ptBuildFormulaOptionsHtml(current, root) {
   const props = _ptFormulaProps(root);
   const propButtons = props.length
     ? props.map(p => '<button type="button" class="pt-small-btn" data-formula-prop="' + esc(p) + '">prop("' + esc(_formulaPropLiteral(p, '"')) + '")</button>').join('')
-    : '<span class="pt-hint">利用可能なプロパティがありません</span>';
+    : '<span class="pt-hint">利用可能な列がありません</span>';
   const templateButtons = _ptFormulaTemplates()
     .map(t => '<button type="button" class="pt-small-btn" data-formula-template="' + esc(t.snippet) + '">' + esc(t.label) + '</button>')
     .join('');
-  return `<div class="field"><label>数式（Notion互換構文）</label>
+  return `<div class="field"><label>数式（Notion互換構文） ${fieldHelp('使用可能: prop("名前"), if, let/lets, and, or, not, empty, contains, replace, floor, round, mod, toNumber, format, year, month, day, dateBetween, dateSubtract, now, +, -, *, /, >, <, ==, !=')}</label>
     <textarea id="pt-formula-src" class="pt-formula-textarea" rows="8">${esc(current.formula||'')}</textarea>
     <div class="pt-formula-tools" aria-label="数式テンプレート">${templateButtons}</div>
-    <div class="pt-formula-props" aria-label="プロパティ候補">${propButtons}</div>
+    <div class="pt-formula-props" aria-label="列候補">${propButtons}</div>
     <pre id="pt-formula-preview" class="pt-formula-preview" aria-label="数式シンタックスプレビュー"></pre>
-    <div class="pt-hint">
-      使用可能: prop("名前"), if, let/lets, and, or, not, empty, contains, replace, floor, round, mod, toNumber, format, year, month, day, dateBetween, dateSubtract, now, +, -, *, /, >, <, ==, !=
-    </div>
   </div>
   <div class="field">
     <button data-action="testFormula(this.closest('[data-pt-root]'))" class="pt-small-btn">テスト</button>
@@ -474,17 +474,42 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
   const ctx = _ptContextForDbPath(dbPath);
   const pivotData = ctx?.pivotData || _ptPivotDataForDbPath(dbPath);
   if (propName === '__entity__') {
+    const entityColumnLabel = typeof _dbEntityColumnDisplayLabel === 'function'
+      ? _dbEntityColumnDisplayLabel(dbPath, { ctx })
+      : 'エントリ名';
     const pinned = typeof getEntityColumnPinned === 'function'
       ? getEntityColumnPinned(dbPath, { ctx })
       : getDbViewConfig(dbPath).entityColumnPinned !== false;
+    // 制作管理シートのエントリ名列は固定名（変更不可）
+    const labelLocked = typeof isProductionManagementSheetPath === 'function'
+      && isProductionManagementSheetPath(dbPath);
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
-      <div class="gb-section-head">エントリ名列</div>
-      <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="エントリ名" disabled aria-label="列名"></div>
+      <div class="gb-section-head">${esc(entityColumnLabel)}列</div>
+      <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="エントリ名"'}></div>
+      ${labelLocked ? '<div class="gb-info-box">制作管理に必要な列のため、列名は変更できません。</div>' : ''}
       <div class="field"><label class="pt-check-label">
         <input id="entity-column-pinned" type="checkbox" ${pinned ? 'checked' : ''}>
         列を固定
       </label></div>
     </div>`;
+    if (!labelLocked) {
+      const labelInput = target.querySelector('#entity-column-name-display');
+      let skipCommit = false;
+      const commitLabel = () => {
+        if (skipCommit) { skipCommit = false; return; }
+        if (typeof setEntityColumnLabel !== 'function' || !labelInput) return;
+        // 表示中のラベルと同じなら保存しない（開いて閉じただけで履歴を汚さない）
+        if (labelInput.value.trim() === entityColumnLabel) return;
+        setEntityColumnLabel(dbPath, labelInput.value, { ctx });
+        if (typeof renderPivot === 'function') renderPivot(ctx);
+      };
+      labelInput?.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') { e.preventDefault(); labelInput.blur(); }
+        else if (e.key === 'Escape') { e.preventDefault(); skipCommit = true; labelInput.value = entityColumnLabel; labelInput.blur(); }
+      });
+      labelInput?.addEventListener('blur', commitLabel);
+    }
     target.querySelector('#entity-column-pinned')?.addEventListener('change', function() {
       if (typeof setEntityColumnPinned === 'function') {
         setEntityColumnPinned(dbPath, !!this.checked, { ctx });
@@ -492,7 +517,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
         const c = getDbViewConfig(dbPath);
         c.entityColumnPinned = !!this.checked;
         saveDbViewConfig(dbPath, c, {
-          historyLabel: 'シート表示: エントリ名列固定',
+          historyLabel: `シート表示: ${entityColumnLabel}列固定`,
           historyDetail: this.checked ? '固定' : '解除',
         });
       }
@@ -501,6 +526,19 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     return;
   }
   const types = getPropertyTypes(dbPath);
+  if (typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(dbPath)) {
+    const current = types[propName] || { type: 'text' };
+    const typeLabel = typeof getPropertyTypeMenuItems === 'function'
+      ? (getPropertyTypeMenuItems().find(item => item.type === current.type)?.label || current.type || 'テキスト')
+      : (current.type || 'テキスト');
+    target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
+      <div class="gb-section-head">${esc(propName)}列</div>
+      <div class="field"><label>列名</label><input type="text" value="${esc(propName)}" disabled aria-label="列名"></div>
+      <div class="field"><label>列タイプ</label><input type="text" value="${esc(typeLabel)}" disabled aria-label="列タイプ"></div>
+      <div class="gb-info-box">制作管理に必要な列のため変更できません ${fieldHelp('列名と列タイプは変更できませんが、並べ替え・ソート・非表示・列幅の調整は利用できます')}</div>
+    </div>`;
+    return;
+  }
   const colOrder = typeof getColOrder === 'function' ? getColOrder(dbPath, { ctx }) : null;
   const availableProps = [
     ...new Set([
@@ -520,7 +558,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
   const current = types[propName] || { type: 'text' };
   const scopeId = 'tab-' + Math.random().toString(36).slice(2, 8);
   target.innerHTML = `<div class="db-prop-settings" data-pt-root>
-    <div class="gb-section-head">プロパティ設定</div>
+    <div class="gb-section-head">列設定</div>
     <div class="field"><label>列名</label>
       <input id="pt-prop-name" type="text" value="${esc(propName)}" placeholder="列名">
     </div>
@@ -558,6 +596,11 @@ function _ptApplyFastLocalSettings(root) {
 
   const prev = stateInfo.current || getPropertyTypes(dbPath)?.[propName] || {};
   const config = { ...prev, type, options };
+  if (typeof collectDbOptionColors === 'function') {
+    const optionColors = collectDbOptionColors(scope, prev.optionColors, options);
+    if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
+    else delete config.optionColors;
+  }
   const cfg = getDbViewConfig(dbPath);
   if (cfg) {
     if (!cfg.propertyTypes) cfg.propertyTypes = {};
@@ -632,6 +675,24 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     _bindDbPropertySettingsAutosave(root, root._ptAutosavePropName || initialPropName);
     schedule(120);
   });
+  // 列名欄は Enter で即確定・Escape で取り消し。既定の 450ms デバウンス待ちを挟まない。
+  const nameInput = root.querySelector('#pt-prop-name');
+  if (nameInput && !nameInput.dataset.ptNameKeyBound) {
+    nameInput.dataset.ptNameKeyBound = '1';
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return; // IME変換中は無視
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        clearTimeout(timer);
+        _ptApplyFastLocalSettings(root);
+        run();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        nameInput.value = root._ptAutosavePropName || initialPropName;
+        nameInput.blur();
+      }
+    });
+  }
 }
 
 async function applyDbPropertySettings(originalPropName, root, options = {}) {
@@ -664,7 +725,7 @@ async function applyDbPropertySettings(originalPropName, root, options = {}) {
       return null;
     }
     try {
-      const ok = await renameDbProperty(dbPath, originalPropName, newName);
+      const ok = await renameDbProperty(dbPath, originalPropName, newName, ctx);
       if (!ok) return null;
     } catch (e) {
       showStatus('列名変更に失敗: ' + (e?.message || e), true);
@@ -680,7 +741,7 @@ async function applyDbPropertySettings(originalPropName, root, options = {}) {
   if (typeof state !== 'undefined') state.selectedColumn = { dbPath, propName };
   if (!options.auto) {
     renderDbPropertySettingsPanel(dbPath, propName);
-    showStatus('プロパティ設定を保存しました');
+    showStatus('列設定を保存しました');
   }
   return { propName, config: savedConfig };
 }

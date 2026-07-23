@@ -1,28 +1,64 @@
-    for (const root of foldersToShow) {
-      // フォルダヘッダー
-      const header = document.createElement('div');
-      header.style.cssText = 'font-size:12px;font-weight:bold;color:var(--accent);padding:8px 0 4px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px;';
-      header.innerHTML = lucide('folder', 13) + ' ' + esc(root.name || root.path.split(/[/\\]/).pop());
-      el.appendChild(header);
-      // メンバー一覧
-      try {
-        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
-        if (members.length === 0) {
-          const empty = document.createElement('div');
-          empty.style.cssText = 'color:var(--fg2);padding:4px 0;font-size:11px;';
-          empty.textContent = 'メンバーなし';
-          el.appendChild(empty);
-          continue;
-        }
-        _renderTeamMemberRows(el, members, myName, root.path);
-      } catch {
-        const err = document.createElement('div');
-        err.style.cssText = 'color:var(--fg2);padding:4px 0;font-size:11px;';
-        err.textContent = '読み込みエラー';
-        el.appendChild(err);
-      }
+// スタッフ管理シート（正本）のセクション表示。
+// ユーザーアカウント一元管理 計画書 Phase 1（§5.7）。
+// 一覧はアイコン+表示名+権限バッジのみ（編集UIは置かず正本シートへ誘導する。
+// 「何かを追加する時にダイアログで設定を強要しない」原則により、未設定時も
+// ダイアログは出さず、一覧を開いた時点で無ダイアログ自動作成する）。
+async function _renderStaffRegistrySettings() {
+  const listEl = document.getElementById('settings-staff-list');
+  const locationEl = document.getElementById('settings-staff-location');
+  if (!listEl || typeof window.MeldexUserRegistry === 'undefined' || !window.MeldexUserRegistry) return;
+  listEl.innerHTML = '<div class="gb-section-desc">読み込み中...</div>';
+  try {
+    let config = await window.MeldexUserRegistry.getConfig();
+    let staff;
+    let duplicates;
+    if (!config.path) {
+      // 未設定なら初回アクセスとしてここで無ダイアログ自動作成する（計画書§5.1）。
+      const ensured = await window.MeldexUserRegistry.ensure();
+      config = { path: ensured.path || '', updated: ensured.updated || '' };
+      staff = ensured.staff || [];
+      duplicates = ensured.duplicates || [];
+    } else {
+      staff = await window.MeldexUserRegistry.listStaff({ force: true });
+      duplicates = window.MeldexUserRegistry.listDuplicatesSync();
     }
-  } catch { el.innerHTML = '<div style="color:var(--fg2);">読み込みエラー</div>'; }
+    if (locationEl) locationEl.textContent = config.path || '（未設定）';
+    listEl.innerHTML = '';
+    if (!staff.length) {
+      listEl.innerHTML = '<div class="gb-section-desc">スタッフがいません</div>';
+    }
+    const myName = typeof getUsername === 'function' ? getUsername() : '';
+    const duplicateUsers = new Set((duplicates || []).map(d => d.user));
+    for (const row of staff) {
+      const item = document.createElement('div');
+      item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);';
+      const isLeft = !!row.active_to && row.active_to <= new Date().toISOString().slice(0, 10);
+      if (isLeft) item.style.opacity = '0.55';
+      const av = document.createElement('div');
+      av.style.cssText = 'width:24px;height:24px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;';
+      const avatarUrl = window.MeldexDataAccess?.team?.avatarUrl?.(row.user) || (`${API_BASE}/team/avatar/${encodeURIComponent(row.user)}`);
+      av.innerHTML = `<img src="${esc(avatarUrl)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.textContent='${esc((row.display || row.user || '?').charAt(0).toUpperCase())}';">`;
+      item.appendChild(av);
+      const nameSpan = document.createElement('span');
+      nameSpan.style.cssText = 'flex:1 1 0;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      nameSpan.textContent = (row.display || row.user) + (row.user === myName ? '（自分）' : '') + (duplicateUsers.has(row.user) ? ' ⚠' : '');
+      nameSpan.title = duplicateUsers.has(row.user) ? '同じユーザーが複数のスタッフ行に設定されています' : nameSpan.textContent;
+      item.appendChild(nameSpan);
+      const roleBadge = document.createElement('span');
+      roleBadge.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg3);color:var(--fg2);flex-shrink:0;';
+      roleBadge.textContent = row.role || '（権限未設定）';
+      item.appendChild(roleBadge);
+      if (isLeft) {
+        const leftBadge = document.createElement('span');
+        leftBadge.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg4);color:var(--fg2);flex-shrink:0;';
+        leftBadge.textContent = '離脱';
+        item.appendChild(leftBadge);
+      }
+      listEl.appendChild(item);
+    }
+  } catch (e) {
+    listEl.innerHTML = '<div style="color:var(--fg2);">読み込みエラー</div>';
+  }
 }
 
 async function loadFileLockListForSettings() {
@@ -85,63 +121,10 @@ async function loadFileLockListForSettings() {
   }
 }
 
-function _renderTeamMemberRows(container, members, myName, folderPath) {
-  const roleLabels = { owner: '管理者', editor: '編集者', viewer: '閲覧者' };
-  for (const m of members) {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);';
-    // アバター
-    const av = document.createElement('div');
-    av.style.cssText = 'width:24px;height:24px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;';
-    if (m.has_avatar) {
-      const avatarSrc = window.MeldexDataAccess?.team?.avatarUrl?.(m.name || 'anonymous', { folder: folderPath }) || `${API_BASE}/team/avatar/${encodeURIComponent(m.name)}?folder=${encodeURIComponent(folderPath)}&t=${Date.now()}`;
-      av.innerHTML = `<img src="${esc(avatarSrc)}" style="width:100%;height:100%;object-fit:cover;">`;
-    } else {
-      av.innerHTML = `<span style="font-size:11px;font-weight:bold;color:var(--fg2);">${esc((m.name||'?').charAt(0).toUpperCase())}</span>`;
-    }
-    row.appendChild(av);
-    // 名前
-    const nameSpan = document.createElement('span');
-    nameSpan.style.cssText = 'flex:1 1 0;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-    nameSpan.textContent = m.name + (m.name === myName ? '（自分）' : '');
-    nameSpan.title = nameSpan.textContent;
-    row.appendChild(nameSpan);
-    // ロール
-    const role = m.role || 'editor';
-    const sel = document.createElement('select');
-    sel.className = 'gb-select';
-    sel.style.cssText = 'font-size:11px;padding:1px 4px;width:78px;flex-shrink:0;';
-    for (const [val, label] of Object.entries(roleLabels)) {
-      const opt = document.createElement('option');
-      opt.value = val; opt.textContent = label;
-      if (val === role) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    sel.addEventListener('change', async () => {
-      try {
-        await apiPost('/team/role', { name: m.name, role: sel.value, folder: folderPath });
-        if (m.name === myName) {
-          _myTeamRoles[folderPath] = sel.value;
-          _myTeamRole = sel.value;
-        }
-        showStatus(`${m.name} を${roleLabels[sel.value]}に変更しました`);
-      } catch (e) { showStatus('ロール変更に失敗しました', true); }
-    });
-    row.appendChild(sel);
-    // 最終アクセス
-    if (m.last_seen) {
-      const ts = document.createElement('span');
-      ts.style.cssText = 'font-size:10px;color:var(--fg2);white-space:nowrap;flex-shrink:0;';
-      ts.textContent = m.last_seen.replace('T', ' ').substring(0, 16);
-      row.appendChild(ts);
-    }
-    container.appendChild(row);
-  }
-}
-
-// ユーザー編集モーダル（管理者用）
-// _showEditUserModal, addUserFromSettings, removeUserFromSettings, doLogout は廃止
-// （チーム方式に移行 — ユーザー管理はマイプロフィールのみ）
+// _showEditUserModal, addUserFromSettings, removeUserFromSettings, doLogout,
+// loadUserListForSettings, _renderTeamMemberRows は廃止
+// （ユーザー管理はマイプロフィール + スタッフ管理シートの表示に統合。
+// ユーザーアカウント一元管理 計画書 Phase 1、2026-07-19）
 
 function _replaceChildrenWithText(el, text) {
   if (!el) return null;
@@ -382,6 +365,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
       if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
       if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
+      window.MeldexSettingsCloudLink?.renderStatusCard?.(modal.querySelector('#settings-cloud-link-card'));
       return;
     }
     if (canonical === 'テーマ') {
@@ -407,8 +391,9 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       return;
     }
     if (canonical === 'ユーザー') {
-      if (typeof loadUserListForSettings === 'function') loadUserListForSettings();
+      if (typeof _renderStaffRegistrySettings === 'function') _renderStaffRegistrySettings();
       if (typeof loadFileLockListForSettings === 'function') loadFileLockListForSettings();
+      window.MeldexSettingsAccountLink?.renderStatusLine?.(modal.querySelector('#settings-account-link-status'));
       return;
     }
     if (canonical === 'ワークスペース') {
@@ -418,6 +403,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === '取り込み') {
       if (typeof renderExternalImportSettings === 'function') renderExternalImportSettings(modal);
       if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
+      if (typeof renderXAccountPostsSettings === 'function') renderXAccountPostsSettings(modal);
       return;
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {
@@ -642,7 +628,12 @@ async function _installExtension(key, btn) {
   btn.style.background = 'var(--bg4)';
   btn.style.color = 'var(--fg2)';
   try {
-    const res = await apiPost('/extensions/install', { extension: key });
+    const res = await runBackgroundJob('/extensions/install', { extension: key }, {
+      onProgress: (progress) => {
+        const label = (progress && progress.message) || 'インストール中...';
+        btn.textContent = label.length > 24 ? 'インストール中...' : label;
+      },
+    });
     if (res.ok) {
       btn.innerHTML = lucide('check', 12) + ' 完了（再起動で有効）';
       btn.style.background = 'var(--green)';
@@ -763,14 +754,34 @@ if (typeof window !== 'undefined') {
   }
 }
 
+// 他の端末（デスクトップ版・クラウド版）と共有中のフォルダが実在するかを判定する。
+// 判定できない場合（クラウド版、通信失敗など）は false を返し、追加の確認は出さない。
+async function _settingsResetHasSharedSourceFolders() {
+  try {
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return false;
+    if (typeof apiFetch !== 'function') return false;
+    const status = await apiFetch('/dropbox-link/status', { silentError: true });
+    const roots = Array.isArray(status?.roots) ? status.roots : [];
+    return roots.some(root => root?.state === 'shared');
+  } catch {
+    return false;
+  }
+}
+
 async function resetAllSettings() {
+  // 共有中のフォルダが実在する場合のみ、登録には影響しないことを追加で確認する
+  // （共有していない大多数のユーザーには無関係な文言のため、該当時のみ表示）。
+  if (await _settingsResetHasSharedSourceFolders() && typeof cfConfirm === 'function') {
+    const proceed = await cfConfirm('他の端末と共有しているフォルダの登録には影響しません。このまま初期化を続けますか？');
+    if (!proceed) return;
+  }
   const beforeReset = await _captureSettingsResetSnapshot();
   try {
     sessionStorage.setItem(SETTINGS_RESET_HISTORY_SESSION_KEY, JSON.stringify({ before: beforeReset, at: Date.now() }));
   } catch {}
   localStorage.clear();
-  // サーバー側の設定もクリア
-  try { await apiPut('/outliner-roots', { roots: [] }); } catch {}
+  // サーバー側の設定もクリア。フォルダの登録（共有フォルダの一覧）はここでは初期化しない —
+  // 空リストを送ると他の端末・クラウド版のフォルダ一覧にも削除が伝わってしまうため。
   try { await apiPut('/ui-config', {}); } catch {}
   try { await apiPut('/vault', { path: '' }); } catch {}
   location.reload();

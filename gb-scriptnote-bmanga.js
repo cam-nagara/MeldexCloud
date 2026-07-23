@@ -4,7 +4,25 @@
 
   const CONTRACT = 'meldex-bmanga-scenario';
   const VERSION = 1;
+  const VERSION_V2 = 2;
   const DEFAULT_PORT = 47817;
+  const RUBY_PRIORITY = Object.freeze({
+    manual: 400,
+    'shared-link-dictionary': 300,
+    'document-rule': 200,
+    'local-auto-dictionary': 100,
+  });
+  const DEFAULT_RUBY_PRESENTATION = Object.freeze({
+    writingMode: 'horizontal',
+    sizePercent: 50,
+    gapEm: 0,
+    letterSpacingEm: 0,
+    lineHeight: 1.8,
+    align: 'center',
+    smallKana: 'keep',
+    fontPreset: 'inherit',
+    defaultStyle: 'group',
+  });
 
   function isAvailable() {
     const host = String(location.hostname || '').toLowerCase();
@@ -27,6 +45,170 @@
   function _manualLinkLabelRaw(raw) {
     const match = String(raw || '').match(/^\[((?:\\.|[^\]])+)\]\(ml:/);
     return match ? match[1] : '';
+  }
+
+  function _rubyStyle(value, fallback = 'group') {
+    const safeFallback = ['group', 'mono', 'jukugo'].includes(fallback) ? fallback : 'group';
+    return ['group', 'mono', 'jukugo'].includes(value) ? value : safeFallback;
+  }
+
+  function _logicalFontPreset(value) {
+    const preset = String(value || '').trim();
+    if (!preset || preset.includes('/') || preset.includes('\\') || /^[A-Za-z]:/.test(preset)) return 'inherit';
+    return preset.slice(0, 128);
+  }
+
+  function _finiteNumber(value, fallback, minimum = null) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || (minimum != null && number < minimum)) return fallback;
+    return number;
+  }
+
+  function _legacyTransferGapEm(stored, fallbackWritingMode = 'horizontal') {
+    const compatibility = (stored?.compatibility && typeof stored.compatibility === 'object')
+      ? stored.compatibility : {};
+    if (compatibility.useLegacyGap !== true) {
+      return _finiteNumber(stored?.gapEm, DEFAULT_RUBY_PRESENTATION.gapEm);
+    }
+    const explicit = Number(compatibility.legacyGapEm);
+    if (compatibility.legacyGapEm !== undefined && compatibility.legacyGapEm !== null
+      && String(compatibility.legacyGapEm).trim() !== '' && Number.isFinite(explicit)) {
+      return Math.max(-2, Math.min(4, explicit));
+    }
+    const baseEm = _finiteNumber(compatibility.legacyBaseEmPx, 14, 0.001);
+    const writingMode = ['horizontal', 'vertical'].includes(stored?.writingMode)
+      ? stored.writingMode : fallbackWritingMode;
+    const defaultCrossSize = writingMode === 'vertical' ? 18 : 14;
+    const crossSize = _finiteNumber(compatibility.legacyCrossSizePx, defaultCrossSize, 0.001);
+    const offset = _finiteNumber(compatibility.legacyOffsetPx, 3.5);
+    return Math.max(-2, Math.min(4, ((crossSize - baseEm) * 0.5 - offset) / baseEm));
+  }
+
+  function normalizeRubyPresentation(doc) {
+    const stored = (doc?.rubyPresentation && typeof doc.rubyPresentation === 'object')
+      ? doc.rubyPresentation
+      : ((doc?.editor?.rubyPresentation && typeof doc.editor.rubyPresentation === 'object')
+        ? doc.editor.rubyPresentation
+        : {});
+    const viewMode = doc?.editor?.viewMode === 'vertical' ? 'vertical' : 'horizontal';
+    const sharedModel = window.MeldexRubyPresentation;
+    if (typeof sharedModel?.normalize === 'function') {
+      const fallback = { ...sharedModel.DEFAULTS, writingMode: viewMode };
+      const normalized = typeof sharedModel.toTransferPresentation === 'function'
+        ? sharedModel.toTransferPresentation(stored, fallback)
+        : sharedModel.normalize(stored, fallback);
+      return {
+        writingMode: normalized.writingMode,
+        sizePercent: normalized.sizePercent,
+        gapEm: normalized.gapEm,
+        letterSpacingEm: normalized.letterSpacingEm,
+        lineHeight: normalized.lineHeight,
+        align: normalized.align,
+        smallKana: normalized.smallKana,
+        fontPreset: _logicalFontPreset(normalized.fontPreset),
+        defaultStyle: _rubyStyle(normalized.defaultStyle),
+      };
+    }
+    return {
+      writingMode: ['horizontal', 'vertical'].includes(stored.writingMode) ? stored.writingMode : viewMode,
+      sizePercent: stored?.compatibility?.useLegacySize === true
+        ? _finiteNumber(stored.compatibility.legacySizeEm, 0.55, 0.05) * 100
+        : _finiteNumber(stored.sizePercent, DEFAULT_RUBY_PRESENTATION.sizePercent, 5),
+      gapEm: _legacyTransferGapEm(stored, viewMode),
+      letterSpacingEm: _finiteNumber(stored.letterSpacingEm, DEFAULT_RUBY_PRESENTATION.letterSpacingEm),
+      lineHeight: _finiteNumber(stored.lineHeight, DEFAULT_RUBY_PRESENTATION.lineHeight, 0.1),
+      align: ['center', 'start'].includes(stored.align) ? stored.align : DEFAULT_RUBY_PRESENTATION.align,
+      smallKana: ['keep', 'fullsize'].includes(stored.smallKana) ? stored.smallKana : DEFAULT_RUBY_PRESENTATION.smallKana,
+      fontPreset: _logicalFontPreset(stored.fontPreset),
+      defaultStyle: _rubyStyle(stored.defaultStyle, DEFAULT_RUBY_PRESENTATION.defaultStyle),
+    };
+  }
+
+  function _normalizedRubyRule(rule, index, origin, defaultStyle = 'group') {
+    const text = String(rule?.text || '');
+    const rubyText = String(rule?.rubyText ?? rule?.ruby ?? '');
+    if (!text || !rubyText) return null;
+    const normalized = {
+      text,
+      chars: Array.from(text),
+      rubyText,
+      style: _rubyStyle(rule?.style, defaultStyle),
+      origin,
+      priority: RUBY_PRIORITY[origin],
+      index,
+    };
+    if (Array.isArray(rule?.segments)) normalized.segments = rule.segments.map(item => ({ ...item }));
+    return normalized;
+  }
+
+  function _applyRubyRuleSource(body, rules, used, found, origin, defaultStyle = 'group') {
+    const chars = Array.from(body);
+    const normalized = (Array.isArray(rules) ? rules : [])
+      .map((rule, index) => _normalizedRubyRule(rule, index, origin, defaultStyle))
+      .filter(Boolean);
+    for (let pos = 0; pos < chars.length; pos++) {
+      const candidates = normalized
+        .filter(rule => rule.chars.every((ch, offset) => chars[pos + offset] === ch))
+        .sort((a, b) => b.chars.length - a.chars.length || a.index - b.index);
+      const match = candidates.find(rule => rule.chars.every((_ch, offset) => !used[pos + offset]));
+      if (!match) continue;
+      match.chars.forEach((_ch, offset) => { used[pos + offset] = true; });
+      const span = {
+        start: pos,
+        length: match.chars.length,
+        rubyText: match.rubyText,
+        style: match.style,
+        origin: match.origin,
+        priority: match.priority,
+      };
+      if (match.segments) span.segments = match.segments;
+      found.push(span);
+      pos += match.chars.length - 1;
+    }
+  }
+
+  function resolveRubySpans(raw, sources = {}) {
+    let body = '';
+    const rubies = [];
+    const protectedRanges = [];
+    const defaultStyle = _rubyStyle(sources.defaultStyle);
+    _segments(raw).forEach(segment => {
+      const start = _visibleLength(body);
+      if (segment.type === 'ruby') {
+        const base = String(segment.plain || '');
+        const rubyText = String(segment.ruby || '');
+        body += base;
+        const span = {
+          start,
+          length: _visibleLength(base),
+          rubyText,
+          style: _rubyStyle(segment.style, defaultStyle),
+          origin: 'manual',
+          priority: RUBY_PRIORITY.manual,
+        };
+        if (Array.isArray(segment.segments)) span.segments = segment.segments.map(item => ({ ...item }));
+        if (span.length && rubyText) rubies.push(span);
+      } else if (segment.type === 'manual-link') {
+        const labelRaw = _manualLinkLabelRaw(segment.raw);
+        const nested = labelRaw
+          ? resolveRubySpans(labelRaw, { defaultStyle })
+          : { body: String(segment.plain || ''), rubies: [] };
+        body += nested.body;
+        nested.rubies.forEach(item => rubies.push({ ...item, start: start + item.start }));
+        protectedRanges.push({ start, length: _visibleLength(nested.body) });
+      } else {
+        body += _plain(segment.raw);
+      }
+    });
+    const used = new Array(_visibleLength(body)).fill(false);
+    rubies.concat(protectedRanges).forEach(item => {
+      for (let i = item.start; i < item.start + item.length; i++) used[i] = true;
+    });
+    _applyRubyRuleSource(body, sources.sharedLinkEntries, used, rubies, 'shared-link-dictionary', defaultStyle);
+    _applyRubyRuleSource(body, sources.documentRules, used, rubies, 'document-rule', defaultStyle);
+    _applyRubyRuleSource(body, sources.localDictionary, used, rubies, 'local-auto-dictionary', defaultStyle);
+    rubies.sort((a, b) => a.start - b.start || b.priority - a.priority || b.length - a.length);
+    return { body, rubies };
   }
 
   function resolveVisibleBody(raw, rubyRules) {
@@ -90,6 +272,31 @@
     return { before: String(before || ''), after: String(after || '') };
   }
 
+  function _sharedLinkEntries() {
+    const entries = window.MeldexAutoLink?.getDict?.();
+    return (Array.isArray(entries) ? entries : []).filter(item => item && String(item.ruby || ''));
+  }
+
+  function _supportsV2(capabilities) {
+    return capabilities?.contract === CONTRACT
+      && Array.isArray(capabilities?.versions)
+      && capabilities.versions.includes(VERSION_V2)
+      && capabilities?.features?.presentationRuby === true
+      && capabilities?.features?.rubySpanOrigins === true
+      && capabilities?.features?.rubySegments === true;
+  }
+
+  function _rowPresentation(row, doc) {
+    const override = (row?.rubyPresentation && typeof row.rubyPresentation === 'object')
+      ? row.rubyPresentation
+      : ((row?.presentation?.ruby && typeof row.presentation.ruby === 'object') ? row.presentation.ruby : null);
+    if (!override) return null;
+    return normalizeRubyPresentation({
+      rubyPresentation: { ...normalizeRubyPresentation(doc), ...override },
+      editor: doc?.editor,
+    });
+  }
+
   // doc/documentId のみに依存する純粋関数。Node からの直接evalテストのため editor に依存しない。
   function buildPayload(doc, documentId, options) {
     const opts = Object.assign({
@@ -98,7 +305,11 @@
       includeSummary: false,
       includeBreakText: false,
       skipBlank: false,
+      contractVersion: VERSION,
+      sharedLinkEntries: null,
+      localDictionary: null,
     }, options || {});
+    const contractVersion = Number(opts.contractVersion) === VERSION_V2 ? VERSION_V2 : VERSION;
     const id = String(documentId || doc?.source?.documentId || '').trim();
     if (!id) throw new Error('先にシナリオを保存してください');
     const characters = Array.isArray(doc?.characters) ? doc.characters : [];
@@ -121,7 +332,15 @@
       const isSummary = !!role && summaryNames.has(role);
       if (isSummary && !opts.includeSummary) return;
       if (isBreak && index > 0) pages.push({ pageIndex: pages.length, rows: [] });
-      const resolved = resolveVisibleBody(String(row?.text || ''), doc?.rubyRules);
+      const resolved = contractVersion === VERSION_V2
+        ? resolveRubySpans(String(row?.text || ''), {
+          sharedLinkEntries: Array.isArray(opts.sharedLinkEntries) ? opts.sharedLinkEntries : _sharedLinkEntries(),
+          documentRules: doc?.rubyRules,
+          localDictionary: opts.localDictionary,
+          defaultStyle: window.MeldexRubyPresentation?.ensureDocument?.(doc)?.defaultStyle
+            || doc?.rubyPresentation?.defaultStyle,
+        })
+        : resolveVisibleBody(String(row?.text || ''), doc?.rubyRules);
       let body = resolved.body;
       let rubies = resolved.rubies;
       if (opts.includeAffix && body) {
@@ -131,23 +350,32 @@
         body = affix.before + body + affix.after;
       }
       const rowId = String(row?.id || `row-${index}`);
+      const rowPayload = { rowId, type: isBreak ? '' : role, body, rubies };
+      const rowRubyPresentation = contractVersion === VERSION_V2 ? _rowPresentation(row, doc) : null;
+      if (rowRubyPresentation) rowPayload.presentation = { ruby: rowRubyPresentation };
       if (isBreak) {
         // 区切り行は「区切り行のテキストも出力する」ONかつ本文ありのときだけ、新しいページの先頭に type:'' で出力する。
         if (opts.includeBreakText && body) {
-          pages[pages.length - 1].rows.push({ rowId, type: '', body, rubies });
+          pages[pages.length - 1].rows.push(rowPayload);
         }
         return;
       }
       // 「空白行を出力しない」: 区切り/プロットではなく、役名も本文も空の行だけを除外する。
       if (opts.skipBlank && !isSummary && !role && !body) return;
-      pages[pages.length - 1].rows.push({ rowId, type: role, body, rubies });
+      pages[pages.length - 1].rows.push(rowPayload);
     });
-    return {
+    const payload = {
       contract: CONTRACT,
-      version: VERSION,
+      version: contractVersion,
       source: { documentId: id, title: String(doc?.title || '') },
       pages,
     };
+    if (contractVersion === VERSION_V2) {
+      payload.indexUnit = 'unicode-code-point';
+      payload.normalization = 'none';
+      payload.presentation = { ruby: normalizeRubyPresentation(doc) };
+    }
+    return payload;
   }
 
   function _activeEditor() {
@@ -291,9 +519,10 @@
       cancel.addEventListener('click', () => close(null));
       send.addEventListener('click', () => {
         let payload;
-        try { payload = buildPayload(doc, documentId, currentOptions()); }
+        const options = currentOptions();
+        try { payload = buildPayload(doc, documentId, options); }
         catch (error) { showStatus?.(error.message || String(error), true); return; }
-        close({ port: Number(port.value), token: token.value, payload });
+        close({ port: Number(port.value), token: token.value, payload, options });
       });
       overlay.addEventListener('click', event => { if (event.target === overlay) close(null); });
       buttons.append(cancel, send);
@@ -330,18 +559,45 @@
     if (!result) return;
     showLoading?.('B-MANGAへ送信しています...');
     try {
+      let sendVersion = VERSION;
+      try {
+        const capabilityResponse = await fetch('/api/bmanga/scenario/capabilities', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ port: result.port, token: result.token }),
+        });
+        const capabilities = await capabilityResponse.json().catch(() => ({}));
+        if (capabilityResponse.ok && _supportsV2(capabilities)) sendVersion = VERSION_V2;
+      } catch {
+        // 能力確認に失敗しても、公開済みv1の送信経路は止めない。
+      }
+      result.payload = buildPayload(editor.doc, documentId, {
+        ...(result.options || {}),
+        contractVersion: sendVersion,
+        sharedLinkEntries: _sharedLinkEntries(),
+      });
       const response = await fetch('/api/bmanga/scenario/send', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port: result.port, token: result.token, payload: result.payload }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || data.error || '送信に失敗しました');
-      showStatus?.(`B-MANGAへ${result.payload.pages.length}ページを送信しました`);
+      const compatibilityNotice = sendVersion === VERSION
+        ? '。ルビの表示設定は送信されません'
+        : '';
+      showStatus?.(`B-MANGAへ${result.payload.pages.length}ページを送信しました${compatibilityNotice}`);
       return data;
     } catch (error) {
       showStatus?.(error.message || 'B-MANGAへの送信に失敗しました', true);
     } finally { hideLoading?.(); }
   }
 
-  window.MeldexBManga = { isAvailable, resolveVisibleBody, buildPayload, sendActiveScenario };
+  window.MeldexBManga = {
+    isAvailable,
+    resolveVisibleBody,
+    resolveRubySpans,
+    normalizeRubyPresentation,
+    supportsV2: _supportsV2,
+    buildPayload,
+    sendActiveScenario,
+  };
 })();

@@ -50,6 +50,55 @@ function _chatGenerationCurrentProvider() {
   }
 }
 
+// 思考の深さ（reasoning）はサーバ実装（meldex_chat_stream_support.py / meldex_api_cli_chat.py）で
+// anthropic/openai/gemini の3プロバイダ（API経由）に加え、claude_code/codex（CLI経由、--effort注入）
+// でも生成オプションへ反映される。local_llm、およびgemini_cli（CLIに思考深度の指定手段が無い）は
+// 未対応のまま。
+const CHAT_REASONING_SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'claude_code', 'codex']);
+
+function _chatGenerationReasoningSupported(provider) {
+  return CHAT_REASONING_SUPPORTED_PROVIDERS.has(String(provider || '').trim().toLowerCase());
+}
+
+// 思考の深さの選択肢。オフ/低/中/高/最高/最大の6段階 + claude_code限定のUltracode。
+// 内部値はgb-right-panel-chat.part01.part01.jsのCHAT_REASONING_LEVELSと対応させること。
+function _chatReasoningLevelOptions(provider) {
+  const base = [
+    ['off', 'オフ'],
+    ['low', '低'],
+    ['medium', '中'],
+    ['high', '高'],
+    ['xhigh', '最高'],
+    ['max', '最大'],
+  ];
+  if (String(provider || '').trim().toLowerCase() === 'claude_code') base.push(['ultracode', 'Ultracode']);
+  return base;
+}
+
+function _chatGenerationReasoningRowHtml() {
+  const provider = _chatGenerationCurrentProvider();
+  const supported = _chatGenerationReasoningSupported(provider);
+  const options = _chatReasoningLevelOptions(provider);
+  const storedRaw = _chatGenerationSettingValue('chat-reasoning-level', 'off');
+  const stored = typeof _chatNormalizeReasoningLevel === 'function' ? _chatNormalizeReasoningLevel(storedRaw) : storedRaw;
+  const select = `<select id="chat-menu-reasoning-level" class="gb-input" style="max-width:130px;" ${supported ? '' : 'disabled'}>
+      ${options.map(([value, label]) => `<option value="${value}" ${stored === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+    </select>`;
+  const row = _chatGenerationSettingsRow('思考の深さ', select);
+  if (supported) return row;
+  return `${row}<div data-chat-reasoning-unsupported-note style="font-size:11px;color:var(--fg2);margin-top:-4px;">このプロバイダでは思考の深さ設定は使われません</div>`;
+}
+
+// 現行世代のClaudeモデル（Fable 5 / Opus 4.8 / Opus 4.7 / Sonnet 5）はtemperature/top_pに
+// 既定値以外を指定するとエラーになるため、詳細パラメータの値があっても送信時に省略される
+// （meldex_chat_stream_support.py の _anthropic_supports_sampling_params 参照）。
+// UI共通ルール: モデルのコード名やtemperature/top_pといった内部用語は基本UIに出さず、
+// ツールチップへ集約する。
+function _chatGenerationSamplingParamsNoteHtml() {
+  if (_chatGenerationCurrentProvider() !== 'anthropic') return '';
+  return `<div data-chat-sampling-params-note style="font-size:11px;color:var(--fg2);margin-top:6px;">${fieldHelp('一部の新しいモデルではこの詳細指定は使われません')}</div>`;
+}
+
 function _chatGenerationCliSessionControlsHtml() {
   const provider = _chatGenerationCurrentProvider();
   const cli = window.GBChatCli;
@@ -99,6 +148,14 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
   const code = menu.querySelector('#chat-menu-allow-code-execution');
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
+  const showRecommendations = menu.querySelector('#chat-menu-show-recommendations');
+  if (showRecommendations) {
+    const nextValue = showRecommendations.checked ? '1' : '0';
+    if (localStorage.getItem('chat-recommendations-enabled') !== nextValue) {
+      localStorage.setItem('chat-recommendations-enabled', nextValue);
+      try { window.GBChatRecommendations?.refresh?.({ force: true }); } catch {}
+    }
+  }
   const reasoning = menu.querySelector('#chat-menu-reasoning-level');
   if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
   const preset = menu.querySelector('#chat-menu-param-preset');
@@ -132,9 +189,9 @@ function showChatGenerationSettingsMenu(event) {
     <label class="gb-check" style="margin:0;"><input id="chat-menu-auto-compress" type="checkbox" ${localStorage.getItem('chat-auto-compress') === '1' ? 'checked' : ''}><span>長い会話を自動要約</span></label>
     ${_chatGenerationCliSessionControlsHtml()}
     <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-code-execution" type="checkbox" ${localStorage.getItem('chat-allow-code-execution') === '1' ? 'checked' : ''}><span>コード実行を許可</span></label>
-    ${_chatGenerationSettingsRow('思考の深さ', `<select id="chat-menu-reasoning-level" class="gb-input" style="max-width:130px;">
-      ${['off','standard','max'].map(v => `<option value="${v}" ${_chatGenerationSettingValue('chat-reasoning-level', 'off') === v ? 'selected' : ''}>${v === 'off' ? 'オフ' : v === 'standard' ? '標準' : '最大'}</option>`).join('')}
-    </select>`)}
+    <label class="gb-check" style="margin:0;"><input id="chat-menu-show-recommendations" type="checkbox" ${localStorage.getItem('chat-recommendations-enabled') !== '0' ? 'checked' : ''}><span>「次にできること」の提案を表示</span></label>
+    <div data-chat-generation-tuning-hint style="font-size:11px;color:var(--fg2);line-height:1.4;">${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</div>
+    ${_chatGenerationReasoningRowHtml()}
     ${_chatGenerationSettingsRow('応答プリセット', `<select id="chat-menu-param-preset" class="gb-input" style="max-width:130px;">
       ${[
         ['creative','創作'],
@@ -148,6 +205,7 @@ function showChatGenerationSettingsMenu(event) {
         ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('temperature'))}" placeholder="自動">`)}
         ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('max-tokens'))}" placeholder="8192">`)}
         ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('top-p'))}" placeholder="自動">`)}
+        ${_chatGenerationSamplingParamsNoteHtml()}
       </div>
     </details>
   `;

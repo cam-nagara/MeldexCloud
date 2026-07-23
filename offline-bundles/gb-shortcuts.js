@@ -87,7 +87,7 @@ const GB_SHORTCUTS = {
   'db.enter':             { key: 'enter',        label: 'エントリを開く / 編集',      scope: 'database' },
   'db.edit':              { key: 'f2',           label: 'セル / エントリ名を編集',   scope: 'database' },
   'db.newEntry':          { key: 'ctrl+enter',   label: '新規エントリ追加',           scope: 'database' },
-  'db.newProp':           { key: 'ctrl+shift+enter', label: '新規プロパティ追加',    scope: 'database' },
+  'db.newProp':           { key: 'ctrl+shift+enter', label: '新規列追加',    scope: 'database' },
   'db.search':            { key: 'ctrl+f',       label: '現在のシートを検索',         scope: 'database' },
   'db.replace':           { key: 'ctrl+h',       label: '現在のシートで置換',         scope: 'database' },
   'db.advancedFilter':    { key: 'ctrl+shift+f', label: '複数条件フィルタ',           scope: 'database' },
@@ -199,7 +199,7 @@ function _resolveShortcutScope(e) {
   if (isEditing) {
     const scope = _viewToScope(state.view);
     if (scope === 'note' && editEl?.closest?.('#page-content, #entity-freetext, #dp-editable')) return ['global', 'note'];
-    if (scope === 'scenario') return ['global', 'scenario'];
+    if (scope === 'scenario' && editEl?.closest?.('.gb-se-root')) return ['global', 'scenario'];
     return ['global'];
   }
 
@@ -399,17 +399,24 @@ function _shortcutStatusItem(id, label) {
 }
 
 function getScriptnoteShortcutStatusText() {
+  // 2026-07-17 最新仕様に同期: Tab=タイプ選択・同タイプ行追加・セル内貼付・全選択/選択解除を追加、
+  // 「上へ/下へ」は行移動であることが分かる表記へ変更
   return [
     _shortcutStatusItem('scenario.addRow', '行追加'),
-    _shortcutStatusItem('scenario.newline', '改行'),
+    _shortcutStatusItem('scenario.addRowSameType', '同タイプ行追加'),
+    _shortcutStatusItem('scenario.newline', 'セル内改行'),
     _shortcutStatusItem('scenario.deleteRow', '行削除'),
+    _shortcutStatusItem('scenario.tab', 'タイプ選択'),
+    _shortcutStatusItem('scenario.moveUp', '行を上へ'),
+    _shortcutStatusItem('scenario.moveDown', '行を下へ'),
     _shortcutStatusItem('scenario.search', '検索'),
     _shortcutStatusItem('scenario.replace', '置換'),
-    _shortcutStatusItem('scenario.moveUp', '上へ'),
-    _shortcutStatusItem('scenario.moveDown', '下へ'),
     _shortcutStatusItem('scenario.ruby', 'ルビ'),
     _shortcutStatusItem('scenario.copy', 'コピー'),
     _shortcutStatusItem('scenario.paste', '貼付'),
+    _shortcutStatusItem('scenario.pasteInCell', 'セル内貼付'),
+    _shortcutStatusItem('scenario.selectAll', '全選択'),
+    _shortcutStatusItem('scenario.deselectAll', '選択解除'),
     _shortcutStatusItem('scenario.undo', 'Undo'),
     _shortcutStatusItem('scenario.redo', 'Redo'),
   ].filter(Boolean).join(' | ');
@@ -625,28 +632,16 @@ const _shortcutHandlers = {
     if (searchInput) { searchInput.focus(); searchInput.select(); }
   },
   'global.undo': () => {
-    // contentEditable内ではブラウザデフォルトに任せる
+    // contentEditable内ではブラウザデフォルトに任せる（この判定はショートカット側のみに残す。
+    // ツールバーボタンはクリック時点でフォーカスがボタンへ移るため、meldexUndo() には入れない）
     const ae = document.activeElement;
     if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return false;
-    // ボードならボード専用undo
-    if (state.view === 'board' && typeof bdUndo === 'function') { bdUndo(); return; }
-    // カレンダーDBならカレンダー専用undo
-    if (typeof isCalendarDb === 'function' && isCalendarDb()) {
-      const mode = typeof getCalendarMode === 'function' ? getCalendarMode(state.currentDbPath) : 'month';
-      if (mode !== 'timeline') { _calUndo(); return; }
-    }
-    if (typeof historyUndo === 'function') historyUndo();
+    if (typeof meldexUndo === 'function') meldexUndo();
   },
   'global.redo': () => {
     const ae = document.activeElement;
     if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return false;
-    // ボードならボード専用redo
-    if (state.view === 'board' && typeof bdRedo === 'function') { bdRedo(); return; }
-    if (typeof isCalendarDb === 'function' && isCalendarDb()) {
-      const mode = typeof getCalendarMode === 'function' ? getCalendarMode(state.currentDbPath) : 'month';
-      if (mode !== 'timeline') { _calRedo(); return; }
-    }
-    if (typeof historyRedo === 'function') historyRedo();
+    if (typeof meldexRedo === 'function') meldexRedo();
   },
   'global.redo2': () => _shortcutHandlers['global.redo'](),
   'global.navBack': (e) => {
@@ -1297,7 +1292,7 @@ const GB_TOOLTIPS = {
   'btn-heading-indent': { label: 'インデント', desc: '見出しインデント表示の切替' },
   'btn-version':        { label: 'バージョン管理', desc: 'バージョン管理パネルを開く' },
   'rab-detail':         { label: 'オプション', desc: 'オプションパネルを開く' },
-  'rab-calendar':       { label: 'スケジューラー', desc: 'スケジューラーパネルを開く' },
+  'rab-calendar':       { label: 'スケジュール', desc: 'スケジュールパネルを開く' },
   'rab-chat':           { label: 'チャット', desc: 'チャットパネルを開く' },
   'rab-tags':           { label: 'タグ', desc: 'タグ管理パネルを開く' },
   'rab-annotation':     { label: '注釈', desc: '注釈パネルを開く' },
@@ -1356,7 +1351,7 @@ const GB_SHORTCUT_SCOPE_LABELS = {
   scenario: 'シナリオ',
   database: 'シート',
   board: 'ボード',
-  calendar: 'スケジューラー',
+  calendar: 'スケジュール',
   csv: 'CSV',
   folder: 'フォルダ',
   panelset: 'パネルセット',

@@ -79,6 +79,7 @@
     const parsed = await _readFrontmatterFile(provider, notePath);
     const frontmatter = { ...(parsed.frontmatter || {}) };
     const propertyTypes = frontmatter.property_types && typeof frontmatter.property_types === 'object' ? { ...frontmatter.property_types } : {};
+    const productionSheet = _isProductionManagementSheetMetadataPath(dbPath);
     let changed = false;
     Object.entries(specs).forEach(([propName, spec]) => {
       const current = propertyTypes[propName] && typeof propertyTypes[propName] === 'object' ? { ...propertyTypes[propName] } : null;
@@ -87,6 +88,8 @@
         changed = true;
         return;
       }
+      // 制作管理の既存列はCSVの推測型で上書き・拡張しない。新規カスタム列だけ追加できる。
+      if (productionSheet) return;
       if (current.type !== 'date') return;
       ['withTime', 'range'].forEach(key => {
         if (spec[key] && !current[key]) {
@@ -157,6 +160,7 @@
     if (!rows.length) return { ok: true, count: 0 };
     const headers = _sheetImportHeaders(rows[0]);
     if (!headers.length) return { ok: true, count: 0 };
+    _rejectProductionReservedLegacyProperties(dbPath, headers.slice(1));
     await _requireUnlocked(provider, dbPath, { action: 'import-csv' });
     await _ensureFolderNote(provider, dbPath, 'settings-db');
     await _mergeSheetImportPropertyTypes(provider, dbPath, _sheetImportPropertySpecs(rows[0], headers, rows.slice(1)));
@@ -738,6 +742,7 @@
     const replacement = String(body?.replace ?? '');
     const nextFrontmatter = _replaceNestedText(stored.frontmatter, pattern, replacement, state);
     const nextBody = _replaceStringValue(stored.body || '', pattern, replacement, state);
+    _rejectProductionReservedLegacyPropertyObject(stored.dbPath, nextFrontmatter?.properties);
     if (state.count > 0) {
       await _requireUnlocked(provider, stored.dbPath, { action: 'replace-sheet-store' });
       const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
@@ -751,6 +756,9 @@
     const path = _normalizeFolderPath(body?.path || '');
     const q = String(body?.search || '');
     if (!path || !q) throw new Error('path, search は必須です');
+    if (_isProductionManagementFolderNotePath(path)) {
+      throw new Error('制作管理の列定義ファイルは一括置換から変更できません');
+    }
     const pattern = _searchPattern(q, _truthy(body?.case), _truthy(body?.regex));
     if (!pattern) throw new Error('無効な正規表現');
     const storeResult = await _replaceInSheetStoreEntry(provider, path, body || {}, pattern);
@@ -763,8 +771,24 @@
     const content = await provider.readText(path);
     const state = { count: 0, replaceAll: _truthy(body?.all), remaining: _truthy(body?.all) ? Number.POSITIVE_INFINITY : 1 };
     const next = _replaceStringValue(content, pattern, String(body?.replace ?? ''), state);
-    if (state.count > 0) await provider.writeText(path, next);
+    if (state.count > 0) {
+      _rejectProductionReservedLegacyPropertyObject(_dirname(path), _parseFrontmatter(next).frontmatter?.properties);
+      await provider.writeText(path, next);
+    }
     return { ok: true, count: state.count };
+  }
+
+  async function _cloudLinkDictFuriganaKeys(provider, dbPath) {
+    try {
+      const note = await _folderFrontmatter(provider, dbPath);
+      const propertyTypes = note?.frontmatter?.property_types;
+      if (!propertyTypes || typeof propertyTypes !== 'object' || Array.isArray(propertyTypes)) return [];
+      return Object.entries(propertyTypes)
+        .filter(([, spec]) => spec && typeof spec === 'object' && spec.type === 'furigana')
+        .map(([name]) => name);
+    } catch {
+      return [];
+    }
   }
 
   async function _cloudLinkDict(provider, url) {
@@ -778,12 +802,14 @@
     for (const db of dbs) {
       if (db.kind && db.kind !== 'settings-db') continue;
       const pivot = await _readPivot(provider, db.path, '').catch(() => null);
+      const furiganaKeys = await _cloudLinkDictFuriganaKeys(provider, db.path);
+      const rubyKeys = [...new Set([...furiganaKeys, 'ふりがな', 'ルビ', 'フリガナ', 'ruby'])];
       Object.entries(pivot?.entities || {}).forEach(([name, props]) => {
         const text = String(name || '').trim();
         if (text.length < 2 || seen.has(text)) return;
         seen.add(text);
         let ruby = '';
-        for (const key of ['ふりがな', 'ルビ', 'フリガナ', 'ruby']) {
+        for (const key of rubyKeys) {
           const values = Array.isArray(props?.[key]) ? props[key] : [];
           const adopted = values.find(item => item?.status === '採用' && item?.value);
           if (adopted) {
@@ -897,7 +923,14 @@
     if (pathname === '/value' && method === 'PUT') return _updateValue(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/value' && method === 'POST') return _addValue(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/entity/create' && method === 'POST') return _createEntity(await _requirePwaProvider('readwrite'), body || {});
-    if (pathname === '/entity/rename' && method === 'POST') return _renameEntity(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/entity/rename' && method === 'POST') {
+      const production = window.MeldexProductionManagement;
+      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(body?.path)
+        && typeof production?.renameCloudManagedEntry === 'function') {
+        return production.renameCloudManagedEntry(body || {});
+      }
+      return _renameEntity(await _requirePwaProvider('readwrite'), body || {});
+    }
     if (pathname === '/import-csv' && method === 'POST') return _importCsvToDb(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});

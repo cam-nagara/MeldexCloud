@@ -1,15 +1,23 @@
-/* note-standalone-app.js */
+/* note-standalone-app.js
+ *
+ * 単独版ノートは本体ノートエディタ資産（gb-editor.js / gb-note-enhance.js /
+ * gb-format-popup.js / gb-text-selection-format.js / gb-shortcuts.js 等）を
+ * そのまま同梱し、このファイルは「本体エディタの初期化 + ファイルI/O差し替え」
+ * （MeldexStandaloneFS 経由の開く/保存/新規作成）だけを担当する。
+ * 本文の描画・収集（Markdown⇔HTML変換）は本体の mdToHtml / htmlToMd をそのまま使う
+ * （旧 note-standalone-markdown.js の独自実装は撤去済み。ルビ・表・コールアウト等の
+ * 変換は本体と完全に同一のロジックになるため、往復保存の差分は生まれない）。
+ */
 (function () {
   'use strict';
 
   const app = {
     path: '',
     dirty: false,
-    etag: '',
-    frontMatter: '',
   };
 
   function qs(id) { return document.getElementById(id); }
+  function editor() { return qs('page-content'); }
 
   function titleFromPath(path) {
     const name = String(path || '').split('/').pop() || '無題';
@@ -22,6 +30,9 @@
     return idx >= 0 ? value.slice(0, idx) : '';
   }
 
+  // リンク・画像挿入（ローカルUI操作由来）に使う安全URL検証。
+  // 本体の mdToHtml/htmlToMd はファイル内容側の安全性（エスケープ・スキームのホワイト
+  // リスト）を担うが、単独版はここに加えて「UI操作で今まさに挿入する値」を検証する。
   function safeContentUrl(value, kind) {
     const raw = String(value || '').trim();
     if (!raw || /[\u0000-\u001f\u007f]/.test(raw)) return '';
@@ -35,34 +46,13 @@
     return ['http', 'https', 'mailto', 'tel'].includes(scheme) ? raw : '';
   }
 
-  function sanitizeEditorContent(root) {
-    root.querySelectorAll('script,iframe,object,embed,link,meta,base,style').forEach(el => el.remove());
-    root.querySelectorAll('*').forEach(el => {
-      [...el.attributes].forEach(attr => {
-        if (/^on/i.test(attr.name) || attr.name.toLowerCase() === 'srcdoc') el.removeAttribute(attr.name);
-      });
-    });
-    root.querySelectorAll('a[href]').forEach(link => {
-      const safe = safeContentUrl(link.getAttribute('href'), 'link');
-      if (safe) {
-        link.setAttribute('href', safe);
-        link.setAttribute('rel', 'noopener noreferrer');
-      } else {
-        link.removeAttribute('href');
-      }
-    });
-    root.querySelectorAll('img[src]').forEach(image => {
-      const safe = safeContentUrl(image.getAttribute('src'), 'image');
-      if (safe) image.setAttribute('src', safe);
-      else image.removeAttribute('src');
-    });
-  }
-
+  // Cloudの/file-raw・/media/file 参照（サーバー実体が無いため、Dropbox経由で
+  // 取得したデータURLへ差し替える必要がある）を検出する。
   function rawFilePath(value) {
     try {
       const parsed = new URL(String(value || ''), location.href);
       if (parsed.origin !== location.origin) return '';
-      if (!/\/(?:api\/)?file-raw$/i.test(parsed.pathname)) return '';
+      if (!/\/(?:api\/)?(?:file-raw|media\/file)$/i.test(parsed.pathname)) return '';
       return String(parsed.searchParams.get('path') || '').replace(/\\/g, '/');
     } catch {
       return '';
@@ -90,83 +80,91 @@
     }));
   }
 
-  function simpleMdToHtml(md) {
-    const lines = String(md || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    return lines.map(line => {
-      if (/^###\s+/.test(line)) return '<h3>' + esc(line.replace(/^###\s+/, '')) + '</h3>';
-      if (/^##\s+/.test(line)) return '<h2>' + esc(line.replace(/^##\s+/, '')) + '</h2>';
-      if (/^#\s+/.test(line)) return '<h1>' + esc(line.replace(/^#\s+/, '')) + '</h1>';
-      const linked = esc(line)
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">')
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-      return linked ? '<div>' + linked + '</div>' : '<div><br></div>';
-    }).join('');
+  // 本体と同じ抽出方法（openPage()と同一の正規表現）。CRLFにも寛容にしておく。
+  function splitFrontMatter(raw) {
+    const match = String(raw || '').match(/^(---\r?\n[\s\S]*?\r?\n---\r?\n?)/);
+    return match ? match[1] : '';
   }
 
-  function simpleHtmlToMd(html) {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = html || '';
-    tmp.querySelectorAll('img').forEach(image => {
-      const source = image.dataset.meldexSourceSrc || image.getAttribute('src') || '';
-      const safe = safeContentUrl(source, 'image');
-      image.replaceWith(document.createTextNode(safe ? `![${image.alt || ''}](${safe})` : (image.alt || '')));
-    });
-    tmp.querySelectorAll('a').forEach(link => {
-      const label = link.textContent || '';
-      const safe = safeContentUrl(link.getAttribute('href'), 'link');
-      link.replaceWith(document.createTextNode(safe ? `[${label}](${safe})` : label));
-    });
-    tmp.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-    tmp.querySelectorAll('h1,h2,h3,p,div,li').forEach(el => {
-      if (el.tagName === 'H1') el.prepend('# ');
-      if (el.tagName === 'H2') el.prepend('## ');
-      if (el.tagName === 'H3') el.prepend('### ');
-      el.append('\n');
-    });
-    return tmp.textContent.replace(/\n{3,}/g, '\n\n').trimEnd() + (tmp.textContent.trim() ? '\n' : '');
+  async function renderMarkdown(raw) {
+    const pc = editor();
+    const source = String(raw || '');
+    pc.dataset.frontmatter = splitFrontMatter(source);
+    pc.innerHTML = typeof mdToHtml === 'function' ? mdToHtml(source) : '';
+    await hydrateCloudMedia(pc);
   }
 
-  async function renderMarkdown(md) {
-    const codec = window.MeldexStandaloneMarkdown;
-    const source = String(md || '');
-    const parts = typeof codec?.splitDocument === 'function' ? codec.splitDocument(source) : null;
-    app.frontMatter = String(parts?.frontMatter || '');
-    const body = parts ? parts.body : source.replace(/^---\n[\s\S]*?\n---\n?/, '');
-    const html = codec?.toHtml(source) || (typeof mdToHtml === 'function' ? mdToHtml(body) : simpleMdToHtml(body));
-    const editor = qs('page-content');
-    editor.innerHTML = html;
-    sanitizeEditorContent(editor);
-    await hydrateCloudMedia(editor);
-  }
-
+  // 本体の _noteMarkdownFromEditor と同じ変換（htmlToMd + フロントマター復元）を行うが、
+  // Cloudでハイドレートした画像src（data URL）をクローン上で元のサーバー参照へ
+  // 戻してから変換する（本体には無いCloud単独版固有の手当て。戻さないと保存の
+  // たびに巨大なdata URLが本文へ書き込まれてしまう）。
   function collectMarkdown() {
-    const editor = qs('page-content');
-    editor.querySelectorAll('mark.file-search-highlight').forEach(mark => mark.replaceWith(...mark.childNodes));
-    editor.normalize();
-    const clone = editor.cloneNode(true);
+    const pc = editor();
+    pc.querySelectorAll('mark.file-search-highlight').forEach(mark => mark.replaceWith(...mark.childNodes));
+    pc.normalize();
+    const clone = pc.cloneNode(true);
     clone.querySelectorAll('[data-meldex-source-src]').forEach(image => {
       image.setAttribute('src', image.dataset.meldexSourceSrc || '');
       image.removeAttribute('data-meldex-source-src');
     });
-    const html = clone.innerHTML || '';
-    const codec = window.MeldexStandaloneMarkdown;
-    if (typeof codec?.fromHtml === 'function') return codec.fromHtml(html, app.frontMatter);
-    return typeof htmlToMd === 'function' ? htmlToMd(html) : simpleHtmlToMd(html);
+    const body = typeof htmlToMd === 'function' ? htmlToMd(clone.innerHTML) : '';
+    const fm = pc.dataset.frontmatter || '';
+    return fm ? fm + body : body;
+  }
+
+  function clearToast() {
+    qs('standalone-toast')?.classList.remove('visible');
   }
 
   function setPath(path, etag) {
+    const pc = editor();
     app.path = String(path || '').replace(/\\/g, '/');
     MeldexStandaloneFS.setCurrentPath?.(app.path);
-    app.etag = etag || '';
-    qs('page-content').dataset.path = app.path;
+    pc.dataset.path = app.path;
+    pc.dataset.lastSavedEtag = etag || '';
+    pc.dataset.loadFailed = '';
     state.currentPagePath = app.path;
+    state.view = 'page';
     qs('note-title-input').value = titleFromPath(app.path);
     qs('note-path-label').textContent = app.path ? MeldexStandaloneFS.pathLabel(app.path) : '未保存';
+    syncOptionPanel().catch(error => console.error('option panel sync failed', error));
   }
 
   function setDirty(flag) {
     app.dirty = !!flag;
     document.title = (app.dirty ? '* ' : '') + 'Meldex Note';
+  }
+
+  // 「公開」（vault全体の公開設定が前提）と「バックリンク」（GbBacklinks未同梱）は
+  // 単独版では機能しないため、行き止まりタブとして残さず隠す
+  // （計画書§4: バックリンク一覧・自動リンクは対象外）。
+  // 本体の _showFileInfoInDetailPanel は _syncDetailPanel からawait無しで
+  // 呼ばれ、その中の showDetailPanel() が showNoteTabs(true) 経由でバックリンク
+  // タブを非同期に再表示する（file-meta取得完了後、タイミング不定）。一度隠す
+  // だけでは間に合わないため、MutationObserverで hidden 属性の変化を監視し、
+  // 再表示された瞬間に隠し直す。
+  let _hideUnsupportedTabsObserver = null;
+  function hideUnsupportedOptionTabs() {
+    document.querySelectorAll('.detail-tab-publish, .detail-tab-backlinks').forEach(tab => {
+      if (!tab.hidden) tab.hidden = true;
+    });
+  }
+  function watchUnsupportedOptionTabs() {
+    const tabBar = qs('detail-tab-bar');
+    if (!tabBar || _hideUnsupportedTabsObserver) return;
+    _hideUnsupportedTabsObserver = new MutationObserver(hideUnsupportedOptionTabs);
+    _hideUnsupportedTabsObserver.observe(tabBar, { attributes: true, attributeFilter: ['hidden'], subtree: true });
+  }
+
+  // オプションパネル（「エディタ」= ファイル情報 / 「テーマ」= ファイル別スタイル）を
+  // 本体の共通関数へ配線する。type='page' は本体のノート編集と同じ扱いになるため、
+  // 書式設定タブ（gb-detail-panel.js の _FS_FIELDS.page）がそのまま使える。
+  async function syncOptionPanel() {
+    if (typeof _syncDetailPanel !== 'function') return;
+    const label = qs('note-title-input')?.value || titleFromPath(app.path);
+    await _syncDetailPanel(label, app.path, 'page', {});
+    watchUnsupportedOptionTabs();
+    hideUnsupportedOptionTabs();
   }
 
   function currentZoom() {
@@ -196,11 +194,12 @@
 
   async function newNote() {
     if (app.dirty && !(await cfConfirm('未保存の変更を破棄しますか？'))) return;
+    clearToast();
     await renderMarkdown('');
     setPath('', '');
     qs('note-title-input').value = '無題';
     setDirty(false);
-    qs('page-content').focus();
+    editor().focus();
   }
 
   async function openPath(path) {
@@ -228,11 +227,13 @@
       MeldexStandaloneFS.discardQueuedOpen?.();
       return;
     }
+    clearToast();
     const selected = await MeldexStandaloneFS.openFile();
     if (selected?.path) await openPath(selected.path);
   }
 
   async function saveNote() {
+    clearToast();
     const md = collectMarkdown();
     if (!app.path) {
       await saveNoteAs();
@@ -240,13 +241,13 @@
     }
     showLoading('ノートを保存しています...');
     try {
-      const res = await MeldexStandaloneFS.writeText(app.path, md, { if_match_etag: app.etag, skip_if_missing: true });
+      const res = await MeldexStandaloneFS.writeText(app.path, md, { if_match_etag: editor().dataset.lastSavedEtag || '', skip_if_missing: true });
       if (res?.skipped || res?.missing) {
         showStatus('保存先が見つかりません。名前を付けて保存してください', true);
         await saveNoteAs();
         return;
       }
-      app.etag = res?.etag || '';
+      editor().dataset.lastSavedEtag = res?.etag || '';
       setDirty(false);
       showStatus('保存しました');
     } finally {
@@ -265,7 +266,20 @@
     showStatus('保存しました');
   }
 
-  function insertLink() {
+  // リンク挿入。メニュークリック（savedRange無し・現在の選択範囲を使う）と、
+  // gb-shortcuts.js の Ctrl+K ハンドラ（window.showLinkInsertModal 経由・
+  // savedRangeあり）の両方から共有する。安全なスキームだけ許可する検証は
+  // ここに一本化し、キーボード経路でも menuと同じ安全性を確保する。
+  function insertLinkAtSelection(savedRange) {
+    const restoreRange = (range) => {
+      if (!range) return;
+      try {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch { /* 復元できない場合は現在の選択のまま続行 */ }
+    };
+    restoreRange(savedRange);
     const sel = window.getSelection();
     const selected = sel && sel.rangeCount ? String(sel.toString() || '') : '';
     const target = window.prompt('リンク先', '');
@@ -276,12 +290,22 @@
       return;
     }
     const label = selected || window.prompt('表示名', target) || target;
+    restoreRange(savedRange);
+    editor().focus();
     document.execCommand('insertHTML', false, `<a href="${esc(safeTarget)}" rel="noopener noreferrer">${esc(label)}</a>`);
     setDirty(true);
   }
 
+  function insertLink() {
+    insertLinkAtSelection(null);
+  }
+
   function toggleVertical() {
-    qs('page-content').classList.toggle('vertical-writing');
+    if (typeof toggleNoteVertical === 'function') {
+      toggleNoteVertical();
+    } else {
+      editor().classList.toggle('vertical-writing');
+    }
   }
 
   function fileToDataUrl(file) {
@@ -315,34 +339,34 @@
       }
       if (!safeContentUrl(displayUrl, 'image')) throw new Error('表示できない画像形式です');
       const sourceAttr = displayUrl === raw ? '' : ` data-meldex-source-src="${esc(raw)}"`;
-      insertHtml(`<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(file.name)}"><img src="${esc(displayUrl)}"${sourceAttr} alt="${esc(file.name)}"></div><div><br></div>`);
+      insertHtml(`<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(file.name)}" data-type="image"><img src="${esc(displayUrl)}"${sourceAttr} alt="${esc(file.name)}"></div><div><br></div>`);
     } else {
       insertHtml(`<a href="${esc(raw)}">${esc(file.name || res.path)}</a> `);
     }
   }
 
   function bindEditor() {
-    const editor = qs('page-content');
-    editor.addEventListener('input', () => setDirty(true));
-    editor.addEventListener('paste', async event => {
+    const pc = editor();
+    pc.addEventListener('input', () => setDirty(true));
+    pc.addEventListener('paste', async event => {
       const files = [...(event.clipboardData?.files || [])];
       const image = files.find(file => (file.type || '').startsWith('image/'));
       if (!image) return;
       event.preventDefault();
       await insertFile(image);
     });
-    editor.addEventListener('dragover', event => {
+    pc.addEventListener('dragover', event => {
       if ([...(event.dataTransfer?.types || [])].includes('Files')) {
         event.preventDefault();
       }
     });
-    editor.addEventListener('drop', async event => {
+    pc.addEventListener('drop', async event => {
       const files = [...(event.dataTransfer?.files || [])];
       if (!files.length) return;
       event.preventDefault();
       for (const file of files) await insertFile(file);
     });
-    editor.addEventListener('click', async event => {
+    pc.addEventListener('click', async event => {
       const link = event.target.closest?.('a[href]');
       const path = rawFilePath(link?.getAttribute('href'));
       if (!path || !document.documentElement.hasAttribute('data-standalone-cloud')) return;
@@ -357,89 +381,108 @@
         showStatus('添付ファイルを開けません: ' + (error.message || error), true);
       }
     });
-    editor.addEventListener('keydown', event => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        insertLink();
-      }
-    });
   }
 
   function bindPathChanges() {
     window.addEventListener('meldex:file-path-renamed', event => {
       const oldPath = String(event?.detail?.oldPath || '').replace(/\\/g, '/');
       const newPath = String(event?.detail?.newPath || '').replace(/\\/g, '/');
-      if (oldPath && newPath && app.path === oldPath) setPath(newPath, app.etag);
+      if (oldPath && newPath && app.path === oldPath) setPath(newPath, editor().dataset.lastSavedEtag || '');
     });
   }
 
-  function bindMediaControls() {
-    const controls = qs('media-float-controls');
-    const resizeHandle = qs('media-resize-handle');
-    let active = null;
-    let suppressedMedia = null;
-    function hide(options = {}) {
-      if (options.suppressUntilLeave && active) suppressedMedia = active;
-      controls.classList.remove('visible');
-      resizeHandle.classList.remove('visible');
-      controls.setAttribute('aria-hidden', 'true');
-      resizeHandle.setAttribute('aria-hidden', 'true');
-      active = null;
-    }
-    function show(media) {
-      active = media;
-      const rect = media.getBoundingClientRect();
-      controls.classList.add('visible');
-      controls.setAttribute('aria-hidden', 'false');
-      const width = controls.offsetWidth || 0;
-      placeFixedElement(controls, rect.right - width - 6, rect.top + 6);
-      resizeHandle.classList.add('visible');
-      resizeHandle.setAttribute('aria-hidden', 'false');
-      placeFixedElement(resizeHandle, rect.right - 8, rect.bottom - 8);
-    }
-    document.addEventListener('mouseover', event => {
-      const media = event.target.closest?.('.embed-media');
-      if (media && media === suppressedMedia) return;
-      if (media) show(media);
-    });
-    document.addEventListener('mouseout', event => {
-      if (suppressedMedia && !suppressedMedia.contains(event.relatedTarget)) suppressedMedia = null;
-    });
-    document.addEventListener('keydown', event => { if (event.key === 'Escape') hide({ suppressUntilLeave: true }); }, true);
-    controls.addEventListener('click', event => {
-      const button = event.target.closest('button');
-      if (!button || !active) return;
-      const align = button.dataset.align;
-      if (align) {
-        active.style.marginLeft = align === 'left' ? '0' : 'auto';
-        active.style.marginRight = align === 'right' ? '0' : 'auto';
-        setDirty(true);
-      } else if (button.dataset.action === 'delete') {
-        active.remove();
-        hide();
-        setDirty(true);
+  // #page-rt-toolbar は本体の mousedown ハンドラ（gb-editor.js）が既に選択範囲の
+  // 保持/復元を面倒みるため、ここではボタンごとの本体コマンド呼び出しだけ配線する。
+  function bindToolbar() {
+    const toolbar = qs('page-rt-toolbar');
+    toolbar.addEventListener('click', event => {
+      const rtBtn = event.target.closest('[data-note-rt-cmd]');
+      if (rtBtn) {
+        const [cmd, value] = String(rtBtn.dataset.noteRtCmd || '').split(':');
+        if (typeof rtCmd === 'function') rtCmd(cmd, value);
+        return;
+      }
+      if (event.target.closest('#btn-toc-toggle')) {
+        if (typeof toggleNoteToc === 'function') toggleNoteToc();
+        return;
+      }
+      if (event.target.closest('#btn-note-vertical')) {
+        toggleVertical();
+        return;
+      }
+      if (event.target.closest('#btn-heading-indent')) {
+        if (typeof toggleHeadingIndent === 'function') toggleHeadingIndent();
+        return;
+      }
+      if (event.target.closest('#note-rt-callout')) {
+        if (typeof insertCallout === 'function') insertCallout();
+        return;
+      }
+      if (event.target.closest('#note-rt-table')) {
+        if (typeof insertNoteTable === 'function') insertNoteTable();
+        return;
+      }
+      if (event.target.closest('#note-rt-search')) {
+        if (typeof openFileSearch === 'function') openFileSearch('replace');
       }
     });
-    resizeHandle.addEventListener('pointerdown', event => {
-      if (!active) return;
-      event.preventDefault();
-      const target = active.querySelector('img,video');
-      if (!target) return;
-      const startX = event.clientX;
-      const startWidth = target.offsetWidth;
-      const move = ev => {
-        target.style.width = Math.max(60, startWidth + ev.clientX - startX) + 'px';
-        target.style.height = 'auto';
-        show(active);
-      };
-      const up = () => {
-        document.removeEventListener('pointermove', move);
-        document.removeEventListener('pointerup', up);
-        setDirty(true);
-      };
-      document.addEventListener('pointermove', move);
-      document.addEventListener('pointerup', up);
+    qs('note-rt-heading').addEventListener('change', event => {
+      if (typeof rtHeading === 'function') rtHeading(event.target.value);
+      event.target.value = '';
     });
+  }
+
+  // スマホ幅（≤820px）で優先操作だけを常時表示し、残りを「その他」ボトムシートへ畳む
+  // （計画書: standalone-mobile-toolbar_plan_2026-07-20.md §4）。
+  function initMobileToolbar() {
+    window.MeldexStandaloneMobileToolbar?.setup({
+      toolbar: '#page-rt-toolbar',
+      priority: ['#btn-toc-toggle', '[data-note-rt-cmd="undo"]', '[data-note-rt-cmd="redo"]', '[data-note-rt-cmd="bold"]', '#note-rt-search'],
+      sheetTitle: 'その他',
+    });
+  }
+
+  function bindFileSearchBar() {
+    qs('fsb-prev')?.addEventListener('click', () => window.doFileSearch?.(-1));
+    qs('fsb-next')?.addEventListener('click', () => window.doFileSearch?.(1));
+    qs('fsb-replace-one')?.addEventListener('click', () => window.doFileReplace?.(false));
+    qs('fsb-replace-all')?.addEventListener('click', () => window.doFileReplace?.(true));
+    qs('fsb-close')?.addEventListener('click', () => window.closeFileSearch?.());
+  }
+
+  async function exportMarkdownFile() {
+    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
+      showStatus('保存ダイアログを初期化できませんでした', true);
+      return;
+    }
+    const title = qs('note-title-input').value.trim() || titleFromPath(app.path);
+    await MeldexExportSave.saveText(collectMarkdown(), {
+      title,
+      extension: '.md',
+      dialogTitle: 'Markdownとして保存',
+      filetypes: [['Markdownファイル', '*.md'], ['すべてのファイル', '*.*']],
+      bom: true,
+      okMessage: 'Markdown として保存しました',
+      errorMessage: 'Markdown の保存に失敗しました',
+    });
+  }
+
+  async function exportPngFile() {
+    if (typeof MeldexExportImage === 'undefined') {
+      showStatus('PNG出力エンジンを読み込めませんでした', true);
+      return;
+    }
+    await MeldexExportImage.exportCurrentView('page');
+  }
+
+  async function copyMarkdownToClipboard() {
+    const md = collectMarkdown();
+    if (!navigator.clipboard?.writeText) {
+      showStatus('クリップボードにアクセスできませんでした', true);
+      return;
+    }
+    await navigator.clipboard.writeText(md);
+    showStatus('マークダウンをコピーしました');
   }
 
   function bindMenus() {
@@ -449,7 +492,7 @@
       context.classList.remove('open');
       context.setAttribute('aria-hidden', 'true');
       if (restoreFocus) {
-        try { qs('page-content').focus({ preventScroll: true }); } catch { qs('page-content').focus(); }
+        try { editor().focus({ preventScroll: true }); } catch { editor().focus(); }
       }
     }
     function showContext(event) {
@@ -470,16 +513,19 @@
       if (action === 'saveAs') await window.runStandaloneFileAction('名前を付けて保存', saveNoteAs);
       if (action === 'insertLink') insertLink();
       if (action === 'toggleVertical') toggleVertical();
+      if (action === 'exportMarkdown') await window.runStandaloneFileAction('Markdown出力', exportMarkdownFile);
+      if (action === 'exportPng') await window.runStandaloneFileAction('PNG出力', exportPngFile);
+      if (action === 'copyMarkdown') await window.runStandaloneFileAction('Markdownコピー', copyMarkdownToClipboard);
       if (fromContext) hideContext(false);
     });
     document.addEventListener('click', event => {
       const command = event.target.closest('[data-note-command]')?.dataset.noteCommand;
       if (!command) return;
-      try { qs('page-content').focus({ preventScroll: true }); } catch { qs('page-content').focus(); }
+      try { editor().focus({ preventScroll: true }); } catch { editor().focus(); }
       document.execCommand(command);
       if (event.target.closest('#note-context-menu')) hideContext(false);
     });
-    qs('page-content').addEventListener('contextmenu', showContext);
+    editor().addEventListener('contextmenu', showContext);
     document.addEventListener('pointerdown', event => {
       if (context.classList.contains('open') && !context.contains(event.target)) hideContext(false);
     });
@@ -494,7 +540,7 @@
   function bindShortcuts() {
     document.addEventListener('keydown', async event => {
       const key = event.key.toLowerCase();
-      if (!(event.ctrlKey || event.metaKey)) return;
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
       if (key === 's') {
         event.preventDefault();
         await window.runStandaloneFileAction('保存', saveNote);
@@ -508,13 +554,55 @@
     });
   }
 
+  // gb-shortcuts.js の note.link ハンドラ（Ctrl+K）は、単独版では未同梱の
+  // showLinkInsertModal（本体のCtrl+K内部リンク検索。要判断#4により対象外のまま）
+  // が無い場合、無検証の window.prompt にフォールバックする。ここで安全な実装を
+  // 用意して差し替え、キーボード経路でもメニューと同じURL検証を確保する。
+  function initLinkModalBridge() {
+    window.showLinkInsertModal = function (savedRange) {
+      insertLinkAtSelection(savedRange || null);
+    };
+  }
+
+  // 本体の共有関数 _syncDetailPanel（gb-detail-panel.js）は、#rp-detail が
+  // パネルシステム（.gb-pane-content）配下に無い場合、旧・独立詳細パネル向けの
+  // localStorage フラグ detail-panel-cfg.visible を見て早期returnする。単独版の
+  // オプションパネルの開閉は standalone-option-panel.js が別のキーで管理して
+  // いるため、この旧フラグは単独版では常にtrueに固定し、_syncDetailPanel が
+  // 実際にタブへ描画できるようにする（立てないと「テーマ」等のタブが常に
+  // 空のまま表示されない）。
+  function ensureDetailPanelCfgVisible() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem('detail-panel-cfg') || '{}');
+      if (cfg.visible !== true) {
+        cfg.visible = true;
+        localStorage.setItem('detail-panel-cfg', JSON.stringify(cfg));
+      }
+    } catch {
+      localStorage.setItem('detail-panel-cfg', JSON.stringify({ visible: true }));
+    }
+  }
+
+  function initOptionPanel() {
+    ensureDetailPanelCfgVisible();
+    window.MeldexStandaloneOptionPanel?.init({
+      storagePrefix: 'meldex-note',
+      toggleButtonIds: ['note-option-panel-button'],
+      defaultWidth: 360,
+    });
+  }
+
   async function init() {
     await MeldexStandaloneFS.init();
+    initLinkModalBridge();
+    initOptionPanel();
     bindMenus();
     bindShortcuts();
     bindEditor();
+    bindToolbar();
+    initMobileToolbar();
+    bindFileSearchBar();
     bindPathChanges();
-    bindMediaControls();
     const initial = MeldexStandaloneFS.nativeInitialPath();
     if (!initial) await newNote();
     else {

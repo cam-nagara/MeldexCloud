@@ -144,30 +144,31 @@
       <input type="hidden" id="knowledge-auto-write-mode" data-setting="knowledge-auto-write-mode" value="admin_auto">
       <div class="knowledge-auto-simple-status">
         <div>
-          <div class="knowledge-auto-simple-title">${_icon('checkCircle2', 14)} 自動で記憶し、チャットで活用します</div>
-          <div class="gb-section-desc">通常は設定不要です。チャットの中で出た決定・好み・ルールは、次の相談や創作提案に自動で使われます。</div>
+          <div class="knowledge-auto-simple-title">${_icon('checkCircle2', 14)} 自動で記憶し、チャットで活用します ${fieldHelp('通常は設定不要です。チャットの中で出た決定・好み・ルールは、次の相談や創作提案に自動で使われます。')}</div>
         </div>
         <span class="gb-pill">常時ON</span>
       </div>
-      <label class="gb-check knowledge-auto-ai-toggle">
-        <input type="checkbox" id="knowledge-auto-llm-enabled" data-setting="knowledge-auto-llm-enabled" ${aiEnabled ? 'checked' : ''}>
-        <span>AIで詳しく抽出する</span>
-      </label>
-      <div class="gb-section-desc">ONにした場合だけ、チャット内容を選んだAIへ送り、より細かい記憶候補を抽出します。OFFでも端末内の軽い抽出は動きます。</div>
+      <div class="gb-check-help-row">
+        <label class="gb-check knowledge-auto-ai-toggle">
+          <input type="checkbox" id="knowledge-auto-llm-enabled" data-setting="knowledge-auto-llm-enabled" ${aiEnabled ? 'checked' : ''}>
+          <span>AIで詳しく抽出する</span>
+        </label>
+        ${fieldHelp('より細かい記憶候補を抽出するために使います。OFFでも端末内の軽い抽出は動きます。')}
+      </div>
+      <div class="gb-section-desc">ONのときだけチャット内容を選んだAIへ送ります</div>
       <div class="knowledge-auto-ai-panel" data-knowledge-auto-ai-panel ${aiEnabled ? '' : 'hidden'}>
         <label class="gb-field-row">
           <span class="gb-label" style="min-width:140px;">使うAI</span>
           <select id="knowledge-auto-provider" class="gb-select" data-setting="knowledge-auto-provider" style="width:150px;">
             <option value="anthropic" ${selectedProvider === 'anthropic' ? 'selected' : ''}>Claude</option>
-            <option value="openai" ${selectedProvider === 'openai' ? 'selected' : ''}>GPT</option>
+            <option value="openai" ${selectedProvider === 'openai' ? 'selected' : ''}>ChatGPT</option>
             <option value="gemini" ${selectedProvider === 'gemini' ? 'selected' : ''}>Gemini</option>
           </select>
           <input id="knowledge-auto-model" type="text" class="gb-input" data-setting="knowledge-auto-model" style="flex:1;min-width:160px;" value="${_esc(settings.model)}" placeholder="空欄なら標準モデル">
         </label>
       </div>
       <details class="knowledge-auto-details">
-        <summary>${_icon('slidersHorizontal', 14)} 対象フォルダを確認する</summary>
-        <div class="gb-section-desc">通常はすべて対象です。特定のフォルダだけ除外したい場合に変更します。</div>
+        <summary>${_icon('slidersHorizontal', 14)} 対象フォルダを確認する ${fieldHelp('通常はすべて対象です。特定のフォルダだけ除外したい場合に変更します。')}</summary>
         <div id="knowledge-auto-target-list" style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
           <div class="gb-section-desc">対象フォルダを読み込み中...</div>
         </div>

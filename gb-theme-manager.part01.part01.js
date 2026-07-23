@@ -131,7 +131,7 @@
       hover: { bg: '--bd-select-rect-color', underline: '--bd-anchor-color' },
       selected: { fg: '--bd-selection-fg', bg: '--bd-selection-color', underline: '--bd-caret-color' },
     } },
-    { id: 'style-calendar', group: 'style', app: 'スケジューラー', label: 'スケジューラー', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { selected: '今日/選択' }, vars: {
+    { id: 'style-calendar', group: 'style', app: 'スケジュール', label: 'スケジュール', props: STYLE_TARGET_PROPS, states: STYLE_TARGET_STATES, propLabels: STYLE_TARGET_PROP_LABELS, stateLabels: { selected: '今日/選択' }, vars: {
       normal: { fg: '--cal-fg', bg: '--cal-bg', underline: '--cal-grid-line' },
       hover: { fg: '--cal-cell-hover-fg', bg: '--cal-cell-hover-bg' },
       selected: { fg: '--cal-today-fg', bg: '--cal-today-bg', underline: '--cal-now-line-color' },

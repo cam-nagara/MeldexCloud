@@ -102,8 +102,9 @@ const GBLayout = (() => {
       tabs: tabs || [],
       activeTabIndex: activeTabIndex != null ? activeTabIndex : -1,
       locked: false,
-      navHistory: [],
-      navIndex: -1,
+      // 戻る/進む履歴はタブ単位（tab.navHistory/tab.navIndex）で持つ（②タブ別ナビ履歴、
+      // 2026-07-21）。ペイン単位の navHistory/navIndex は廃止済み。旧形式の layout JSON に
+      // 残る pane.navHistory は _normalizePaneNode でアクティブタブへ移譲してから削除する。
     };
   }
 
@@ -123,11 +124,11 @@ const GBLayout = (() => {
   }
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
-  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'search', 'version']);
+  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'search', 'version']);
   const FIXED_RAIL_RIGHT_DEFAULTS = [
     ['ビューワー', 'preview'], ['オプション', 'detail'], ['バージョン管理', 'version'],
     ['チャット', 'chat'], ['タイマー', 'timer'],
-    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['検索', 'search'],
+    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['タグ', 'tags'], ['検索', 'search'],
   ];
 
   function _fixedRailGeneratedId(prefix) {
@@ -504,6 +505,11 @@ const GBLayout = (() => {
         if (tab.type === 'folder' && !tab.path && tab.label === 'エクスプローラー') {
           tab.label = 'フォルダ';
         }
+        // アプリ名変更前の汎用スケジュールタブだけを現行名へ移行する。
+        // パス付きのカレンダーファイルはユーザーが付けた名前なので変更しない。
+        if (tab.type === 'calendar' && !tab.path && tab.label === 'スケジューラー') {
+          tab.label = 'スケジュール';
+        }
         // 詳細パネル → オプションパネル リネーム (v0.5.255/0.5.263) 以前のレイアウトに残る
         // 旧ラベル '詳細' / 旧アイコン 'info' を現行値に置換する
         if (tab.type === 'detail') {
@@ -512,11 +518,38 @@ const GBLayout = (() => {
         }
         // タブピン留め機能は廃止されたため、既存レイアウト JSON の pinned プロパティを除去
         if ('pinned' in tab) delete tab.pinned;
+        // タブ単位の戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）: 各タブへ防御的に初期化する。
+        if (!Array.isArray(tab.navHistory)) tab.navHistory = [];
+        tab.navHistory.forEach((entry) => {
+          if (entry?.type === 'calendar' && !entry.path && entry.label === 'スケジューラー') {
+            entry.label = 'スケジュール';
+          }
+        });
+        if (!Number.isInteger(tab.navIndex)) tab.navIndex = tab.navHistory.length ? tab.navHistory.length - 1 : -1;
+        if (tab.navIndex >= tab.navHistory.length) tab.navIndex = tab.navHistory.length - 1;
       });
       if (!Number.isInteger(node.activeTabIndex)) node.activeTabIndex = node.tabs.length ? 0 : -1;
-      if (!Array.isArray(node.navHistory)) node.navHistory = [];
-      if (!Number.isInteger(node.navIndex)) node.navIndex = node.navHistory.length ? node.navHistory.length - 1 : -1;
-      if (node.navIndex >= node.navHistory.length) node.navIndex = node.navHistory.length - 1;
+      // 旧形式マイグレーション: pane.navHistory/pane.navIndex（ペイン単位・廃止済み）が
+      // 残っている場合、アクティブタブの navHistory が空ならそこへ移譲する。
+      // アクティブタブが既に独自の履歴を持つ場合は上書きしない（新形式の値を優先）。
+      if (Array.isArray(node.navHistory) && node.navHistory.length) {
+        const activeTab = node.tabs[node.activeTabIndex];
+        if (activeTab && Array.isArray(activeTab.navHistory) && activeTab.navHistory.length === 0) {
+          activeTab.navHistory = node.navHistory;
+          activeTab.navHistory.forEach((entry) => {
+            if (entry?.type === 'calendar' && !entry.path && entry.label === 'スケジューラー') {
+              entry.label = 'スケジュール';
+            }
+          });
+          activeTab.navIndex = Number.isInteger(node.navIndex) ? node.navIndex : (activeTab.navHistory.length - 1);
+          if (activeTab.navIndex >= activeTab.navHistory.length) activeTab.navIndex = activeTab.navHistory.length - 1;
+        }
+      }
+      // pane.navHistory/navIndex は旧形式の名残。移譲の有無によらず常に除去する
+      // （旧版ロールバック時は旧版の _normalizePaneNode が navHistory=[] を再生成するため
+      // 追加のみ変更でスキーマ互換を保てる）。
+      delete node.navHistory;
+      delete node.navIndex;
       return;
     }
     if (node.type === 'split' && Array.isArray(node.children)) {
@@ -724,6 +757,22 @@ const GBLayout = (() => {
     return Number(targetNode?.defaultPopupWidth || 0) > 0;
   }
 
+  // 左右レール導入後、内側の水平split（作業領域 | 右サイドバー）は panelset で
+  // ラップされるため、split そのものでも panelset 越しでも取り出せるようにする。
+  function _innerHorizontalSplit(node) {
+    if (!node) return null;
+    if (node.type === 'split' && node.direction === 'horizontal' && Array.isArray(node.children) && node.children.length === 2) {
+      return node;
+    }
+    if (node.type === 'panelset' && Array.isArray(node.groups) && node.groups.length === 1) {
+      const root = node.groups[0]?.root;
+      if (root && root.type === 'split' && root.direction === 'horizontal' && Array.isArray(root.children) && root.children.length === 2) {
+        return root;
+      }
+    }
+    return null;
+  }
+
   function _restoreExpandedSplitRatio(splitNode, childIndex, targetNode) {
     if (!splitNode || splitNode.type !== 'split') return;
     const saved = Number(targetNode?._savedRatio);
@@ -787,34 +836,39 @@ const GBLayout = (() => {
       }
     }
 
-    // --- preserve inner split children's pixel widths ---
-    if (otherChild && otherChild.type === 'split' && otherChild.direction === 'horizontal'
-        && otherChild.children?.length === 2) {
+    // --- 左レール開閉で右サイドバーのピクセル幅を変えない ---
+    // 内側の水平split（作業領域 | 右サイドバー）を panelset 越しでも取り出し、
+    // その時点の比率から右サイドバーの実ピクセル幅を求め、コンテンツ領域幅が
+    // 変わっても同じピクセル幅になるよう比率を再計算する。
+    // スナップショット（_savedInnerRatio）は使わず毎回現在値から算出するため、
+    // 折りたたみ中に右幅をドラッグ調整しても展開時に破棄されない。
+    const innerSplit = _innerHorizontalSplit(otherChild);
+    if (innerSplit) {
       const layoutW = _layoutEl?.clientWidth || window.innerWidth || 1600;
       const handlePx = 4;
-      if (targetNode.collapsed) {
-        // Save inner ratio before adjustment
-        if (otherChild._savedInnerRatio == null) otherChild._savedInnerRatio = otherChild.ratio;
-        // Compute old contentSplit content area (before collapse)
-        const savedRatio = targetNode._savedRatio;
-        const oldSplitPct = childIndex === 0 ? (1 - savedRatio) : savedRatio;
-        const oldContentW = oldSplitPct * (layoutW - handlePx);
-        // New contentSplit width (flex:1 after collapse → layoutW - 32 - handlePx)
-        const newContentW = layoutW - 32 - handlePx;
-        const innerOld = oldContentW - handlePx;
-        const innerNew = newContentW - handlePx;
-        if (innerOld > 0 && innerNew > 0) {
-          // Keep right sidebar at same pixel width
-          const rightPx = (1 - otherChild._savedInnerRatio) * innerOld;
-          otherChild.ratio = Math.max(0.1, Math.min(0.95, 1 - rightPx / innerNew));
-        }
-      } else {
-        // Expanding: restore the saved inner ratio
-        if (otherChild._savedInnerRatio != null) {
-          otherChild.ratio = otherChild._savedInnerRatio;
-          delete otherChild._savedInnerRatio;
+      // 左レール展開時のルート比率（折りたたみ時は保存値、展開時は復元済みの現在値）
+      const expandedRootRatio = targetNode.collapsed
+        ? Number(targetNode._savedRatio)
+        : Number(splitNode.ratio);
+      const expandedPaneW = (childIndex === 0 ? (1 - expandedRootRatio) : expandedRootRatio) * (layoutW - handlePx);
+      const expandedInnerW = expandedPaneW - handlePx;      // 左レール展開時の内側split外形
+      const collapsedInnerW = (layoutW - 32 - handlePx) - handlePx; // 左レール折りたたみ時（左32px固定）
+      const curRatio = Number(innerSplit.ratio);
+      if (Number.isFinite(expandedRootRatio) && expandedRootRatio > 0 && expandedRootRatio < 1
+          && Number.isFinite(curRatio) && expandedInnerW > 0 && collapsedInnerW > 0) {
+        if (targetNode.collapsed) {
+          // 展開→折りたたみ: 広がったコンテンツ幅でも右サイドバーのピクセル幅を維持
+          const rightPx = (1 - curRatio) * expandedInnerW;
+          innerSplit.ratio = Math.max(0.1, Math.min(0.95, 1 - rightPx / collapsedInnerW));
+        } else {
+          // 折りたたみ→展開: 狭まったコンテンツ幅でも右サイドバーのピクセル幅を維持
+          const rightPx = (1 - curRatio) * collapsedInnerW;
+          innerSplit.ratio = Math.max(0.1, Math.min(0.95, 1 - rightPx / expandedInnerW));
         }
       }
+      // 旧実装が永続化した陳腐な保存値を掃除する
+      if (Object.prototype.hasOwnProperty.call(innerSplit, '_savedInnerRatio')) delete innerSplit._savedInnerRatio;
+      if (otherChild !== innerSplit && Object.prototype.hasOwnProperty.call(otherChild, '_savedInnerRatio')) delete otherChild._savedInnerRatio;
     }
 
     if (!options?.skipRender) render();
@@ -832,6 +886,13 @@ const GBLayout = (() => {
       return true;
     }
     node.collapsed = nextCollapsed;
+    // 固定レール（フォルダツリー/右サイドバー）をユーザーが明示的に閉じたことを記録する。
+    // この記録がある間、ファイルを開く等に伴う付随的な revealPane では開き直さない
+    // （ユーザー操作起点の reveal だけがこの記録を解除して開く）。
+    if (node.meldexRole === 'left-sidebar' || node.meldexRole === 'right-sidebar') {
+      if (nextCollapsed) node._userCollapsed = true;
+      else delete node._userCollapsed;
+    }
     _adjustSplitForCollapse(node, { skipRender: true });
     if (options?.activePaneId && typeof setActivePane === 'function') {
       setActivePane(options.activePaneId, { skipCallback: !!options.skipActivePaneCallback });

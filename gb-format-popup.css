@@ -32,8 +32,9 @@
 }
 .gb-fmt-popup--role-opts {
   z-index: 10000;
-  min-width: 340px;
-  max-width: 480px;
+  /* 2026-07-17 ユーザー指示: 幅を従来（min-width 340px）の半分にする。説明文は行内折返しで表示 */
+  min-width: 160px;
+  max-width: 170px;
   max-height: 80vh;
   overflow-y: auto;
 }
@@ -57,6 +58,34 @@
   justify-content: flex-end;
   gap: var(--ui-space-3);
   width: 100%;
+}
+
+/* 選択時書式ポップアップのルビ入力行（シナリオのテキストセル選択時のみ表示）。
+   ポップアップ最上段に置き、1行目=ラベル+入力+追加 / 2行目=読み取得+ルール追加 */
+.gb-text-selection-fmt .gb-fmt-popup-row--count { flex-wrap: wrap; }
+.gb-fmt-popup-row--top { flex-wrap: wrap; }
+.gb-text-selection-ruby-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ui-space-2);
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.gb-text-selection-ruby-line {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  min-width: 0;
+}
+.gb-text-selection-ruby-row .gb-text-selection-ruby-input {
+  flex: 0 1 140px;
+  min-width: 60px;
+  width: auto;
+}
+.gb-text-selection-ruby-check {
+  white-space: nowrap;
+  font-size: var(--ui-font-11);
 }
 
 .gb-fmt-popup-row--wrap {
@@ -300,6 +329,31 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   color: var(--fg);
 }
 
+/* 書式コピー/貼り付けボタン（リセットと同じ見た目、右寄せはしない） */
+.gb-fmt-style-copy {
+  height: 22px;
+  padding: 0 var(--ui-space-3);
+  box-sizing: border-box;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--bg3);
+  color: var(--fg2);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+}
+.gb-fmt-style-copy:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--fg);
+}
+/* 最初のコピー系ボタンを左端グループとして右寄せリセットから分離 */
+.gb-fmt-style-copy + .gb-fmt-style-copy {
+  margin-left: var(--ui-space-1);
+}
+
 @media (max-width: 640px), (pointer: coarse) {
   .gb-fmt-popup {
     max-width: calc(100vw - 16px);
@@ -332,6 +386,7 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
 
   .gb-fmt-btn,
   .gb-fmt-reset,
+  .gb-fmt-style-copy,
   .gb-fmt-popup-group > .gb-btn-sm,
   .gb-fmt-popup .meldex-dropdown-close-btn,
   .gb-fmt-popup [data-meldex-dropdown-close] {

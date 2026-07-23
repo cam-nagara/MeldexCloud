@@ -119,7 +119,7 @@ function renderPublishSettingsPanel() {
   const isSinglePanel = ['page', 'entity', 'csv', 'calendar'].includes(ctx.kind);
   const isDb = ctx.kind === 'database';
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
-    <div class="gb-section-title">${lucide('globe',14)} 公開</div>
+    <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます') : ''}</div>
     <div class="gb-section-desc">対象: ${esc(ctx.label)}${ctx.path ? ' / ' + esc(ctx.path) : ''}</div>
     <label class="gb-field-row"><span class="gb-label">HTML保存先</span><input id="publish-html-path" class="gb-input" value="${esc(cfg.html_path || '')}" readonly></label>
     <div class="gb-field-row">
@@ -135,7 +135,6 @@ function renderPublishSettingsPanel() {
     <label class="gb-field-row"><span class="gb-label">送信先URL</span><input id="publish-submit-url" class="gb-input" value="${esc(cfg.submit_url || '')}" placeholder="未指定ならMeldex公開URLから生成"></label>
     <label class="gb-field-row"><span class="gb-label">送信トークン</span><input id="publish-form-token" class="gb-input" value="${esc(cfg.form_submit_token || '')}" readonly><button type="button" class="gb-btn gb-btn-sm" id="publish-token-btn">再発行</button></label>
     ` : ''}
-    ${isSinglePanel ? `<div class="gb-section-desc" style="font-size:11px;color:var(--fg2);">※ 現在表示中の内容がそのまま静的 HTML として出力されます</div>` : ''}
   </section>`;
 }
 

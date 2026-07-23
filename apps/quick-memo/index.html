@@ -1,0 +1,143 @@
+<!doctype html>
+<html data-standalone-app="quick-memo" data-standalone-cloud="quick-memo" data-meldex-cloud-app="quick-memo" lang="ja" spellcheck="false">
+<head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+  <base href="../../">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="theme-color" content="#181818">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Meldex クイックメモ">
+  <link rel="manifest" href="apps/quick-memo/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="MeldexQuickMemo_icon_256.png">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Meldex クイックメモ</title>
+  <link rel="icon" href="MeldexQuickMemo_icon_64.png" type="image/png">
+  <link rel="stylesheet" href="quick-memo.css">
+  <link rel="stylesheet" href="standalone-profile.css">
+</head>
+<body>
+  <main class="qm-shell" id="editorView">
+    <header class="qm-header sa-toolbar">
+      <div class="qm-brand">
+        <img src="MeldexQuickMemo_icon_64.png" alt="" width="24" height="24">
+        <div>
+          <strong>Meldex Memo</strong>
+          <span id="syncStatus">未保存</span>
+        </div>
+      </div>
+      <div class="qm-header-actions">
+        <button id="listBtn" class="qm-icon" type="button" title="一覧">☰</button>
+        <button id="installBtn" class="qm-ghost" type="button" title="ホームに追加">ホームに追加</button>
+        <button id="autoTagBtn" class="qm-ghost qm-auto-tag" type="button">タグを自動付け</button>
+        <button id="newMemoBtn" class="qm-icon" type="button" title="新規メモ">＋</button>
+        <button id="saveBtn" class="qm-primary" type="button">保存</button>
+      </div>
+    </header>
+
+    <div id="cloudConnectBanner" class="qm-cloud-connect" style="display:none;">
+      <p>Dropboxに接続すると、メモがMeldex本体・他の端末と共有されます。接続するまでメモは端末内に保存され、接続後に自動で送信されます。</p>
+      <div class="qm-cloud-connect-actions">
+        <button id="cloudConnectBtn" class="qm-primary" type="button">Dropboxに接続</button>
+      </div>
+      <div class="qm-cloud-connect-code">
+        <input id="cloudConnectCode" type="text" placeholder="接続画面に表示されたコードを貼り付け" spellcheck="false" autocomplete="off">
+        <button id="cloudConnectSubmitBtn" type="button">接続する</button>
+      </div>
+    </div>
+
+    <section class="qm-meta">
+      <input id="titleInput" type="text" placeholder="タイトル（空なら本文の一行目）" spellcheck="false">
+      <div id="tagSelector" class="qm-tag-selector">
+        <div id="tagChips" class="qm-tag-chips"></div>
+        <button id="addTagBtn" class="qm-tag-add" type="button" title="新しいタグを追加">＋</button>
+      </div>
+    </section>
+
+    <nav class="qm-mode-tabs">
+      <button class="qm-mode-tab is-active" data-mode="text" type="button">テキスト</button>
+      <button class="qm-mode-tab" data-mode="pen" type="button">ペン</button>
+      <button class="qm-mode-tab" data-mode="voice" type="button">音声</button>
+    </nav>
+
+    <nav class="qm-toolbar" aria-label="ツールバー">
+      <div class="qm-toolbar-group" data-for="text">
+        <button type="button" data-command="bold" title="太字"><b>B</b></button>
+        <button type="button" data-command="italic" title="斜体"><i>I</i></button>
+        <button type="button" data-command="underline" title="下線"><u>U</u></button>
+        <button type="button" data-command="insertUnorderedList" title="箇条書き">•</button>
+        <button type="button" data-command="removeFormat" title="書式解除">Tx</button>
+      </div>
+      <div class="qm-toolbar-group" data-for="pen" style="display:none;">
+        <label class="qm-color" title="色"><input id="colorInput" type="color" value="#4ec9b0"></label>
+        <input id="widthInput" type="range" min="2" max="24" value="4" title="線幅">
+        <button id="markerBtn" type="button" title="マーカー">マーカー</button>
+        <button id="fillBtn" type="button" title="薄く塗る">塗り</button>
+        <button id="eraserBtn" type="button" title="消しゴム">消しゴム</button>
+        <button id="clearDrawingBtn" type="button" title="手書きを消去">消去</button>
+      </div>
+    </nav>
+
+    <section class="qm-surface">
+      <div id="editor" class="qm-editor" contenteditable="true" spellcheck="false" role="textbox" aria-label="メモ本文" data-placeholder="すぐ書けます"></div>
+      <canvas id="drawingCanvas" class="qm-canvas" aria-label="手書きメモ" style="display:none;"></canvas>
+      <div id="voicePanel" class="qm-voice" style="display:none;">
+        <div class="qm-voice-status" id="voiceStatus">マイクの準備ができています</div>
+        <div class="qm-voice-timer" id="voiceTimer">00:00</div>
+        <div class="qm-voice-controls">
+          <button id="voiceRecordBtn" class="qm-voice-btn qm-voice-record" type="button">録音開始</button>
+          <button id="voicePauseBtn" class="qm-voice-btn" type="button" style="display:none;">一時停止</button>
+          <button id="voiceResumeBtn" class="qm-voice-btn" type="button" style="display:none;">録音再開</button>
+          <button id="voiceStopBtn" class="qm-voice-btn qm-voice-stop" type="button" style="display:none;">録音終了</button>
+        </div>
+        <div id="voiceTranscript" class="qm-voice-transcript"></div>
+      </div>
+    </section>
+  </main>
+
+  <section id="listView" class="qm-shell qm-list-view" style="display:none;">
+    <header class="qm-header">
+      <div class="qm-brand">
+        <img src="MeldexQuickMemo_icon_64.png" alt="" width="24" height="24">
+        <div><strong>クイックメモ一覧</strong></div>
+      </div>
+      <div class="qm-header-actions">
+        <button id="listBackBtn" class="qm-icon" type="button" title="戻る">✕</button>
+      </div>
+    </header>
+    <section class="qm-list-filter">
+      <input id="listSearch" type="text" placeholder="検索" spellcheck="false">
+      <select id="listTagFilter"><option value="">すべてのタグ</option></select>
+    </section>
+    <section id="listContent" class="qm-list-content"></section>
+  </section>
+
+  <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
+
+  <script src="gb-cloud-runtime-config.js"></script>
+  <script src="gb-config.js"></script>
+  <script src="gb-runtime-adapter.js"></script>
+  <script src="gb-resource-url.js"></script>
+  <script src="gb-dropbox-auth.js"></script>
+  <script src="gb-source-folder-registry.js"></script>
+  <script src="offline-bundles/gb-storage-adapter.js"></script>
+  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-owner-key-store.js"></script>
+  <script src="gb-knowledge-signature.js"></script>
+  <script src="gb-file-lock-store.js"></script>
+  <script src="gb-active-lock-store.js"></script>
+  <script src="gb-active-locks.js"></script>
+  <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
+  <script src="standalone-cloud-path-policy.js"></script>
+  <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-runtime.js"></script>
+  <script src="gb-dropbox-profile-sync.js"></script>
+  <script src="standalone-profile.js"></script>
+  <script src="standalone-pwa-install.js"></script>
+  <script src="quick-memo.js"></script>
+</body>
+</html>

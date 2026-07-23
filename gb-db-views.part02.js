@@ -367,7 +367,7 @@ function _setGalleryDisplayProps(dbPath, cfg, options = {}) {
   };
   setCurrentDbViewTypeSpecific(dbPath, 'gallery', next, {
     ctx: options.ctx || null,
-    historyLabel: options.label || 'シート表示: ギャラリー表示プロパティ',
+    historyLabel: options.label || 'シート表示: ギャラリー表示列',
     detail: options.detail || '',
     skipHistory: options.skipHistory === true,
   });
@@ -450,9 +450,9 @@ function _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps,
   const displayPropsBtn = document.createElement('button');
   displayPropsBtn.type = 'button';
   displayPropsBtn.className = 'tl-nav-btn db-card-view-toolbar-btn';
-  displayPropsBtn.title = 'カードに表示するプロパティ';
+  displayPropsBtn.title = 'カードに表示する列';
   displayPropsBtn.dataset.e2eId = 'gallery-display-props';
-  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示プロパティ' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
+  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示列' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
   displayPropsBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -692,7 +692,7 @@ function _setKanbanDisplayProps(dbPath, cfg, options = {}) {
   };
   setCurrentDbViewTypeSpecific(dbPath, 'kanban', next, {
     ctx: options.ctx || null,
-    historyLabel: options.label || 'シート表示: カンバン表示プロパティ',
+    historyLabel: options.label || 'シート表示: カンバン表示列',
     detail: options.detail || '',
     skipHistory: options.skipHistory === true,
   });
@@ -830,9 +830,9 @@ function _buildKanbanToolbar(dbPath, groupByProp, visibleProps, kanbanCfg, activ
   const displayPropsBtn = document.createElement('button');
   displayPropsBtn.type = 'button';
   displayPropsBtn.className = 'tl-nav-btn db-card-view-toolbar-btn';
-  displayPropsBtn.title = 'カードに表示するプロパティ';
+  displayPropsBtn.title = 'カードに表示する列';
   displayPropsBtn.dataset.e2eId = 'kanban-display-props';
-  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示プロパティ' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
+  displayPropsBtn.innerHTML = (typeof lucide === 'function' ? lucide('listPlus', 12) + ' ' : '') + '表示列' + (activeCardProps.length ? ' (' + activeCardProps.length + ')' : '');
   displayPropsBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -929,6 +929,12 @@ function renderKanban(ctx) {
       dot.className = 'kanban-dot';
       dot.style.background = statusColors.get(colKey) || (typeof _getStatusColor === 'function' ? _getStatusColor(colKey, dbPath) : '#888');
       colHeader.appendChild(dot);
+    } else if (typeof createDbOptionColorDot === 'function' && typeof getDbOptionColor === 'function') {
+      const groupPtc = propTypes[groupByProp];
+      if (groupPtc && (groupPtc.type === 'select' || groupPtc.type === 'multi-select')) {
+        const optionDot = createDbOptionColorDot(getDbOptionColor(groupPtc, colKey));
+        if (optionDot) { optionDot.classList.add('kanban-dot'); colHeader.appendChild(optionDot); }
+      }
     }
     const colTitle = document.createElement('span');
     colTitle.textContent = colKey;

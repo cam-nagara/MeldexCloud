@@ -263,18 +263,27 @@ async function bdExportImage() {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const html2canvas = await _bdLoadHtml2CanvasForExport();
     const stageRect = stage.getBoundingClientRect();
-    const canvas = await html2canvas(stage, {
-      backgroundColor: getComputedStyle(stage).backgroundColor || '#1e1e1e',
-      scale: window.devicePixelRatio || 1,
-      useCORS: true,
-      logging: false,
-      x: -stageRect.left,
-      y: -stageRect.top,
-      width: bounds.width,
-      height: bounds.height,
-      windowWidth: bounds.width,
-      windowHeight: bounds.height,
-    });
+    // html2canvasが複雑な内容で極端に時間がかかる／返ってこないことがあるため、
+    // 単独版など無期限に固まって見えるのを避ける上限時間を設ける
+    // （gb-export-image.js の同種フォールバックと同じ考え方）。
+    const canvas = await Promise.race([
+      html2canvas(stage, {
+        backgroundColor: getComputedStyle(stage).backgroundColor || '#1e1e1e',
+        scale: window.devicePixelRatio || 1,
+        useCORS: true,
+        logging: false,
+        x: -stageRect.left,
+        y: -stageRect.top,
+        width: bounds.width,
+        height: bounds.height,
+        windowWidth: bounds.width,
+        windowHeight: bounds.height,
+      }),
+      new Promise((_resolve, reject) => setTimeout(
+        () => reject(new Error('画像生成がタイムアウトしました（内容が複雑すぎる可能性があります）')),
+        25000,
+      )),
+    ]);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     if (!blob) {
       showStatus('ボードの画像化に失敗しました', true);

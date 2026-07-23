@@ -491,6 +491,7 @@
     gap: 8px;
   }
   .sn2-ruby-popup-input {
+    flex: 1 1 auto; /* タッチ環境は操作面を優先して幅いっぱいに戻す */
     min-height: 44px;
     font-size: 15px;
   }
@@ -577,8 +578,7 @@
   .sn2-header-sub-popup {
     max-width: calc(100vw - 16px);
   }
-  .sn2-role-menu,
-  .sn2-role-sub-popup {
+  .sn2-role-menu {
     box-sizing: border-box;
     max-width: calc(100vw - 16px);
     max-height: calc(100dvh - 16px);
@@ -586,9 +586,8 @@
     padding: 6px;
   }
   .sn2-role-menu .sn2-role-item,
-  .sn2-role-menu .sn2-role-cat,
-  .sn2-role-sub-popup .sn2-role-item,
   .sn2-role-menu .sn2-role-input,
+  .sn2-role-menu .sn2-role-link,
   .sn2-role-menu .meldex-dropdown-close-btn {
     min-height: 44px;
     font-size: 15px;
@@ -726,6 +725,8 @@
   }
   .sn2-ruby-panel {
     font-size: 15px;
+    box-sizing: border-box;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
   }
   .sn2-ruby-header-actions {
     gap: 8px;
@@ -742,6 +743,7 @@
     min-height: 44px;
   }
   .sn2-ruby-number-input,
+  .sn2-ruby-presentation-control,
   .sn2-ruby-rule-input {
     min-height: 44px;
     font-size: 15px;

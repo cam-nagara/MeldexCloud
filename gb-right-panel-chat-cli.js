@@ -75,9 +75,64 @@
       && cliChatSessionContinuitySettingEnabled();
   }
 
-  function cliChatModel(provider) {
-    const configured = cliChatConfig?.providers?.[provider]?.model;
-    return configured || cliChatMeta(provider)?.model || cliChatMeta(provider)?.label || 'CLI';
+  // CLIチャットのモデル選択。設定ダイアログ側の値（cliChatConfig）と、チャットパネルの
+  // モデル選択ドロップダウン（#chat-model、CHAT_CLI_MODEL_CATALOG由来）の2系統がある。
+  // ドロップダウンでの選択がある場合はそちらを優先し、無ければ設定ダイアログの値、
+  // それも無ければ「CLI既定」を使う。
+
+  function cliChatConfiguredModelOverride(provider) {
+    const raw = String(cliChatConfig?.providers?.[provider]?.model || '').trim();
+    if (!raw) return '';
+    const placeholder = String(cliChatMeta(provider)?.model || '').trim();
+    if (placeholder && raw === placeholder) return '';
+    return raw;
+  }
+
+  function cliChatModelCatalogFor(provider) {
+    const catalog = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[provider]) || [];
+    const models = catalog.map(item => ({ id: item.id, name: item.name }));
+    const configured = cliChatConfiguredModelOverride(provider);
+    if (configured && !models.some(item => item.id === configured)) {
+      models.push({ id: configured, name: configured });
+    }
+    return { models, configured };
+  }
+
+  function cliChatDefaultModelSentinel() {
+    return typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
+  }
+
+  function cliChatSelectedModelValue(provider) {
+    const key = String(provider || '').trim();
+    const modelSelect = document.getElementById('chat-model');
+    if (modelSelect && typeof _chatState !== 'undefined' && _chatState.provider === key && modelSelect.value) {
+      return modelSelect.value;
+    }
+    let stored = '';
+    try { stored = localStorage.getItem('chat-model:' + key) || ''; } catch { stored = ''; }
+    if (stored) return stored;
+    if (typeof _chatState !== 'undefined' && _chatState.provider === key && _chatState.model) return _chatState.model;
+    const configured = cliChatConfiguredModelOverride(key);
+    if (configured) return configured;
+    return cliChatDefaultModelSentinel();
+  }
+
+  function cliChatModelLabel(provider, value) {
+    const key = String(provider || '').trim();
+    const modelValue = value != null ? value : cliChatSelectedModelValue(key);
+    const sentinel = cliChatDefaultModelSentinel();
+    if (!modelValue || modelValue === sentinel) {
+      return (cliChatMeta(key)?.label || key || 'CLI') + '（CLI既定）';
+    }
+    const catalog = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[key]) || [];
+    const entry = catalog.find(item => item.id === modelValue);
+    return entry ? entry.name : modelValue;
+  }
+
+  function cliChatEffectiveModelForRequest(provider) {
+    const value = cliChatSelectedModelValue(provider);
+    const sentinel = cliChatDefaultModelSentinel();
+    return (!value || value === sentinel) ? '' : value;
   }
 
   function cliChatSessionStorageKey(provider, sessionId) {
@@ -179,9 +234,10 @@
 
   function ensureCliChatProviderOptions() {
     try {
-      if (typeof CHAT_DEFAULT_MODELS !== 'undefined') {
-        CLI_CHAT_PROVIDERS.forEach(provider => { CHAT_DEFAULT_MODELS[provider.key] = [provider.model]; });
-      }
+      // CHAT_DEFAULT_MODELS[provider.key] は gb-right-panel-chat.part01.part01.js の
+      // CHAT_CLI_MODEL_CATALOG から既に複数候補で定義済みのため、ここで1件だけの配列に
+      // 上書きしない（旧実装はここで [provider.model] へ上書きしてしまい、モデル選択肢が
+      // 常に1件しか出ない不具合の原因の一つだった）。
       if (typeof CHAT_PROVIDER_META !== 'undefined') {
         CLI_CHAT_PROVIDERS.forEach(provider => {
           CHAT_PROVIDER_META[provider.key] = { ...(CHAT_PROVIDER_META[provider.key] || {}), label: provider.label };
@@ -592,7 +648,7 @@
     wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;min-width:0;align-self:flex-start;box-sizing:border-box;';
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
-    const label = cliChatModel(provider);
+    const label = cliChatModelLabel(provider);
     header.innerHTML = (typeof getProviderIconHtml === 'function' ? getProviderIconHtml(provider, 16) : icon('terminal', 16)) + '<span>' + esc(label) + '</span>';
     const body = document.createElement('div');
     body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;box-sizing:border-box;';
@@ -775,7 +831,10 @@
       ? String(options.mode || '')
       : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || ''));
     const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
-    const streamModel = cliChatModel(provider);
+    // streamModelValue: サーバーへ送る実際の値（CLI既定選択時は空文字列に変換済み）。
+    // streamModelLabel: 表示・保存履歴用の人間向けラベル（内部値やセンチネルは出さない）。
+    const streamModelValue = cliChatEffectiveModelForRequest(provider);
+    const streamModelLabel = cliChatModelLabel(provider);
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -847,7 +906,7 @@
         messageIndex: streamMessages.length,
         msg_id: assistantMessageId,
         provider,
-        model: streamModel,
+        model: streamModelLabel,
         timestamp: assistantTimestamp,
       };
     };
@@ -933,7 +992,7 @@
         sourceFolder: streamSourceFolder,
         workspaceId: streamWorkspaceId,
         provider,
-        model: streamModel,
+        model: streamModelLabel,
         silent: !throwOnError,
       });
       if (saved && typeof renderChatHistory === 'function') renderChatHistory();
@@ -949,7 +1008,8 @@
         signal: streamController.signal,
         body: JSON.stringify({
           provider,
-          model: streamModel,
+          model: streamModelValue,
+          reasoning_level: typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off',
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
           system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath }) : '',
           session_id: streamSessionId,
@@ -1035,7 +1095,7 @@
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(fullText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
-        const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
+        const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModelLabel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
         if (cliThinkingText.trim()) assistantMessage.thinking = cliThinkingText;
         streamMessages.push(assistantMessage);
         sendOk = true;
@@ -1059,7 +1119,7 @@
           content: abortedText,
           msg_id: assistantMessageId,
           provider,
-          model: streamModel,
+          model: streamModelLabel,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           aborted: !clientIdleAbortMessage,
           auto_stopped: !!clientIdleAbortMessage,
@@ -1084,7 +1144,7 @@
           content: errorText,
           msg_id: assistantMessageId,
           provider,
-          model: streamModel,
+          model: streamModelLabel,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           error: !autoContinuing,
           auto_continue: !!autoContinuing,
@@ -1125,7 +1185,7 @@
               sourceFolder: streamSourceFolder,
               workspaceId: streamWorkspaceId,
               provider,
-              model: streamModel,
+              model: streamModelLabel,
               mode: streamMode,
               cliContinuationCount: autoContinueRequest.count,
             }).catch(() => {});
@@ -1170,9 +1230,19 @@
           const key = String(provider || '').trim();
           if (isCliChatProvider(key)) {
             await loadCliChatConfig();
-            const model = cliChatModel(key);
-            _chatState.modelsByProvider[key] = [{ id: model, name: model }];
-            return _chatState.modelsByProvider[key];
+            const { models, configured } = cliChatModelCatalogFor(key);
+            _chatState.modelsByProvider[key] = models;
+            if (configured) {
+              // 設定ダイアログ側に既存の上書き値があり、かつユーザーがこのプロバイダの
+              // モデルをこの端末でまだ一度も選んでいない場合は、それを次回描画の優先候補にする
+              // （_currentChatModelSelectionのpendingModel優先ロジックに乗せる）。
+              let hasStoredChoice = true;
+              try { hasStoredChoice = localStorage.getItem('chat-model:' + key) != null; } catch { hasStoredChoice = true; }
+              if (!hasStoredChoice && typeof _chatState !== 'undefined' && _chatState.provider === key && !_chatState.pendingModel) {
+                _chatState.pendingModel = configured;
+              }
+            }
+            return models;
           }
           return baseLoadProviderModels(provider, options);
         };

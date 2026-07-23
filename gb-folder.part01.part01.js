@@ -846,12 +846,16 @@ async function _convertPureRefFolderItemToBoard(item) {
   const baseName = String(item.name || item.path.split(/[\\/]/).pop() || 'PureRef').replace(/\.pur$/i, '') || 'PureRef';
   try {
     showStatus('PureRefをボードファイルに変換しています...');
-    const result = await apiPost('/external-import/pureref/import', {
+    const result = await runBackgroundJob('/external-import/pureref/import', {
       path: item.path,
       board_name: baseName,
       save_dir: _folderParentPath(item.path),
       save_root: 'source',
-    }, { silentError: true });
+    }, {
+      onProgress: (progress) => {
+        if (progress && progress.message) showStatus(progress.message);
+      },
+    });
     if (_folderPath) await _folderRefreshCurrentFolder();
     if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
     if (result?.board_path && typeof openBoard === 'function') {

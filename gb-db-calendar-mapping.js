@@ -226,7 +226,7 @@ function _calendarMappingHistoryScope(dbPath) {
 
 async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options = {}) {
   const ctx = _getMappedCalendarUpdateContext(dbPath, ev);
-  if (!ctx) throw new Error('マッピング元の日時プロパティを解決できません');
+  if (!ctx) throw new Error('マッピング元の日時列を解決できません');
   const reloadCtx = options.ctx || ev?._mappedCtx || null;
   const startValue = _mappedCalendarDateValue(startDate, ctx.startPtc, ctx.startRaw);
   const clearEndIfMissing = !!options.clearEndIfMissing;
@@ -344,7 +344,7 @@ function _buildMappedCalendarInput(label, value, withTime, inputId, e2eId) {
 function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
   const ctx = _getMappedCalendarUpdateContext(dbPath, ev);
   if (!ctx) {
-    showStatus('マッピング元の日時プロパティを解決できません', true);
+    showStatus('マッピング元の日時列を解決できません', true);
     return;
   }
   const panelSeq = ++_mappedCalendarPanelSeq;
@@ -371,7 +371,7 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
   modal.innerHTML = `
     <h3 id="${titleId}">${esc(ev.name || ev.entityName || '予定')}</h3>
     <div id="${descId}" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">
-      このシートでは日時のみカレンダーから編集できます。タイトルや色は元エントリ側で変更してください。
+      日時のみここで編集できます ${fieldHelp('タイトルや色は元エントリ側で変更してください')}
     </div>
     <div id="mapped-cal-fields" style="display:flex;flex-direction:column;gap:8px;"></div>
     <div class="btn-row" data-modal-footer style="justify-content:space-between;margin-top:12px;">
@@ -447,9 +447,9 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   const dateProps = props.filter(p => (propTypes[p]?.type || '') === 'date');
   const textLikeProps = props.filter(p => ['text', 'select', 'multi-select', 'url', 'number', 'date'].includes(propTypes[p]?.type || 'text'));
 
-  const rowSelect = (id, label, options, value, placeholder = '(なし)') => `
+  const rowSelect = (id, label, options, value, placeholder = '(なし)', help = '') => `
     <div class="field gb-field" style="margin-top:6px;">
-      <label class="gb-label" for="${id}">${label}</label>
+      <label class="gb-label" for="${id}">${label}${help ? ' ' + fieldHelp(help) : ''}</label>
       <select id="${id}" class="gb-select" data-e2e-id="${id}" style="width:100%;box-sizing:border-box;">
         <option value="">${placeholder}</option>
         ${options.map(p => `<option value="${esc(p)}" ${value===p?'selected':''}>${esc(p)}</option>`).join('')}
@@ -461,32 +461,29 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
   wrap.className = 'field';
   wrap.style.marginTop = '10px';
   wrap.innerHTML = `
-    <label class="gb-check" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-height:44px;">
-      <input id="dbcfg-calmap-enabled" type="checkbox" data-e2e-id="dbcfg-calmap-enabled" aria-controls="dbcfg-calendar-mapping-fields" aria-expanded="${current?.startProp ? 'true' : 'false'}" ${current?.startProp ? 'checked' : ''} ${dateProps.length === 0 ? 'disabled' : ''}>
-      <span>任意シートをカレンダー表示に連携する（編集のみ／作成・削除はカレンダーDBで行う）</span>
-    </label>
-    <div style="font-size:11px;color:var(--fg2);margin-top:4px;">
-      連携した通常シートでは既存イベントの日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーDB側で行います。
+    <div class="gb-check-help-row">
+      <label class="gb-check" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-height:44px;">
+        <input id="dbcfg-calmap-enabled" type="checkbox" data-e2e-id="dbcfg-calmap-enabled" aria-controls="dbcfg-calendar-mapping-fields" aria-expanded="${current?.startProp ? 'true' : 'false'}" ${current?.startProp ? 'checked' : ''} ${dateProps.length === 0 ? 'disabled' : ''}>
+        <span>任意シートをカレンダー表示に連携する</span>
+      </label>
+      ${fieldHelp('連携すると、このシートの既存イベントは日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーシート側で行います。')}
     </div>
     <div id="dbcfg-calendar-mapping-fields" style="margin-top:6px;${current?.startProp ? '' : 'display:none;'}">
-      ${rowSelect('dbcfg-calmap-start', '開始プロパティ', dateProps, current?.startProp || '', '(必須)')}
-      ${rowSelect('dbcfg-calmap-end', '終了プロパティ', dateProps, current?.endProp || '')}
-      ${rowSelect('dbcfg-calmap-title', 'タイトルプロパティ', textLikeProps, current?.titleProp || '', '(エントリ名)')}
-      ${rowSelect('dbcfg-calmap-color', '色プロパティ', textLikeProps, current?.colorProp || '')}
-      ${rowSelect('dbcfg-calmap-desc', '説明プロパティ', textLikeProps, current?.descriptionProp || '')}
-      ${rowSelect('dbcfg-calmap-location', '場所プロパティ', textLikeProps, current?.locationProp || '')}
-      ${rowSelect('dbcfg-calmap-url', 'URLプロパティ', textLikeProps, current?.urlProp || '')}
-      ${rowSelect('dbcfg-calmap-calid', 'カレンダー分類プロパティ', textLikeProps, current?.calendarIdProp || '')}
-      <div style="font-size:11px;color:var(--fg2);margin-top:6px;">
-        開始プロパティが期間付き日時なら、終了プロパティを空にしても終了日時を拾います。
-      </div>
+      ${rowSelect('dbcfg-calmap-start', '開始列', dateProps, current?.startProp || '', '(必須)')}
+      ${rowSelect('dbcfg-calmap-end', '終了列', dateProps, current?.endProp || '', undefined, '開始列が期間付き日時なら、終了列を空にしても終了日時を拾います')}
+      ${rowSelect('dbcfg-calmap-title', 'タイトル列', textLikeProps, current?.titleProp || '', '(エントリ名)')}
+      ${rowSelect('dbcfg-calmap-color', '色列', textLikeProps, current?.colorProp || '')}
+      ${rowSelect('dbcfg-calmap-desc', '説明列', textLikeProps, current?.descriptionProp || '')}
+      ${rowSelect('dbcfg-calmap-location', '場所列', textLikeProps, current?.locationProp || '')}
+      ${rowSelect('dbcfg-calmap-url', 'URL列', textLikeProps, current?.urlProp || '')}
+      ${rowSelect('dbcfg-calmap-calid', 'カレンダー分類列', textLikeProps, current?.calendarIdProp || '')}
     </div>
   `;
 
   if (dateProps.length === 0) {
     const note = document.createElement('div');
     note.style.cssText = 'font-size:11px;color:var(--red);margin-top:6px;';
-    note.textContent = '日時プロパティがないため、カレンダー連携は設定できません。';
+    note.textContent = '日時列がないため、カレンダー連携は設定できません。';
     wrap.appendChild(note);
   }
 
@@ -513,6 +510,6 @@ function _collectCalendarMappingConfig(modalEl) {
     urlProp: modalEl.querySelector('#dbcfg-calmap-url')?.value || '',
     calendarIdProp: modalEl.querySelector('#dbcfg-calmap-calid')?.value || '',
   });
-  if (!mapping?.startProp) throw new Error('開始プロパティを選択してください');
+  if (!mapping?.startProp) throw new Error('開始列を選択してください');
   return mapping;
 }

@@ -1,3 +1,28 @@
+      if (_updateBoardAnnotation(item.id, { data: next })) return;
+      _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
+    };
+    const scheduleSave = () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(persist, 400);
+    };
+    editor = _createNoteEditor(data, scheduleSave, item.id);
+    note.appendChild(editor);
+
+    let dragState = null;
+    const onHeaderDragMove = (e) => {
+      if (!dragState) return;
+      e.preventDefault();
+      const pt = _toLocalCoords(e.clientX, e.clientY);
+      data.x = dragState.x + (pt.x - dragState.startX);
+      data.y = dragState.y + (pt.y - dragState.startY);
+      _applyNotePosition(note, data);
+    };
+    const onHeaderDragEnd = () => {
+      if (!dragState) return;
+      dragState = null;
+      document.removeEventListener('pointermove', onHeaderDragMove);
+      document.removeEventListener('pointerup', onHeaderDragEnd);
+      document.removeEventListener('pointercancel', onHeaderDragEnd);
       persist();
     };
     header.addEventListener('pointerdown', (e) => {
@@ -873,28 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
     const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
     if (type === 'comment') {
       return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;
-    }
-    return type === 'note' || type === 'sticky';
-  }
-
-  function _renderNote(annId, data, color) {
-    const note = document.createElement('div');
-    note.className = 'sa-note'; note.dataset.annId = annId;
-    note.style.cssText = `position:absolute;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
-    const textarea = document.createElement('textarea');
-    textarea.value = data.text || '';
-    textarea.style.cssText = 'width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
-    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
-    _applyStandaloneNoteSize(note, textarea, data);
-    textarea.onblur = async () => {
-      const previousData = { ...data };
-      const previousStyle = {
-        width: note.style.width,
-        minHeight: note.style.minHeight,
-        textareaHeight: textarea.style.height,
-      };
-      Object.assign(data, _saNotePayload(data, textarea, note));
-      try {
-        await _saUpdateAnnotation(annId, { data: { ...data } });
-      } catch (error) {
-        Object.keys(data).forEach(key => { delete data[key]; });

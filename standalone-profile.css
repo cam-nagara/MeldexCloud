@@ -1,0 +1,101 @@
+/* standalone-profile.css
+ * クラウド単独アプリ共通のユーザー名/アイコンバッジ + 設定ポップオーバー。
+ * standalone-profile.js が生成する要素にのみ適用する。
+ *
+ * 読み込み順: 各 *-standalone.html の <head> 内、最後のスタイルシートとして追加
+ * （.sa-icon-btn / .tb-icon-btn の角丸を丸バッジ用に上書きするため、カスケードで
+ * 後勝ちさせる必要がある）。
+ */
+
+.sa-profile-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.sa-profile-badge img,
+.sa-profile-badge span {
+  pointer-events: none;
+}
+
+.sa-profile-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(300px, calc(100vw - 24px));
+  padding: 12px;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 8px;
+  background: var(--bg2, var(--sa-bg2));
+  color: var(--fg, var(--sa-fg));
+  box-shadow: var(--ui-shadow-lg, 0 14px 36px rgba(0, 0, 0, 0.32));
+}
+
+.sa-profile-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sa-profile-popover-preview {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.sa-profile-popover-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.sa-profile-popover-desc {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ui-fg-muted, var(--sa-muted));
+}
+
+.sa-profile-popover-field {
+  gap: 4px;
+}
+
+.sa-profile-popover-field input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border, var(--sa-border));
+  border-radius: 5px;
+  background: var(--bg, var(--sa-bg));
+  color: var(--fg, var(--sa-fg));
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.sa-profile-popover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sa-profile-popover-actions .sa-text-btn {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  border: 1px solid var(--border, var(--sa-border));
+}
+
+.sa-profile-popover-close-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (pointer: coarse), (max-width: 560px) {
+  .sa-profile-badge {
+    width: 44px;
+    height: 44px;
+  }
+}

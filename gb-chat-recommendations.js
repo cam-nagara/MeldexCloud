@@ -4,6 +4,7 @@
 
   const PANEL_ID = 'chat-recommendations-panel';
   const STORAGE_KEY = 'chat-recommendations-dismissed:v1';
+  const ENABLED_STORAGE_KEY = 'chat-recommendations-enabled';
   const MAX_ACTIONS = 3;
   const REFRESH_DELAY_MS = 120;
   const REFRESH_INTERVAL_MS = 2500;
@@ -314,6 +315,14 @@
     return actions;
   }
 
+  function recommendationsEnabled() {
+    try {
+      return global.localStorage.getItem(ENABLED_STORAGE_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+
   function dismissedMap() {
     try {
       const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
@@ -340,6 +349,13 @@
       .filter(action => dismissed[dismissKey(ctx, action.id)] !== '1')
       .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
       .slice(0, MAX_ACTIONS);
+  }
+
+  function hidePanelForDisabled() {
+    const panel = global.document.getElementById(PANEL_ID);
+    if (!panel) return;
+    panel.style.display = 'none';
+    panel.innerHTML = '';
   }
 
   function ensurePanel() {
@@ -404,6 +420,10 @@
   }
 
   function renderPanel(ctx, actions) {
+    if (!recommendationsEnabled()) {
+      hidePanelForDisabled();
+      return;
+    }
     const panel = ensurePanel();
     if (!panel) return;
     if (chatMode() !== 'llm' || chatState()?.streaming || !actions.length) {
@@ -456,6 +476,11 @@
   }
 
   function refreshNow(options = {}) {
+    if (!recommendationsEnabled()) {
+      hidePanelForDisabled();
+      lastSignature = '';
+      return;
+    }
     const ctx = contextSnapshot();
     const actions = filteredActions(ctx);
     const signature = signatureFor(ctx, actions);
@@ -518,8 +543,9 @@
   }
 
   function install() {
-    ensurePanel();
-    refreshNow({ force: true });
+    // Listeners and the refresh interval are wired unconditionally so that toggling
+    // the "show recommendations" setting back on (via settings, or in another tab)
+    // is picked up on the next interval tick without needing to reload the page.
     const input = global.document.getElementById('chat-input');
     if (input && !input.dataset.chatRecommendationsBound) {
       input.dataset.chatRecommendationsBound = '1';
@@ -529,6 +555,9 @@
     global.document.addEventListener('click', scheduleRefresh, true);
     global.addEventListener('focus', scheduleRefresh);
     global.setInterval(() => refreshNow(), REFRESH_INTERVAL_MS);
+    if (!recommendationsEnabled()) return;
+    ensurePanel();
+    refreshNow({ force: true });
   }
 
   global.GBChatRecommendations = {

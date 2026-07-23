@@ -498,7 +498,11 @@ function createTreeNodeFromBrowse(item, rootPath) {
     notice.className = 'tree-source-mapping-badge';
     notice.textContent = '場所を確認';
     notice.title = 'このPCでDropbox同期フォルダの場所を確認してください';
-    notice.style.cssText = 'margin-left:6px;color:var(--fg2);font-size:11px;white-space:nowrap;';
+    notice.style.cssText = 'margin-left:6px;color:var(--fg2);font-size:11px;white-space:nowrap;cursor:pointer;';
+    notice.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.MeldexSettingsCloudLink?.confirmSourceFolderLocation?.(item);
+    });
     row.title = notice.title;
     row.dataset.gbTooltip = notice.title;
     row.appendChild(notice);
@@ -659,7 +663,20 @@ function createTreeNodeFromBrowse(item, rootPath) {
             });
           }
           childrenDiv.dataset.loaded = 'true';
-        } catch (e) { /* error shown — dataset.loaded を 'false' のまま残してリトライ可能にする */ }
+        } catch (e) {
+          // 握りつぶさず理由を表示する。部分的に追加済みの子ノードを取り除き、
+          // 折りたたみ直して再クリックすればリロードが走る状態に戻す
+          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          showStatus(`「${item.name}」の読み込みに失敗` + (reason ? `（${reason}）` : ''), true);
+          childrenDiv.querySelectorAll(':scope > .tree-node').forEach(n => {
+            if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
+            n.remove();
+          });
+          toggle.classList.remove('expanded');
+          toggle.dataset.expanded = 'false';
+          childrenDiv.classList.add('collapsed');
+          saveExpandedState(item.path, false);
+        }
         finally {
           delete childrenDiv.dataset.loading;
           spinner.remove();
@@ -881,20 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
   });
 
   row.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    if (!draggedNode) return;
-    // Ctrl+ドラッグ中はツリー内移動を行わない（ペインで開く操作に委ねる）
-    if (e.ctrlKey) { e.dataTransfer.dropEffect = 'copy'; return; }
-    // ドラッグ中のノード自体（複数選択含む）へのドロップを防止
-    if (draggedNodes && draggedNodes.includes(div) || draggedNode === div) return;
-    e.dataTransfer.dropEffect = 'move';
-    clearDragIndicators();
-
-    const rect = row.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const h = rect.height;
-
-    if (isFolder || isDB) {
-      if (y < h * 0.25) row.classList.add('drag-over-above');
-      else if (y > h * 0.75) row.classList.add('drag-over-below');
-      else row.classList.add('drag-over-inside');

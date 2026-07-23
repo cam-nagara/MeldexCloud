@@ -423,7 +423,7 @@ function showDbSearchModal(options) {
 
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = 'シート横断検索...（エントリ名・プロパティ値）';
+  input.placeholder = 'シート横断検索...（エントリ名・列の値）';
   input.style.cssText = 'flex:1;width:auto;min-width:0;padding:6px 10px;font-size:14px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
 
   const scopeSelect = document.createElement('select');

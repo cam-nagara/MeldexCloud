@@ -113,7 +113,13 @@
 .sn2-role-item[style*="background"]:hover,
 .sn2-role-item[style*="background"]:focus { filter: brightness(1.3); }
 .sn2-role-item.active { border-left: 3px solid var(--accent, #4a90d9); font-weight: bold; padding-left: 9px; }
-.sn2-role-link { margin-top: 6px; }
+.sn2-role-link {
+  display: block; width: 100%; margin-top: 6px; padding: 5px 12px;
+  border: none; border-top: 1px solid var(--border); background: transparent; color: var(--fg);
+  font-size: 13px; text-align: left; cursor: pointer; border-radius: 4px;
+}
+.sn2-role-link:hover,
+.sn2-role-link:focus { background: var(--bg4); outline: none; }
 .sn2-role-input {
   width: calc(100% - 16px); margin: 4px 8px; padding: 4px 8px;
   border: 1px solid var(--border); border-radius: 4px;
@@ -121,43 +127,10 @@
 }
 .sn2-role-input:focus { border-color: var(--blue, #4a90d9); }
 
-/* カテゴリボタン */
-.sn2-role-cat {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: 7px 12px;
-  border: none;
-  background: transparent;
-  color: var(--fg);
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 4px;
-  gap: 6px;
-}
-.sn2-role-cat:hover, .sn2-role-cat:focus, .sn2-role-cat.focused { background: var(--bg4); outline: none; }
-.sn2-role-cat.active { font-weight: 600; }
-.sn2-role-cat-arrow { margin-left: auto; color: var(--fg2); font-size: 10px; }
+/* カテゴリボタン・サブメニュー（.sn2-role-cat / .sn2-role-sub-popup）は
+   2026-07-17 のフラット表示化（タイプ選択メニューを件数に関わらず全件表示）で廃止 */
 
 /* スタイルポップアップの定義は gb-format-popup.css (.gb-fmt-popup 系) に移行済み（E-2 フェーズ 2026-04-16） */
-
-/* サブメニューポップアップ */
-.sn2-role-sub-popup {
-  background: var(--ui-popup-bg, var(--bg2));
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-  z-index: 10100;
-  padding: 4px;
-  min-width: 100px;
-  max-height: 360px;
-  overflow-y: auto;
-}
-.sn2-role-sub-popup .sn2-role-item {
-  padding: 4px 12px;
-  font-size: 12px;
-}
 
 /* === 詳細パネル（タイプ管理） === */
 
@@ -204,6 +177,31 @@
   flex-wrap: wrap;
   border-bottom: 1px solid var(--ui-border);
 }
+.sn2-ruby-presentation-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.sn2-ruby-presentation-field {
+  justify-content: space-between;
+}
+.sn2-ruby-presentation-control {
+  min-width: 96px;
+}
+.sn2-ruby-compatibility-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+.sn2-ruby-presentation-global {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--ui-space-2) var(--ui-space-4);
+}
+.sn2-ruby-presentation-global-field {
+  justify-content: space-between;
+}
 .sn2-ruby-field {
   display: flex;
   align-items: center;
@@ -221,8 +219,17 @@
   color: var(--ui-fg-muted);
   white-space: nowrap;
 }
+/* ファイル内ルビ一覧はパネルの残り縦幅いっぱいまで伸ばす（他セクションは固定） */
+.sn2-ruby-panel > .sn2-detail-header,
+.sn2-ruby-panel > .sn2-ruby-section-label,
+.sn2-ruby-panel > .sn2-ruby-settings,
+.sn2-ruby-panel > .sn2-detail-list {
+  flex: 0 0 auto;
+}
 .sn2-ruby-table-wrap {
-  max-height: 200px;
+  /* パネルに余りがあれば一覧を残り縦幅いっぱいまで伸ばす。
+     パネルが内容より短い場合は縮めず（内容の自然高さを維持）、パネル側のスクロールに任せる。 */
+  flex: 1 0 auto;
   overflow-y: auto;
   padding: 0 var(--ui-space-2);
 }
@@ -253,6 +260,12 @@
 .sn2-ruby-file-ruby,
 .sn2-ruby-file-pos {
   color: var(--ui-fg-muted);
+}
+.sn2-ruby-file-actions {
+  white-space: nowrap;
+}
+.sn2-ruby-file-actions .gb-btn + .gb-btn {
+  margin-left: var(--ui-space-1);
 }
 .sn2-ruby-file-pos {
   text-align: right;
@@ -388,6 +401,11 @@
 .sn2-detail-check { opacity: 0; transition: opacity 0.15s; }
 .sn2-detail-item:hover .sn2-detail-check,
 .sn2-detail-item.selected .sn2-detail-check { opacity: 1; }
+/* ホバー/選択時は枠線を強調（行のホバー背景に溶けて視認できないため） */
+.sn2-detail-item:hover .sn2-detail-check:not(:checked):not(:disabled),
+.sn2-detail-item.selected .sn2-detail-check:not(:checked):not(:disabled) {
+  border-color: var(--ui-fg-muted);
+}
 
 .sn2-detail-handle { cursor: grab; color: var(--ui-fg-muted); font-size: var(--ui-font-14); opacity: 0.4; user-select: none; padding: 0 var(--ui-space-1); }
 .sn2-detail-handle:hover { opacity: 1; }

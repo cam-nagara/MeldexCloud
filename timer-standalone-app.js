@@ -160,9 +160,18 @@
     }, true);
   }
 
+  function initOptionPanel() {
+    window.MeldexStandaloneOptionPanel?.init({
+      storagePrefix: 'meldex-timer',
+      toggleButtonIds: ['timer-option-panel-button'],
+      defaultWidth: 360,
+    });
+  }
+
   async function init() {
     await MeldexStandaloneFS.init();
     mountTimer();
+    initOptionPanel();
     bindMenus();
     bindShortcuts();
     bindPathChanges();

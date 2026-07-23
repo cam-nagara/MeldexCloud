@@ -20,7 +20,6 @@
     'sn2-ruby',
     'sn2-rowset',
     'backlinks',
-    'tag-management',
   ];
   let _draggedTabId = '';
 

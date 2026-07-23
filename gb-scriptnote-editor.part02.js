@@ -129,6 +129,8 @@
     const appendCell = (colId, cell) => {
       if (!cell) return;
       cell.dataset.colId = colId;
+      const gridKey = `${row.id}\u001f${colId}`;
+      if (this._gridCellSelection?.has(gridKey)) cell.classList.add('sn2-grid-cell-selected');
       el.appendChild(cell);
     };
 
@@ -139,7 +141,7 @@
       handle.className = 'sn2-handle';
       // 注意: HTML5 draggable は使わない (ドラッグ中 wheel がブロックされるため)。
       // pointer events ベースの自前ドラッグ (_bind 内) で移動を実装する。
-      handle.title = 'ドラッグで移動';
+      // シナリオ上ではツールチップを出さない（title属性は付けない）
       handle.addEventListener('click', (ev) => {
         if (this._suppressRowCheckClick) {
           ev.preventDefault();
@@ -154,7 +156,6 @@
       cb.className = 'sn2-row-check';
       cb.dataset.e2eId = `sn-row-${rowId}-select`;
       cb.checked = this._rowSelection?.has(rowId) || false;
-      cb.title = '行を選択（Shift+クリックで範囲選択）';
       cb.setAttribute('aria-label', `行を選択: ${idx + 1}`);
       cb.addEventListener('click', (ev) => {
         if (this._suppressRowCheckClick) {
@@ -236,7 +237,6 @@
       roleBtn.className = 'sn2-role-btn';
       roleBtn.type = 'button';
       roleBtn.textContent = mergeRole ? '' : (row.role || '');
-      roleBtn.title = 'クリックで選択、ダブルクリックでタイプ変更';
       roleBtn.setAttribute('aria-label', `タイプ: ${row.role || '未設定'}`);
       roleBtn.tabIndex = 0;
       roleBtn.dataset.rowId = row.id;
@@ -340,7 +340,6 @@
         inp.className = 'sn2-custom-input';
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
         inp.setAttribute('aria-label', colControlLabel);
-        inp.title = colControlLabel;
         inp.value = val;
         inp.addEventListener('change', () => {
           this._pushUndo('列値変更');
@@ -362,7 +361,6 @@
         sel.className = 'sn2-custom-select';
         sel.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
         sel.setAttribute('aria-label', colControlLabel);
-        sel.title = colControlLabel;
         col.options.forEach(opt => { const o = document.createElement('option'); o.value = opt; o.textContent = opt; sel.appendChild(o); });
         sel.value = val;
         sel.addEventListener('change', () => { this._pushUndo('列値変更'); row.columns[col.id] = sel.value; this._markDirty({ skipUndo: true }); });
@@ -373,7 +371,6 @@
         inp.contentEditable = 'true';
         inp.dataset.e2eId = `sn-row-${row.id}-custom-${col.id}`;
         inp.setAttribute('aria-label', colControlLabel);
-        inp.title = colControlLabel;
         inp.textContent = val;
         this._applyAutoLinks(inp);
         this._applyAutoRuby(inp);
@@ -930,6 +927,11 @@
             e.preventDefault(); e.stopPropagation();
             nativeCtrl.blur();
             this._cellEditMode = false;
+            // Tab はその行のタイプ選択メニューを開く（Shift+Tab は従来どおり前のセルへ移動）
+            if (!e.shiftKey) {
+              const roleBtn = nativeCtrl.closest('.sn2-row')?.querySelector('.sn2-role-btn');
+              if (roleBtn) { this._showRoleMenu(roleBtn); return; }
+            }
             this._navigateCell(e.shiftKey ? 'prev-col' : 'next-col');
             return;
           }
@@ -938,6 +940,14 @@
 
       const roleKeyTarget = e.target.closest?.('.sn2-role-btn');
       if (roleKeyTarget && typeof this._handleRoleCellKeydown === 'function' && this._handleRoleCellKeydown(roleKeyTarget, e)) return;
+
+      // Tab: カスタム列テキストセル編集中もその行のタイプ選択メニューを開く
+      // （メインテキストセルの Tab は part03 のテキストセル keydown で処理される）
+      if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        const customText = e.target.closest?.('.sn2-custom-text');
+        const roleBtn = customText?.closest('.sn2-row')?.querySelector('.sn2-role-btn');
+        if (roleBtn) { e.preventDefault(); this._showRoleMenu(roleBtn); return; }
+      }
 
       // Ctrl+Z / Ctrl+Y (undo/redo) — テキスト内外どちらでも動作
       const lk = e.key.toLowerCase();
@@ -962,11 +972,12 @@
         this._showSearchReplacePopup?.(searchBtn);
         return;
       }
-      // Ctrl+D: 行選択・テキスト選択を解除
+      // Ctrl+D: 行選択・セル範囲選択を解除
       if ((e.ctrlKey || e.metaKey) && lk === 'd' && !e.shiftKey && !e.altKey) {
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.deselectAll', e)) return;
         e.preventDefault();
         if (this._rowSelection?.size) this._clearRowSelection();
+        if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
         if (this._textCellSelection?.size) this._clearTextCellSelection?.();
         this._lastSelectedIdx = -1;
         const dsel = window.getSelection();

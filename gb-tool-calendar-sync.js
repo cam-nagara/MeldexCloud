@@ -77,7 +77,7 @@
         ${microsoft.connected ? '<div class="gb-cal-sync-actions"><button class="sync-ms-pull gb-cal-sync-action" type="button">Microsoftから取得</button><button class="sync-ms-push gb-cal-sync-action" type="button">Microsoftに送信</button></div>' : ''}
       `)}
       ${_syncCard('iCal / .ics', `
-        <div class="gb-cal-sync-status">.icsファイル、またはBasic認証付きのiCal URLから取り込めます。</div>
+        <div class="gb-cal-sync-status">.icsファイル、または認証付きのiCal URLから取り込めます。</div>
         <div class="field"><label>iCal URL</label><input class="sync-ical-url" type="url" placeholder="https://example.com/calendar.ics"></div>
         <div class="gb-cal-sync-split">
           <div class="field"><label>ユーザー名</label><input class="sync-ical-user" type="text"></div>

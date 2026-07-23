@@ -635,7 +635,7 @@
       const props = document.createElement('section');
       props.className = 'cloud-mobile-side-drawer-section cloud-mobile-side-drawer-props';
       const propsTitle = document.createElement('h3');
-      propsTitle.textContent = 'プロパティ';
+      propsTitle.textContent = '列';
       props.appendChild(propsTitle);
       if (parentDb) {
         const parent = document.createElement('button');
@@ -653,7 +653,7 @@
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, entityPath, { parentDb });
       } else {
-        grid.textContent = 'プロパティを表示できません';
+        grid.textContent = '列を表示できません';
       }
       body.appendChild(props);
 

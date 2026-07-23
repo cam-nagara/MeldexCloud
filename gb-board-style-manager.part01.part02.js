@@ -134,6 +134,7 @@
   lrow3.appendChild(fmt.makeGroup([fmt.makeLabel('縁取'), shadowInp, fmt.makeLabel('px'), shadowColorSw]));
   if (showFontFamily) {
     const lineFontFamilySel = fmt.makeSelect({ opts: _bdFontFamilyOptions(), value: _bdNormalizeFontFamily(style.fontFamily), onChange: (v) => setField('fontFamily', v) });
+    lineFontFamilySel.classList.add('bd-font-family-select');
     tag('fontFamily')(lineFontFamilySel);
     lrow3.appendChild(fmt.makeGroup([fmt.makeLabel('フォント'), lineFontFamilySel]));
   }

@@ -152,21 +152,37 @@
           modelSel.value = savedModel;
         }
       }
+      // モード決定（保存セッションの復元 / team既定へのフォールバック）はセッション内の
+      // 初回ライブマウント時のみ行う。以降のライブ再マウント（リサイズ再描画等での
+      // 全ペインDOM再構築）では、ユーザーが選択済みのモードタブをそのまま維持する。
       const isDockPopupMount = !!options?.dockPopup;
-      const restoring = !isDockPopupMount && typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.restoreOnOpen === 'function'
-        ? GBChatRestore.restoreOnOpen()
-        : false;
-      if (!isDockPopupMount && !restoring && !(typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.isRestoreSuspended === 'function' && GBChatRestore.isRestoreSuspended()) && typeof switchChatMode === 'function') {
-        switchChatMode('team');
+      if (!isDockPopupMount && !_chatModeInitDone) {
+        _chatModeInitDone = true;
+        const restoring = typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.restoreOnOpen === 'function'
+          ? GBChatRestore.restoreOnOpen()
+          : false;
+        if (!restoring && !(typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.isRestoreSuspended === 'function' && GBChatRestore.isRestoreSuspended()) && typeof switchChatMode === 'function') {
+          switchChatMode('team');
+        }
       }
     } else if (toolType === 'annotation') {
       if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
     } else if (toolType === 'sticky') {
-      const type = document.getElementById('rp-ann-type');
-      if (type) type.value = 'sticky';
+      // 種類フィルタの既定値('sticky')もセッション内の初回ライブマウント時のみ適用する。
+      // 以降の再マウントでユーザーが選んだフィルタを維持するため（チャットのモード決定と同じ理由）。
+      if (!_stickyTypeInitDone) {
+        _stickyTypeInitDone = true;
+        const type = document.getElementById('rp-ann-type');
+        if (type) type.value = 'sticky';
+      }
       if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
     } else if (toolType === 'history') {
       if (typeof renderHistoryList === 'function') renderHistoryList();
+    } else if (toolType === 'tags') {
+      if (typeof renderTagManagementTab === 'function') {
+        const container = document.getElementById('rp-tags');
+        if (container) renderTagManagementTab(container);
+      }
     }
   }
 
@@ -604,6 +620,7 @@
     'search',
     'version',
     'timer',
+    'tags',
   ]);
 
   function _isPassiveToolPaneTab(type, tab) {
@@ -890,7 +907,9 @@
   function _expandCollapsedPane(paneId) {
     if (!paneId) return;
     if (typeof GBLayout.revealPane === 'function') {
-      GBLayout.revealPane(paneId);
+      // ここに来るのはファイル・バージョン・サブパネルなどをユーザーが開いた場合。
+      // ユーザー操作起点として、閉じている固定レールも開く。
+      GBLayout.revealPane(paneId, { userIntent: true });
       return;
     }
     const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
@@ -965,13 +984,13 @@
     return { paneId: fallbackPaneId, reusable: false };
   }
 
-  function _updateVersionTab(tab, label, versionType, versionPath) {
+  function _updateVersionTab(tab, label, versionType, versionPath, follow) {
     if (!tab) return;
     tab.label = label;
     if (versionPath != null) tab.path = versionPath || '';
     tab.icon = GBTabs.tabIcon('version');
     const path = tab.path || tab.state?.versionPath || '';
-    tab.state = { ...(tab.state || {}), versionType, versionPath: path };
+    tab.state = { ...(tab.state || {}), versionType, versionPath: path, versionFollow: !!follow };
   }
 
   // ================================================================
@@ -984,6 +1003,10 @@
       // スプリットペイン内のビュー切替はそのまま
       if (ctx && ctx.containerEl) {
         const result = _origShowView(viewName, ctx);
+        // 埋め込みシートは親ツール（例: スケジュール）の中だけで描画する。
+        // ここで通常シート用の全体ツールバーを更新すると、親ツール自身の
+        // ツールバーの上へ #app-toolbar / #tb-db が追加表示されてしまう。
+        if (ctx.embedded === true) return result;
         const toolbarViewForPaneRender = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : _normalizeDbPaneView(viewName);
         if (TOOLBAR_DB_VIEW_TYPES.has(toolbarViewForPaneRender)) {
           _updateToolbars(toolbarViewForPaneRender);

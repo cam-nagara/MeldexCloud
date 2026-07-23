@@ -11,28 +11,31 @@
     ['scales', '作業規模'],
     ['staff', 'メンバー'],
   ];
+  // 「staff」（メンバー）タブは、アカウント一元管理 計画書 Phase 4 で正本
+  // 「スタッフ管理シート」へ完全統合されたため、この汎用シート一覧UI
+  // （SHEET_BY_TAB 経由の _renderList）では扱わず、正本シートを開く導線へ
+  // 差し替えた（_renderStaffRedirect 参照）。SHEET_BY_TAB/DEFAULT_COLUMNS
+  // から staff を除いたのはそのため。
   const SHEET_BY_TAB = {
     tasks: 'タスクリスト',
     works: '作品リスト',
-    staff: 'スタッフリスト',
     targets: '作業対象リスト',
     contents: '作業内容リスト',
     scales: '作業規模リスト',
   };
   const DEFAULT_COLUMNS = {
     tasks: ['__name', '作品タイトル', '作業対象リスト', '作業内容リスト', '作業規模リスト', '状況', '担当者', '作業予定日時', '目標作業時間'],
-    works: ['作品タイトル_話数', '完了', 'ページ数', '作業作成粒度', '作業期間', '状況', '担当者'],
-    targets: ['作業対象', '基準作業時間', '担当者候補', '対象色'],
-    contents: ['作業内容', '表示名', '作業順', '依存階層', '作業時間倍率', '担当者候補', '標準粒度'],
-    scales: ['作業規模', '作業時間倍率', '面積比'],
-    staff: ['スタッフ名', '表示名', '権限', '担当できる作業', '作業可能時間', '休憩時間'],
+    works: ['__name', '完了', 'ページ数', '作業作成粒度', '作業期間', '状況', '担当者'],
+    targets: ['__name', '基準作業時間', '担当者候補', '対象色'],
+    contents: ['__name', '表示名', '作業順', '依存階層', '作業時間倍率', '担当者候補', '標準粒度'],
+    scales: ['__name', '作業時間倍率', '面積比'],
   };
   const ADD_CONFIG = {
     works: {
       label: '作品を追加',
-      nameProp: '作品タイトル_話数',
+      nameProp: '__name',
       fields: [
-        ['作品タイトル_話数', 'text', '無題作品'],
+        ['__name', 'text', '無題作品'],
         ['ページ数', 'number', '1'],
         ['作業作成粒度', 'select', 'ページ単位', ['ページ単位', 'コマ単位']],
         ['プリセット種別', 'select', 'マンガ', ['マンガ', '汎用']],
@@ -40,27 +43,24 @@
     },
     targets: {
       label: '作業対象を追加',
-      nameProp: '作業対象',
-      fields: [['作業対象', 'text', '全体'], ['基準作業時間', 'number', '1'], ['担当者候補', 'member', ''], ['備考', 'text', '']],
+      nameProp: '__name',
+      fields: [['__name', 'text', '全体'], ['基準作業時間', 'number', '1'], ['担当者候補', 'member', ''], ['備考', 'text', '']],
     },
     contents: {
       label: '作業内容を追加',
-      nameProp: '作業内容',
-      fields: [['作業内容', 'text', 'ネーム'], ['表示名', 'text', ''], ['作業順', 'number', '1'], ['依存階層', 'number', '1'], ['作業時間倍率', 'number', '1'], ['担当者候補', 'member', '']],
+      nameProp: '__name',
+      fields: [['__name', 'text', 'ネーム'], ['表示名', 'text', ''], ['作業順', 'number', '1'], ['依存階層', 'number', '1'], ['作業時間倍率', 'number', '1'], ['担当者候補', 'member', '']],
     },
     scales: {
       label: '作業規模を追加',
-      nameProp: '作業規模',
-      fields: [['作業規模', 'text', 'ページ全体'], ['作業時間倍率', 'number', '1'], ['面積比', 'number', '1']],
+      nameProp: '__name',
+      fields: [['__name', 'text', 'ページ全体'], ['作業時間倍率', 'number', '1'], ['面積比', 'number', '1']],
     },
   };
   const TAB_LABELS = Object.fromEntries(TABS);
   const DISPLAY_LABELS = {
     common: {
       '作業作成粒度': 'タスク作成粒度',
-      'スタッフ名': 'メンバー名',
-      'スタッフリスト': 'メンバー',
-      '担当できる作業': '担当できるタスク',
     },
     tasks: {
       '__name': 'タスク名',
@@ -72,6 +72,10 @@
       '目標作業時間': '目標時間',
       '目標作業時間_値': '目標時間',
     },
+    works: { '__name': '作品名' },
+    targets: { '__name': '作業対象名' },
+    contents: { '__name': '作業内容名' },
+    scales: { '__name': '作業規模名' },
   };
   let _composerSeq = 0;
 
@@ -94,6 +98,11 @@
     if (typeof showStatus === 'function') showStatus(message, !!isError);
   }
 
+  function _desktopOnlyReason(label, desktopOnly) {
+    if (!desktopOnly || !window.MeldexRuntimeAdapter?.isDropboxMode?.()) return '';
+    return `${label}はデスクトップ版で実行してください`;
+  }
+
   function _displayLabel(name, tab = '') {
     return DISPLAY_LABELS[tab]?.[name] || DISPLAY_LABELS.common?.[name] || name;
   }
@@ -103,7 +112,7 @@
   }
 
   function _isMemberField(name) {
-    return ['担当者', '担当者候補', 'スタッフ名'].includes(name);
+    return ['担当者', '担当者候補', 'スタッフ'].includes(name);
   }
 
   function _createOption(select, value, label = value) {
@@ -124,6 +133,9 @@
     return choices;
   }
 
+  // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
+  // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、
+  // §5.8-5）。/team への参照はここで無くなる。
   async function _workspaceMemberNames() {
     const names = new Set();
     let hasWorkspace = false;
@@ -140,10 +152,9 @@
       hasWorkspace = !!active;
       (Array.isArray(active?.members) ? active.members : []).forEach(member => add(member?.name || member));
     } catch {}
-    if (!hasWorkspace && names.size <= 1 && typeof apiFetch === 'function') {
+    if (!hasWorkspace && names.size <= 1 && window.MeldexUserPicker) {
       try {
-        const members = await apiFetch('/team');
-        (Array.isArray(members) ? members : []).forEach(member => add(member?.name || member));
+        (await window.MeldexUserPicker.getCandidates()).forEach(candidate => add(candidate?.name));
       } catch {}
     }
     if (!hasWorkspace && !names.size) add(currentUser);
@@ -193,6 +204,8 @@
     btn.type = 'button';
     btn.className = options.primary ? 'gb-btn gb-btn-xs gb-cal-production-button primary' : 'gb-btn gb-btn-xs gb-cal-production-button';
     btn.setAttribute('aria-label', options.ariaLabel || label);
+    btn.disabled = !!options.disabled;
+    if (options.title) btn.title = options.title;
     btn.dataset.calProductionAction = options.actionId || label;
     if (options.actionId) btn.dataset.e2eId = `gb-cal-production-action-${options.actionId}`;
     btn.innerHTML = `${_icon(icon, 13)} <span>${_esc(label)}</span>`;
@@ -206,6 +219,7 @@
         _status(error?.message || String(error), true);
       }
     });
+    if (options.writeAction) window.MeldexProductionUiAvailability?.markWriteControl?.(btn);
     return btn;
   }
 
@@ -252,23 +266,31 @@
 
   function _actions(body) {
     const rows = [
-      ['制作管理を始める', 'hammer', 'openProductionManagementStart'],
-      ['シフトを取り込む', 'fileInput', 'openProductionShiftImport'],
-      ['担当者と時間を割り当て', 'users', 'runProductionAssignment'],
-      ['再計算', 'refreshCw', 'openProductionRecalculate'],
-      ['メンバーを追加', 'userPlus', 'openProductionStaffAdd'],
-      ['外部カレンダーへ送信', 'send', 'runProductionExternalSync'],
-      ['書き出す', 'fileOutput', 'openProductionExport'],
+      ['制作管理を始める', 'hammer', 'openProductionManagementStart', false, true],
+      ['シフトを取り込む', 'fileInput', 'openProductionShiftImport', false, true],
+      ['担当者と時間を割り当て', 'users', 'runProductionAssignment', false, true],
+      ['再計算', 'refreshCw', 'openProductionRecalculate', true, true],
+      ['メンバーを追加', 'userPlus', 'openProductionStaffAdd', false, true],
+      ['外部カレンダーへ送信', 'send', 'runProductionExternalSync', true, true],
+      ['書き出す', 'fileOutput', 'openProductionExport', false, false],
     ];
     const wrap = document.createElement('div');
     wrap.className = 'gb-cal-production-actions';
     wrap.appendChild(_button('タスクを作成', 'listPlus', () => render(body, { tab: 'tasks' }), { primary: true, actionId: 'task-tab' }));
-    rows.forEach(([label, icon, fn]) => {
-      wrap.appendChild(_button(label, icon, () => {
+    rows.forEach(([label, icon, fn, desktopOnly, writeAction]) => {
+      const unavailableReason = _desktopOnlyReason(label, desktopOnly);
+      const visibleLabel = unavailableReason ? `${label}（デスクトップ版のみ）` : label;
+      wrap.appendChild(_button(visibleLabel, icon, () => {
         const action = window[fn];
         if (typeof action === 'function') action();
         else _status(label + 'を初期化できませんでした', true);
-      }, { actionId: fn.replace(/^openProduction|^runProduction/, '').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() }));
+      }, {
+        actionId: fn.replace(/^openProduction|^runProduction/, '').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase(),
+        disabled: !!unavailableReason,
+        title: unavailableReason,
+        ariaLabel: unavailableReason ? `${label}（デスクトップ版のみ）` : label,
+        writeAction,
+      }));
     });
     return wrap;
   }
@@ -343,6 +365,11 @@
     return label;
   }
 
+  function _markWriteFields(root) {
+    root?.querySelectorAll?.('input, select, textarea, [contenteditable="true"]')
+      ?.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
+  }
+
   function _renderQuickAdd(tab, onSaved, showInitially = false, context = {}) {
     const config = ADD_CONFIG[tab];
     if (!config) return null;
@@ -361,13 +388,15 @@
         const props = {};
         box.querySelectorAll('[data-prop-name]').forEach(input => { props[input.dataset.propName] = input.value; });
         const name = props[config.nameProp] || config.label;
+        delete props.__name;
         await _api().createEntry({ sheet: SHEET_BY_TAB[tab], name, properties: props });
         _status(config.label.replace('を追加', '') + 'を追加しました');
         await onSaved();
       });
-    }, { primary: true, actionId: `quick-add-save-${tab}` }));
+    }, { primary: true, actionId: `quick-add-save-${tab}`, writeAction: true }));
     actions.appendChild(_button('閉じる', 'x', () => { box.hidden = true; }, { actionId: `quick-add-close-${tab}` }));
     box.append(title, grid, actions);
+    _markWriteFields(box);
     return box;
   }
 
@@ -406,7 +435,7 @@
     (options.extraControls || []).forEach(node => caption.appendChild(node));
     const actions = document.createElement('div');
     actions.className = 'gb-cal-production-actions';
-    if (options.onAdd) actions.appendChild(_button(options.onAdd.label, 'plus', options.onAdd.handler, { primary: true, actionId: options.onAdd.actionId || `quick-add-open-${options.tab || 'list'}` }));
+    if (options.onAdd) actions.appendChild(_button(options.onAdd.label, 'plus', options.onAdd.handler, { primary: true, actionId: options.onAdd.actionId || `quick-add-open-${options.tab || 'list'}`, writeAction: true }));
     actions.appendChild(_button('更新', 'refreshCw', options.onRefresh || (() => {}), { actionId: `refresh-${options.tab || 'list'}` }));
     toolbar.append(caption, actions);
     return toolbar;
@@ -456,10 +485,10 @@
 
   async function _taskComposer(onSaved) {
     const [works, targets, contents, scales] = await Promise.all([
-      _optionRows('作品リスト', '作品タイトル_話数'),
-      _optionRows('作業対象リスト', '作業対象'),
-      _optionRows('作業内容リスト', '作業内容'),
-      _optionRows('作業規模リスト', '作業規模'),
+      _optionRows('作品リスト', ''),
+      _optionRows('作業対象リスト', ''),
+      _optionRows('作業内容リスト', ''),
+      _optionRows('作業規模リスト', ''),
     ]);
     const box = document.createElement('div');
     box.className = 'gb-cal-production-composer';
@@ -516,8 +545,9 @@
         _status(`タスクを作成しました: ${result.created || 0}件`);
         await onSaved();
       });
-    }, { primary: true, actionId: 'task-composer-create' }));
+    }, { primary: true, actionId: 'task-composer-create', writeAction: true }));
     box.append(title, grid, checks, actions);
+    _markWriteFields(box);
     return box;
   }
 
@@ -732,11 +762,29 @@
         // 保存後も編集していた行の選択・詳細表示を維持する
         if (typeof context.refresh === 'function') await context.refresh({ path: row.path });
       });
-    }, { primary: true, actionId: 'detail-save' }));
+    }, { primary: true, actionId: 'detail-save', writeAction: true }));
     actions.appendChild(_button('元シートを開く', 'externalLink', () => {
       if (row.path && typeof openPage === 'function') openPage(row.name || '制作管理', row.path);
     }, { actionId: 'detail-open-source' }));
     detail.appendChild(actions);
+    _markWriteFields(detail);
+  }
+
+  // 「メンバー」タブ: 一覧・詳細編集は正本『スタッフ管理シート』で行う
+  // （アカウント一元管理計画書 Phase 4。制作管理ルートごとの独自テーブルは
+  // 廃止し、正本を開く導線のみを提供する）。
+  function _renderStaffRedirect(content) {
+    const wrap = document.createElement('div');
+    wrap.className = 'gb-cal-production-list';
+    const message = document.createElement('p');
+    message.className = 'cal-option-empty';
+    message.textContent = 'メンバーの一覧・追加・編集は、全体で共有される「スタッフ管理シート」で行います。';
+    const openButton = _button('スタッフ管理シートを開く', 'externalLink', async () => {
+      const opened = await window.MeldexUserRegistry?.openSheet?.();
+      if (!opened) _status('スタッフ管理シートを開けませんでした', true);
+    }, { primary: true, actionId: 'staff-open-registry' });
+    wrap.append(message, openButton);
+    content.replaceChildren(wrap);
   }
 
   async function render(body, options = {}) {
@@ -745,6 +793,7 @@
     const content = _ensureShell(body, tab);
     try {
       if (tab === 'summary') await _renderSummary(content, body);
+      else if (tab === 'staff') _renderStaffRedirect(content);
       else if (SHEET_BY_TAB[tab]) await _renderList(content, tab, options);
     } catch (error) {
       content.textContent = '制作管理を読み込めません: ' + (error?.message || error);

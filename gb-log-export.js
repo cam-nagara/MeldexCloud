@@ -11,6 +11,12 @@
   let lastError = null;
   let userInteractedBeforeNotice = false;
   let supportDialogSeq = 0;
+  // 同種の失敗が短時間に繰り返し起きても、右下トーストを積み増さないための重複抑制。
+  // 「操作に失敗しました」トーストが頻発する不具合の対策（同一種類の失敗を1個の
+  // トーストにまとめ、表示中は自動消去タイマーだけ延長する）。
+  const NOTICE_DEDUPE_MS = 15000;
+  let _lastNoticeFingerprint = '';
+  let _lastNoticeShownAt = 0;
 
   function _now() {
     return new Date().toISOString();
@@ -631,6 +637,10 @@
     }
   }
 
+  function _noticeFingerprint(friendly, context) {
+    return [friendly?.title || '', friendly?.status || 0, context?.method || 'GET', _safeEndpoint(context?.path || '')].join('|');
+  }
+
   function showErrorNotice(error, context) {
     const friendly = window.MeldexErrorMessages?.translate?.(error, context) || null;
     if (!friendly) return;
@@ -641,11 +651,25 @@
       }, 1200);
       return;
     }
-    const old = document.getElementById('meldex-error-support-notice');
-    if (old) old.remove();
+    const fingerprint = _noticeFingerprint(friendly, context);
+    const now = Date.now();
+    const existing = document.getElementById('meldex-error-support-notice');
+    if (existing && existing.dataset.noticeFingerprint === fingerprint) {
+      // 同じ種類の失敗が連続発生: トーストを積み増さず、表示中のものの自動消去だけ延長する
+      // （「操作に失敗しました」が頻発して見える不具合の対策）。記録自体はcaptureApiError側で継続する。
+      _lastNoticeShownAt = now;
+      existing._meldexExtendDismiss?.();
+      return;
+    }
+    if (!existing && fingerprint === _lastNoticeFingerprint && (now - _lastNoticeShownAt) < NOTICE_DEDUPE_MS) {
+      // 直近で同種の失敗のトーストを表示・消去済み: クールダウン中は再表示を抑制する。
+      return;
+    }
+    if (existing) existing.remove();
     const notice = document.createElement('div');
     const compact = _isCompactErrorNoticeViewport();
     notice.id = 'meldex-error-support-notice';
+    notice.dataset.noticeFingerprint = fingerprint;
     notice.setAttribute('role', 'alertdialog');
     notice.setAttribute('aria-live', 'assertive');
     notice.setAttribute('aria-labelledby', 'meldex-error-support-title');
@@ -667,6 +691,11 @@
       if (autoDismissTimer) clearTimeout(autoDismissTimer);
       notice.remove();
     };
+    const scheduleAutoDismiss = () => {
+      if (autoDismissTimer) clearTimeout(autoDismissTimer);
+      autoDismissTimer = setTimeout(closeNotice, compact ? 7000 : 12000);
+    };
+    notice._meldexExtendDismiss = scheduleAutoDismiss;
     const openSupport = () => {
       closeNotice();
       showSupportDialog(error, context);
@@ -674,7 +703,9 @@
     notice.querySelector('[data-error-action="close"]')?.addEventListener('click', closeNotice);
     notice.querySelector('[data-error-action="details"]')?.addEventListener('click', openSupport);
     notice.querySelector('[data-error-action="support"]')?.addEventListener('click', openSupport);
-    autoDismissTimer = setTimeout(closeNotice, compact ? 7000 : 12000);
+    scheduleAutoDismiss();
+    _lastNoticeFingerprint = fingerprint;
+    _lastNoticeShownAt = now;
   }
 
   _installConsoleCapture();

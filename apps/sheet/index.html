@@ -20,9 +20,13 @@
   <link rel="stylesheet" href="gb-icon-assets.css">
   <link rel="stylesheet" href="gb-theme.css">
   <link rel="stylesheet" href="gb-ui.css">
+  <link rel="stylesheet" href="gb-tools.css">
+  <link rel="stylesheet" href="gb-format-popup.css">
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
+  <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="sheet-standalone.css">
+  <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
   <div class="sa-shell sheet-app">
@@ -30,21 +34,84 @@
       <div class="sa-menu-wrap">
         <button id="sheet-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー" data-e2e-id="sheet-menu-button"><span class="ico ico-menu"></span></button>
         <div id="sheet-menu" class="sa-menu" role="menu">
-          <button type="button" data-sheet-action="new" data-e2e-id="sheet-menu-new"><span class="ico ico-filePlus"></span>新規シート</button>
-          <button type="button" data-sheet-action="open" data-e2e-id="sheet-menu-open"><span class="ico ico-folderOpen"></span>開く...</button>
+          <button type="button" data-sheet-action="new" data-e2e-id="sheet-menu-new"><span class="ico ico-filePlus"></span>新規シート（スマートシート定義）</button>
+          <button type="button" data-sheet-action="openFolder" data-e2e-id="sheet-menu-open-folder"><span class="ico ico-folderOpen"></span>フォルダをシートとして開く...</button>
+          <button type="button" data-sheet-action="open" data-e2e-id="sheet-menu-open"><span class="ico ico-file"></span>ファイルを開く（.mel-sheet / CSV）...</button>
           <button type="button" data-sheet-action="save" data-e2e-id="sheet-menu-save"><span class="ico ico-save"></span>保存</button>
           <button type="button" data-sheet-action="saveAs" data-e2e-id="sheet-menu-save-as"><span class="ico ico-saveAll"></span>名前を付けて保存...</button>
           <div class="sa-menu-sep"></div>
-          <button type="button" data-sheet-action="addFilter" data-e2e-id="sheet-menu-add-filter"><span class="ico ico-funnel"></span>フィルタを追加</button>
-          <button type="button" data-sheet-action="syncJson" data-e2e-id="sheet-menu-sync-json"><span class="ico ico-refreshCw"></span>JSONを反映</button>
+          <button type="button" data-sheet-action="addFilter" data-e2e-id="sheet-menu-add-filter"><span class="ico ico-funnel"></span>フィルタを追加（定義編集）</button>
+          <button type="button" data-sheet-action="syncJson" data-e2e-id="sheet-menu-sync-json"><span class="ico ico-refreshCw"></span>JSONを反映（定義編集）</button>
+          <button type="button" data-sheet-action="refreshPreview" data-e2e-id="sheet-menu-refresh-preview"><span class="ico ico-refreshCw"></span>プレビューを更新</button>
           <div class="sa-menu-sep"></div>
           <button type="button" data-standalone-default-apps-open data-e2e-id="sheet-menu-default-app"><span class="ico ico-fileCog"></span>既定アプリに設定...</button>
         </div>
       </div>
       <div id="sheet-title-label" class="sa-title">新規シート</div>
       <div id="sheet-path-label" class="sa-path">未保存</div>
+      <button id="sheet-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="sheet-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
+    <div id="sheet-db-toolbar" class="gb-toolbar" hidden>
+      <div class="db-toolbar-view-switcher" aria-label="シートビュー切替">
+        <div class="view-tabs db-view-tabs" id="db-view-tabs"></div>
+        <select id="db-view-select" class="tb-select db-view-select" title="ビュー切替" aria-label="ビュー切替"></select>
+      </div>
+      <div class="tb-spacer"></div>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button data-e2e-id="sheet-tb-undo"><span class="ico ico-undo2"></span></button>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button data-e2e-id="sheet-tb-redo"><span class="ico ico-redo2"></span></button>
+      <div class="sep"></div>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-filter" title="フィルタ" aria-label="フィルタ" data-e2e-id="sheet-tb-filter"><span class="ico ico-filter"></span></button>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-sort" title="並び替え" aria-label="並び替え" data-e2e-id="sheet-tb-sort"><span class="ico ico-arrowUpDown"></span></button>
+      <div class="sep"></div>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-cell-wrap" title="折返し" aria-label="折返し" data-e2e-id="sheet-tb-cell-wrap"><span class="ico ico-wrapText"></span></button>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-autofit" title="列幅自動調整" aria-label="列幅自動調整" data-e2e-id="sheet-tb-autofit"><span class="ico ico-columns3"></span></button>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-columns" title="列の表示と順序" aria-label="列の表示と順序" data-e2e-id="sheet-tb-columns"><span class="ico ico-listChecks"></span></button>
+      <div class="sep"></div>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-reload" title="再読み込み" aria-label="再読み込み" data-e2e-id="sheet-tb-reload"><span class="ico ico-refreshCw"></span></button>
+    </div>
+    <div class="sa-body">
     <main class="sa-main sheet-main">
+      <section id="sheet-live-root" class="sheet-live-root" hidden>
+        <div id="welcome-view" style="display:none;align-items:center;justify-content:center;flex:1;color:var(--fg2);">
+          <div style="text-align:center;">
+            <div style="font-size:13px;color:var(--fg2);">フォルダまたはファイルを選択してください</div>
+          </div>
+        </div>
+        <div id="db-view-container" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
+          <div id="pivot-view" style="flex:1;overflow:auto;padding:0;">
+            <table id="pivot-table" role="table" aria-label="シート"><thead></thead><tbody></tbody><tfoot></tfoot></table>
+          </div>
+          <div id="gallery-view"></div>
+          <div id="kanban-view"></div>
+          <div id="timeline-view"></div>
+          <div id="chart-view"></div>
+          <div id="graph-view"></div>
+          <div id="form-view" class="form-view" style="display:none;flex:1;overflow:auto;"></div>
+        </div>
+        <div id="smart-db-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
+          <div class="smart-db-toolbar">
+            <span class="tb-title" style="padding:0 4px;">スマートシート プレビュー</span>
+            <div class="smart-db-view-tabs" id="smart-db-view-tabs" role="tablist" aria-label="スマートシートビュー"></div>
+            <div class="tb-spacer"></div>
+            <button type="button" class="tb-icon-btn" id="sheet-tb-smart-refresh" title="更新" aria-label="更新" data-e2e-id="sheet-tb-smart-refresh"><span class="ico ico-refreshCw"></span></button>
+          </div>
+          <div id="smart-db-table-area" class="smart-db-table-area">
+            <table id="smart-db-table" class="smart-db-table" role="table" aria-label="スマートシート">
+              <thead></thead><tbody></tbody>
+            </table>
+          </div>
+          <div id="smart-db-dashboard-area" class="smart-db-dashboard-area" hidden></div>
+        </div>
+        <div id="entity-view">
+          <div id="entity-parent-link" style="padding:6px 12px 0;font-size:12px;color:var(--fg2);min-height:0;"></div>
+          <div id="entity-title"></div>
+          <div id="entity-props-grid"></div>
+          <div id="entity-create-note-btn" style="display:none;padding:8px 12px;"></div>
+          <div id="entity-rt-toolbar" class="toolbar-group gb-toolbar" style="display:none;border-top:1px solid var(--border);"></div>
+          <div id="entity-freetext" contenteditable="true"></div>
+        </div>
+      </section>
+      <div id="sheet-definition-row" class="sheet-definition-row">
       <section id="sheet-definition-panel" class="sheet-work">
         <div class="sheet-grid-toolbar">
           <label class="sa-field">
@@ -73,6 +140,14 @@
           </table>
         </div>
       </section>
+      <aside id="sheet-json-panel" class="sheet-side">
+        <div class="sheet-side-head">
+          <span>JSON</span>
+          <button id="sheet-format-json" class="sa-text-btn" type="button">整形</button>
+        </div>
+        <textarea id="sheet-json" spellcheck="false"></textarea>
+      </aside>
+      </div>
       <section id="sheet-csv-panel" class="sheet-csv-panel" hidden>
         <div class="sheet-csv-toolbar">
           <button id="sheet-csv-add-row" class="sa-text-btn" type="button">行を追加</button>
@@ -82,14 +157,13 @@
           <table id="sheet-csv-table" class="sheet-csv-table" aria-label="CSV"></table>
         </div>
       </section>
-      <aside id="sheet-json-panel" class="sheet-side">
-        <div class="sheet-side-head">
-          <span>JSON</span>
-          <button id="sheet-format-json" class="sa-text-btn" type="button">整形</button>
-        </div>
-        <textarea id="sheet-json" spellcheck="false"></textarea>
-      </aside>
     </main>
+      <div id="sheet-option-resizer" class="sa-option-resizer" role="separator" aria-label="オプションパネルの幅を調整" aria-orientation="vertical" tabindex="0"></div>
+      <aside id="sheet-option-panel" class="sa-option-panel" aria-label="オプションパネル">
+        <div class="sa-option-header"><span>オプション</span></div>
+        <div id="rp-detail" class="sa-option-body"></div>
+      </aside>
+    </div>
   </div>
 
   <div id="standalone-loading" class="sa-loading" role="status" aria-live="polite" aria-busy="true">
@@ -99,6 +173,7 @@
     </div>
   </div>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite" data-e2e-id="sheet-standalone-toast"></div>
+  <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
@@ -117,14 +192,71 @@
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
   <script src="gb-icon-assets.js"></script>
+  <script src="gb-ui.js"></script>
+  <script src="offline-bundles/gb-tooltip.js"></script>
+  <script src="gb-modal-shell.js"></script>
+  <script src="gb-dropdown-dismiss.js"></script>
+  <script src="offline-bundles/gb-color-palette.js"></script>
+  <script src="gb-format-popup.js"></script>
+  <script src="gb-events.js"></script>
   <script src="standalone-stubs.js"></script>
+  <script src="gb-pane-context.js"></script>
+  <script src="offline-bundles/gb-history.js"></script>
+  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-format-style-ui.js"></script>
+  <script src="standalone-option-panel.js"></script>
   <script src="standalone-file-fs.js"></script>
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="gb-dropbox-profile-sync.js"></script>
+  <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="standalone-pwa-install.js"></script>
+  <script src="gb-datetime-utils.js"></script>
+  <script src="sheet-standalone-view-config.js"></script>
+  <script src="gb-db-date.js"></script>
+  <script src="gb-db-calendar-mapping.js"></script>
+  <script src="gb-db-formula.js"></script>
+  <script src="gb-db-core.js"></script>
+  <script src="offline-bundles/gb-db-props.js"></script>
+  <script src="gb-db-advanced-filter.js"></script>
+  <script src="offline-bundles/gb-db-property-types.js"></script>
+  <script src="gb-db-pivot-sync.js"></script>
+  <script src="gb-db-conditional-color.js"></script>
+  <script src="gb-db-option-color.js"></script>
+  <script src="gb-db-link-prop.js"></script>
+  <script src="offline-bundles/gb-db-inline-edit.js"></script>
+  <script src="gb-db-cell-ui.js"></script>
+  <script src="offline-bundles/gb-db-value-editors.js"></script>
+  <script src="gb-db-image-gallery.js"></script>
+  <script src="offline-bundles/gb-db-table.js"></script>
+  <script src="offline-bundles/gb-database.js"></script>
+  <script src="gb-db-autofill.js"></script>
+  <script src="gb-db-bulk-edit.js"></script>
+  <script src="gb-db-relations.js"></script>
+  <script src="offline-bundles/gb-db-timeline.js"></script>
+  <script src="gb-db-timeline-calendar-systems.js"></script>
+  <script src="gb-db-timeline-controls.js"></script>
+  <script src="gb-db-timeline-header-dnd.js"></script>
+  <script src="gb-db-timeline-auto-fit.js"></script>
+  <script src="gb-db-view-form.js"></script>
+  <script src="offline-bundles/gb-db-views.js"></script>
+  <script src="offline-bundles/gb-db-templates.js"></script>
+  <script src="gb-db-aggregate.js"></script>
+  <script src="gb-db-chart.js"></script>
+  <script src="gb-db-rollup.js"></script>
+  <script src="gb-db-graph.js"></script>
+  <script src="gb-db-validate.js"></script>
+  <script src="gb-db-actions.js"></script>
+  <script src="gb-db-smart-dashboard-view.js"></script>
+  <script src="gb-db-smart-virtual.js"></script>
+  <script src="gb-db-search.js"></script>
+  <script src="gb-sheet-archive.js"></script>
+  <script src="gb-db-smart.js"></script>
+  <script src="gb-db-smart-global.js"></script>
+  <script src="standalone-mobile-toolbar.js"></script>
   <script src="sheet-standalone-app.js"></script>
 </body>
 </html>

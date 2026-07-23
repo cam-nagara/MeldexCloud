@@ -2,8 +2,11 @@
   function _updatePaneNavButtons(paneId) {
     const paneInfo = _paneMap[paneId];
     const paneNode = paneInfo?.node || findNode(_root, paneId)?.node;
-    const history = Array.isArray(paneNode?.navHistory) ? paneNode.navHistory : [];
-    const navIndex = Number.isInteger(paneNode?.navIndex) ? paneNode.navIndex : (history.length ? history.length - 1 : -1);
+    // 戻る/進む履歴はタブ単位（②タブ別ナビ履歴、2026-07-21）。ペインではなく
+    // 「今アクティブなタブ」の navHistory/navIndex を読む。
+    const activeTab = Array.isArray(paneNode?.tabs) ? paneNode.tabs[paneNode.activeTabIndex] : null;
+    const history = Array.isArray(activeTab?.navHistory) ? activeTab.navHistory : [];
+    const navIndex = Number.isInteger(activeTab?.navIndex) ? activeTab.navIndex : (history.length ? history.length - 1 : -1);
     const backBtn = paneInfo?.el?.querySelector('.gb-pane-nav-back');
     const forwardBtn = paneInfo?.el?.querySelector('.gb-pane-nav-forward');
     const navCtrls = paneInfo?.el?.querySelector('.gb-pane-nav-ctrls');

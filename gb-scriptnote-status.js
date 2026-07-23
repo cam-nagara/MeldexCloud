@@ -102,7 +102,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     label.textContent = labelText;
     button.appendChild(dot);
     button.appendChild(label);
-    button.title = status ? `採用状況: ${status}` : 'クリックで採用状況を設定';
     button.setAttribute('aria-label', `採用状況: ${labelText}`);
   },
 

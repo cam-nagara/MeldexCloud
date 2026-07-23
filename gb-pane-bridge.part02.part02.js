@@ -96,7 +96,7 @@
         sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き';
       } else if (effectiveToolbarViewName === 'scriptnote') {
         if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
-        else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Ctrl+↑↓ 行入替 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+        else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
       } else sc.textContent = '';
     }
   }
@@ -108,12 +108,16 @@
     const _prevNavPush = navPush; // gb-app.jsの上書き版
 
     navPush = function(entry, paneId) {
-      // パネルタブ更新が責務。履歴記録は navPush 本体で行われる
       const targetPaneId = paneId || _getFileOpenPane(GBLayout.activePane);
-      if (targetPaneId) _prevNavPush(entry, targetPaneId);
+      const shouldUpdateTab = !!targetPaneId && !_bridgeUpdating && _initialized
+        && !!entry && !!entry.type && entry.type !== 'welcome';
 
-      if (_bridgeUpdating || !_initialized) return;
-      if (!entry || !entry.type || entry.type === 'welcome') return;
+      // タブ更新対象が定まらない/ブリッジ未初期化/再入中/welcome型は、従来どおり
+      // 履歴記録（gb-app.jsの上書き版）だけを行って抜ける。
+      if (!shouldUpdateTab) {
+        if (targetPaneId) _prevNavPush(entry, targetPaneId);
+        return;
+      }
 
       _beginBridgeUpdate();
       try {
@@ -122,73 +126,94 @@
         const type = entry.type;
 
         // ナビ/補助ペインではなく、作業用ペインのアクティブタブを上書きする
-        const paneId = targetPaneId || _getFileOpenPane(GBLayout.activePane);
-        if (paneId) {
-          const paneInfo = GBLayout.findNode(GBLayout.root, paneId);
-          if (paneInfo) {
-            const pane = paneInfo.node;
-            let tabAddedByManager = false;
-            // フォルダは既存タブを再利用し、なければアクティブタブを置換
-            if (type === 'folder') {
-              const folderTab = pane.tabs.find(t => t.type === 'folder');
-              if (folderTab) {
-                folderTab.label = label;
-                folderTab.path = path;
-                folderTab.state = {};
-                const fi = pane.tabs.indexOf(folderTab);
-                pane.activeTabIndex = fi;
-                GBLayout.render();
-                GBLayout.saveLayout({ immediate: true });
-              } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
-                const tab = pane.tabs[pane.activeTabIndex];
-                if (typeof removeComponentInstance === 'function') removeComponentInstance(tab.id);
-                tab.type = type;
-                tab.label = label;
-                tab.path = path;
-                tab.state = {};
-                tab.icon = GBTabs.tabIcon(type);
-                GBLayout.render();
-                GBLayout.saveLayout({ immediate: true });
-              } else {
-                GBTabs.addTab(paneId, label, type, path, null, { preferTargetPane: true });
-                tabAddedByManager = true;
-              }
-            } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
-              const tab = pane.tabs[pane.activeTabIndex];
-              // コンポーネント型タブが自身のnavPushを呼んだ場合: ラベルだけ更新して破棄しない
-              if (COMPONENT_TYPES.has(type) && tab.type === type && tab.path === path) {
-                tab.label = label;
-                GBLayout.saveLayout({ immediate: true });
-              } else if (tab.type === type && !COMPONENT_TYPES.has(type)) {
-                // 同タイプ内のナビゲーション（page→page 等）: render() 不要、タブラベルのみ更新
-                // コンポーネント型は render() でマウントが必要なため除外
-                tab.state = entry.mediaType ? { mediaType: entry.mediaType } : {};
-                tab.label = label;
-                tab.path = path;
-                // タブバーのラベルを直接更新（full render を避ける）
-                const tabEl = GBLayout.paneMap[paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
-                if (tabEl) tabEl.textContent = label;
-                GBLayout.saveLayout({ immediate: true });
-              } else {
-                // 別タイプへのナビゲーション: コンポーネントを破棄して置換、full render
-                if (typeof removeComponentInstance === 'function') {
-                  removeComponentInstance(tab.id);
-                }
-                tab.state = entry.mediaType ? { mediaType: entry.mediaType } : {};
-                tab.type = type;
-                tab.label = label;
-                tab.path = path;
-                tab.icon = GBTabs.tabIcon(type);
-                GBLayout.render();
-                GBLayout.saveLayout({ immediate: true });
-              }
-            } else {
-              GBTabs.addTab(paneId, label, type, path, null, { preferTargetPane: true });
-              tabAddedByManager = true;
-            }
-            if (!tabAddedByManager) _focusFileOpenPane(paneId);
-          }
+        const paneInfo = GBLayout.findNode(GBLayout.root, targetPaneId);
+        if (!paneInfo) {
+          _prevNavPush(entry, targetPaneId);
+          return;
         }
+        const pane = paneInfo.node;
+        let tabAddedByManager = false;
+        // フォルダは既存タブを再利用し、なければアクティブタブを置換。
+        // 履歴再生中（navBack/navForward/履歴ドロップダウン経由、navNavigating=true）は、
+        // 同ペイン内の「別の」フォルダタブへ activeTabIndex を強制切替する
+        // ハイジャックを行わない。戻る/進むでタブが絶対に切り替わらないことを保証するため、
+        // 常に「アクティブタブをその場で上書き」する分岐へ落とす
+        // （副作用として、再生後に同ペイン内へフォルダタブが一時的に2枚並ぶことがあるが、
+        // 既知の制限として許容する）。
+        if (type === 'folder') {
+          const isReplaying = typeof navNavigating !== 'undefined' && navNavigating;
+          const folderTab = !isReplaying && pane.tabs.find(t => t.type === 'folder');
+          if (folderTab) {
+            folderTab.label = label;
+            folderTab.path = path;
+            folderTab.state = {};
+            const fi = pane.tabs.indexOf(folderTab);
+            pane.activeTabIndex = fi;
+            GBLayout.render();
+            GBLayout.saveLayout({ immediate: true });
+          } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
+            const tab = pane.tabs[pane.activeTabIndex];
+            if (typeof removeComponentInstance === 'function') removeComponentInstance(tab.id);
+            tab.type = type;
+            tab.label = label;
+            tab.path = path;
+            tab.state = {};
+            tab.icon = GBTabs.tabIcon(type);
+            GBLayout.render();
+            GBLayout.saveLayout({ immediate: true });
+          } else {
+            GBTabs.addTab(targetPaneId, label, type, path, null, { preferTargetPane: true });
+            tabAddedByManager = true;
+          }
+        } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
+          const tab = pane.tabs[pane.activeTabIndex];
+          // コンポーネント型タブが自身のnavPushを呼んだ場合: ラベルだけ更新して破棄しない
+          if (COMPONENT_TYPES.has(type) && tab.type === type && tab.path === path) {
+            tab.label = label;
+            GBLayout.saveLayout({ immediate: true });
+          } else if (tab.type === type && !COMPONENT_TYPES.has(type)) {
+            // 同タイプ内のナビゲーション（page→page 等）: render() 不要、タブラベルのみ更新
+            // コンポーネント型は render() でマウントが必要なため除外
+            tab.state = entry.mediaType ? { mediaType: entry.mediaType } : {};
+            tab.label = label;
+            tab.path = path;
+            // タブバーのラベルを直接更新（full render を避ける）
+            const tabEl = GBLayout.paneMap[targetPaneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+            if (tabEl) tabEl.textContent = label;
+            GBLayout.saveLayout({ immediate: true });
+          } else {
+            // 別タイプへのナビゲーション: コンポーネントを破棄して置換、full render
+            if (typeof removeComponentInstance === 'function') {
+              removeComponentInstance(tab.id);
+            }
+            tab.state = entry.mediaType ? { mediaType: entry.mediaType } : {};
+            tab.type = type;
+            tab.label = label;
+            tab.path = path;
+            tab.icon = GBTabs.tabIcon(type);
+            GBLayout.render();
+            GBLayout.saveLayout({ immediate: true });
+          }
+        } else {
+          GBTabs.addTab(targetPaneId, label, type, path, null, { preferTargetPane: true });
+          tabAddedByManager = true;
+        }
+        if (!tabAddedByManager) _focusFileOpenPane(targetPaneId);
+
+        // タブの解決/更新が確定した後に基底の navPush を呼ぶ（②タブ別ナビ履歴、2026-07-21）。
+        // 旧実装は push→タブ更新の順だったため、addTab のdedup 再利用やフォルダタブ再利用で
+        // 「これから表示されるタブ」とは別のタブが最終的にアクティブになった場合、履歴エントリが
+        // 直前にアクティブだったタブ側へ誤って積まれていた（タブ複数時に履歴が混線するバグの一因）。
+        // pane.activeTabIndex が確定した後に push することで、_getNavState が解決する
+        // 「今アクティブなタブ」に必ず一致させる。
+        _prevNavPush(entry, targetPaneId);
+
+        // 追従バージョン管理タブの同期。
+        // 同一タブ内で別ファイルを開いた場合（例: ノート内リンクから別ノートへ）は
+        // 対象ペインが既にアクティブのままで GBLayout.setActivePane が呼ばれず
+        // onActivePaneChange 経由の同期が発火しないため、ここで明示的に同期する。
+        // 分岐によらず一度だけ呼べば十分なので、if/else の外・try の末尾に置く。
+        if (typeof _syncFollowingVersionTabs === 'function') _syncFollowingVersionTabs();
       } finally {
         _endBridgeUpdate();
       }
@@ -310,7 +335,7 @@
       const openOpts = options || {};
       const labels = {
         page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-        board: 'ボード', calendar: 'スケジューラー', timer: 'タイマー',
+        board: 'ボード', calendar: 'スケジュール', timer: 'タイマー',
         'smart-db': 'スマートシート',
         folder: 'フォルダ', outliner: 'フォルダツリー',
         search: '検索',
@@ -342,7 +367,7 @@
     // パネルメニュー経由の「常に新規タブとして追加」動作（C案 — 他のパネルセットに同種のタブがあっても新規追加する）
     const _PANEL_MENU_LABELS = {
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'スケジューラー', timer: 'タイマー',
+      board: 'ボード', calendar: 'スケジュール', timer: 'タイマー',
       'smart-db': 'スマートシート',
       folder: 'フォルダ',
       outliner: 'フォルダツリー', preview: 'ビューワー', detail: 'オプション',
@@ -481,7 +506,9 @@
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
         return null;
       }
-      const tabId = GBTabs.addTab(paneId, label, 'version', path, { versionType: vType, versionPath: path });
+      // パネルメニュー／コマンドパレット経由は「今アクティブなファイル」を追いかける追従タブとして開く。
+      // 対象未指定で開いた場合も、後から対象ができた時に自動で反映されるよう追従フラグを立てておく。
+      const tabId = GBTabs.addTab(paneId, label, 'version', path, { versionType: vType, versionPath: path, versionFollow: true });
       if (!tabId) return null;
       if (hasPath) {
         const comp = typeof getComponentInstance === 'function' ? getComponentInstance(tabId) : null;
@@ -497,8 +524,12 @@
     }
 
     // バージョン管理タブを開く（path が空でも「対象未指定」の状態で開ける）
-    window.openVersionTab = function(path, versionType) {
+    // options.follow=true で開いた場合、対象未指定で終わらせず「今アクティブなファイル」を
+    // 自動で追いかける追従タブになる（メインパネルのファイル切替に応じて表示対象が変わる）。
+    // 省略時（false）は従来通り、渡された path に固定されたピン留めタブになる。
+    window.openVersionTab = function(path, versionType, options) {
       const vType = versionType || 'file';
+      const follow = !!options?.follow;
       const hasPath = !!path;
       const searchPath = path || '';
       const fileName = hasPath ? (path.split('/').pop() || path) : '';
@@ -514,7 +545,7 @@
           if (emptyTab) {
             const emptyLocked = typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(emptyExisting.paneId);
             if (!emptyLocked) {
-              _updateVersionTab(emptyTab, label, vType, path);
+              _updateVersionTab(emptyTab, label, vType, path, follow);
               GBLayout.render();
               GBLayout.saveLayout();
               _expandCollapsedPane(emptyExisting.paneId);
@@ -533,7 +564,7 @@
         const existingTab = existingPaneInfo?.node?.tabs?.find(t => t.id === existing.tabId);
         const existingLocked = typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(existing.paneId);
         if (_isVersionHostPane(existingPaneInfo?.node)) {
-          if (!existingLocked) _updateVersionTab(existingTab, label, vType, searchPath);
+          if (!existingLocked) _updateVersionTab(existingTab, label, vType, searchPath, follow);
           GBLayout.render();
           GBLayout.saveLayout();
           _expandCollapsedPane(existing.paneId);
@@ -547,7 +578,7 @@
             GBTabs.activateTab(existing.paneId, existing.tabId);
             return existing.tabId;
           }
-          _updateVersionTab(existingTab, label, vType, searchPath);
+          _updateVersionTab(existingTab, label, vType, searchPath, follow);
           _expandCollapsedPane(hostInfo.paneId);
           GBTabs.moveTab(existing.paneId, existing.tabId, hostInfo.paneId);
           GBTabs.activateTab(hostInfo.paneId, existing.tabId);
@@ -559,7 +590,7 @@
           _loadVersionTab(existing.tabId, searchPath, vType);
           return existing.tabId;
         }
-        _updateVersionTab(existingTab, label, vType, searchPath);
+        _updateVersionTab(existingTab, label, vType, searchPath, follow);
         const sourcePaneId = hostInfo.paneId || existing.paneId;
         if (!sourcePaneId) return existing.tabId;
         const newPane = GBLayout.createPaneNode(null, [], -1);
@@ -576,14 +607,14 @@
 
       if (hostInfo.reusable && hostInfo.paneId) {
         _expandCollapsedPane(hostInfo.paneId);
-        const tabId = GBTabs.addTab(hostInfo.paneId, label, 'version', searchPath, { versionType: vType, versionPath: searchPath });
+        const tabId = GBTabs.addTab(hostInfo.paneId, label, 'version', searchPath, { versionType: vType, versionPath: searchPath, versionFollow: follow });
         _loadVersionTab(tabId, searchPath, vType);
         return tabId;
       }
 
       const sourcePaneId = hostInfo.paneId;
       if (!sourcePaneId) return null;
-      const tab = GBTabs.createTab(label, 'version', searchPath, { versionType: vType, versionPath: searchPath });
+      const tab = GBTabs.createTab(label, 'version', searchPath, { versionType: vType, versionPath: searchPath, versionFollow: follow });
       const newPane = GBLayout.createPaneNode(null, [tab], 0);
       const newPaneId = GBLayout.splitPane(sourcePaneId, 'horizontal', 'right', newPane);
       if (newPaneId) {
@@ -632,7 +663,7 @@
 
         const labels = {
           page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-          board: 'ボード', calendar: 'スケジューラー', timer: 'タイマー', preview: 'ビューワー',
+          board: 'ボード', calendar: 'スケジュール', timer: 'タイマー', preview: 'ビューワー',
           'smart-db': 'スマートシート',
           folder: 'フォルダ', chat: 'チャット', history: 'ヒストリー',
           annotation: '注釈', detail: 'オプション',

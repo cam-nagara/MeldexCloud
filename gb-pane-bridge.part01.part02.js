@@ -71,6 +71,7 @@
     _mountFloatingAnnotationUi();
     if (typeof navNavigating !== 'undefined' && navNavigating) return;
     _syncDetailForActivePane(paneId);
+    _syncFollowingVersionTabs();
   }
 
   // アクティブペインに応じて詳細パネル・ビューワーを同期
@@ -138,13 +139,11 @@
     const scriptnoteVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-scriptnote');
     const boardVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-board, .detail-tab-board-note, .detail-tab-board-style');
     const publishVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-publish');
-    const tagManagementVisible = _detailPaneHasVisibleTab(detailPane, '.detail-tab-tag-management');
     const publishAllowed = new Set(['page', 'calendar', 'csv', 'smart-db']).has(type) || _DETAIL_DB_VIEW_TYPES.has(type);
     if (type !== 'calendar' && calendarVisible) return true;
     if (type !== 'scriptnote' && scriptnoteVisible) return true;
     if (type !== 'board' && boardVisible) return true;
     if (!publishAllowed && publishVisible) return true;
-    if (type !== 'folder' && tagManagementVisible) return true;
     if (expectedCtx && activeDetailTab === 'file-style' && currentCtx !== expectedCtx) return true;
     if (expectedCtx && fileStyleVisible && currentCtx !== expectedCtx) return true;
     if (!expectedCtx && fileStyleVisible) return true;
@@ -199,13 +198,12 @@
       if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
       if (typeof showFileStyleTab === 'function') showFileStyleTab(false);
       if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
-      if (typeof showTagManagementTab === 'function') showTagManagementTab(false);
       if (typeof hideBoardNoteTab === 'function') hideBoardNoteTab();
       if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
       if (typeof switchDetailTab === 'function') switchDetailTab(null);
       if (typeof _removeStaleDpEditables === 'function') _removeStaleDpEditables(detailPane);
       else detailPane.querySelectorAll('#dp-editable').forEach(n => n.remove());
-      ['#detail-tab-note-editor', '#detail-tab-db-property-settings', '#detail-tab-file-style', '#detail-tab-calendar-today', '#detail-tab-calendar-settings', '#detail-tab-calendar-production', '#detail-tab-publish', '#detail-tab-tag-management'].forEach(selector => {
+      ['#detail-tab-note-editor', '#detail-tab-db-property-settings', '#detail-tab-file-style', '#detail-tab-calendar-today', '#detail-tab-calendar-settings', '#detail-tab-calendar-production', '#detail-tab-publish'].forEach(selector => {
         const el = detailPane.querySelector(selector);
         if (el) el.innerHTML = '';
       });
@@ -283,6 +281,74 @@
     }
     // ビューワーも同期
     _updatePreviewPane(false);
+  }
+
+  // ================================================================
+  // バージョン管理タブの追従同期
+  // 対象未指定（またはコマンドパレット等）で開いた version タブには versionFollow=true が
+  // 付き、メインパネル側で表示中のファイルが変わるたびにここで追従させる。
+  // openVersionTab(path, type) のように対象を明示して開いたタブ（versionFollow なし/false）は
+  // 従来通りピン留めのままで、ここでは一切書き換えない。
+  // ================================================================
+  let _versionFollowSyncing = false;
+
+  function _collectFollowingVersionTabs() {
+    const out = [];
+    if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function') return out;
+    const allPanes = GBLayout.getAllPanes(GBLayout.root);
+    for (const pane of allPanes) {
+      for (const tab of (pane.tabs || [])) {
+        if (tab.type === 'version' && tab.state && tab.state.versionFollow) out.push({ pane, tab });
+      }
+    }
+    return out;
+  }
+
+  function _versionFollowLabel(path) {
+    return path ? 'バージョン: ' + (path.split('/').pop() || path) : 'バージョン管理';
+  }
+
+  // 1タブ分の追従先を確定する。
+  // 対象が解決できない（newPath が空）場合は直前の表示を維持し、空表示へは切り替えない。
+  // 対象に変化が無い場合は _loadVersions を呼ばず、重複ロードを抑止する。
+  function _applyVersionFollowTarget(pane, tab, target) {
+    const newPath = target?.path || '';
+    const newType = target?.type || 'file';
+    if (!newPath) return false;
+    const curPath = tab.state?.versionPath || tab.path || '';
+    const curType = tab.state?.versionType || 'file';
+    if (newPath === curPath && newType === curType) return false;
+    tab.label = _versionFollowLabel(newPath);
+    tab.path = newPath;
+    tab.state = { ...(tab.state || {}), versionType: newType, versionPath: newPath, versionFollow: true };
+    if (typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function') tab.icon = GBTabs.tabIcon('version');
+    const comp = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
+    if (comp && typeof comp._loadVersions === 'function') comp._loadVersions(newPath, newType);
+    // タブバーのラベルのみ軽量更新（ペイン本体の再マウントやアクティブペイン変更はしない）。
+    // pane-bridge の他の同期呼び出しから再入される想定のため、ここから
+    // refreshPaneAfterTabSwitch 等の重い経路へは戻さない。
+    if (typeof GBLayout !== 'undefined' && typeof GBLayout.refreshPaneTabs === 'function') {
+      try { GBLayout.refreshPaneTabs(pane.id); } catch (_) {}
+    }
+    return true;
+  }
+
+  // 追従タブ（versionFollow=true）をすべて現在の版管理対象へ合わせる。
+  // 追従タブが1つも無ければ即return。対象に変化が無ければ何もしない（重複ロード抑止）。
+  // 再入防止フラグを持つため、複数の呼び出し元（アクティブペイン変更・タブ切替後の
+  // リフレッシュ・navPush の同一タブ内ファイル切替）から気軽に重複して呼んでよい。
+  function _syncFollowingVersionTabs() {
+    if (_versionFollowSyncing) return;
+    if (typeof _getCurrentVersionTarget !== 'function') return;
+    const followers = _collectFollowingVersionTabs();
+    if (!followers.length) return;
+    _versionFollowSyncing = true;
+    try {
+      const target = _getCurrentVersionTarget();
+      followers.forEach(({ pane, tab }) => _applyVersionFollowTarget(pane, tab, target));
+    } finally {
+      _versionFollowSyncing = false;
+    }
   }
 
   // ================================================================

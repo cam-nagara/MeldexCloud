@@ -330,7 +330,7 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
   let { cardImageThumbCount, cardPropLineCount } = _dbCardViewDisplayConfig(cfg);
   const saveCardProps = (detail) => {
     setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, cardImageThumbCount, cardPropLineCount }, {
-      label: 'シート表示: タイムライン表示プロパティ',
+      label: 'シート表示: タイムライン表示列',
       detail,
       ctx,
     });
@@ -671,7 +671,7 @@ function renderTimeline(ctx) {
   const timePropOptions = dateProps.length
     ? `<option value="" ${!cfg.timeProp?'selected':''}>(未設定)</option>`
       + dateProps.map(p => `<option value="${esc(p)}" ${cfg.timeProp===p?'selected':''}>${esc(p)}</option>`).join('')
-    : '<option value="">(日時プロパティなし)</option>';
+    : '<option value="">(日時列なし)</option>';
   const endPropOptions = dateProps.map(p => `<option value="${esc(p)}" ${cfg.endProp===p?'selected':''}>${esc(p)}</option>`).join('');
 
   container.innerHTML = '';
@@ -712,7 +712,7 @@ function renderTimeline(ctx) {
       <option value="horizontal" ${cfg.direction==='horizontal'?'selected':''}>→ 横方向（時間が右）</option>
       <option value="vertical" ${cfg.direction==='vertical'?'selected':''}>↓ 縦方向（時間が下）</option>
     </select></label>
-    <button type="button" id="tl-card-props" class="tl-nav-btn" title="カードに表示するプロパティ">${lucide('listPlus', 12)} 表示プロパティ ${Array.isArray(cfg.cardProps) && cfg.cardProps.length ? '(' + cfg.cardProps.length + ')' : ''}</button>
+    <button type="button" id="tl-card-props" class="tl-nav-btn" title="カードに表示する列">${lucide('listPlus', 12)} 表示列 ${Array.isArray(cfg.cardProps) && cfg.cardProps.length ? '(' + cfg.cardProps.length + ')' : ''}</button>
   `;
   container.appendChild(settings);
   settings.querySelector('#tl-card-props')?.addEventListener('click', (ev) => {
@@ -780,7 +780,7 @@ function renderTimeline(ctx) {
   }
 
   if (entityNames.length > 0 && !cfg.timeProp) {
-    container.insertAdjacentHTML('beforeend', '<div style="padding:24px;color:var(--fg2);">時間軸プロパティを選択してください</div>');
+    container.insertAdjacentHTML('beforeend', '<div style="padding:24px;color:var(--fg2);">時間軸の列を選択してください</div>');
     return;
   }
 

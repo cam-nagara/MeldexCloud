@@ -42,7 +42,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         // セル内で Ctrl+A: 全行選択ではなくそのセルの内容全体を選択する
         const cell = ae?.closest?.('.sn2-text[contenteditable], .sn2-custom-text[contenteditable]');
         if (cell && this.host?.contains(cell)) {
-          // 過去のテキストセル範囲選択が残っていると、この後のDeleteで無関係なセルまで消えるため先に解除する
+          // 過去のセル範囲選択が残っていると、この後のDeleteで無関係なセルまで消えるため先に解除する
+          this._clearGridCellSelection?.();
           this._clearTextCellSelection?.();
           const sel = window.getSelection();
           if (sel) {
@@ -105,6 +106,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _runDeselectAllShortcut() {
     if (this._rowSelection?.size) this._clearRowSelection();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection();
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     this._lastSelectedIdx = -1;
     const sel = window.getSelection();
@@ -270,6 +272,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (typeof this._closeRoleMenu === 'function') this._closeRoleMenu();
     if (this._rowSelection?.size) this._clearRowSelection();
     if (this._roleCellSelection?.size) this._clearRoleCellSelection();
+    if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
     if (this._textCellSelection?.size) this._clearTextCellSelection?.();
     return true;
   },
@@ -321,14 +324,78 @@ Object.assign(ScriptNoteEditor.prototype, {
     let dragStartX = 0;
     let dragStartY = 0;
     let dragPointerId = 0;
-    let dragCtrl = false;
-    let dragShift = false;
+    let dragBaseSet = null;
+    let dragAnchorCell = null;
+    let dragScrollEl = null;
+    let dragLastX = 0;
+    let dragLastY = 0;
+    let dragAutoScrollRaf = 0;
     let dragRect = null;
-    let textDragRowId = null;
+    let textDragCell = null;
     let textDragStartX = 0;
     let textDragStartY = 0;
     let textDragPointerId = 0;
     const DRAG_THRESHOLD = 4;
+    const EDGE_THRESHOLD = 52;
+    const EDGE_MAX_SPEED = 24;
+
+    const selectableCell = (element) => {
+      const cell = element?.closest?.('[data-col-id]');
+      const row = cell?.closest?.('.sn2-row[data-row-id]');
+      const colId = cell?.dataset?.colId || '';
+      if (!cell || !row || !host.contains(row) || !colId || colId === '_handle') return null;
+      return { element: cell, rowId: row.dataset.rowId || '', colId };
+    };
+    const visibleScrollRect = () => {
+      const rect = dragScrollEl?.getBoundingClientRect?.();
+      if (!rect) return null;
+      return {
+        left: Math.max(0, rect.left),
+        top: Math.max(0, rect.top),
+        right: Math.min(window.innerWidth, rect.right),
+        bottom: Math.min(window.innerHeight, rect.bottom),
+      };
+    };
+    const cellFromPoint = (x, y, clampToScroll = false) => {
+      let pointX = x;
+      let pointY = y;
+      if (clampToScroll && dragScrollEl) {
+        const rect = visibleScrollRect() || dragScrollEl.getBoundingClientRect();
+        pointX = Math.max(rect.left + 2, Math.min(rect.right - 2, pointX));
+        pointY = Math.max(rect.top + 2, Math.min(rect.bottom - 2, pointY));
+      }
+      return selectableCell(document.elementFromPoint(pointX, pointY));
+    };
+    const nearestCellFromPoint = (x, y) => {
+      const scrollEl = dragScrollEl || host.querySelector('.sn2-scroll');
+      const rawRect = scrollEl?.getBoundingClientRect?.();
+      if (!rawRect) return null;
+      const viewRect = {
+        left: Math.max(0, rawRect.left),
+        top: Math.max(0, rawRect.top),
+        right: Math.min(window.innerWidth, rawRect.right),
+        bottom: Math.min(window.innerHeight, rawRect.bottom),
+      };
+      const pointX = Math.max(viewRect.left + 2, Math.min(viewRect.right - 2, x));
+      const pointY = Math.max(viewRect.top + 2, Math.min(viewRect.bottom - 2, y));
+      let nearest = null;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      host.querySelectorAll('.sn2-row[data-row-id] > [data-col-id]').forEach(cell => {
+        const candidate = selectableCell(cell);
+        if (!candidate) return;
+        const rect = cell.getBoundingClientRect();
+        if (rect.right <= viewRect.left || rect.left >= viewRect.right
+            || rect.bottom <= viewRect.top || rect.top >= viewRect.bottom) return;
+        const dx = pointX < rect.left ? rect.left - pointX : pointX > rect.right ? pointX - rect.right : 0;
+        const dy = pointY < rect.top ? rect.top - pointY : pointY > rect.bottom ? pointY - rect.bottom : 0;
+        const distance = dx * dx + dy * dy;
+        if (distance < nearestDistance) {
+          nearest = candidate;
+          nearestDistance = distance;
+        }
+      });
+      return nearest;
+    };
 
     const updateDragRect = (x, y) => {
       if (!dragRect) {
@@ -351,38 +418,128 @@ Object.assign(ScriptNoteEditor.prototype, {
         dragRect = null;
       }
     };
-    const cancelDragState = () => {
-      textDragRowId = null;
+    const updateGridRangeAtPoint = (x, y) => {
+      if (!dragSelecting || !dragAnchorCell) return false;
+      const over = cellFromPoint(x, y, true) || nearestCellFromPoint(x, y);
+      if (!over) return false;
+      return !!this._setGridCellRange?.(
+        dragAnchorCell.rowId,
+        dragAnchorCell.colId,
+        over.rowId,
+        over.colId,
+        dragBaseSet,
+      );
+    };
+    const edgeVelocity = (position, start, end) => {
+      if (position < start + EDGE_THRESHOLD) {
+        const ratio = Math.min(1, Math.max(0, (start + EDGE_THRESHOLD - position) / EDGE_THRESHOLD));
+        return -Math.max(2, Math.round(EDGE_MAX_SPEED * ratio));
+      }
+      if (position > end - EDGE_THRESHOLD) {
+        const ratio = Math.min(1, Math.max(0, (position - (end - EDGE_THRESHOLD)) / EDGE_THRESHOLD));
+        return Math.max(2, Math.round(EDGE_MAX_SPEED * ratio));
+      }
+      return 0;
+    };
+    const stopAutoScroll = () => {
+      if (dragAutoScrollRaf) cancelAnimationFrame(dragAutoScrollRaf);
+      dragAutoScrollRaf = 0;
+    };
+    const performAutoScrollStep = () => {
+      if (!dragSelecting || !dragScrollEl?.isConnected) return false;
+      const rect = visibleScrollRect() || dragScrollEl.getBoundingClientRect();
+      const deltaX = dragScrollEl.scrollWidth > dragScrollEl.clientWidth
+        ? edgeVelocity(dragLastX, rect.left, rect.right)
+        : 0;
+      const deltaY = dragScrollEl.scrollHeight > dragScrollEl.clientHeight
+        ? edgeVelocity(dragLastY, rect.top, rect.bottom)
+        : 0;
+      const beforeLeft = dragScrollEl.scrollLeft;
+      const beforeTop = dragScrollEl.scrollTop;
+      if (deltaX) dragScrollEl.scrollLeft += deltaX;
+      if (deltaY) dragScrollEl.scrollTop += deltaY;
+      if (dragScrollEl.scrollLeft !== beforeLeft || dragScrollEl.scrollTop !== beforeTop) {
+        updateGridRangeAtPoint(dragLastX, dragLastY);
+        return true;
+      }
+      return false;
+    };
+    const runAutoScroll = () => {
+      dragAutoScrollRaf = 0;
+      if (!dragSelecting || !dragScrollEl?.isConnected) return;
+      performAutoScrollStep();
+      dragAutoScrollRaf = requestAnimationFrame(runAutoScroll);
+    };
+    const startAutoScroll = () => {
+      if (!dragAutoScrollRaf) dragAutoScrollRaf = requestAnimationFrame(runAutoScroll);
+    };
+    const beginGridDrag = (anchor, pointerEvent, startX, startY, pointerId) => {
+      if (!anchor?.rowId || !anchor?.colId) return false;
       dragPending = false;
-      if (dragSelecting) {
-        dragSelecting = false;
-        removeDragRect();
-        this._updateTextCellSelectionUI?.();
+      dragSelecting = true;
+      dragAnchorCell = anchor;
+      dragStartX = startX;
+      dragStartY = startY;
+      dragPointerId = pointerId;
+      dragScrollEl = anchor.element?.closest?.('.sn2-scroll') || host.querySelector('.sn2-scroll');
+      this._beginGridCellDragSelection?.(anchor.rowId, anchor.colId, dragBaseSet);
+      this._setGridCellRange?.(anchor.rowId, anchor.colId, anchor.rowId, anchor.colId, dragBaseSet);
+      this._gridDragSelectionActive = true;
+      try { window.getSelection()?.removeAllRanges(); } catch {}
+      try { host.setPointerCapture(dragPointerId); } catch {}
+      pointerEvent?.preventDefault?.();
+      startAutoScroll();
+      return true;
+    };
+    const finishDrag = (options = {}) => {
+      const hadSelection = dragSelecting;
+      stopAutoScroll();
+      this._gridDragSelectionActive = false;
+      textDragCell = null;
+      dragPending = false;
+      dragSelecting = false;
+      removeDragRect();
+      try { if (dragPointerId) host.releasePointerCapture(dragPointerId); } catch {}
+      dragPointerId = 0;
+      dragScrollEl = null;
+      dragAnchorCell = null;
+      dragBaseSet = null;
+      if (hadSelection) {
+        this._updateGridCellSelectionUI?.();
+        if (options.focus !== false) this._focusGridCellSelectionHost?.();
       }
     };
     if (this._dragSelectionDocCleanup) this._dragSelectionDocCleanup();
-    document.addEventListener('pointerup', cancelDragState);
-    document.addEventListener('pointercancel', cancelDragState);
+    const onDocumentPointerUp = () => finishDrag();
+    const onDocumentPointerCancel = () => finishDrag({ focus: false });
+    document.addEventListener('pointerup', onDocumentPointerUp);
+    document.addEventListener('pointercancel', onDocumentPointerCancel);
     this._dragSelectionDocCleanup = () => {
-      document.removeEventListener('pointerup', cancelDragState);
-      document.removeEventListener('pointercancel', cancelDragState);
+      finishDrag({ focus: false });
+      document.removeEventListener('pointerup', onDocumentPointerUp);
+      document.removeEventListener('pointercancel', onDocumentPointerCancel);
     };
 
     host.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       const target = e.target;
-      if (target.closest('.sn2-text[contenteditable]')) {
-        const row = target.closest('.sn2-row');
-        textDragRowId = row?.dataset.rowId || null;
+      const textLike = target.closest('.sn2-text[contenteditable], .sn2-custom-text[contenteditable]');
+      if (textLike) {
+        textDragCell = selectableCell(textLike);
         textDragStartX = e.clientX;
         textDragStartY = e.clientY;
         textDragPointerId = e.pointerId;
+        dragBaseSet = (e.ctrlKey || e.metaKey || e.shiftKey) ? new Set(this._gridCellSelection || []) : new Set();
+        dragLastX = e.clientX;
+        dragLastY = e.clientY;
         return;
       }
       if (target.closest('.sn2-role-btn')
+          || target.closest('.sn2-status-btn')
           || target.closest('.sn2-header')
           || target.closest('.sn2-handle')
           || target.tagName === 'INPUT'
+          || target.tagName === 'SELECT'
           || target.tagName === 'BUTTON') return;
       if (!target.closest('.sn2-row')
           && !target.closest('.sn2-scroll')
@@ -392,78 +549,42 @@ Object.assign(ScriptNoteEditor.prototype, {
       dragStartX = e.clientX;
       dragStartY = e.clientY;
       dragPointerId = e.pointerId;
-      dragCtrl = e.ctrlKey || e.metaKey;
-      dragShift = e.shiftKey;
+      dragLastX = e.clientX;
+      dragLastY = e.clientY;
+      dragAnchorCell = selectableCell(target) || nearestCellFromPoint(e.clientX, e.clientY);
+      dragBaseSet = (e.ctrlKey || e.metaKey || e.shiftKey) ? new Set(this._gridCellSelection || []) : new Set();
     });
 
     host.addEventListener('pointermove', (e) => {
-      if (textDragRowId && !dragSelecting && !dragPending) {
-        const overEl = document.elementFromPoint(e.clientX, e.clientY);
-        const overRow = overEl?.closest?.('.sn2-row');
-        if (overRow && host.contains(overRow) && overRow.dataset.rowId && overRow.dataset.rowId !== textDragRowId) {
-          const startRowId = textDragRowId;
-          textDragRowId = null;
-          dragSelecting = true;
-          dragStartX = textDragStartX;
-          dragStartY = textDragStartY;
-          dragPointerId = textDragPointerId;
-          dragCtrl = e.ctrlKey || e.metaKey;
-          dragShift = e.shiftKey;
-          // 行選択ではなくテキストセル範囲選択として確定する
-          this._beginTextCellDragSelection?.(startRowId);
-          if (!this._textCellSelection) this._textCellSelection = new Set();
-          if (!dragCtrl && !dragShift) this._textCellSelection.clear();
-          try { window.getSelection()?.removeAllRanges(); } catch {}
-          try { host.setPointerCapture(dragPointerId); } catch {}
-          this._textCellSelection.add(startRowId);
-          this._textCellSelection.add(overRow.dataset.rowId);
-          this._updateTextCellSelectionUI?.();
+      dragLastX = e.clientX;
+      dragLastY = e.clientY;
+      if (textDragCell && !dragSelecting && !dragPending) {
+        const over = cellFromPoint(e.clientX, e.clientY);
+        const movedToOtherCell = over && (over.rowId !== textDragCell.rowId || over.colId !== textDragCell.colId);
+        if (movedToOtherCell) {
+          const anchor = textDragCell;
+          textDragCell = null;
+          beginGridDrag(anchor, e, textDragStartX, textDragStartY, textDragPointerId);
+          updateGridRangeAtPoint(e.clientX, e.clientY);
         }
       }
       if (dragPending && !dragSelecting) {
         const dx = e.clientX - dragStartX;
         const dy = e.clientY - dragStartY;
         if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
-        dragPending = false;
-        dragSelecting = true;
-        // 行選択ではなくテキストセル範囲選択として確定する
-        this._beginTextCellDragSelection?.();
-        if (!this._textCellSelection) this._textCellSelection = new Set();
-        if (!dragCtrl && !dragShift) {
-          this._textCellSelection.clear();
-        }
-        host.setPointerCapture(dragPointerId);
-        const startEl = document.elementFromPoint(dragStartX, dragStartY);
-        const startRow = startEl?.closest('.sn2-row');
-        if (startRow && host.contains(startRow) && startRow.dataset.rowId) {
-          this._beginTextCellDragSelection?.(startRow.dataset.rowId);
-          this._textCellSelection.add(startRow.dataset.rowId);
-        }
+        const anchor = dragAnchorCell || cellFromPoint(dragStartX, dragStartY) || nearestCellFromPoint(dragStartX, dragStartY);
+        if (!beginGridDrag(anchor, e, dragStartX, dragStartY, dragPointerId)) return;
       }
       if (!dragSelecting) return;
       updateDragRect(e.clientX, e.clientY);
-      const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-      const rx1 = Math.min(dragStartX, e.clientX) / z;
-      const ry1 = Math.min(dragStartY, e.clientY) / z;
-      const rx2 = Math.max(dragStartX, e.clientX) / z;
-      const ry2 = Math.max(dragStartY, e.clientY) / z;
-      let changed = false;
-      host.querySelectorAll('.sn2-row').forEach((row) => {
-        const rr = row.getBoundingClientRect();
-        if (rr.right / z >= rx1 && rr.left / z <= rx2 && rr.bottom / z >= ry1 && rr.top / z <= ry2) {
-          const rowId = row.dataset.rowId;
-          if (rowId && !this._textCellSelection.has(rowId)) {
-            this._textCellSelection.add(rowId);
-            changed = true;
-          }
-        }
-      });
-      if (changed) this._updateTextCellSelectionUI?.();
+      updateGridRangeAtPoint(e.clientX, e.clientY);
+      // rAFが間引かれる環境でも端へ入った瞬間には必ず1段階スクロールする。
+      performAutoScrollStep();
     });
 
     host.addEventListener('pointerup', (e) => {
-      const wasTextCellClick = !!textDragRowId;
-      textDragRowId = null;
+      const wasTextCellClick = !!textDragCell;
+      textDragCell = null;
       if (dragPending && !dragSelecting) {
         dragPending = false;
         // ドラッグでない単クリック: すべての選択系を解除
@@ -471,40 +592,44 @@ Object.assign(ScriptNoteEditor.prototype, {
           this._rowSelection.clear();
           this._updateRowSelectionUI();
         }
+        if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
         if (this._textCellSelection?.size) this._clearTextCellSelection?.();
         if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
         if (this._activeCellRowId) this._clearActiveCell?.();
         return;
       }
       // テキストセル上のドラッグでない単クリック: テキストセル範囲選択を解除
-      if (wasTextCellClick && !dragSelecting && this._textCellSelection?.size) {
-        this._clearTextCellSelection?.();
+      if (wasTextCellClick && !dragSelecting) {
+        if (this._gridCellSelection?.size) this._clearGridCellSelection?.();
+        if (this._textCellSelection?.size) this._clearTextCellSelection?.();
       }
-      dragPending = false;
-      removeDragRect();
-      if (!dragSelecting) return;
-      dragSelecting = false;
-      host.releasePointerCapture(e.pointerId);
-      this._updateTextCellSelectionUI?.();
-      // Delete/Backspace を host で受けられるようにフォーカスを保証する
-      this._focusTextCellSelectionHost?.();
+      if (dragSelecting) finishDrag();
     });
 
     host.addEventListener('lostpointercapture', () => {
-      textDragRowId = null;
-      if (dragSelecting) {
-        dragSelecting = false;
-        removeDragRect();
-        this._updateTextCellSelectionUI?.();
-      }
-      dragPending = false;
+      textDragCell = null;
+      if (dragSelecting || dragPending) finishDrag();
     });
+
+    host.addEventListener('wheel', (e) => {
+      if (!dragSelecting || !dragScrollEl?.isConnected) return;
+      dragLastX = e.clientX || dragLastX;
+      dragLastY = e.clientY || dragLastY;
+      if (!e.defaultPrevented) {
+        e.preventDefault();
+        dragScrollEl.scrollLeft += e.deltaX;
+        dragScrollEl.scrollTop += e.deltaY;
+      }
+      requestAnimationFrame(() => updateGridRangeAtPoint(dragLastX, dragLastY));
+    }, { passive: false });
   },
 
   _bindRowSelectionCopy() {
     this._copyHandler = (e) => {
       if (!this._rowSelection || this._rowSelection.size === 0) {
-        // 行選択が無い場合はテキストセル範囲選択のコピーを試す
+        // 行選択が無い場合は矩形セル範囲→従来テキストセル範囲の順にコピーを試す
+        if (typeof this._handleGridCellSelectionCopy === 'function'
+            && this._handleGridCellSelectionCopy(e)) return;
         if (typeof this._handleTextCellSelectionCopy === 'function') this._handleTextCellSelectionCopy(e);
         return;
       }

@@ -164,10 +164,35 @@ function _imagePropOpenPath(item) {
 
 function openImagePropertyItemInViewer(item) {
   const imagePath = _imagePropOpenPath(item);
-  if (imagePath && typeof openViewer === 'function') {
-    openViewer('/viewer?file=' + encodeURIComponent(imagePath));
-    return true;
+  if (imagePath) {
+    const label = item?.caption || item?.filename || imagePath.split('/').pop() || imagePath;
+    const ext = (imagePath.split('.').pop() || '').toLowerCase();
+    const mediaType = (typeof MeldexDnD !== 'undefined' && typeof MeldexDnD.getMediaType === 'function'
+      ? MeldexDnD.getMediaType(ext)
+      : null) || (ext === 'pdf' ? 'pdf' : 'image');
+    // シートの表示状態（スクロール位置・表示中のビュー）を戻る履歴へ積んでから画像を開く。
+    // DB行ダブルクリック（_handleTbodyDblclick）と同一パターン（②タブ別ナビ履歴、2026-07-21）。
+    // _navPushWithViewState の既定フォールバック（_currentPaneState()）は旧split専用の
+    // gb-pane-context.js 由来で、現行のペイン/タブ体系には存在しないペインID 'main' を
+    // 返すため、履歴が対象タブへ積まれない（legacy側の未使用履歴へ迷子になる）。
+    // ここでは現在アクティブなペインIDを明示して渡す（dbPathはstate.currentDbPathへの
+    // 内蔵フォールバックに委ねる）。
+    if (typeof _navPushWithViewState === 'function') {
+      const activePaneId = (typeof GBLayout !== 'undefined' && GBLayout.activePane) ? GBLayout.activePane : null;
+      _navPushWithViewState(activePaneId ? { paneId: activePaneId } : null, null);
+    }
+    if (typeof openMedia === 'function') {
+      openMedia(label, imagePath, mediaType);
+      return true;
+    }
+    if (typeof openViewer === 'function') {
+      openViewer('/viewer?file=' + encodeURIComponent(imagePath));
+      return true;
+    }
+    return false;
   }
+  // URL-only（https:/data:/blob: 等でワークスペース内パスへ解決できない）場合は、
+  // 戻る操作で再生できないため従来どおり openViewer 直呼びのまま履歴対象外で開く。
   const imageUrl = _imageSrc(item, false);
   if (imageUrl && typeof openViewer === 'function') {
     openViewer(imageUrl);
@@ -321,8 +346,8 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
         const imageLabel = item.caption || item.filename || imagePath.split('/').pop() || '画像';
         if (typeof showLinkedOpenTargetMenu === 'function') {
           showLinkedOpenTargetMenu(ev, imagePath, imageLabel, { linkType: 'image' });
-        } else if (typeof openViewer === 'function') {
-          openViewer('/viewer?file=' + encodeURIComponent(imagePath));
+        } else if (typeof openImagePropertyItemInViewer === 'function') {
+          openImagePropertyItemInViewer(item);
         }
       }, { requiresEdit: false, disabled: !imagePath }));
       actions.appendChild(actionBtn('arrowUp', '上へ', async () => {
@@ -355,7 +380,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       items = _imagePropCloneItems(nextItems);
     } catch (err) {
       items = prevItems;
-      showStatus(err?.message || '画像プロパティの保存に失敗しました', true);
+      showStatus(err?.message || '画像列の保存に失敗しました', true);
     }
     render();
   };

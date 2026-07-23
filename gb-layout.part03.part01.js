@@ -237,7 +237,12 @@
     let changed = false;
     path.forEach((node) => {
       if (!node?.collapsed) return;
+      // ユーザーが明示的に閉じた固定レールは、付随的な reveal（コンテンツ更新・
+      // タブ切替等）では開き直さない。ユーザー操作起点（options.userIntent）のみ開く。
+      const isFixedRail = node.meldexRole === 'left-sidebar' || node.meldexRole === 'right-sidebar';
+      if (isFixedRail && node._userCollapsed && !options?.userIntent) return;
       node.collapsed = false;
+      if (isFixedRail) delete node._userCollapsed;
       _adjustSplitForCollapse(node, { skipRender: true });
       changed = true;
     });

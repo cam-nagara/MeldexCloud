@@ -321,7 +321,13 @@
   }
 
   async function _setPwaRoots(roots) {
-    const clean = (Array.isArray(roots) ? roots : []).map((root) => ({
+    // ワークスペード由来（origin: 'ws:...'）のエントリは、個人のアカウント台帳
+    // （source-folders.v1.json）へ絶対に書き込んではならない。ここが全ての
+    // PUT /outliner-roots 呼び出しの合流点なので、clean マッピングへ渡す前に除外する。
+    const accountRoots = (Array.isArray(roots) ? roots : []).filter(
+      (root) => !(typeof root?.origin === 'string' && root.origin.startsWith('ws:'))
+    );
+    const clean = accountRoots.map((root) => ({
       path: String(root?.path || '.'),
       id: root?.id || root?.sourceId || undefined,
       sourceId: root?.sourceId || root?.id || undefined,

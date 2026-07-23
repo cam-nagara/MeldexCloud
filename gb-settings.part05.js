@@ -39,7 +39,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['ノート', ['引用ブロック']],
     ['シート', ['ヘッダー', 'エントリ列', 'セル']],
     ['ボード', ['ボード背景']],
-    ['スケジューラー', ['全体', 'ツールバー', 'サイドバー', 'コンテンツ', '右サイドバー', 'セル']],
+    ['スケジュール', ['全体', 'ツールバー', 'サイドバー', 'コンテンツ', '右サイドバー', 'セル']],
     ['補助パネル', ['フォルダツリー', 'ビューワーカード', 'チャット入力']],
   ],
   text: [
@@ -47,7 +47,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['ノート', ['タイトル', '見出し H1', '見出し H2', '見出し H3', '見出し H4', '見出し H5', '見出し H6', '本文', '引用ブロック']],
     ['シナリオ', ['基本テキスト']],
     ['シート', ['ヘッダー', 'エントリ列', 'セル']],
-    ['スケジューラー', ['見出し', '土曜', '日曜', '時刻', '補助表示']],
+    ['スケジュール', ['見出し', '土曜', '日曜', '時刻', '補助表示']],
     ['補助パネル', ['チャット本文', 'タイマー']],
   ],
   state: [
@@ -56,7 +56,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['シナリオ', ['ホバー', 'テキスト選択', 'ドラッグ選択', 'ドロップ', 'カーソル']],
     ['シート', ['選択', 'アクティブセル枠']],
     ['ボード', ['選択', '矩形選択', 'カーソル']],
-    ['スケジューラー', ['セルホバー', '今日', 'イベント', '現在時刻バー', '入力欄', '操作ボタン', 'アクセント', 'ミニカレンダー選択']],
+    ['スケジュール', ['セルホバー', '今日', 'イベント', '現在時刻バー', '入力欄', '操作ボタン', 'アクセント', 'ミニカレンダー選択']],
     ['補助パネル', ['補助パネルアクセント']],
   ],
   ornament: [
@@ -65,7 +65,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['シナリオ', ['枠線', '見開き区切り', 'ルビ']],
     ['シート', ['テーブル罫線', '採用ステータス', 'ソースバッジ 1', 'ソースバッジ 2', 'ソースバッジ 3', 'ソースバッジ 4']],
     ['ボード', ['影', 'グループ', 'アンカー', 'カード隙間']],
-    ['スケジューラー', ['罫線', 'イベント配置', 'ToDo列', 'ToDo見出し', 'ToDo', '優先度: 緊急', '優先度: 高', '優先度: 中', '打刻']],
+    ['スケジュール', ['罫線', 'イベント配置', 'ToDo列', 'ToDo見出し', 'ToDo', '優先度: 緊急', '優先度: 高', '優先度: 中', '打刻']],
   ],
 });
 
@@ -219,7 +219,7 @@ function _settingsThemeIsCustom(id) {
 }
 
 const SETTINGS_THEME_STYLE_TABS = [
-  '共通', 'フォルダ', 'ノート', 'シナリオ', 'シート', 'ボード', 'スケジューラー',
+  '共通', 'フォルダ', 'ノート', 'シナリオ', 'シート', 'ボード', 'スケジュール',
   '補助パネル',
 ];
 const SETTINGS_THEME_STYLE_AUTO_TARGETS = {
@@ -228,7 +228,7 @@ const SETTINGS_THEME_STYLE_AUTO_TARGETS = {
   'シナリオ': ['style-scriptnote', 'scriptnote-type-dialogue', 'scriptnote-type-action', 'scriptnote-type-heading', 'scriptnote-type-summary', 'scriptnote-type-break'],
   'シート': ['style-sheet'],
   'ボード': ['style-board'],
-  'スケジューラー': ['style-calendar'],
+  'スケジュール': ['style-calendar'],
   '補助パネル': ['style-outliner', 'folder-tree-folder', 'style-preview', 'style-detail', 'style-chat', 'style-timer', 'style-history', 'style-annotation', 'style-search', 'style-version'],
 };
 

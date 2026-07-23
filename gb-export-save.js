@@ -71,6 +71,67 @@ const MeldexExportSave = (() => {
     if (typeof showStatus === 'function') showStatus(text, false, { showSaveDialog: true });
   }
 
+  // 単独アプリ（ノート/シナリオ/シート/タイマー/ボード）判定。
+  // これらのページだけが window.MeldexStandaloneFS または window.BoardStandaloneFS を
+  // 定義するため、本体 Meldex.html では常に false になる（本体の挙動には影響しない）。
+  function _isStandaloneContext() {
+    return typeof window !== 'undefined' && !!(window.MeldexStandaloneFS || window.BoardStandaloneFS);
+  }
+
+  // 単独アプリには /api/save-file-dialog（サーバー側ネイティブダイアログ）が無いため、
+  // ブラウザの通常ダウンロード（Blob URL + <a download>）でファイルを書き出す。
+  // 保存先フォルダを選ばせられない点は本体の名前を付けて保存ダイアログに劣るが、
+  // Windows単独exe・Cloud静的版・PWAのいずれでも共通に動作する。
+  function _downloadBlobDirect(blob, filename) {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || '無題';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 4000);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function _standaloneSaveText(content, options = {}) {
+    const fallbackExtension = options.extension || '.txt';
+    const { initialfile } = splitFileName(
+      options.initialfile || options.filename || '',
+      options.title || options.fallbackTitle || '無題',
+      fallbackExtension
+    );
+    const blob = new Blob([options.bom ? '\uFEFF' + String(content || '') : String(content || '')], {
+      type: options.mime || 'text/plain;charset=utf-8',
+    });
+    if (!_downloadBlobDirect(blob, initialfile)) {
+      if (typeof showStatus === 'function') showStatus(options.errorMessage || '保存に失敗しました', true);
+      return false;
+    }
+    _notifyManualSaveSuccess((options.okMessage || '保存しました') + '（ダウンロード: ' + initialfile + '）');
+    return { ok: true, path: initialfile };
+  }
+
+  async function _standaloneSaveBlob(blob, options = {}) {
+    const fallbackExtension = options.extension || '.bin';
+    const { initialfile } = splitFileName(
+      options.initialfile || options.filename || '',
+      options.title || options.fallbackTitle || '無題',
+      fallbackExtension
+    );
+    if (!_downloadBlobDirect(blob, initialfile)) {
+      if (typeof showStatus === 'function') showStatus(options.errorMessage || '保存に失敗しました', true);
+      return false;
+    }
+    _notifyManualSaveSuccess((options.okMessage || '保存しました') + '（ダウンロード: ' + initialfile + '）');
+    return { ok: true, path: initialfile };
+  }
+
   async function _showDialog(payload, messages = {}) {
     try {
       const res = await apiPost('/save-file-dialog', payload);
@@ -91,6 +152,7 @@ const MeldexExportSave = (() => {
   }
 
   async function saveText(content, options = {}) {
+    if (_isStandaloneContext()) return _standaloneSaveText(content, options);
     const fallbackExtension = options.extension || '.txt';
     const { initialfile, extension } = splitFileName(
       options.initialfile || options.filename || '',
@@ -136,6 +198,18 @@ const MeldexExportSave = (() => {
       options.title || options.fallbackTitle || '無題',
       fallbackExtension
     );
+    if (_isStandaloneContext()) {
+      // 単独アプリには /api/save-file-dialog が無い。File System Access API
+      // (showSaveFilePicker) が使える環境ではファイル名/保存先を選べる方を優先し、
+      // 使えない環境（一部のwebview等）は通常のダウンロードにフォールバックする。
+      const pickerResult = await _saveBlobWithBrowserPicker(blob, initialfile, {
+        ok: options.okMessage || '保存しました',
+        cancel: options.cancelMessage || '保存をキャンセルしました',
+        error: options.errorMessage || '保存に失敗しました',
+      });
+      if (pickerResult !== null) return pickerResult;
+      return _standaloneSaveBlob(blob, options);
+    }
     const pickerThreshold = options.browserPickerThreshold || LARGE_BLOB_PICKER_THRESHOLD;
     if (blob?.size > pickerThreshold) {
       const pickerResult = await _saveBlobWithBrowserPicker(blob, initialfile, {

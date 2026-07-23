@@ -67,7 +67,7 @@
           <div class="gb-section-title">${_icon('usersRound', 14)} <span>${_escape(workspace.name || 'ワークスペース')}</span></div>
           <div class="gb-section-desc">${_escape(workspace.folder || '')}</div>
         </div>
-        <label class="gb-check" title="チャットとスケジューラーで最初に使うワークスペース">
+          <label class="gb-check" title="チャットとスケジュールで最初に使うワークスペース">
           <input type="radio" name="settings-active-workspace" data-workspace-active="${_escape(workspace.id)}" data-e2e-id="settings-workspace-active-${_escape(workspace.id)}" ${workspace.id === activeId ? 'checked' : ''}>
           <span>選択中</span>
         </label>
@@ -91,8 +91,7 @@
       </div>
     </section>`).join('');
     container.innerHTML = `<section class="gb-section gb-section--boxed">
-      <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース</div>
-      <div class="gb-section-desc">作品・フォルダツリーのソースとは別に、チャットや共同作業で使う単位です。</div>
+      <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース ${fieldHelp('作品・フォルダツリーのソースとは別に、チャットや共同作業で使う単位です。')}</div>
       <button type="button" class="gb-btn gb-btn-sm" data-settings-workspace-add data-e2e-id="settings-workspace-add">${_icon('plus', 14)} ワークスペースを追加</button>
     </section>${rowHtml}`;
     bindWorkspaceSettings(container);

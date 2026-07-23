@@ -402,29 +402,22 @@ async function showDirectMessageModal() {
         }
       });
     } catch {}
+  } else {
+    // 候補ユーザー一覧は正本「スタッフ管理シート」から取得する（ユーザー
+    // アカウント一元管理 計画書 Phase 5、旧 /team・/auth/users の個別マージ
+    // 実装を置換）。ワークスペース内DMではワークスペースメンバーのみに絞る
+    // 従来挙動は維持する。
+    try {
+      const staff = window.MeldexUserRegistry ? await window.MeldexUserRegistry.listStaff() : [];
+      staff.forEach(row => {
+        const name = String(row?.user || '').trim();
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          users.push(name);
+        }
+      });
+    } catch {}
   }
-  try {
-    const team = workspaceId ? [] : await apiFetch('/team');
-    if (Array.isArray(team)) {
-      team.forEach(member => {
-        if (member.name && !seen.has(member.name)) {
-          seen.add(member.name);
-          users.push(member.name);
-        }
-      });
-    }
-  } catch {}
-  try {
-    const authUsers = await apiFetch('/auth/users');
-    if (Array.isArray(authUsers)) {
-      authUsers.forEach(user => {
-        if (user.name && !seen.has(user.name)) {
-          seen.add(user.name);
-          users.push(user.name);
-        }
-      });
-    }
-  } catch {}
   users.sort((a, b) => a.localeCompare(b, 'ja'));
   if (!users.length) {
     showStatus('DMできるユーザーが見つかりません', true);

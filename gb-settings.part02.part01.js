@@ -134,13 +134,10 @@ const UI_STYLE_SECTIONS = {
     { label: 'ドラッグ選択', bg:'--sn2-drag-select-color', text:'ドラッグ選択' },
     { label: 'ドロップ', line:'--sn2-drop-color', width:'--sn2-drop-width', text:'━━' },
     { label: 'カーソル', fg:'--sn2-caret-color', width:'--sn2-caret-width', text:'┃' },
-    { label: 'ルビ', numbers:[
-      { label:'サイズ',   key:'--sn2-ruby-size',   min:0.3, max:1.5, step:0.05, unit:'em', fallback:0.5 },
-      { label:'オフセット', key:'--sn2-ruby-offset', min:-8, max:8,   step:1,    unit:'px', fallback:0 },
-    ], text:'ルビ' },
+    { label: 'ルビ', type: 'rubyPresentationDefaults', text: 'ルビ' },
   ],
   'シート': [
-    { label: 'ヘッダー', fg:'--db-th-fg', bold:'--db-th-bold', italic:'--db-th-italic', bg:'--db-th-bg', text:'プロパティ名', font:'--db-th-font' },
+    { label: 'ヘッダー', fg:'--db-th-fg', bold:'--db-th-bold', italic:'--db-th-italic', bg:'--db-th-bg', text:'列名', font:'--db-th-font' },
     { label: 'エントリ列', fg:'--db-entity-fg', bold:'--db-entity-bold', italic:'--db-entity-italic', bg:'--db-entity-bg', text:'キャラ名', font:'--db-entity-font' },
     { label: 'セル', fg:'--db-cell-fg', bold:'--db-cell-bold', italic:'--db-cell-italic', bg:'--db-cell-bg', text:'候補値テキスト', bgType:'rgba', font:'--db-cell-font' },
     { label: '選択', fg:'--db-selection-fg', bg:'--db-selection-color', text:'選択セル' },
@@ -166,11 +163,11 @@ const UI_STYLE_SECTIONS = {
       { label:'階層間',  key:'--bd-gap-levels',  min:0, max:600, step:1, unit:'px', fallback:30 },
     ], text:'隙間' },
   ],
-  'スケジューラー': [
-    { label: '全体', fg: '--cal-fg', bg: '--cal-bg', text: 'スケジューラー', font: '--cal-font-family' },
+  'スケジュール': [
+    { label: '全体', fg: '--cal-fg', bg: '--cal-bg', text: 'スケジュール', font: '--cal-font-family' },
     { label: 'ツールバー', fg: '--cal-toolbar-fg', bg: '--cal-toolbar-bg', text: 'ツールバー' },
     { label: 'サイドバー', fg: '--cal-sidebar-fg', bg: '--cal-sidebar-bg', text: 'サイドバー' },
-    { label: 'コンテンツ', fg: '--cal-fg', text: 'スケジューラー面' },
+    { label: 'コンテンツ', fg: '--cal-fg', text: 'スケジュール面' },
     { label: '右サイドバー', fg: '--cal-panel-fg', bg: '--cal-panel-bg', text: 'オプション' },
     { label: '見出し', fg: '--cal-header-fg', bg: '--cal-header-bg', text: '曜日見出し' },
     { label: '土曜', fg: '--cal-saturday-fg', text: '土' },
@@ -783,6 +780,9 @@ function _settingsThemeWidthControl(widthKey, label) {
 
 // 行レンダリング（全タブ共通）
 function renderStyleRow(d) {
+  if (d?.type === 'rubyPresentationDefaults' && typeof MeldexRubySettingsUI !== 'undefined') {
+    return MeldexRubySettingsUI.globalSettingsHtml();
+  }
   const fgVal = d.fg ? getCssVar(d.fg) : '';
   const bgVal = d.bg ? getCssVar(d.bg) : '';
   const lineVal = d.line ? getCssVar(d.line) : '';

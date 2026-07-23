@@ -38,21 +38,72 @@
     return apiFetch('/global-tags', { silentError: true });
   }
 
+  // シートの共通タグ列など、大量のセル描画で同一データを繰り返し参照する用途向けの
+  // 短期キャッシュ付きラッパー。タグ/グループの変更操作（作成・更新・削除）で即座に破棄される。
+  let _tagsCatalogCache = null; // { at: number, promise: Promise }
+  let _tagsCatalogLastResolved = null; // 直近で解決済みの値（同期参照用）
+  const TAGS_CATALOG_CACHE_TTL_MS = 3000;
+  function invalidateTagsCatalogCache() {
+    _tagsCatalogCache = null;
+  }
+  function loadTagsCached() {
+    if (_tagsCatalogCache && (Date.now() - _tagsCatalogCache.at) < TAGS_CATALOG_CACHE_TTL_MS) {
+      return _tagsCatalogCache.promise;
+    }
+    const promise = loadTags().then(data => {
+      _tagsCatalogLastResolved = data;
+      return data;
+    }).catch(err => {
+      invalidateTagsCatalogCache();
+      throw err;
+    });
+    _tagsCatalogCache = { at: Date.now(), promise };
+    return promise;
+  }
+  // 同期参照用: 直近で解決済みのタグカタログ（未取得なら null）。フィルタ適用など
+  // 「非同期を待てない場面で、できれば最新値を使いたい」用途向けのベストエフォート参照。
+  function getCachedTagsSync() {
+    return _tagsCatalogLastResolved;
+  }
+
+  // 複数条件フィルタ向け: 共通タグ列の「含む/含まない」に入力された文字列がタグ名の
+  // 完全一致であれば、保存値（タグID）に変換する。キャッシュ未取得やヒット無しの場合は
+  // 入力をそのまま返す（IDそのものを直接入力した場合や、キャッシュ未温まりでも
+  // クラッシュせず、単に一致しない = 0件として扱われるだけの安全側フォールバック）。
+  function resolveCommonTagsFilterValueSync(dbPath, propName, rawValue) {
+    const text = String(rawValue || '').trim();
+    if (!text) return rawValue;
+    try {
+      const ptc = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null;
+      if (!ptc || ptc.type !== 'common-tags') return rawValue;
+    } catch { return rawValue; }
+    const cached = getCachedTagsSync();
+    const allTags = Array.isArray(cached?.tags) ? cached.tags : [];
+    const match = allTags.find(tag => String(tag.name || '').trim().toLowerCase() === text.toLowerCase());
+    return match ? String(match.id) : rawValue;
+  }
+
   async function createTag(payload) {
-    return apiPost('/global-tags', payload || {}, { silentError: true });
+    const result = await apiPost('/global-tags', payload || {}, { silentError: true });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   async function updateTag(tagId, payload) {
-    return apiFetch('/global-tags/' + encodeURIComponent(tagId), {
+    const result = await apiFetch('/global-tags/' + encodeURIComponent(tagId), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload || {}),
       silentError: true,
     });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   async function deleteTag(tagId) {
-    return apiFetch('/global-tags/' + encodeURIComponent(tagId), { method: 'DELETE', silentError: true });
+    const result = await apiFetch('/global-tags/' + encodeURIComponent(tagId), { method: 'DELETE', silentError: true });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   // ============================================================
@@ -64,20 +115,26 @@
   }
 
   async function createGroup(payload) {
-    return apiPost('/global-tag-groups', payload || {}, { silentError: true });
+    const result = await apiPost('/global-tag-groups', payload || {}, { silentError: true });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   async function updateGroup(groupId, payload) {
-    return apiFetch('/global-tag-groups/' + encodeURIComponent(groupId), {
+    const result = await apiFetch('/global-tag-groups/' + encodeURIComponent(groupId), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload || {}),
       silentError: true,
     });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   async function deleteGroup(groupId) {
-    return apiFetch('/global-tag-groups/' + encodeURIComponent(groupId), { method: 'DELETE', silentError: true });
+    const result = await apiFetch('/global-tag-groups/' + encodeURIComponent(groupId), { method: 'DELETE', silentError: true });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   // ============================================================
@@ -105,11 +162,15 @@
   }
 
   async function loadPreset(presetId, payload) {
-    return apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/load', payload || {}, { silentError: true });
+    const result = await apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/load', payload || {}, { silentError: true });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   async function autoTag(payload) {
-    return apiPost('/global-tags/auto-tag', payload || {}, { silentError: true });
+    const result = await apiPost('/global-tags/auto-tag', payload || {}, { silentError: true });
+    invalidateTagsCatalogCache();
+    return result;
   }
 
   // ============================================================
@@ -354,16 +415,149 @@
   }
 
   // ============================================================
+  // 汎用タグエディタ（get/set コールバック対象向け）
+  //   ボードのカード・シートの行・クイックメモなど、ファイルパスを持たず
+  //   データ本体へタグID配列を直接埋め込む対象向け。表示は buildTargetTagEditorUi を共用する。
+  //   options: { getIds(): string[], setIds(ids: string[]): void, onChange?(): void, compact?: boolean, boxed?: boolean }
+  // ============================================================
+  function renderInlineTagEditor(container, options) {
+    if (!container) return;
+    if (typeof options?.getIds !== 'function' || typeof options?.setIds !== 'function') return;
+    container.textContent = '';
+    const ui = buildTargetTagEditorUi(container, options);
+    const refresh = () => refreshInlineTagEditorTags(options, ui, refresh);
+    bindInlineTagEditor(options, ui, refresh);
+    refreshTargetTagOptions(ui.datalist);
+    refresh();
+  }
+
+  async function refreshInlineTagEditorTags(options, ui, refresh) {
+    ui.msg.textContent = 'タグを読み込んでいます...';
+    try {
+      const data = await loadTags();
+      const allTags = Array.isArray(data?.tags) ? data.tags : [];
+      const groups = Array.isArray(data?.groups) ? data.groups : [];
+      const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
+      const idSet = new Set((options.getIds() || []).map(id => String(id)));
+      const tags = allTags.filter(tag => idSet.has(String(tag.id)));
+      ui.chips.textContent = '';
+      if (!tags.length) {
+        const empty = document.createElement('span');
+        empty.className = 'gb-section-desc';
+        empty.textContent = 'タグはありません。';
+        ui.chips.appendChild(empty);
+      }
+      tags.forEach(tag => ui.chips.appendChild(inlineTagChip(tag, options, refresh, message => { ui.msg.textContent = message; }, groupsById)));
+      ui.msg.textContent = '';
+    } catch (err) {
+      ui.msg.textContent = 'タグを読み込めませんでした: ' + (err.userMessage || err.message || err);
+    }
+  }
+
+  function inlineTagChip(tag, options, refresh, onError, groupsById) {
+    const chip = document.createElement('span');
+    chip.className = 'gb-tag-chip';
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--bg3);font-size:12px;';
+    const swatch = document.createElement('span');
+    swatch.style.cssText = 'width:9px;height:9px;border-radius:50%;border:1px solid var(--border);';
+    swatch.style.background = effectiveTagColor(tag, groupsById || {});
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+    name.style.padding = '0';
+    const displayName = tag.name || '';
+    name.textContent = displayName;
+    name.title = 'このタグの項目を検索';
+    name.setAttribute('aria-label', (displayName || 'タグ') + 'の項目を検索');
+    const tagKey = String(tag?.id || tag?.name || 'tag');
+    name.dataset.e2eId = `global-tags-inline-search:${tagKey}`;
+    name.dataset.globalTagsRole = 'inline-search';
+    name.addEventListener('click', () => {
+      if (window.MeldexTagManagement && typeof window.MeldexTagManagement.showSearchForTag === 'function') {
+        window.MeldexTagManagement.showSearchForTag(tag);
+      } else {
+        searchByTag(tag);
+      }
+    });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+    remove.style.padding = '0 2px';
+    remove.title = 'タグを外す';
+    remove.setAttribute('aria-label', (displayName || 'タグ') + 'を外す');
+    remove.dataset.e2eId = `global-tags-inline-remove:${tagKey}`;
+    remove.dataset.globalTagsRole = 'inline-remove';
+    remove.innerHTML = icon('x', 12) || '×';
+    remove.addEventListener('click', () => {
+      try {
+        const nextIds = (options.getIds() || []).filter(id => String(id) !== String(tag.id));
+        options.setIds(nextIds);
+        if (typeof options.onChange === 'function') options.onChange();
+        refresh();
+      } catch (err) {
+        if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
+      }
+    });
+    chip.append(swatch, name, remove);
+    return chip;
+  }
+
+  function bindInlineTagEditor(options, ui, refresh) {
+    const addCurrent = async () => {
+      const name = ui.input.value.trim();
+      if (!name) return;
+      try {
+        const data = await loadTags();
+        const allTags = Array.isArray(data?.tags) ? data.tags : [];
+        let tag = allTags.find(t => String(t.name || '').trim().toLowerCase() === name.toLowerCase());
+        if (!tag) {
+          try {
+            const created = await createTag({ name });
+            tag = created?.tag || null;
+          } catch (createErr) {
+            // 競合(同名タグが既に作成済み)などで失敗した場合は再取得してフォールバック
+            const retryData = await loadTags();
+            tag = (Array.isArray(retryData?.tags) ? retryData.tags : []).find(t => String(t.name || '').trim().toLowerCase() === name.toLowerCase());
+            if (!tag) throw createErr;
+          }
+        }
+        if (!tag?.id) return;
+        const ids = new Set((options.getIds() || []).map(id => String(id)));
+        ids.add(String(tag.id));
+        options.setIds([...ids]);
+        ui.input.value = '';
+        if (typeof options.onChange === 'function') options.onChange();
+        await refresh();
+        await refreshTargetTagOptions(ui.datalist);
+        if (window.MeldexTagManagement && typeof window.MeldexTagManagement.refresh === 'function') {
+          window.MeldexTagManagement.refresh();
+        }
+      } catch (err) {
+        ui.msg.textContent = 'タグを追加できませんでした: ' + (err.userMessage || err.message || err);
+      }
+    };
+    ui.add.addEventListener('click', addCurrent);
+    ui.input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') addCurrent();
+    });
+  }
+
+  // ============================================================
   // エクスポート
   // ============================================================
   window.renderGlobalTagTargetEditor = renderTargetTagEditor;
   window.hydrateGlobalTagTargetEditors = hydrateTargetEditors;
   window.searchGlobalTagTargets = searchByTag;
+  window.renderInlineTagEditor = renderInlineTagEditor;
 
   // タグ管理タブやファイル別エディタから使う API/ユーティリティ群を一括公開
   window.MeldexGlobalTags = {
     // タグ
     loadTags,
+    loadTagsCached,
+    getCachedTagsSync,
+    resolveCommonTagsFilterValueSync,
+    invalidateTagsCatalogCache,
     createTag,
     updateTag,
     deleteTag,

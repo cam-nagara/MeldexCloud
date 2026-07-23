@@ -56,17 +56,35 @@ const MeldexExportImage = (() => {
     const rect = contentEl.getBoundingClientRect?.() || {};
     const width = Math.ceil(options?.width || contentEl.scrollWidth || rect.width || contentEl.clientWidth || 1200);
     const height = Math.ceil(options?.height || contentEl.scrollHeight || rect.height || contentEl.clientHeight || 800);
-    const canvas = await h2c(contentEl, {
-      scale,
-      useCORS: true,
-      logging: false,
-      width,
-      height,
-      windowWidth: width,
-      windowHeight: height,
-      scrollX: 0,
-      scrollY: 0,
-    });
+    // html2canvas は前世代のcolor構文までしか解釈できず、Chromeがネイティブの
+    // チェックボックス等に用いる `color(srgb ...)` 形式の computed style に当たると
+    // 例外で失敗する。サーバーサイド生成パス（MeldexExportHtml.exportToHtml側）は
+    // 事前に preTransform でUI専用要素を取り除けるが、このフォールバック経路は
+    // 実DOMをそのまま撮影するため同じ手段が使えない。ignoreElements で対象外にする。
+    const ignoreElements = typeof options?.ignoreElements === 'function' ? options.ignoreElements : undefined;
+    // html2canvasは複雑なDOM（縦書き・ルビ等の絶対配置要素が多いシナリオ表示等）で
+    // 極端に時間がかかる、または返ってこないことがある。サーバー側レンダリングが
+    // 使えない単独アプリではこのフォールバックが唯一の経路になるため、無期限に
+    // 固まって見えないよう上限時間を設ける（タイムアウト後はエラー扱いにする）。
+    const timeoutMs = Number(options?.fallbackTimeoutMs) || 25000;
+    const canvas = await Promise.race([
+      h2c(contentEl, {
+        scale,
+        useCORS: true,
+        logging: false,
+        width,
+        height,
+        windowWidth: width,
+        windowHeight: height,
+        ignoreElements,
+        scrollX: 0,
+        scrollY: 0,
+      }),
+      new Promise((_resolve, reject) => setTimeout(
+        () => reject(new Error('PNG生成がタイムアウトしました（内容が複雑すぎる可能性があります）')),
+        timeoutMs,
+      )),
+    ]);
     return new Promise((resolve, reject) => {
       canvas.toBlob(blob => {
         if (blob) resolve(blob);
@@ -210,7 +228,19 @@ const MeldexExportImage = (() => {
     await exportToPng(el, {
       title,
       htmlOptions: _getHtmlOptionsForView(viewType),
+      ignoreElements: _ignoreElementsForView(viewType),
     });
+  }
+
+  // フォールバック（html2canvas直接撮影）経路専用。サーバー生成パスの
+  // preTransform で除去しているUI専用要素と同じものを撮影対象から除外する。
+  // 現状シナリオの行選択チェックボックス（.sn2-row-check）がネイティブ描画で
+  // color() 構文の computed style になり html2canvas が解析に失敗するため、
+  // ここで撮影自体から外す（見た目のオン/オフ状態は元々エクスポート対象外）。
+  function _ignoreElementsForView(viewType) {
+    if (viewType !== 'scriptnote') return undefined;
+    const selector = '.sn2-row-bulk-bar, .sn2-handle-zone, .sn2-handle, .sn2-add-row, .sn2-add-col-btn, .sn2-row-check';
+    return (el) => { try { return el.matches?.(selector) === true; } catch { return false; } };
   }
 
   /** ビューごとの HTML 出力オプション */

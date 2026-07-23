@@ -334,6 +334,96 @@
 .pivot-table[data-cell-overflow="clip"] .gb-image-thumb-stack {
   flex-wrap: nowrap;
 }
+/* シートセル表示・列ごとの上書き（td単位）。td[data-cell-overflow] はシート全体の
+   #pivot-table[data-cell-overflow] より詳細度が高いため、列側の設定が優先される。
+   --db-cell-wrap-lines も td に設定されればカスタムプロパティの継承で子孫へ伝わる。 */
+#pivot-table td[data-cell-overflow="wrap"] .value-text,
+#pivot-table td[data-cell-overflow="wrap"] .db-cell-display-text,
+.pivot-table td[data-cell-overflow="wrap"] .value-text,
+.pivot-table td[data-cell-overflow="wrap"] .db-cell-display-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--db-cell-wrap-lines, 10);
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+#pivot-table td[data-cell-overflow="clip"] .cell-value,
+.pivot-table td[data-cell-overflow="clip"] .cell-value {
+  min-width: 0;
+  overflow: hidden;
+}
+#pivot-table td[data-cell-overflow="clip"] .value-text,
+#pivot-table td[data-cell-overflow="clip"] .db-cell-display-text,
+.pivot-table td[data-cell-overflow="clip"] .value-text,
+.pivot-table td[data-cell-overflow="clip"] .db-cell-display-text {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  min-width: 0;
+}
+#pivot-table td[data-cell-overflow="wrap"] .gb-image-thumb-stack,
+.pivot-table td[data-cell-overflow="wrap"] .gb-image-thumb-stack {
+  flex-wrap: wrap;
+  max-height: calc((var(--gb-image-cell-size, 96px) + 6px) * var(--db-cell-wrap-lines, 10));
+}
+#pivot-table td[data-cell-overflow="clip"] .gb-image-cell,
+.pivot-table td[data-cell-overflow="clip"] .gb-image-cell {
+  max-height: calc(var(--gb-image-cell-size, 96px) + 8px);
+}
+#pivot-table td[data-cell-overflow="clip"] .gb-image-thumb-stack,
+.pivot-table td[data-cell-overflow="clip"] .gb-image-thumb-stack {
+  flex-wrap: nowrap;
+}
+/* エントリ名列（__entity__）の折り返し/切り詰め上書き。.entity-name-label は
+   上の .value-text / .db-cell-display-text ルールの対象外なので個別に指定する。 */
+#pivot-table td.col-entity[data-cell-overflow="wrap"] .entity-name-label,
+.pivot-table td.col-entity[data-cell-overflow="wrap"] .entity-name-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--db-cell-wrap-lines, 10);
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+}
+#pivot-table td.col-entity[data-cell-overflow="clip"] .entity-name-label,
+.pivot-table td.col-entity[data-cell-overflow="clip"] .entity-name-label {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  min-width: 0;
+}
+/* エントリ名列に列個別の上書きが無いときは、シート全体の折り返し/切り詰め設定に従う
+   （通常列と同じ挙動＝「シート設定に従う」を選んだときの整合性）。:not([data-cell-overflow])
+   で、上の列個別上書きルールがある場合はそちらが優先される。既定は wrap(10行)のため
+   通常のエントリ名では実質無制限のまま。 */
+#pivot-table[data-cell-overflow="wrap"] td.col-entity:not([data-cell-overflow]) .entity-name-label,
+.pivot-table[data-cell-overflow="wrap"] td.col-entity:not([data-cell-overflow]) .entity-name-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--db-cell-wrap-lines, 10);
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+}
+#pivot-table[data-cell-overflow="clip"] td.col-entity:not([data-cell-overflow]) .entity-name-label,
+.pivot-table[data-cell-overflow="clip"] td.col-entity:not([data-cell-overflow]) .entity-name-label {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  min-width: 0;
+}
 .value-input--textarea,
 .cell-inline-input--textarea {
   display: block;

@@ -250,7 +250,7 @@
     } catch {}
     if (beforeKey && beforeKey === afterKey) return false;
     historyPush(
-      label || 'スケジューラー: 設定変更',
+      label || 'スケジュール: 設定変更',
       () => restoreLocalStorageSettings(snapshots.before, _calRefreshSettingsAfterHistory),
       () => restoreLocalStorageSettings(snapshots.after, _calRefreshSettingsAfterHistory),
       CALENDAR_SETTINGS_SCOPE,
@@ -305,6 +305,10 @@
     return `<span class="gb-cal-event-avatars">${names.map(name => _calAvatarHtml(name, size)).join('')}</span>`;
   };
 
+  // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
+  // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、
+  // §5.8-3）。_loadTeamGroups() はワークスペース別グルーピング表示用の別機能
+  // として維持し、それが使えない場合のフォールバックだけを差し替える。
   CalendarComponent.prototype._loadCalendarUserChoices = async function() {
     const current = this._getUser();
     const users = new Map();
@@ -317,14 +321,10 @@
         return [...users.values()];
       } catch {}
     }
-    let roots = [];
-    try { roots = await apiFetch('/outliner-roots'); } catch {}
-    const visibleRoots = (roots || []).filter(root => root?.visible && root?.path);
-    const sources = visibleRoots.length ? visibleRoots.map(root => root.path) : [''];
-    for (const folder of sources) {
+    if (window.MeldexUserPicker) {
       try {
-        const members = await apiFetch('/team' + (folder ? '?folder=' + encodeURIComponent(folder) : ''));
-        (members || []).forEach(member => add(member.name));
+        const candidates = await window.MeldexUserPicker.getCandidates();
+        if (candidates.length) return candidates;
       } catch {}
     }
     return [...users.values()];
@@ -815,10 +815,29 @@
     _origDestroy.call(this);
   };
 
+  // v0.6.199: アクティブ履歴スコープを、現在表示中の面に応じて切り替える。
+  // - 制作管理タスクリスト面（埋め込みシート）表示中: 埋め込みシートの 'db:<パス>' スコープ
+  //   （_meldexProductionEmbedHistoryScope() と同じ解決規則。フェーズ4から流用）
+  // - それ以外（カレンダー面・ToDo/シフト/時計等）: このタブ自身の 'schedule:<tabId>' スコープ
+  //   （系統(A)の予定/ToDo編集用。gb-tool-calendar.js 参照）
+  // - 埋め込みシート未マウント等でどちらも解決できない場合: 従来どおり 'calendar:settings'
+  //   （サイドバー表示・週開始曜日等のスケジュール設定用スコープ。この関数が置き換える前の
+  //   activate() が無条件に設定していたのと同じフォールバック値）
+  CalendarComponent.prototype._syncHistoryScope = function() {
+    if (typeof historySetScope !== 'function') return;
+    const embedScope = typeof _meldexProductionEmbedHistoryScope === 'function' ? _meldexProductionEmbedHistoryScope() : '';
+    if (embedScope) { historySetScope(embedScope); return; }
+    if (this._surface !== 'productionTasks' && typeof _schedHistoryScope === 'function') {
+      historySetScope(_schedHistoryScope(this));
+      return;
+    }
+    historySetScope(CALENDAR_SETTINGS_SCOPE);
+  };
+
   const _origActivate = CalendarComponent.prototype.activate;
   CalendarComponent.prototype.activate = function() {
     _origActivate.call(this);
-    if (typeof historySetScope === 'function') historySetScope(CALENDAR_SETTINGS_SCOPE);
+    this._syncHistoryScope();
   };
 
   CalendarComponent.prototype._closeEventCardMenu = function() {
@@ -993,7 +1012,7 @@
     localStorage.setItem('gb:cal-sidebar-mode', normalized);
     localStorage.setItem('gb:cal-sidebar-only', this._sidebarOnly ? 'true' : 'false');
     const detail = normalized === 'hidden' ? 'サイドバーを隠す' : normalized === 'only' ? 'サイドバーのみ' : 'すべて表示';
-    _calPushSettingsHistory('スケジューラー: サイドバー表示変更', before, ['gb:cal-sidebar-mode', 'gb:cal-sidebar-only'], detail);
+    _calPushSettingsHistory('スケジュール: サイドバー表示変更', before, ['gb:cal-sidebar-mode', 'gb:cal-sidebar-only'], detail);
     this._applySidebarMode();
   };
 
@@ -1026,7 +1045,7 @@
       const before = _calCaptureSettingsHistory(['gb-cal-start-day']);
       this._startDay = parseInt(e.currentTarget.value, 10);
       localStorage.setItem('gb-cal-start-day', this._startDay);
-      _calPushSettingsHistory('スケジューラー: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
+      _calPushSettingsHistory('スケジュール: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
       this._render();
       this._renderMiniCal();
     });
@@ -1044,7 +1063,7 @@
   };
 
   CalendarComponent.prototype._showCalendarSettingsPanel = function(options = {}) {
-    const body = _calOptionContainer('スケジューラー設定', {
+    const body = _calOptionContainer('スケジュール設定', {
       tabId: 'calendar-settings',
       select: options.select !== false,
     });
@@ -1055,7 +1074,7 @@
   window.openCalendarSettingsPanel = function() {
     const component = _calFindCalendarComponent();
     if (!component || typeof component._showCalendarSettingsPanel !== 'function') {
-      if (typeof showStatus === 'function') showStatus('スケジューラーを開いてから設定を開いてください', true);
+      if (typeof showStatus === 'function') showStatus('スケジュールを開いてから設定を開いてください', true);
       return;
     }
     component._showCalendarSettingsPanel();
@@ -1090,31 +1109,37 @@
       creator: this._getUser(),
       members: [],
     };
-    const tempId = 'tmp-cal-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-    const optimisticEvent = { id: tempId, ...payload, _optimistic: true };
+    const id = window.MeldexCalendarSaveQueue?.newEventId?.() || ('cal-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+    payload.id = id;
+    const optimisticEvent = { id, ...payload, _optimistic: true, _saveState: 'saving' };
     this._pushUndo('イベント作成');
     this._events = [...(this._events || []), optimisticEvent];
-    this._setSelectedEvents([tempId], tempId);
+    this._setSelectedEvents([id], id);
     this._render();
+    // POSTがタイムアウトしても即座に楽観イベントを破棄しない。保存キュー側で
+    // 確認・再試行まで行い、それでも失敗したら「未保存」として画面に保持する。
+    const savedId = window.MeldexCalendarSaveQueue
+      ? await window.MeldexCalendarSaveQueue.createWithConfirm(this, id, payload)
+      : await this._createEventQuickFallback(id, payload);
+    if (!savedId) return '';
+    await this._loadEvents();
+    this._render();
+    const created = this._events.find(e => e.id === savedId) || { id: savedId, ...payload };
+    this._setSelectedEvents([savedId], savedId);
+    this._showEventOptionsPanel(created, defaultStart, defaultEnd, defaultAllDay);
+    return savedId;
+  };
+
+  // MeldexCalendarSaveQueue が読み込まれていない場合の最小限フォールバック（旧挙動相当）。
+  CalendarComponent.prototype._createEventQuickFallback = async function(id, payload) {
     try {
-      const res = await apiPost('/cal/events', payload);
-      const id = res?.id || '';
-      if (id) {
-        const idx = (this._events || []).findIndex(e => e.id === tempId);
-        if (idx >= 0) this._events[idx] = { ...optimisticEvent, id, _optimistic: false };
-        this._setSelectedEvents([id], id);
-      }
-      await this._loadEvents();
-      this._render();
-      if (id) {
-        const created = this._events.find(e => e.id === id) || { id, ...payload };
-        this._setSelectedEvents([id], id);
-        this._showEventOptionsPanel(created, defaultStart, defaultEnd, defaultAllDay);
-      }
+      await apiPost('/cal/events', payload);
+      const created = (this._events || []).find(e => e.id === id);
+      if (created) { delete created._optimistic; delete created._saveState; }
       this._showStatus('イベントを追加しました');
       return id;
     } catch {
-      this._events = (this._events || []).filter(e => e.id !== tempId);
+      this._events = (this._events || []).filter(e => e.id !== id);
       this._render();
       this._showStatus('イベント追加に失敗', true);
       return '';
@@ -1400,7 +1425,10 @@
       ${_calField('ステータス', `<select data-cal-task-status data-e2e-id="cal-task-status" aria-label="ToDoステータス" class="gb-select">${statuses.map(([v,l]) => `<option value="${v}" ${(task.status || 'todo') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
       ${_calField('優先度', `<select data-cal-task-priority data-e2e-id="cal-task-priority" aria-label="ToDo優先度" class="gb-select">${priorities.map(([v,l]) => `<option value="${v}" ${(task.priority || 'medium') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
       ${_calField('期限', `<input data-cal-task-due data-e2e-id="cal-task-due" aria-label="ToDo期限" type="date" value="${_calEsc(task.due_date || '')}">`)}
-      ${_calField('担当者', `<input data-cal-task-assignee data-e2e-id="cal-task-assignee" aria-label="ToDo担当者" type="text" value="${_calEsc(task.assignee || '')}">`)}
+      ${_calField('担当者', `<div style="display:flex;gap:4px;align-items:center;">
+        <input data-cal-task-assignee data-e2e-id="cal-task-assignee" aria-label="ToDo担当者" type="text" value="${_calEsc(task.assignee || '')}" style="flex:1;min-width:0;">
+        <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-cal-task-assignee-picker data-e2e-id="cal-task-assignee-picker" aria-label="担当者候補から選択" title="候補から選択">▾</button>
+      </div>`)}
       <div class="cal-option-grid">
         ${_calField('見積(h)', `<input data-cal-task-est data-e2e-id="cal-task-estimated-hours" aria-label="ToDo見積時間" type="number" step="0.5" value="${_calEsc(task.estimated_hours || 0)}">`)}
         ${_calField('実績(h)', `<input data-cal-task-act data-e2e-id="cal-task-actual-hours" aria-label="ToDo実績時間" type="number" step="0.5" value="${_calEsc(task.actual_hours || 0)}">`)}
@@ -1413,6 +1441,18 @@
       </div>`;
     body.querySelector('[data-cal-task-save]')?.addEventListener('click', () => this._saveTaskOptions(task.id, body));
     body.querySelector('[data-cal-task-delete]')?.addEventListener('click', () => this._deleteTaskFromOptions(task.id));
+    // ToDo担当者はコンボ型ピッカー（候補選択+自由入力併用。ユーザーアカウント
+    // 一元管理 計画書 Phase 3、§5.8）。既存の自由入力値は保存経路（value読み取り）
+    // をそのまま使うため壊さない。
+    body.querySelector('[data-cal-task-assignee-picker]')?.addEventListener('click', (event) => {
+      const input = body.querySelector('[data-cal-task-assignee]');
+      if (!input || !window.MeldexUserPicker) return;
+      window.MeldexUserPicker.open(event.currentTarget, {
+        value: input.value,
+        allowFreeText: true,
+        onCommit: (name) => { input.value = name; input.focus(); },
+      });
+    });
     setTimeout(() => body.querySelector('[data-cal-task-title]')?.focus(), 0);
   };
 
@@ -1551,7 +1591,7 @@
   };
 
   // 詳細パネル版イベントフォーム（gb-detail-panel）を退避してから上書きする。
-  // スケジューラー未起動時やタイトル付き新規作成（ファイルドロップ等）はこちらへ委譲する
+  // スケジュール未起動時やタイトル付き新規作成（ファイルドロップ等）はこちらへ委譲する
   const _detailPanelEventForm = typeof _showCalEventInDetailPanel === 'function' ? _showCalEventInDetailPanel : null;
   window._showCalEventInDetailPanel = function(ev, calendars, defaultStart, defaultEnd, defaultAllDay, ownerComponent) {
     const owner = ownerComponent || (typeof _calFindCalendarComponent === 'function' ? _calFindCalendarComponent() : null);

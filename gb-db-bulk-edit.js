@@ -239,8 +239,10 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
     },
     async () => {
       const nextTrashRefs = [];
+      const deleteResponses = [];
       for (const item of deletedItems) {
         const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
+        if (res) deleteResponses.push(res);
         const ref = toTrashRef(item, res);
         if (ref) nextTrashRefs.push(ref);
         try {
@@ -251,6 +253,10 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
       }
       trashRefs = nextTrashRefs;
       await refresh(false);
+      const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
+        ? _dbDeleteCalendarSyncWarningMessage(deleteResponses)
+        : '';
+      if (calendarWarning && typeof showStatus === 'function') showStatus(calendarWarning, true);
     },
     scope
   );
@@ -269,7 +275,7 @@ function _showBulkEditModal(entityNames, ctx) {
     return !lockMsg && !['formula', 'button', 'chat', 'multi-source-relation', 'rollup'].includes(t);
   });
   if (editableProps.length === 0) {
-    showStatus('編集可能なプロパティがありません', true);
+    showStatus('編集可能な列がありません', true);
     return;
   }
 
@@ -278,7 +284,7 @@ function _showBulkEditModal(entityNames, ctx) {
   overlay.innerHTML = `<div class="modal" style="min-width:460px;">
     <h3>一括編集 (${entityNames.length} 件)</h3>
     <div style="margin:8px 0;color:var(--fg2);font-size:12px;max-height:80px;overflow-y:auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
-    <div class="field"><label>プロパティ</label>
+    <div class="field"><label>列</label>
       <select id="bulk-edit-prop" style="width:100%;padding:4px;">
         ${editableProps.map(p => `<option value="${esc(p)}">${esc(p)} (${esc(propTypes[p]?.type || 'text')})</option>`).join('')}
       </select>
@@ -402,32 +408,18 @@ function _showBulkEditModal(entityNames, ctx) {
         container.appendChild(wrap);
       }
     } else if (ptc.type === 'user' || ptc.type === 'multi-user') {
-      const users = [];
-      const seen = new Set();
+      // 候補ユーザー一覧は MeldexUserPicker.getCandidates() に統一する
+      // （正本「スタッフ管理シート」+ワークスペースメンバーのマージ。
+      // ユーザーアカウント一元管理 計画書 Phase 5、旧 /team・/auth/users の
+      // 個別マージ実装を置換）。
+      let users = [];
       try {
-        const team = await apiFetch('/team');
+        const candidates = window.MeldexUserPicker ? await window.MeldexUserPicker.getCandidates() : [];
         if (isStaleRender()) return;
-        if (Array.isArray(team)) {
-          team.forEach(member => {
-            if (member?.name && !seen.has(member.name)) {
-              seen.add(member.name);
-              users.push(member.name);
-            }
-          });
-        }
-      } catch {}
-      try {
-        const authUsers = await apiFetch('/auth/users');
+        users = candidates.map(candidate => candidate?.name).filter(Boolean);
+      } catch {
         if (isStaleRender()) return;
-        if (Array.isArray(authUsers)) {
-          authUsers.forEach(user => {
-            if (user?.name && !seen.has(user.name)) {
-              seen.add(user.name);
-              users.push(user.name);
-            }
-          });
-        }
-      } catch {}
+      }
       if (ptc.type === 'user') {
         const select = document.createElement('select');
         select.id = 'bulk-edit-value';
@@ -477,7 +469,7 @@ function _showBulkEditModal(entityNames, ctx) {
     const ptc = propTypes[prop] || { type: 'text' };
     const canBatchUndo = true;
     if (!prop) {
-      showStatus('プロパティを選択してください', true);
+      showStatus('列を選択してください', true);
       return;
     }
     if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation' || ptc.bidirectional)) {
@@ -618,7 +610,11 @@ async function _bulkDeleteEntities(entityNames, ctx) {
           await window.GbDbCalendarSync.onEntryDeleted(dbPath, ep);
         }
       } catch {}
-      return { ok: true, item: { name, path: ep, trash_name: res?.trash_name || '', trash_root: res?.trash_root || '' } };
+      return {
+        ok: true,
+        response: res,
+        item: { name, path: ep, trash_name: res?.trash_name || '', trash_root: res?.trash_root || '' },
+      };
     } catch {
       return { ok: false };
     }
@@ -627,7 +623,11 @@ async function _bulkDeleteEntities(entityNames, ctx) {
   const ok = deletedItems.length;
   const fail = results.length - ok;
   _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
-  showStatus(`一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`);
+  const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`;
+  const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
+    ? _dbDeleteCalendarSyncWarningMessage(results.filter(result => result.ok).map(result => result.response))
+    : '';
+  showStatus(calendarWarning ? `${summary}。${calendarWarning}` : summary, fail > 0 || !!calendarWarning);
   if (fail > 0) {
     await selectDatabase(dbPath, ctx, { silent: true });
   }

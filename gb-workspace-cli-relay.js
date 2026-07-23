@@ -372,7 +372,7 @@
     const isAdmin = _isAdminRole(requesterRole);
     desc.textContent = isAdmin
       ? '管理者PCが起動中で中継設定が有効な時だけ返答されます。'
-      : '管理者以外の依頼はCodex CLIで読み取り専用として処理されます。';
+      : '管理者以外の依頼はCLIで読み取り専用として処理されます。';
     menu.appendChild(desc);
     _providersForCurrentRole().forEach(provider => {
       const item = document.createElement('button');
@@ -432,11 +432,13 @@
     if (!container) return;
     container.innerHTML = `
       <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px;">
-        <label class="gb-check">
-          <input id="settings-workspace-cli-enabled" type="checkbox" ${config?.enabled ? 'checked' : ''}>
-          <span>ワークスペースチャットから管理者PCのCLIへ依頼できるようにする</span>
-        </label>
-        <div class="gb-section-desc" style="margin-top:6px;">このPCが起動中の時だけ、共有ワークスペース内のCLI依頼を処理します。</div>
+        <div class="gb-check-help-row">
+          <label class="gb-check">
+            <input id="settings-workspace-cli-enabled" type="checkbox" ${config?.enabled ? 'checked' : ''}>
+            <span>ワークスペースチャットから管理者PCのCLIへ依頼できるようにする</span>
+          </label>
+          ${fieldHelp('このPCが起動中の時だけ、共有ワークスペース内のCLI依頼を処理します。')}
+        </div>
         <div style="display:grid;grid-template-columns:minmax(120px,1fr) 90px;gap:8px;margin-top:8px;">
           <input id="settings-workspace-cli-node-name" class="gb-input" value="${_htmlEsc(config?.node_name || '')}" placeholder="このPCの表示名">
           <input id="settings-workspace-cli-poll-interval" class="gb-input" type="number" min="2" max="3600" value="${Number(config?.poll_interval_seconds || 5)}" title="確認間隔（秒）">

@@ -2,42 +2,12 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
   const dropdownOptions = options || {};
   document.querySelectorAll('.user-dropdown').forEach(el => el.remove());
 
-  // ワークスペースメンバー（優先）+ 旧チーム/auth users（後方互換）をマージ
-  let users = [];
-  const seen = new Set();
-  const addUser = (user, fallbackRole) => {
-    const name = String(user?.name || user || '').trim();
-    if (!name || seen.has(name)) return;
-    seen.add(name);
-    users.push({
-      ...(typeof user === 'object' && user ? user : {}),
-      name,
-      role: user?.role || fallbackRole || 'editor',
-      has_avatar: !!user?.has_avatar,
-    });
-  };
-  try {
-    const workspaces = window.MeldexWorkspaces?.load
-      ? await window.MeldexWorkspaces.load({ force: false })
-      : [];
-    const active = window.MeldexWorkspaces?.getActiveWorkspace?.() || (Array.isArray(workspaces) ? workspaces[0] : null);
-    (Array.isArray(active?.members) ? active.members : []).forEach(member => {
-      const user = typeof member === 'object' && member ? { ...member, workspace_member: true } : member;
-      addUser(user, member?.role || 'editor');
-    });
-  } catch {}
-  try {
-    const team = await apiFetch('/team');
-    if (Array.isArray(team)) {
-      team.forEach(m => addUser(m, m?.role || 'editor'));
-    }
-  } catch {}
-  try {
-    const authUsers = await apiFetch('/auth/users');
-    if (Array.isArray(authUsers)) {
-      authUsers.forEach(u => addUser(u, u?.role || 'editor'));
-    }
-  } catch {}
+  // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
+  // ワークスペースメンバーのマージ。/team・/auth/usersへの参照はここで無くなる。
+  // ユーザーアカウント一元管理 計画書 Phase 3、§5.8-1）。
+  const users = window.MeldexUserPicker
+    ? await window.MeldexUserPicker.getCandidates()
+    : [];
 
   const dd = document.createElement('div');
   dd.className = 'cell-inline-dd user-dropdown';
@@ -290,7 +260,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
   const relDb = typeof _dbResolveRelationDbPath === 'function'
     ? _dbResolveRelationDbPath(sourceDbPath, ptc)
     : (isSelfRef ? sourceDbPath : (ptc.relationDb || ''));
-  if (!relDb) { showStatus('参照先シートが設定されていません。プロパティ型設定で指定してください。', true); return; }
+  if (!relDb) { showStatus('参照先シートが設定されていません。列タイプ設定で指定してください。', true); return; }
 
   // 参照先DBのエントリ一覧（ID付き）を取得
   let entryList = []; // { name, id }
@@ -658,7 +628,11 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
   effectiveOptions.forEach(opt => {
     const item = document.createElement('div');
     item.className = 'status-dropdown-item';
-    item.textContent = opt;
+    if (typeof createDbOptionColorDot === 'function') {
+      const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(latestConfig, opt) : '');
+      if (dot) item.appendChild(dot);
+    }
+    item.appendChild(document.createTextNode(opt));
     if (val.value === opt) item.classList.add('selected');
     item.addEventListener('click', async () => {
       closeAllDropdowns();
@@ -712,11 +686,7 @@ function _showAutoFillStatusInput(dbPath, propName, ptc, currentValue) {
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal" style="width:350px;padding:16px;">
-      <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">ステータス連動設定</div>
-      <div style="font-size:12px;color:var(--fg2);margin-bottom:12px;">
-        どのステータスに変更されたとき、この日時プロパティに現在日時を自動入力しますか？<br>
-        空にすると自動入力を解除します。
-      </div>
+      <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">ステータス連動設定 ${fieldHelp('どのステータスに変更されたとき、この日時列に現在日時を自動入力しますか？空にすると自動入力を解除します。')}</div>
       <input id="_autoFillStatusInput" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み"
         style="width:100%;padding:6px 8px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;box-sizing:border-box;margin-bottom:12px;">
       <div style="display:flex;gap:8px;justify-content:flex-end;">

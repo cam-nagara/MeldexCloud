@@ -6,14 +6,14 @@
   if (typeof window === 'undefined') return;
 
   const CALENDAR_STYLE_KEY = 'gb:calendar-panel-style';
-  const CALENDAR_THEME_TAB = 'スケジューラー';
+  const CALENDAR_THEME_TAB = 'スケジュール';
   const CALENDAR_CTX = 'calendar';
 
   const CALENDAR_STYLE_ROWS = [
-    { label: '全体', fg: '--cal-fg', bg: '--cal-bg', text: 'スケジューラー', font: '--cal-font-family' },
+    { label: '全体', fg: '--cal-fg', bg: '--cal-bg', text: 'スケジュール', font: '--cal-font-family' },
     { label: 'ツールバー', fg: '--cal-toolbar-fg', bg: '--cal-toolbar-bg', text: 'ツールバー' },
     { label: 'サイドバー', fg: '--cal-sidebar-fg', bg: '--cal-sidebar-bg', text: 'サイドバー' },
-    { label: 'コンテンツ', fg: '--cal-fg', text: 'スケジューラー面' },
+    { label: 'コンテンツ', fg: '--cal-fg', text: 'スケジュール面' },
     { label: '右サイドバー', fg: '--cal-panel-fg', bg: '--cal-panel-bg', text: 'オプション' },
     { label: '見出し', fg: '--cal-header-fg', bg: '--cal-header-bg', text: '曜日見出し' },
     { label: '土曜', fg: '--cal-saturday-fg', text: '土' },
@@ -279,7 +279,7 @@
     Object.entries(vars).forEach(([key, value]) => {
       if (key === '__themeId') return;
       // --theme-palette-* を body に適用するとアプリ全体のパレット参照（タブ色分け等）を
-      // スケジューラー側の設定で覆い隠してしまうため、body 適用対象から除外する（保存は維持）
+      // スケジュール側の設定で覆い隠してしまうため、body 適用対象から除外する（保存は維持）
       if (!String(key).startsWith('--cal-') && key !== '--theme-os-accent' && key !== '--theme-os-accent-text') return;
       if (key === '--cal-content-bg' || key === '--cal-scroll-thumb' || key === '--cal-scroll-thumb-hover') return;
       if (value !== null && value !== undefined && value !== '') out[key] = value;
@@ -454,7 +454,7 @@
         const el = document.getElementById('detail-tab-file-style');
         el?.setAttribute('data-calendar-style', '1');
         const desc = el?.querySelector?.('.gb-section-desc');
-        if (desc) desc.textContent = '対象: スケジューラー';
+        if (desc) desc.textContent = '対象: スケジュール';
         applyCalendarPanelStyle();
       };
     }

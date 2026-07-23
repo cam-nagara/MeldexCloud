@@ -198,7 +198,7 @@
     const owner = _isOwner();
     section.innerHTML = `
       <div class="gb-section-title gb-owner-key-title" id="owner-key-section-title">${_icon('keyRound', 14)} 管理者鍵 / 改竄検知</div>
-      <div class="gb-section-desc">ナレッジ、編集ロック、監査対象JSONのHMAC署名に使う鍵です。鍵はこの端末のブラウザ内に暗号化して保存され、Dropboxには保存されません。</div>
+      <div class="gb-section-desc">この端末内に暗号化して保存する管理者用の鍵です。 ${fieldHelp('ナレッジ、編集ロック、対象ファイルの署名に使う鍵です。Dropboxには保存されません。')}</div>
       <label class="gb-field-row gb-owner-key-passphrase-row">
         <span class="gb-label gb-owner-key-label">パスフレーズ</span>
         <input type="password" class="gb-input gb-owner-key-passphrase-input" data-setting="owner-key-passphrase" data-owner-key-passphrase data-e2e-id="owner-key-passphrase" aria-label="管理者鍵パスフレーズ" autocomplete="new-password" ${owner ? '' : 'disabled'} placeholder="${_esc(window.MeldexOwnerKeyStore?.PASSPHRASE_MIN_LENGTH || 12)}文字以上">

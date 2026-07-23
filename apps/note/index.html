@@ -20,9 +20,12 @@
   <link rel="stylesheet" href="gb-icon-assets.css">
   <link rel="stylesheet" href="gb-theme.css">
   <link rel="stylesheet" href="gb-ui.css">
+  <link rel="stylesheet" href="gb-tools.css">
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
+  <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="note-standalone.css">
+  <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
   <div class="sa-shell note-app">
@@ -38,22 +41,87 @@
           <button type="button" data-note-action="insertLink" data-e2e-id="note-menu-insert-link"><span class="ico ico-link"></span>リンクを挿入</button>
           <button type="button" data-note-action="toggleVertical" data-e2e-id="note-menu-toggle-vertical"><span class="ico ico-kanban"></span>縦書き切替</button>
           <div class="sa-menu-sep"></div>
+          <button type="button" data-note-action="exportMarkdown" data-e2e-id="note-menu-export-markdown"><span class="ico ico-fileText"></span>Markdownとして保存...</button>
+          <button type="button" data-note-action="exportPng" data-e2e-id="note-menu-export-png"><span class="ico ico-image"></span>画像（PNG）として保存...</button>
+          <button type="button" data-note-action="copyMarkdown" data-e2e-id="note-menu-copy-markdown"><span class="ico ico-clipboardCopy"></span>Markdownをコピー</button>
+          <div class="sa-menu-sep"></div>
           <button type="button" data-standalone-default-apps-open data-e2e-id="note-menu-default-app"><span class="ico ico-fileCog"></span>既定アプリに設定...</button>
         </div>
       </div>
       <input id="note-title-input" class="note-title-input" type="text" value="無題" aria-label="ノート名" spellcheck="false">
       <div id="note-path-label" class="sa-path">未保存</div>
+      <button id="note-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="note-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
-    <main class="sa-main note-main">
-      <article id="page-content" class="note-editor" contenteditable="true" spellcheck="false" data-path=""></article>
-      <div id="media-float-controls" class="note-media-controls" role="toolbar" aria-label="メディア操作" aria-hidden="true">
-        <button type="button" data-align="left" data-e2e-id="note-media-align-left" title="左寄せ" aria-label="メディアを左寄せ">左</button>
-        <button type="button" data-align="center" data-e2e-id="note-media-align-center" title="中央" aria-label="メディアを中央寄せ">中</button>
-        <button type="button" data-align="right" data-e2e-id="note-media-align-right" title="右寄せ" aria-label="メディアを右寄せ">右</button>
-        <button type="button" data-action="delete" data-e2e-id="note-media-delete" title="削除" aria-label="メディアを削除">削除</button>
-      </div>
-      <div id="media-resize-handle" class="note-media-resize" data-e2e-id="note-media-resize" aria-hidden="true"></div>
-    </main>
+    <div id="page-rt-toolbar" class="gb-toolbar">
+      <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-e2e-id="note-toc-toggle"><span class="ico ico-panelLeft"></span></button>
+      <button type="button" class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" aria-label="縦書きにする" data-e2e-id="note-vertical-toggle"><span class="ico ico-kanban"></span></button>
+      <button type="button" class="tb-icon-btn" id="btn-heading-indent" title="見出しインデント表示" aria-label="見出しインデント表示" data-e2e-id="note-heading-indent-toggle"><span class="ico ico-indentIncrease"></span></button>
+      <div class="sep"></div>
+      <button type="button" class="tb-icon-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-note-rt-cmd="undo" data-e2e-id="note-rt-undo"><span class="ico ico-undo2"></span></button>
+      <button type="button" class="tb-icon-btn" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-note-rt-cmd="redo" data-e2e-id="note-rt-redo"><span class="ico ico-redo2"></span></button>
+      <div class="sep"></div>
+      <button type="button" class="tb-icon-btn" title="太字 (Ctrl+B)" aria-label="太字" data-note-rt-cmd="bold" data-e2e-id="note-rt-bold"><span class="ico ico-bold"></span></button>
+      <button type="button" class="tb-icon-btn" title="斜体 (Ctrl+I)" aria-label="斜体" data-note-rt-cmd="italic" data-e2e-id="note-rt-italic"><span class="ico ico-italic"></span></button>
+      <button type="button" class="tb-icon-btn" title="下線 (Ctrl+U)" aria-label="下線" data-note-rt-cmd="underline" data-e2e-id="note-rt-underline"><span class="ico ico-underline"></span></button>
+      <button type="button" class="tb-icon-btn" title="取り消し線" aria-label="取り消し線" data-note-rt-cmd="strikeThrough" data-e2e-id="note-rt-strike"><span class="ico ico-strikethrough"></span></button>
+      <div class="sep"></div>
+      <select class="tb-select" id="note-rt-heading" title="見出し" aria-label="見出し" data-e2e-id="note-rt-heading">
+        <option value="">見出し</option>
+        <option value="TITLE">タイトル</option>
+        <option value="H1">H1</option><option value="H2">H2</option><option value="H3">H3</option>
+        <option value="H4">H4</option><option value="H5">H5</option><option value="H6">H6</option>
+        <option value="P">本文</option>
+      </select>
+      <div class="sep"></div>
+      <button type="button" class="tb-icon-btn" title="箇条書き" aria-label="箇条書き" data-note-rt-cmd="insertUnorderedList" data-e2e-id="note-rt-unordered-list"><span class="ico ico-list"></span></button>
+      <button type="button" class="tb-icon-btn" title="番号付き" aria-label="番号付き" data-note-rt-cmd="insertOrderedList" data-e2e-id="note-rt-ordered-list"><span class="ico ico-listOrdered"></span></button>
+      <button type="button" class="tb-icon-btn" title="引用" aria-label="引用" data-note-rt-cmd="formatBlock:BLOCKQUOTE" data-e2e-id="note-rt-blockquote"><span class="ico ico-textQuote"></span></button>
+      <button type="button" class="tb-icon-btn" id="note-rt-callout" title="コールアウト" aria-label="コールアウト" data-e2e-id="note-rt-callout"><span class="ico ico-lightbulb"></span></button>
+      <button type="button" class="tb-icon-btn" id="note-rt-table" title="表を挿入" aria-label="表を挿入" data-e2e-id="note-rt-table"><span class="ico ico-table"></span></button>
+      <button type="button" class="tb-icon-btn" title="水平線" aria-label="水平線" data-note-rt-cmd="insertHorizontalRule" data-e2e-id="note-rt-horizontal-rule"><span class="ico ico-minus"></span></button>
+      <div class="tb-spacer"></div>
+      <button type="button" class="tb-icon-btn" id="note-rt-search" title="検索と置換" aria-label="検索と置換" data-e2e-id="note-rt-search"><span class="ico ico-search"></span></button>
+    </div>
+    <!-- 本体の gb-editor.js が document.getElementById('rt-toolbar') をnullチェック無しで
+         参照する箇所があるため（#entity-rt-toolbar 用テンプレートのコピー元。単独版は
+         エンティティ編集を持たないため中身は不要）、存在確認クラッシュを避けるための
+         空プレースホルダー。可視状態には出ないよう hidden を付ける。
+         #entity-freetext も同様（gb-editor.js の setupEditableDropHandler が
+         null チェック無しで呼び出す。エンティティ自由記述欄は単独版に無い）。 -->
+    <div id="rt-toolbar" hidden></div>
+    <div id="entity-freetext" hidden></div>
+    <div class="sa-body">
+      <main class="sa-main note-main">
+        <div class="note-editor-body">
+          <div id="note-toc" data-e2e-id="note-toc"></div>
+          <div id="note-toc-resize" title="目次幅を調整" role="separator" aria-orientation="vertical" aria-label="目次幅を調整" tabindex="0" data-e2e-id="note-toc-resize"></div>
+          <article id="page-content" class="note-editor" contenteditable="true" spellcheck="false" data-path=""></article>
+        </div>
+        <div id="media-float-controls" class="note-media-controls" role="toolbar" aria-label="メディア操作" aria-hidden="true">
+          <button type="button" data-align="left" data-e2e-id="note-media-align-left" title="左寄せ" aria-label="メディアを左寄せ">左</button>
+          <button type="button" data-align="center" data-e2e-id="note-media-align-center" title="中央" aria-label="メディアを中央寄せ">中</button>
+          <button type="button" data-align="right" data-e2e-id="note-media-align-right" title="右寄せ" aria-label="メディアを右寄せ">右</button>
+          <button type="button" data-action="delete" data-e2e-id="note-media-delete" title="削除" aria-label="メディアを削除">削除</button>
+        </div>
+        <div id="media-resize-handle" class="note-media-resize" data-e2e-id="note-media-resize" aria-hidden="true"></div>
+      </main>
+      <div id="note-option-resizer" class="sa-option-resizer" role="separator" aria-label="オプションパネルの幅を調整" aria-orientation="vertical" tabindex="0"></div>
+      <aside id="note-option-panel" class="sa-option-panel" aria-label="オプションパネル">
+        <div class="sa-option-header"><span>オプション</span></div>
+        <div id="rp-detail" class="sa-option-body"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="file-search-bar">
+    <textarea id="fsb-query" aria-label="ファイル内検索" placeholder="検索..." rows="1" style="width:160px;resize:none;"></textarea>
+    <span class="fsb-count" id="fsb-count"></span>
+    <button type="button" id="fsb-prev" title="前へ" aria-label="前へ">↑</button>
+    <button type="button" id="fsb-next" title="次へ" aria-label="次へ">↓</button>
+    <textarea id="fsb-replace" aria-label="ファイル内置換" placeholder="置換..." rows="1" style="width:120px;resize:none;"></textarea>
+    <button type="button" id="fsb-replace-one" title="置換" aria-label="置換">置換</button>
+    <button type="button" id="fsb-replace-all" title="全置換" aria-label="全置換">全置換</button>
+    <button type="button" id="fsb-close" title="検索を閉じる" aria-label="検索を閉じる">×</button>
   </div>
 
   <div id="note-context-menu" class="sa-context-menu" role="menu" aria-hidden="true">
@@ -70,6 +138,7 @@
     </div>
   </div>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite" data-e2e-id="note-standalone-toast"></div>
+  <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
@@ -88,15 +157,35 @@
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
   <script src="gb-icon-assets.js"></script>
+  <script src="gb-ui.js"></script>
+  <script src="offline-bundles/gb-tooltip.js"></script>
+  <script src="gb-modal-shell.js"></script>
+  <script src="gb-dropdown-dismiss.js"></script>
+  <script src="offline-bundles/gb-color-palette.js"></script>
+  <script src="gb-format-popup.js"></script>
+  <script src="gb-events.js"></script>
   <script src="standalone-stubs.js"></script>
+  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-format-style-ui.js"></script>
+  <script src="standalone-option-panel.js"></script>
   <script src="standalone-file-fs.js"></script>
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="gb-dropbox-profile-sync.js"></script>
+  <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="standalone-pwa-install.js"></script>
-  <script src="note-standalone-markdown.js"></script>
+  <script src="gb-note-theme-style.js"></script>
+  <script src="gb-editor-preview.js"></script>
+  <script src="offline-bundles/gb-editor.js"></script>
+  <script src="offline-bundles/gb-note-enhance.js"></script>
+  <script src="gb-text-selection-format.js"></script>
+  <script src="offline-bundles/gb-shortcuts.js"></script>
+  <script src="gb-export-save.js"></script>
+  <script src="gb-export-image.js"></script>
+  <script src="standalone-mobile-toolbar.js"></script>
   <script src="note-standalone-app.js"></script>
 </body>
 </html>

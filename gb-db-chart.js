@@ -808,7 +808,7 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
     allProps.map(p => ({ key: p, label: p })),
     config.xProperty,
     chartScope + '-x-property',
-    'チャートX軸プロパティ'
+    'チャートX軸の列'
   );
   xSelect.addEventListener('change', () => {
     config.xProperty = xSelect.value;
@@ -849,7 +849,7 @@ function _buildChartSettingsBar(dbPath, config, allProps, ctx) {
       numProps.map(p => ({ key: p, label: p })),
       config.yProperty || numProps[0] || '',
       chartScope + '-y-property',
-      'チャートY軸対象プロパティ'
+      'チャートY軸対象の列'
     );
     yPropSelect.addEventListener('change', () => {
       config.yProperty = yPropSelect.value;

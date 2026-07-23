@@ -58,7 +58,7 @@
   min-height: 100%;
   height: max-content;
   width: max-content;
-  gap: var(--sn2-margin, 16px); /* 段の隙間 = 余白 */
+  gap: var(--sn2-wrap-gap, var(--sn2-margin, 16px)); /* 段の隙間 = 段間隔（未指定なら余白） */
   padding: 0 24px; /* 両端にスクロール余白 */
 }
 .sn2-column-group {
@@ -229,7 +229,7 @@
   width: 100%;
   max-width: 100%;
   height: max-content;
-  gap: var(--sn2-margin, 16px); /* 段の隙間 = 余白 */
+  gap: var(--sn2-wrap-gap, var(--sn2-margin, 16px)); /* 段の隙間 = 段間隔（未指定なら余白） */
   padding: 24px 0; /* 上下にスクロール余白 */
 }
 .sn2-scroll.sn2-vertical.sn2-wrap .sn2-column-group {
@@ -328,7 +328,6 @@
 
 /* ポップアップ共通: position:fixedが正しく動作するよう、containの影響を排除 */
 .sn2-role-menu,
-.sn2-role-sub-popup,
 .sn2-header-popup,
 .gb-fmt-popup,
 .sn2-filter-popup {
@@ -364,8 +363,8 @@
   min-width: 0;
 }
 .sn2-ruby-popup-input {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 1 140px;
+  min-width: 60px;
   height: 24px;
   font-size: 13px;
 }
@@ -383,7 +382,7 @@
   overflow-wrap: anywhere;
 }
 .sn2-ruby-popup-auto {
-  margin-left: auto;
+  margin-left: 0;
 }
 .sn2-header-popup-sep { border-top: 1px solid var(--border); margin: 2px 0; }
 .sn2-header-popup-label { padding: 4px 8px 2px; font-size: 10px; color: var(--fg2); font-weight: 600; }
@@ -509,6 +508,25 @@
 .sn2-custom-cell[data-align="left"] { justify-content: flex-start; }
 .sn2-custom-cell[data-align="center"] { justify-content: center; }
 .sn2-custom-cell[data-align="right"] { justify-content: flex-end; }
+/* 折返設定: タイプ列・ガター列・カスタム列テキスト（.sn2-text と同じ3モード） */
+.sn2-role-btn[data-overflow="wrap"],
+.sn2-gutter[data-overflow="wrap"],
+.sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; text-overflow: clip; }
+.sn2-role-btn[data-overflow="overflow"],
+.sn2-gutter[data-overflow="overflow"],
+.sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; overflow: visible; text-overflow: clip; }
+.sn2-role-btn[data-overflow="clip"],
+.sn2-gutter[data-overflow="clip"],
+.sn2-custom-text[data-overflow="clip"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="wrap"],
+.sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="wrap"],
+.sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="overflow"],
+.sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="overflow"],
+.sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; word-break: normal; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="clip"],
+.sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="clip"],
+.sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="clip"] { white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: clip; }
 
 /* （段ごとのクローンヘッダーは廃止、全モードでstickyフロートに統一） */
 .sn2-header-cell {

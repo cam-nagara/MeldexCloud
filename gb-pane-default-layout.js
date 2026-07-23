@@ -7,7 +7,7 @@
   const DEFAULT_MIN_WORK_WIDTH_PX = 400;
   const UTILITY_PANE_TYPES = new Set([
     'outliner', 'detail', 'preview', 'chat', 'timer',
-    'history', 'annotation', 'sticky', 'search', 'version',
+    'history', 'annotation', 'sticky', 'tags', 'search', 'version',
   ]);
 
   function _clampRatio(value, min, max) {
@@ -156,6 +156,7 @@
       _pane([_tab('タイマー', 'timer')]),
       _pane([_tab('ヒストリー', 'history')]),
       _pane([_tab('注釈', 'annotation')]),
+      _pane([_tab('タグ', 'tags')]),
       _pane([_tab('検索', 'search')]),
     ];
     rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });

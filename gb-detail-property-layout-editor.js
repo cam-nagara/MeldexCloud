@@ -94,7 +94,7 @@ async function savePropertyLayout(dbPath, layout) {
     return true;
   } catch (err) {
     console.warn('property_layout 保存失敗:', err);
-    showStatus('プロパティレイアウトを保存できませんでした', true);
+    showStatus('列レイアウトを保存できませんでした', true);
     return false;
   }
 }
@@ -222,7 +222,11 @@ function _ensurePropertyLayoutMetadataForRender(grid, data, entityPath, opts, db
   });
 }
 
-function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
+// appendTarget: ツールバーの実際の挿入先 (省略時は grid 自身)。
+// renderEntityPropsGridInto はプロパティ本体をまとめて開閉できるよう専用の body ラッパーを渡すが、
+// 「並べ替え」等のボタン操作で再描画する際は常に外側の grid (真のコンテナ) を再帰的に渡す必要があるため、
+// grid 自体は appendTarget と独立して保持する。
+function renderPropertyLayoutToolbar(grid, data, entityPath, opts, appendTarget) {
   const dbPath = opts?.parentDb || (typeof _entityParentDir === 'function' ? _entityParentDir(entityPath) : '');
   if (!grid || !dbPath) return;
   _ensurePropertyLayoutMetadataForRender(grid, data, entityPath, opts, dbPath);
@@ -295,7 +299,7 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts) {
       renderEntityPropsGridInto(grid, data, entityPath, opts);
     }));
   }
-  grid.appendChild(toolbar);
+  (appendTarget || grid).appendChild(toolbar);
 }
 
 function _focusPropertyLayoutMenuAnchor(anchor) {

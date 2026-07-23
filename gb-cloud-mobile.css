@@ -79,18 +79,18 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open {
     box-sizing: border-box;
     top: var(--cloud-visual-offset-top, 0px) !important;
-    right: 0 !important;
+    right: auto !important;
     bottom: auto !important;
     left: 0 !important;
-    width: calc(100vw / var(--meldex-ui-zoom, 1)) !important;
+    width: min(85vw, 400px) !important;
     min-width: 0 !important;
-    max-width: calc(100vw / var(--meldex-ui-zoom, 1)) !important;
+    max-width: min(85vw, 400px) !important;
     height: calc(var(--cloud-visual-vh, 100dvh) / var(--meldex-ui-zoom, 1)) !important;
     overflow-x: hidden !important;
     transform: none !important;
     z-index: 10080;
-    border-right: none;
-    box-shadow: none;
+    border-right: 1px solid var(--border, #333);
+    box-shadow: 12px 0 28px rgba(0, 0, 0, 0.35);
     background: var(--bg, #1f1f1f);
   }
 
@@ -110,7 +110,7 @@
     min-height: calc(54px + var(--cloud-mobile-safe-top, 0px));
     padding: calc(6px + var(--cloud-mobile-safe-top, 0px)) max(10px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) auto auto;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
     align-items: center;
     gap: 12px;
     border-bottom: 1px solid var(--border, #333);
@@ -124,35 +124,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-mode-switch {
-    min-width: 0;
-    display: inline-grid;
-    grid-template-columns: repeat(2, minmax(54px, 1fr));
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--border, #333);
-    border-radius: 8px;
-    background: var(--bg, #1f1f1f);
-  }
-
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-mode {
-    min-width: 0;
-    min-height: 36px;
-    padding: 0 10px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--fg2, #969696);
-    font-size: 13px;
-    font-weight: 600;
-    touch-action: manipulation;
-  }
-
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-mode[aria-pressed="true"] {
-    background: var(--bg3, #2d2d2d);
-    color: var(--fg, #d4d4d4);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-tree-actions {
@@ -189,7 +160,7 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-drawer-handle {
     box-sizing: border-box;
-    width: 28px;
+    width: 44px;
     height: 76px;
     padding: 0;
     align-items: center;
@@ -210,9 +181,13 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #sidebar.cloud-mobile-tree-screen-open .cloud-mobile-left-drawer-handle {
-    position: fixed;
+    /* ドロワー本体（position:fixed）を包含ブロックとして右端に固定表示する。
+       ドロワー幅が変わっても常に右端に追従する。 */
+    position: absolute;
     top: 50%;
-    right: max(24px, env(safe-area-inset-right));
+    right: 12px;
+    left: auto;
+    bottom: auto;
     z-index: 6;
     display: inline-flex;
     transform: translateY(-50%);
@@ -857,11 +832,11 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .cloud-mobile-right-drawer-handle {
+    /* 左ドロワーの鏡像: 右ドロワーは左に隙間が空くため、ハンドルは左端に置く。 */
     position: absolute;
     top: 50%;
-    right: 12px;
-    right: max(12px, env(safe-area-inset-right, 0px));
-    left: auto;
+    left: 12px;
+    right: auto;
     z-index: 2;
     display: inline-flex;
     transform: translateY(-50%);

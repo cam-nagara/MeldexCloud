@@ -5,6 +5,7 @@
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
   const CLIENT_ID_KEY = 'meldex:quick-memo:client-id:v1';
   const TAGS_CACHE_KEY = 'meldex:quick-memo:tags-cache:v1';
+  const CLOUD_SHEET_NAME = 'クイックメモ';
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
   const els = {};
   const state = {
@@ -24,6 +25,7 @@
     currentMode: 'text',
     allTags: [],
     selectedTags: [],
+    commonTagColors: {}, // 共通タグ由来の候補: 名前 → 色（#rrggbb、無ければ空文字）。スウォッチ表示用
     voiceTimerInterval: null,
     voiceStartTime: 0,
     voicePausing: false,
@@ -40,6 +42,7 @@
     setupCanvas();
     bindEvents();
     switchMode(state.currentMode);
+    initCloudMode();
     loadTags();
     listenInstallPrompt();
     registerServiceWorker();
@@ -367,7 +370,8 @@
         ok = await flushQueue();
       } while (ok && state.flushRequested);
       state.dirty = !ok;
-      setStatus(ok ? 'Meldexに保存済み' : 'Meldex起動後に自動送信');
+      const pendingMessage = isCloudMode() ? 'Dropbox接続後に自動送信' : 'Meldex起動後に自動送信';
+      setStatus(ok ? 'Meldexに保存済み' : pendingMessage);
       return ok;
     } finally {
       state.saving = false;
@@ -377,12 +381,14 @@
   async function flushQueue() {
     const snapshot = readJson(QUEUE_KEY, []);
     if (!Array.isArray(snapshot) || !snapshot.length) return true;
+    const cloud = isCloudMode();
+    if (cloud && !cloudConnected()) return false;
     const sent = new Set();
     const failed = new Set();
     const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
     for (const item of snapshot) {
       try {
-        const result = await postJson('/api/quick-memo', item);
+        const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
         sent.add(item.memo_id);
         const current = readJson(CURRENT_KEY, {});
@@ -439,6 +445,236 @@
     return data;
   }
 
+  // --- クラウド保存（Dropbox連携の単独アプリとして開かれた場合） ------------------
+  // 標準エンドポイント（/file・/outliner/add・/db-metadata・/entity/create・/value）
+  // だけで「クイックメモ」シートへ保存する。同じキューを読む gb-quick-memo-sync.js の
+  // 保存経路と同じ考え方: 新規メモは /entity/create、2回目以降の自動保存は既存パスへの
+  // /file 上書きでfrontmatterを丸ごと書き直す（プロパティを部分更新する候補追加APIは
+  // 使わず、保存のたびに候補が積み上がるのを避ける）。
+
+  function isCloudMode() {
+    return typeof window.apiFetch === 'function' && window.apiFetch._meldexStandaloneCloudAdapter === true;
+  }
+
+  function cloudConnected() {
+    return window.MeldexStandaloneCloud && window.MeldexStandaloneCloud.getStatus
+      && window.MeldexStandaloneCloud.getStatus().connected === true;
+  }
+
+  function cloudCandidate(value) {
+    return { value: String(value || ''), status: '採用', created: new Date().toISOString() };
+  }
+
+  function cloudJsonValue(value) {
+    return JSON.stringify(value == null ? '' : value);
+  }
+
+  function cloudFrontmatterText(frontmatter, body) {
+    const lines = ['---'];
+    Object.entries(frontmatter || {}).forEach(([key, value]) => {
+      if (!key || key.startsWith('_')) return;
+      lines.push(`${key}: ${cloudJsonValue(value)}`);
+    });
+    lines.push('---', '');
+    return lines.join('\n') + String(body || '').replace(/\s+$/, '') + '\n';
+  }
+
+  function cloudMemoPath(item) {
+    if (item.server_path) return String(item.server_path).replace(/\\/g, '/');
+    const stamp = String(item.created_at || new Date().toISOString())
+      .replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '_').slice(0, 15);
+    const id = String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
+    const firstLine = (item.text || '').trim().split(/\r?\n/)[0] || '';
+    const title = String(item.title || firstLine || 'メモ').trim().slice(0, 40).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_') || 'メモ';
+    return `${CLOUD_SHEET_NAME}/${stamp}_${title}_${id}.md`;
+  }
+
+  function autoTagSuggest(text) {
+    const lower = String(text || '').toLowerCase();
+    if (!lower.trim()) return [];
+    return state.allTags.filter((tag) => tag && lower.includes(String(tag).toLowerCase()));
+  }
+
+  function cloudMemoTags(item) {
+    let tags = Array.isArray(item.tags) ? [...item.tags] : [];
+    if (item.auto_tag) {
+      const matched = autoTagSuggest(String(item.title || '') + ' ' + String(item.text || ''));
+      tags = [...new Set([...tags, ...matched])];
+    }
+    return tags;
+  }
+
+  function cloudMemoBody(item) {
+    const title = String(item.title || '').trim() || 'メモ';
+    const html = sanitizeHtml(item.html || '');
+    const text = String(item.text || '').trim();
+    const drawingRaw = String(item.drawing_png || '');
+    const drawing = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/.test(drawingRaw) ? drawingRaw.replace(/\s+/g, '') : '';
+    const parts = ['# ' + title, ''];
+    if (html) parts.push(html, '');
+    else if (text) parts.push(escHtml(text).replace(/\n/g, '<br>'), '');
+    if (drawing) parts.push('<figure>', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
+    return parts.join('\n');
+  }
+
+  function cloudMemoFrontmatter(item, path, tags) {
+    const created = String(item.created_at || new Date().toISOString());
+    const updated = String(item.updated_at || new Date().toISOString());
+    const properties = {
+      種別: [cloudCandidate('メモ')],
+      タグ: [cloudCandidate(tags.join(', '))],
+      追加日時: [cloudCandidate(created)],
+      更新日時: [cloudCandidate(updated)],
+      保存先: [cloudCandidate(path)],
+    };
+    if (item.source_url) properties['URL'] = [cloudCandidate(item.source_url)];
+    if (item.share_title) properties['共有タイトル'] = [cloudCandidate(item.share_title)];
+    if (item.source_label) properties['共有元'] = [cloudCandidate(item.source_label)];
+    return {
+      type: 'settings-entry',
+      id: 'ent_' + String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12),
+      category: CLOUD_SHEET_NAME,
+      quick_memo: true,
+      quick_memo_id: String(item.memo_id || item.client_id || ''),
+      created,
+      modified: updated,
+      properties,
+      relations: [],
+    };
+  }
+
+  async function ensureCloudSheet() {
+    // 既存メモの更新時も含め毎回呼ぶ（gb-quick-memo-sync.jsのensureMemoWorkspace()と
+    // 同じ方針）。シートが外部操作で削除されていた場合でも次の保存で自己修復できるように、
+    // 「新規作成時だけ」に絞り込まない。
+    try {
+      await window.apiFetch('/file?path=' + encodeURIComponent(CLOUD_SHEET_NAME + '/' + CLOUD_SHEET_NAME + '.md'));
+    } catch {
+      await window.apiPost('/outliner/add', { type: 'database', label: CLOUD_SHEET_NAME, parent: '' }).catch(() => {});
+    }
+    await window.apiPut('/db-metadata?path=' + encodeURIComponent(CLOUD_SHEET_NAME), {
+      type: 'settings-db',
+      property_types: {
+        種別: { type: 'select', options: ['メモ'] },
+        タグ: { type: 'multi-select', options: [] },
+        追加日時: { type: 'date', withTime: true },
+        更新日時: { type: 'date', withTime: true },
+        保存先: { type: 'text' },
+        URL: { type: 'url' },
+        共有タイトル: { type: 'text' },
+        共有元: { type: 'text' },
+      },
+    }).catch(() => {});
+  }
+
+  // /file の上書きは、対象パスの事前GETで得たetagが無いと拒否される
+  // （standalone-cloud-runtime.jsのrequestJson()側の仕様）。ファイルが存在しなければ
+  // create_only指定で新規作成として書く。既存メモの更新にも、フォールバック書き込みにも使う。
+  async function cloudWriteFile(path, content) {
+    let exists = false;
+    try {
+      await window.apiFetch('/file?path=' + encodeURIComponent(path));
+      exists = true;
+    } catch {}
+    const body = exists ? { content } : { content, create_only: true };
+    await window.apiPost('/file?path=' + encodeURIComponent(path), body);
+  }
+
+  async function saveMemoCloud(item) {
+    await ensureCloudSheet();
+    const path = cloudMemoPath(item);
+    const tags = cloudMemoTags(item);
+    const frontmatter = cloudMemoFrontmatter(item, path, tags);
+    if (!item.server_path) {
+      try {
+        const created = await window.apiPost('/entity/create', {
+          parent_path: CLOUD_SHEET_NAME,
+          name: path.split('/').pop().replace(/\.md$/i, ''),
+          properties: frontmatter.properties,
+          source: 'quick-memo',
+          reviewed: true,
+        });
+        const createdPath = (created && created.path) || path;
+        await window.apiPut('/value?path=' + encodeURIComponent(createdPath), { new_body: cloudMemoBody(item) });
+        return { ok: true, path: createdPath, target_sheet: CLOUD_SHEET_NAME, tags };
+      } catch {
+        // /entity/create または続く/valueが失敗した場合（前回の再試行で実体が
+        // 既に作成済みの可能性を含む）は、決定的なパスへの直接書き込みにフォールバックする。
+        // これにより再試行のたびに重複エントリが増えるのを防ぐ。
+      }
+    }
+    await cloudWriteFile(path, cloudFrontmatterText(frontmatter, cloudMemoBody(item)));
+    return { ok: true, path, target_sheet: CLOUD_SHEET_NAME, tags };
+  }
+
+  function initCloudMode() {
+    if (!isCloudMode()) return;
+    if (els.listBtn) els.listBtn.style.display = 'none';
+    // standalone-pwa-install.js が独自の「ホームに追加」フローティングボタンと
+    // ダイアログを提供する（クラウド単独アプリ共通）。二重表示を避けるため、
+    // quick-memo.js自身のインストールボタンはクラウドモードでは隠す。
+    if (els.installBtn) els.installBtn.style.display = 'none';
+    const banner = document.getElementById('cloudConnectBanner');
+    if (!banner) return;
+    const codeInput = document.getElementById('cloudConnectCode');
+    const connectBtn = document.getElementById('cloudConnectBtn');
+    const submitBtn = document.getElementById('cloudConnectSubmitBtn');
+
+    function refreshConnectBanner() {
+      const connected = cloudConnected();
+      banner.style.display = connected ? 'none' : '';
+      if (connected) {
+        loadTagsCloud();
+        flushPendingQueue();
+      }
+    }
+
+    if (connectBtn) {
+      connectBtn.addEventListener('click', async () => {
+        let popup = null;
+        try { popup = window.open('about:blank', '_blank'); } catch {}
+        try {
+          const auth = await window.MeldexStandaloneCloud.beginManualAuth();
+          if (popup) {
+            try { popup.opener = null; } catch {}
+            popup.location.replace(auth.authorizationUrl);
+          } else {
+            setStatus('ポップアップがブロックされました。ブラウザの設定を確認してください', true);
+          }
+          if (codeInput) codeInput.focus();
+        } catch (error) {
+          try { popup && popup.close(); } catch {}
+          setStatus((error && error.message) || String(error), true);
+        }
+      });
+    }
+    if (submitBtn) {
+      submitBtn.addEventListener('click', async () => {
+        const code = ((codeInput && codeInput.value) || '').trim();
+        if (!code) return;
+        try {
+          await window.MeldexStandaloneCloud.exchangeManualCode(code);
+          if (codeInput) codeInput.value = '';
+          setStatus('Dropboxに接続しました');
+        } catch (error) {
+          setStatus((error && error.message) || String(error), true);
+        }
+      });
+    }
+    if (codeInput) {
+      codeInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (submitBtn) submitBtn.click();
+        }
+      });
+    }
+    window.addEventListener('meldex:standalone-cloud-ready', refreshConnectBanner);
+    window.addEventListener('meldex:standalone-auth-required', refreshConnectBanner);
+    window.addEventListener('meldex:standalone-auth-changed', refreshConnectBanner);
+    refreshConnectBanner();
+  }
+
   function parseTags(value) {
     const seen = new Set();
     return String(value || '')
@@ -469,18 +705,48 @@
     // まずローカルキャッシュから即表示し、サーバー応答を待たずにチップを描く
     state.allTags = [...new Set([...state.allTags, ...readJson(TAGS_CACHE_KEY, [])])];
     renderTagChips();
+    if (isCloudMode()) {
+      await loadTagsCloud();
+      return;
+    }
     try {
       const res = await fetch(API_BASE + '/api/quick-memo/tags');
       if (res.ok) {
         const data = await res.json();
         if (data.ok && Array.isArray(data.tags)) {
+          // 共通タグ（ボード/シート等と共有するグローバルタグカタログ）由来の候補を統合する。
+          // 保存形式は現行のまま文字列（タグ名）のため、共通タグも名前として扱う。
+          // 色情報だけ別途 commonTagColors に保持し、チップにスウォッチを付ける。
+          const commonTags = Array.isArray(data.commonTags) ? data.commonTags : [];
+          const commonTagNames = commonTags.map((tag) => String(tag?.name || '').trim()).filter(Boolean);
+          const nextColors = {};
+          commonTags.forEach((tag) => {
+            const name = String(tag?.name || '').trim();
+            if (name) nextColors[name] = String(tag?.color || '').trim();
+          });
+          state.commonTagColors = nextColors;
           // サーバー側のタグ一覧と、ローカルにしかない未同期タグをマージする
           const localOnly = readJson(TAGS_CACHE_KEY, []).filter((tag) => !data.tags.includes(tag));
-          state.allTags = [...new Set([...data.tags, ...localOnly, ...state.selectedTags])];
+          state.allTags = [...new Set([...data.tags, ...commonTagNames, ...localOnly, ...state.selectedTags])];
           writeJson(TAGS_CACHE_KEY, state.allTags);
           renderTagChips();
         }
       }
+    } catch {}
+  }
+
+  async function loadTagsCloud() {
+    try {
+      if (!cloudConnected()) return;
+      // クラウド版に /api/quick-memo/tags は無いため、シートの「タグ」列に
+      // 登録済みの選択肢をそのまま候補として使う（共通タグカタログは対象外）。
+      const meta = await window.apiFetch('/db-metadata?path=' + encodeURIComponent(CLOUD_SHEET_NAME));
+      const options = meta && meta.property_types && meta.property_types['タグ'] && meta.property_types['タグ'].options;
+      if (!Array.isArray(options) || !options.length) return;
+      const localOnly = readJson(TAGS_CACHE_KEY, []).filter((tag) => !options.includes(tag));
+      state.allTags = [...new Set([...options, ...localOnly, ...state.selectedTags])];
+      writeJson(TAGS_CACHE_KEY, state.allTags);
+      renderTagChips();
     } catch {}
   }
 
@@ -491,8 +757,19 @@
     const tags = [...new Set(state.allTags)];
     tags.forEach((tag) => {
       const chip = document.createElement('span');
-      chip.className = 'qm-tag-chip' + (state.selectedTags.includes(tag) ? ' is-selected' : '');
-      chip.textContent = tag;
+      const isCommonTag = Object.prototype.hasOwnProperty.call(state.commonTagColors, tag);
+      const commonColor = isCommonTag ? (state.commonTagColors[tag] || '') : '';
+      chip.className = 'qm-tag-chip' + (state.selectedTags.includes(tag) ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : '');
+      if (isCommonTag) {
+        const swatch = document.createElement('span');
+        swatch.className = 'qm-tag-chip-swatch';
+        swatch.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;background:' + (commonColor || 'var(--accent, #569cd6)') + ';';
+        chip.appendChild(swatch);
+        chip.appendChild(document.createTextNode(tag));
+      } else {
+        chip.textContent = tag;
+      }
+      chip.title = isCommonTag ? '共通タグ' : '';
       chip.addEventListener('click', () => toggleTag(tag));
       container.appendChild(chip);
     });
@@ -598,6 +875,9 @@
   // --- ホーム画面に追加（PWAインストール） -----------------------------------
 
   function listenInstallPrompt() {
+    // クラウド版は standalone-pwa-install.js が独自の「ホームに追加」導線を持つため
+    // （フローティングボタン+ダイアログ）、quick-memo.js側のボタンは出さない。
+    if (isCloudMode()) return;
     window.addEventListener('beforeinstallprompt', (event) => {
       event.preventDefault();
       state.installPrompt = event;
@@ -966,6 +1246,10 @@
   }
 
   function registerServiceWorker() {
+    // クラウド版（apps/quick-memo/）はビルド時に生成される専用のsw.jsを
+    // standalone-pwa-install.js が登録する。ここで quick-memo-sw.js を登録すると
+    // 存在しないパスへ向けた誤った登録になるため、クラウドモードではスキップする。
+    if (isCloudMode()) return;
     if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
     const cleanupLegacyRootWorker = navigator.serviceWorker.getRegistration
       ? navigator.serviceWorker.getRegistration('./').then((registration) => {

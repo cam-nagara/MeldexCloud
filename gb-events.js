@@ -256,6 +256,9 @@
 
   function _showTip(el, text, e) {
     if (_hasSharedTooltip()) {
+      // 共有ツールチップ側の除外対象（タブ・チャットMarkdownリンク等のカスタム
+      // リンク種）は、この旧 title 経路からも表示しない（抑止契約の迂回防止）
+      if (typeof window.GBTooltip.isEligible === 'function' && !window.GBTooltip.isEligible(el)) return;
       window.GBTooltip.showFor(el, text);
       return;
     }

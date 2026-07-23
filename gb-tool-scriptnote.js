@@ -170,6 +170,9 @@ class ScriptNoteComponent extends ToolComponent {
   <button type="button" class="tb-icon-btn" data-sn-action="saveTemplate" title="現在の設定をテンプレートとして登録" aria-label="現在の設定をテンプレートとして登録"><span class="ico ico-save"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="manageTemplates" title="テンプレートを管理" aria-label="テンプレートを管理"><span class="ico ico-listChecks"></span></button>
   <div class="sep"></div>
+  <button type="button" class="tb-icon-btn" data-sn-action="undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button><span class="ico ico-undo2"></span></button>
+  <button type="button" class="tb-icon-btn" data-sn-action="redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button><span class="ico ico-redo2"></span></button>
+  <div class="sep"></div>
   <button type="button" class="tb-icon-btn active" data-sn-action="horizontal" id="btn-horizontal" title="横書き" aria-label="横書き"><span class="ico ico-textAlignStart"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="vertical" id="btn-vertical" title="縦書き" aria-label="縦書き"><span class="ico ico-kanban"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="wrap" id="btn-wrap" title="折返し" aria-label="折返し"><span class="ico ico-wrapText"></span></button>
@@ -223,7 +226,9 @@ class ScriptNoteComponent extends ToolComponent {
         this._loadScenario(this.state.scenarioPath, isPaneActive ? {} : passiveLoadOpts);
         return;
       }
-    } else {
+    } else if (!this._editor?.doc) {
+      // scenarioPath が空でも、単独版の「新規シナリオ」等で既にドキュメントが
+      // メモリ上にロード済みの場合は空状態で上書きしない（未保存の新規文書を保持する）。
       this._renderEmptyState();
     }
     // 詳細パネルをシナリオエディタ用に切り替え（非アクティブペインではスキップ）
@@ -543,10 +548,19 @@ class ScriptNoteComponent extends ToolComponent {
       if (!btn) return;
       const action = btn.dataset.snAction;
       if (action === 'detail') { this._openDetailPanel(); return; }
+      if (action === 'undo') { if (this._editor) this._editor.undo(); return; }
+      if (action === 'redo') { if (this._editor) this._editor.redo(); return; }
       if (action === 'horizontal' || action === 'vertical') {
         if (!this._editor?.doc) return;
         this._editor._pushUndo('表示方向変更');
-        this._editor.doc.editor.viewMode = action;
+        if (typeof MeldexRubyPresentation !== 'undefined' && typeof MeldexRubyPresentation.updateDocument === 'function') {
+          MeldexRubyPresentation.updateDocument(this._editor.doc, { writingMode: action });
+        } else {
+          this._editor.doc.editor.viewMode = action;
+          if (this._editor.doc.rubyPresentation && typeof this._editor.doc.rubyPresentation === 'object') {
+            this._editor.doc.rubyPresentation.writingMode = action;
+          }
+        }
         this._editor._render();
         this._editor._markDirty();
         this.el.querySelector('#btn-horizontal')?.classList.toggle('active', action === 'horizontal');
@@ -645,6 +659,19 @@ class ScriptNoteComponent extends ToolComponent {
               if (tpl.layoutMode) this._editor.doc.layoutMode = tpl.layoutMode;
               if (tpl.editor) Object.assign(this._editor.doc.editor, JSON.parse(JSON.stringify(tpl.editor)));
               if (tpl.characters) this._editor.doc.characters = JSON.parse(JSON.stringify(tpl.characters));
+              if (tpl.rubyPresentation && typeof tpl.rubyPresentation === 'object') {
+                this._editor.doc.rubyPresentation = JSON.parse(JSON.stringify(tpl.rubyPresentation));
+              } else if (tpl.editor?.viewMode && typeof MeldexRubyPresentation !== 'undefined'
+                && typeof MeldexRubyPresentation.updateDocument === 'function') {
+                MeldexRubyPresentation.updateDocument(this._editor.doc, { writingMode: tpl.editor.viewMode });
+              }
+              if (typeof ensureScriptNoteDefaultType === 'function') ensureScriptNoteDefaultType(this._editor.doc.editor);
+              if (typeof applyLegacyScriptNoteDocMigrations === 'function') {
+                applyLegacyScriptNoteDocMigrations(this._editor.doc, {
+                  legacyDetectKindByName: name => this._editor._legacyDetectKindByName(name),
+                });
+              }
+              this._editor._ensureDefaultChara();
             }
           } catch {}
         } else {
@@ -854,6 +881,7 @@ class ScriptNoteComponent extends ToolComponent {
           layoutMode: this._editor.doc.layoutMode,
           editor: _snToolClone(this._editor.doc.editor || {}),
           characters: _snToolClone(this._editor.doc.characters || []),
+          rubyPresentation: _snToolClone(this._editor.doc.rubyPresentation || {}),
         };
         const saved = this._savePresetValue('template', name, value, {
           allowOverwrite: options.allowOverwrite,

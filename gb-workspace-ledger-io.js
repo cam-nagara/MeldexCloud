@@ -1,0 +1,335 @@
+// フォルダ内共有台帳I/O層（フェーズ3a）+ 参加中ワークスペースの端末ローカル記録。
+//
+// gb-source-folder-registry.js のアカウントルート台帳I/O実装
+// （_readRemoteRegistryWithMetadata / writeRegistry のrevベース楽観ロック、
+// strict_conflict、not_found時overwrite、1回だけのリトライ）に厳密に合わせて、
+// 共有ワークスペースフォルダ基準のフォルダ内台帳を読み書きする。
+// パース/直列化は二重実装せず gb-workspace-shared-ledger.js
+// （window.MeldexWorkspaceSharedLedger）へ委譲する。
+//
+// 【重要】このファイルはフェーズ3aの土台のみ。既存の読み込み経路
+// （loadOutlinerRoots 等）にはまだ配線しない
+// (app/docs/dropbox-folder-scoped-sharing-plan-2026-07-21.md §4.1・§4.4・§5.2)。
+// 配線・複数台帳マージの実運用化はフェーズ3b以降で行う。
+
+(function () {
+  'use strict';
+
+  if (window.MeldexWorkspaceLedgerIO) return;
+
+  const JOINED_WORKSPACES_KEY = 'meldex-joined-workspaces-v1';
+
+  function _auth() {
+    return window.MeldexDropboxAuth;
+  }
+
+  function _sharedLedger() {
+    return window.MeldexWorkspaceSharedLedger;
+  }
+
+  // ------------------------------------------------------------------
+  // Dropboxパス正規化（gb-source-folder-registry.js と同じ規約のローカル実装。
+  // 既存ファイルへの依存を増やさないため複製する）
+  // ------------------------------------------------------------------
+
+  function normalizeDropboxPath(path) {
+    const raw = String(path || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/\/+/g, '/');
+    if (raw === '/') return '/';
+    const normalized = raw.replace(/\/$/, '');
+    if (!normalized) return '';
+    return normalized.startsWith('/') ? normalized : ('/' + normalized);
+  }
+
+  function normalizeRelativePath(path) {
+    return String(path || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\/+/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/\/$/, '');
+  }
+
+  function joinDropboxPath() {
+    const parts = Array.from(arguments);
+    const first = normalizeDropboxPath(parts.shift() || '');
+    const rest = parts.map(normalizeRelativePath).filter(Boolean).join('/');
+    if (!rest) return first;
+    return first === '/' ? `/${rest}` : `${first}/${rest}`;
+  }
+
+  function _basename(path) {
+    const normalized = normalizeDropboxPath(path) || normalizeRelativePath(path);
+    const parts = normalized.split('/').filter(Boolean);
+    return parts[parts.length - 1] || '';
+  }
+
+  function _slug(text) {
+    const raw = String(text || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .join('-')
+      .replace(/[^a-z0-9぀-ヿ㐀-鿿-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+    return raw || 'workspace';
+  }
+
+  // ------------------------------------------------------------------
+  // A. フォルダ内台帳I/O
+  // ------------------------------------------------------------------
+
+  function workspaceLedgerDropboxPath(workspaceDropboxPath) {
+    const sharedLedger = _sharedLedger();
+    const relative = sharedLedger?.WORKSPACE_LEDGER_RELATIVE_PATH
+      || 'MeldexShare/_meldex/source-folders.v1.json';
+    return joinDropboxPath(normalizeDropboxPath(workspaceDropboxPath), relative);
+  }
+
+  async function _rpc(route, body) {
+    const auth = _auth();
+    if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
+    return auth.apiRpc(route, body);
+  }
+
+  async function _content(route, arg, init) {
+    const auth = _auth();
+    if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
+    return auth.apiContent(route, arg, init);
+  }
+
+  async function _ensureFolder(dropboxPath) {
+    const normalized = normalizeDropboxPath(dropboxPath);
+    if (!normalized || normalized === '/') return true;
+    try {
+      await _rpc('files/create_folder_v2', { path: normalized, autorename: false });
+      return true;
+    } catch (err) {
+      let meta = null;
+      try {
+        meta = await _rpc('files/get_metadata', {
+          path: normalized,
+          include_deleted: false,
+          include_has_explicit_shared_members: false,
+        });
+      } catch {
+        // メタデータ取得も失敗した場合は、直前の create_folder_v2 の
+        // エラーをそのまま呼び出し元へ投げる（下のthrow errで処理）。
+      }
+      if (meta?.['.tag'] === 'folder') return true;
+      if (meta) throw new Error(normalized + ' はDropbox上でフォルダではありません');
+      throw err;
+    }
+  }
+
+  async function _ensureWorkspaceLedgerFolders(workspaceDropboxPath) {
+    const sharedLedger = _sharedLedger();
+    const shareDir = sharedLedger?.WORKSPACE_SHARE_DIR || 'MeldexShare';
+    const base = normalizeDropboxPath(workspaceDropboxPath);
+    await _ensureFolder(base);
+    await _ensureFolder(joinDropboxPath(base, shareDir));
+    await _ensureFolder(joinDropboxPath(base, shareDir, '_meldex'));
+    return true;
+  }
+
+  function _isWorkspaceLedgerNotFoundError(err) {
+    return /not_found|path\/not_found/i.test(err?.message || '');
+  }
+
+  function _isWorkspaceLedgerWriteConflictError(err) {
+    return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
+  }
+
+  async function _readWorkspaceLedgerWithMetadata(workspaceDropboxPath) {
+    const response = await _content('files/download', {
+      path: workspaceLedgerDropboxPath(workspaceDropboxPath),
+    });
+    const text = await response.text();
+    let rev = '';
+    try {
+      const metadataText = response.headers?.get?.('dropbox-api-result') || '';
+      const metadata = metadataText ? JSON.parse(metadataText) : null;
+      rev = String(metadata?.rev || '');
+    } catch {
+      // dropbox-api-result ヘッダーが無い/壊れている場合はrev無しの
+      // 通常アップロード（overwrite）にフォールバックする。
+    }
+    const sharedLedger = _sharedLedger();
+    if (!sharedLedger?.parseWsLedger) throw new Error('MeldexWorkspaceSharedLedger が未読み込みです');
+    return {
+      roots: sharedLedger.parseWsLedger(JSON.parse(text)),
+      rev,
+    };
+  }
+
+  async function readWorkspaceLedger(workspaceDropboxPath) {
+    try {
+      const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath);
+      return result.roots;
+    } catch (err) {
+      // フォルダ内台帳がまだ作成されていない共有ワークスペースは
+      // 「ソースフォルダが1件も登録されていない」正常な初期状態のため、
+      // not_found はエラーにせず空配列として扱う。
+      if (_isWorkspaceLedgerNotFoundError(err)) return [];
+      throw err;
+    }
+  }
+
+  // 「共有ワークスペースにする」導線用。roots が空でも「ファイル自体が無い
+  // （未作成）」のか「ファイルはあるが中身を解釈できない（他バージョンの形式・
+  // 想定外の内容）」のかを exists で区別できるようにする。この区別が無いと、
+  // 呼び出し元が後者を「未作成」と誤判定して新規内容で全置換し、他メンバーの
+  // 共有内容を黙って消す事故につながる（敵対的検証 2026-07-21 で実行再現済み）。
+  // ネットワーク一時障害・JSON破損は throw のまま伝播させる（呼び出し元は中断する）。
+  async function readWorkspaceLedgerStatus(workspaceDropboxPath) {
+    try {
+      const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath);
+      return { exists: true, roots: result.roots };
+    } catch (err) {
+      if (_isWorkspaceLedgerNotFoundError(err)) return { exists: false, roots: [] };
+      throw err;
+    }
+  }
+
+  async function _readWorkspaceLedgerForWrite(workspaceDropboxPath) {
+    try {
+      return await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath);
+    } catch (err) {
+      if (_isWorkspaceLedgerNotFoundError(err)) return null;
+      throw err;
+    }
+  }
+
+  async function writeWorkspaceLedger(workspaceDropboxPath, roots) {
+    const sharedLedger = _sharedLedger();
+    if (!sharedLedger?.serializeWsLedger) throw new Error('MeldexWorkspaceSharedLedger が未読み込みです');
+    await _ensureWorkspaceLedgerFolders(workspaceDropboxPath);
+    const targetPath = workspaceLedgerDropboxPath(workspaceDropboxPath);
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const remote = await _readWorkspaceLedgerForWrite(workspaceDropboxPath);
+      const serialized = sharedLedger.serializeWsLedger(roots);
+      const bytes = new TextEncoder().encode(JSON.stringify(serialized, null, 2));
+      try {
+        await _content('files/upload', {
+          path: targetPath,
+          mode: remote?.rev ? { '.tag': 'update', update: remote.rev } : { '.tag': 'overwrite' },
+          autorename: false,
+          mute: false,
+          strict_conflict: true,
+        }, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: bytes,
+        });
+        return serialized;
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0 && _isWorkspaceLedgerWriteConflictError(err)) continue;
+        throw err;
+      }
+    }
+    throw lastError;
+  }
+
+  // ------------------------------------------------------------------
+  // B. 参加中ワークスペースの記録（この端末ローカル、localStorage）
+  //
+  // どの共有ワークスペースをこの端末で「参加」しているかは端末固有の情報
+  // （マウント位置は端末ごとに異なる）なので、Dropbox台帳には書かず
+  // localStorage にのみ保持する。
+  // ------------------------------------------------------------------
+
+  function _readJoinedWorkspacesRaw() {
+    try {
+      const raw = localStorage.getItem(JOINED_WORKSPACES_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      // localStorageが使えない/壊れている場合は「未参加」として扱う。
+      return [];
+    }
+  }
+
+  function _writeJoinedWorkspacesRaw(list) {
+    try {
+      localStorage.setItem(JOINED_WORKSPACES_KEY, JSON.stringify(list));
+    } catch {
+      // プライベートブラウズ等でlocalStorageへ書けない場合は、この端末での
+      // 参加記録が次回起動時に失われるだけで、Dropbox側の台帳には影響しない。
+    }
+  }
+
+  function listJoinedWorkspaces() {
+    return _readJoinedWorkspacesRaw();
+  }
+
+  function _joinedWorkspaceId(dropboxPath) {
+    return 'ws:' + _slug(normalizeDropboxPath(dropboxPath));
+  }
+
+  function addJoinedWorkspace(entry) {
+    const dropboxPath = normalizeDropboxPath(entry?.dropboxPath);
+    if (!dropboxPath) throw new Error('共有ワークスペースフォルダを選択してください');
+    const list = _readJoinedWorkspacesRaw();
+    const normalizedLower = dropboxPath.toLowerCase();
+    const existingIndex = list.findIndex(
+      (item) => normalizeDropboxPath(item?.dropboxPath).toLowerCase() === normalizedLower
+    );
+    const existing = existingIndex >= 0 ? list[existingIndex] : null;
+    let id = String(entry?.id || existing?.id || '').trim();
+    if (!id) {
+      // 記号・空白だけが違う別フォルダ（例: /Team A と /Team-A）は同じ短縮名に
+      // なるため、既に別のフォルダが同じIDを使っていれば -2, -3… で一意化する。
+      // IDが重複すると、離脱で両方の参加記録が消える・フォルダツリーの解決先が
+      // 取り違えられる（後勝ちで上書き）実害があるため必須のガード。
+      const base = _joinedWorkspaceId(dropboxPath);
+      const usedByOthers = new Set(
+        list.filter((item, index) => index !== existingIndex).map((item) => String(item?.id || '').trim())
+      );
+      id = base;
+      for (let n = 2; usedByOthers.has(id); n += 1) id = `${base}-${n}`;
+    }
+    const name = String(entry?.name || existing?.name || _basename(dropboxPath) || dropboxPath).trim();
+    const record = {
+      id,
+      dropboxPath,
+      name,
+      joinedAt: existing?.joinedAt || new Date().toISOString(),
+    };
+    if (existingIndex >= 0) list[existingIndex] = record;
+    else list.push(record);
+    _writeJoinedWorkspacesRaw(list);
+    return record;
+  }
+
+  function removeJoinedWorkspace(id) {
+    const targetId = String(id || '').trim();
+    if (!targetId) return false;
+    const list = _readJoinedWorkspacesRaw();
+    const nextList = list.filter((item) => item?.id !== targetId);
+    if (nextList.length === list.length) return false;
+    _writeJoinedWorkspacesRaw(nextList);
+    return true;
+  }
+
+  // ------------------------------------------------------------------
+  // C. 公開
+  // ------------------------------------------------------------------
+
+  window.MeldexWorkspaceLedgerIO = {
+    workspaceLedgerDropboxPath,
+    readWorkspaceLedger,
+    readWorkspaceLedgerStatus,
+    writeWorkspaceLedger,
+    listJoinedWorkspaces,
+    addJoinedWorkspace,
+    removeJoinedWorkspace,
+  };
+})();

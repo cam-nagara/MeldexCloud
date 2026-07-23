@@ -28,9 +28,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     toolbar.className = 'sn2-detail-toolbar';
     toolbar.appendChild(mkBtn('＋追加', '新規タイプ追加', () => {
       this._pushUndo('タイプ追加');
-      const newChara = { name: this._uniqueRoleName ? this._uniqueRoleName('新しいキャラ') : '新しいキャラ' };
-      this._assignAutoColor(newChara);
-      this._applyColumnAllRules(newChara);
+      const name = this._uniqueRoleName ? this._uniqueRoleName('新しいキャラ') : '新しいキャラ';
+      const newChara = this._createCharaFromTypeDefault(name);
       // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
       const defIdx = this.doc.characters.findIndex(c => c.isDefault);
       if (defIdx >= 0) this.doc.characters.splice(defIdx, 0, newChara);
@@ -80,8 +79,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     }, 'scriptnote-detail-delete-selected'));
     // 全選択ボタン
     const selectAllBtn = mkBtn('全選択', 'すべてのタイプを選択', () => {
-      this.doc.characters.forEach((_, i) => this._detailSelection.add(i));
+      // （なし）行（isDefault）は選択対象外
+      this.doc.characters.forEach((c, i) => { if (!c?.isDefault) this._detailSelection.add(i); });
       container.querySelectorAll('.sn2-detail-item').forEach(el => {
+        if (el.dataset.idx === 'type-default') return;
+        if (el.dataset.kind === 'blank') return;
         el.classList.add('selected');
         const cb = el.querySelector('.sn2-detail-check');
         if (cb) cb.checked = true;
@@ -127,8 +129,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._detailLastClickIdx = -1;
     // 列定義（標準列 + カスタム列）
     const detailCols = [
-      { id: '_gutter', label: '大区切り' },
-      { id: '_gutter2', label: '小区切り' },
       { id: '_role', label: 'タイプ' },
       { id: '_text', label: 'テキスト' },
     ];
@@ -170,7 +170,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     thead.appendChild(hRow);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
+    const typeDefault = this._ensureTypeDefaultChara();
     this.doc.characters.forEach((chara, i) => {
+      if (chara?.isDefault && typeDefault) {
+        tbody.appendChild(this._buildDetailItem(typeDefault, 'type-default', container, detailCols));
+      }
       tbody.appendChild(this._buildDetailItem(chara, i, container, detailCols));
     });
     table.appendChild(tbody);
@@ -186,13 +190,16 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _buildDetailItem(chara, idx, panelContainer, detailCols) {
     const isDefaultRow = !!chara.isDefault;
+    const isTypeDefaultRow = !!chara.isTypeDefault;
+    const isMetaRow = isDefaultRow || isTypeDefaultRow;
     const item = document.createElement('tr');
-    item.className = 'sn2-detail-item' + (this._detailSelection?.has(idx) ? ' selected' : '') + (isDefaultRow ? ' sn2-detail-default' : '');
+    item.className = 'sn2-detail-item' + (this._detailSelection?.has(idx) ? ' selected' : '') + (isMetaRow ? ' sn2-detail-default' : '');
     item.dataset.idx = idx;
-    item.dataset.kind = isDefaultRow
-      ? 'blank'
+    item.dataset.kind = isTypeDefaultRow
+      ? 'type-default'
+      : isDefaultRow ? 'blank'
       : (chara.isSummary ? 'summary' : (chara.isBreak ? 'break' : (['dialogue', 'action', 'heading'].includes(chara.kind) ? chara.kind : 'dialogue')));
-    item.draggable = !isDefaultRow;
+    item.draggable = !isMetaRow;
 
     // チェックボックス + ドラッグハンドル セル（横並び）— デフォルト行はチェックボックスのみ（ハンドルなし）
     const ctrlTd = document.createElement('td');
@@ -202,14 +209,18 @@ Object.assign(ScriptNoteEditor.prototype, {
     check.className = 'sn2-detail-check';
     check.dataset.e2eId = 'scriptnote-detail-row-check-' + idx;
     check.dataset.sn2DetailIndex = String(idx);
-    const checkLabel = isDefaultRow
-      ? '空行を選択'
+    // （デフォルト）行・（なし）行は選択対象外（複製・削除できない特殊行のため）
+    check.disabled = isMetaRow;
+    const checkLabel = isTypeDefaultRow
+      ? '新規タイプの既定設定'
+      : isDefaultRow ? 'タイプなし（選択対象外）'
       : '行を選択: ' + (chara.name || chara.label || chara.role || String(idx + 1));
     check.setAttribute('aria-label', checkLabel);
     check.title = checkLabel;
     check.checked = this._detailSelection?.has(idx) || false;
     check.addEventListener('click', (ev) => {
       ev.stopPropagation();
+      if (isMetaRow) return;
       if (ev.shiftKey && this._detailLastClickIdx >= 0) {
         const from = Math.min(this._detailLastClickIdx, idx);
         const to = Math.max(this._detailLastClickIdx, idx);
@@ -231,7 +242,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (this._detailBulkBar) this._updateBulkBar(this._detailBulkBar);
     });
     ctrlTd.appendChild(check);
-    if (!isDefaultRow) {
+    if (!isMetaRow) {
       const handle = document.createElement('span');
       handle.className = 'sn2-detail-handle-inline';
       handle.textContent = '⠿';
@@ -287,11 +298,13 @@ Object.assign(ScriptNoteEditor.prototype, {
 
       if (col.id === '_role') {
         // タイプ列: インライン入力 + ホバー時「…」ボタン（デフォルト行は固定ラベル）
-        if (isDefaultRow) {
+        if (isMetaRow) {
           const labelDiv = document.createElement('div');
           labelDiv.className = 'sn2-detail-cell-label';
-          labelDiv.textContent = '（デフォルト）';
-          labelDiv.title = '役割が空の行に適用されるデフォルトスタイル';
+          labelDiv.textContent = isTypeDefaultRow ? '（デフォルト）' : '（なし）';
+          labelDiv.title = isTypeDefaultRow
+            ? '新しく追加するタイプに適用される初期設定'
+            : 'タイプが空欄の行に適用される設定';
           applyDynStyle(labelDiv, dynStyle);
           td.appendChild(labelDiv);
           const fmtBtn = document.createElement('button');
@@ -375,23 +388,21 @@ Object.assign(ScriptNoteEditor.prototype, {
       item.appendChild(td);
     });
 
-    // オプション設定セル — デフォルト行は空セル
+    // オプション設定セル —（なし）行にも表示（効果のない項目はポップアップ側で非表示）
     const infoTd = document.createElement('td');
     infoTd.className = 'sn2-detail-td-info';
-    if (!isDefaultRow) {
-      const optBtn = document.createElement('button');
-      optBtn.className = 'gb-fmt-btn sn2-detail-opt-btn';
-      optBtn.type = 'button';
-      optBtn.textContent = 'オプション';
-      optBtn.title = 'オプション設定';
-      optBtn.dataset.e2eId = 'scriptnote-detail-role-options-' + idx;
-      optBtn.dataset.sn2DetailIndex = String(idx);
-      optBtn.addEventListener('click', () => this._showRoleOptionsPopup(optBtn, chara, panelContainer));
-      const infoWrap = document.createElement('div');
-      infoWrap.className = 'sn2-detail-opt-wrap';
-      infoWrap.append(optBtn);
-      infoTd.appendChild(infoWrap);
-    }
+    const optBtn = document.createElement('button');
+    optBtn.className = 'gb-fmt-btn sn2-detail-opt-btn';
+    optBtn.type = 'button';
+    optBtn.textContent = 'オプション';
+    optBtn.title = 'オプション設定';
+    optBtn.dataset.e2eId = 'scriptnote-detail-role-options-' + idx;
+    optBtn.dataset.sn2DetailIndex = String(idx);
+    optBtn.addEventListener('click', () => this._showRoleOptionsPopup(optBtn, chara, panelContainer));
+    const infoWrap = document.createElement('div');
+    infoWrap.className = 'sn2-detail-opt-wrap';
+    infoWrap.append(optBtn);
+    infoTd.appendChild(infoWrap);
     item.appendChild(infoTd);
 
     // applyPreview参照を保持
@@ -826,9 +837,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._pushUndo('DBインポート');
         selectedNames.forEach(name => {
           if (!this.doc.characters.some(c => !c.isDefault && c.name === name)) {
-            const newChara = { name: this._uniqueRoleName ? this._uniqueRoleName(name) : name };
-            this._assignAutoColor(newChara);
-            this._applyColumnAllRules(newChara);
+            const newChara = this._createCharaFromTypeDefault(this._uniqueRoleName ? this._uniqueRoleName(name) : name);
             // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
             const defIdx = this.doc.characters.findIndex(c => c.isDefault);
             if (defIdx >= 0) this.doc.characters.splice(defIdx, 0, newChara);
@@ -971,8 +980,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   _applyCountConfigFormatSetting(key, value, panelContainer) {
     if (!key) return;
     if (!this.doc.editor) this.doc.editor = {};
-    if (!this.doc.editor.countConfig) this.doc.editor.countConfig = {};
     this._pushUndo('区切り表示設定変更');
+    // undo スナップショット直列化では空の countConfig が整理されるため、取得直前に作る。
+    if (!this.doc.editor.countConfig) this.doc.editor.countConfig = {};
     const cc = this.doc.editor.countConfig;
     if (key.endsWith('Pad')) {
       const parsed = Number(value);
@@ -1082,36 +1092,43 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   // セルスタイルポップアップ（列別スタイル編集）— openFormatPopup 経由
-  _showCellStylePopup(anchorEl, chara, colId, panelContainer) {
+  _showCellStylePopup(anchorEl, chara, colId, panelContainer, options = {}) {
     if (typeof openFormatPopup !== 'function') return;
     const style = this._getColStyle(chara, colId);
     const isTextCol = colId === '_text';
     const isRoleCol = colId === '_role';
+    const isTypeOverride = options.typeOverride === true;
+    const inheritedStyle = options.inheritedStyle && typeof options.inheritedStyle === 'object'
+      ? options.inheritedStyle
+      : {};
+    const scopedValue = (key, fallback = '') => {
+      if (!isTypeOverride) return fallback;
+      return Object.prototype.hasOwnProperty.call(style, key) ? style[key] : (inheritedStyle[key] ?? fallback);
+    };
     const needsLegacySync = isTextCol;
     const fields = [
       'textColor', 'fontSize', 'fontFamily',
       'bold', 'italic', 'textStrokeColor', 'textStrokeWidth',
       'bgColor', 'leftAccent', 'underline', 'accentColor',
-      ...(isTextCol ? ['textBefore', 'textAfter'] : []),
-      'textAlign', 'textValign', 'textOverflow',
+      ...(!isTypeOverride ? [...(isTextCol ? ['textBefore', 'textAfter'] : []), 'textAlign', 'textValign', 'textOverflow'] : []),
     ];
     const refreshItem = () => { const item = anchorEl.closest('.sn2-detail-item'); if (item?._applyPreview) item._applyPreview(); };
     const ec = this._resolveCharaColors(chara, colId) || {};
     const pick = (primary, fallback) => (primary != null && primary !== '' ? primary : fallback);
     const values = {
       // bgColor: 背景色は計画書 §2-2「未設定時はチェック柄表示」方針に従い fallback なし
-      bgColor: style.bgColor || '',
+      bgColor: isTypeOverride ? scopedValue('bgColor') : (style.bgColor || ''),
       // textColor: T アイコンの色はタイプ色（ec）で表示するため fallback あり
-      textColor: style.textColor || ec.textColor || '',
-      fontWeight: needsLegacySync ? pick(style.fontWeight, chara.fontWeight || '') : (style.fontWeight || ''),
-      fontStyle: needsLegacySync ? pick(style.fontStyle, chara.fontStyle || '') : (style.fontStyle || ''),
-      fontSize: needsLegacySync ? pick(style.fontSize, chara.fontSize || '') : (style.fontSize || ''),
-      fontFamily: needsLegacySync ? pick(style.fontFamily, chara.fontFamily || '') : (style.fontFamily || ''),
-      textStrokeColor: needsLegacySync ? pick(style.textStrokeColor, chara.textStrokeColor || '') : (style.textStrokeColor || ''),
-      textStrokeWidth: needsLegacySync ? pick(style.textStrokeWidth, chara.textStrokeWidth || '') : (style.textStrokeWidth || ''),
-      leftAccent: !!style.leftAccent,
-      underline: !!style.underline,
-      accentColor: style.accentColor || chara.accentColor || '',
+      textColor: isTypeOverride ? scopedValue('textColor') : (style.textColor || ec.textColor || ''),
+      fontWeight: isTypeOverride ? scopedValue('fontWeight') : (needsLegacySync ? pick(style.fontWeight, chara.fontWeight || '') : (style.fontWeight || '')),
+      fontStyle: isTypeOverride ? scopedValue('fontStyle') : (needsLegacySync ? pick(style.fontStyle, chara.fontStyle || '') : (style.fontStyle || '')),
+      fontSize: isTypeOverride ? scopedValue('fontSize') : (needsLegacySync ? pick(style.fontSize, chara.fontSize || '') : (style.fontSize || '')),
+      fontFamily: isTypeOverride ? scopedValue('fontFamily') : (needsLegacySync ? pick(style.fontFamily, chara.fontFamily || '') : (style.fontFamily || '')),
+      textStrokeColor: isTypeOverride ? scopedValue('textStrokeColor') : (needsLegacySync ? pick(style.textStrokeColor, chara.textStrokeColor || '') : (style.textStrokeColor || '')),
+      textStrokeWidth: isTypeOverride ? scopedValue('textStrokeWidth') : (needsLegacySync ? pick(style.textStrokeWidth, chara.textStrokeWidth || '') : (style.textStrokeWidth || '')),
+      leftAccent: isTypeOverride ? !!scopedValue('leftAccent', false) : !!style.leftAccent,
+      underline: isTypeOverride ? !!scopedValue('underline', false) : !!style.underline,
+      accentColor: isTypeOverride ? scopedValue('accentColor') : (style.accentColor || chara.accentColor || ''),
       textBefore: isTextCol ? (style.textBefore ?? chara.textBefore ?? '') : (style.textBefore ?? ''),
       textAfter: isTextCol ? (style.textAfter ?? chara.textAfter ?? '') : (style.textAfter ?? ''),
       textAlign: isTextCol ? (style.textAlign || chara.textAlign || '') : (style.textAlign ?? ''),
@@ -1136,14 +1153,23 @@ Object.assign(ScriptNoteEditor.prototype, {
       textBefore: 'タイプ設定変更', textAfter: 'タイプ設定変更',
       textAlign: 'タイプ配置変更', textValign: 'タイプ配置変更', textOverflow: 'タイプ配置変更',
     };
-    openFormatPopup(anchorEl, {
-      values,
-      fields,
-      className: 'gb-fmt-popup--cell-style',
-      positionAnchor: this._detailMultiSelectionPositionAnchor(anchorEl, panelContainer),
-      extraRow2: this._buildCountConfigFormatControls(colId, panelContainer),
-      onChange: (prop, value) => {
+    const liveValues = { ...values };
+    const STYLE_COPY_PROPS = [
+      'bgColor', 'textColor', 'fontWeight', 'fontStyle', 'fontSize', 'fontFamily',
+      'textStrokeColor', 'textStrokeWidth', 'leftAccent', 'underline', 'accentColor',
+      ...(!isTypeOverride ? [...(isTextCol ? ['textBefore', 'textAfter'] : []), 'textAlign', 'textValign', 'textOverflow'] : []),
+    ];
+    const handleChange = (prop, value) => {
+        liveValues[prop] = value;
         this._pushUndo(UNDO_LABELS[prop] || 'タイプ書式変更');
+        if (isTypeOverride) {
+          if (prop === 'leftAccent' || prop === 'underline') style[prop] = !!value;
+          else if (value === '' || value === null || value === undefined) style[prop] = null;
+          else style[prop] = value;
+          this._render();
+          this._markDirty();
+          return;
+        }
         if (prop === 'bgColor' || prop === 'textColor') {
           if (value === '' || value == null) delete style[prop];
           else style[prop] = value;
@@ -1190,7 +1216,34 @@ Object.assign(ScriptNoteEditor.prototype, {
         else this._refreshRowStyles();
         this._markDirty();
         refreshItem();
-      },
+    };
+    // 書式貼り付け: コピーした書式を1回のUndo単位でまとめて適用し、表示更新のため開き直す
+    const applyCopiedStyle = (clip, props) => {
+      const entries = (props || []).filter((p) => Object.prototype.hasOwnProperty.call(clip, p));
+      if (!entries.length) return;
+      this._pushUndo('書式貼り付け');
+      const prevSuppressed = this._pushUndoSuppressed;
+      this._pushUndoSuppressed = true;
+      try {
+        entries.forEach((p) => {
+          let v = clip[p];
+          if (v === '' && (p === 'fontSize' || p === 'textStrokeWidth')) v = null;
+          handleChange(p, v);
+        });
+      } finally {
+        this._pushUndoSuppressed = prevSuppressed;
+      }
+      this._showCellStylePopup(anchorEl, chara, colId, panelContainer, options);
+    };
+    openFormatPopup(anchorEl, {
+      values,
+      fields,
+      verticalWriting: this.doc.editor?.viewMode === 'vertical',
+      className: 'gb-fmt-popup--cell-style' + (isTypeOverride ? ' gb-fmt-popup--type-gutter-style' : ''),
+      positionAnchor: this._detailMultiSelectionPositionAnchor(anchorEl, panelContainer),
+      extraRow2: options.includeCountConfig === false ? [] : this._buildCountConfigFormatControls(colId, panelContainer),
+      extraRow4: this._buildStyleCopyPasteControls(() => liveValues, applyCopiedStyle, STYLE_COPY_PROPS),
+      onChange: handleChange,
       onReset: () => {
         this._pushUndo('書式リセット');
         ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete style[p]);

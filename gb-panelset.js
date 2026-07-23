@@ -738,7 +738,7 @@
     { type: 'scriptnote', label: 'シナリオ', icon: 'scriptnote', standalone: 'scenario-standalone.html' },
     { type: 'database', label: 'シート', icon: 'database', standalone: 'sheet-standalone.html' },
     { type: 'board', label: 'ボード', icon: 'board', standalone: 'board-standalone.html' },
-    { type: 'calendar', label: 'スケジューラー', icon: 'calendar' },
+    { type: 'calendar', label: 'スケジュール', icon: 'calendar' },
     { type: 'smart-db', label: 'スマートシート', icon: 'smart-db' },
   ]);
 

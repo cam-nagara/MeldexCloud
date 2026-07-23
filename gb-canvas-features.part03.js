@@ -755,7 +755,6 @@ function bdManageStatuses() {
   };
   function render() {
     let html = '<div class="modal" style="min-width:400px;"><h3>ステータス管理</h3>';
-    html += '<div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">各ステータスの名前・色・透過度・枠線を設定できます</div>';
     bd.statuses.forEach((s,i) => {
       html += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
         <input type="text" value="${esc(s.name)}" data-i="${i}" data-f="name" style="width:80px;font-size:13px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">

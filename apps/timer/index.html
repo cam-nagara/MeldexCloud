@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="timer-standalone.css">
+  <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
   <div class="sa-shell timer-app">
@@ -41,8 +42,16 @@
       </div>
       <div id="timer-title-label" class="sa-title">タイマー</div>
       <div id="timer-path-label" class="sa-path">未保存</div>
+      <button id="timer-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="timer-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
-    <main id="timer-root" class="sa-main timer-main"></main>
+    <div class="sa-body">
+      <main id="timer-root" class="sa-main timer-main"></main>
+      <div id="timer-option-resizer" class="sa-option-resizer" role="separator" aria-label="オプションパネルの幅を調整" aria-orientation="vertical" tabindex="0"></div>
+      <aside id="timer-option-panel" class="sa-option-panel" aria-label="オプションパネル">
+        <div class="sa-option-header"><span>オプション</span></div>
+        <div id="rp-detail" class="sa-option-body"></div>
+      </aside>
+    </div>
   </div>
   <div id="standalone-loading" class="sa-loading" role="status" aria-live="polite" aria-busy="true">
     <div class="sa-loading-box">
@@ -51,6 +60,7 @@
     </div>
   </div>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
+  <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
@@ -72,11 +82,15 @@
   <script src="gb-ui.js"></script>
   <script src="gb-modal-shell.js"></script>
   <script src="standalone-stubs.js"></script>
+  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="standalone-option-panel.js"></script>
   <script src="standalone-file-fs.js"></script>
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="gb-dropbox-profile-sync.js"></script>
+  <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="standalone-pwa-install.js"></script>
   <script src="gb-component.js"></script>

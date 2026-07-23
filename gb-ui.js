@@ -647,9 +647,10 @@
     const closeBtn = el('button', {
       cls: ['gb-modal-close'],
       title: '閉じる',
-      text: '\u00D7',
       attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる' }
     });
+    if (typeof lucide === 'function') closeBtn.innerHTML = lucide('x', 20);
+    else closeBtn.textContent = '\u00D7';
     header.appendChild(closeBtn);
 
     // body
@@ -842,6 +843,29 @@
   _installRangeFillSync();
 
   // ============================================================
+  // ポップアップ内フォーカス循環（Tab / Shift+Tab）
+  // ルビ入力ポップアップ・選択時書式ポップアップなど、開いている間だけ
+  // Tab でポップアップ内の操作項目を順番に切り替えるための共通処理。
+  // ============================================================
+  function cyclePopupFocus(popup, backward) {
+    if (!popup || !popup.querySelectorAll) return false;
+    const items = Array.from(popup.querySelectorAll('button, input, select, textarea, [tabindex]'))
+      .filter((item) => {
+        if (item.disabled || item.tabIndex < 0) return false;
+        const rect = item.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+    if (!items.length) return false;
+    const current = items.indexOf(document.activeElement);
+    const next = current < 0
+      ? (backward ? items.length - 1 : 0)
+      : (current + (backward ? -1 : 1) + items.length) % items.length;
+    try { items[next].focus({ preventScroll: true }); } catch { items[next].focus(); }
+    return true;
+  }
+  window.gbCyclePopupFocus = cyclePopupFocus;
+
+  // ============================================================
   // Public API
   // ============================================================
   window.GBUI = {
@@ -874,6 +898,7 @@
     // misc
     applyVariant,
     refreshRangeFill,
-    refreshRangeFills
+    refreshRangeFills,
+    cyclePopupFocus
   };
 })();

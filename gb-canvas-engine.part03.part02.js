@@ -44,6 +44,7 @@ function bdStatusNames() { return ['', ...bd.statuses.map(s=>s.name)]; }
 // --- グループ管理 ---
 if (!bd.groups) bd.groups = [];
 bd.statusFilter = ''; // 空=全表示
+bd.tagFilter = []; // 共通タグID配列。空=全表示（絞り込みは減光のみで、非表示にはしない）
 
 // --- 整列関数 ---
 function bdAlign(type) {
@@ -470,7 +471,7 @@ function bdCloneNodesWithOffset(sourceNodes, offset) {
     const copyAbsY = Number.isFinite(+_bdCopyAbsY) ? +_bdCopyAbsY : null;
     const nextX = parentCopied ? n.x : ((n.contained && copyAbsX != null) ? copyAbsX + offset : n.x + offset);
     const nextY = parentCopied ? n.y : ((n.contained && copyAbsY != null) ? copyAbsY + offset : n.y + offset);
-    const nn = bdNode(n.text, nextX, nextY, n.w, n.h, {...rest, markers: n.markers ? {...n.markers} : undefined});
+    const nn = bdNode(n.text, nextX, nextY, n.w, n.h, {...rest, markers: n.markers ? {...n.markers} : undefined, tags: Array.isArray(n.tags) ? [...n.tags] : undefined});
     idMap[n.id] = nn.id;
     return nn;
   });

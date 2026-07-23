@@ -271,21 +271,27 @@ Object.assign(ScriptNoteEditor.prototype, {
       return btn;
     };
 
-    // 水平配置（現在値+サブメニュー）
-    const alignLabels = { left: '左寄せ', center: '中央', right: '右寄せ' };
-    popup.appendChild(mkSubItem('水平', alignLabels[settings.align] || '左寄せ', (sub) => {
-      [['左寄せ', 'left'], ['中央', 'center'], ['右寄せ', 'right']].forEach(([label, val]) => {
-        sub.appendChild(mkItem(label, settings.align === val, () => {
+    // 配置（現在値+サブメニュー）
+    // 縦書き（vertical-rl）では align は上下方向（left=上）、valign は左右方向（top=右）に
+    // 対応するため、保存値はそのままにラベルだけを縦書き向けへ切り替える
+    const isVerticalWriting = this.doc.editor?.viewMode === 'vertical';
+    const alignLabels = isVerticalWriting
+      ? { left: '上寄せ', center: '中央', right: '下寄せ' }
+      : { left: '左寄せ', center: '中央', right: '右寄せ' };
+    popup.appendChild(mkSubItem(isVerticalWriting ? '垂直' : '水平', alignLabels[settings.align] || alignLabels.left, (sub) => {
+      ['left', 'center', 'right'].forEach((val) => {
+        sub.appendChild(mkItem(alignLabels[val], settings.align === val, () => {
           this._pushUndo('列配置変更'); settings.align = val; this._markDirty(); this._render(); closePopup();
         }));
       });
     }));
 
-    // 垂直配置（現在値+サブメニュー）
-    const valignLabels = { top: '上寄せ', middle: '中央', bottom: '下寄せ' };
-    popup.appendChild(mkSubItem('垂直', valignLabels[settings.valign] || '上寄せ', (sub) => {
-      [['上寄せ', 'top'], ['中央', 'middle'], ['下寄せ', 'bottom']].forEach(([label, val]) => {
-        sub.appendChild(mkItem(label, settings.valign === val, () => {
+    const valignLabels = isVerticalWriting
+      ? { top: '右寄せ', middle: '中央', bottom: '左寄せ' }
+      : { top: '上寄せ', middle: '中央', bottom: '下寄せ' };
+    popup.appendChild(mkSubItem(isVerticalWriting ? '水平' : '垂直', valignLabels[settings.valign] || valignLabels.top, (sub) => {
+      ['top', 'middle', 'bottom'].forEach((val) => {
+        sub.appendChild(mkItem(valignLabels[val], settings.valign === val, () => {
           this._pushUndo('列配置変更'); settings.valign = val; this._markDirty(); this._render(); closePopup();
         }));
       });

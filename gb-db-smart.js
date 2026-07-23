@@ -800,7 +800,7 @@ function showSmartDbFilterModal(smartDbId) {
   let filtersHtml = '';
   (def.filters || []).forEach((f, i) => {
     filtersHtml += `<div class="sdf-row" data-idx="${i}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-      <input type="text" class="gb-input" value="${esc(f.property)}" placeholder="プロパティ名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${i}-property" aria-label="スマートシート条件${i + 1} プロパティ">
+      <input type="text" class="gb-input" value="${esc(f.property)}" placeholder="列名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${i}-property" aria-label="スマートシート条件${i + 1} 列">
       <select data-field="field" class="gb-select" data-e2e-id="smart-filter-${i}-field" aria-label="スマートシート条件${i + 1} 対象">
         <option value="value"${f.field === 'value' ? ' selected' : ''}>値</option>
         <option value="status"${f.field === 'status' ? ' selected' : ''}>ステータス</option>
@@ -916,9 +916,8 @@ async function _openSmartDbFolderPicker(def, callback) {
     o.remove();
     _smartDbRestoreFocus(restoreTarget);
   };
-  o.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sdf-folder-title" aria-describedby="sdf-folder-desc" data-e2e-id="smart-folder-picker-dialog" style="min-width:520px;max-width:80vw;">
-    <h3 id="sdf-folder-title">対象フォルダを選択</h3>
-    <div id="sdf-folder-desc" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">フォルダをクリックすると、そのフォルダ＋サブフォルダがスマートシートの対象になります。</div>
+  o.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sdf-folder-title" data-e2e-id="smart-folder-picker-dialog" style="min-width:520px;max-width:80vw;">
+    <h3 id="sdf-folder-title">対象フォルダを選択 ${fieldHelp('フォルダをクリックすると、そのフォルダ＋サブフォルダがスマートシートの対象になります')}</h3>
     <div id="sdf-folder-tree" role="tree" aria-label="対象フォルダ" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px;background:var(--bg);"></div>
     <div class="btn-row" style="margin-top:12px;">
       <button type="button" data-smart-db-action="close-modal" data-e2e-id="smart-folder-picker-cancel">キャンセル</button>
@@ -1092,7 +1091,7 @@ function _wireSmartDbFolderExpand(toggle, childrenHost, fetchChildren, emptyHint
 function _smartDbFilterRowHtml(prop='', field='value', op='contains', val='') {
   const rowId = 'new-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   return `<div class="sdf-row" data-e2e-row="${rowId}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-    <input type="text" class="gb-input" value="${esc(prop)}" placeholder="プロパティ名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${rowId}-property" aria-label="スマートシート新規条件 プロパティ">
+    <input type="text" class="gb-input" value="${esc(prop)}" placeholder="列名" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="property" data-e2e-id="smart-filter-${rowId}-property" aria-label="スマートシート新規条件 列">
     <select data-field="field" class="gb-select" data-e2e-id="smart-filter-${rowId}-field" aria-label="スマートシート新規条件 対象">
       <option value="value"${field === 'value' ? ' selected' : ''}>値</option>
       <option value="status"${field === 'status' ? ' selected' : ''}>ステータス</option>

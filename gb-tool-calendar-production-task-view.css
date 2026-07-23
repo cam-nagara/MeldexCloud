@@ -1,0 +1,947 @@
+/* Schedule production task workspace */
+.gb-cal-toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--ui-space-3);
+  margin-left: auto;
+}
+
+.gb-cal-toolbar-actions > .sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--ui-space-1);
+  flex: 0 0 auto;
+  background: var(--cal-grid-line, var(--ui-border, var(--border)));
+}
+
+.gb-cal-surface-switch {
+  display: flex;
+  align-items: center;
+  align-content: center;
+  flex: 1 1 420px;
+  flex-wrap: wrap;
+  min-width: min(240px, 100%);
+  max-width: none;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--cal-control-border, var(--ui-border, var(--border)));
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.gb-cal-surface-btn {
+  flex: 0 0 auto;
+}
+
+/* 制作面ではカレンダー用ナビ（今日/前後/表示切替）が非表示になり、タブ列の右隣が
+   直接ツールバー右端ボタン群になる。既定の .tb-spacer (flex:1) を伸ばしたままだと
+   余白がタブ列とスペーサーで折半され、タブ折り返し時にタブ領域と右寄せボタン群の
+   間へ大きな隙間が生まれるため、制作面ではスペーサーを畳み、タブ列へ余白を全部渡す
+   （タブが1行に収まりやすくなり、隙間は最小化される）。カレンダー面はタイトル中央
+   寄せの配置が変わらないよう従来のままにする。 */
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-toolbar-cal > .tb-spacer {
+  flex: 0 0 0;
+  min-width: 0;
+}
+
+.gb-cal-surface-btn:hover {
+  background: var(--cal-cell-hover-bg, var(--ui-hover-bg, var(--bg3)));
+  color: var(--cal-fg, var(--fg));
+}
+
+.gb-toolbar-cal .gb-cal-surface-btn.gb-inner-tab-active,
+.gb-toolbar-cal .gb-cal-surface-btn.gb-inner-tab-active:hover {
+  background: color-mix(in srgb, var(--cal-accent, var(--accent)) 14%, transparent);
+  color: var(--cal-accent, var(--accent));
+  border-bottom-color: var(--cal-accent, var(--accent));
+}
+
+.gb-cal-surface-btn:focus-visible,
+.gb-production-task-workspace button:focus-visible,
+.gb-production-task-workspace input:focus-visible,
+.gb-production-task-workspace select:focus-visible,
+.gb-production-sidebar button:focus-visible,
+.gb-production-sidebar input:focus-visible,
+.gb-production-sidebar select:focus-visible,
+.gb-production-sidebar textarea:focus-visible {
+  outline: 2px solid var(--cal-accent, var(--accent));
+  outline-offset: 1px;
+}
+
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-cal-calendar-control,
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-cal-sidebar,
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-cal-sidebar-resize,
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-cal-right-panel {
+  display: none !important;
+}
+
+.gb-cal-root:not([data-cal-surface="productionTasks"]) .gb-cal-production-control {
+  display: none !important;
+}
+
+.gb-cal-root[data-cal-surface="productionTasks"].gb-cal-sidebar-only .gb-cal-content,
+.gb-cal-root[data-cal-surface="productionTasks"] .gb-cal-content {
+  display: flex !important;
+  padding: 0;
+  overflow: hidden;
+}
+
+.gb-production-task-view,
+.gb-production-task-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cal-content-bg, var(--content-bg, var(--bg)));
+  color: var(--cal-fg, var(--fg));
+}
+
+/* --- リスト切替バー (作品ごとのタスクリスト + 管理リスト) --- */
+.gb-production-list-switch {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+  background: var(--cal-toolbar-bg, var(--bg2));
+  overflow-x: auto;
+}
+
+.gb-production-list-switch[hidden] { display: none; }
+
+.gb-production-list-switch-btn {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 999px;
+  background: var(--cal-control-bg, var(--bg));
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gb-production-list-switch-btn:hover {
+  border-color: var(--cal-accent, var(--accent));
+  color: var(--cal-fg, var(--fg));
+}
+
+.gb-production-list-switch-btn.is-active {
+  border-color: var(--cal-accent, var(--accent));
+  background: var(--cal-accent, var(--accent));
+  color: var(--cal-accent-fg, #fff);
+  font-weight: 600;
+}
+
+.gb-production-list-switch-add {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.gb-production-list-switch-add-btn {
+  min-width: 28px;
+  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gb-production-list-switch-add-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gb-production-list-switch-add-form input {
+  height: 28px;
+  min-width: 160px;
+  padding: 3px 8px;
+  border: 1px solid var(--cal-accent, var(--accent));
+  border-radius: 5px;
+  background: var(--cal-control-bg, var(--bg));
+  color: var(--cal-control-fg, var(--fg));
+  font: inherit;
+  font-size: 11px;
+}
+
+.gb-production-list-switch-add-confirm,
+.gb-production-list-switch-add-cancel {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 5px;
+  background: var(--cal-control-bg, var(--bg3));
+  color: var(--cal-control-fg, var(--fg));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.gb-production-list-switch-add-confirm {
+  border-color: var(--cal-accent, var(--accent));
+  color: var(--cal-accent, var(--accent));
+}
+
+.gb-production-list-switch-loading,
+.gb-production-list-switch-error {
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 11px;
+}
+
+.gb-production-list-switch-error {
+  color: var(--red, #e06c75);
+}
+
+.gb-production-write-availability {
+  flex: 0 0 auto;
+  margin: 8px 10px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--yellow, #d7b35b);
+  background: color-mix(in srgb, var(--yellow, #d7b35b) 10%, var(--cal-content-bg, var(--bg)));
+  color: var(--cal-fg, var(--fg));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gb-production-write-availability[hidden] { display: none; }
+
+.gb-production-task-filter,
+.gb-production-sidebar-field,
+.gb-production-template-field,
+.gb-production-quick-plan-form label,
+.gb-production-quick-advanced label {
+  display: grid;
+  gap: 3px;
+  min-width: 108px;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 10px;
+}
+
+.gb-production-sidebar-field input,
+.gb-production-sidebar-field select,
+.gb-production-sidebar-field textarea,
+.gb-production-template-field input,
+.gb-production-template-field select,
+.gb-production-template-field textarea,
+.gb-production-template-placement input,
+.gb-production-template-placement select,
+.gb-production-quick-plan input,
+.gb-production-quick-plan select {
+  height: 30px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 5px;
+  background: var(--cal-control-bg, var(--bg));
+  color: var(--cal-control-fg, var(--fg));
+  font: inherit;
+}
+
+.gb-production-sidebar-field textarea,
+.gb-production-template-field textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.gb-production-sidebar-actions,
+.gb-production-template-card-actions,
+.gb-production-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gb-production-task-button,
+.gb-production-sidebar-button,
+.gb-production-template-button,
+.gb-production-dialog-actions button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 5px;
+  background: var(--cal-control-bg, var(--bg3));
+  color: var(--cal-control-fg, var(--fg));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gb-production-task-button:hover,
+.gb-production-sidebar-button:hover,
+.gb-production-template-button:hover,
+.gb-production-dialog-actions button:hover {
+  border-color: var(--cal-accent, var(--accent));
+  color: var(--cal-accent, var(--accent));
+}
+
+.gb-production-task-button.primary,
+.gb-production-sidebar-button.primary,
+.gb-production-template-button.primary,
+.gb-production-dialog-actions button.primary {
+  border-color: var(--cal-accent, var(--accent));
+  background: var(--cal-accent, var(--accent));
+  color: var(--cal-accent-fg, #fff);
+}
+
+.gb-production-task-button:disabled,
+.gb-production-sidebar-button:disabled,
+.gb-production-template-button:disabled {
+  color: var(--ui-disabled-fg, var(--cal-muted-fg, var(--fg2)));
+  background: var(--ui-disabled-bg, var(--cal-control-bg, var(--bg)));
+  border-color: var(--ui-disabled-border, var(--cal-control-border, var(--border)));
+  opacity: 1;
+  cursor: wait;
+}
+
+.gb-production-template-button:disabled {
+  cursor: not-allowed;
+}
+
+[data-production-write-blocked] {
+  cursor: not-allowed !important;
+}
+
+/* --- 埋め込みシート表の領域 --- */
+.gb-production-embed-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.gb-production-embed-host .gb-production-sheet-embed {
+  flex: 1 1 auto;
+}
+
+.gb-production-task-empty-notice {
+  padding: 32px 16px;
+  color: var(--cal-muted-fg, var(--fg2));
+  text-align: center;
+}
+
+.is-template-drop-target,
+.is-production-template-drop-target {
+  box-shadow: inset 0 0 0 2px var(--cal-accent, var(--accent)) !important;
+  background: color-mix(in srgb, var(--cal-accent, var(--accent)) 14%, var(--cal-content-bg, var(--bg))) !important;
+}
+
+.gb-production-quick-plan {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.gb-production-quick-description,
+.gb-production-template-toolbar p,
+.gb-production-template-card p,
+.gb-production-classification-note {
+  margin: 3px 0 0;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.gb-production-quick-description {
+  margin: 0;
+  font-size: 12px;
+}
+
+.gb-production-quick-plan-form {
+  display: grid;
+  grid-template-columns: minmax(100px, 140px) minmax(210px, 260px) max-content;
+  align-items: end;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.gb-production-quick-plan-form label,
+.gb-production-quick-field-label {
+  white-space: nowrap;
+}
+
+.gb-production-quick-advanced {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.gb-production-quick-advanced summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  color: var(--cal-muted-fg, var(--fg2));
+  cursor: pointer;
+  list-style: none;
+}
+
+.gb-production-quick-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.gb-production-quick-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 120ms ease;
+}
+
+.gb-production-quick-advanced[open] .gb-production-quick-chevron {
+  transform: rotate(90deg);
+}
+
+.gb-production-quick-advanced:not([open]) > :not(summary) {
+  display: none !important;
+}
+
+.gb-production-quick-advanced label {
+  max-width: 280px;
+  margin-top: 8px;
+}
+
+.gb-production-assumption-note {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-left: 3px solid var(--cal-accent, var(--accent));
+  background: color-mix(in srgb, var(--cal-accent, var(--accent)) 8%, transparent);
+  color: var(--cal-muted-fg, var(--fg2));
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.gb-production-quick-result:not(:empty) {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-quick-summary {
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.gb-production-assumption-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0 0 8px;
+  font-size: 10px;
+}
+
+.gb-production-assumption-list dt { color: var(--cal-muted-fg, var(--fg2)); }
+.gb-production-assumption-list dd { margin: 0; }
+.gb-production-assumption-list dd.is-auto { color: var(--cal-accent, var(--accent)); }
+
+.gb-production-quick-solutions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.gb-production-quick-solutions strong {
+  margin-right: 3px;
+  font-size: 11px;
+}
+
+/* Right production sidebar */
+.gb-production-sidebar {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--cal-panel-bg, var(--bg2));
+  color: var(--cal-fg, var(--fg));
+}
+
+.gb-production-sidebar-tabs {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-sidebar-tab {
+  min-width: 0;
+  min-height: 36px;
+  padding: 5px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--cal-muted-fg, var(--fg2));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gb-production-sidebar-tab:hover { background: var(--cal-cell-hover-bg, var(--bg3)); color: var(--cal-fg, var(--fg)); }
+.gb-production-sidebar-tab.is-active {
+  border-bottom-color: var(--cal-accent, var(--accent));
+  color: color-mix(in srgb, var(--cal-accent, var(--accent)) 55%, #fff);
+}
+
+.gb-production-sidebar-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.gb-production-task-list-sidebar-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--cal-grid-line, var(--border));
+  border-radius: 7px;
+  background: var(--cal-panel-bg, var(--bg2));
+}
+
+.gb-production-task-list-sidebar-note p {
+  margin: 0;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.gb-production-management-actions-note {
+  margin: 0 0 10px;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.gb-production-sidebar-empty {
+  min-height: 180px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--cal-muted-fg, var(--fg2));
+  text-align: center;
+}
+
+.gb-production-sidebar-empty strong { color: var(--cal-fg, var(--fg)); font-size: 12px; }
+.gb-production-sidebar-empty p { margin: 0; font-size: 10px; line-height: 1.5; }
+
+.gb-production-sidebar-detail-header {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-sidebar-detail-header strong { font-size: 13px; }
+.gb-production-sidebar-detail-header span { color: var(--cal-muted-fg, var(--fg2)); font-size: 10px; }
+
+.gb-production-sidebar-form,
+.gb-production-template-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.gb-production-sidebar-date-range,
+.gb-production-template-fields {
+  display: grid;
+  gap: 5px;
+}
+
+.gb-production-sidebar-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.gb-production-sidebar-section-title span { color: var(--cal-muted-fg, var(--fg2)); font-size: 9px; }
+
+.gb-production-classification-editor {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-template-toolbar {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.gb-production-template-list {
+  display: grid;
+  gap: 7px;
+}
+
+.gb-production-template-card {
+  padding: 8px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 6px;
+  background: var(--cal-content-bg, var(--bg));
+}
+
+.gb-production-template-card[draggable="true"] { cursor: grab; }
+.gb-production-template-card[draggable="true"]:active { cursor: grabbing; }
+
+.gb-production-template-card-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gb-production-template-card-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.gb-production-template-card-actions {
+  flex-wrap: wrap;
+  margin-top: 7px;
+}
+
+.gb-production-template-placement {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--cal-grid-line, var(--border));
+}
+
+.gb-production-work-dialog {
+  width: min(360px, calc(100vw - 24px));
+  padding: 14px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 8px;
+  background: var(--cal-panel-bg, var(--bg2));
+  color: var(--cal-fg, var(--fg));
+}
+
+.gb-production-work-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.gb-production-work-dialog p { color: var(--cal-muted-fg, var(--fg2)); font-size: 10px; }
+.gb-production-work-dialog input,
+.gb-production-work-dialog select { width: 100%; height: 32px; }
+.gb-production-dialog-actions { justify-content: flex-end; margin-top: 10px; }
+
+body[data-cloud-mobile-editing-ui="1"] :is(
+  .gb-production-task-button,
+  .gb-production-sidebar-button,
+  .gb-production-template-button,
+  .gb-production-dialog-actions button,
+  .gb-production-list-switch-btn,
+  .gb-production-list-switch-add-btn,
+  .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch-add-cancel,
+  .gb-production-list-switch-loading,
+  .gb-production-list-switch-error,
+  .gb-production-sidebar-tab,
+  .gb-production-quick-advanced summary,
+  .gb-production-quick-summary,
+  .gb-production-quick-solutions strong,
+  .gb-production-sidebar-empty strong,
+  .gb-production-sidebar-detail-header strong,
+  .gb-production-template-card-header strong
+) {
+  font-size: 15px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] :is(
+  .gb-production-task-filter,
+  .gb-production-sidebar-field,
+  .gb-production-template-field,
+  .gb-production-quick-plan-form label,
+  .gb-production-quick-advanced label,
+  .gb-production-quick-description,
+  .gb-production-assumption-note,
+  .gb-production-assumption-list,
+  .gb-production-template-toolbar p,
+  .gb-production-template-card p,
+  .gb-production-classification-note,
+  .gb-production-task-list-sidebar-note p,
+  .gb-production-management-actions-note,
+  .gb-production-sidebar-empty p,
+  .gb-production-sidebar-detail-header span,
+  .gb-production-sidebar-section-title span,
+  .gb-production-work-dialog p,
+  .gb-production-write-availability
+) {
+  font-size: 14px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] :is(
+  .gb-production-sidebar-field input,
+  .gb-production-sidebar-field select,
+  .gb-production-sidebar-field textarea,
+  .gb-production-template-field input,
+  .gb-production-template-field select,
+  .gb-production-template-field textarea,
+  .gb-production-template-placement input,
+  .gb-production-template-placement select,
+  .gb-production-quick-plan input,
+  .gb-production-quick-plan select,
+  .gb-production-list-switch-add-form input,
+  .gb-production-work-dialog input,
+  .gb-production-work-dialog select
+) {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] :is(
+  .gb-production-task-button,
+  .gb-production-sidebar-button,
+  .gb-production-template-button,
+  .gb-production-dialog-actions button,
+  .gb-production-list-switch-btn,
+  .gb-production-list-switch-add-btn,
+  .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch-add-cancel,
+  .gb-production-sidebar-tab,
+  .gb-production-quick-advanced summary
+) {
+  min-height: 44px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] :is(
+  .gb-production-list-switch-add-btn,
+  .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch-add-cancel
+) {
+  min-width: 44px;
+}
+
+@media (pointer: coarse), (max-width: 720px) {
+  .gb-cal-surface-btn,
+  .gb-production-list-switch-btn,
+  .gb-production-list-switch-add-btn,
+  .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch-add-cancel,
+  .gb-production-task-button,
+  .gb-production-sidebar-button,
+  .gb-production-template-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .gb-production-list-switch-add-form input,
+  .gb-production-sidebar-field input,
+  .gb-production-sidebar-field select,
+  .gb-production-template-field input,
+  .gb-production-template-field select,
+  .gb-production-template-placement input,
+  .gb-production-template-placement select,
+  .gb-production-quick-plan input,
+  .gb-production-quick-plan select,
+  .gb-production-work-dialog input,
+  .gb-production-work-dialog select {
+    min-height: 44px;
+  }
+  .gb-production-quick-advanced summary { min-height: 44px; }
+  .gb-production-sidebar-tab { min-height: 44px; }
+  .gb-production-management-actions .gb-cal-production-action { min-height: 44px; }
+}
+
+@media (max-width: 720px) {
+  .gb-cal-surface-switch { flex: 1 1 100%; max-width: 100%; }
+  .gb-production-list-switch { padding: 5px 8px; }
+  .gb-production-quick-plan-form { grid-template-columns: minmax(90px, 120px) minmax(180px, 1fr); }
+  .gb-production-quick-plan-form > button { grid-column: 1 / -1; justify-self: start; }
+
+  .gb-production-task-button,
+  .gb-production-sidebar-button,
+  .gb-production-template-button,
+  .gb-production-dialog-actions button,
+  .gb-production-list-switch-btn,
+  .gb-production-list-switch-loading,
+  .gb-production-list-switch-error,
+  .gb-production-quick-summary,
+  .gb-production-quick-solutions strong,
+  .gb-production-sidebar-detail-header strong,
+  .gb-production-template-card-header strong {
+    font-size: 15px;
+  }
+
+  .gb-production-task-filter,
+  .gb-production-sidebar-field,
+  .gb-production-template-field,
+  .gb-production-quick-plan-form label,
+  .gb-production-quick-advanced label,
+  .gb-production-quick-description,
+  .gb-production-template-toolbar p,
+  .gb-production-template-card p,
+  .gb-production-classification-note,
+  .gb-production-assumption-note,
+  .gb-production-assumption-list,
+  .gb-production-task-list-sidebar-note p,
+  .gb-production-management-actions-note,
+  .gb-production-sidebar-empty p,
+  .gb-production-sidebar-detail-header span,
+  .gb-production-sidebar-section-title span,
+  .gb-production-work-dialog p {
+    font-size: 14px;
+  }
+
+  .gb-production-write-availability {
+    font-size: 14px;
+  }
+
+  .gb-production-sidebar-field input,
+  .gb-production-sidebar-field select,
+  .gb-production-sidebar-field textarea,
+  .gb-production-template-field input,
+  .gb-production-template-field select,
+  .gb-production-template-field textarea,
+  .gb-production-template-placement input,
+  .gb-production-template-placement select,
+  .gb-production-quick-plan input,
+  .gb-production-quick-plan select,
+  .gb-production-list-switch-add-form input,
+  .gb-production-work-dialog input,
+  .gb-production-work-dialog select {
+    height: auto;
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .gb-production-sidebar-tab,
+  .gb-production-sidebar-empty strong {
+    font-size: 15px;
+  }
+}
+
+@media (max-width: 480px) {
+  .gb-production-list-switch { padding: 5px 6px; gap: 3px; }
+  .gb-production-list-switch-btn { padding: 4px 8px; }
+  .gb-production-quick-plan-form { grid-template-columns: 1fr; }
+  .gb-production-quick-plan-form > button { grid-column: auto; width: 100%; }
+  .gb-production-quick-solutions { align-items: stretch; }
+  .gb-production-quick-solutions strong { width: 100%; }
+  .gb-production-quick-solutions .gb-production-task-button { flex: 1 1 100%; }
+}
+
+/* --- 作品別タブの並べ替え・閉じる（シートビュータブと同じ操作感） --- */
+
+.gb-production-list-switch-btn-sortable {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gb-production-list-switch-btn.dragging {
+  opacity: 0.5;
+}
+
+.gb-production-list-switch-btn.gb-production-tab-drop-before::before,
+.gb-production-list-switch-btn.gb-production-tab-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--cal-accent, var(--accent));
+  box-shadow: 0 0 0 2px rgba(86, 156, 214, 0.22);
+  pointer-events: none;
+}
+
+.gb-production-list-switch-btn.gb-production-tab-drop-before::before { left: -3px; }
+.gb-production-list-switch-btn.gb-production-tab-drop-after::after { right: -3px; }
+
+.gb-production-list-tab-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  border-radius: 999px;
+  opacity: 0;
+  transition: opacity 0.1s;
+  cursor: pointer;
+}
+
+.gb-production-list-switch-btn:hover .gb-production-list-tab-more,
+.gb-production-list-switch-btn:focus-visible .gb-production-list-tab-more,
+.gb-production-list-switch-btn.is-active .gb-production-list-tab-more {
+  opacity: 1;
+}
+
+.gb-production-list-tab-more:hover {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+@media (pointer: coarse) {
+  .gb-production-list-tab-more { opacity: 1; }
+}
+
+.gb-production-list-switch-hidden-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--cal-muted-fg, var(--fg2));
+}
+
+/* --- 「すべて」タブ: 全作品タスクリストの縦積み表示 --- */
+
+.gb-production-all-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  gap: 12px;
+  padding-bottom: 24px;
+}
+
+.gb-production-all-section {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* 見出しは固定表示にしない（シート列ヘッダーが sticky top:-1px / z-index:20 で
+   上端に固定されるため、同じ位置に固定すると重なって列名が隠れる） */
+.gb-production-all-section-title {
+  margin: 0;
+  padding: 8px 10px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cal-fg, var(--fg));
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+  background: var(--cal-toolbar-bg, var(--bg2));
+}
+
+.gb-production-all-empty {
+  margin: 16px;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 12px;
+}

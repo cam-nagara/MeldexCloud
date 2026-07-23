@@ -27,6 +27,7 @@
     '[data-action*="dropdown"]',
     '[aria-haspopup="listbox"]',
     '[aria-haspopup="menu"]',
+    '[aria-haspopup="dialog"]',
     '.tool-menu-btn',
     '.bd-style-trigger',
     '.bd-detail-style-trigger',

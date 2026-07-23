@@ -610,7 +610,14 @@
       }
       setStatus('ENEXファイルを読み込んでいます...', false);
       const content = await file.text();
-      const data = await apiPost('/external-import/enex/import', { filename: file.name, name: file.name.replace(/\\.enex$/i, ''), content }, { silentError: true });
+      const data = await runBackgroundJob(
+        '/external-import/enex/import',
+        { filename: file.name, name: file.name.replace(/\\.enex$/i, ''), content },
+        {
+          startTimeoutMs: 300000,
+          onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件取り込み済み', defaultPhase: '取り込み中' }), false),
+        }
+      );
       setStatus(`ENEX取り込み完了: 新規${data.created || 0} / 更新${data.updated || 0}`, false);
     } catch (err) {
       setStatus('ENEXを取り込めませんでした: ' + (err.userMessage || err.message || err), true);
@@ -650,14 +657,17 @@
       if (!boardName) return;
       setStatus('PureRefファイルを読み込んでいます...', false);
       const content = await fileToBase64(file);
-      const data = await apiPost('/external-import/pureref/import-upload', {
+      const data = await runBackgroundJob('/external-import/pureref/import-upload', {
         filename: file.name,
         name: boardName,
         board_name: boardName,
         save_dir: `外部取り込み/PureRef/${boardName}`,
         save_root: 'source',
         content_base64: content
-      }, { silentError: true });
+      }, {
+        startTimeoutMs: 300000,
+        onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件', defaultPhase: '画像を取り込み中' }), false),
+      });
       setStatus(`PureRef取り込み完了: 画像${data.image_count || 0}件 / ${data.board_path || ''}`, false);
       if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
     } catch (err) {

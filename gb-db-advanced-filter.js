@@ -169,7 +169,7 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   propOptions.forEach((prop) => {
     const opt = document.createElement('option');
     opt.value = prop;
-    opt.textContent = prop === '*' ? '全プロパティ' : propOptions.includes(prop) && !filterable.includes(prop) ? prop + '（削除済み）' : prop;
+    opt.textContent = prop === '*' ? 'すべての列' : propOptions.includes(prop) && !filterable.includes(prop) ? prop + '（削除済み）' : prop;
     if (savedProp === prop) opt.selected = true;
     propSel.appendChild(opt);
   });
@@ -195,6 +195,33 @@ function createAdvancedFilterRowElement(f, idx, allProps, dbPathOverride = '') {
   valInput.value = f?.value ?? '';
   styleConditionControl(valInput, 'font-size:12px;padding:2px 4px;');
   row.appendChild(createConditionFieldBlock('値', valInput));
+
+  const commonTagsDatalist = document.createElement('datalist');
+  commonTagsDatalist.id = 'adv-filter-common-tags-dl-' + idx + '-' + Date.now().toString(36);
+  row.appendChild(commonTagsDatalist);
+  const _refreshCommonTagsValueField = () => {
+    const isCommonTags = propSel.value !== '*' && pts[propSel.value]?.type === 'common-tags';
+    if (isCommonTags) {
+      valInput.setAttribute('list', commonTagsDatalist.id);
+      valInput.placeholder = 'タグ名の一部を入力';
+      if (window.MeldexGlobalTags?.loadTagsCached) {
+        window.MeldexGlobalTags.loadTagsCached().then(data => {
+          if (!commonTagsDatalist.isConnected) return;
+          commonTagsDatalist.textContent = '';
+          (Array.isArray(data?.tags) ? data.tags : []).forEach(tag => {
+            const opt = document.createElement('option');
+            opt.value = tag.name || '';
+            commonTagsDatalist.appendChild(opt);
+          });
+        }).catch(() => {});
+      }
+    } else {
+      valInput.removeAttribute('list');
+      valInput.placeholder = '値';
+    }
+  };
+  propSel.addEventListener('change', _refreshCommonTagsValueField);
+  _refreshCommonTagsValueField();
 
   return row;
 }
@@ -233,7 +260,10 @@ async function applyAdvFilters() {
     const field = row.querySelector('.af-field').value;
     const prop = row.querySelector('.af-prop').value;
     const op = row.querySelector('.af-op').value;
-    const val = row.querySelector('.af-val').value;
+    let val = row.querySelector('.af-val').value;
+    if (dbPath && window.MeldexGlobalTags?.resolveCommonTagsFilterValueSync) {
+      val = window.MeldexGlobalTags.resolveCommonTagsFilterValueSync(dbPath, prop, val);
+    }
     filters.push({ field, property: prop, operator: op, value: val });
   });
   setAdvancedFilters(dbPath, filters, { ctx });

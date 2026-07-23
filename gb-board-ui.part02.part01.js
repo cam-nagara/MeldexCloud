@@ -141,6 +141,10 @@ function _bdBuildNodeDetailHtml(node) {
         ${node.img ? `<label class="bd-detail-field bd-detail-field-wide"><span>画像</span><input type="text" value="${_bdEscAttr(node.img || '')}" data-bd-field="img"></label>` : ''}
       </div>
       <div class="bd-detail-section">
+        <div class="bd-detail-section-title">タグ</div>
+        <div data-bd-node-tags-editor data-e2e-id="bd-node-tags-editor"></div>
+      </div>
+      <div class="bd-detail-section">
         <div class="bd-detail-section-title">カードスタイル</div>
         <div class="bd-detail-style-row">
           ${_bdDetailStyleTriggerHtml('card', node.cardStyle || bd.activeCardStyle, 'data-bd-node-style-pick')}
@@ -728,6 +732,25 @@ function _bdBindNodeDetailPanel(nodeId) {
     root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', () => {
       if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
     });
+    const tagsEditorEl = root.querySelector('[data-bd-node-tags-editor]');
+    if (tagsEditorEl && typeof renderInlineTagEditor === 'function') {
+      renderInlineTagEditor(tagsEditorEl, {
+        compact: true,
+        getIds: () => {
+          const target = bd.nodes.find(item => item.id === nodeId);
+          return Array.isArray(target?.tags) ? target.tags : [];
+        },
+        setIds: (ids) => {
+          const target = bd.nodes.find(item => item.id === nodeId);
+          if (!target) return;
+          bdPushUndo();
+          target.tags = ids;
+          bdRender();
+          bdDirty();
+          if (typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
+        },
+      });
+    }
   });
 }
 

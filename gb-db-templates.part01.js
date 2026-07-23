@@ -40,6 +40,7 @@ function _dbTplRelationType(type, targetSheet, reverseProp, opts = {}) {
 
 const _dbTplProp = {
   text: name => ({ name, type: { type: 'text' } }),
+  furigana: name => ({ name, type: { type: 'furigana' } }),
   number: name => ({ name, type: { type: 'number' } }),
   date: name => ({ name, type: { type: 'date' } }),
   checkbox: name => ({ name, type: { type: 'checkbox' } }),
@@ -104,7 +105,7 @@ const _CHAR_ZODIAC_FORMULA = `if(empty(prop("生年月日_西暦")), "", let("m"
   [12, 22, 1, 19, '山羊座'], [1, 20, 2, 18, '水瓶座'], [2, 19, 3, 20, '魚座'],
 ])}))`;
 const _CHAR_TEMPLATE_PROPERTIES = [
-  _dbTplProp.text('ふりがな'), _dbTplProp.text('一人称'), _dbTplProp.text('名前_アルファベット表記'),
+  _dbTplProp.furigana('ふりがな'), _dbTplProp.text('一人称'), _dbTplProp.text('名前_アルファベット表記'),
   _dbTplProp.text('名前の由来'), _dbTplProp.text('本名'), _dbTplProp.text('異名'), _dbTplProp.text('異名_オリジナル'),
   _dbTplProp.date('生年月日_西暦'), _dbTplProp.date('基準年月日_西暦'), _dbTplProp.formula('年齢', _CHAR_AGE_FORMULA),
   _dbTplProp.formula('干支', _CHAR_ETO_FORMULA), _dbTplProp.formula('12星座', _CHAR_ZODIAC_FORMULA), _dbTplProp.select('性別', ['男','女','その他']), _dbTplProp.select('血液型', ['A','B','O','AB','不明']),
@@ -155,7 +156,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '伏線の仕込みと回収を追跡',
     icon: 'eye',
     properties: [
-      _dbTplProp.text('ふりがな'),
+      _dbTplProp.furigana('ふりがな'),
       _dbTplProp.select('種類', ['セリフ','ビジュアル','構造','キャラクター','赤ニシン']),
       _dbTplProp.number('仕込み話'), _dbTplProp.multiRelation('仕込みエピソード', DB_TEMPLATE_SHEET.episode, '仕込み伏線'),
       _dbTplProp.text('仕込み方法'), _dbTplProp.text('カモフラージュ'),
@@ -179,7 +180,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: 'ストーリーアークの構造と進行を管理',
     icon: 'gitBranch',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.number('アーク番号'), _dbTplProp.number('開始話'), _dbTplProp.number('終了話'),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.number('アーク番号'), _dbTplProp.number('開始話'), _dbTplProp.number('終了話'),
       _dbTplProp.select('構造タイプ', ['A:目標達成','B:謎解明','C:対決','D:関係変化','E:自己実現','F:転落']),
       _dbTplProp.text('テーマ'), _dbTplProp.text('主人公の嘘と真実'), _dbTplProp.text('話数配分'), _dbTplProp.text('転換点配置'),
       _dbTplProp.text('概要'), _dbTplProp.text('感情曲線'),
@@ -263,7 +264,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '物語の舞台・場所を管理',
     icon: 'mapPin',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.text('地域'), _dbTplProp.select('スケール', ['部屋','建物','街区','都市','地域','国','大陸','世界','異界']),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.text('地域'), _dbTplProp.select('スケール', ['部屋','建物','街区','都市','地域','国','大陸','世界','異界']),
       _dbTplProp.relation('上位舞台', DB_TEMPLATE_SHEET.location), _dbTplProp.multiRelation('下位舞台', DB_TEMPLATE_SHEET.location),
       _dbTplProp.select('機能', ['生活','学習','労働','政治','宗教','商業','戦闘','移動','隠れ家','監禁','その他']),
       _dbTplProp.text('特徴'), _dbTplProp.text('気候'), _dbTplProp.text('雰囲気・トーン'), _dbTplProp.text('人口規模'),
@@ -286,7 +287,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '組織・団体の情報を管理',
     icon: 'users',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.select('種類', ['政府','企業','秘密結社','学校','軍事','宗教','犯罪組織','自治組織','その他']),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.select('種類', ['政府','企業','秘密結社','学校','軍事','宗教','犯罪組織','自治組織','その他']),
       _dbTplProp.text('起源'), _dbTplProp.text('目的'), _dbTplProp.text('資金源'), _dbTplProp.text('指導体制'),
       _dbTplProp.number('構成員数'), _dbTplProp.text('構成員の性質'),
       _dbTplProp.relation('リーダー', DB_TEMPLATE_SHEET.char, 'リーダー担当組織'),
@@ -349,7 +350,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '重要アイテムの情報を管理',
     icon: 'package',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.select('種類', ['武器','防具','道具','素材','鍵','証拠','象徴物','消耗品','その他']),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.select('種類', ['武器','防具','道具','素材','鍵','証拠','象徴物','消耗品','その他']),
       _dbTplProp.text('外見的特徴'), _dbTplProp.multiRelation('所有者', DB_TEMPLATE_SHEET.char, '所有アイテム'),
       _dbTplProp.text('効果'), _dbTplProp.text('物語上の機能'), _dbTplProp.text('入手経緯'), _dbTplProp.select('希少度', ['一般','レア','ユニーク','伝説級']),
       _dbTplProp.multiRelation('関連伏線', DB_TEMPLATE_SHEET.foreshadow),
@@ -367,7 +368,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: 'モンスター・敵対存在の情報を管理',
     icon: 'skull',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.select('種別', ['怪物','亜人','霊体','機械','人工生命','敵組織員','災害','その他']),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.select('種別', ['怪物','亜人','霊体','機械','人工生命','敵組織員','災害','その他']),
       _dbTplProp.select('脅威度', ['S','A','B','C','D']), _dbTplProp.select('知性', ['本能のみ','低い','人間並み','高い','超越']),
       _dbTplProp.text('モチーフ'), _dbTplProp.text('外見・特性'), _dbTplProp.relation('生息地', DB_TEMPLATE_SHEET.location),
       _dbTplProp.text('弱点'), _dbTplProp.multiRelation('能力', DB_TEMPLATE_SHEET.ability),
@@ -384,7 +385,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '種族・民族の情報を管理',
     icon: 'users',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.text('特徴'), _dbTplProp.text('身体的特徴'), _dbTplProp.text('文化'), _dbTplProp.text('社会構造'),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.text('特徴'), _dbTplProp.text('身体的特徴'), _dbTplProp.text('文化'), _dbTplProp.text('社会構造'),
       _dbTplProp.text('寿命'), _dbTplProp.text('言語'), _dbTplProp.multiRelation('居住地域', DB_TEMPLATE_SHEET.location),
       _dbTplProp.multiRelation('出身キャラ', DB_TEMPLATE_SHEET.char, '種族'),
       _dbTplProp.multiRelation('関連世界設定', DB_TEMPLATE_SHEET.world),
@@ -400,7 +401,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '作品世界の歴史的出来事を管理',
     icon: 'calendar',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.number('年表順'), _dbTplProp.text('時期'),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.number('年表順'), _dbTplProp.text('時期'),
       _dbTplProp.select('タイプ', ['建国','戦争','災害','発明','事件','制度変更','人物史','その他']),
       _dbTplProp.select('規模', ['世界','国','地域','組織','個人']),
       _dbTplProp.text('原因'), _dbTplProp.text('結果'),
@@ -419,7 +420,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: '事件・トリック・謎を管理（推理物向け）',
     icon: 'alertTriangle',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.number('発生話'), _dbTplProp.select('種類', ['殺人','盗難','陰謀','事故','失踪','怪異','その他']),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.number('発生話'), _dbTplProp.select('種類', ['殺人','盗難','陰謀','事故','失踪','怪異','その他']),
       _dbTplProp.relation('舞台', DB_TEMPLATE_SHEET.location), _dbTplProp.relation('犯人', DB_TEMPLATE_SHEET.char),
       _dbTplProp.relation('被害者', DB_TEMPLATE_SHEET.char), _dbTplProp.multiRelation('容疑者', DB_TEMPLATE_SHEET.char),
       _dbTplProp.multiRelation('関係キャラ', DB_TEMPLATE_SHEET.char, '関与事件'),
@@ -439,7 +440,7 @@ const BUILTIN_DB_TEMPLATES = [
     description: 'マルチバース・階層世界を管理',
     icon: 'layers',
     properties: [
-      _dbTplProp.text('ふりがな'), _dbTplProp.select('階層', ['メイン','並行世界','上位世界','下位世界','夢・仮想','異界']),
+      _dbTplProp.furigana('ふりがな'), _dbTplProp.select('階層', ['メイン','並行世界','上位世界','下位世界','夢・仮想','異界']),
       _dbTplProp.text('ジャンル'), _dbTplProp.text('ルール'), _dbTplProp.text('メインバースとの差分要素'),
       _dbTplProp.multiRelation('登場ヒロイン', DB_TEMPLATE_SHEET.char), _dbTplProp.text('主人公の変身形態'),
       _dbTplProp.multiRelation('含まれる舞台', DB_TEMPLATE_SHEET.location), _dbTplProp.multiRelation('関連世界設定', DB_TEMPLATE_SHEET.world),
@@ -536,6 +537,20 @@ function _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes) {
 }
 
 function _restoreDbTemplateBackendPropertyTypes(dbPath, snapshot) {
+  if (_dbTemplateProductionSchemaLocked(dbPath)) {
+    // 表示設定の履歴は戻してよいが、過去snapshotの列型を制作管理へ戻すと
+    // relation/date/user契約が壊れる。localStorage側にも現在の型を戻して揃える。
+    const currentTypes = _dbTemplateCurrentPropertyTypes(dbPath);
+    const cfg = getDbViewConfig(dbPath);
+    cfg.propertyTypes = _cloneTemplateData(currentTypes);
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true, skipBackend: true });
+    _setDbTemplateMetadataPropertyTypes(dbPath, currentTypes);
+    if (typeof showProductionManagementSchemaLockedStatus === 'function') {
+      showProductionManagementSchemaLockedStatus();
+    }
+    _refreshDbTemplateHistoryUi(dbPath);
+    return Promise.resolve(false);
+  }
   const propertyTypes = _dbTemplatePropertyTypesFromSnapshot(snapshot, dbPath);
   _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes);
   return _saveDbTemplatePropertyTypesToBackend(dbPath, propertyTypes)
@@ -692,6 +707,7 @@ function _applyDbTemplateViewFields(cfg, template, overwrite) {
 }
 
 function _saveDbTemplatePropertyTypesToBackend(dbPath, propertyTypes) {
+  _dbTemplateAssertProductionPropertyTypesUnchanged(dbPath, propertyTypes);
   if (typeof apiPut !== 'function') {
     _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes);
     return Promise.resolve(true);
@@ -719,6 +735,7 @@ function getAllTemplates() {
  */
 function applyDbTemplate(dbPath, template, opts) {
   const overwrite = opts?.overwrite || false;
+  const productionSchemaLocked = _dbTemplateProductionSchemaLocked(dbPath);
   const originalConfig = getDbViewConfig(dbPath);
   const backendTypes = typeof getPropertyTypes === 'function' ? _cloneTemplateData(getPropertyTypes(dbPath) || {}) : {};
   if (Object.keys(backendTypes).length > 0) {
@@ -735,7 +752,9 @@ function applyDbTemplate(dbPath, template, opts) {
   // 1. プロパティ型を設定
   if (!c.propertyTypes) c.propertyTypes = {};
   template.properties.forEach(p => {
-    if (!overwrite && c.propertyTypes[p.name]) {
+    const reservedLegacy = productionSchemaLocked
+      && window.MeldexProductionSchemaMigration?.reservedLegacyPropertyForPath?.(dbPath, p.name);
+    if (reservedLegacy || (c.propertyTypes[p.name] && (productionSchemaLocked || !overwrite))) {
       skipped.push(p.name);
     } else {
       c.propertyTypes[p.name] = _resolveDbTemplatePropertyTypeForPath(p.type, dbPath, template.name);
@@ -777,7 +796,13 @@ function applyDbTemplate(dbPath, template, opts) {
       if (!c.countTypes[k] || overwrite) c.countTypes[k] = v;
     });
   }
-  _applyDbTemplateViewFields(c, template, overwrite);
+  const usedSavedViewsPath = typeof _applyDbTemplateSavedViews === 'function'
+    && _applyDbTemplateSavedViews(c, template, overwrite);
+  if (!usedSavedViewsPath) {
+    _applyDbTemplateViewFields(c, template, overwrite);
+  }
+  const viewsResult = c._dbTemplateViewsResult || null;
+  delete c._dbTemplateViewsResult;
 
   // 6. エントリテンプレート（別のlocalStorageキー）
   let existingEntityTemplates = null;
@@ -825,7 +850,7 @@ function applyDbTemplate(dbPath, template, opts) {
     throw e;
   }
 
-  return { applied, skipped, backendSavePromise };
+  return { applied, skipped, viewsResult, backendSavePromise };
 }
 
 /**
@@ -855,251 +880,39 @@ function exportDbAsTemplate(dbPath) {
     enabledModes: savedViewModes && savedViewModes.length ? savedViewModes : (c.enabledModes || ['pivot']),
     entityTemplates: getEntityTemplates(dbPath),
     countTypes: hasSavedViews ? (currentCountTypes || {}) : (currentCountTypes && Object.keys(currentCountTypes).length ? currentCountTypes : (c.countTypes || {})),
+    savedViews: typeof exportDbTemplateSavedViews === 'function' ? exportDbTemplateSavedViews(c) : null,
   };
 }
 
-function _dbTemplateTrigger(triggerEl = null) {
-  if (triggerEl && typeof triggerEl.focus === 'function') return triggerEl;
-  const active = typeof document !== 'undefined' ? document.activeElement : null;
-  return active && typeof active.focus === 'function' ? active : null;
+function _dbTemplateProductionSchemaLocked(dbPath) {
+  return typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(dbPath);
 }
 
-function _focusDbTemplateTrigger(triggerEl) {
-  if (!triggerEl || typeof triggerEl.focus !== 'function' || !triggerEl.isConnected) return;
-  try {
-    triggerEl.focus({ preventScroll: true });
-  } catch {
-    try { triggerEl.focus(); } catch {}
+function _dbTemplateCurrentPropertyTypes(dbPath) {
+  const metadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath) : null;
+  const backendTypes = metadata?.property_types;
+  if (backendTypes && typeof backendTypes === 'object' && Object.keys(backendTypes).length) {
+    return _cloneTemplateData(backendTypes);
+  }
+  return typeof getPropertyTypes === 'function'
+    ? _cloneTemplateData(getPropertyTypes(dbPath) || {})
+    : {};
+}
+
+function _dbTemplateAssertProductionPropertyTypesUnchanged(dbPath, nextTypes) {
+  if (!_dbTemplateProductionSchemaLocked(dbPath)) return;
+  const currentTypes = _dbTemplateCurrentPropertyTypes(dbPath);
+  const candidateTypes = nextTypes && typeof nextTypes === 'object' ? nextTypes : {};
+  for (const [name, typeConfig] of Object.entries(currentTypes)) {
+    if (!Object.prototype.hasOwnProperty.call(candidateTypes, name)
+      || JSON.stringify(candidateTypes[name] || {}) !== JSON.stringify(typeConfig || {})) {
+      throw new Error(`制作管理に必要な列「${name}」の種類・設定はテンプレートから変更できません`);
+    }
+  }
+  for (const name of Object.keys(candidateTypes)) {
+    if (window.MeldexProductionSchemaMigration?.reservedLegacyPropertyForPath?.(dbPath, name)) {
+      throw new Error(`制作管理では旧名称列「${name}」を追加できません。エントリ名を使用してください`);
+    }
   }
 }
-
-function _cleanupDbTemplateOverlay(overlay) {
-  if (!overlay || typeof overlay._dbTemplateCleanup !== 'function') return;
-  overlay._dbTemplateCleanup();
-}
-
-function _isTopDbTemplateOverlay(overlay) {
-  if (!overlay?.isConnected) return false;
-  const overlays = Array.from(document.querySelectorAll('.modal-overlay[data-db-template-modal]'))
-    .filter(el => el.isConnected);
-  return overlays[overlays.length - 1] === overlay;
-}
-
-function _closeDbTemplateOverlay(overlay, triggerEl = null, options = {}) {
-  if (!overlay || !overlay.isConnected) return;
-  _cleanupDbTemplateOverlay(overlay);
-  overlay.remove();
-  if (options.restoreFocus === false) return;
-  const trigger = triggerEl || overlay._dbTemplateTrigger || null;
-  _focusDbTemplateTrigger(trigger);
-  setTimeout(() => _focusDbTemplateTrigger(trigger), 0);
-  setTimeout(() => _focusDbTemplateTrigger(trigger), 60);
-}
-
-function _bindDbTemplateDismiss(overlay, triggerEl = null) {
-  if (!overlay) return;
-  const onPointerDown = (e) => {
-    if (e.target !== overlay) return;
-    _closeDbTemplateOverlay(overlay, triggerEl);
-  };
-  const onKeyDown = (e) => {
-    if (e.key !== 'Escape' || !overlay.isConnected) return;
-    if (!_isTopDbTemplateOverlay(overlay)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    _closeDbTemplateOverlay(overlay, triggerEl);
-  };
-  overlay.addEventListener('pointerdown', onPointerDown);
-  document.addEventListener('keydown', onKeyDown, true);
-  overlay._dbTemplateCleanup = () => {
-    overlay.removeEventListener('pointerdown', onPointerDown);
-    document.removeEventListener('keydown', onKeyDown, true);
-    overlay._dbTemplateCleanup = null;
-  };
-}
-
-function _dbTemplateViewportSize() {
-  const zoom = typeof _getZoom === 'function'
-    ? Math.max(0.1, _getZoom() || 1)
-    : Math.max(0.1, parseFloat(document.documentElement?.style?.zoom || '') || 1);
-  const width = (window.visualViewport?.width || window.innerWidth || document.documentElement?.clientWidth || 800) / zoom;
-  const height = (window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 600) / zoom;
-  return { width, height };
-}
-
-function _isDbTemplateMobileSheetMode() {
-  return document.body?.dataset?.cloudMobile === '1'
-    || document.body?.dataset?.mobileUi === '1'
-    || document.body?.dataset?.mobileUiLocal === '1'
-    || window.MeldexCloudMobileState?.mobile === true;
-}
-
-function _setDbTemplateModalSize(modal, opts = {}) {
-  if (!modal || _isDbTemplateMobileSheetMode()) return;
-  const viewport = _dbTemplateViewportSize();
-  const usableWidth = Math.max(260, viewport.width - 32);
-  const usableHeight = Math.max(220, viewport.height - 24);
-  const maxWidth = Math.max(260, opts.maxWidth || 500);
-  modal.style.width = Math.round(Math.min(maxWidth, usableWidth)) + 'px';
-  if (!opts.heightRatio && !opts.maxHeight) return;
-  let targetHeight = opts.heightRatio ? viewport.height * opts.heightRatio : usableHeight;
-  if (opts.maxHeight) targetHeight = Math.min(targetHeight, opts.maxHeight);
-  targetHeight = Math.min(targetHeight, usableHeight);
-  if (opts.minHeight) targetHeight = Math.max(Math.min(opts.minHeight, usableHeight), targetHeight);
-  modal.style.height = Math.round(targetHeight) + 'px';
-}
-
-function _showDbTemplateOverlay(overlay, modal, triggerEl = null, focusTarget = null) {
-  if (!overlay || !modal) return;
-  overlay._dbTemplateTrigger = triggerEl || null;
-  _bindDbTemplateDismiss(overlay, triggerEl);
-  document.body.appendChild(overlay);
-  if (typeof GBModalShell !== 'undefined' && GBModalShell?.enhanceAll) GBModalShell.enhanceAll();
-  requestAnimationFrame(() => {
-    try {
-      (focusTarget || modal)?.focus?.({ preventScroll: true });
-    } catch {
-      try { (focusTarget || modal)?.focus?.(); } catch {}
-    }
-  });
-}
-
-function _setupDbTemplateButton(button, className, e2eId, ariaLabel = '') {
-  if (!button) return button;
-  button.type = 'button';
-  if (className) button.className = className;
-  if (e2eId) button.dataset.e2eId = e2eId;
-  if (ariaLabel) button.setAttribute('aria-label', ariaLabel);
-  return button;
-}
-
-/* --- テンプレートギャラリーUI --- */
-
-/**
- * テンプレートギャラリーモーダルを表示
- */
-function showTemplateGalleryModal(dbPath, triggerEl = null) {
-  const trigger = _dbTemplateTrigger(triggerEl);
-  const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
-  const titleId = `db-template-gallery-title-${seq}`;
-  const descId = `db-template-gallery-desc-${seq}`;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.dbTemplateModal = 'gallery';
-  overlay.style.zIndex = '120';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal db-template-modal db-template-gallery-modal';
-  modal.dataset.e2eId = 'db-template-gallery-dialog';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', titleId);
-  modal.setAttribute('aria-describedby', descId);
-  modal.tabIndex = -1;
-  _setDbTemplateModalSize(modal, { maxWidth: 720, maxHeight: 720, heightRatio: 0.8, minHeight: 420 });
-
-  // ヘッダー
-  const header = document.createElement('div');
-  header.className = 'db-template-modal-header';
-  const h3 = document.createElement('h3');
-  h3.id = titleId;
-  h3.textContent = 'シートテンプレート';
-  header.appendChild(h3);
-  const desc = document.createElement('div');
-  desc.id = descId;
-  desc.className = 'gb-visually-hidden';
-  desc.textContent = 'シートに適用するテンプレートを選ぶダイアログ';
-  header.appendChild(desc);
-  const closeBtn = document.createElement('button');
-  _setupDbTemplateButton(closeBtn, 'gb-btn tb-icon-btn db-template-close-btn', 'db-template-gallery-close', '閉じる');
-  closeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : '×';
-  closeBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
-  header.appendChild(closeBtn);
-  modal.appendChild(header);
-
-  // コンテンツ（左: フィルタ、右: カード）
-  const content = document.createElement('div');
-  content.className = 'db-template-content';
-
-  // 左サイドバー
-  const sidebar = document.createElement('div');
-  sidebar.className = 'db-template-sidebar';
-  sidebar.setAttribute('aria-label', 'テンプレート種別');
-  let currentTier = 'all';
-
-  const tierFilters = [
-    { key: 'all', label: 'すべて' },
-    { key: '1', label: 'Tier 1' },
-    { key: '2', label: 'Tier 2' },
-    { key: '3', label: 'Tier 3' },
-    { key: 'custom', label: 'カスタム' },
-  ];
-
-  tierFilters.forEach(tf => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = tf.label;
-    btn.className = 'template-tier-btn' + (tf.key === 'all' ? ' active' : '');
-    btn.dataset.tier = tf.key;
-    btn.dataset.e2eId = `db-template-tier-${tf.key}`;
-    btn.setAttribute('aria-pressed', tf.key === 'all' ? 'true' : 'false');
-    btn.addEventListener('click', () => {
-      currentTier = tf.key;
-      sidebar.querySelectorAll('.template-tier-btn').forEach(b => {
-        b.classList.remove('active');
-        b.setAttribute('aria-pressed', 'false');
-      });
-      btn.classList.add('active');
-      btn.setAttribute('aria-pressed', 'true');
-      renderTemplateCards();
-    });
-    sidebar.appendChild(btn);
-  });
-  content.appendChild(sidebar);
-
-  // 右: カードグリッド
-  const grid = document.createElement('div');
-  grid.className = 'template-grid';
-  grid.dataset.e2eId = 'db-template-grid';
-  content.appendChild(grid);
-  modal.appendChild(content);
-
-  // フッター: カスタムテンプレート作成ボタン
-  const footer = document.createElement('div');
-  footer.className = 'db-template-footer';
-  const createBtn = document.createElement('button');
-  _setupDbTemplateButton(createBtn, 'gb-btn gb-btn-sm', 'db-template-create-open');
-  createBtn.textContent = '+ 現在のシートからテンプレート作成';
-  createBtn.addEventListener('click', () => {
-    _closeDbTemplateOverlay(overlay, trigger, { restoreFocus: false });
-    showCreateTemplateModal(dbPath, trigger);
-  });
-  footer.appendChild(createBtn);
-  const cancelBtn = document.createElement('button');
-  _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-gallery-cancel');
-  cancelBtn.textContent = '閉じる';
-  cancelBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
-  footer.appendChild(cancelBtn);
-  modal.appendChild(footer);
-
-  overlay.appendChild(modal);
-  _showDbTemplateOverlay(overlay, modal, trigger, modal);
-
-  function renderTemplateCards() {
-    grid.innerHTML = '';
-    const templates = getAllTemplates();
-    const filtered = templates.filter(t => {
-      if (currentTier === 'all') return true;
-      if (currentTier === 'custom') return t.tier === 0;
-      return t.tier === Number(currentTier);
-    });
-
-    if (filtered.length === 0) {
-      const empty = document.createElement('div');
-      empty.textContent = 'テンプレートがありません';
-      empty.style.cssText = 'color:var(--fg2);padding:20px;';
-      grid.appendChild(empty);
-      return;
-    }
-
-    filtered.forEach(tmpl => {

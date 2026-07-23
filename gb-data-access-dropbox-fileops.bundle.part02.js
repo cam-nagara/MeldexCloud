@@ -1,3 +1,67 @@
+    if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
+    return name;
+  }
+
+  function _deletedVersionToken() {
+    return `d_${_versionTimestamp()}`;
+  }
+
+  function _deletedVersionsDir(baseDir) {
+    return _joinPath(baseDir, '_deleted');
+  }
+
+  async function _softDeleteVersionEntry(provider, baseDir, version, kind) {
+    const safeName = _safeVersionName(version);
+    const sourcePath = _joinPath(baseDir, safeName);
+    const source = await _resolveEntryHandle(provider, sourcePath);
+    const expectedKind = kind === 'folder' ? 'directory' : 'file';
+    if (!source || source.kind !== expectedKind) throw new Error('バージョンが見つかりません');
+    const token = _safeVersionName(_deletedVersionToken());
+    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), token);
+    await provider.movePath(sourcePath, _joinPath(deletedDir, safeName));
+    await provider.writeJson(_joinPath(deletedDir, '_meta.json'), {
+      kind,
+      version: safeName,
+      deleted_at: _nowIso(),
+    });
+    return { ok: true, token, version: safeName };
+  }
+
+  async function _restoreDeletedVersionEntry(provider, baseDir, token, kind) {
+    const safeToken = _safeVersionName(token);
+    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), safeToken);
+    const meta = await _readJsonSafe(provider, _joinPath(deletedDir, '_meta.json'), null);
+    if (!meta || meta.kind !== kind) throw new Error('削除済みバージョンが見つかりません');
+    const versionName = _safeVersionName(meta.version || '');
+    const sourcePath = _joinPath(deletedDir, versionName);
+    const expectedKind = kind === 'folder' ? 'directory' : 'file';
+    const source = await _resolveEntryHandle(provider, sourcePath);
+    if (!source || source.kind !== expectedKind) throw new Error('削除済みバージョンが見つかりません');
+    const target = await _moveConflictName(provider, baseDir, versionName, kind !== 'folder');
+    await provider.movePath(sourcePath, target.path);
+    await provider.deletePath(deletedDir).catch(() => {});
+    return { ok: true, version: _basename(target.path) };
+  }
+
+  async function _readFileVersion(provider, path, version) {
+    const normalized = _normalizeFolderPath(path);
+    const name = _safeVersionName(version);
+    const versionPath = _joinPath(_fileVersionDir(normalized), name);
+    const entry = await _resolveEntryHandle(provider, versionPath);
+    if (!entry || entry.kind !== 'file') throw new Error('バージョンが見つかりません');
+    return { content: await provider.readText(versionPath), name };
+  }
+
+  async function _restoreFileVersion(provider, path, version) {
+    const normalized = _normalizeFolderPath(path);
+    if (_isProductionFolderNotePath(normalized)) {
+      throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
+    }
+    const source = await _resolveEntryHandle(provider, normalized);
+    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+    const data = await _readFileVersion(provider, normalized, version);
+    _rejectProductionLegacyEntryContent(normalized, data.content || '');
+    await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
     await provider.writeText(normalized, data.content || '');
     return { ok: true };
   }
@@ -118,6 +182,20 @@
     if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
     const safeVersion = _safeVersionName(version);
     const meta = await _readFolderVersion(provider, normalized, safeVersion);
+    const protectedFile = (Array.isArray(meta.files) ? meta.files : []).find(file => {
+      const relPath = _normalizeFolderPath(file?.rel_path || '');
+      return relPath && _isProductionFolderNotePath(_joinPath(normalized, relPath));
+    });
+    if (protectedFile) {
+      throw new Error('制作管理の列定義を含むフォルダ履歴は汎用復元できません');
+    }
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      const dst = _joinPath(normalized, relPath);
+      if (!_productionReservedEntryProperties(dst).length) continue;
+      const src = _joinPath(_folderVersionDir(normalized), safeVersion, 'files', relPath);
+      _rejectProductionLegacyEntryContent(dst, await provider.readText(src));
+    }
     await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
     const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
     const versionFilesDir = _joinPath(_folderVersionDir(normalized), safeVersion, 'files');
@@ -276,6 +354,12 @@
       if (!['keep_original', 'keep_conflict'].includes(action)) throw new Error('競合解消アクションが不正です');
       const originalPath = _originalPathForConflict(conflictPath);
       if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
+      if (action === 'keep_conflict' && _isProductionFolderNotePath(originalPath)) {
+        throw new Error('制作管理の列定義へ競合コピーを適用できません');
+      }
+      if (action === 'keep_conflict' && _productionReservedEntryProperties(originalPath).length) {
+        _rejectProductionLegacyEntryContent(originalPath, await provider.readText(conflictPath));
+      }
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
@@ -399,7 +483,11 @@
       const provider = await _requirePwaProvider('readwrite');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
       if (!filePath) throw new Error('path は必須です');
+      if (_isProductionFolderNotePath(filePath)) {
+        throw new Error('制作管理の列定義ファイルは汎用ファイル保存から変更できません');
+      }
       const content = String(body?.content ?? '');
+      _rejectProductionLegacyEntryContent(filePath, content);
       const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
       const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
       const createOnly = !!(body?.create_only || body?.createOnly);
@@ -432,7 +520,14 @@
         targetName = `${split.stem}_${counter}${split.ext}`;
         targetPath = _joinPath(targetDir, targetName);
       }
-      await _writeBytes(provider, targetPath, _decodeUploadData(body?.data || ''));
+      if (_isProductionFolderNotePath(targetPath)) {
+        throw new Error('制作管理の列定義ファイルは汎用アップロードから変更できません');
+      }
+      const uploadBytes = _decodeUploadData(body?.data || '');
+      if (_productionReservedEntryProperties(targetPath).length && /\.md$/i.test(targetPath)) {
+        _rejectProductionLegacyEntryContent(targetPath, new TextDecoder().decode(uploadBytes));
+      }
+      await _writeBytes(provider, targetPath, uploadBytes);
       return { ok: true, path: targetPath, name: targetName };
     }
 
@@ -803,98 +898,3 @@
       }
       throw new Error(`不正なタイプ: ${type}`);
     }
-
-    if (pathname === '/outliner/rename' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const oldPath = _normalizeFolderPath(body?.old_path || '');
-      const newName = _validateItemName(body?.new_name || '', 'new_name');
-      const source = await _resolveEntryHandle(provider, oldPath);
-      if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      const parentPath = _dirname(oldPath);
-      const sourceName = _basename(oldPath);
-      if (source.kind === 'directory') {
-        const newPath = _joinPath(parentPath, newName);
-        if (newPath !== oldPath && await _pathExists(provider, newPath)) throw new Error(`既に存在: ${newName}`);
-        const warnings = [];
-        if (newPath !== oldPath) {
-          await _moveEntry(provider, oldPath, newPath);
-          await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, newPath, true));
-        }
-        const oldNotePath = _joinPath(newPath, sourceName + '.md');
-        const newNotePath = _joinPath(newPath, newName + '.md');
-        if (await _pathExists(provider, oldNotePath) && !await _pathExists(provider, newNotePath)) {
-          await _moveEntry(provider, oldNotePath, newNotePath);
-          await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
-        }
-        await _runPostMutationStep(warnings, 'stored-paths', () => (
-          typeof _rewriteStoredPathsForProvider === 'function'
-            ? _rewriteStoredPathsForProvider(provider, oldPath, newPath, true)
-            : Promise.resolve(_rewriteStoredPaths(oldPath, newPath, true))
-        ));
-        await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: true }, warnings);
-        await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, { action: 'rename', oldPath, newPath, isFolder: true }));
-        let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-        await _runPostMutationStep(warnings, 'references', async () => {
-          relocate = await _relocateReferences(provider, oldPath, newPath, true);
-        });
-        return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
-      }
-      const split = _splitNameAndExt(sourceName);
-      const nextPath = _joinPath(parentPath, newName + split.ext);
-      if (nextPath !== oldPath && await _pathExists(provider, nextPath)) throw new Error(`既に存在: ${newName + split.ext}`);
-      if (split.ext === '.md' && String(body?.type || '') === 'page') {
-        const original = await provider.readText(oldPath);
-        await provider.writeText(oldPath, original.replace(/^# .+/m, '# ' + newName));
-      }
-      if (nextPath !== oldPath) {
-        await _moveEntry(provider, oldPath, nextPath);
-      }
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, nextPath, false));
-      await _runPostMutationStep(warnings, 'stored-paths', () => (
-        typeof _rewriteStoredPathsForProvider === 'function'
-          ? _rewriteStoredPathsForProvider(provider, oldPath, nextPath, false)
-          : Promise.resolve(_rewriteStoredPaths(oldPath, nextPath, false))
-      ));
-      await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath: nextPath, isFolder: false }, warnings);
-      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, { action: 'rename', oldPath, newPath: nextPath, isFolder: false }));
-      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-      await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, oldPath, nextPath, false);
-      });
-      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/outliner/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _deleteOutlinerPathToTrash(provider, body?.path || '');
-    }
-
-    if (pathname === '/outliner/delete-batch' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const items = Array.isArray(body?.items) ? body.items : [];
-      const results = [];
-      for (const item of items) {
-        try {
-          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item?.path || '') });
-        } catch (error) {
-          results.push({ ok: false, error: error?.message || String(error) });
-        }
-      }
-      return { ok: true, results };
-    }
-
-    if (pathname === '/outliner/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, trashName);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, trashPath, originalPath);
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {

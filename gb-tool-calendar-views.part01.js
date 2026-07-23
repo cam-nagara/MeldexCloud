@@ -164,11 +164,14 @@ CalendarComponent.prototype._sanitizeEventColor = function(color) {
 
 CalendarComponent.prototype._eventSourceClass = function(ev) {
   const source = String(ev?.calendar_source || '');
-  if (source === 'production-task') return ' gb-cal-production-task-event';
-  if (source === 'shift') return ' gb-cal-shift-event';
-  if (source === 'shift-break') return ' gb-cal-shift-break-event';
-  if (source === 'attendance') return ' gb-cal-attendance-event';
-  return '';
+  let cls = '';
+  if (source === 'production-task') cls = ' gb-cal-production-task-event';
+  else if (source === 'shift') cls = ' gb-cal-shift-event';
+  else if (source === 'shift-break') cls = ' gb-cal-shift-break-event';
+  else if (source === 'attendance') cls = ' gb-cal-attendance-event';
+  // 保存未確定（タイムアウト後の再試行待ち）のイベントは破線枠+バッジで区別する
+  if (ev?._saveState === 'unsaved') cls += ' gb-cal-event-unsaved';
+  return cls;
 };
 
 CalendarComponent.prototype._eventTitleContentHtml = function(ev) {

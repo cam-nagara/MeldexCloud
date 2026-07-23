@@ -13,7 +13,7 @@ const GBDocking = (() => {
     database: 'シート',
     scriptnote: 'シナリオ',
     board: 'ボード',
-    calendar: 'スケジューラー',
+    calendar: 'スケジュール',
     preview: 'ビューワー',
     'smart-db': 'スマートシート',
     folder: 'フォルダ',

@@ -357,6 +357,8 @@
     '#csv-add-row',
     '#csv-add-col',
     '#csv-to-db',
+    '#csv-undo',
+    '#csv-redo',
     '#csv-table-container input',
     '#csv-table-container textarea',
     '#csv-table-container select',
@@ -365,6 +367,8 @@
     '#folder-toolbar-cut',
     '#folder-toolbar-paste',
     '#folder-toolbar-delete',
+    '#folder-toolbar-undo',
+    '#folder-toolbar-redo',
     '#folder-view [data-action^="fvBulkBoard"]',
     '#folder-view [data-action^="fvBulkDelete"]',
     '#sidebar .sidebar-section-btn[data-action*="_showHomeAddMenu"]',
@@ -726,6 +730,7 @@
         </div>
       </div>`;
       document.body.appendChild(overlay);
+      window.MeldexCloudBootstrapInherit?.renderInheritSection?.(overlay);
 
       function setError(text) {
         const el = overlay.querySelector('#cloud-setup-error');

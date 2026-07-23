@@ -91,15 +91,15 @@ async function _disableBidirectionalRelationConfig(sourceDbPath, propName, prevC
   const remoteCfg = nextTypes[prev.remotePropName];
   const expectedRelationDb = prev.remoteDbPath === sourceDbPath ? '' : sourceDbPath;
   if (!remoteCfg) {
-    _warnBidirectionalDisableSkipped('参照先プロパティが見つかりません: ' + prev.remotePropName);
+    _warnBidirectionalDisableSkipped('参照先の列が見つかりません: ' + prev.remotePropName);
     return;
   }
   if ((remoteCfg.bidirectionalProp || '') !== propName) {
-    _warnBidirectionalDisableSkipped('参照先プロパティの対応元が一致しません: ' + prev.remotePropName);
+    _warnBidirectionalDisableSkipped('参照先の列の対応元が一致しません: ' + prev.remotePropName);
     return;
   }
   if ((remoteCfg.relationDb || '') !== expectedRelationDb) {
-    _warnBidirectionalDisableSkipped('参照先プロパティの参照先シートが一致しません: ' + prev.remotePropName);
+    _warnBidirectionalDisableSkipped('参照先の列の参照先シートが一致しません: ' + prev.remotePropName);
     return;
   }
   const updated = { ...remoteCfg };
@@ -116,20 +116,20 @@ async function _ensureBidirectionalRelationConfig(sourceDbPath, propName, config
   });
   if (!resolved) return config;
   if (resolved.remoteDbPath === sourceDbPath && resolved.remotePropName === propName) {
-    throw new Error('同一シートで双方向リレーションを使う場合は、参照先側に別名の対応プロパティを指定してください');
+    throw new Error('同一シートで双方向リレーションを使う場合は、参照先側に別名の対応列を指定してください');
   }
   const meta = await _getDbMetadataCached(resolved.remoteDbPath, true);
   const nextTypes = { ...(meta.property_types || {}) };
   const existing = nextTypes[resolved.remotePropName];
   const expectedRelationDb = resolved.remoteDbPath === sourceDbPath ? '' : sourceDbPath;
   if (existing && existing.type && existing.type !== 'relation' && existing.type !== 'multi-relation') {
-    throw new Error('参照先シート側の対応プロパティがリレーション型ではありません: ' + resolved.remotePropName);
+    throw new Error('参照先シート側の対応列がリレーション型ではありません: ' + resolved.remotePropName);
   }
   if (existing && existing.bidirectional && (existing.bidirectionalProp || '') !== propName) {
-    throw new Error('参照先シート側の対応プロパティが別の双方向リレーションに使われています: ' + resolved.remotePropName);
+    throw new Error('参照先シート側の対応列が別の双方向リレーションに使われています: ' + resolved.remotePropName);
   }
   if (existing && (existing.relationDb || '') !== expectedRelationDb) {
-    throw new Error('参照先シート側の対応プロパティが別の参照先シートを向いています: ' + resolved.remotePropName);
+    throw new Error('参照先シート側の対応列が別の参照先シートを向いています: ' + resolved.remotePropName);
   }
   const remoteConfig = {
     ...(existing || {}),

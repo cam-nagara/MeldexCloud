@@ -378,6 +378,21 @@
     return body;
   }
 
+  function _normalizeHeaderCloseButton(header) {
+    if (!header?.querySelector) return null;
+    const close = header.querySelector([
+      '.gb-modal-close',
+      'button[aria-label$="閉じる"]',
+      'button[title="閉じる"]',
+      'button[data-modal-close]',
+      'button[data-close]',
+    ].join(', '));
+    if (!close) return null;
+    close.classList.add('gb-modal-close');
+    close.dataset.modalCloseNormalized = '1';
+    return close;
+  }
+
   function _numericStyle(value, fallback) {
     const parsed = parseFloat(value || '');
     return Number.isFinite(parsed) ? parsed : fallback;
@@ -572,6 +587,11 @@
 
   function _clearModalShellGeometryForSheet(modal) {
     modal.classList.remove('gb-modal-resizable');
+    // 旧リサイズ機構（gb-app.part03 の _gbInstallModalResizeEdges）は
+    // data-gb-resizable-modal="1" を「導入済み」ガードに使う。ここでエッジだけ
+    // 除去してフラグを残すと、シート解除後にどちらの機構も再導入せず
+    // リサイズ不能のまま固定される（導入とペアで必ず解除する）。
+    if (modal.dataset && modal.dataset.gbResizableModal) delete modal.dataset.gbResizableModal;
     modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
     ['position', 'margin', 'left', 'top', 'height'].forEach(prop => {
       modal.style[prop] = '';
@@ -620,6 +640,7 @@
     if (!modal.getAttribute('role')) modal.setAttribute('role', 'dialog');
     if (!modal.getAttribute('aria-modal')) modal.setAttribute('aria-modal', 'true');
     const header = _ensureHeader(modal);
+    _normalizeHeaderCloseButton(header);
     const footer = _ensureFooter(modal);
     _ensureBody(modal, header, footer);
     _syncResizableShell(overlay, modal, header, footer);

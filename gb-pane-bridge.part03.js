@@ -1,5 +1,5 @@
       page: 'ノート', scriptnote: 'シナリオ', database: 'シート',
-      board: 'ボード', calendar: 'スケジューラー',
+      board: 'ボード', calendar: 'スケジュール',
       'smart-db': 'スマートシート', folder: 'フォルダ',
       };
       const containerId = LEGACY_CONTAINERS[toolType];
@@ -438,7 +438,7 @@
       ['シナリオ', 'bookOpenText', () => openToolTab('scriptnote')],
       ['シート', 'db', () => openToolTab('database')],
       ['ボード', 'presentation', () => openToolTab('board')],
-      ['スケジューラー', 'calendar', () => openToolTab('calendar')],
+      ['スケジュール', 'calendar', () => openToolTab('calendar')],
       ['スマートシート', 'databaseSearch', () => openToolTab('smart-db')],
       ['---'],
       ['フォルダ', 'folder', () => openToolTab('folder')],
@@ -536,10 +536,21 @@
     if (previousActivePane && previousActivePane !== paneId) {
       _refreshMountedPane(previousActivePane);
     }
+    // タブ切替でアクティブタブが変わった分、戻る/進むボタンの表示もタブ単位の履歴へ
+    // 追随させる（②タブ別ナビ履歴、2026-07-21）。activateTab の高速経路（タブDOM再構築を
+    // 伴わない場合）・パネルセットのグループ切替・ペイン間 moveTab はいずれもここを
+    // 通るため、この1箇所に集約する。
+    if (typeof GBLayout.updatePaneNavButtons === 'function') {
+      GBLayout.updatePaneNavButtons(paneId);
+      if (previousActivePane && previousActivePane !== paneId) {
+        GBLayout.updatePaneNavButtons(previousActivePane);
+      }
+    }
     _syncStateView();
     _mountFloatingAnnotationUi();
     const detailSourcePaneId = _isDetailSyncSourcePane(paneId) ? paneId : (GBLayout.activePane || paneId);
     _syncDetailForActivePane(detailSourcePaneId);
+    _syncFollowingVersionTabs();
     _syncToolButtonStates();
     if (typeof GBAppLayouts !== 'undefined' && typeof GBAppLayouts.syncButtons === 'function') {
       GBAppLayouts.syncButtons();
@@ -598,6 +609,7 @@
     getCurrentOpenTarget: _getCurrentAnnotationTarget,
     rememberAnnotationTargetForPane: _rememberAnnotationTargetForPane,
     refreshPaneAfterTabSwitch: _refreshPaneAfterTabSwitch,
+    syncFollowingVersionTabs: _syncFollowingVersionTabs,
     retractPaneContent: _retractPaneContent,
     toolLabel: _toolLabel,
     toggleNewMenu: _toggleNewMenu,

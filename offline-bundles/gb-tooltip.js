@@ -69,6 +69,7 @@
     '#pivot-table tbody td',
     '.pivot-table tbody td',
     '.pivot-view td[role="cell"]',
+    '.sn2-role-btn',
     'td[data-prop-name]',
     'td.col-entity',
     '.new-entity-row td',
@@ -253,7 +254,7 @@
     'sn-action:saveFilter': '現在のフィルタを登録します',
     'sn-action:search': 'シナリオ本文を検索または置換します',
     'sn-action:detail': 'シナリオのオプションを開きます',
-    'cal-action:toggleSidebar': 'スケジューラーサイドバーを開閉します',
+    'cal-action:toggleSidebar': 'スケジュールサイドバーを開閉します',
     'cal-action:today': '今日へ移動します',
     'cal-action:prev': '前の期間へ移動します',
     'cal-action:next': '次の期間へ移動します',
@@ -262,7 +263,7 @@
     'cal-action:production': '制作管理パネルを開きます',
     'cal-action:sync': '外部カレンダーと同期します',
     'cal-action:sidebarOnly': 'サイドバーのみの表示に切り替えます',
-    'cal-action:settings': 'スケジューラー設定を開きます',
+    'cal-action:settings': 'スケジュール設定を開きます',
     'cal-action:miniPrev': '小型カレンダーを前の月へ移動します',
     'cal-action:miniNext': '小型カレンダーを次の月へ移動します',
     'cal-action:addTodayTask': '今日のToDoを追加します',
@@ -1019,7 +1020,7 @@
   regId('btn-version',         { label: 'バージョン管理', desc: 'ファイルの履歴・差分・復元を行うパネルを開きます' });
   regId('btn-filter',          { label: 'フィルタ',   desc: 'シートの絞り込み条件を設定します', shortcutId: 'db.filter' });
   regId('rab-detail',          { label: 'オプション', desc: '右サイドバーにオプション設定タブを表示します' });
-  regId('rab-calendar',        { label: 'スケジューラー', desc: '右サイドバーにスケジューラーを表示します' });
+  regId('rab-calendar',        { label: 'スケジュール', desc: '右サイドバーにスケジュールを表示します' });
   regId('rab-chat',            { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
   regId('rab-tags',            { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
   regId('rab-annotation',      { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
@@ -1027,7 +1028,7 @@
 
   // 右アクティビティバー: data-rp-tab
   regData('rp-tab', 'detail',     { label: 'オプション', desc: '右サイドバーにオプション設定タブを表示します' });
-  regData('rp-tab', 'calendar',   { label: 'スケジューラー', desc: '右サイドバーにスケジューラーを表示します' });
+  regData('rp-tab', 'calendar',   { label: 'スケジュール', desc: '右サイドバーにスケジュールを表示します' });
   regData('rp-tab', 'chat',       { label: 'チャット',   desc: '右サイドバーにチャットを表示します' });
   regData('rp-tab', 'tags',       { label: 'タグ',       desc: '右サイドバーにタグ管理を表示します' });
   regData('rp-tab', 'annotation', { label: '注釈',       desc: '右サイドバーに注釈一覧を表示します' });
@@ -1121,7 +1122,7 @@
   regId('btn-db-detail',          { label: 'オプション', desc: 'シートの表示オプションを開閉します' });
   regAction('showunifiedfiltermodal', { label: 'フィルタ', desc: 'シートの絞り込み条件を設定します', shortcutId: 'db.filter' });
   regAction('addcolumn',          { label: '列追加',     desc: 'シートに新しい列を追加します' });
-  regData('cal-action', 'toggleSidebar', { label: 'スケジューラーサイドバー', desc: '小型カレンダーやイベント一覧の表示を切り替えます' });
+  regData('cal-action', 'toggleSidebar', { label: 'スケジュールサイドバー', desc: '小型カレンダーやイベント一覧の表示を切り替えます' });
   regData('cal-action', 'today',         { label: '今日',     desc: '表示位置を今日に戻します', shortcutId: 'cal.today' });
   regData('cal-action', 'prev',          { label: '前へ',     desc: '前の期間（日/週/月）に移動します', shortcutId: 'cal.prev' });
   regData('cal-action', 'next',          { label: '次へ',     desc: '次の期間（日/週/月）に移動します', shortcutId: 'cal.next' });
@@ -1130,7 +1131,7 @@
   regData('cal-action', 'production',    { label: '制作管理', desc: '制作管理パネルを開きます' });
   regData('cal-action', 'sync',          { label: '外部同期', desc: 'Googleカレンダー等と同期します' });
   regData('cal-action', 'sidebarOnly',   { label: 'サイドバーのみ', desc: 'メイン領域を隠してサイドバーのみ表示します' });
-  regData('cal-action', 'settings',      { label: 'スケジューラー設定', desc: 'スケジューラーの表示と動作を設定します' });
+  regData('cal-action', 'settings',      { label: 'スケジュール設定', desc: 'スケジュールの表示と動作を設定します' });
   regData('cal-action', 'miniPrev',      { label: '前の月', desc: 'サイドバーの小型カレンダーを前の月に進めます' });
   regData('cal-action', 'miniNext',      { label: '次の月', desc: 'サイドバーの小型カレンダーを次の月に進めます' });
   regData('cal-action', 'addTodayTask',  { label: '今日のToDo追加', desc: '今日の日付でToDoを追加します' });
@@ -1537,6 +1538,9 @@
     hide: hideNow,
     refresh,
     getTooltipText,
+    // 旧 title ツールチップ経路（gb-events.js）が委譲前に除外リスト
+    // （タブ・カスタムリンク等）を照会できるようにする
+    isEligible: isTooltipEligible,
     register: (scope, key, entry) => reg(scope, key, entry)
   };
 })();

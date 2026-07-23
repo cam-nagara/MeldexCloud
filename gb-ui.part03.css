@@ -401,8 +401,8 @@ input[type="range"]::-moz-range-thumb {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   background: transparent;
   border: none;
@@ -410,6 +410,20 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
   border-radius: var(--ui-radius-xs);
   flex-shrink: 0;
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1;
+}
+.gb-modal-close svg {
+  width: 20px !important;
+  height: 20px !important;
+  min-width: 20px;
+  min-height: 20px;
+  stroke-width: 2.25;
+}
+.gb-modal-close .ico {
+  width: 20px;
+  height: 20px;
 }
 .gb-modal-close:hover {
   background: var(--ui-hover-bg);

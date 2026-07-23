@@ -939,27 +939,6 @@ async function resetColorSettings() {
   document.querySelector('.modal-overlay').remove();
 }
 
-// ユーザー管理（ソースフォルダ別チーム表示）
-let _settingsTeamFocusFolder = '';  // 設定ダイアログで選択中のフォルダ（外部から指定可能）
-
-async function loadUserListForSettings() {
-  const el = document.getElementById('settings-user-list');
-  if (!el) return;
-  el.innerHTML = '';
-  const myName = getUsername();
-  try {
-    const roots = await apiFetch('/outliner-roots').catch(() => []);
-    const visibleRoots = roots.filter(r => r.visible && r.path);
-    if (visibleRoots.length === 0) {
-      // ソースフォルダなし
-      el.innerHTML = '<div style="color:var(--fg2);">ソースフォルダが設定されていません</div>';
-      return;
-    }
-    // フォーカスフォルダが指定されていればそれだけ表示、なければ全フォルダ
-    const foldersToShow = _settingsTeamFocusFolder
-      ? visibleRoots.filter(r => r.path === _settingsTeamFocusFolder)
-      : visibleRoots;
-    if (foldersToShow.length === 0 && _settingsTeamFocusFolder) {
-      // 指定フォルダが見つからない場合は全表示
-      foldersToShow.push(...visibleRoots);
-    }
+// ユーザー管理（ソースフォルダ別チーム表示）は廃止し、正本「スタッフ管理シート」
+// ベースの表示（_renderStaffRegistrySettings、gb-settings.part03.part02.js）へ
+// 統合した（ユーザーアカウント一元管理 計画書 Phase 1、2026-07-19）。

@@ -481,7 +481,7 @@ function _buildGraphSettingsBar(dbPath, config, allProps, ctx) {
 
   bar.appendChild(_chartLabel('色分け'));
   const colorOpts = [{ key: '', label: 'なし' }].concat(allProps.map(p => ({ key: p, label: p })));
-  const colorSel = _chartSelect(colorOpts, config.colorProperty || '', graphScope + '-color-property', 'グラフ色分けプロパティ');
+  const colorSel = _chartSelect(colorOpts, config.colorProperty || '', graphScope + '-color-property', 'グラフ色分けの列');
   colorSel.addEventListener('change', () => {
     config.colorProperty = colorSel.value;
     setGraphConfig(dbPath, config, { ctx, label: 'シート表示: グラフ設定', detail: '色分け' });

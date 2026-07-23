@@ -1,14 +1,19 @@
-    };
   }
-  if (!Array.isArray(pane.navHistory)) pane.navHistory = [];
-  if (!Number.isInteger(pane.navIndex)) pane.navIndex = pane.navHistory.length ? pane.navHistory.length - 1 : -1;
-  if (pane.navIndex >= pane.navHistory.length) pane.navIndex = pane.navHistory.length - 1;
+  const tabIndex = (Number.isInteger(pane.activeTabIndex) && pane.activeTabIndex >= 0 && pane.activeTabIndex < pane.tabs.length)
+    ? pane.activeTabIndex
+    : 0;
+  const tab = pane.tabs[tabIndex];
+  if (!tab) return _legacyNavState();
+  if (!Array.isArray(tab.navHistory)) tab.navHistory = [];
+  if (!Number.isInteger(tab.navIndex)) tab.navIndex = tab.navHistory.length ? tab.navHistory.length - 1 : -1;
+  if (tab.navIndex >= tab.navHistory.length) tab.navIndex = tab.navHistory.length - 1;
   return {
-    kind: 'pane',
+    kind: 'tab',
     paneId: resolvedPaneId,
-    history: pane.navHistory,
-    get index() { return pane.navIndex; },
-    set index(v) { pane.navIndex = v; },
+    tabId: tab.id,
+    history: tab.navHistory,
+    get index() { return tab.navIndex; },
+    set index(v) { tab.navIndex = v; },
   };
 }
 
@@ -23,7 +28,7 @@ function _refreshPaneNavUi(paneId) {
 }
 
 function _persistPaneNavState(navState) {
-  if (navState?.kind === 'pane' && typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
+  if (navState?.kind === 'tab' && typeof GBLayout !== 'undefined' && typeof GBLayout.saveLayout === 'function') {
     GBLayout.saveLayout();
   }
 }
@@ -59,17 +64,25 @@ function _forcedNavPush(entry, paneId) {
 
 function _getDbViewScrollContainer(ctx, viewMode) {
   const mode = ['calendar', 'tasks', 'shifts'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
-  const selectors = {
-    pivot: '.pivot-view',
-    gallery: '.gallery-view',
-    kanban: '.kanban-view',
-    timeline: '.timeline-view',
-    chart: '.chart-view',
-    graph: '.graph-view',
-    form: '.form-view',
+  const names = {
+    pivot: 'pivot-view',
+    gallery: 'gallery-view',
+    kanban: 'kanban-view',
+    timeline: 'timeline-view',
+    chart: 'chart-view',
+    graph: 'graph-view',
+    form: 'form-view',
   };
-  const selector = selectors[mode] || '.pivot-view';
-  return (typeof _paneEl === 'function' ? _paneEl(ctx, selector) : null) || document.querySelector(selector);
+  const name = names[mode] || 'pivot-view';
+  // メイン画面のビューコンテナは ID（#pivot-view 等。Meldex.html はクラスを持たない）、
+  // 制作管理の埋め込みシートはクラス（.pivot-view 等 + 接尾辞付きID）で識別される。
+  // クラスだけで探すと本体側が一度もヒットしない（スクロール保存が常に0・復元が素通り）。
+  // ctx.containerEl 内を ID→クラスの順で探し、document 全体へのフォールバックでも
+  // 埋め込み側の同クラス要素を誤って掴まないよう ID を優先する。
+  const scoped = typeof _paneEl === 'function'
+    ? (_paneEl(ctx, '#' + name) || _paneEl(ctx, '.' + name))
+    : null;
+  return scoped || document.getElementById(name) || document.querySelector('.' + name);
 }
 
 function _navPushWithViewState(ctx, entityName) {

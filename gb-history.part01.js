@@ -443,7 +443,7 @@ function showDbSnapshotPreview(data, title) {
   o.className = 'modal-overlay';
   o.style.zIndex = '110';
   let tableHtml = '<table class="gb-history-table">';
-  tableHtml += '<tr><th>エントリ</th><th>プロパティ</th><th>値</th><th>ステータス</th></tr>';
+  tableHtml += '<tr><th>エントリ</th><th>列</th><th>値</th><th>ステータス</th></tr>';
   for (const [entName, entData] of Object.entries(data.entities || {})) {
     for (const [propName, vals] of Object.entries(entData)) {
       if (propName === '_freetext') continue;
@@ -673,11 +673,11 @@ function _getCurrentVersionTarget() {
 }
 
 // 現在のビューに応じてバージョン管理タブを開く（新方式）
-// 対象アプリが無くても空タブとして開く（対象ができたら手動更新または再オープンで反映）
+// 対象アプリが無くても空タブとして開く（対象ができたら追従で自動反映される）
 function openCurrentVersionsTab() {
   const { path, type } = _getCurrentVersionTarget();
   if (typeof openVersionTab === 'function') {
-    openVersionTab(path || '', type);
+    openVersionTab(path || '', type, { follow: true });
   } else if (path) {
     _showVersionsInPanel(path, type);
   }
@@ -748,7 +748,7 @@ function showDbDiff(snapshot, title, currentData = null) {
   o.style.zIndex = '110';
 
   let html = '<table class="gb-history-table">';
-  html += '<tr><th>エントリ</th><th>プロパティ</th><th>旧値</th><th>旧ステータス</th><th>現在値</th><th>現在ステータス</th><th>変更</th></tr>';
+  html += '<tr><th>エントリ</th><th>列</th><th>旧値</th><th>旧ステータス</th><th>現在値</th><th>現在ステータス</th><th>変更</th></tr>';
 
   const allEntities = new Set([...Object.keys(snapshot.entities || {}), ...Object.keys(data.entities || {})]);
   const allProps = new Set(data.properties || []);

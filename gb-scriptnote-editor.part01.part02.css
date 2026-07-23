@@ -45,6 +45,26 @@
 .sn2-row[data-outline][data-spread-border] { border-top: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
 .sn2-scroll.sn2-vertical .sn2-row[data-spread-border],
 .sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] { border-top: none !important; border-right: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+/* 見開き区切り線は行選択メニュー列（ハンドル列）には表示しない。
+   線は行のborderで引かれるため、ハンドル列の区間だけページ背景色で覆って消す */
+.sn2-row[data-spread-border] > .sn2-handle::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(-1 * var(--sn2-spread-border-width, 2px));
+  height: var(--sn2-spread-border-width, 2px);
+  background: var(--sn2-page-bg, var(--content-bg, var(--bg)));
+  pointer-events: none;
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-spread-border] > .sn2-handle::before {
+  top: 0;
+  bottom: 0;
+  left: auto;
+  right: calc(-1 * var(--sn2-spread-border-width, 2px));
+  width: var(--sn2-spread-border-width, 2px);
+  height: auto;
+}
 
 .sn2-row:hover { background: var(--sn2-hover-bg, var(--bg2)); }
 .sn2-row.sn2-row-selected { background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 35%, transparent); }
@@ -64,42 +84,22 @@
   box-shadow: inset 0 0 0 9999px var(--sn2-selection-color, color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 45%, transparent));
 }
 .sn2-row:focus-within { background: var(--sn2-hover-bg, var(--bg3)); }
-/* ホバー時: 背景色付きセルに半透明オーバーレイで明度変化（filter: brightness()はテキスト色まで
-   変えてしまうため使わない。::beforeをz-index:-1でテキストより背後・セル背景より前面に置くことで
-   背景だけを明るく見せる。z-index:0でこのセル自身にスタッキングコンテキストを作り、
-   ::beforeが行や祖先要素の背景まで突き抜けて不可視化しないようにする） */
+/* ホバー時: 背景色付きセルは filter でテキスト色ごと明度変化させる。
+   ::before オーバーレイ方式は前置文字（data-before の ::before）と同一疑似要素を
+   奪い合い、前置文字付きセルだけハイライトされなくなるため使わないこと */
 .sn2-row:hover > .sn2-gutter[style*="background"],
 .sn2-row:hover > .sn2-role-btn[style*="background"],
 .sn2-row:hover > .sn2-status-btn[style*="background"],
 .sn2-row:hover > .sn2-text[style*="background"],
-.sn2-row:hover > .sn2-custom-cell[style*="background"],
+.sn2-row:hover > .sn2-custom-cell[style*="background"] {
+  filter: brightness(1.35);
+}
 .sn2-row:focus-within > .sn2-gutter[style*="background"],
 .sn2-row:focus-within > .sn2-role-btn[style*="background"],
 .sn2-row:focus-within > .sn2-status-btn[style*="background"],
 .sn2-row:focus-within > .sn2-text[style*="background"],
 .sn2-row:focus-within > .sn2-custom-cell[style*="background"] {
-  position: relative;
-  z-index: 0;
-}
-.sn2-row:hover > .sn2-cell-active[style*="background"],
-.sn2-row:focus-within > .sn2-cell-active[style*="background"] {
-  z-index: 7;
-}
-.sn2-row:hover > [style*="background"]::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(255,255,255,0.12);
-  pointer-events: none;
-  z-index: -1;
-}
-.sn2-row:focus-within > [style*="background"]::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(255,255,255,0.18);
-  pointer-events: none;
-  z-index: -1;
+  filter: brightness(1.5);
 }
 
 /* 行の右端スペーサー */
@@ -326,28 +326,36 @@
      次の行に丸ごと送る)。*/
   display: inline-block;
   vertical-align: baseline;
+  /* B-MANGA と同じく、ルビを含む行だけ rubyLineHeight で字送りする。 */
+  line-height: var(--sn2-ruby-line-height, 1.8);
+  /* 前の文字列（タイプの textBefore）がある行は .sn2-text に text-indent:-1em が付く。
+     text-indent は継承プロパティで、inline-block である本 span（ブロックコンテナ）の
+     内部の本文字にも効いてしまい、本文字だけが 1em 左へずれる。一方ルビ ::after は
+     span 外形基準で置かれるため、結果としてルビが本文字の約1em右へズレる。
+     span 側で text-indent を打ち消し、本文字とルビの基準を一致させる（横書き限定の不具合）。 */
+  text-indent: 0;
 }
 .sn2-text span[data-ruby]::after,
 .sn2-custom-text span[data-ruby]::after {
-  content: attr(data-ruby);
+  content: attr(data-ruby-rendered);
   position: absolute;
-  /* 横書き: テキスト上部に配置、左右はauto marginでセンタリング */
-  bottom: calc(100% - var(--sn2-ruby-offset, 3.5px));
-  left: 0;
-  right: 0;
-  width: max-content;
-  margin-left: auto;
-  margin-right: auto;
+  /* 親文字の仮想ボディ上端から、親文字基準の相対間隔だけ離す。 */
+  bottom: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  left: var(--sn2-ruby-inline-start, 0px);
+  right: auto;
+  width: var(--sn2-ruby-layout-extent, max-content);
+  margin-left: 0;
+  margin-right: 0;
   transform: none;
-  font-size: var(--sn2-ruby-size, 0.55em);
+  font-size: var(--sn2-ruby-size-override, var(--sn2-ruby-size, 0.5em));
   line-height: 1;
+  font-family: var(--sn2-ruby-font-family, inherit);
   color: inherit;
-  opacity: 0.75;
+  opacity: 1;
   white-space: nowrap;
   pointer-events: none;
-  letter-spacing: var(--sn2-ruby-ls, normal);
-  /* letter-spacing のトレーリングスペースと均等化して視覚的に中央揃え */
-  text-indent: var(--sn2-ruby-ls, 0px);
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
 }
 /* 自動リンク */
 .sn2-text .auto-link,
@@ -379,23 +387,24 @@
 .sn2-custom-text .auto-link[data-ruby]::before { content: none; }
 .sn2-text .auto-link[data-ruby]::after,
 .sn2-custom-text .auto-link[data-ruby]::after {
-  content: attr(data-ruby);
+  content: attr(data-ruby-rendered);
   position: absolute;
-  bottom: calc(100% - var(--sn2-ruby-offset, 3.5px));
-  left: 0;
-  right: 0;
-  width: max-content;
-  margin-left: auto;
-  margin-right: auto;
+  bottom: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  left: var(--sn2-ruby-inline-start, 0px);
+  right: auto;
+  width: var(--sn2-ruby-layout-extent, max-content);
+  margin-left: 0;
+  margin-right: 0;
   transform: none;
-  font-size: var(--sn2-ruby-size, 0.55em);
+  font-size: var(--sn2-ruby-size-override, var(--sn2-ruby-size, 0.5em));
   line-height: 1;
+  font-family: var(--sn2-ruby-font-family, inherit);
   color: inherit;
-  opacity: 0.75;
+  opacity: 1;
   white-space: nowrap;
   pointer-events: none;
-  letter-spacing: var(--sn2-ruby-ls, normal);
-  text-indent: var(--sn2-ruby-ls, 0px);
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
 }
 
 /* 縦書きルビ: 右側に配置、上下はauto marginでセンタリング */
@@ -419,17 +428,16 @@
   margin-left: 0;
   margin-right: 0;
   /* テキストからの距離 */
-  left: calc(100% - var(--sn2-ruby-offset, 3.5px));
-  /* 縦書きセンタリング: auto margin方式 */
-  top: 0;
-  bottom: 0;
-  height: max-content;
-  margin-top: auto;
-  margin-bottom: auto;
+  left: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  top: var(--sn2-ruby-inline-start, 0px);
+  bottom: auto;
+  height: var(--sn2-ruby-layout-extent, max-content);
+  margin-top: 0;
+  margin-bottom: 0;
   writing-mode: vertical-rl;
   text-orientation: upright;
-  letter-spacing: var(--sn2-ruby-ls, normal);
-  text-indent: var(--sn2-ruby-ls, 0px);
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
 }
 .sn2-scroll.sn2-vertical .sn2-text .auto-link[data-ruby]::after,
 .sn2-scroll.sn2-vertical .sn2-custom-text .auto-link[data-ruby]::after {
@@ -438,29 +446,72 @@
   width: auto;
   margin-left: 0;
   margin-right: 0;
-  left: calc(100% - var(--sn2-ruby-offset, 3.5px));
-  top: 0;
-  bottom: 0;
-  height: max-content;
-  margin-top: auto;
-  margin-bottom: auto;
+  left: calc(var(--sn2-ruby-base-edge, 100%) + var(--sn2-ruby-gap-px, 0px));
+  top: var(--sn2-ruby-inline-start, 0px);
+  bottom: auto;
+  height: var(--sn2-ruby-layout-extent, max-content);
+  margin-top: 0;
+  margin-bottom: 0;
   writing-mode: vertical-rl;
   text-orientation: upright;
-  letter-spacing: var(--sn2-ruby-ls, normal);
-  text-indent: var(--sn2-ruby-ls, 0px);
+  letter-spacing: var(--sn2-ruby-effective-letter-spacing, var(--sn2-ruby-letter-spacing, 0em));
+  text-indent: 0;
+}
+
+/* 旧文書互換: 縦書きはpx offsetをそのまま使い、明示変更されるまで見た目を維持する。
+   横書きは旧offset(既定3.5px)が本文の字面上端へ食い込み、ルビが手前の文字列に
+   覆いかぶさって読めなくなるため、互換モードでも通常配置(親文字仮想ボディ上端基準)を使う。 */
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-custom-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-gap-mode="legacy"] .sn2-custom-text .auto-link[data-ruby]::after {
+  bottom: 0;
+  left: calc(100% - var(--sn2-ruby-offset, 3.5px));
+}
+
+/* 肩付きは横書きでは左端、縦書きでは上端へ揃える。 */
+.sn2-scroll[data-ruby-align="start"] .sn2-text span[data-ruby]::after,
+.sn2-scroll[data-ruby-align="start"] .sn2-custom-text span[data-ruby]::after,
+.sn2-scroll[data-ruby-align="start"] .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll[data-ruby-align="start"] .sn2-custom-text .auto-link[data-ruby]::after {
+  margin-left: 0;
+  margin-right: auto;
+}
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-custom-text span[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-text .auto-link[data-ruby]::after,
+.sn2-scroll.sn2-vertical[data-ruby-align="start"] .sn2-custom-text .auto-link[data-ruby]::after {
+  margin-top: 0;
+  margin-bottom: auto;
 }
 
 /* テキスト前後文字列（タイプオプション） — テキスト列の色・書式を継承 */
-/* data-before がある場合、hanging indent で全行の先頭文字を水平方向に揃える:
-   - padding-left を 1em 追加 (prefix 領域を確保)
-   - text-indent: -1em で 1 行目だけ左に引き戻す (prefix はここに描画)
-   - ::before は inline-block で幅固定 1em。prefix 文字の実幅に関わらず
-     本文の先頭文字は常にパディング内側に揃う */
-.sn2-text[data-before]:not(:empty) {
+/* data-before がある場合、prefix (::before) と本文を横並びのflexアイテムにする。
+   text-indentによるhanging indent（旧実装）は、prefix幅を固定1emで見積もるため
+   実際の文字幅とズレるうえ、継承されたtext-indentがルビ用span[data-ruby]
+   （display:inline-blockで新たな整形コンテキストになる）の内部にまで及び、
+   本文字だけがずれてルビ位置が狂う副作用があった（主因はspan[data-ruby]側の
+   text-indent:0リセットで解消済み、下記参照）。
+   flexなら prefix は内容なりの幅を占め（width固定不要）、本文は残りの幅で
+   折り返す独立ボックスになるため、1行目・折り返し行のどちらも本文の開始位置が
+   自然に揃う。data-valign併用時は縦方向中央寄せに display:block!important
+   （align-contentベース、下記参照）を要求するため、この構造は使わず旧方式を残す。 */
+.sn2-text[data-before]:not(:empty):not([data-valign]) {
+  display: flex;
+  align-items: flex-start;
+}
+.sn2-text[data-before]:not(:empty):not([data-valign])::before {
+  content: attr(data-before);
+  flex: 0 0 auto;
+  color: inherit;
+  pointer-events: none;
+}
+/* data-valign併用時のみ旧方式（prefix幅1em固定のhanging indent）を維持 */
+.sn2-text[data-before]:not(:empty)[data-valign] {
   padding-left: calc(8px + 1em);
   text-indent: -1em;
 }
-.sn2-text[data-before]:not(:empty)::before {
+.sn2-text[data-before]:not(:empty)[data-valign]::before {
   content: attr(data-before);
   display: inline-block;
   width: 1em;
@@ -468,8 +519,9 @@
   color: inherit;
   pointer-events: none;
 }
-/* 縦書きモードでは上下方向での揃えになる */
+/* 縦書きモードでは上下方向での揃えになる（横書き用flex構造は使わずblockへ戻す） */
 .sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty) {
+  display: block;
   padding-left: 6px;
   padding-top: 6px;
   text-indent: 0;
@@ -484,16 +536,6 @@
   color: inherit;
   pointer-events: none;
 }
-/* hover/focus-within 用オーバーレイ ::before が data-before の hanging-indent 用
-   ::before と衝突し position:absolute でテキスト位置がずれるのを防止する */
-.sn2-row:hover > .sn2-text[data-before][style*="background"]:not(:empty)::before,
-.sn2-row:focus-within > .sn2-text[data-before][style*="background"]:not(:empty)::before {
-  position: static;
-  inset: auto;
-  background: none;
-  z-index: auto;
-}
-
 /* 区切り行の直前に「1行ぶんの空白」相当の余白を追加（表示のみ。データ構造には影響しない）
    横書き: 行の上側に margin-top、縦書き(vertical-rl): 行の右側に margin-right
    親コンテナ内で同種(.sn2-row)の最初の要素（＝シナリオ先頭行）は打ち消して余白をつけない */

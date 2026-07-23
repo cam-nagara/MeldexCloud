@@ -21,20 +21,18 @@
   }catch(err){showStatus('移動に失敗',true);}
 }
 
+// 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
+// ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、§5.8-2）。
 async function _calendarLoadUserChoices() {
+  if (window.MeldexUserPicker) {
+    try {
+      const candidates = await window.MeldexUserPicker.getCandidates();
+      if (candidates.length) return candidates;
+    } catch {}
+  }
   const users = new Map();
   const add = name => { name = String(name || '').trim(); if (name && !users.has(name)) users.set(name, { name }); };
   add(_getUser());
-  let roots = [];
-  try { roots = await apiFetch('/outliner-roots'); } catch {}
-  const visibleRoots = (roots || []).filter(root => root?.visible && root?.path);
-  const sources = visibleRoots.length ? visibleRoots.map(root => root.path) : [''];
-  for (const folder of sources) {
-    try {
-      const members = await apiFetch('/team' + (folder ? '?folder=' + encodeURIComponent(folder) : ''));
-      (members || []).forEach(member => add(member.name));
-    } catch {}
-  }
   return [...users.values()];
 }
 function _calendarUserFields(prefix, ev) {
@@ -944,7 +942,7 @@ function _showSyncModal(dbPath) {
     </div>
 
     <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">CalDAV (Radicale)</div>
+      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">CalDAV</div>
       <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">CalDAVサーバーとの双方向同期</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;">
         <button id="sync-caldav-push" style="font-size:12px;padding:4px 12px;">→ CalDAVに送信</button>
@@ -953,8 +951,8 @@ function _showSyncModal(dbPath) {
     </div>
 
     <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">SQLiteマイグレーション</div>
-      <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">旧カレンダーデータ（SQLite）をファイルベースDBに変換</div>
+      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">旧データ移行</div>
+      <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">旧カレンダーデータを新形式に変換</div>
       <button id="sync-migrate" style="font-size:12px;padding:4px 12px;">マイグレーション実行</button>
     </div>
 

@@ -134,6 +134,9 @@
   function createWidget(container, config, onChange) {
     if (!container) return;
     const c = normalize(config);
+    // E2E/UI監査用の安定識別子。ホスト側の data-e2e-id（例: notion-sync-schedule-0）を
+    // 接頭辞に継承し、無ければ汎用の gb-scheduler を使う
+    const idBase = (container.dataset && container.dataset.e2eId) || 'gb-scheduler';
 
     const wrap = document.createElement('div');
     wrap.className = 'gb-scheduler-widget';
@@ -147,6 +150,8 @@
 
     const typeSelect = document.createElement('select');
     typeSelect.className = 'gb-select gb-select-sm gb-scheduler-type';
+    typeSelect.dataset.e2eId = idBase + '-type';
+    typeSelect.setAttribute('aria-label', '自動実行の種別');
     [
       { value: 'off', label: '手動のみ' },
       { value: 'interval', label: '間隔（分/時間）' },
@@ -216,6 +221,8 @@
       if (type === 'interval') {
         const sel = document.createElement('select');
         sel.className = 'gb-select gb-select-sm gb-scheduler-interval';
+        sel.dataset.e2eId = idBase + '-interval';
+        sel.setAttribute('aria-label', '実行間隔');
         [5, 10, 15, 30, 60, 120, 360, 720, 1440].forEach(v => {
           const opt = document.createElement('option');
           opt.value = v;
@@ -231,6 +238,8 @@
         const timeInput = document.createElement('input');
         timeInput.type = 'time';
         timeInput.className = 'gb-input gb-scheduler-time';
+        timeInput.dataset.e2eId = idBase + '-time';
+        timeInput.setAttribute('aria-label', '実行時刻');
         timeInput.value = c.time || '09:00';
         timeInput.addEventListener('change', fireChange);
         detailBox.appendChild(timeInput);
@@ -245,6 +254,8 @@
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.className = 'gb-scheduler-dow';
+          cb.dataset.e2eId = idBase + '-dow-' + i;
+          cb.setAttribute('aria-label', label + '曜日に実行');
           cb.value = i;
           cb.checked = (c.days_of_week || []).includes(i);
           cb.addEventListener('change', fireChange);
@@ -259,6 +270,8 @@
         const domInput = document.createElement('input');
         domInput.type = 'text';
         domInput.className = 'gb-input gb-scheduler-dom';
+        domInput.dataset.e2eId = idBase + '-dom';
+        domInput.setAttribute('aria-label', '実行する日付（カンマ区切り）');
         domInput.placeholder = '例: 1, 15';
         domInput.value = (c.days_of_month || [1]).join(', ');
         domInput.addEventListener('change', fireChange);

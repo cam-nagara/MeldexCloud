@@ -1,0 +1,245 @@
+.gb-production-task-create-dialog {
+  width: min(var(--gb-production-modal-width, 720px), calc(100vw - 32px));
+  max-width: 100%;
+}
+
+.gb-production-bulk-create {
+  color: var(--fg, #e7e7e7);
+}
+
+.gb-production-bulk-description,
+.gb-production-bulk-note,
+.gb-production-bulk-warning,
+.gb-production-bulk-result {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.gb-production-bulk-description {
+  margin-bottom: 16px;
+  color: var(--fg2, #b9b9b9);
+}
+
+.gb-production-bulk-form {
+  display: grid;
+  gap: 16px;
+}
+
+.gb-production-bulk-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(2, minmax(110px, 1fr));
+  gap: 12px;
+}
+
+.gb-production-bulk-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gb-production-bulk-field:first-child {
+  grid-column: 1 / -1;
+}
+
+.gb-production-bulk-field-label,
+.gb-production-bulk-contents legend {
+  color: var(--fg2, #b9b9b9);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gb-production-bulk-field input,
+.gb-production-bulk-field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--line, #404040);
+  border-radius: 6px;
+  background: var(--bg2, #262626);
+  color: var(--fg, #e7e7e7);
+  font: inherit;
+  font-size: 13px;
+}
+
+.gb-production-bulk-field input:focus-visible,
+.gb-production-bulk-field select:focus-visible,
+.gb-production-bulk-check:has(input:focus-visible) {
+  outline: 2px solid var(--accent, #19bfa5);
+  outline-offset: 2px;
+}
+
+.gb-production-bulk-contents {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line, #404040);
+  border-radius: 8px;
+}
+
+.gb-production-bulk-contents legend {
+  padding: 0 4px;
+}
+
+.gb-production-bulk-content-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.gb-production-bulk-check {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg3, #303030) 76%, transparent);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.gb-production-bulk-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent, #19bfa5);
+}
+
+.gb-production-bulk-summary {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent, #19bfa5) 52%, var(--line, #404040));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #19bfa5) 10%, var(--bg2, #262626));
+  color: var(--fg, #e7e7e7);
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.gb-production-bulk-summary.is-error,
+.gb-production-bulk-result:not(:empty) {
+  border-color: color-mix(in srgb, var(--red, #e46b6b) 60%, var(--line, #404040));
+  color: var(--red, #e46b6b);
+}
+
+.gb-production-bulk-note {
+  color: var(--fg2, #b9b9b9);
+}
+
+.gb-production-bulk-warning {
+  padding: 10px 12px;
+  border-left: 3px solid var(--yellow, #d7b35b);
+  background: color-mix(in srgb, var(--yellow, #d7b35b) 10%, transparent);
+  color: var(--fg, #e7e7e7);
+}
+
+.gb-production-bulk-result:not(:empty) {
+  padding: 10px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--red, #e46b6b) 8%, transparent);
+}
+
+.gb-production-task-icon.is-spinning svg {
+  animation: gb-production-bulk-spin 0.8s linear infinite;
+}
+
+@keyframes gb-production-bulk-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Tablet can use the mobile editing shell even when its CSS viewport is wider
+   than the phone breakpoint. Keep every dialog control at the shared touch size. */
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-task-button,
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field input,
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field select,
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-check {
+  min-height: 44px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field input,
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field select {
+  font-size: 16px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
+  .gb-production-bulk-description,
+  .gb-production-bulk-note,
+  .gb-production-bulk-warning,
+  .gb-production-bulk-result,
+  .gb-production-bulk-field-label,
+  .gb-production-bulk-contents legend
+) {
+  font-size: 14px;
+}
+
+body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
+  .gb-production-bulk-check,
+  .gb-production-bulk-summary,
+  .gb-production-task-button
+) {
+  font-size: 15px;
+}
+
+@media (max-width: 720px) {
+  .gb-production-task-create-dialog {
+    width: 100%;
+  }
+
+  .gb-production-bulk-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gb-production-bulk-field:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .gb-production-bulk-content-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gb-production-bulk-field input,
+  .gb-production-bulk-field select,
+  .gb-production-bulk-check,
+  .gb-production-task-create-dialog .gb-production-task-button {
+    min-height: 44px;
+  }
+
+  .gb-production-bulk-field input,
+  .gb-production-bulk-field select {
+    font-size: 16px;
+  }
+
+  .gb-production-bulk-description,
+  .gb-production-bulk-note,
+  .gb-production-bulk-warning,
+  .gb-production-bulk-result,
+  .gb-production-bulk-field-label,
+  .gb-production-bulk-contents legend {
+    font-size: 14px;
+  }
+
+  .gb-production-bulk-check,
+  .gb-production-bulk-summary,
+  .gb-production-task-create-dialog .gb-production-task-button {
+    font-size: 15px;
+  }
+}
+
+@media (max-width: 420px) {
+  .gb-production-bulk-fields,
+  .gb-production-bulk-content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .gb-production-bulk-field:first-child {
+    grid-column: auto;
+  }
+
+  .gb-production-bulk-summary {
+    font-size: 15px;
+  }
+}

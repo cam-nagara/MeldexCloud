@@ -60,7 +60,13 @@ function showUnifiedFilterModal() {
   const condDiv = o.querySelector('#uf-conditions');
   if (advFilters.length) {
     advFilters.forEach(f => condDiv.insertAdjacentHTML('beforeend', _ufConditionRow(f, dbPath, ctx)));
+    condDiv.querySelectorAll('.uf-cond').forEach(row => _ufPopulateCommonTagsDatalist(row));
   }
+  // 列を切り替えたときに共通タグ列向けの候補(datalist)を切り替える
+  condDiv?.addEventListener('change', (e) => {
+    const propSelect = e.target?.closest?.('[data-field="property"]');
+    if (propSelect) _ufRefreshConditionRowForPropertyChange(propSelect);
+  });
 }
 
 function _getUnifiedFilterProperties(dbPath, ctx) {
@@ -75,14 +81,20 @@ function _getUnifiedFilterProperties(dbPath, ctx) {
   return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
 }
 
+let _ufConditionRowSeq = 0;
 function _ufConditionRow(f, dbPath, ctx) {
   const selectedProp = f?.property || '*';
   const props = _getUnifiedFilterProperties(dbPath || state.currentDbPath, ctx);
   if (selectedProp !== '*' && !props.includes(selectedProp)) props.push(selectedProp);
   const propOpts = props.map(p => `<option value="${esc(p)}" ${selectedProp===p?'selected':''}>${esc(p)}</option>`).join('');
-  return `<div class="uf-cond" style="display:flex;gap:4px;margin-bottom:4px;align-items:center;font-size:12px;">
+  const rowSeq = ++_ufConditionRowSeq;
+  const datalistId = 'uf-common-tags-dl-' + rowSeq;
+  const resolvedDbPath = dbPath || state.currentDbPath;
+  const isCommonTags = selectedProp !== '*' && getPropertyTypes(resolvedDbPath)?.[selectedProp]?.type === 'common-tags';
+  const valueListAttr = isCommonTags ? ` list="${datalistId}" placeholder="タグ名の一部を入力"` : '';
+  return `<div class="uf-cond" data-uf-common-tags-datalist-id="${datalistId}" style="display:flex;gap:4px;margin-bottom:4px;align-items:center;font-size:12px;">
     <select data-field="field" class="gb-select gb-select-sm"><option value="value" ${f?.field==='value'?'selected':''}>値</option><option value="status" ${f?.field==='status'?'selected':''}>ステータス</option></select>
-    <select data-field="property" class="gb-select gb-select-sm" style="flex:1;"><option value="*" ${selectedProp==='*'?'selected':''}>全プロパティ</option>${propOpts}</select>
+    <select data-field="property" class="gb-select gb-select-sm" style="flex:1;"><option value="*" ${selectedProp==='*'?'selected':''}>すべての列</option>${propOpts}</select>
     <select data-field="operator" class="gb-select gb-select-sm">
       <option value="contains" ${f?.operator==='contains'?'selected':''}>含む</option>
       <option value="not_contains" ${f?.operator==='not_contains'?'selected':''}>含まない</option>
@@ -91,13 +103,53 @@ function _ufConditionRow(f, dbPath, ctx) {
       <option value="empty" ${f?.operator==='empty'?'selected':''}>空</option>
       <option value="not_empty" ${f?.operator==='not_empty'?'selected':''}>空でない</option>
     </select>
-    <input type="text" data-field="value" value="${esc(f?.value ?? '')}" style="padding:2px;width:80px;">
+    <input type="text" data-field="value" value="${esc(f?.value ?? '')}" style="padding:2px;width:80px;"${valueListAttr}>
+    <datalist id="${datalistId}"></datalist>
     <button data-action="this.parentElement.remove()" style="color:var(--red);background:none;border:none;cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
 }
+// 共通タグ列を対象にした条件行のみ、タグカタログからタグ名の候補を <datalist> に流し込む
+// （値そのものはタグID保存のままだが、名前を入力すればID部分一致でヒットするよう候補として名前を提示する）
+function _ufPopulateCommonTagsDatalist(rowEl) {
+  const datalistId = rowEl?.dataset?.ufCommonTagsDatalistId;
+  const datalist = datalistId ? document.getElementById(datalistId) : null;
+  if (!datalist || !window.MeldexGlobalTags?.loadTagsCached) return;
+  window.MeldexGlobalTags.loadTagsCached().then(data => {
+    if (!datalist.isConnected) return;
+    datalist.textContent = '';
+    (Array.isArray(data?.tags) ? data.tags : []).forEach(tag => {
+      const opt = document.createElement('option');
+      opt.value = tag.name || '';
+      datalist.appendChild(opt);
+    });
+  }).catch(() => {});
+}
+function _ufRefreshConditionRowForPropertyChange(propSelect) {
+  const row = propSelect?.closest?.('.uf-cond');
+  const overlay = propSelect?.closest?.('.modal-overlay[data-uf-db-path]');
+  if (!row || !overlay) return;
+  const dbPath = overlay.dataset.ufDbPath || overlay._ufCtx?.dbPath || state.currentDbPath;
+  const propName = propSelect.value;
+  const isCommonTags = propName !== '*' && getPropertyTypes(dbPath)?.[propName]?.type === 'common-tags';
+  const valueInput = row.querySelector('[data-field="value"]');
+  const datalistId = row.dataset.ufCommonTagsDatalistId;
+  if (valueInput && datalistId) {
+    if (isCommonTags) {
+      valueInput.setAttribute('list', datalistId);
+      valueInput.placeholder = 'タグ名の一部を入力';
+      _ufPopulateCommonTagsDatalist(row);
+    } else {
+      valueInput.removeAttribute('list');
+      valueInput.placeholder = '';
+    }
+  }
+}
 function _ufAddCondition() {
   const overlay = document.querySelector('.modal-overlay[data-uf-db-path]');
-  document.getElementById('uf-conditions').insertAdjacentHTML('beforeend', _ufConditionRow({}, overlay?.dataset.ufDbPath || state.currentDbPath, overlay?._ufCtx || null));
+  const html = _ufConditionRow({}, overlay?.dataset.ufDbPath || state.currentDbPath, overlay?._ufCtx || null);
+  const conditionsHost = document.getElementById('uf-conditions');
+  conditionsHost.insertAdjacentHTML('beforeend', html);
+  _ufPopulateCommonTagsDatalist(conditionsHost?.lastElementChild);
 }
 function _ufApply() {
   const overlay = document.querySelector('.modal-overlay[data-uf-db-path]');
@@ -113,17 +165,22 @@ function _ufApply() {
   // 条件フィルタ
   const filters = [];
   document.querySelectorAll('.uf-cond').forEach(row => {
+    const propName = row.querySelector('[data-field="property"]').value;
+    let rawValue = row.querySelector('[data-field="value"]').value;
+    if (dbPath && window.MeldexGlobalTags?.resolveCommonTagsFilterValueSync) {
+      rawValue = window.MeldexGlobalTags.resolveCommonTagsFilterValueSync(dbPath, propName, rawValue);
+    }
     filters.push({
       field: row.querySelector('[data-field="field"]').value,
-      property: row.querySelector('[data-field="property"]').value,
+      property: propName,
       operator: row.querySelector('[data-field="operator"]').value,
-      value: row.querySelector('[data-field="value"]').value,
+      value: rawValue,
     });
   });
   if (dbPath) setAdvancedFilters(dbPath, filters, { ctx });
   document.querySelector('.modal-overlay').remove();
   _updateFilterBadge({ dbPath, filter: ctx?.filter ?? nextFilter, ctx });
-  if (dbPath) selectDatabase(dbPath, ctx);
+  if (dbPath) _ufRefreshTarget(ctx, dbPath);
 }
 function _ufClear() {
   const overlay = document.querySelector('.modal-overlay[data-uf-db-path]');
@@ -133,7 +190,17 @@ function _ufClear() {
   if (dbPath) setAdvancedFilters(dbPath, [], { ctx });
   document.querySelector('.modal-overlay').remove();
   _updateFilterBadge({ dbPath, filter: 'disabled', ctx });
-  if (dbPath) selectDatabase(dbPath, ctx);
+  if (dbPath) _ufRefreshTarget(ctx, dbPath);
+}
+
+function _ufRefreshTarget(ctx, dbPath) {
+  // 埋め込みシートは通常ペインのレジストリに登録されない。selectDatabase() を直接
+  // 呼ぶとグローバルの現在シートを一時的に上書きするため、既にあるデータを局所再描画する。
+  if (ctx?.embedded && typeof renderPivot === 'function') {
+    renderPivot(ctx);
+    return;
+  }
+  selectDatabase(dbPath, ctx);
 }
 
 function _dbEntityCreateContextMatches(ctx, dbPath) {
@@ -334,7 +401,75 @@ function _dbCreateEntityOptimistic(ctx, dbPath, options) {
   const trackedPromise = typeof _dbRegisterPendingEntityCreate === 'function'
     ? _dbRegisterPendingEntityCreate(dbPath, localName, createPromise)
     : createPromise;
-  return { name: localName, renderCtx, promise: trackedPromise };
+  return { name: localName, renderCtx, promise: trackedPromise, baseName, baseline: existing };
+}
+
+// サーバーが実際に付けた名前が楽観行の仮名と異なる場合、ローカル表示（エンティティ
+// マップ・表示順・manualOrder）の名前をサーバー名へ付け替える。付け替えないと
+// 再取得時に仮名が manualOrder に残り、実体が並び順から外れて行が消えたように見える。
+function _dbRenameOptimisticEntityLocally(ctx, dbPath, fromName, toName) {
+  if (!fromName || !toName || fromName === toName) return;
+  const normalize = typeof _dbNormalizePath === 'function'
+    ? _dbNormalizePath
+    : (path) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
+  const targets = [];
+  if (renderCtx) targets.push(renderCtx);
+  if (typeof state !== 'undefined' && normalize(state.currentDbPath || '') === normalize(dbPath || '')) targets.push(state);
+  targets.forEach(target => {
+    const ents = target?.pivotData?.entities;
+    if (ents && Object.prototype.hasOwnProperty.call(ents, fromName) && !Object.prototype.hasOwnProperty.call(ents, toName)) {
+      ents[toName] = ents[fromName];
+      delete ents[fromName];
+    }
+    if (Array.isArray(target._lastEntityNames)) {
+      target._lastEntityNames = target._lastEntityNames.map(name => (name === fromName ? toName : name));
+    }
+  });
+  if (typeof getDbViewConfig === 'function' && typeof saveDbViewConfig === 'function') {
+    const cfg = getDbViewConfig(dbPath);
+    const entry = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+      ? (_getCurrentDbViewConfigEntryFromConfig(cfg) || cfg)
+      : cfg;
+    if (Array.isArray(entry?.manualOrder) && entry.manualOrder.includes(fromName)) {
+      entry.manualOrder = entry.manualOrder.map(name => (name === fromName ? toName : name));
+      saveDbViewConfig(dbPath, cfg);
+    }
+  }
+}
+
+// 作成通信がタイムアウト/中断で失敗しても、サーバー側は作成を完了していることがある。
+// /pivot を取り直して実体が現れていれば、行を撤去せず成功として確定する。
+// 撤去してよい（本当に作られていない）場合のみ null を返す。
+async function _dbRecoverEntityCreateAfterError(ctx, dbPath, created) {
+  try {
+    const pivotData = await apiFetch(_dbPivotFetchUrl(dbPath), { skipBrowseCache: true, cache: 'reload' });
+    const serverNames = Object.keys(pivotData?.entities || {});
+    const baseName = String(created?.baseName || '無題');
+    const baseline = new Set(Array.isArray(created?.baseline) ? created.baseline : []);
+    let confirmed = '';
+    if (created?.name && serverNames.includes(created.name)) {
+      confirmed = created.name;
+    } else {
+      // 再試行で別名が付いた可能性。ベースライン以降に新しく現れた同系統名が
+      // ちょうど1件だけなら、それを今回の作成とみなす。
+      const family = serverNames.filter(name => !baseline.has(name)
+        && (name === baseName || (name.startsWith(baseName) && /^\d+$/.test(name.slice(baseName.length)))));
+      if (family.length === 1) confirmed = family[0];
+    }
+    if (!confirmed) return null;
+    if (confirmed !== created.name) _dbRenameOptimisticEntityLocally(ctx, dbPath, created.name, confirmed);
+    const renderCtx = _dbResolveEntityCreateRenderContext(ctx, dbPath);
+    if (renderCtx) renderCtx.pivotData = pivotData;
+    if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.pivotData = pivotData;
+    if (!_dbEntityCreateIsEditing(renderCtx)) {
+      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
+      else if (typeof renderPivot === 'function') renderPivot(renderCtx);
+    }
+    return { name: confirmed, path: created?.path || (typeof _entityPath === 'function' ? _entityPath(dbPath, confirmed) : `${dbPath}/${confirmed}.md`) };
+  } catch {
+    return null;
+  }
 }
 
 function _dbEntityCreateIsEditing(renderCtx) {
@@ -422,6 +557,13 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
       const pivotData = await apiFetch(_dbPivotFetchUrl(dbPath));
       // サーバー作成が未確定の楽観的エントリは取得データに含まれないため、行が消えないよう再マージする
       if (typeof _dbMergePendingEntityCreates === 'function') _dbMergePendingEntityCreates(dbPath, pivotData);
+      // 直前に作成が確定した名前も、SQLite の可視化タイミング等でこの取得にまだ
+      // 現れていない場合があるため、行が一瞬消えないよう空スタブで保持する（次回取得で実体化）。
+      if (pivotData && pivotData.entities && typeof pivotData.entities === 'object') {
+        (createdNames || []).forEach(name => {
+          if (name && !(name in pivotData.entities)) pivotData.entities[name] = {};
+        });
+      }
       if (renderCtx) renderCtx.pivotData = pivotData;
       if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.pivotData = pivotData;
       if (!_dbEntityCreateIsEditing(renderCtx)) {
@@ -494,10 +636,18 @@ async function _handleNewEntryClick(ctx) {
   _dbKeepNewEntryRowVisible(renderCtx);
   try {
     const saved = await created.promise;
+    // サーバーが仮名と異なる名前を付けた場合は、並び順・manualOrder を実際の名前へ揃える
+    if (saved.name !== created.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, created.name, saved.name);
     _dbScheduleEntityCreatePostSync(dbPath, [{ name: saved.name, path: saved.path, response: saved.response }], renderCtx);
   } catch (e) {
-    _dbRemoveCreatedEntitiesLocally(renderCtx, dbPath, [created.name]);
-    if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+    // タイムアウト等でも実際は作成済みのことがある。撤去前に必ず確認する
+    const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, created);
+    if (recovered) {
+      if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+    } else {
+      _dbRemoveCreatedEntitiesLocally(renderCtx, dbPath, [created.name]);
+      if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+    }
   }
 }
 
@@ -549,9 +699,13 @@ async function _handleInsertRowRelative(ctx, refEntityName, position, count) {
   for (const record of createdRecords) {
     try {
       const saved = await record.promise;
+      if (saved.name !== record.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, record.name, saved.name);
       createdItems.push({ name: saved.name, path: saved.path, response: saved.response });
     } catch (e) {
-      failed.push(record.name);
+      // タイムアウト等でも作成済みのことがあるため、撤去前に確認する
+      const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, record);
+      if (recovered) createdItems.push({ name: recovered.name, path: recovered.path, response: null });
+      else failed.push(record.name);
     }
   }
   if (failed.length) {
@@ -781,7 +935,7 @@ async function _handleTbodyClick(e) {
   const propTypes = getPropertyTypes(dbPath);
   const rawPtc = propTypes[propName];
   const ptc = rawPtc?.type ? { ...rawPtc, type: String(rawPtc.type).replace(/_/g, '-') } : rawPtc;
-  const opensInlineDropdown = ptc && ['select', 'multi-select', 'relation', 'multi-relation', 'user', 'multi-user'].includes(ptc.type);
+  const opensInlineDropdown = ptc && ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(ptc.type);
   // セル内の特殊要素は他で処理されている。候補選択型の値は通常クリックで候補を開き、Ctrl/Shift時はセル選択に回す。
   if (target.closest('.status-dot') || target.closest('.cell-checkbox') || target.closest('.chat-prop-cell')) return;
   if (target.closest('.cell-select-val')) {

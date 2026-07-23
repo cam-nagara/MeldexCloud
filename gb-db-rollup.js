@@ -191,7 +191,7 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
   const initialTargetType = current?.targetProp ? propTypes?.[current.targetProp]?.type : '';
   const aggOptions = _rollupAggregationOptionsForType(initialTargetType);
 
-  let html = '<div class="field"><label>リレーションプロパティ</label>';
+  let html = '<div class="field"><label>リレーション列</label>';
   html += '<select id="rollup-relation-prop">';
   html += '<option value="">選択...</option>';
   relationProps.forEach(p => {
@@ -200,7 +200,7 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
   });
   html += '</select></div>';
 
-  html += '<div class="field"><label>参照先プロパティ</label>';
+  html += '<div class="field"><label>参照先の列</label>';
   html += '<select id="rollup-target-prop"><option value="">読み込み中...</option></select></div>';
 
   html += '<div class="field"><label>集計タイプ</label>';

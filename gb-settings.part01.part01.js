@@ -126,7 +126,7 @@ function _setAvatarBgColor(color) {
    ルートフォルダ設定
    ============================== */
 async function showSettingsModal(opts) {
-  // opts: { panel: 'ユーザー', teamFolder: 'D:/...' } で特定パネル・フォルダを開ける
+  // opts: { panel: 'ユーザー' } で特定パネルを開ける
   opts = opts || {};
   try {
     window.MeldexDiagnostics?.recordOperation?.('設定を開く', {
@@ -246,32 +246,28 @@ async function showSettingsModal(opts) {
     <!-- 全般 -->
     <div class="settings-panel settings-panel-grid settings-panel-grid--general" data-panel="全般">
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ</div>
-        <div class="gb-section-desc">Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります。</div>
+        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-home-folder" type="text" class="gb-input" style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ</div>
-        <div class="gb-section-desc">フォルダツリーに表示するフォルダを管理します。</div>
+        <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ ${fieldHelp('フォルダツリーに表示するフォルダを管理します')}</div>
         <div id="modal-outliner-roots"><div class="gb-section-desc">読み込み中...</div></div>
         <div>
           <button class="gb-btn gb-btn-sm" data-action="addOutlinerRootFromSettings()">+ フォルダを追加</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ</div>
-        <div class="gb-section-desc">ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません。</div>
+        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません')}</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
           <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">保存先</div>
-        <div class="gb-section-desc">このPCのフォルダ、Dropbox、またはMeldex共有サーバーを保存先として使います。</div>
+        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます')}</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
@@ -279,8 +275,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続</div>
-        <div class="gb-section-desc">このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください。</div>
+        <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続 ${fieldHelp('このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください')}</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
           <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
           <button type="button" class="gb-btn gb-btn-sm" data-action="copySettingsMobilePrimaryUrl()">${lucide('copy',14)} URLをコピー</button>
@@ -295,8 +290,7 @@ async function showSettingsModal(opts) {
         </section>
       </div>
       <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section">
-        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ</div>
-        <div class="gb-section-desc">Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます。</div>
+        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます')}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-sheet" data-action="setMeldexDefaultApp" data-args='["sheet"]'>${lucide('table',14)} シート/CSVをMeldex Sheetにする</button>
@@ -309,8 +303,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ</div>
-        <div class="gb-section-desc">このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません。</div>
+        <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません')}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
           <button type="button" class="gb-btn gb-btn-sm" data-action="openSettingsTransferLocation()">${lucide('folderOpen',14)} 設定保存先を開く</button>
@@ -358,15 +351,14 @@ async function showSettingsModal(opts) {
         </label>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">ヒストリー（Undo/Redo）</div>
+        <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）')}</div>
         <label class="gb-field-row">
           <span class="gb-label">最大アンドゥ回数</span>
           <input id="modal-history-max" type="number" class="gb-input" style="width:80px;" value="${getHistoryMax()}" min="1" max="200">
         </label>
-        <div class="gb-section-desc">Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）</div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">自動バージョン保存</div>
+        <div class="gb-section-title">自動バージョン保存 ${fieldHelp('編集があった場合のみ保存します。古いものから自動削除されます')}</div>
         <label class="gb-field-row">
           <span class="gb-label">間隔</span>
           <select id="modal-version-interval" class="gb-select">
@@ -381,28 +373,25 @@ async function showSettingsModal(opts) {
           <span class="gb-label">自動バージョン最大保持数</span>
           <input id="modal-version-max" type="number" class="gb-input" style="width:80px;" value="${getMaxAutoVersions()}" min="1" max="200">
         </label>
-        <div class="gb-section-desc">編集があった場合のみ保存。古いものから自動削除されます</div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">レイアウト</div>
-        <div class="gb-section-desc">現在のパネル配置を単一レイアウトとして保存します。ファイル形式による自動切り替えは行いません。</div>
+        <div class="gb-section-title">レイアウト ${fieldHelp('現在のパネル配置を単一レイアウトとして保存します。ファイル形式による自動切り替えは行いません')}</div>
         <div class="gb-field-row">
           <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})">レイアウトを初期化</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート</div>
-        <div class="gb-section-desc">チャット履歴・注釈・スケジューラーのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）。</div>
+        <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・注釈・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）')}</div>
         <div class="gb-field-row">
           <button id="btn-export-to-db" class="gb-btn gb-btn-sm" data-action="runExportToDb()">エクスポート実行</button>
           <span id="export-to-db-status" class="gb-section-desc"></span>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">全設定リセット</div>
-        <div class="gb-section-desc">レイアウト・テーマ・フィルタ・表示設定など、localStorageに保存された全ての設定を初期化します。ログイン情報もリセットされます。</div>
+        <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます')}</div>
         <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})">全設定を初期化</button>
       </section>
+      <div id="settings-cloud-link-card" class="settings-section-wide"></div>
     </div>
     <!-- テーマ -->
     <div class="settings-panel" data-panel="テーマ" data-settings-theme-lazy="1" hidden>
@@ -414,7 +403,7 @@ async function showSettingsModal(opts) {
     <!-- LLM -->
     <div class="settings-panel" data-panel="LLM" hidden>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('messagesSquare',14)} LLMチャット APIキー</div>
+        <div class="gb-section-title">${lucide('messagesSquare',14)} LLMチャット APIキー ${fieldHelp('キーを入れていない会社のAIは使えません。通常はこの端末だけに保存します。別端末へ持ち回る場合は、下のCloud保存を明示的に使ってください')}</div>
         <label class="gb-field-row">
           <span class="gb-label" style="min-width:140px;">Gemini (Google)</span>
           <input id="modal-gemini-key" type="password" class="gb-input" style="flex:1;" placeholder="AIza...">
@@ -426,21 +415,20 @@ async function showSettingsModal(opts) {
           <button type="button" class="gb-btn gb-btn-icon settings-llm-key-visibility-btn" title="表示切替" aria-label="Claude APIキーを表示/非表示" data-action="_toggleLlmKeyVisibility('modal-anthropic-key', this)">${lucide('eye',16)}</button>
         </label>
         <label class="gb-field-row">
-          <span class="gb-label" style="min-width:140px;">GPT (OpenAI)</span>
+          <span class="gb-label" style="min-width:140px;">ChatGPT (OpenAI)</span>
           <input id="modal-openai-key" type="password" class="gb-input" style="flex:1;" placeholder="sk-...">
           <button type="button" class="gb-btn gb-btn-icon settings-llm-key-visibility-btn" title="表示切替" aria-label="OpenAI APIキーを表示/非表示" data-action="_toggleLlmKeyVisibility('modal-openai-key', this)">${lucide('eye',16)}</button>
         </label>
-        <div class="gb-section-desc">キーを入れていない会社のAIは使えません。通常はこの端末だけに保存します。Cloudで別端末へ持ち回る場合は、下のCloud保存を明示的に使ってください。</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
-          <span class="gb-label" style="min-width:140px;">Cloud保存</span>
+          <span class="gb-label" style="min-width:140px;">Cloud保存 ${fieldHelp('別端末へ持ち回る場合だけ使います。作成・更新・削除は管理者のみ可能です。共有相手へAPIキーを渡す用途ではなく、自分の別端末で読み込むための試験機能です')}</span>
           <input id="modal-llm-cloud-passphrase" type="password" class="gb-input" style="flex:1;min-width:220px;" placeholder="暗号化パスフレーズ">
           <button type="button" class="gb-btn gb-btn-sm" data-action="MeldexLlmKeys.saveCloudFromSettings()">${lucide('cloudUpload',14)} 暗号化して保存</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="MeldexLlmKeys.loadCloudFromSettings()">${lucide('cloudDownload',14)} 復号して読み込み</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-action="MeldexLlmKeys.deleteCloudFromSettings()">${lucide('trash2',14)} Cloud保存を削除</button>
         </div>
-        <div class="gb-section-desc">Cloud保存はAES-GCMで暗号化し、パスフレーズ自体は保存しません。作成・更新・削除は管理者のみ可能です。共有相手へAPIキーを渡す用途ではなく、自分の別端末で復号するためのBETA機能です。</div>
+        <div class="gb-section-desc">Cloud保存は暗号化して保存し、パスフレーズ自体は保存しません。</div>
         <div class="gb-section-desc" style="margin-top:10px;">
-          AIへの送信について: 返答を作るため、チャット本文や必要なMeldex内の情報を、選んだAI会社のサーバーへ送ることがあります。OpenAI/Claudeは、あなたが同意しない限りAIの学習に使いません。Geminiの無料枠では、Googleの改善や人による確認に使われる場合があります。
+          AIへの送信について: 返答を作るため、チャット本文や必要なMeldex内の情報を、選んだAI会社のサーバーへ送ることがあります。${fieldHelp('OpenAI/Claudeは、あなたが同意しない限りAIの学習に使いません。Geminiの無料枠では、Googleの改善や人による確認に使われる場合があります')}
         </div>
         <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">
           <button type="button" class="gb-btn gb-btn-sm" role="link" data-e2e-id="settings-llm-openai-api-key-link" data-action="openExternalBrowserUrl" data-args='["${MELDEX_LLM_API_KEY_URLS.openai}"]'>${lucide('externalLink',14)} OpenAI APIキーを取得</button>
@@ -449,8 +437,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('server',14)} ローカルLLM</div>
-        <div class="gb-section-desc">Ollama / LM Studio などのOpenAI互換ローカルサーバーを使います。APIキーは使わず、接続先は localhost / 127.0.0.1 / ::1 のみに制限されます。</div>
+        <div class="gb-section-title">${lucide('server',14)} ローカルLLM ${fieldHelp('Ollama / LM Studio などのOpenAI互換ローカルサーバーを使います。APIキーは使わず、接続先はこのPC内だけに制限されます')}</div>
         <label class="gb-field-row">
           <span class="gb-label" style="min-width:140px;">接続先URL</span>
           <input id="modal-local-llm-base-url" type="text" class="gb-input" style="flex:1;min-width:220px;" value="${esc(localStorage.getItem('chat-local-llm-base-url') || 'http://127.0.0.1:11434/v1')}" placeholder="http://127.0.0.1:11434/v1">
@@ -459,27 +446,26 @@ async function showSettingsModal(opts) {
           <span class="gb-label" style="min-width:140px;">既定モデル</span>
           <input id="modal-local-llm-model" type="text" class="gb-input" style="flex:1;min-width:220px;" value="${esc(localStorage.getItem('chat-local-llm-model') || localStorage.getItem('chat-model:local_llm') || 'llama3.1')}" placeholder="llama3.1">
         </label>
-        <label class="gb-field-row" style="align-items:center;">
-          <span class="gb-label" style="min-width:140px;">Meldex操作</span>
-          <input id="modal-local-llm-mcp-enabled" type="checkbox" ${localStorage.getItem('chat-local-llm-mcp-enabled') === '0' ? '' : 'checked'}>
-          <span class="gb-section-desc">チャットからMeldex内の読み取り・作成・更新ツールを使えるようにします。</span>
-        </label>
+        <div class="gb-field-row gb-check-help-row" style="align-items:center;">
+          <label class="gb-field-row" style="align-items:center;margin:0;flex:0 1 auto;">
+            <span class="gb-label" style="min-width:140px;">Meldex操作</span>
+            <input id="modal-local-llm-mcp-enabled" type="checkbox" ${localStorage.getItem('chat-local-llm-mcp-enabled') === '0' ? '' : 'checked'}>
+          </label>
+          ${fieldHelp('チャットからMeldex内の読み取り・作成・更新ツールを使えるようにします')}
+        </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット</div>
-        <div class="gb-section-desc">PCに入っている Codex CLI / Claude Code / Gemini CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください。</div>
+        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Gemini CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
         <div id="settings-cli-chat-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('badgeInfo',14)} カスタムインストラクション</div>
-        <div class="gb-section-desc">シートのフォームで、ユーザー情報・作品前提・回答方針を項目別に入力します。送信した内容はチャットのカスタムインストラクションに反映されます。</div>
+        <div class="gb-section-title">${lucide('badgeInfo',14)} カスタムインストラクション ${fieldHelp('シートのフォームで、ユーザー情報・作品前提・回答方針を項目別に入力します。送信した内容はチャットのカスタムインストラクションに反映されます')}</div>
         <button type="button" class="gb-btn gb-btn-sm" data-action="ensureChatCustomInstructionSheet()">${lucide('clipboardList',14)} 入力フォームを開く</button>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('brain',14)} ナレッジ</div>
-        <div class="gb-section-desc">チャットの内容から記憶を作り、アイデア出しやプロット相談で自動的に活用します。通常は設定不要です。</div>
+        <div class="gb-section-title">${lucide('brain',14)} ナレッジ ${fieldHelp('チャットの内容から記憶を作り、アイデア出しやプロット相談で自動的に活用します。通常は設定不要です')}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
           <button type="button" class="gb-btn gb-btn-sm" data-action="openKnowledgeHomeView('items')">${lucide('brain',14)} 記憶一覧を開く</button>
         </div>
@@ -529,6 +515,17 @@ async function showSettingsModal(opts) {
             </div>
           </div>
         </div>
+        <div id="settings-account-link-status"></div>
+      </section>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('usersRound',14)} スタッフ</div>
+        <div class="gb-section-desc">保存場所: <span id="settings-staff-location">（読み込み中）</span>
+          <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" id="staff-registry-relocate-btn">変更</button>
+        </div>
+        <div id="settings-staff-list"><div class="gb-section-desc">このタブを開いた時に読み込みます</div></div>
+        <div class="gb-field-row" style="justify-content:flex-start;margin-top:8px;">
+          <button type="button" class="gb-btn gb-btn-sm" id="staff-registry-open-btn">${lucide('externalLink',14)} スタッフ管理シートを開く</button>
+        </div>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('lock',14)} 編集ロック中の項目</div>
@@ -557,12 +554,17 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('archive',14)} Xアカウントのポスト保存</div>
+        <div id="x-account-posts-settings-container">
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </div>
+      </section>
     </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('blocks',14)} Web Clipper</div>
-        <div class="gb-section-desc">Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の <code>Web Clipper</code> フォルダです。</div>
+        <div class="gb-section-title">${lucide('blocks',14)} Web Clipper ${fieldHelp('Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の「Web Clipper」フォルダです')}</div>
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
         <label class="gb-field" style="margin-top:8px;">
@@ -595,8 +597,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">拡張機能</div>
-        <div class="gb-section-desc">追加機能に必要なパッケージをインストールします。すべての処理はPC上で完結し、画像がAIに学習されることはありません。</div>
+        <div class="gb-section-title">拡張機能 ${fieldHelp('追加機能に必要なパッケージをインストールします。すべての処理はPC上で完結し、画像がAIに学習されることはありません')}</div>
         <div id="ext-status"></div>
       </section>
     </div>
@@ -654,6 +655,22 @@ async function showSettingsModal(opts) {
     closeSettingsModalRestoringTheme();
   });
   o.querySelector('#settings-back-btn')?.addEventListener('click', () => _backToSettingsList(o));
+  o.querySelector('#staff-registry-open-btn')?.addEventListener('click', () => {
+    window.MeldexUserRegistry?.openSheet?.();
+  });
+  o.querySelector('#staff-registry-relocate-btn')?.addEventListener('click', async () => {
+    if (!window.MeldexUserRegistry) return;
+    const current = await window.MeldexUserRegistry.getConfig().catch(() => ({ path: '' }));
+    const next = await cfPrompt('スタッフ管理シートの保存場所（フォルダパス）を入力してください:', current.path || '');
+    if (!next || next === current.path) return;
+    try {
+      await window.MeldexUserRegistry.relocate(next);
+      showStatus('スタッフ管理シートの保存場所を変更しました');
+      if (typeof _renderStaffRegistrySettings === 'function') _renderStaffRegistrySettings();
+    } catch (e) {
+      showStatus('保存場所の変更に失敗しました: ' + (e?.message || e), true);
+    }
+  });
   o.querySelectorAll('.settings-nav-item[data-target]').forEach((item) => {
     item.addEventListener('click', (event) => {
       event.preventDefault();
@@ -699,9 +716,6 @@ async function showSettingsModal(opts) {
       }
     });
   }
-  // チームフォーカスフォルダが指定されていればセット
-  if (opts.teamFolder) _settingsTeamFocusFolder = opts.teamFolder;
-  else _settingsTeamFocusFolder = '';
   // 指定パネルを開く
   if (requestedPanel) {
     if (typeof _openSettingsSection === 'function') {
@@ -1133,6 +1147,16 @@ function _isDropboxBackedSourcePath(path, root) {
     || normalized.includes('dropbox');
 }
 
+// フォルダツリー一覧の行バッジ（gb-settings-cloud-link.js）と同じ判定。
+// パス文字列の緩い判定（_isDropboxBackedSourcePath）は使わない。まだフォルダの
+// 実体を持たない「フォルダ追加直後の案内」だけがパス文字列の緩い判定を使い、
+// 一覧上部の常設の注意文はこちらの厳密な判定に揃える。これにより、パスに
+// 'dropbox' の文字列を含むだけの未登録フォルダ（行バッジは「この端末のみ」）に
+// 対して、注意文だけが「端末間で共有されます」と矛盾した表示を出すことを防ぐ。
+function _isDropboxProviderRoot(root) {
+  return !!(root && (root.provider === 'dropbox' || root.dropboxPath));
+}
+
 function _sourceRootDisplayPath(root) {
   if (!root) return '';
   if (root.provider === 'dropbox' || root.dropboxPath) {
@@ -1147,4 +1171,4 @@ function _createDropboxSourceFolderNotice() {
   notice.id = 'settings-dropbox-source-folder-notice';
   notice.className = 'gb-section-desc';
   notice.style.cssText = 'margin:0 0 8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg2);line-height:1.5;';
-  notice.textContent = 'Dropbox上のソースフォルダは端末間で共有されます。このPCで使う場合は、Dropboxアプリ側でも必要なフォルダをローカルで利用可能にしてください。';
+  notice.innerHTML = 'Dropbox上のソースフォルダは端末間で共有されます。' + (typeof fieldHelp === 'function' ? fieldHelp('このPCで使う場合は、Dropboxアプリ側でも必要なフォルダをローカルで利用可能にしてください') : '');

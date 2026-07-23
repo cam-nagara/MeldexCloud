@@ -42,6 +42,14 @@
       cloudUrl: 'apps/timer/',
       description: '作業タイマーを単独で開き、執筆時間を管理できます。',
     }),
+    Object.freeze({
+      id: 'quick-memo',
+      name: 'Meldex クイックメモ',
+      icon: 'MeldexQuickMemo_icon_128.png',
+      windowsAsset: 'MeldexQuickMemo.zip',
+      cloudUrl: 'apps/quick-memo/',
+      description: '短いメモや共有URLをすばやく保存できます。ホーム画面に追加してすぐ開けます。',
+    }),
   ]);
 
   function node(tagName, className, text) {

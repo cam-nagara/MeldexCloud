@@ -1,3 +1,11 @@
+    _dispatchInput();
+    _saveSelection();
+  }
+
+  function _openColor(anchor, command) {
+    _restoreSelection();
+    if (typeof openColorPalette !== 'function') return;
+    const fallback = command === 'hiliteColor' ? '#ffff88' : '#ffffff';
     openColorPalette(anchor, anchor?.dataset?.color || '', (color) => {
       const next = color || fallback;
       if (anchor?.dataset) anchor.dataset.color = next;

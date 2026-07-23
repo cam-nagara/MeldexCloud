@@ -1,0 +1,276 @@
+/* ==============================
+   gb-db-template-editor-ui.js: カスタムテンプレートの作成・編集
+   名前/説明に加えてアイコンを共通アイコンポップアップ（GBIconAssets.openPicker）で設定できる。
+   作成・編集は同一のフォームモーダルを mode: 'create' | 'edit' で共用する。
+   ============================== */
+
+/**
+ * アイコンspecを保存用に正規化する。
+ * Lucide選択時は生名（旧版の lucide('lucide:x') 空SVG化を避けるため）、
+ * Noto選択時は 'noto:HEX' のまま保存する。
+ */
+function _dbTemplateIconSpecForSave(spec) {
+  const normalized = (typeof GBIconAssets !== 'undefined' && GBIconAssets?.normalizeSpec)
+    ? GBIconAssets.normalizeSpec(spec)
+    : String(spec || '');
+  if (!normalized) return 'file';
+  return normalized.toLowerCase().startsWith('lucide:') ? normalized.slice(7) : normalized;
+}
+
+function _dbTemplateOpenIconPicker(anchorEl, currentIcon, onSelect) {
+  if (typeof GBIconAssets === 'undefined' || typeof GBIconAssets.openPicker !== 'function') return;
+  GBIconAssets.openPicker({
+    title: 'テンプレートアイコンを選択',
+    anchorEl,
+    current: currentIcon,
+    allowReset: true,
+    resetLabel: '既定に戻す',
+    onSelect: (spec) => onSelect(_dbTemplateIconSpecForSave(spec)),
+    onReset: () => onSelect('file'),
+  });
+}
+
+/**
+ * アイコン設定欄を構築する。GBIconAssets 未ロード環境ではボタンを出さず
+ * 既定アイコンのまま進める（行き止まりUI禁止）。
+ */
+function _buildDbTemplateIconField(initialIcon) {
+  const field = document.createElement('div');
+  field.className = 'field gb-field db-template-icon-field';
+  const label = document.createElement('div');
+  label.className = 'gb-label';
+  label.textContent = 'アイコン';
+  field.appendChild(label);
+
+  let currentIcon = initialIcon || 'file';
+  const hasIconPicker = typeof GBIconAssets !== 'undefined' && typeof GBIconAssets.openPicker === 'function';
+
+  if (!hasIconPicker) {
+    const fallback = document.createElement('div');
+    fallback.className = 'db-template-icon-fallback';
+    fallback.innerHTML = _dbTemplateIconHtml(currentIcon, 18);
+    field.appendChild(fallback);
+    return { field, getIcon: () => currentIcon };
+  }
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'gb-btn gb-btn-sm db-template-icon-button';
+  button.dataset.e2eId = 'db-template-icon-button';
+  button.setAttribute('aria-label', 'テンプレートアイコンを選択');
+  // gb-dropdown-dismiss.js の「外側クリックで閉じる」対象から自身を除外し、
+  // 開いた直後に自分自身のクリックでピッカーが閉じてしまわないようにする
+  button.setAttribute('aria-haspopup', 'dialog');
+  const iconPreview = document.createElement('span');
+  iconPreview.className = 'db-template-icon-button-preview';
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'db-template-icon-button-label';
+  labelSpan.textContent = 'アイコンを選ぶ';
+  button.append(iconPreview, labelSpan);
+  const updateButton = () => {
+    iconPreview.innerHTML = _dbTemplateIconHtml(currentIcon, 18);
+  };
+  updateButton();
+  button.addEventListener('click', () => {
+    _dbTemplateOpenIconPicker(button, currentIcon, (nextIcon) => {
+      currentIcon = nextIcon;
+      updateButton();
+    });
+  });
+  field.appendChild(button);
+  return { field, getIcon: () => currentIcon };
+}
+
+/**
+ * カスタムテンプレートの作成/編集フォームモーダル本体（両モード共用）。
+ * @param {object} options - { mode: 'create'|'edit', dbPath, triggerEl, initialName, initialDescription,
+ *   initialIcon, previewText, editNote, onSave(fields): boolean|void }
+ */
+function _showDbTemplateFormModal(options) {
+  const trigger = _dbTemplateTrigger(options.triggerEl);
+  const mode = options.mode === 'edit' ? 'edit' : 'create';
+  const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
+  const titleId = `db-template-${mode}-title-${seq}`;
+  const descId = `db-template-${mode}-desc-${seq}`;
+  const nameId = `db-template-name-${seq}`;
+  const detailId = `db-template-desc-${seq}`;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.dataset.dbTemplateModal = mode;
+  overlay.style.zIndex = '120';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal db-template-modal db-template-' + mode + '-modal';
+  modal.dataset.e2eId = 'db-template-' + mode + '-dialog';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', titleId);
+  modal.setAttribute('aria-describedby', descId);
+  modal.tabIndex = -1;
+  _setDbTemplateModalSize(modal, { maxWidth: 500, maxHeight: 560, heightRatio: 0.66, minHeight: 400 });
+
+  const h3 = document.createElement('h3');
+  h3.id = titleId;
+  h3.textContent = mode === 'edit' ? 'カスタムテンプレート編集' : 'カスタムテンプレート作成';
+  modal.appendChild(h3);
+  const modalDesc = document.createElement('div');
+  modalDesc.id = descId;
+  modalDesc.className = 'gb-visually-hidden';
+  modalDesc.textContent = mode === 'edit'
+    ? 'カスタムテンプレートの名前・説明・アイコンを編集するダイアログ'
+    : '現在のシート設定をカスタムテンプレートとして保存するダイアログ';
+  modal.appendChild(modalDesc);
+
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+
+  const iconField = _buildDbTemplateIconField(options.initialIcon);
+  body.appendChild(iconField.field);
+
+  // 名前入力
+  const nameField = document.createElement('div');
+  nameField.className = 'field gb-field';
+  const nameLabel = document.createElement('label');
+  nameLabel.className = 'gb-label';
+  nameLabel.htmlFor = nameId;
+  nameLabel.textContent = 'テンプレート名';
+  nameField.appendChild(nameLabel);
+  const nameInput = document.createElement('input');
+  nameInput.id = nameId;
+  nameInput.className = 'gb-input';
+  nameInput.dataset.e2eId = 'db-template-name-input';
+  nameInput.type = 'text';
+  nameInput.placeholder = '例: キャラシート（カスタム）';
+  nameInput.value = options.initialName || '';
+  nameField.appendChild(nameInput);
+  body.appendChild(nameField);
+
+  // 説明入力
+  const descField = document.createElement('div');
+  descField.className = 'field gb-field';
+  const descLabel = document.createElement('label');
+  descLabel.className = 'gb-label';
+  descLabel.htmlFor = detailId;
+  descLabel.textContent = '説明';
+  descField.appendChild(descLabel);
+  const descInput = document.createElement('input');
+  descInput.id = detailId;
+  descInput.className = 'gb-input';
+  descInput.dataset.e2eId = 'db-template-desc-input';
+  descInput.type = 'text';
+  descInput.placeholder = 'テンプレートの説明';
+  descInput.value = options.initialDescription || '';
+  descField.appendChild(descInput);
+  body.appendChild(descField);
+
+  // プロパティ/ビューのプレビュー概要
+  const preview = document.createElement('div');
+  preview.className = 'db-template-create-preview';
+  preview.textContent = options.previewText || '';
+  body.appendChild(preview);
+
+  if (mode === 'edit') {
+    const note = document.createElement('div');
+    note.className = 'db-template-edit-note';
+    note.dataset.e2eId = 'db-template-edit-note';
+    if (options.editNote) {
+      note.textContent = options.editNote;
+    } else {
+      note.innerHTML = `名前・説明・アイコンのみ編集できます ${fieldHelp('列とビューは保存時点の内容のまま変更されません')}`;
+    }
+    body.appendChild(note);
+  }
+  modal.appendChild(body);
+
+  // ボタン
+  const btnRow = document.createElement('div');
+  btnRow.className = 'db-template-footer';
+  const cancelBtn = document.createElement('button');
+  _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-' + mode + '-cancel');
+  cancelBtn.textContent = 'キャンセル';
+  cancelBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
+  btnRow.appendChild(cancelBtn);
+  const saveBtn = document.createElement('button');
+  _setupDbTemplateButton(saveBtn, 'gb-btn gb-btn-sm gb-btn-primary primary', 'db-template-' + mode + '-save');
+  saveBtn.textContent = '保存';
+  saveBtn.addEventListener('click', () => {
+    const name = nameInput.value.trim();
+    if (!name) { showStatus('名前を入力してください', true); return; }
+    const result = options.onSave({
+      name,
+      description: descInput.value.trim(),
+      icon: iconField.getIcon(),
+    });
+    if (result === false) return;
+    _closeDbTemplateOverlay(overlay, trigger);
+  });
+  btnRow.appendChild(saveBtn);
+  modal.appendChild(btnRow);
+
+  overlay.appendChild(modal);
+  _showDbTemplateOverlay(overlay, modal, trigger, nameInput);
+}
+
+/**
+ * 現在のシートからカスタムテンプレートを作成するダイアログを開く。
+ */
+function showCreateTemplateModal(dbPath, triggerEl = null) {
+  const exported = exportDbAsTemplate(dbPath);
+  if (exported.properties.length === 0) {
+    showStatus('このシートには列タイプが設定されていません', true);
+    return;
+  }
+
+  const viewCount = Array.isArray(exported.savedViews) ? exported.savedViews.length : 0;
+  const previewText = '含まれる列: ' + exported.properties.map(p => p.name).join(', ')
+    + (viewCount ? `（ビュー${viewCount}件を含む）` : '');
+
+  _showDbTemplateFormModal({
+    mode: 'create',
+    dbPath,
+    triggerEl,
+    initialName: '',
+    initialDescription: '',
+    initialIcon: exported.icon || 'file',
+    previewText,
+    onSave: ({ name, description, icon }) => {
+      exported.name = name;
+      exported.description = description;
+      exported.icon = icon;
+      const customs = getCustomTemplates();
+      customs.push(exported);
+      if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート作成', detail: name })) return false;
+      showStatus('カスタムテンプレート「' + name + '」を保存しました');
+    },
+  });
+}
+
+/**
+ * 既存のカスタムテンプレートの名前・説明・アイコンを編集するダイアログを開く。
+ * プロパティ・ビューは保存時点のスナップショットのまま変更しない。
+ */
+function showEditTemplateModal(tmpl, dbPath, triggerEl = null) {
+  if (!tmpl || tmpl.tier !== 0) return;
+  const propCount = (tmpl.properties || []).length;
+  const viewCount = Array.isArray(tmpl.savedViews) ? tmpl.savedViews.length : 0;
+  const previewText = `列${propCount}件` + (viewCount ? ` / ビュー${viewCount}件` : '');
+
+  _showDbTemplateFormModal({
+    mode: 'edit',
+    dbPath,
+    triggerEl,
+    initialName: tmpl.name || '',
+    initialDescription: tmpl.description || '',
+    initialIcon: tmpl.icon || 'file',
+    previewText,
+    onSave: ({ name, description, icon }) => {
+      const customs = getCustomTemplates();
+      const idx = customs.findIndex(c => c.id === tmpl.id);
+      if (idx < 0) { showStatus('カスタムテンプレートが見つかりません', true); return false; }
+      customs[idx] = { ...customs[idx], name, description, icon };
+      if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート編集', detail: name })) return false;
+      showStatus('カスタムテンプレート「' + name + '」を更新しました');
+    },
+  });
+}
