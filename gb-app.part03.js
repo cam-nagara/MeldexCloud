@@ -649,10 +649,14 @@ function _gbIsMobileDialogSheetModal(modal) {
 function _gbClampModalForNarrowViewport(modal) {
   if (!modal || window.innerWidth > 768) return;
   const gap = 8;
-  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  const zoom = Math.max(0.1, (typeof _getZoom === 'function'
+    ? Number(_getZoom())
+    : Number.parseFloat(document.documentElement.style.zoom || '1')) || 1);
+  const viewportWidth = window.innerWidth / zoom;
+  const viewportHeight = (window.visualViewport?.height || window.innerHeight) / zoom;
   modal.style.minWidth = '0';
-  modal.style.width = Math.max(240, window.innerWidth - gap * 2) + 'px';
-  modal.style.maxWidth = 'calc(100vw - 16px)';
+  modal.style.width = Math.max(240, viewportWidth - gap * 2) + 'px';
+  modal.style.maxWidth = Math.max(240, viewportWidth - gap * 2) + 'px';
   modal.style.maxHeight = Math.max(160, viewportHeight - gap * 2) + 'px';
 }
 

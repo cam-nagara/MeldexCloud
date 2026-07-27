@@ -677,6 +677,7 @@
     dialog.append(title, body, buttons);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    _applyConsentDialogResponsiveSizing(overlay, dialog);
     _refreshInstallUi(overlay);
     const installButton = overlay.querySelector('[data-meldex-install-button]');
     installButton?.focus?.();
@@ -793,6 +794,7 @@
       dialog.append(title, body, buttons);
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
+      _applyConsentDialogResponsiveSizing(overlay, dialog);
       addButton.focus();
     });
   }
@@ -944,6 +946,7 @@
     dialog.append(title, body, buttons);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    _applyConsentDialogResponsiveSizing(overlay, dialog);
     (doneButton || closeButton).focus();
     return true;
   }
@@ -988,9 +991,14 @@
 
   function _applyConsentDialogResponsiveSizing(overlay, dialog) {
     if (!overlay || !dialog) return;
+    const zoom = Math.max(0.1, (typeof _getZoom === 'function'
+      ? Number(_getZoom())
+      : Number.parseFloat(document.documentElement.style.zoom || '1')) || 1);
+    const viewportWidth = (window.visualViewport?.width || window.innerWidth) / zoom;
+    const viewportHeight = (window.visualViewport?.height || window.innerHeight) / zoom;
     dialog.style.minWidth = '0';
     dialog.style.boxSizing = 'border-box';
-    dialog.style.maxWidth = 'min(620px, calc(100vw - 16px))';
+    dialog.style.maxWidth = Math.min(620, Math.max(240, viewportWidth - 16)) + 'px';
     if (window.innerWidth > 768) return;
     const title = dialog.querySelector(':scope > h3');
     const body = dialog.querySelector(':scope > .modal-body');
@@ -1000,9 +1008,9 @@
     overlay.style.overflowX = 'hidden';
     overlay.style.overflowY = 'auto';
     overlay.style.padding = 'var(--gb-mobile-dialog-top-gap, 10px) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left))';
-    dialog.style.width = 'min(100%, calc(100vw - 16px))';
-    dialog.style.maxWidth = 'min(100%, calc(100vw - 16px))';
-    dialog.style.maxHeight = 'calc(100vh - var(--gb-mobile-dialog-top-gap, 10px))';
+    dialog.style.setProperty('width', Math.max(240, viewportWidth - 16) + 'px', 'important');
+    dialog.style.setProperty('max-width', Math.max(240, viewportWidth - 16) + 'px', 'important');
+    dialog.style.setProperty('max-height', Math.max(180, viewportHeight - 10) + 'px', 'important');
     dialog.style.borderRadius = '16px 16px 0 0';
     dialog.style.overflowX = 'hidden';
     [title, body, footer].forEach(section => {

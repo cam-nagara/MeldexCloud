@@ -1,3 +1,7 @@
+  let newIdx;
+  if (idx === -1) {
+    // 現在値がステップ外の場合、最も近いステップを探す
+    newIdx = steps.reduce((best, v, i) => Math.abs(v - cur) < Math.abs(steps[best] - cur) ? i : best, 0);
   } else {
     newIdx = e.deltaY < 0 ? Math.min(idx + 1, steps.length - 1) : Math.max(idx - 1, 0);
   }

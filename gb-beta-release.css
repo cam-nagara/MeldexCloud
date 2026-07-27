@@ -719,9 +719,9 @@
   .meldex-install-prompt-modal,
   .meldex-install-help-modal,
   .meldex-cloud-home-first-modal {
-    width: calc(100vw - 16px) !important;
-    max-width: calc(100vw - 16px) !important;
-    max-height: calc(100dvh - 10px - env(safe-area-inset-top, 0px)) !important;
+    width: calc(100% - 16px) !important;
+    max-width: calc(100% - 16px) !important;
+    max-height: calc((100dvh - 10px - env(safe-area-inset-top, 0px)) / var(--meldex-ui-zoom, 1)) !important;
     border-radius: 16px 16px 0 0 !important;
     overflow-x: hidden !important;
     overflow-y: auto !important;

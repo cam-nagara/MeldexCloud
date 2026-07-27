@@ -569,10 +569,14 @@ function _gbIsMobileDialogSheetModal(modal) {
 function _gbClampModalForNarrowViewport(modal) {
   if (!modal || window.innerWidth > 768) return;
   const gap = 8;
-  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  const zoom = Math.max(0.1, (typeof _getZoom === 'function'
+    ? Number(_getZoom())
+    : Number.parseFloat(document.documentElement.style.zoom || '1')) || 1);
+  const viewportWidth = window.innerWidth / zoom;
+  const viewportHeight = (window.visualViewport?.height || window.innerHeight) / zoom;
   modal.style.minWidth = '0';
-  modal.style.width = Math.max(240, window.innerWidth - gap * 2) + 'px';
-  modal.style.maxWidth = 'calc(100vw - 16px)';
+  modal.style.width = Math.max(240, viewportWidth - gap * 2) + 'px';
+  modal.style.maxWidth = Math.max(240, viewportWidth - gap * 2) + 'px';
   modal.style.maxHeight = Math.max(160, viewportHeight - gap * 2) + 'px';
 }
 
@@ -894,7 +898,3 @@ document.addEventListener('wheel', (e) => {
   const steps = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
   const cur = parseInt(localStorage.getItem('ui-scale') || '100', 10);
   const idx = steps.indexOf(cur);
-  let newIdx;
-  if (idx === -1) {
-    // 現在値がステップ外の場合、最も近いステップを探す
-    newIdx = steps.reduce((best, v, i) => Math.abs(v - cur) < Math.abs(steps[best] - cur) ? i : best, 0);
