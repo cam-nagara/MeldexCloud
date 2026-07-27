@@ -2750,7 +2750,7 @@ function bdContextMenu(e, nodeId) {
       item('リンク先を開く', () => {
         if (typeof _bdOpenLinkedTarget === 'function') _bdOpenLinkedTarget(nd);
       });
-      item('サブパネルで開く', () => {
+      item('フロートパネルで開く', () => {
         const linkPath = nd.link;
         const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
         if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(linkPath, linkName, { linkType: nd.linkType });

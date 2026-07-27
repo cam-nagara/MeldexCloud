@@ -391,13 +391,28 @@
       return vaultPath ? vaultPath.split('/').filter(Boolean).pop() : '';
     }
 
-    _dropboxPath(relativePath) {
+    _dropboxLocation(relativePath) {
       const registry = _sourceRegistry();
-      if (registry?.resolveDropboxPath) return registry.resolveDropboxPath(relativePath, this.getVaultPath());
+      if (registry?.resolveDropboxLocation) {
+        return registry.resolveDropboxLocation(relativePath, this.getVaultPath());
+      }
+      if (registry?.resolveDropboxPath) {
+        return {
+          path: registry.resolveDropboxPath(relativePath, this.getVaultPath()),
+          namespaceKind: 'home',
+        };
+      }
       const vaultPath = this.getVaultPath();
       if (!vaultPath) throw new Error('Dropboxの保存先フォルダが未設定です');
       const relative = _normalizeRelativePath(relativePath);
-      return relative ? (vaultPath + '/' + relative) : vaultPath;
+      return {
+        path: relative ? (vaultPath + '/' + relative) : vaultPath,
+        namespaceKind: _auth()?.getVaultNamespaceKind?.() === 'team_root' ? 'team_root' : 'home',
+      };
+    }
+
+    _dropboxPath(relativePath) {
+      return this._dropboxLocation(relativePath).path;
     }
 
     _relativeFromDropboxPath(pathDisplay, sourceId) {
@@ -411,12 +426,16 @@
       return raw.replace(/^\/+/, '');
     }
 
-    async _rpc(route, body) {
-      return _auth().apiRpc(route, body);
+    async _rpc(route, body, location) {
+      return _auth().apiRpc(route, body, {
+        namespaceKind: location?.namespaceKind || 'home',
+      });
     }
 
-    async _content(route, arg, init) {
-      return _auth().apiContent(route, arg, init);
+    async _content(route, arg, init, location) {
+      return _auth().apiContent(route, arg, init, {
+        namespaceKind: location?.namespaceKind || 'home',
+      });
     }
 
     _rememberMeta(relativePath, meta) {
@@ -612,6 +631,7 @@
         connected: !!workspace,
         name: this.getVaultName(),
         path: this.getVaultPath(),
+        namespaceKind: _auth()?.getVaultNamespaceKind?.() === 'team_root' ? 'team_root' : 'home',
         permission: state.access === 'viewer' ? 'readonly' : 'readwrite',
       };
     }
@@ -756,11 +776,12 @@
       const normalized = _normalizeRelativePath(relativePath);
       if (this._metaCache.has(normalized)) return this._metaCache.get(normalized);
       try {
+        const location = this._dropboxLocation(normalized);
         const payload = await this._rpc('files/get_metadata', {
-          path: this._dropboxPath(normalized),
+          path: location.path,
           include_deleted: false,
           include_has_explicit_shared_members: false,
-        });
+        }, location);
         this._rememberMeta(normalized, payload);
         return payload;
       } catch (err) {
@@ -823,10 +844,11 @@
           current = _joinPath(current, segment);
         }
         try {
+          const location = this._dropboxLocation(current);
           await this._rpc('files/create_folder_v2', {
-            path: this._dropboxPath(current),
+            path: location.path,
             autorename: false,
-          });
+          }, location);
         } catch (err) {
           this._forgetMeta(current);
           const existing = await this.statPath(current);
@@ -844,6 +866,8 @@
         await this._rpc('files/create_folder_v2', {
           path: vaultPath,
           autorename: false,
+        }, {
+          namespaceKind: _auth()?.getVaultNamespaceKind?.() === 'team_root' ? 'team_root' : 'home',
         });
       } catch (err) {
         this._forgetMeta('');
@@ -861,16 +885,17 @@
       const inFlight = this._listInFlight.get(normalized);
       if (inFlight) return this._cloneListEntries(await inFlight);
       const sourceId = _sourceRegistry()?.parseSourcePath?.(normalized)?.sourceId || '';
+      const location = this._dropboxLocation(normalized);
       const cacheGeneration = this._listCacheGeneration;
       const promise = (async () => {
         const entries = [];
         let payload = await this._rpc('files/list_folder', {
-          path: this._dropboxPath(normalized),
+          path: location.path,
           recursive: false,
           include_deleted: false,
           include_has_explicit_shared_members: false,
           include_mounted_folders: true,
-        });
+        }, location);
         while (true) {
           (payload.entries || []).forEach((entry) => {
             if (entry['.tag'] !== 'file' && entry['.tag'] !== 'folder') return;
@@ -886,7 +911,7 @@
             });
           });
           if (!payload.has_more || !payload.cursor) break;
-          payload = await this._rpc('files/list_folder/continue', { cursor: payload.cursor });
+          payload = await this._rpc('files/list_folder/continue', { cursor: payload.cursor }, location);
         }
         entries.sort((a, b) => a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' }));
         if (cacheGeneration === this._listCacheGeneration) {
@@ -909,7 +934,8 @@
       const inFlight = this._fileDownloadInFlight.get(normalized);
       if (inFlight) return inFlight;
       const promise = (async () => {
-        const response = await this._content('files/download', { path: this._dropboxPath(normalized) });
+        const location = this._dropboxLocation(normalized);
+        const response = await this._content('files/download', { path: location.path }, undefined, location);
         const resultHeader = response.headers.get('dropbox-api-result');
         const meta = _safeJsonParse(resultHeader, null) || {};
         this._rememberMeta(normalized, meta);
@@ -932,7 +958,8 @@
 
     async getTemporaryLink(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
-      const payload = await this._rpc('files/get_temporary_link', { path: this._dropboxPath(normalized) });
+      const location = this._dropboxLocation(normalized);
+      const payload = await this._rpc('files/get_temporary_link', { path: location.path }, location);
       return payload.link || '';
     }
 
@@ -950,8 +977,9 @@
 
     async _uploadBytesWithMode(relativePath, bytes, mode) {
       const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
       const response = await this._content('files/upload', {
-        path: this._dropboxPath(normalized),
+        path: location.path,
         mode,
         autorename: false,
         mute: false,
@@ -960,7 +988,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: bytes,
-      });
+      }, location);
       const meta = await response.json();
       this._rememberMeta(normalized, meta);
       this._rememberDownloadedFile(normalized, _createFile(bytes, meta.name || _basename(normalized), {
@@ -1054,7 +1082,8 @@
         let current = fallbackValue;
         let rev = '';
         try {
-          const response = await this._content('files/download', { path: this._dropboxPath(normalized) });
+          const location = this._dropboxLocation(normalized);
+          const response = await this._content('files/download', { path: location.path }, undefined, location);
           const resultHeader = response.headers.get('dropbox-api-result');
           const meta = _safeJsonParse(resultHeader, null) || {};
           this._rememberMeta(normalized, meta);
@@ -1086,7 +1115,8 @@
 
     async deletePath(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
-      await this._rpc('files/delete_v2', { path: this._dropboxPath(normalized) });
+      const location = this._dropboxLocation(normalized);
+      await this._rpc('files/delete_v2', { path: location.path }, location);
       this._forgetMeta(normalized);
       return true;
     }
@@ -1096,13 +1126,24 @@
       const target = _normalizeRelativePath(newRelativePath);
       const parent = _dirname(target);
       if (parent) await this.ensureDirectory(parent);
+      const sourceLocation = this._dropboxLocation(source);
+      const targetLocation = this._dropboxLocation(target);
+      let sourcePath = sourceLocation.path;
+      if (sourceLocation.namespaceKind !== targetLocation.namespaceKind) {
+        const sourceMeta = await this._rpc('files/get_metadata', {
+          path: sourceLocation.path,
+          include_deleted: false,
+        }, sourceLocation);
+        sourcePath = String(sourceMeta?.id || '');
+        if (!sourcePath) throw new Error('Dropbox領域をまたぐ移動元を確認できませんでした');
+      }
       const payload = await this._rpc('files/move_v2', {
-        from_path: this._dropboxPath(source),
-        to_path: this._dropboxPath(target),
+        from_path: sourcePath,
+        to_path: targetLocation.path,
         allow_shared_folder: true,
         autorename: false,
         allow_ownership_transfer: false,
-      });
+      }, targetLocation);
       this._forgetMeta(source);
       // 移動元の親フォルダの一覧キャッシュも明示的に無効化する（移動先のみが無効化され、
       // 移動元フォルダに最大3.5秒古い項目が残る問題の予防）
@@ -1117,12 +1158,23 @@
       const target = _normalizeRelativePath(newRelativePath);
       const parent = _dirname(target);
       if (parent) await this.ensureDirectory(parent);
+      const sourceLocation = this._dropboxLocation(source);
+      const targetLocation = this._dropboxLocation(target);
+      let sourcePath = sourceLocation.path;
+      if (sourceLocation.namespaceKind !== targetLocation.namespaceKind) {
+        const sourceMeta = await this._rpc('files/get_metadata', {
+          path: sourceLocation.path,
+          include_deleted: false,
+        }, sourceLocation);
+        sourcePath = String(sourceMeta?.id || '');
+        if (!sourcePath) throw new Error('Dropbox領域をまたぐコピー元を確認できませんでした');
+      }
       const payload = await this._rpc('files/copy_v2', {
-        from_path: this._dropboxPath(source),
-        to_path: this._dropboxPath(target),
+        from_path: sourcePath,
+        to_path: targetLocation.path,
         allow_shared_folder: true,
         autorename: false,
-      });
+      }, targetLocation);
       this._rememberMeta(target, payload.metadata || null);
       this._forgetListCache(_dirname(target));
       return payload;

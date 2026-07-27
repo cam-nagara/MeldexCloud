@@ -135,7 +135,7 @@ function renderOutlinerRootsSettings() {
       <input type="text" class="or-name" value="${esc(root.name)}"
         data-e2e-id="settings-outliner-root-${i}-name" aria-label="ソースフォルダ名"
         style="width:80px;font-size:12px;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-      <span style="flex:1;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(displayPath)}">${esc(displayPath)}</span>
+      <span class="or-path" style="flex:1;min-width:0;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(displayPath)}">${esc(displayPath)}</span>
       <button type="button" class="or-delete" data-e2e-id="settings-outliner-root-${i}-delete" aria-label="${esc(root.name || 'ソースフォルダ')}を削除" title="削除" style="font-size:11px;padding:1px 6px;color:var(--fg2);">${lucide('x', 12)}</button>
     `;
     row.querySelector('.or-visible').addEventListener('change', (e) => {
@@ -163,6 +163,10 @@ function renderOutlinerRootsSettings() {
     row.__msclRoot = root;
     window.MeldexSettingsCloudLink?.decorateRootRow?.(row, root);
     container.appendChild(row);
+    // 長いパスは実効幅に収めて「先頭…末尾フォルダ名」形式で中略表示する（右省略だけだと
+    // 末尾のフォルダ名が切れて読めなくなるため）。DOM接続後でないと実効幅が取れないため
+    // appendChild の後で呼ぶ。
+    if (typeof applyMiddleEllipsis === 'function') applyMiddleEllipsis(row.querySelector('.or-path'), displayPath);
   });
 }
 

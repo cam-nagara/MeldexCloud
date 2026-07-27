@@ -37,7 +37,11 @@
     return path === '/' ? 'Dropbox' : _basename(path);
   }
 
-  async function _listFolders(path) {
+  function _normalizeNamespaceKind(value) {
+    return value === 'team_root' ? 'team_root' : 'home';
+  }
+
+  async function _listFolders(path, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
     const folders = [];
@@ -46,7 +50,7 @@
       recursive: false,
       include_deleted: false,
       include_mounted_folders: true,
-    });
+    }, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
     while (true) {
       (payload.entries || []).forEach((entry) => {
         if (entry['.tag'] === 'folder') {
@@ -57,17 +61,25 @@
         }
       });
       if (!payload.has_more || !payload.cursor) break;
-      payload = await auth.apiRpc('files/list_folder/continue', { cursor: payload.cursor });
+      payload = await auth.apiRpc(
+        'files/list_folder/continue',
+        { cursor: payload.cursor },
+        { namespaceKind: _normalizeNamespaceKind(namespaceKind) }
+      );
     }
     folders.sort((a, b) => a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' }));
     return folders;
   }
 
-  async function _createFolder(parentPath, name) {
+  async function _createFolder(parentPath, name, namespaceKind) {
     const cleanName = String(name || '').trim().replace(/[\\\/]+/g, '-');
     if (!cleanName) return null;
     const path = parentPath === '/' ? `/${cleanName}` : `${parentPath}/${cleanName}`;
-    await _auth().apiRpc('files/create_folder_v2', { path, autorename: false });
+    await _auth().apiRpc(
+      'files/create_folder_v2',
+      { path, autorename: false },
+      { namespaceKind: _normalizeNamespaceKind(namespaceKind) }
+    );
     return _escPath(path);
   }
 
@@ -92,7 +104,31 @@
       const title = _el('h3', { id: `${pickerId}-title`, text: options.title || 'Dropbox内フォルダを選択' });
       title.style.cssText = 'margin:0;padding:14px 16px;border-bottom:1px solid var(--border);font-size:16px;';
       const body = _el('div', { class: 'modal-body' });
-      body.style.cssText = 'display:grid;grid-template-rows:auto 1fr auto;gap:10px;min-height:0;padding:12px 16px;overflow:hidden;';
+      body.style.cssText = 'display:grid;grid-template-rows:auto auto 1fr auto;gap:10px;min-height:0;padding:12px 16px;overflow:hidden;';
+      const namespacePicker = _el('div', {
+        role: 'group',
+        'aria-label': 'Dropboxの領域',
+        'data-e2e-id': 'dropbox-folder-picker-namespace',
+      });
+      namespacePicker.style.cssText = 'display:none;grid-template-columns:1fr 1fr;gap:8px;';
+      const homeNamespaceButton = _el('button', {
+        type: 'button',
+        class: 'gb-btn gb-btn-sm',
+        text: '個人用',
+        'data-namespace-kind': 'home',
+        'data-e2e-id': 'dropbox-folder-picker-namespace-home',
+      });
+      const teamNamespaceButton = _el('button', {
+        type: 'button',
+        class: 'gb-btn gb-btn-sm',
+        text: 'チーム共有',
+        'data-namespace-kind': 'team_root',
+        'data-e2e-id': 'dropbox-folder-picker-namespace-team',
+      });
+      for (const button of [homeNamespaceButton, teamNamespaceButton]) {
+        button.style.cssText = 'min-height:44px;';
+        namespacePicker.appendChild(button);
+      }
       const toolbar = _el('div', { class: 'gb-field-row' });
       toolbar.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;';
       const upButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: '上へ', title: '上の階層へ', 'aria-label': '上の階層へ', 'data-e2e-id': 'dropbox-folder-picker-up' });
@@ -110,13 +146,14 @@
       const cancelButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: 'キャンセル', 'data-e2e-id': 'dropbox-folder-picker-cancel' });
       const selectButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm gb-btn-primary primary', text: 'このフォルダを追加', 'data-e2e-id': 'dropbox-folder-picker-select' });
       buttons.append(newButton, cancelButton, selectButton);
-      body.append(toolbar, list, status);
+      body.append(namespacePicker, toolbar, list, status);
       dialog.append(title, body, buttons);
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
 
       let currentPath = _escPath(options.initialPath || '/');
       let selectedPath = currentPath;
+      let currentNamespaceKind = _normalizeNamespaceKind(options.namespaceKind);
       let renderSeq = 0;
 
       const close = (value) => {
@@ -134,13 +171,15 @@
         const renderPath = _escPath(currentPath);
         currentPath = renderPath;
         pathText.textContent = renderPath;
+        homeNamespaceButton.setAttribute('aria-pressed', currentNamespaceKind === 'home' ? 'true' : 'false');
+        teamNamespaceButton.setAttribute('aria-pressed', currentNamespaceKind === 'team_root' ? 'true' : 'false');
         selectedPath = renderPath;
         list.textContent = '';
         list.setAttribute('aria-busy', 'true');
         status.textContent = '読み込み中...';
         upButton.disabled = renderPath === '/';
         try {
-          const folders = await _listFolders(renderPath);
+          const folders = await _listFolders(renderPath, currentNamespaceKind);
           if (seq !== renderSeq) return;
           list.textContent = '';
           list.setAttribute('aria-busy', 'false');
@@ -184,11 +223,20 @@
         render();
       });
       refreshButton.addEventListener('click', render);
+      namespacePicker.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-namespace-kind]');
+        if (!button) return;
+        const nextKind = _normalizeNamespaceKind(button.getAttribute('data-namespace-kind'));
+        if (nextKind === currentNamespaceKind) return;
+        currentNamespaceKind = nextKind;
+        currentPath = '/';
+        render();
+      });
       newButton.addEventListener('click', async () => {
         const name = prompt('新しいフォルダ名');
         if (!name) return;
         try {
-          const createdPath = await _createFolder(currentPath, name);
+          const createdPath = await _createFolder(currentPath, name, currentNamespaceKind);
           if (!createdPath) {
             status.textContent = 'フォルダ名を入力してください。';
             return;
@@ -200,12 +248,20 @@
         }
       });
       cancelButton.addEventListener('click', () => close(null));
-      selectButton.addEventListener('click', () => close({ path: selectedPath, name: _displayName(selectedPath) }));
+      selectButton.addEventListener('click', () => close({
+        path: selectedPath,
+        name: _displayName(selectedPath),
+        namespaceKind: currentNamespaceKind,
+      }));
       overlay.addEventListener('click', (event) => {
         if (event.target === overlay) close(null);
       });
       document.addEventListener('keydown', onKeydown);
       render();
+      Promise.resolve(_auth()?.getNamespaceContext?.(false)).then((context) => {
+        if (!context?.isTeam) return;
+        namespacePicker.style.display = 'grid';
+      }).catch(() => {});
     });
   }
 

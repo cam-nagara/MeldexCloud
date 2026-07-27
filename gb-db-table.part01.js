@@ -444,6 +444,7 @@ function _dbRenameOptimisticEntityLocally(ctx, dbPath, fromName, toName) {
 async function _dbRecoverEntityCreateAfterError(ctx, dbPath, created) {
   try {
     const pivotData = await apiFetch(_dbPivotFetchUrl(dbPath), { skipBrowseCache: true, cache: 'reload' });
+    if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
     const serverNames = Object.keys(pivotData?.entities || {});
     const baseName = String(created?.baseName || '無題');
     const baseline = new Set(Array.isArray(created?.baseline) ? created.baseline : []);
@@ -555,6 +556,7 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
   setTimeout(async () => {
     try {
       const pivotData = await apiFetch(_dbPivotFetchUrl(dbPath));
+      if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
       // サーバー作成が未確定の楽観的エントリは取得データに含まれないため、行が消えないよう再マージする
       if (typeof _dbMergePendingEntityCreates === 'function') _dbMergePendingEntityCreates(dbPath, pivotData);
       // 直前に作成が確定した名前も、SQLite の可視化タイミング等でこの取得にまだ
@@ -728,7 +730,7 @@ function _handleRelationLinkClick(link, ctx) {
   const items = [
     // 互換テスト用: navigateToEntity(entityName, relDbPath)
     { label: 'リンク先を開く', icon: 'externalLink', action: () => navigateToEntity(entityName, relDbPath, ctx) },
-    { label: 'サブパネルで開く', icon: 'layers-2', action: () => {
+    { label: 'フロートパネルで開く', icon: 'layers-2', action: () => {
       if (relPath && typeof openLinkInSubPanel === 'function') openLinkInSubPanel(relPath, entityName, { linkType: 'entity', sourcePaneId });
       // 互換テスト用: navigateToEntity(entityName, relDbPath)
       else navigateToEntity(entityName, relDbPath, ctx);
@@ -832,6 +834,17 @@ async function _handleTbodyClick(e) {
   const target = e.target;
   const dbPath = ctx.dbPath;
 
+  // 行合わせ後のリレーションステータス丸印は、非同期再描画後も確実に動くよう委譲する。
+  const alignedRelationStatus = target.closest('.db-rollup-relation-status');
+  if (alignedRelationStatus) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof _dbOpenAlignedRelationStatusDropdown === 'function') {
+      _dbOpenAlignedRelationStatusDropdown(alignedRelationStatus, ctx);
+    }
+    return;
+  }
+
   // 1. グループヘッダー行 click → 折りたたみトグル
   const gtr = target.closest('tr.group-header-row');
   if (gtr) {
@@ -908,13 +921,10 @@ async function _handleTbodyClick(e) {
     return;
   }
 
-  // 8. エントリ名セル (col-entity) click → 詳細パネル
+  // 8. エントリ名セル (col-entity) click → 選択のみ (他セルと同じ操作体系。詳細パネルは開かない)
   const colEntityTd = target.closest('td.col-entity');
   if (colEntityTd && !colEntityTd.closest('tr.new-entity-row')) {
-    const entityName = colEntityTd.closest('tr')?.dataset?.entityName;
-    if (entityName) {
-      openEntityInSplit(_entityPath(dbPath, entityName), entityName);
-    }
+    if (typeof setActiveCell === 'function') setActiveCell(colEntityTd);
     return;
   }
 
@@ -996,12 +1006,14 @@ function _handleTbodyPointerdown(e) {
   const tbl = ctx.tableId || 'pivot-table';
   const paneRoot = _paneEl(ctx, '#' + tbl) || document;
 
-  // 行の HTML5 ドラッグを一時的に無効化 (cb 操作が行ドラッグを誤起動しないように)
+  // 行の HTML5 ドラッグを一時的に無効化 (cb 操作が行ドラッグを誤起動しないように)。
+  // 通常行は専用ハンドルだけを draggable にしているため、解除時は true 固定ではなく元の値へ戻す。
   const tr = cb.closest('tr');
   if (tr) {
+    const wasDraggable = tr.draggable;
     tr.draggable = false;
     const restore = () => {
-      tr.draggable = true;
+      tr.draggable = wasDraggable;
       document.removeEventListener('pointerup', restore, true);
       document.removeEventListener('pointercancel', restore, true);
     };

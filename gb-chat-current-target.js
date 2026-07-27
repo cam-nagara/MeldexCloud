@@ -1,5 +1,6 @@
-/* Chat target resolution: unqualified chat follows the currently open item. */
+/* Chat target resolution: reference target is optional and independent from chat storage. */
 const _CHAT_TARGET_DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'gallery', 'kanban', 'timeline', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+const _CHAT_TARGET_MODES = new Set(['follow-main', 'manual', 'detached']);
 
 function _chatStatePath(key) {
   return (typeof state !== 'undefined' && state) ? String(state[key] || '') : '';
@@ -49,29 +50,34 @@ function _chatCurrentOpenTarget() {
     if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.getCurrentOpenTargetInfo === 'function') {
       const paneId = (typeof GBLayout !== 'undefined' && GBLayout) ? (GBLayout.activePane || '') : '';
       const info = GBPaneBridge.getCurrentOpenTargetInfo(paneId);
-      const target = _chatCurrentTargetFromTab(info?.activeTab);
-      if (target.path) return { path: _chatNormalizePath(target.path), kind: target.kind || '' };
+      if (info?.activeTab) {
+        const target = _chatCurrentTargetFromTab(info.activeTab);
+        return { path: _chatNormalizePath(target.path), kind: target.kind || '', resolved: true };
+      }
     }
   } catch {}
 
   try {
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function' && typeof GBLayout !== 'undefined') {
-      const target = _chatCurrentTargetFromTab(GBTabs.getActiveTab(GBLayout.activePane));
-      if (target.path) return { path: _chatNormalizePath(target.path), kind: target.kind || '' };
+      const activeTab = GBTabs.getActiveTab(GBLayout.activePane);
+      if (activeTab) {
+        const target = _chatCurrentTargetFromTab(activeTab);
+        return { path: _chatNormalizePath(target.path), kind: target.kind || '', resolved: true };
+      }
     }
   } catch {}
 
   const view = _chatStatePath('view');
-  if (view === 'folder' && typeof _folderPath !== 'undefined' && _folderPath) return { path: _chatNormalizePath(_folderPath), kind: 'folder' };
-  if (view === 'board' && _chatStatePath('currentBoardPath')) return { path: _chatNormalizePath(_chatStatePath('currentBoardPath')), kind: 'file' };
-  if ((view === 'page' || view === 'media' || view === 'html') && _chatStatePath('currentPagePath')) return { path: _chatNormalizePath(_chatStatePath('currentPagePath')), kind: 'file' };
-  if (view === 'entity' && _chatStatePath('currentEntityPath')) return { path: _chatNormalizePath(_chatStatePath('currentEntityPath')), kind: 'file' };
-  if (_CHAT_TARGET_DB_VIEW_TYPES.has(view) && _chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: 'folder' };
-  if (_chatStatePath('currentPagePath')) return { path: _chatNormalizePath(_chatStatePath('currentPagePath')), kind: 'file' };
-  if (_chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: 'folder' };
-  if (_chatStatePath('currentBoardPath')) return { path: _chatNormalizePath(_chatStatePath('currentBoardPath')), kind: 'file' };
-  if (typeof _folderPath !== 'undefined' && _folderPath) return { path: _chatNormalizePath(_folderPath), kind: 'folder' };
-  return { path: '', kind: '' };
+  if (view === 'folder' && typeof _folderPath !== 'undefined' && _folderPath) return { path: _chatNormalizePath(_folderPath), kind: 'folder', resolved: true };
+  if (view === 'board' && _chatStatePath('currentBoardPath')) return { path: _chatNormalizePath(_chatStatePath('currentBoardPath')), kind: 'file', resolved: true };
+  if ((view === 'page' || view === 'media' || view === 'html') && _chatStatePath('currentPagePath')) return { path: _chatNormalizePath(_chatStatePath('currentPagePath')), kind: 'file', resolved: true };
+  if (view === 'entity' && _chatStatePath('currentEntityPath')) return { path: _chatNormalizePath(_chatStatePath('currentEntityPath')), kind: 'file', resolved: true };
+  if (_CHAT_TARGET_DB_VIEW_TYPES.has(view) && _chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: 'folder', resolved: true };
+  if (_chatStatePath('currentPagePath')) return { path: _chatNormalizePath(_chatStatePath('currentPagePath')), kind: 'file', resolved: true };
+  if (_chatStatePath('currentDbPath')) return { path: _chatNormalizePath(_chatStatePath('currentDbPath')), kind: 'folder', resolved: true };
+  if (_chatStatePath('currentBoardPath')) return { path: _chatNormalizePath(_chatStatePath('currentBoardPath')), kind: 'file', resolved: true };
+  if (typeof _folderPath !== 'undefined' && _folderPath) return { path: _chatNormalizePath(_folderPath), kind: 'folder', resolved: true };
+  return { path: '', kind: '', resolved: false };
 }
 
 function _chatTargetFromViewObject(view) {
@@ -86,58 +92,65 @@ function _chatTargetFromViewObject(view) {
   return { path: view.path || '', kind: view.path ? 'file' : '' };
 }
 
-function _chatAdoptSourceForTargetPath(path, options = {}) {
-  const clean = _chatNormalizePath(path);
-  if (!clean || typeof _chatSourceOptions !== 'function' || typeof _chatApplySourceContextValue !== 'function') return;
-  const current = typeof _chatTargetSelectorValue === 'function' ? _chatTargetSelectorValue() : '';
-  const optionsList = _chatSourceOptions();
-  let best = null;
-  let bestLength = -1;
-  optionsList.forEach(option => {
-    const root = _chatNormalizePath(option?.path || option?.value || '');
-    if (!root) return;
-    if (clean === root || clean.startsWith(root + '/')) {
-      if (root.length > bestLength) {
-        best = option;
-        bestLength = root.length;
-      }
-    }
-  });
-  if (!best) return;
-  const next = best.kind === 'workspace' ? _chatWorkspaceOptionValue(best.workspaceId || '') : (best.path || best.value || '');
-  if (next && next !== current) {
-    _chatApplySourceContextValue(next, { reason: options.reason || 'current-target', syncWorkspace: options.syncWorkspace !== false });
+function _chatCurrentTargetMode() {
+  const mode = String(_chatState.currentTargetMode || '');
+  return _CHAT_TARGET_MODES.has(mode) ? mode : 'follow-main';
+}
+
+function _chatSetCurrentTargetMode(mode) {
+  const next = _CHAT_TARGET_MODES.has(String(mode || '')) ? String(mode) : 'follow-main';
+  _chatState.currentTargetMode = next;
+  return next;
+}
+
+function _chatTargetSnapshot() {
+  return {
+    mode: _chatCurrentTargetMode(),
+    path: String(_chatState.currentTargetPath || ''),
+    kind: String(_chatState.currentTargetKind || ''),
+  };
+}
+
+function _chatPersistTargetSnapshot() {
+  try {
+    if (window.GBChatRestore?.saveTargetState) window.GBChatRestore.saveTargetState(_chatTargetSnapshot());
+  } catch {
+    // 復元用メタデータの保存失敗は、現在のチャット操作を止めない。
   }
 }
 
-let _chatDeferredSourceAdoptSeq = 0;
-
-function _chatDeferSourceAdoption(path, options = {}) {
-  const clean = _chatNormalizePath(path);
-  const seq = ++_chatDeferredSourceAdoptSeq;
-  const run = () => {
-    if (seq !== _chatDeferredSourceAdoptSeq) return;
-    if (_chatState.currentTargetPath !== clean) return;
-    _chatAdoptSourceForTargetPath(clean, options);
-  };
-  if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
-    requestAnimationFrame(() => setTimeout(run, 0));
-    return;
+function _chatTargetUpdateMode(options = {}) {
+  const reason = String(options.reason || '');
+  const currentMode = _chatCurrentTargetMode();
+  if (options.mode && _CHAT_TARGET_MODES.has(String(options.mode))) return String(options.mode);
+  if (reason === 'chat-target-picker' || reason === 'open-file-chat' || reason === 'create-file-chat' || reason === 'open-saved-chat') {
+    return 'manual';
   }
-  setTimeout(run, 0);
+  if (reason === 'tree-click') {
+    if (currentMode === 'manual' && !options.force) return '';
+    return 'follow-main';
+  }
+  if (reason === 'last-view') {
+    if (currentMode !== 'follow-main' && !options.force) return '';
+    return 'follow-main';
+  }
+  return currentMode;
 }
 
 function _chatSetCurrentTargetPath(path, kind = '', options = {}) {
   const clean = _chatNormalizePath(path);
   const nextKind = clean ? String(kind || '') : '';
-  const changed = _chatState.currentTargetPath !== clean || _chatState.currentTargetKind !== nextKind;
+  const nextMode = _chatTargetUpdateMode(options);
+  if (!nextMode) return String(_chatState.currentTargetPath || '');
   _chatState.currentTargetPath = clean;
   _chatState.currentTargetKind = nextKind;
-  if (clean && options.adoptSource !== false && (changed || options.forceAdoptSource)) {
-    if (options.deferAdoptSource) _chatDeferSourceAdoption(clean, options);
-    else _chatAdoptSourceForTargetPath(clean, options);
+  _chatSetCurrentTargetMode(nextMode);
+  if (nextMode === 'manual') {
+    _chatState.targetPath = clean;
+    _chatState.lastImplicitTargetPath = '';
   }
   _chatRefreshCurrentTargetDisplay();
+  _chatPersistTargetSnapshot();
   return clean;
 }
 
@@ -149,9 +162,11 @@ function _chatSetCurrentTargetFromView(view, options = {}) {
 
 function _chatEffectiveTargetPath(options = {}) {
   if (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath')) return String(options.targetPath || '');
-  if (_chatState.currentTargetPath) return String(_chatState.currentTargetPath || '');
-  if (_chatState.targetPath) return String(_chatState.targetPath || '');
-  return _chatCurrentOpenTarget().path || '';
+  const mode = _chatCurrentTargetMode();
+  if (mode === 'detached') return '';
+  if (mode === 'manual') return String(_chatState.currentTargetPath || _chatState.targetPath || '');
+  const currentTarget = _chatCurrentOpenTarget();
+  return currentTarget.resolved ? currentTarget.path : (currentTarget.path || String(_chatState.currentTargetPath || ''));
 }
 
 function _chatIsPseudoTargetPath(path) {
@@ -174,31 +189,133 @@ function _chatEffectiveWorkFolder(targetPath = '', options = {}) {
   if (Object.prototype.hasOwnProperty.call(options || {}, 'workFolder')) return String(options.workFolder || '');
   if (Object.prototype.hasOwnProperty.call(options || {}, 'work_folder')) return String(options.work_folder || '');
   const currentTarget = _chatCurrentOpenTarget();
-  const target = _chatNormalizePath(targetPath || currentTarget.path || '');
-  const kind = target && target === currentTarget.path ? currentTarget.kind : '';
+  const target = _chatNormalizePath(targetPath || '');
+  const storedTarget = _chatNormalizePath(_chatState.currentTargetPath || '');
+  const kind = target && target === storedTarget
+    ? String(_chatState.currentTargetKind || '')
+    : (target && target === currentTarget.path ? currentTarget.kind : '');
   return _chatParentFolderForTarget(target, kind);
 }
 
 function _chatCurrentTargetLabel() {
-  const path = _chatEffectiveTargetPath();
-  if (path) return path;
-  const source = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
-  if (source) return source;
-  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
-  if (!workspaceId) return '';
-  if (typeof _chatSourceOptions === 'function') {
-    const workspace = _chatSourceOptions().find(item => item?.kind === 'workspace' && String(item.workspaceId || '') === workspaceId);
-    if (workspace?.path) return workspace.path;
-  }
-  return 'ワークスペース: ' + workspaceId;
+  return _chatEffectiveTargetPath();
 }
 
 function _chatRefreshCurrentTargetDisplay() {
   if (typeof _showChatTargetBadge === 'function') _showChatTargetBadge(_chatCurrentTargetLabel());
 }
 
+function _chatFollowCurrentOpenTarget(options = {}) {
+  if (_chatCurrentTargetMode() !== 'follow-main') return _chatTargetSnapshot();
+  const target = _chatCurrentOpenTarget();
+  if (target.resolved) {
+    _chatState.currentTargetPath = target.path || '';
+    _chatState.currentTargetKind = target.path ? String(target.kind || '') : '';
+  }
+  _chatState.targetPath = '';
+  _chatRefreshCurrentTargetDisplay();
+  if (options.persist !== false) _chatPersistTargetSnapshot();
+  return _chatTargetSnapshot();
+}
+
+function _chatInstallTabActivationHook() {
+  try {
+    if (typeof GBTabs === 'undefined' || typeof GBTabs.activateTab !== 'function') return;
+    const original = GBTabs.activateTab;
+    if (original.__gbChatTargetPatched) return;
+    const patched = function() {
+      const result = original.apply(this, arguments);
+      const refresh = () => _chatFollowCurrentOpenTarget();
+      if (result && typeof result.then === 'function') result.then(refresh, refresh);
+      else Promise.resolve().then(refresh);
+      return result;
+    };
+    patched.__gbChatTargetPatched = true;
+    GBTabs.activateTab = patched;
+  } catch {
+    // タブ機構がまだ初期化されていない場合も、従来の選択イベントによる追従を維持する。
+  }
+}
+
+function _chatClearCurrentTarget() {
+  if (_chatState.streaming) {
+    if (typeof showStatus === 'function') showStatus('応答生成中は対象を変更できません', true);
+    return false;
+  }
+  _chatState.currentTargetPath = '';
+  _chatState.currentTargetKind = '';
+  _chatState.targetPath = '';
+  _chatState.lastImplicitTargetPath = '';
+  _chatSetCurrentTargetMode('detached');
+  _chatRefreshCurrentTargetDisplay();
+  _chatPersistTargetSnapshot();
+  return true;
+}
+
+async function _chatPickCurrentTarget() {
+  if (_chatState.streaming) {
+    if (typeof showStatus === 'function') showStatus('応答生成中は対象を変更できません', true);
+    return null;
+  }
+  if (!window.GBFolderPicker?.pickFolder) {
+    if (typeof showStatus === 'function') showStatus('対象一覧を読み込めませんでした', true);
+    return null;
+  }
+  const currentPath = _chatEffectiveTargetPath();
+  let selection = null;
+  try {
+    selection = await window.GBFolderPicker.pickFolder({
+      title: 'チャットの対象を選択',
+      selectFiles: true,
+      includeHome: true,
+      includeSources: true,
+      includeWorkspaces: true,
+      initialPath: currentPath,
+      revealPath: currentPath,
+    });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('対象の選択に失敗しました: ' + (error?.message || error), true);
+    return null;
+  }
+  if (!selection?.path) return null;
+  _chatSetCurrentTargetPath(selection.path, selection.kind || 'folder', {
+    reason: 'chat-target-picker',
+    mode: 'manual',
+  });
+  return selection;
+}
+
+function _chatRestoreTargetSnapshot(snapshot) {
+  const mode = _CHAT_TARGET_MODES.has(String(snapshot?.mode || '')) ? String(snapshot.mode) : 'follow-main';
+  const savedPath = _chatNormalizePath(snapshot?.path || '');
+  const currentTarget = mode === 'follow-main' ? _chatCurrentOpenTarget() : { path: '', kind: '' };
+  const path = mode === 'follow-main' && currentTarget.resolved ? currentTarget.path : savedPath;
+  _chatState.currentTargetPath = mode === 'detached' ? '' : path;
+  _chatState.currentTargetKind = path
+    ? String(mode === 'follow-main' && currentTarget.resolved ? currentTarget.kind || '' : snapshot?.kind || '')
+    : '';
+  _chatSetCurrentTargetMode(mode);
+  if (mode === 'manual') _chatState.targetPath = path;
+  else _chatState.targetPath = '';
+  if (mode === 'detached') {
+    _chatState.targetPath = '';
+    _chatState.lastImplicitTargetPath = '';
+  }
+  _chatRefreshCurrentTargetDisplay();
+  return _chatTargetSnapshot();
+}
+
+window.chatClearCurrentTarget = _chatClearCurrentTarget;
+window.chatPickCurrentTarget = _chatPickCurrentTarget;
 window.MeldexChatCurrentTarget = {
   setPath: _chatSetCurrentTargetPath,
   setFromView: _chatSetCurrentTargetFromView,
+  clear: _chatClearCurrentTarget,
+  pick: _chatPickCurrentTarget,
+  followMain: _chatFollowCurrentOpenTarget,
   refresh: _chatRefreshCurrentTargetDisplay,
+  snapshot: _chatTargetSnapshot,
+  restore: _chatRestoreTargetSnapshot,
 };
+
+_chatInstallTabActivationHook();

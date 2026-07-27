@@ -446,12 +446,62 @@
   flex-wrap: wrap;
 }
 /* DBピッカー */
+.gb-middle-ellipsis-input-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.gb-middle-ellipsis-input-wrap > input {
+  width: 100%;
+  min-width: 0;
+}
+.gb-middle-ellipsis-input-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  box-sizing: border-box;
+  padding-left: var(--gb-middle-input-padding-left, var(--ui-space-2));
+  padding-right: var(--gb-middle-input-padding-right, var(--ui-space-2));
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--gb-middle-input-color, var(--ui-fg-default));
+  font-family: var(--gb-middle-input-font-family, inherit);
+  font-size: var(--gb-middle-input-font-size, inherit);
+  font-weight: var(--gb-middle-input-font-weight, inherit);
+  pointer-events: none;
+}
+.gb-middle-ellipsis-input-overlay[hidden] { display: none; }
+input.gb-middle-ellipsis-input-active {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent;
+}
+.db-picker-field-stack {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
 .db-picker-input-row { display: flex; align-items: center; gap: var(--ui-space-2); width: 100%; }
 .db-picker-input-row input { flex: 1; min-width: 0; box-sizing: border-box; }
 .db-picker-scope-hint {
-  font-size: var(--ui-font-11); color: var(--ui-fg-muted); margin-top: var(--ui-space-1);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: var(--ui-font-11);
+  color: var(--ui-fg-muted);
+  margin-top: var(--ui-space-1);
 }
-.db-picker-btn {
+/* 「一覧から選択」ボタン。ダイアログ内では `.modal button`（詳細度が上）の
+   左右パディングが効いてしまい、28px幅のボタンの中でアイコンが2pxまで潰れて
+   別のアイコンに見えていた（オプションパネル側は潰れない）。
+   ダイアログ内でも同じ見た目にするため、`.modal button` に勝つ形で併記する。 */
+.db-picker-btn,
+.modal button.db-picker-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: var(--ui-h-sm); height: var(--ui-h-sm); flex: 0 0 var(--ui-h-sm); padding: 0;
   font-size: var(--ui-font-12); background: var(--ui-bg-control); color: var(--ui-fg-default);
@@ -861,6 +911,20 @@
 #entity-freetext ul, #entity-freetext ol, #page-content ul, #page-content ol, #dp-editable ul, #dp-editable ol, #board-note-editable ul, #board-note-editable ol { padding-left: 24px; margin: 4px 0; }
 #entity-freetext li, #page-content li, #dp-editable li, #board-note-editable li { line-height: 1.4; margin: 0.4em 0; }
 
+/* フロートパネル・右サイドバーのビューワー・スマホのドロワーに出す本文。
+   全体リセット（gb-theme.css の `* { padding: 0 }`）で ul/ol の左余白が 0 になっており、
+   箇条書きの記号は本文の外側に描かれるため、そのままだとパネルの枠に接触する。
+   上のメインパネル側と同じ余白を与えて、記号が本文の内側に収まるようにする。 */
+.gb-subpanel-entity-note ul, .gb-subpanel-entity-note ol,
+.gb-preview-entity-note ul, .gb-preview-entity-note ol,
+.cloud-mobile-side-drawer-editable ul, .cloud-mobile-side-drawer-editable ol { padding-left: 24px; margin: 4px 0; }
+.gb-subpanel-entity-note li,
+.gb-preview-entity-note li,
+.cloud-mobile-side-drawer-editable li { line-height: 1.4; margin: 0.4em 0; }
+.gb-subpanel-entity-note hr,
+.gb-preview-entity-note hr,
+.cloud-mobile-side-drawer-editable hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+
 /* 検索パネル */
 /* クイックアクセス・最近使った項目 */
 .quick-item { padding: 2px 8px; font-size: 12px; cursor: pointer; color: var(--fg); border-radius: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1167,9 +1231,15 @@
   color: var(--fg);
   font-size: 12px;
 }
+/* 幅が足りないときはラベルの下へ折り返す（セレクトを潰して選択肢が読めなくなるのを防ぐ） */
+.dbcfg-inline-field {
+  flex-wrap: wrap;
+}
 .dbcfg-inline-field select {
   width: auto;
-  min-width: 88px;
+  /* 最長の選択肢（「フロートパネル」）と右端の▼が切れずに収まる幅 */
+  min-width: 116px;
+  flex-shrink: 0;
 }
 .dbcfg-display-actions {
   display: flex;

@@ -726,6 +726,8 @@ function _showChatTargetBadge(targetPath) {
   if (!badge) return;
   const label = badge.querySelector('#chat-current-target-path') || badge.querySelector('[data-chat-current-target-path]');
   const icon = badge.querySelector('[data-chat-current-target-icon]');
+  const clearButton = badge.querySelector('[data-chat-target-clear]');
+  const pickerButton = badge.querySelector('[data-chat-target-pick]');
   const pathText = String(targetPath || '').trim();
   if (pathText) {
     const normalized = typeof _chatNormalizePath === 'function' ? _chatNormalizePath(pathText) : pathText;
@@ -740,15 +742,23 @@ function _showChatTargetBadge(targetPath) {
     badge.dataset.empty = '0';
     badge.style.display = 'flex';
   } else {
-    if (icon) icon.innerHTML = typeof lucide === 'function' ? lucide('folder', 12) : '';
+    if (icon) icon.innerHTML = typeof lucide === 'function' ? lucide('circleSlash2', 12) : '';
     if (label) {
-      label.textContent = '未選択';
-      label.title = 'フォルダツリーで対象を選択してください';
+      label.textContent = '対象なし';
+      label.title = '対象なしでもAIチャットを利用できます';
     } else {
-      badge.textContent = '未選択';
+      badge.textContent = '対象なし';
     }
     badge.dataset.empty = '1';
     badge.style.display = 'flex';
+  }
+  if (clearButton) {
+    clearButton.disabled = !pathText || !!_chatState.streaming;
+    clearButton.setAttribute('aria-disabled', clearButton.disabled ? 'true' : 'false');
+  }
+  if (pickerButton) {
+    pickerButton.disabled = !!_chatState.streaming;
+    pickerButton.setAttribute('aria-disabled', pickerButton.disabled ? 'true' : 'false');
   }
 }
 
@@ -846,6 +856,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     _chatState.sessionId = '';
     _chatState.targetPath = '';
     _chatState.lastImplicitTargetPath = '';
+    window.MeldexChatCurrentTarget?.restore?.({ mode: 'detached', path: '', kind: '' });
     _setChatSessionTitle('');
     const container = _chatLiveMessagesContainer();
     if (container) container.innerHTML = '';
@@ -856,12 +867,21 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && parsed.savedPath) {
+        if (parsed && typeof parsed === 'object') {
           // 該当 savedPath と一致する場合のみクリア（他チャットを誤って消さない）
           const legacySaved = '_chat/llm/' + (path.split('/').pop() || '');
           const targetSaved = _chatSavedPathForSession((path.split('/').pop() || '').replace(/\.md$/, ''));
-          if (parsed.savedPath === path || parsed.savedPath === targetSaved || parsed.savedPath === legacySaved) {
+          const matchesMissingPath = value => value === path || value === targetSaved || value === legacySaved;
+          let changed = false;
+          if (matchesMissingPath(parsed.savedPath)) {
             delete parsed.savedPath;
+            changed = true;
+          }
+          if (parsed.ai && typeof parsed.ai === 'object' && matchesMissingPath(parsed.ai.savedPath)) {
+            parsed.ai.savedPath = '';
+            changed = true;
+          }
+          if (changed) {
             parsed.savedAt = Date.now();
             localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
           }
@@ -890,6 +910,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   _chatState.lastImplicitTargetPath = '';
   if (_chatState.targetPath && typeof _chatSetCurrentTargetPath === 'function') {
     _chatSetCurrentTargetPath(_chatState.targetPath, 'file', { reason: 'open-saved-chat' });
+  } else {
+    window.MeldexChatCurrentTarget?.restore?.({ mode: 'detached', path: '', kind: '' });
   }
   _setChatSessionTitle(data.frontmatter?.title || '');
   if (data.frontmatter?.provider) {
@@ -904,7 +926,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   // メッセージをレンダリング
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
-  _showChatTargetBadge(_chatState.targetPath);
+  if (typeof _chatRefreshCurrentTargetDisplay === 'function') _chatRefreshCurrentTargetDisplay();
+  else _showChatTargetBadge(_chatState.targetPath);
   chatAddSystem('保存済みチャットを読み込みました。');
   _chatState.messages.forEach((m, index) => {
     if (m.role === 'user') chatAddMessage('user', m.content, _chatMessageRenderOptions(m, index));
@@ -967,13 +990,23 @@ async function chatAutoSave(options = {}) {
   if (messages.length === 0 && options?.allowEmpty && !sid) return false;
   if (!sid) return false;
   const sessionTitle = hasSessionTitle ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
-  const targetPath = hasTargetPath ? String(options.targetPath || '') : String((typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '') || _chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || '');
+  const targetPath = hasTargetPath
+    ? String(options.targetPath || '')
+    : (typeof _chatEffectiveTargetPath === 'function'
+      ? String(_chatEffectiveTargetPath() || '')
+      : String(_chatState.currentTargetPath || _chatState.targetPath || _chatState.lastImplicitTargetPath || ''));
   const provider = hasProvider ? options.provider : _chatState.provider;
   const model = hasModel ? options.model : _chatState.model;
-  const sourceFolder = hasSourceFolder ? String(options.sourceFolder || '') : _chatSourceFolderValue();
-  const workspaceId = hasWorkspaceId ? String(options.workspaceId || '') : (hasSourceFolder ? '' : (typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : ''));
+  const storageOptions = {};
+  if (hasWorkspaceId) storageOptions.workspaceId = String(options.workspaceId || '');
+  if (hasSourceFolder) storageOptions.sourceFolder = String(options.sourceFolder || '');
+  const storageContext = window.GBChatStorageContext?.resolveForAi
+    ? await window.GBChatStorageContext.resolveForAi(storageOptions)
+    : null;
+  const sourceFolder = String(storageContext?.sourceFolder || '');
+  const workspaceId = String(storageContext?.workspaceId || '');
   if (!sourceFolder && !workspaceId) {
-    if (!silent) throw new Error('フォルダツリーで対象フォルダまたはファイルを選択してください');
+    if (!silent) throw new Error('AIチャットの保存先を準備できませんでした。ホームフォルダ設定を確認してください');
     return false;
   }
   // 全チャットを _chat/llm/ に統一保存（ファイル紐づきもセッションの一つ）

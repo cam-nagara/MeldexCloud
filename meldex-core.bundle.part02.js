@@ -1,3 +1,79 @@
+  indentIncrease: '<polyline points="3 8 7 12 3 16"/><line x1="21" x2="11" y1="12" y2="12"/><line x1="21" x2="11" y1="6" y2="6"/><line x1="21" x2="11" y1="18" y2="18"/>',
+  textQuote: '<path d="M17 6H3"/><path d="M21 12H8"/><path d="M21 18H8"/><path d="M3 12v6"/>',
+  pipette: '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/>',
+  // 取り消し・やり直しボタン展開 v0.6.196（undo-redo-toolbar-plan フェーズ1-3）
+  undo2: '<path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
+  redo2: '<path d="m15 14 5-5-5-5" /><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />',
+  workflow: '<rect width="8" height="8" x="3" y="3" rx="2" /><path d="M7 11v4a2 2 0 0 0 2 2h4" /><rect width="8" height="8" x="13" y="13" rx="2" />',
+};
+// gb-icon-assets.js (hasLucideName) が独自アイコン (page / db / scenario 等) を
+// 解決できるよう、curated LUCIDE を window に公開する。これが無いと
+// GBIconAssets.render() がテキストフォールバックに落ちてボタンアイコンが壊れる。
+if (typeof window !== 'undefined') window.LUCIDE = LUCIDE;
+
+function lucide(name, size) {
+  size = size || 14;
+  let paths = LUCIDE[name];
+  if (paths == null && typeof window !== 'undefined' && window.LUCIDE_FULL) {
+    paths = window.LUCIDE_FULL[name];
+  }
+  paths = paths || '';
+  return `<svg data-icon="${name}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
+}
+
+// メニュー選択状態アイコン
+function radioMark(selected) {
+  return selected ? '<span style="color:var(--accent);">' + lucide('check', 12) + '</span> ' : '　';
+}
+
+// サブメニュー展開矢印（▸の代替）
+function submenuArrow() {
+  return '<span style="float:right;opacity:0.5;margin-left:8px;line-height:1;">' + lucide('chevronRight', 10) + '</span>';
+}
+
+const UI_TYPE_ICONS = {
+  folder: 'folder',
+  database: 'db',
+  entity: 'entry',
+  page: 'page',
+  scenario: 'scenario',
+  scriptnote: 'bookOpenText',
+  board: 'presentation',
+  calendar: 'calendar',
+  'smart-db': 'databaseSearch',
+  preview: 'tvMinimal',
+  detail: 'slidersHorizontal',
+  info: 'info',
+  chat: 'messagesSquare',
+  tags: 'tag',
+  annotation: 'stickyNote',
+  sticky: 'clipboardList',
+  history: 'history',
+  media: 'galleryThumbnails',
+  html: 'globe',
+  csv: 'table',
+  pivot: 'db',
+  gallery: 'db',
+  kanban: 'db',
+  timeline: 'db',
+  chart: 'db',
+  graph: 'db',
+  compare: 'columns',
+  outliner: 'folderTree',
+  welcome: 'folder',
+};
+
+function uiTypeIconName(type) {
+  return UI_TYPE_ICONS[type] || '';
+}
+
+function fileTypeIcon(type, size) {
+  const map = {
+    image: 'image', video: 'video', audio: 'audio',
+    psd: 'brush', clip: 'penTool', '3d': 'box', document: 'fileText',
+    archive: 'archive', app: 'settings', unknown: 'fileQuestion',
+  };
+  return lucide(uiTypeIconName(type) || map[type] || 'fileQuestion', size || 36);
 }
 
 function replaceIcons(root) {
@@ -109,6 +185,9 @@ function replaceIcons(root) {
     else if (cls.includes('ico-funnel')) name = 'funnel';
     else if (cls.includes('ico-type')) name = 'type';
     else if (cls.includes('ico-table')) name = 'table';
+    // 右レール タグパネル等のタグアイコン（ico-tags は ico-tag より前に置く）
+    else if (cls.includes('ico-tags')) name = 'tags';
+    else if (cls.includes('ico-tag')) name = 'tag';
     // v0.5.147 書字方向・インデント・引用
     else if (cls.includes('ico-textAlignStart')) name = 'textAlignStart';
     else if (cls.includes('ico-kanban')) name = 'kanban';
@@ -819,82 +898,3 @@ function initIframeMarkup(scrollContainer) {
           document.removeEventListener('pointerup', onUp);
           data.width = Math.max(minW, Math.round(note.offsetWidth));
           data.height = Math.max(minH, Math.round(note.offsetHeight));
-          persist();
-        };
-        document.addEventListener('pointermove', onMove);
-        document.addEventListener('pointerup', onUp);
-      });
-      note.appendChild(handle);
-    });
-  }
-
-  function _isEmbeddedStandaloneNoteItem(item, data) {
-    if (!item || data?.deleted) return false;
-    const type = String(item.type || '');
-    const shape = String(item.shape || data?.shape || '');
-    const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
-    if (type === 'comment') {
-      return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;
-    }
-    return type === 'note' || type === 'sticky';
-  }
-
-  function _renderNote(item, data) {
-    if (!data) return null;
-    const note = document.createElement('div');
-    note.className = 'ann-note ann-note-embedded ' + (item.shape || 'sticky');
-    note.dataset.annId = item.id || '';
-    note._annData = data;
-    _applyNotePosition(note, data);
-    note.style.width = (data.width || 180) + 'px';
-    note.style.height = (data.height || 100) + 'px';
-    _applyNoteColor(note, item.color || '#c48080');
-    note.style.opacity = item.opacity ?? 1;
-    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
-    note.addEventListener('pointerdown', (e) => {
-      // 右クリック/中クリックが bd-canvas の pointerdown ハンドラまで伝播すると
-      // ボード側の右クリックメニュー (bdContextMenu) が付箋メニューと重なって
-      // 出てしまうため、付箋内のポインター押下は親へ伝播させない。
-      if (e.button !== 0) e.stopPropagation();
-      notesLayer.querySelectorAll('.ann-note-selected').forEach(el => el.classList.remove('ann-note-selected'));
-      note.classList.add('ann-note-selected');
-    });
-
-    const header = document.createElement('div');
-    header.className = 'ann-note-header';
-    const dateStr = item.created ? String(item.created).substring(0, 16).replace('T', ' ') : '';
-    const displayUser = (item.user && item.user !== 'anonymous') ? item.user : (data.user || (typeof getUsername === 'function' ? getUsername() : item.user || 'anonymous'));
-    const headerLabel = document.createElement('span');
-    headerLabel.className = 'ann-note-user';
-    const userIcon = document.createElement('span');
-    userIcon.className = 'ann-user-icon';
-    userIcon.innerHTML = _userIconHtml(displayUser);
-    const userText = document.createElement('span');
-    userText.className = 'ann-user-name';
-    userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'ann-note-delete-btn';
-    deleteBtn.dataset.annDelete = '1';
-    deleteBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-delete`;
-    deleteBtn.setAttribute('aria-label', '注釈を削除');
-    deleteBtn.title = '削除';
-    deleteBtn.innerHTML = lucide('x', 12);
-    _normalizeEmbeddedNoteIcon(deleteBtn, 12);
-    headerLabel.appendChild(userIcon);
-    headerLabel.appendChild(userText);
-    header.appendChild(headerLabel);
-    header.appendChild(deleteBtn);
-    note.tabIndex = -1;
-    note.setAttribute('aria-haspopup', 'menu');
-    note.appendChild(header);
-
-    let saveTimer = null;
-    let editor = null;
-    const persist = () => {
-      const next = _notePayload(data, editor, note);
-      Object.assign(data, next);
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
-        item._pendingData = next;
-        return;
-      }

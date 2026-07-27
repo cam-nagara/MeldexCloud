@@ -316,6 +316,56 @@ function _bdAddLinkedTabToExactPane(targetPaneId, entry, tabState) {
   return tab.id || null;
 }
 
+// 表示中のタブそのものを開き先へ切り替える。切り替えられた場合はそのタブIDを返す。
+// ロック中のパネル、タブが1つも無いパネル、固定タブは対象外（従来どおり新しいタブを足す）。
+function _bdRetargetActiveTabInPane(targetPaneId, targetPane, entry, tabState) {
+  if (typeof GBTabs === 'undefined' || typeof GBTabs.updateTab !== 'function') return '';
+  if (typeof GBLayout?.isPaneLocked === 'function' && GBLayout.isPaneLocked(targetPaneId)) return '';
+  const tabs = targetPane?.tabs || [];
+  if (!tabs.length) return '';
+  const index = Math.min(Math.max(targetPane.activeTabIndex || 0, 0), tabs.length - 1);
+  const activeTab = tabs[index];
+  if (!activeTab || activeTab.pinned) return '';
+  if (activeTab.path && activeTab.path !== entry.path) {
+    const dbTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+    if (dbTypes.has(activeTab.type) && typeof _navPushWithViewState === 'function') {
+      const paneCtx = typeof getPaneContext === 'function' ? getPaneContext(targetPaneId) : null;
+      _navPushWithViewState({
+        ...(paneCtx || {}),
+        paneId: targetPaneId,
+        dbPath: activeTab.path,
+        currentViewIdx: paneCtx?.currentViewIdx ?? activeTab.state?.viewIdx,
+      }, entry.type === 'entity' ? entry.label : null);
+    } else if (typeof _forcedNavPush === 'function') {
+      _forcedNavPush({
+        type: activeTab.type,
+        path: activeTab.path,
+        label: activeTab.label || activeTab.path,
+        ...(activeTab.state || {}),
+      }, targetPaneId);
+    }
+  }
+  const updated = GBTabs.updateTab(
+    targetPaneId,
+    activeTab.id,
+    { label: entry.label, type: entry.type, path: entry.path, state: tabState },
+    { activate: true },
+  );
+  if (!updated) return '';
+  if (typeof _forcedNavPush === 'function') {
+    _forcedNavPush({
+      type: entry.type,
+      path: entry.path,
+      label: entry.label,
+      ...(tabState || {}),
+    }, targetPaneId);
+  }
+  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
+    GBPaneBridge.refreshPaneAfterTabSwitch(targetPaneId);
+  }
+  return activeTab.id;
+}
+
 function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (!entry || !entry.type) return false;
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
@@ -333,6 +383,15 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (!targetPane) return false;
   const forceTargetPane = options?.forceTargetPane === true;
   const preserveActivePane = options?.preserveActivePane === true;
+  // 開いているタブを開き先へ切り替える（新しいタブを増やさない）。
+  // 同じシートを何度も開くとタブが際限なく増えるため、メインパネルで開く経路で使う。
+  if (!existingTab && options?.reuseActiveTab === true) {
+    const reusedTabId = _bdRetargetActiveTabInPane(targetPaneId, targetPane, entry, tabState);
+    if (reusedTabId) {
+      if (!preserveActivePane && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(targetPaneId, { sync: true });
+      return true;
+    }
+  }
   const tabId = existingTab ? existingTab.id : (
     forceTargetPane
       ? _bdAddLinkedTabToExactPane(targetPaneId, entry, tabState)
@@ -439,11 +498,20 @@ function _bdRevealRightSidebarTool(tabType) {
   }
   if (typeof GBTabs !== 'undefined' && typeof GBTabs.activateTab === 'function') {
     GBTabs.activateTab(match.pane.id, match.tab.id, { preserveActivePane: true });
-  } else {
-    if (typeof GBLayout?.render === 'function') GBLayout.render();
-    if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
   }
+  // 表示グループの切り替えはタブのアクティブ化だけでは画面へ反映されない。
+  // 再描画しないと対象の区画がDOMに載らず、内容を書き込んでも見えないままになる。
+  if (typeof GBLayout?.render === 'function') GBLayout.render();
+  if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
   return match.pane.id || '';
+}
+
+// 右サイドバーのビューワー区画。退避領域に置かれたままなら表示できないので null を返す。
+function _bdVisibleRightSidebarPreviewPane() {
+  const pane = document.getElementById('gb-preview-pane');
+  if (!pane || !pane.isConnected) return null;
+  const shown = pane.offsetParent !== null || pane.getClientRects().length > 0;
+  return shown ? pane : null;
 }
 
 function _bdMainPaneIdForLinkedOpen() {
@@ -467,7 +535,12 @@ async function openLinkedPathInMainPane(path, label, options) {
     }
     return false;
   }
-  return _bdActivateNavEntryInPane(paneId, entry, { forceTargetPane: true, preserveActivePane: false });
+  // メインパネルで開くときは、表示中のタブをそのまま開き先へ切り替える（タブを増やさない）
+  return _bdActivateNavEntryInPane(paneId, entry, {
+    forceTargetPane: true,
+    preserveActivePane: false,
+    reuseActiveTab: true,
+  });
 }
 
 async function openLinkedPathInSubPanel(path, label, options) {
@@ -496,12 +569,93 @@ async function openLinkedPathInRightPane(path, label, options) {
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   _bdRevealRightSidebarTool('preview');
-  const pane = document.getElementById('gb-preview-pane');
+  // 画面に出ている区画だけを対象にする。退避中の区画へ書き込むと「押しても何も起きない」状態になる。
+  const pane = _bdVisibleRightSidebarPreviewPane();
+  // エントリは汎用プレビュー(先頭240字)ではなく、プロパティ一覧＋本文の本物のエントリ表示を出す
+  const isEntity = (opts.linkType || entry.type) === 'entity';
+  if (pane && isEntity) {
+    const ok = await _bdRenderEntityIntoRightPane(entry.path || path || '', entry.label || label || '', pane);
+    if (ok) return true;
+  }
   if (pane && typeof bdRenderLinkedPreview === 'function') {
     await bdRenderLinkedPreview(entry.path || path || '', pane, opts.linkType || entry.mediaType || entry.type || '');
     return true;
   }
   return openLinkedPathInSubPanel(path, label, { ...opts, entry });
+}
+
+// 右サイドバー(ビューワータブ)にエントリのプロパティ一覧＋本文を描画する。
+// フルページ/サブパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。
+async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
+  if (!entityPath || !pane || typeof apiFetch !== 'function' || typeof renderEntityPropsGridInto !== 'function') return false;
+  try {
+    await pane._meldexEntityDetailController?.dispose?.();
+    pane.innerHTML = '<div class="gb-preview-entity-loading" style="padding:12px;color:var(--fg2)">エントリを読み込み中...</div>';
+    const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+    if (!data) return false;
+    if (window.MeldexEntityDetail?.mount) {
+      const controller = window.MeldexEntityDetail.mount({
+        root: pane,
+        path: entityPath,
+        surface: 'right-sidebar',
+        data,
+      });
+      return await controller.ready;
+    }
+    pane.replaceChildren();
+    pane.dataset.path = entityPath;
+    // ビューワー区画は「ファイルを選択すると…」の案内を中央に置くため中央寄せになっている。
+    // 実際の内容を出すときに中央寄せのままだと、幅が足りない分だけ左右へはみ出すので上詰めに戻す。
+    pane.style.alignItems = 'stretch';
+    pane.style.justifyContent = 'flex-start';
+    const root = document.createElement('div');
+    root.className = 'gb-preview-entity';
+    root.style.cssText = 'padding:10px 12px;width:100%;min-width:0;';
+
+    const parentDb = String(entityPath).replace(/\\/g, '/').replace(/\/[^/]+$/, '');
+    if (parentDb) {
+      const parent = document.createElement('button');
+      parent.type = 'button';
+      parent.className = 'gb-subpanel-link-button';
+      parent.style.cssText = 'margin-bottom:8px;';
+      parent.textContent = '← ' + (parentDb.split('/').pop() || parentDb);
+      parent.title = parentDb;
+      parent.addEventListener('click', () => { if (typeof selectDatabase === 'function') selectDatabase(parentDb); });
+      root.appendChild(parent);
+    }
+
+    const title = document.createElement('h2');
+    title.className = 'gb-preview-entity-title';
+    title.style.cssText = 'font-size:15px;margin:0 0 8px;';
+    title.textContent = (data && data.entity) || label || (String(entityPath).split(/[/\\]/).pop() || '').replace(/\.md$/i, '');
+    root.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'gb-preview-entity-props';
+    root.appendChild(grid);
+    renderEntityPropsGridInto(grid, data, entityPath, { parentDb });
+
+    const raw = String((data && data.page_content) || '');
+    const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '');
+    if (body.trim()) {
+      const note = document.createElement('div');
+      note.className = 'gb-preview-entity-note';
+      note.style.cssText = 'margin-top:10px;padding-top:10px;border-top:1px solid var(--border);';
+      if (typeof mdToHtml === 'function') {
+        const html = mdToHtml(body, { basePath: entityPath });
+        note.innerHTML = typeof applyAutoLinks === 'function' ? applyAutoLinks(html, entityPath) : html;
+      } else {
+        note.textContent = body;
+      }
+      root.appendChild(note);
+    }
+
+    pane.appendChild(root);
+    if (typeof replaceIcons === 'function') replaceIcons();
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function _bdOpenEntryInSubPanel(label, path, type) {
@@ -587,7 +741,7 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
     }
     menu.appendChild(item);
   };
-  addItem('サブパネルで開く', 'layers-2', () => openLinkedPathInSubPanel(targetPath, label, opts));
+  addItem('フロートパネルで開く', 'layers-2', () => openLinkedPathInSubPanel(targetPath, label, opts));
   addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
   addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightPane(targetPath, label, opts));
   if (_bdIsExternalBrowserUrl(targetPath)) {
@@ -851,7 +1005,8 @@ async function bdRenderLinkedPreview(filePath, pane, linkType) {
     return true;
   }
   if (mediaType === 'video') {
-    pane.innerHTML = `<video src="${_bdEscAttr(API_BASE + '/file-raw?path=' + encodeURIComponent(filePath))}" controls style="width:100%;height:100%;max-height:100%;border-radius:6px;background:#000;object-fit:contain;"></video>`;
+    pane.innerHTML = `<video src="${_bdEscAttr(API_BASE + '/file-raw?path=' + encodeURIComponent(filePath))}" controls autoplay playsinline style="width:100%;height:100%;max-height:100%;border-radius:6px;background:#000;object-fit:contain;"></video>`;
+    window.MeldexMediaPlayback?.start(pane.querySelector('video'));
     return true;
   }
   if (mediaType === 'audio') {

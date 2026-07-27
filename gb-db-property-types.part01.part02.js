@@ -114,7 +114,7 @@
       <div id="pt-msr-sources"></div>
       <button id="pt-msr-add-source" class="pt-small-btn">+ ソース追加</button>
     </div>`;
-    _renderMsrSources(current.sources || [], curMode, scope);
+    _renderMsrSources(_msrNormalizeSourcesForEditor(current.sources || []), curMode, scope);
     _ptGet('pt-msr-mode', scope)?.addEventListener('change', function() {
       const s = _collectMsrSources(scope);
       _renderMsrSources(s, this.value, scope);
@@ -122,7 +122,7 @@
     _ptGet('pt-msr-add-source', scope)?.addEventListener('click', () => {
       const s = _collectMsrSources(scope);
       const mode = _ptGet('pt-msr-mode', scope)?.value || 'manual';
-      s.push({ db: '', label: '', matchRules: [] });
+      s.push({ sourceId: _msrCreateSourceId(), kind: 'sheet', db: '', label: '', matchRules: [] });
       _renderMsrSources(s, mode, scope);
     });
   } else if (type === 'date') {

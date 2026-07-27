@@ -168,7 +168,6 @@ body[data-statusbar-hidden="1"] .left-chrome-floating {
   bottom: env(safe-area-inset-bottom);
 }
 
-body[data-left-chrome-sidebar-visible="1"] .left-chrome-floating,
 body[data-link-modal-open="1"] .left-chrome-floating,
 body[data-pane-maximized="1"] .left-chrome-floating,
 html[data-single-window="1"] .left-chrome-floating {

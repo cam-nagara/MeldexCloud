@@ -10,6 +10,7 @@ const GBLayout = (() => {
   const MAX_DEPTH = 4;
   const MIN_PANE_SIZE = 32; // px（折り畳みボタン1つ分まで縮小可能）
   const FREE_LAYOUT_UI_ENABLED = false;
+  const MAIN_TAB_REORDER_MIME = 'application/x-meldex-main-tab-reorder';
 
   let _root = null;       // LayoutNode (ツリーのルート)
   let _paneMap = {};       // paneId → { node, el, component }
@@ -50,6 +51,15 @@ const GBLayout = (() => {
 
   function _isMainPaneNode(node) {
     return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main');
+  }
+
+  function _canReorderMainPaneTabs(node) {
+    return !_showFreeLayoutUi()
+      && _isMainPaneNode(node)
+      && !node?.locked
+      && !node?.collapsed
+      && Array.isArray(node?.tabs)
+      && node.tabs.length > 1;
   }
 
   function _isSidebarPaneNode(node) {
@@ -1022,6 +1032,8 @@ const GBLayout = (() => {
     moreBtn.dataset.e2eId = `pane-${node.id}-actions`;
     moreBtn.title = mobileMainTabActions ? 'タブ操作' : 'パネル操作';
     moreBtn.setAttribute('aria-label', moreBtn.title);
+    moreBtn.setAttribute('aria-haspopup', 'menu');
+    moreBtn.setAttribute('aria-expanded', 'false');
     moreBtn.innerHTML = lucide('moreHorizontal', 12);
     // pointerdown で即反応（span だと click が拾われないケースがあったため button に変更）
     moreBtn.addEventListener('pointerdown', (e) => {
@@ -1047,9 +1059,11 @@ const GBLayout = (() => {
         tabEl.className = 'gb-tab' + (i === node.activeTabIndex ? ' active' : '');
         tabEl.dataset.tabId = tab.id;
         tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
-        tabEl.draggable = _showFreeLayoutUi();
+        const canReorderMainTab = _canReorderMainPaneTabs(node);
+        tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab;
         tabEl.tabIndex = -1;
         tabEl.setAttribute('aria-haspopup', 'menu');
+        tabEl.setAttribute('aria-expanded', 'false');
 
         const iconSpan = document.createElement('span');
         iconSpan.className = 'gb-tab-icon';
@@ -1060,6 +1074,28 @@ const GBLayout = (() => {
         labelSpan.className = 'gb-tab-label';
         labelSpan.textContent = tab.label || '';
         tabEl.appendChild(labelSpan);
+
+        if (_isMainPaneNode(node) && !node.collapsed) {
+          const tabMoreBtn = document.createElement('button');
+          tabMoreBtn.type = 'button';
+          tabMoreBtn.className = 'gb-tab-more';
+          tabMoreBtn.dataset.e2eId = `pane-${node.id}-tab-${tab.id}-actions`;
+          tabMoreBtn.title = 'タブ操作';
+          tabMoreBtn.setAttribute('aria-label', `${tab.label || 'タブ'}のタブ操作`);
+          tabMoreBtn.setAttribute('aria-haspopup', 'menu');
+          tabMoreBtn.setAttribute('aria-expanded', 'false');
+          tabMoreBtn.draggable = false;
+          tabMoreBtn.innerHTML = lucide('moreHorizontal', 14);
+          tabMoreBtn.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+          });
+          tabMoreBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            _showTabContextMenu(e, node.id, tab);
+          });
+          tabEl.appendChild(tabMoreBtn);
+        }
 
         // 閉じる操作は右クリックメニュー経由に統一（タブ内に × ボタンは置かない）
 
@@ -1087,9 +1123,23 @@ const GBLayout = (() => {
         }
 
         // D&D
+        let tabDragMode = '';
         tabEl.addEventListener('dragstart', (e) => {
-          if (!_showFreeLayoutUi()) {
+          if (e.target?.closest?.('.gb-tab-more')) {
             e.preventDefault();
+            return;
+          }
+          if (!_showFreeLayoutUi() && !canReorderMainTab) {
+            e.preventDefault();
+            return;
+          }
+          tabDragMode = _showFreeLayoutUi() ? 'free' : 'main-reorder';
+          if (tabDragMode === 'main-reorder') {
+            e.dataTransfer.setData(MAIN_TAB_REORDER_MIME, JSON.stringify({ tabId: tab.id, paneId: node.id }));
+            e.dataTransfer.effectAllowed = 'move';
+            if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, tabEl, 0.35);
+            tabEl.classList.add('dragging');
+            window._gbTabDragSrcPaneId = node.id;
             return;
           }
           e.dataTransfer.setData('application/x-gb-tab', JSON.stringify({ tabId: tab.id, paneId: node.id }));
@@ -1119,6 +1169,11 @@ const GBLayout = (() => {
           // 全 tab bar の drop マーカーを念のためクリア (Esc キャンセル等の漏れ対策)
           document.querySelectorAll('.gb-tab.gb-tab-drop-before, .gb-tab.gb-tab-drop-after')
             .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
+          if (tabDragMode === 'main-reorder') {
+            tabDragMode = '';
+            return;
+          }
+          tabDragMode = '';
           // ウィンドウ外にドロップ: 共通ヘルパーで単一窓として開く
           if (typeof isDragDroppedOutsideWindow !== 'function' || !isDragDroppedOutsideWindow(e)) return;
           // path 無しの tool タブは popout できないので、元タブも閉じない
@@ -1168,11 +1223,14 @@ const GBLayout = (() => {
         .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     };
     tabBar.addEventListener('dragover', (e) => {
-      if (!_showFreeLayoutUi()) return;
       const types = e.dataTransfer.types;
+      const isMainReorder = types.includes(MAIN_TAB_REORDER_MIME);
       const isTab = types.includes('application/x-gb-tab');
       const isNode = types.includes('application/x-meldex-node');
-      if (!isTab && !isNode) return;
+      if (!isMainReorder && (!_showFreeLayoutUi() || (!isTab && !isNode))) return;
+      if (isMainReorder) {
+        if (!_canReorderMainPaneTabs(node) || window._gbTabDragSrcPaneId !== node.id) return;
+      }
       if (node.locked) {
         if (isTab) {
           const srcPaneId = window._gbTabDragSrcPaneId || '';
@@ -1183,7 +1241,7 @@ const GBLayout = (() => {
       }
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = isNode ? 'copy' : 'move';
+      e.dataTransfer.dropEffect = isNode && !isMainReorder ? 'copy' : 'move';
       // ペイン分割インジケータが表示中なら消す
       if (typeof GBDocking !== 'undefined') GBDocking.hideIndicator();
       _clearDropMarkers();
@@ -1207,10 +1265,10 @@ const GBLayout = (() => {
       _clearDropMarkers();
     });
     tabBar.addEventListener('drop', (e) => {
-      if (!_showFreeLayoutUi()) return;
+      const mainReorderData = e.dataTransfer.getData(MAIN_TAB_REORDER_MIME);
       const tabData = e.dataTransfer.getData('application/x-gb-tab');
       const nodeData = e.dataTransfer.getData('application/x-meldex-node');
-      if (!tabData && !nodeData) return;
+      if (!mainReorderData && (!_showFreeLayoutUi() || (!tabData && !nodeData))) return;
       e.preventDefault();
       e.stopPropagation();
       _clearDropMarkers();
@@ -1228,6 +1286,17 @@ const GBLayout = (() => {
         }
         return node.tabs.length;
       };
+      // === 固定レイアウトのメインパネル内だけで使う並べ替え ===
+      if (mainReorderData) {
+        let data;
+        try { data = JSON.parse(mainReorderData); } catch (err) { return; }
+        if (!_canReorderMainPaneTabs(node) || data.paneId !== node.id || !data.tabId) return;
+        const insertIndex = _resolveInsertIndex();
+        const fromIdx = node.tabs.findIndex(t => t.id === data.tabId);
+        if (fromIdx < 0 || insertIndex === fromIdx || insertIndex === fromIdx + 1) return;
+        GBTabs.moveTab(node.id, data.tabId, node.id, insertIndex);
+        return;
+      }
       // === パネルタブの D&D（既存処理） ===
       if (tabData) {
         let data;

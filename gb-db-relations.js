@@ -172,6 +172,7 @@ function _bidirectionalValueSnapshot(val) {
   return {
     existed: true,
     file: val.file || '',
+    entry_path: val.entry_path || '',
     property: val.property || '',
     candidate_index: val.candidate_index,
     value: val.value || '',
@@ -181,9 +182,10 @@ function _bidirectionalValueSnapshot(val) {
   };
 }
 
-function _bidirectionalValueObjFromSnapshot(snapshot, propName) {
+function _bidirectionalValueObjFromSnapshot(snapshot, propName, entityPath) {
   return {
     file: snapshot.file,
+    entry_path: snapshot.entry_path || entityPath,
     property: snapshot.property || propName,
     candidate_index: snapshot.candidate_index,
     value: snapshot.value,
@@ -199,7 +201,7 @@ async function _restoreBidirectionalValueSnapshot(entityPath, propName, snapshot
       await _apiPostValue(entityPath, propName, snapshot.value, snapshot.status || '採用', snapshot.note || '', snapshot.rich_html || '');
       return;
     }
-    await _apiPutValue(_bidirectionalValueObjFromSnapshot(snapshot, propName), {
+    await _apiPutValue(_bidirectionalValueObjFromSnapshot(snapshot, propName, entityPath), {
       new_value: snapshot.value,
       new_status: snapshot.status || '採用',
       new_note: snapshot.note || '',
@@ -210,6 +212,7 @@ async function _restoreBidirectionalValueSnapshot(entityPath, propName, snapshot
   if (changeKind === 'created' && createdResult) {
     await _apiPutValue({
       file: createdResult.path || createdResult.file || entityPath,
+      entry_path: entityPath,
       property: createdResult.property || propName,
       candidate_index: createdResult.candidate_index,
     }, { _delete: true });

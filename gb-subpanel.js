@@ -309,23 +309,30 @@ const GBSubPanel = (() => {
   }
 
   function _retractCurrentContent(options = {}) {
-    if (!_pane || !_contentEl) return;
-    _registerPaneMap();
-    try {
-      if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.retractPaneContent === 'function') {
-        GBPaneBridge.retractPaneContent(_pane.id);
+    if (!_pane || !_contentEl) return Promise.resolve();
+    const pane = _pane;
+    const content = _contentEl;
+    const disposals = [...content.querySelectorAll('[data-meldex-entity-detail]')]
+      .map(root => Promise.resolve(root._meldexEntityDetailController?.dispose?.()).catch(() => false));
+    return Promise.allSettled(disposals).then(() => {
+      if (!content.isConnected && _contentEl !== content) return;
+      _registerPaneMap();
+      try {
+        if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.retractPaneContent === 'function') {
+          GBPaneBridge.retractPaneContent(pane.id);
+        }
+        const tabId = pane.tabs?.[0]?.id || '';
+        if (tabId && typeof removeComponentInstance === 'function') {
+          removeComponentInstance(tabId);
+        }
+      } finally {
+        if (typeof GBLayout !== 'undefined' && GBLayout.paneMap) delete GBLayout.paneMap[pane.id];
+        content.innerHTML = '';
       }
-      const tabId = _pane.tabs?.[0]?.id || '';
-      if (tabId && typeof removeComponentInstance === 'function') {
-        removeComponentInstance(tabId);
+      if (options.remount && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
+        GBPaneBridge.mountAllPanes();
       }
-    } finally {
-      if (typeof GBLayout !== 'undefined' && GBLayout.paneMap) delete GBLayout.paneMap[_pane.id];
-      _contentEl.innerHTML = '';
-    }
-    if (options.remount && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
-      GBPaneBridge.mountAllPanes();
-    }
+    });
   }
 
   function _titleFromOptions(toolType, options) {
@@ -336,7 +343,7 @@ const GBSubPanel = (() => {
 
   function _subpanelTitle(toolType) {
     const label = _toolLabel(toolType);
-    return (label ? label + ' ' : '') + 'サブパネル';
+    return (label ? label + ' ' : '') + 'フロートパネル';
   }
 
   function _entityParentDir(path) {
@@ -437,7 +444,7 @@ const GBSubPanel = (() => {
       return;
     }
     if (typeof mdToHtml === 'function') {
-      const html = mdToHtml(raw);
+      const html = mdToHtml(raw, { basePath: entityPath });
       noteEl.innerHTML = typeof applyAutoLinks === 'function' ? applyAutoLinks(html, entityPath) : html;
     } else {
       noteEl.textContent = raw;
@@ -445,6 +452,16 @@ const GBSubPanel = (() => {
   }
 
   function _renderEntityData(root, data, entityPath, propTypes) {
+    if (window.MeldexEntityDetail?.mount) {
+      window.MeldexEntityDetail.mount({
+        root,
+        path: entityPath,
+        surface: 'float',
+        data,
+        propTypes,
+      });
+      return;
+    }
     root.innerHTML = '';
     root.dataset.path = entityPath;
     _appendEntityParentLink(root, entityPath);
@@ -843,28 +860,30 @@ const GBSubPanel = (() => {
   }
 
   function _mountPane(toolType, options) {
-    _retractCurrentContent({ remount: true });
-    if (toolType === 'entity' && options?.path) {
-      _mountEntityPane(options);
-      return;
-    }
-    _pane = _createPane(toolType, options);
-    _registerPaneMap();
-    const mounted = typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountVirtualPane === 'function'
-      ? GBPaneBridge.mountVirtualPane(_pane, _contentEl, { subPanel: true })
-      : false;
-    if (!mounted) {
-      const empty = document.createElement('div');
-      empty.className = 'gb-subpanel-empty';
-      empty.textContent = 'この内容はサブパネルで表示できません';
-      _contentEl.appendChild(empty);
-    }
-    _current = {
-      toolType,
-      path: options?.path || '',
-      label: _titleFromOptions(toolType, options),
-      tabId: _pane.tabs?.[0]?.id || '',
-    };
+    _retractCurrentContent({ remount: true }).then(() => {
+      if (!_contentEl) return;
+      if (toolType === 'entity' && options?.path) {
+        _mountEntityPane(options);
+        return;
+      }
+      _pane = _createPane(toolType, options);
+      _registerPaneMap();
+      const mounted = typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountVirtualPane === 'function'
+        ? GBPaneBridge.mountVirtualPane(_pane, _contentEl, { subPanel: true })
+        : false;
+      if (!mounted) {
+        const empty = document.createElement('div');
+        empty.className = 'gb-subpanel-empty';
+        empty.textContent = 'この内容はフロートパネルで表示できません';
+        _contentEl.appendChild(empty);
+      }
+      _current = {
+        toolType,
+        path: options?.path || '',
+        label: _titleFromOptions(toolType, options),
+        tabId: _pane.tabs?.[0]?.id || '',
+      };
+    });
   }
 
   function open(toolType, options = {}) {
@@ -885,21 +904,24 @@ const GBSubPanel = (() => {
     if (toolType && _current?.toolType !== toolType) return false;
     if (!_panel) return false;
     _saveRect();
-    _retractCurrentContent();
-    _pane = null;
-    _current = null;
-    _navHistory = [];
-    _navIndex = -1;
-    _navNavigating = false;
-    document.removeEventListener('pointermove', _onPointerMove, true);
-    document.removeEventListener('pointerup', _onPointerUp, true);
-    window.removeEventListener('resize', _onWindowResize);
-    _panel.remove();
-    _panel = null;
-    _contentEl = null;
-    _titleIconEl = null;
-    _titleTextEl = null;
-    _actionsEl = null;
+    const panel = _panel;
+    _retractCurrentContent().finally(() => {
+      if (_panel !== panel) return;
+      _pane = null;
+      _current = null;
+      _navHistory = [];
+      _navIndex = -1;
+      _navNavigating = false;
+      document.removeEventListener('pointermove', _onPointerMove, true);
+      document.removeEventListener('pointerup', _onPointerUp, true);
+      window.removeEventListener('resize', _onWindowResize);
+      panel.remove();
+      _panel = null;
+      _contentEl = null;
+      _titleIconEl = null;
+      _titleTextEl = null;
+      _actionsEl = null;
+    });
     _minimizeBtn = null;
     _backBtn = null;
     _forwardBtn = null;

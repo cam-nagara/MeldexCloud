@@ -99,7 +99,7 @@
   // db-view-tabs / db-view-select は非表示だが必須（ヘッダコメント参照: フォールバック汚染対策）。
   function _buildViewSwitcher(idSuffix) {
     const switcher = document.createElement('div');
-    switcher.className = 'db-pane-view-switcher';
+    switcher.className = 'db-pane-view-switcher db-view-switcher';
     switcher.style.display = 'none';
     const tabs = document.createElement('div');
     tabs.id = 'db-view-tabs-' + idSuffix;

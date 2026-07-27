@@ -124,10 +124,49 @@ function _csvClearSheetToolbar() {
   }
 }
 
+function _csvSyncSheetViewSwitcher() {
+  const tabs = document.getElementById('db-view-tabs');
+  if (tabs) {
+    tabs.textContent = '';
+    tabs.dataset.csvSheetMode = '1';
+    const tab = document.createElement('div');
+    tab.className = 'view-tab active db-csv-view-tab';
+    tab.setAttribute('aria-current', 'page');
+    const label = document.createElement('span');
+    label.className = 'view-tab-label';
+    label.textContent = 'CSV';
+    tab.appendChild(label);
+    tabs.appendChild(tab);
+  }
+
+  const select = document.getElementById('db-view-select');
+  if (select) {
+    select.textContent = '';
+    select.dataset.csvSheetMode = '1';
+    const option = document.createElement('option');
+    option.value = 'csv';
+    option.textContent = 'CSV';
+    select.appendChild(option);
+    select.value = 'csv';
+    select.onchange = () => { select.value = 'csv'; };
+  }
+}
+
 function deactivateCsvSheetMode() {
   _csvSheetModeActive = false;
   if (document.body?.dataset) delete document.body.dataset.csvSheetMode;
   _csvClearSheetToolbar();
+  const tabs = document.getElementById('db-view-tabs');
+  if (tabs?.dataset?.csvSheetMode === '1') {
+    delete tabs.dataset.csvSheetMode;
+    tabs.textContent = '';
+  }
+  const select = document.getElementById('db-view-select');
+  if (select?.dataset?.csvSheetMode === '1') {
+    delete select.dataset.csvSheetMode;
+    select.textContent = '';
+    select.onchange = null;
+  }
   const table = document.getElementById('pivot-table');
   if (table?.classList?.contains('csv-sheet-mode-table')) {
     table.classList.remove('csv-sheet-mode-table');
@@ -140,6 +179,7 @@ function deactivateCsvSheetMode() {
 
 function _csvSyncSheetToolbar(label, path, openOpts) {
   if (document.body?.dataset) document.body.dataset.csvSheetMode = '1';
+  _csvSyncSheetViewSwitcher();
   const displayLabel = _csvDisplayLabel(label, path);
   const toolbarCategoryEl = document.getElementById('toolbar-category');
   if (toolbarCategoryEl && !openOpts?.skipGlobalUi) {
@@ -170,6 +210,7 @@ function _csvPrepareVisibleSurface(label, path, openOpts) {
     showView('pivot');
     if (!openOpts.skipStateView) state.view = 'csv';
     _csvSyncSheetToolbar(label, path, openOpts);
+    if (typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar();
     return;
   }
   _csvSheetModeActive = false;

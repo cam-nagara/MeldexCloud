@@ -30,7 +30,7 @@ function _getEntryNameAutoPropertyColumns(dbPath, ctx) {
   const ordered = [];
   const add = (name) => {
     const prop = String(name || '').trim();
-    if (!prop || ordered.includes(prop)) return;
+    if (!prop || prop === '__entity__' || ordered.includes(prop)) return;
     if (hiddenCols.includes(prop)) return;
     if (allProps.length && !allProps.includes(prop)) return;
     ordered.push(prop);
@@ -163,30 +163,52 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   _addMenuRenameInput(menu, entityName, (newName) => {
     apiPost('/entity/rename', { path: ep, new_name: newName }).then(() => {
       if (typeof _dbUndoRename === 'function') _dbUndoRename(targetDbPath, entityName, newName, ctx);
+      // インライン経路と同じローカルファースト即時反映（「更新」を待たずにその場で反映する）
+      if (typeof _dbCommitEntityRenameLocalFirst === 'function') {
+        _dbCommitEntityRenameLocalFirst(ctx, null, null, entityName, newName, targetDbPath);
+      }
       showStatus('名前を変更: ' + newName);
-      if (typeof selectDatabase === 'function') selectDatabase(targetDbPath, ctx, { silent: true });
+      if (typeof _dbRefreshEntityRenameInBackground === 'function') {
+        _dbRefreshEntityRenameInBackground(ctx, targetDbPath, newName);
+      } else if (typeof selectDatabase === 'function') {
+        selectDatabase(targetDbPath, ctx, { silent: true });
+      }
     }).catch(() => showStatus('名前の変更に失敗', true));
   }, { placeholder: 'エントリ名を変更...' });
   // 依存関係プロパティの有無を確認
   const pts = getPropertyTypes(targetDbPath);
   const hasDeps = _hasDependencyPairProps(pts);
+  const isXBookmarkEntry = !!pts?.['ポストID'];
   const items = [
     ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'エントリ名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
     } }] : []),
     { type: 'sep' },
-    { icon: 'fileText', label: '詳細を開く', action: () => {
-      if (typeof openEntityInSplit === 'function') openEntityInSplit(ep, entityName);
+    { icon: 'layers-2', label: 'フロートパネルで開く', action: () => {
+      if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
       else selectEntity(ep);
     } },
-    { icon: 'layers-2', label: 'サブパネルで開く', action: () => {
-      if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
+    { icon: 'panelLeft', label: 'メインパネルで開く', action: () => {
+      if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
+      else selectEntity(ep);
+    } },
+    { icon: 'panelRight', label: 'サイドバーで開く', action: () => {
+      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId });
       else selectEntity(ep);
     } },
     { icon: 'messagesSquare', label: 'チャットを開く', action: () => {
       if (typeof openEntityChatForPath === 'function') return openEntityChatForPath(ep);
       if (typeof openFileChat === 'function') return openFileChat(ep);
     } },
+    ...(isXBookmarkEntry ? [{ icon: 'refreshCw', label: 'Xからこのポストを再インポート', action: async () => {
+      try {
+        if (typeof window.reimportXBookmarkEntry !== 'function') throw new Error('X再インポート機能を読み込めません');
+        await window.reimportXBookmarkEntry(ep);
+        await selectDatabase(targetDbPath, ctx, { silent: true, skipNavPush: true });
+      } catch (error) {
+        showStatus('再インポートに失敗: ' + (error?.userMessage || error?.message || error), true);
+      }
+    } }] : []),
     { type: 'sep' },
     ...(hasDeps ? [{ icon: 'gitBranch', label: '依存エントリを作成', action: () => _createDependentEntry(targetDbPath, entityName, undefined, ctx) }] : []),
     ...(propName && typeof startCellInlineAdd === 'function' ? [{ icon: 'plus', label: '候補値を追加', action: () => {

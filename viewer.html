@@ -169,12 +169,21 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg);
 <button id="btn-hud" style="display:none;"></button>
 <button id="btn-original" style="display:none;"></button>
 
+<script src="viewer-resize.js"></script>
 <script type="module">
 const API = '/api';
 const params = new URLSearchParams(location.search);
 let folderPath = params.get('folder') || '';
 let pdfPath = params.get('pdf') || '';
 let singleFile = params.get('file') || '';  // 単一ファイル表示
+const archivePath = params.get('archive') || '';
+const archiveMember = params.get('member') || '';
+const sheetContextId = params.get('sheetContext') || '';
+const archiveDisplayPath = archivePath && archiveMember ? ('zip:' + archivePath + '!/' + archiveMember) : '';
+if (archiveDisplayPath) {
+  if (/\.pdf$/i.test(archiveMember)) pdfPath = archiveDisplayPath;
+  else singleFile = archiveDisplayPath;
+}
 let multiFilePaths = parseFilesParam(); // 複数ファイル
 let isPdf = false;
 let isSingle = false;
@@ -188,7 +197,7 @@ function refreshViewerModeFlags() {
 }
 
 function hasExplicitViewerTarget() {
-  return !!(folderPath || pdfPath || singleFile || multiFilePaths.length);
+  return !!(folderPath || pdfPath || singleFile || archiveDisplayPath || sheetContextId || multiFilePaths.length);
 }
 
 function applyInitialOpenPath(path) {
@@ -332,10 +341,17 @@ function isLocalAbsoluteImagePath(path) {
 }
 
 function fileRawUrlForPath(path) {
+  if (archiveDisplayPath && path === archiveDisplayPath) {
+    return API + '/archive/file?path=' + encodeURIComponent(archivePath)
+      + '&member=' + encodeURIComponent(archiveMember);
+  }
   return API + '/file-raw?path=' + encodeURIComponent(path);
 }
 
 function imagePreviewUrlForPath(path) {
+  if (archiveDisplayPath && path === archiveDisplayPath) {
+    return fileRawUrlForPath(path);
+  }
   return API + '/image-preview?path=' + encodeURIComponent(path) + '&size=4096';
 }
 
@@ -383,6 +399,60 @@ function makeImageItem(path, name) {
     path,
   };
 }
+
+function makeSheetContextImageItem(source) {
+  const path = String(source?.path || source?.url || '');
+  const item = makeImageItem(path, source?.name || '');
+  if (source?.url) {
+    item.url = String(source.url);
+    item.rawUrl = item.url;
+    item.previewUrl = item.url;
+    item.urlCandidates = [item.url];
+  }
+  item.w = Number(source?.width || 0);
+  item.h = Number(source?.height || 0);
+  item.sheetImageId = String(source?.id || '');
+  return item;
+}
+
+function requestSheetContext() {
+  if (!sheetContextId || window.parent === window) return false;
+  parent.postMessage({
+    type: 'viewer-sheet-context-request',
+    contextId: sheetContextId,
+  }, parentMessageTargetOrigin());
+  return true;
+}
+
+function applySheetContextPayload(message) {
+  if (!sheetContextId || message?.contextId !== sheetContextId) return false;
+  if (message.boundary) {
+    if (message.message) flashStatus(message.message);
+    return true;
+  }
+  const nextItems = Array.isArray(message.images)
+    ? message.images.map(makeSheetContextImageItem).filter(item => item.url || item.path)
+    : [];
+  if (!nextItems.length) {
+    flashStatus(message.message || 'このセルに画像はありません');
+    return true;
+  }
+  pause();
+  items = nextItems;
+  idx = Math.max(0, Math.min(items.length - 1, Number(message.startIndex) || 0));
+  collectionLoadToken++;
+  preloadNearbyImageMeta(idx, items);
+  showGroup(idx);
+  const rowInfo = [message.rowName, message.column].filter(Boolean).join(' / ');
+  if (rowInfo) flashStatus(rowInfo);
+  return true;
+}
+
+window.addEventListener('message', event => {
+  if (event.source !== window.parent) return;
+  if (event.origin !== location.origin && event.origin !== 'null') return;
+  if (event.data?.type === 'viewer-sheet-context-set') applySheetContextPayload(event.data);
+});
 
 function switchItemToPreviewUrl(item) {
   if (!item?.path || item._viewerPreviewFallbackUsed) return false;
@@ -477,7 +547,7 @@ async function init() {
   if (isPdf) {
     showViewerLoading('PDFを読み込み中...');
     try {
-      pdfDoc = await pdfjsLib.getDocument(API + '/file-raw?path=' + encodeURIComponent(pdfPath)).promise;
+      pdfDoc = await pdfjsLib.getDocument(fileRawUrlForPath(pdfPath)).promise;
       for (let i = 1; i <= pdfDoc.numPages; i++) items.push({type: 'pdf-page', pageNum: i, url: '', w: 0, h: 0, path: pdfPath});
       const p1 = await pdfDoc.getPage(1);
       const vp = p1.getViewport({scale: 1});
@@ -502,7 +572,7 @@ async function init() {
     const { name: fileName, folder: parentFolder } = splitViewerPath(singleFile);
     items = [makeImageItem(singleFile, fileName)];
     idx = 0;
-    if (parentFolder) scheduleSingleFileFolderItemsRefresh(parentFolder, fileName, singleFile, loadToken);
+    if (parentFolder && !archiveDisplayPath) scheduleSingleFileFolderItemsRefresh(parentFolder, fileName, singleFile, loadToken);
   } else if (folderPath) {
     showViewerLoading('ファイル一覧を読み込み中...');
     const loadToken = ++collectionLoadToken;
@@ -519,6 +589,9 @@ async function init() {
     if (items.length === 0) { showViewerLoading('画像がありません'); document.getElementById('hud-info').textContent = '画像がありません'; return; }
     idx = 0;
     preloadNearbyImageMeta(0, items);
+  } else if (sheetContextId) {
+    showViewerLoading('シートの画像を読み込み中...');
+    requestSheetContext();
   } else {
     showViewerLoading('表示するファイルがありません');
     document.getElementById('hud-info').textContent = '画像またはPDFを開いてください';
@@ -588,6 +661,9 @@ function isPortrait(it) { return it.h > it.w; }
 function getGroup(startIdx) {
   if (items.length === 0) return [];
   if (startIdx < 0 || startIdx >= items.length) startIdx = 0;
+  // シート画像セルでは「前へ／次へ」をセル内の画像1枚単位で扱う。
+  // 通常フォルダ閲覧の見開き設定は維持するが、セルをまたぐグループ化はしない。
+  if (sheetContextId) return [startIdx];
   if (mode === 'single') return [startIdx];
   const a = items[startIdx];
   if (!a) return [startIdx];
@@ -956,6 +1032,18 @@ function currentViewerPathForFolderNavigation() {
 
 function requestParentFolderNavigation(direction) {
   if (!isEmbeddedMeldexViewer()) return false;
+  if (sheetContextId) {
+    try {
+      parent?.postMessage?.({
+        type: 'viewer-sheet-row-nav-request',
+        contextId: sheetContextId,
+        direction,
+      }, parentMessageTargetOrigin());
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const currentPath = currentViewerPathForFolderNavigation();
   const currentFolder = _currentFolderPath || splitViewerPath(currentPath).folder || folderPath || '';
   try {
@@ -1104,6 +1192,19 @@ document.getElementById('display').addEventListener('wheel', e => {
   showGroup(idx);
 }, {passive: false});
 
+// マウスの戻る/進むボタン（XButton1/XButton2）で前後へ移動
+['mousedown', 'mouseup', 'auxclick'].forEach(eventName => {
+  document.addEventListener(eventName, e => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (eventName !== 'mousedown') return;
+    pause();
+    if (e.button === 3) prevGroup();
+    else nextGroup();
+  }, {capture: true});
+});
+
 // ドラッグで画像位置移動（transform方式: 画像がウィンドウ内に収まっていてもパン可能）
 let panX = 0, panY = 0;
 function applyPan() {
@@ -1187,8 +1288,8 @@ document.getElementById('display').addEventListener('contextmenu', e => {
   addItem('1枚戻る', () => { pause(); shiftBackward(); }, 'Shift+←');
   addItem('1枚進む', () => { pause(); shiftForward(); }, 'Shift+→');
   addSep();
-  addItem('前のフォルダ', prevFolder, '↑');
-  addItem('次のフォルダ', nextFolder, '↓');
+  addItem(sheetContextId ? '前の画像行' : '前のフォルダ', prevFolder, '↑');
+  addItem(sheetContextId ? '次の画像行' : '次のフォルダ', nextFolder, '↓');
   addSep();
   addItem(playing ? '⏸ 一時停止' : '▶ 再生', togglePlay, 'Space');
   addSep();
@@ -1367,6 +1468,14 @@ function toggleMarkup() {
 }
 
 document.getElementById('btn-markup').onclick = toggleMarkup;
+
+window.addEventListener('viewer-layout-resize', () => {
+  document.querySelectorAll('#layerA img, #layerB img').forEach(img => {
+    applyImageFitStyle(img, !!img.closest('.spread'));
+  });
+  applyViewerTransform();
+  applyPan();
+});
 
 // 親ウィンドウのテーマ色を継承（meldex-core.js提供）
 try {

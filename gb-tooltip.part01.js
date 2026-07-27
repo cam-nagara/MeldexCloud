@@ -372,8 +372,13 @@
     return el.matches(INTERACTIVE_SELECTORS.join(','));
   }
 
+  // 左右レールのアイコンはラベルが出ないため、タブ扱いの除外から外して説明を出す。
+  // （レールのボタンはタブIDを持つので [data-tab-id] に一致してしまい、以前は説明が出なかった）
+  const TAB_EXCLUDE_EXCEPTIONS = '.gb-dock-icon';
+
   function isTabLike(el) {
     if (!el || !el.matches) return false;
+    if (el.matches(TAB_EXCLUDE_EXCEPTIONS)) return false;
     return el.matches(TAB_EXCLUDE_SELECTORS.join(','));
   }
 

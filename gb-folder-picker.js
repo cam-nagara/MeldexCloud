@@ -189,6 +189,13 @@
     return toSourceRelativePath(selection);
   }
 
+  // 「選択中:」欄の表示更新。長いパスは実効幅に収めて「先頭…末尾ファイル名」形式で中略する。
+  // meldex-coreが未ロードの環境で使われる可能性を考慮し、typeofガード+従来表示にフォールバックする。
+  function _setCurrentPathText(el, text) {
+    if (typeof applyMiddleEllipsis === 'function') applyMiddleEllipsis(el, text);
+    else el.textContent = text;
+  }
+
   // selectFiles モードで一覧に含めるファイルの種別アイコン（サーバの /browse type をそのまま解釈）
   const _FILE_TYPE_ICONS = {
     folder: 'folder', database: 'database', calendar: 'calendar',
@@ -243,7 +250,7 @@
     const selectRow = () => {
       state.selected = _selectionFor(root, path, name, isFile ? 'file' : 'folder');
       _markSelectedAcross(state, row);
-      state.current.textContent = _rowLabelText(state.selected);
+      _setCurrentPathText(state.current, _rowLabelText(state.selected));
       state.ok.disabled = false;
     };
 
@@ -447,6 +454,8 @@
       modal.appendChild(buttonRow);
 
       document.body.appendChild(overlay);
+      // DOM接続前は実効幅が取れないため、中略表示の適用はここ（appendChild後）で行う
+      _setCurrentPathText(current, options.initialPath || '未選択');
       if (typeof replaceIcons === 'function') replaceIcons(overlay);
       if (searchInput) searchInput.focus();
 
@@ -533,7 +542,7 @@
               ? _selectionFor(matchedRoot, d.path, d.name, 'file')
               : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file' };
             _markSelectedAcross(state, row);
-            state.current.textContent = matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || '');
+            _setCurrentPathText(state.current, matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || ''));
             state.ok.disabled = false;
           };
           row.addEventListener('click', selectThis);

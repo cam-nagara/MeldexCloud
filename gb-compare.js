@@ -609,6 +609,7 @@ function showCompareModal(preselectedPath) {
   inputA.id = inputAId;
   inputA.className = 'gb-input';
   inputA.type = 'text';
+  inputA.dataset.gbPathInput = '1';
   inputA.value = preselectedPath || '';
   inputA.placeholder = 'パスを入力（例: プロット/第1話/候補A.md）';
   fieldA.appendChild(inputA);
@@ -626,6 +627,7 @@ function showCompareModal(preselectedPath) {
   inputB.id = inputBId;
   inputB.className = 'gb-input';
   inputB.type = 'text';
+  inputB.dataset.gbPathInput = '1';
   inputB.placeholder = 'パスを入力（例: プロット/第1話/候補B.md）';
   fieldB.appendChild(inputB);
   modal.appendChild(fieldB);

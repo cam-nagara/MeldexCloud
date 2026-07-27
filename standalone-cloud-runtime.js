@@ -217,11 +217,10 @@
       state.activeRootId = '';
       return [];
     }
-    const registry = await window.MeldexSourceFolderRegistry.loadRegistry({ writeIfMissing: false });
-    const roots = (Array.isArray(registry?.roots) ? registry.roots : [])
-      .filter((root) => root?.deleted !== true)
-      .map((root) => window.MeldexSourceFolderRegistry.toOutlinerRoot(root))
-      .filter(Boolean);
+    const registry = window.MeldexSourceFolderRegistry;
+    const roots = typeof registry.loadOutlinerRoots === 'function'
+      ? await registry.loadOutlinerRoots()
+      : (await registry.loadRegistry({ writeIfMissing: false })).roots.map((root) => registry.toOutlinerRoot(root)).filter(Boolean);
     state.allRoots = roots;
     state.roots = roots.filter((root) => root?.visible !== false);
     const appKey = ACTIVE_ROOT_KEY + ':' + getAppSpec().id;
@@ -249,16 +248,17 @@
     _dispatch('meldex:standalone-root-changed', { root: { ...root } });
     return { ...root };
   }
-  async function addSource(dropboxPath, name) {
+  async function addSource(dropboxPath, name, options) {
     await ensureReady({ requireConnection: true });
     const normalized = window.MeldexSourceFolderRegistry.normalizeDropboxPath(dropboxPath);
+    const namespaceKind = window.MeldexSourceFolderRegistry.normalizeNamespaceKind(options?.namespaceKind);
     const metadata = await window.MeldexDropboxAuth.apiRpc('files/get_metadata', {
       path: normalized,
       include_deleted: false,
       include_has_explicit_shared_members: false,
-    });
+    }, { namespaceKind });
     if (metadata?.['.tag'] !== 'folder') throw new Error('指定したDropboxの保存先はフォルダではありません');
-    const root = await window.MeldexSourceFolderRegistry.addDropboxRoot(normalized, name);
+    const root = await window.MeldexSourceFolderRegistry.addDropboxRoot(normalized, name, { namespaceKind });
     await _loadRoots();
     await setActiveRoot(root.id || root.sourceId);
     return getActiveRoot();
@@ -317,8 +317,8 @@
     _dispatch('meldex:standalone-auth-changed', result);
     return result;
   }
-  async function disconnect() {
-    await window.MeldexDropboxAuth?.clearSession?.();
+  async function disconnect(options) {
+    if (!options?.keepSession) await window.MeldexDropboxAuth?.clearSession?.();
     await window.MeldexStorageAdapter?.clearWorkspace?.();
     state.connected = false;
     state.roots = [];
@@ -327,7 +327,7 @@
     state.etags.clear();
     state.initPromise = null;
     state.initialized = false;
-    _dispatch('meldex:standalone-auth-changed', getStatus());
+    if (!options?.silent) _dispatch('meldex:standalone-auth-changed', getStatus());
     return getStatus();
   }
   async function _provider() {

@@ -674,7 +674,15 @@ function _ensureFolderBulkBarChrome(bar) {
       if (button.dataset.selectionFloatActionBound === '1') return;
       button.dataset.selectionFloatActionBound = '1';
       button.classList.add('gb-selection-float-button');
-      button.addEventListener('click', () => window.GBSelectionFloatMenu.pulseButton(button), true);
+      // bindDrag() が click をバブル段階で stopPropagation するため、data-action の
+      // ドキュメント委譲(gb-events.js)へ届かない。各ボタンに実アクションを直接結線して回避する。
+      button.addEventListener('click', (e) => {
+        window.GBSelectionFloatMenu.pulseButton(button);
+        if (button.disabled) return;
+        const m = String(button.dataset.action || '').match(/^([a-zA-Z_$][\w$]*)\s*\(/);
+        const fn = m ? window[m[1]] : null;
+        if (typeof fn === 'function') { e.preventDefault(); fn(); }
+      }, true);
     });
   }
 }
@@ -715,6 +723,11 @@ function _updateFolderBulkBar() {
     bar.setAttribute('aria-hidden', 'false');
     const cnt = bar.querySelector('.fv-bulk-count');
     if (cnt) cnt.textContent = selectedCount + ' 件選択中';
+    const readOnlyArchive = !!window._archiveBrowseContext;
+    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"],[data-action^="fvBulkDelete"]').forEach(button => {
+      button.disabled = readOnlyArchive;
+      button.title = readOnlyArchive ? 'ZIP内は読み取り専用です' : '';
+    });
     _positionFolderBulkPopup();
     _setFolderBulkPopupTracking(true);
   } else {
@@ -938,6 +951,10 @@ async function openFolderItem(item) {
   _folderSelected = null;
   _updateFolderBulkBar();
   const _expOpts = { fromExplorer: true };
+  if (item?.archive_path && typeof openArchiveItem === 'function') {
+    openArchiveItem(item);
+    return;
+  }
   const clickPaneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
     ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
     : null;
@@ -968,6 +985,11 @@ async function openFolderItem(item) {
     await _resolveBrowseItemTypeOnDemand(item);
     if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
         && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
+  }
+  if (typeof _folderArchiveExtension === 'function'
+      && _folderArchiveExtension(item?.path || item?.name || '') === '.zip'
+      && typeof openArchiveFolder === 'function') {
+    return openArchiveFolder(item.path, '');
   }
   if (item.type === 'folder') { openFolder(item.name, item.path, _expOpts); }
   else if (item.type === 'database') { selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts); }

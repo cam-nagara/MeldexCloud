@@ -249,7 +249,11 @@
     body.append(_pmField('Excel / CSV', fileInput), preview, _pmFooter(close, '取り込む', async () => {
       if (!parsedRows.length) throw new Error('取り込む行がありません');
       const result = await _pmRequest('/production-management/shifts/apply', { method: 'POST', body: { rows: parsedRows, source_file: fileInput.files?.[0]?.name || '' } });
-      _pmShowStatus(_pmRecoveryText(`シフトを取り込みました: ${result.count || 0}件`, result));
+      let _shiftMsg = `シフトを取り込みました: ${result.count || 0}件`;
+      if (result.registry_added) _shiftMsg += `（スタッフ管理シートに${result.registry_added}名を追加）`;
+      const _shiftWarns = Array.isArray(result.registry_name_warnings) ? result.registry_name_warnings : [];
+      if (_shiftWarns.length) _shiftMsg += ` ⚠ 表記ゆれの可能性: ${_shiftWarns.map(w => `「${w.name}」≈「${w.similar_to}」`).join('、')}`;
+      _pmShowStatus(_pmRecoveryText(_shiftMsg, result), _shiftWarns.length > 0);
     }, { write: true }));
   }
 
@@ -578,6 +582,7 @@
       const readOnlyRequest = method === 'GET' || (method === 'POST' && [
         '/production-management/tasks/query',
         '/production-management/tasks/preview',
+        '/production-management/tasks/structure/preview',
       ].includes(pathname));
       const provider = await internals._requirePwaProvider(readOnlyRequest ? 'read' : 'readwrite');
       let migrationMeta = {};
@@ -627,6 +632,10 @@
       }
       if (pathname === '/production-management/tasks/preview' && method === 'POST') return _pmCloudPreviewTasks(provider, internals, body || {});
       if (pathname === '/production-management/tasks/create' && method === 'POST') return _pmCloudCreateTasks(provider, internals, body || {});
+      if (pathname === '/production-management/tasks/structure/preview' && method === 'POST') return _pmCloudPreviewTaskStructure(provider, internals, body || {});
+      if (pathname === '/production-management/tasks/structure/apply' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyTaskStructure(provider, internals, body || {}));
+      }
       if (pathname === '/production-management/shifts/apply' && method === 'POST') {
         return _pmCloudWithProductionLease(provider, () => _pmCloudApplyShifts(provider, internals, body || {}));
       }
@@ -989,6 +998,10 @@
     return (rows || []).map(row => String(row?.['コマ'] || row?.['単位レベル2'] || '').trim()).filter(Boolean);
   }
 
+  function _pmTaskPageValues(rows) {
+    return (rows || []).map(row => String(row?.['ページ'] || row?.['単位レベル1'] || '').trim()).filter(Boolean);
+  }
+
   function _pmMergeOptions(current, additions) {
     const out = [];
     [...(Array.isArray(current) ? current : []), ...(additions || [])].forEach((item) => {
@@ -1005,7 +1018,10 @@
     const frontmatter = { ...(parsed.frontmatter || {}), type: 'settings-db', schema_version: 1 };
     const propTypes = frontmatter.property_types && typeof frontmatter.property_types === 'object' ? { ...frontmatter.property_types } : {};
     const pageSpec = { ...(propTypes['ページ'] || {}), type: 'multi-select' };
-    pageSpec.options = _pmMergeOptions(pageSpec.options, _pmTaskPageOptions(_pmTaskPageOptionCount(rows, fallbackPageCount)));
+    pageSpec.options = _pmMergeOptions(
+      pageSpec.options,
+      [..._pmTaskPageOptions(_pmTaskPageOptionCount(rows, fallbackPageCount)), ..._pmTaskPageValues(rows)],
+    );
     propTypes['ページ'] = pageSpec;
     const panelSpec = { ...(propTypes['コマ'] || {}), type: 'multi-select' };
     const panelOptions = _pmMergeOptions(panelSpec.options, _pmTaskPanelOptions(rows));
@@ -1030,12 +1046,14 @@
   }
 
   async function _pmCloudPreviewTasks(provider, internals, body) {
-    const rows = _pmBuildTaskRows(body || {});
+    const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
+    const workEntry = await _pmCloudFindWork(provider, internals, workTitle);
+    const taskBody = window.MeldexProductionPageStructure?.prepare?.(body || {}, workEntry?.frontmatter) || (body || {});
+    const rows = _pmBuildTaskRows(taskBody);
     _pmCloudValidateTaskRows(rows);
     await _pmCloudApplyTaskDurations(provider, internals, rows);
-    const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
     const existingKeys = await _pmCloudExistingTaskKeysForWork(provider, internals, workTitle);
-    return { ok: true, rows: rows.map(row => ({ ...row, existing: existingKeys.has(String(row['作成キー'] || '')) })), count: rows.length, cloud: true };
+    return { ok: true, rows: rows.map(row => ({ ...row, existing: existingKeys.has(String(row['作成キー'] || '')) })), count: rows.length, page_units: taskBody.pages || [], cloud: true };
   }
 
   async function _pmCloudEnsureTaskReferences(provider, internals, rows, config) {
@@ -1076,9 +1094,6 @@
 
   async function _pmCloudCreateTasksUnlocked(provider, internals, body) {
     const init = await _pmCloudInit(provider, internals);
-    const rows = _pmBuildTaskRows(body || {});
-    _pmCloudValidateTaskRows(rows);
-    await _pmCloudApplyTaskDurations(provider, internals, rows);
     const workTitle = String((body || {}).work_title || (body || {})['作品タイトル'] || (body || {}).title || '無題作品');
     const workEntries = await _pmCloudListEntries(provider, internals, '作品リスト', { concurrency: 8 });
     const workEntry = workEntries.find(entry => {
@@ -1086,9 +1101,14 @@
         || _pmCloudPropValue(entry.frontmatter, '作品タイトル');
       return title === workTitle;
     });
-    const config = _pmHierarchyConfig(body || {});
-    const paths = _pmHierarchyPaths(body || {}, config);
+    const taskBody = window.MeldexProductionPageStructure?.prepare?.(body || {}, workEntry?.frontmatter) || (body || {});
+    const rows = _pmBuildTaskRows(taskBody);
+    _pmCloudValidateTaskRows(rows);
+    await _pmCloudApplyTaskDurations(provider, internals, rows);
+    const config = _pmHierarchyConfig(taskBody);
+    const paths = _pmHierarchyPaths(taskBody, config);
     const firstLevelCount = new Set(paths.map(path => path[0]).filter(Boolean)).size || paths.length || 1;
+    const physicalPageCount = Number(taskBody._physical_page_count || firstLevelCount);
     const secondLevelsByFirst = new Map();
     paths.forEach(path => {
       if (!path[1]) return;
@@ -1103,17 +1123,22 @@
       || _pmCloudAllocateTaskSheetName(workTitle, usedSheets);
     await _pmCloudEnsureSheet(provider, internals, taskSheet, 'タスクリスト');
     const workProps = {
-      'ページ数': String(firstLevelCount),
+      'ページ数': String(physicalPageCount),
       '階層数': String(config.count),
       '階層ラベル': config.labels.join(','),
       'プリセット種別': config.preset,
-      '作業作成粒度': String((body || {}).granularity || (body || {})['作業作成粒度'] || config.granularity || '階層単位'),
+      '作業作成粒度': String(taskBody.granularity || taskBody['作業作成粒度'] || config.granularity || '階層単位'),
       '生成ページ数': String(firstLevelCount),
       '生成コマ数': String(secondLevelCount),
       'タスク生成': '作成中',
       'タスクリストシート': taskSheet,
     };
-    const workPeriod = _pmWorkPeriodValue(body || {});
+    if (taskBody._physical_page_count) {
+      workProps['開始ページの位置'] = taskBody._page_start_side || '左ページ';
+      workProps['見開きページ'] = (taskBody._spread_pages || []).join(',');
+      workProps['カラーページ'] = (taskBody._color_pages || []).join(',');
+    }
+    const workPeriod = _pmWorkPeriodValue(taskBody);
     if (workPeriod) workProps['作業期間'] = workPeriod;
     const workPath = workEntry
       ? await _pmCloudUpdateEntryAtPath(provider, workEntry.path, workProps, workEntry)
@@ -1121,7 +1146,7 @@
     const migration = await _pmCloudMigrateLegacyTasksForWork(provider, internals, workTitle, taskSheet);
     if (migration.conflicts) throw new Error(`タスクリストに内容を自動統合できない行が${migration.conflicts}件あります。旧タスクリストまたは競合コピーと、作品別タスクリストの同じ作成キーを確認してください`);
     const referencesCreated = await _pmCloudEnsureTaskReferences(provider, internals, rows, config);
-    await _pmCloudEnsureTaskPagePanelOptions(provider, internals, taskSheet, rows, firstLevelCount);
+    await _pmCloudEnsureTaskPagePanelOptions(provider, internals, taskSheet, rows, physicalPageCount);
     const existingKeys = new Set(migration.existing_keys || []);
     const missingRows = [];
     for (const row of rows) {

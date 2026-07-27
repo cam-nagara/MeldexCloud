@@ -1,9 +1,13 @@
 /* Support diagnostics dialog and error notice */
+/* 共通モーダル基盤（gb-modal-shell.js の _clampModal）は、まだ実寸が入っていないモーダルに対して
+   width/height ではなく min-width/min-height を採用して実寸を書き込む。min-width:0 のままだと
+   下限値（260x180）に潰されて上の width/height 指定が効かないため、min 側にも実サイズを書く。 */
 .meldex-support-dialog {
   width: min(440px, calc(100vw - 32px));
-  min-width: 0;
+  min-width: min(440px, calc(100vw - 32px));
   max-width: 440px;
   height: min(760px, calc(100vh - 32px));
+  min-height: min(760px, calc(100vh - 32px));
   max-height: calc(100vh - 32px);
 }
 .meldex-support-dialog-title {

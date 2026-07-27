@@ -283,7 +283,12 @@
     actionRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
     actionRow.appendChild(textButton('グループ追加', 'folder-plus', () => onAddGroup(null), 'tag-management-add-group'));
     actionRow.appendChild(textButton('タグ追加', 'plus', () => onAddTag(null), 'tag-management-add-tag'));
-    actionRow.appendChild(textButton('現在のフォルダを自動タグ付け', 'sparkles', () => runAutoTagForCurrentFolder(), 'tag-management-auto-tag-folder'));
+    if (window.isAutoTagRuntimeAvailable?.() !== false) {
+      actionRow.appendChild(textButton('タグ辞書シート', 'table-properties', () => window.ensureAutoTagDictionarySheet?.(), 'tag-management-open-dictionary'));
+      actionRow.appendChild(textButton('CSV取込', 'upload', () => window.importAutoTagDictionaryCsv?.(), 'tag-management-import-csv'));
+      actionRow.appendChild(textButton('CSV書出', 'download', () => window.exportAutoTagDictionaryCsv?.(), 'tag-management-export-csv'));
+      actionRow.appendChild(textButton('現在のフォルダを自動タグ付け', 'sparkles', () => runAutoTagForCurrentFolder(), 'tag-management-auto-tag-folder'));
+    }
     header.appendChild(actionRow);
     return header;
   }
@@ -416,6 +421,23 @@
     row.appendChild(indent);
     row.appendChild(swatch);
     row.appendChild(rowLabel(tag.name || '', false));
+    if (Array.isArray(tag.aliases) && tag.aliases.length) {
+      const aliasBadge = document.createElement('span');
+      aliasBadge.className = 'gb-tag-alias-badge';
+      aliasBadge.style.cssText = 'font-size:10px;color:var(--fg2);white-space:nowrap;';
+      aliasBadge.textContent = '別名 ' + tag.aliases.length;
+      aliasBadge.title = '別名: ' + tag.aliases.join(', ');
+      row.appendChild(aliasBadge);
+    }
+    if (tag.auto_assign) {
+      const autoBadge = document.createElement('span');
+      autoBadge.className = 'gb-tag-auto-assign-badge';
+      autoBadge.style.cssText = 'display:inline-flex;align-items:center;color:var(--green,#4bc995);';
+      autoBadge.innerHTML = ic('sparkles', 11);
+      autoBadge.title = '自動付与を許可';
+      autoBadge.setAttribute('aria-label', '自動付与を許可');
+      row.appendChild(autoBadge);
+    }
     row.appendChild(rowCount(typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : ''));
     row.appendChild(iconButton('more-horizontal', 'タグの操作', event => openTagMenu(event.currentTarget, tag), '', 'tag-management-tag-menu-' + safeKeyPart(tag.id), { menu: true }));
     row.addEventListener('click', event => {
@@ -666,6 +688,30 @@
     catch (err) { reportError(err, 'タグ名を変更できませんでした'); }
   }
 
+  async function promptAliasesTag(tag) {
+    const current = Array.isArray(tag.aliases) ? tag.aliases.join(', ') : '';
+    const next = await promptAsync('別名（カンマまたは改行で区切ります）', current);
+    if (next == null) return;
+    try {
+      await api().updateTag(tag.id, { aliases: String(next || '') });
+      await refresh(false);
+    } catch (err) {
+      reportError(err, '別名を更新できませんでした');
+    }
+  }
+
+  async function toggleAutoAssignTag(tag) {
+    try {
+      await api().updateTag(tag.id, { auto_assign: !tag.auto_assign });
+      await refresh(false);
+      if (typeof showStatus === 'function') {
+        showStatus(tag.auto_assign ? '自動付与の許可を外しました' : '自動付与を許可しました');
+      }
+    } catch (err) {
+      reportError(err, '自動付与の設定を更新できませんでした');
+    }
+  }
+
   async function onDeleteGroup(group) {
     if (!await confirmAsync('グループ「' + group.name + '」を削除しますか？\n直下のタグは未分類に戻ります。')) return;
     try { await api().deleteGroup(group.id); await refresh(false); }
@@ -709,6 +755,8 @@
       ['filter', '現在のフォルダをこのタグで絞り込み', () => applyTagFilter(tag)],
       ['search', 'このタグの項目を全検索', () => showSearchForTag(tag)],
       ['pencil', '名前を変更', () => promptRenameTag(tag)],
+      ['languages', '別名を編集', () => promptAliasesTag(tag)],
+      ['sparkles', tag.auto_assign ? '自動付与の許可を外す' : '自動付与を許可', () => toggleAutoAssignTag(tag)],
       ['trash-2', '削除', () => onDeleteTag(tag), true],
     ]);
   }
@@ -933,7 +981,7 @@
       if (typeof showStatus === 'function') showStatus('フォルダを開いてから実行してください', true);
       return;
     }
-    if (!await confirmAsync('現在のフォルダ内のファイルへ自動タグ付けを実行しますか？\n画像はCLIで目視判定します。')) return;
+    if (!await confirmAsync('現在のフォルダ内のファイルへ自動タグ付けを実行しますか？\n設定で選んだAI・モデルと自動タグ辞書を使います。')) return;
     try {
       if (typeof showStatus === 'function') showStatus('自動タグ付けを実行しています...');
       const result = await api().autoTag({ path, recursive: false });

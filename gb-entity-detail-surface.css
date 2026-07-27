@@ -1,0 +1,77 @@
+.meldex-entity-detail {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: auto;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
+.meldex-entity-detail-title {
+  margin: 6px 0 10px;
+  color: var(--fg);
+  font-size: 17px;
+}
+
+.meldex-entity-detail-parent {
+  align-self: flex-start;
+}
+
+.meldex-entity-detail-actions,
+.meldex-entity-detail-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.meldex-entity-detail-actions {
+  margin-bottom: 8px;
+}
+
+.meldex-entity-detail-toolbar {
+  margin-top: 10px;
+  padding: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.meldex-entity-detail-editor {
+  min-height: 120px;
+  padding: 10px 4px;
+  outline: none;
+  line-height: 1.65;
+  color: var(--fg);
+}
+
+.meldex-entity-detail-readonly {
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm, 4px);
+  background: var(--bg3);
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.meldex-entity-detail[data-read-only="1"] .meldex-entity-detail-editor {
+  cursor: default;
+}
+
+.meldex-entity-detail[data-read-only="1"] .cell-value {
+  pointer-events: none;
+}
+
+.meldex-entity-detail-loading {
+  padding: 14px;
+  color: var(--fg2);
+}
+
+@media (pointer: coarse) {
+  .meldex-entity-detail-actions button,
+  .meldex-entity-detail-toolbar button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

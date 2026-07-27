@@ -53,6 +53,10 @@
       .replace(/\/$/, '');
   }
 
+  function normalizeNamespaceKind(value) {
+    return value === 'team_root' ? 'team_root' : 'home';
+  }
+
   function joinDropboxPath() {
     const parts = Array.from(arguments);
     const first = normalizeDropboxPath(parts.shift() || '');
@@ -92,23 +96,23 @@
     return joinDropboxPath(normalizeDropboxPath(workspaceDropboxPath), relative);
   }
 
-  async function _rpc(route, body) {
+  async function _rpc(route, body, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
-    return auth.apiRpc(route, body);
+    return auth.apiRpc(route, body, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
   }
 
-  async function _content(route, arg, init) {
+  async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
-    return auth.apiContent(route, arg, init);
+    return auth.apiContent(route, arg, init, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
   }
 
-  async function _ensureFolder(dropboxPath) {
+  async function _ensureFolder(dropboxPath, namespaceKind) {
     const normalized = normalizeDropboxPath(dropboxPath);
     if (!normalized || normalized === '/') return true;
     try {
-      await _rpc('files/create_folder_v2', { path: normalized, autorename: false });
+      await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
       return true;
     } catch (err) {
       let meta = null;
@@ -117,7 +121,7 @@
           path: normalized,
           include_deleted: false,
           include_has_explicit_shared_members: false,
-        });
+        }, namespaceKind);
       } catch {
         // メタデータ取得も失敗した場合は、直前の create_folder_v2 の
         // エラーをそのまま呼び出し元へ投げる（下のthrow errで処理）。
@@ -128,13 +132,13 @@
     }
   }
 
-  async function _ensureWorkspaceLedgerFolders(workspaceDropboxPath) {
+  async function _ensureWorkspaceLedgerFolders(workspaceDropboxPath, namespaceKind) {
     const sharedLedger = _sharedLedger();
     const shareDir = sharedLedger?.WORKSPACE_SHARE_DIR || 'MeldexShare';
     const base = normalizeDropboxPath(workspaceDropboxPath);
-    await _ensureFolder(base);
-    await _ensureFolder(joinDropboxPath(base, shareDir));
-    await _ensureFolder(joinDropboxPath(base, shareDir, '_meldex'));
+    await _ensureFolder(base, namespaceKind);
+    await _ensureFolder(joinDropboxPath(base, shareDir), namespaceKind);
+    await _ensureFolder(joinDropboxPath(base, shareDir, '_meldex'), namespaceKind);
     return true;
   }
 
@@ -146,10 +150,10 @@
     return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
   }
 
-  async function _readWorkspaceLedgerWithMetadata(workspaceDropboxPath) {
+  async function _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind) {
     const response = await _content('files/download', {
       path: workspaceLedgerDropboxPath(workspaceDropboxPath),
-    });
+    }, undefined, namespaceKind);
     const text = await response.text();
     let rev = '';
     try {
@@ -168,9 +172,9 @@
     };
   }
 
-  async function readWorkspaceLedger(workspaceDropboxPath) {
+  async function readWorkspaceLedger(workspaceDropboxPath, namespaceKind) {
     try {
-      const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath);
+      const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
       return result.roots;
     } catch (err) {
       // フォルダ内台帳がまだ作成されていない共有ワークスペースは
@@ -187,9 +191,9 @@
   // 呼び出し元が後者を「未作成」と誤判定して新規内容で全置換し、他メンバーの
   // 共有内容を黙って消す事故につながる（敵対的検証 2026-07-21 で実行再現済み）。
   // ネットワーク一時障害・JSON破損は throw のまま伝播させる（呼び出し元は中断する）。
-  async function readWorkspaceLedgerStatus(workspaceDropboxPath) {
+  async function readWorkspaceLedgerStatus(workspaceDropboxPath, namespaceKind) {
     try {
-      const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath);
+      const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
       return { exists: true, roots: result.roots };
     } catch (err) {
       if (_isWorkspaceLedgerNotFoundError(err)) return { exists: false, roots: [] };
@@ -197,23 +201,23 @@
     }
   }
 
-  async function _readWorkspaceLedgerForWrite(workspaceDropboxPath) {
+  async function _readWorkspaceLedgerForWrite(workspaceDropboxPath, namespaceKind) {
     try {
-      return await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath);
+      return await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
     } catch (err) {
       if (_isWorkspaceLedgerNotFoundError(err)) return null;
       throw err;
     }
   }
 
-  async function writeWorkspaceLedger(workspaceDropboxPath, roots) {
+  async function writeWorkspaceLedger(workspaceDropboxPath, roots, namespaceKind) {
     const sharedLedger = _sharedLedger();
     if (!sharedLedger?.serializeWsLedger) throw new Error('MeldexWorkspaceSharedLedger が未読み込みです');
-    await _ensureWorkspaceLedgerFolders(workspaceDropboxPath);
+    await _ensureWorkspaceLedgerFolders(workspaceDropboxPath, namespaceKind);
     const targetPath = workspaceLedgerDropboxPath(workspaceDropboxPath);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const remote = await _readWorkspaceLedgerForWrite(workspaceDropboxPath);
+      const remote = await _readWorkspaceLedgerForWrite(workspaceDropboxPath, namespaceKind);
       const serialized = sharedLedger.serializeWsLedger(roots);
       const bytes = new TextEncoder().encode(JSON.stringify(serialized, null, 2));
       try {
@@ -227,7 +231,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: bytes,
-        });
+        }, namespaceKind);
         return serialized;
       } catch (err) {
         lastError = err;
@@ -267,7 +271,10 @@
   }
 
   function listJoinedWorkspaces() {
-    return _readJoinedWorkspacesRaw();
+    return _readJoinedWorkspacesRaw().map((entry) => ({
+      ...entry,
+      namespaceKind: normalizeNamespaceKind(entry?.namespaceKind),
+    }));
   }
 
   function _joinedWorkspaceId(dropboxPath) {
@@ -280,7 +287,10 @@
     const list = _readJoinedWorkspacesRaw();
     const normalizedLower = dropboxPath.toLowerCase();
     const existingIndex = list.findIndex(
-      (item) => normalizeDropboxPath(item?.dropboxPath).toLowerCase() === normalizedLower
+      (item) => (
+        normalizeNamespaceKind(item?.namespaceKind) === normalizeNamespaceKind(entry?.namespaceKind)
+        && normalizeDropboxPath(item?.dropboxPath).toLowerCase() === normalizedLower
+      )
     );
     const existing = existingIndex >= 0 ? list[existingIndex] : null;
     let id = String(entry?.id || existing?.id || '').trim();
@@ -300,6 +310,7 @@
     const record = {
       id,
       dropboxPath,
+      namespaceKind: normalizeNamespaceKind(entry?.namespaceKind || existing?.namespaceKind),
       name,
       joinedAt: existing?.joinedAt || new Date().toISOString(),
     };

@@ -2259,6 +2259,62 @@
     }
   }
 
+  function _cloudLinkDictReadings(props, rubyKeys) {
+    const readings = [];
+    const seen = new Set();
+    for (const key of rubyKeys) {
+      const values = Array.isArray(props?.[key]) ? props[key] : [];
+      for (const item of values) {
+        const value = String(item?.value || '').trim();
+        if (!value) continue;
+        const status = String(item?.status || '(未設定)').trim() || '(未設定)';
+        const dedupeKey = `${value}\u0000${status}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        readings.push({ value, status });
+      }
+    }
+    return readings;
+  }
+
+  async function _cloudLinkDictRows(provider, dbPath) {
+    const base = _normalizeFolderPath(dbPath);
+    const store = await _sheetStoreForRead(provider, base).catch(() => null);
+    if (store) {
+      return Object.values(store.rows || {}).map(row => ({
+        name: _sheetStoreEntityName(row?.name || row?.file_name || row?.path),
+        path: row?.path || _joinPath(base, _sheetStoreFileName(row?.name || row?.file_name)),
+        properties: row?.frontmatter?.properties || {},
+      }));
+    }
+    const rows = [];
+    const items = await _listDirectoryEntries(provider, base);
+    for (const item of items) {
+      if (item.handle.kind !== 'file' || !item.name.endsWith('.md')
+          || item.name.startsWith('_') || item.name === _basename(base) + '.md') continue;
+      const path = _joinPath(base, item.name);
+      const parsed = await _readFrontmatterFile(provider, path);
+      if (String(parsed.frontmatter?.type || '') !== 'settings-entry') continue;
+      rows.push({
+        name: item.name.replace(/\.md$/i, ''),
+        path,
+        properties: parsed.frontmatter?.properties || {},
+      });
+    }
+    return rows;
+  }
+
+  function _cloudLinkDictMergeReadings(target, additions) {
+    const identities = new Set((target.readings || []).map(item => `${item.value}\u0000${item.status}`));
+    for (const item of additions || []) {
+      const identity = `${item.value}\u0000${item.status}`;
+      if (!item.value || identities.has(identity)) continue;
+      identities.add(identity);
+      target.readings.push({ value: item.value, status: item.status });
+    }
+    target.ruby = target.readings.find(item => item.status === '採用')?.value || '';
+  }
+
   async function _cloudLinkDict(provider, url) {
     const work = _normalizeFolderPath(url.searchParams.get('work') || '');
     const dbs = [];
@@ -2266,26 +2322,32 @@
     if (baseKind === 'settings-db') dbs.push({ path: work, kind: baseKind });
     dbs.push(...await _findDatabaseFolders(provider, work, 6));
     const entries = [];
-    const seen = new Set();
+    const byText = new Map();
     for (const db of dbs) {
       if (db.kind && db.kind !== 'settings-db') continue;
-      const pivot = await _readPivot(provider, db.path, '').catch(() => null);
       const furiganaKeys = await _cloudLinkDictFuriganaKeys(provider, db.path);
       const rubyKeys = [...new Set([...furiganaKeys, 'ふりがな', 'ルビ', 'フリガナ', 'ruby'])];
-      Object.entries(pivot?.entities || {}).forEach(([name, props]) => {
-        const text = String(name || '').trim();
-        if (text.length < 2 || seen.has(text)) return;
-        seen.add(text);
-        let ruby = '';
-        for (const key of rubyKeys) {
-          const values = Array.isArray(props?.[key]) ? props[key] : [];
-          const adopted = values.find(item => item?.status === '採用' && item?.value);
-          if (adopted) {
-            ruby = String(adopted.value || '');
-            break;
-          }
+      const rows = await _cloudLinkDictRows(provider, db.path).catch(() => []);
+      rows.forEach(row => {
+        const text = String(row.name || '').trim();
+        if (text.length < 2) return;
+        const readings = _cloudLinkDictReadings(row.properties, rubyKeys);
+        const current = byText.get(text);
+        if (current) {
+          _cloudLinkDictMergeReadings(current, readings);
+          return;
         }
-        entries.push({ text, type: 'entity', path: _joinPath(db.path, _sheetStoreFileName(text)), entity: text, ruby });
+        const entry = {
+          text,
+          type: 'entity',
+          path: row.path || _joinPath(db.path, _sheetStoreFileName(text)),
+          entity: text,
+          ruby: '',
+          readings: [],
+        };
+        _cloudLinkDictMergeReadings(entry, readings);
+        byText.set(text, entry);
+        entries.push(entry);
       });
     }
     entries.sort((a, b) => b.text.length - a.text.length);

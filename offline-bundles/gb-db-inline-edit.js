@@ -1,7 +1,84 @@
+(function () {
+  'use strict';
+
+  function plainValue(values) {
+    const items = Array.isArray(values) ? values : values == null ? [] : [values];
+    const adopted = items.find(value => value && typeof value === 'object' && ['採用', '掲載済み'].includes(value.status));
+    const value = adopted ?? items[0] ?? '';
+    return String(value && typeof value === 'object' ? value.value ?? '' : value);
+  }
+
+  function resolve(propertyType, entityData) {
+    const source = propertyType?.optionSource;
+    if (!source || source.kind !== 'row-page-range') return null;
+    const api = window.MeldexProductionPageStructure;
+    if (!api) return null;
+    const count = plainValue(entityData?.[source.countProperty || 'ページ数']) || source.fallbackCount || api.FALLBACK_COUNT;
+    const startSide = plainValue(entityData?.[source.sideProperty || '開始ページの位置']) || source.defaultSide || api.LEFT;
+    const options = source.mode === 'spread'
+      ? api.spreadOptions(count, startSide)
+      : api.pageOptions(count);
+    return { options, count: Number(count), startSide };
+  }
+
+  window.MeldexDbDynamicOptions = { plainValue, resolve };
+})();
 /* インライン編集・キーボードナビゲーション — gb-database.js から分離 */
 
 function _dbInlineIsComposing(e) {
   return !!(e && (e.isComposing || e.keyCode === 229));
+}
+
+function _dbInlineConsumeImeBoundaryKey(e) {
+  if (!e) return false;
+  const justEnded = e.target?.dataset?.dbImeJustEnded === '1'
+    || e.currentTarget?.dataset?.dbImeJustEnded === '1';
+  if (!justEnded) return false;
+  if (['Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar', 'Escape'].includes(e.key)) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+  }
+  return true;
+}
+
+// フォーカスが外れたときの確定を、入力欄内の操作で誤発火させないための共通処理。
+// blur に直結して確定すると、入力中の文字と文字の間をクリックしただけ（キャレット移動だけのつもり）や、
+// 日本語変換の確定操作で入力が閉じてしまう。gb-db-cell-ui.js の scheduleBlurFinish と同じ方針を、
+// シート内の各インライン入力（セル・列見出し・ビュー名など）へ共通化したもの。
+// keepFocusWithin: フォーカスが移っても確定させたくない周辺UI（書式ポップアップ等）のセレクタ。
+function attachInlineBlurCommit(inp, commit, options = {}) {
+  if (!inp || typeof commit !== 'function') return;
+  let composing = false;
+  let pendingBlur = false;
+  let finished = false;
+  const keepSelector = options.keepFocusWithin || '';
+  const commitAfterFocusCheck = () => {
+    setTimeout(() => {
+      if (finished || composing) return;
+      const active = document.activeElement;
+      if (active === inp || inp.contains(active)) return;
+      if (keepSelector && active?.closest?.(keepSelector)) return;
+      finished = true;
+      commit();
+    }, 0);
+  };
+  inp.addEventListener('compositionstart', () => { composing = true; });
+  inp.addEventListener('compositionend', () => {
+    composing = false;
+    inp.dataset.dbImeJustEnded = '1';
+    setTimeout(() => { delete inp.dataset.dbImeJustEnded; }, 0);
+    if (!pendingBlur) return;
+    pendingBlur = false;
+    commitAfterFocusCheck();
+  });
+  inp.addEventListener('blur', () => {
+    if (composing) {
+      pendingBlur = true;
+      return;
+    }
+    commitAfterFocusCheck();
+  });
 }
 
 // ctxOverride: 呼び出し側が既に持っているペインctxを直接渡すためのオプション引数。
@@ -89,11 +166,12 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
+    if (_dbInlineConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
     if (e.key === 'Escape') { committed = true; renderPivot(ctx); restoreActiveCellByProp(oldName); }
     if (e.key === 'Tab') { e.preventDefault(); commit(); }
   });
-  inp.addEventListener('blur', commit);
+  attachInlineBlurCommit(inp, commit);
 }
 
 function _dbResolveEntityRenameContext(anchorEl, dbPath) {
@@ -148,6 +226,12 @@ function _dbRefreshEntityRenameInBackground(ctx, dbPath, entityName) {
 }
 
 function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, dbPath) {
+  // 楽観再描画より前に manualOrder も同じ名前へ付け替える。
+  // 画面だけ先に新名へ変わって manualOrder が旧名のままだと、保存完了まで一度末尾へ落ちる。
+  // 保存失敗時は呼び出し側が newName → oldName で本関数を再実行するため、順序も同時に戻る。
+  if (typeof _dbRenameLocalRefs === 'function') {
+    _dbRenameLocalRefs(dbPath, oldName, newName);
+  }
   const changed = _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName);
   if (changed && typeof renderPivot === 'function') {
     renderPivot(ctx);
@@ -202,45 +286,71 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     const newName = inp.value.trim();
     if (!newName || newName === oldName) {
       renderPivot(_renCtx);
-      restoreActiveCellByRow(rowIdx, 0);
+      restoreActiveCellByRow(rowIdx, 'entity');
       return;
     }
+    // 同名エントリが既にあれば、楽観適用で既存エントリを上書きしないようここで弾く
+    // （サーバも 409 で拒否するが、待たずに即フィードバックする）。
+    const _renEntities = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
+      || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
+    if (Object.prototype.hasOwnProperty.call(_renEntities, newName)) {
+      if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
+      renderPivot(_renCtx);
+      restoreActiveCellByRow(rowIdx, 'entity');
+      return;
+    }
+    // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
+    // 保存に失敗したら catch で旧名へ戻す。
+    _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
     try {
       const renamePath = typeof _dbResolveEntityPathForRename === 'function'
         ? await _dbResolveEntityPathForRename(dbPath, oldName)
         : _entityPath(dbPath, oldName);
       await apiPost('/entity/rename', { path: renamePath, new_name: newName });
       _dbUndoRename(dbPath, oldName, newName, _renCtx);
-      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
     } catch(e) {
-      renderPivot(_renCtx);
-      restoreActiveCellByRow(rowIdx, 0);
+      // 保存失敗: 楽観適用を取り消して旧名へ戻す
+      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+      if (typeof showStatus === 'function') showStatus('名前の変更に失敗しました', true);
+      restoreActiveCellByRow(rowIdx, 'entity');
     }
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
+    if (_dbInlineConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; renderPivot(_renCtx); restoreActiveCellByRow(rowIdx, 0); }
+    if (e.key === 'Escape') { committed = true; renderPivot(_renCtx); restoreActiveCellByRow(rowIdx, 'entity'); }
     if (e.key === 'Tab') {
       e.preventDefault();
-      // Tab: 確定して同じ行の次のセルへ
+      // Tab: 確定して同じ行の次のセルへ（エントリ名列の位置に関わらず「最初のプロパティ列」へ）
       committed = true;
       const newName = inp.value.trim();
-      const doAfter = () => restoreActiveCellByRow(rowIdx, 1);
+      const doAfter = () => restoreActiveCellByRow(rowIdx, 'first-prop');
       if (!newName || newName === oldName) { renderPivot(_renCtx); doAfter(); return; }
+      const _renEntitiesTab = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
+        || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
+      if (Object.prototype.hasOwnProperty.call(_renEntitiesTab, newName)) {
+        if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
+        renderPivot(_renCtx); doAfter(); return;
+      }
+      // 楽観的更新: 先に新名を表示してからサーバ保存
+      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       const renamePathPromise = typeof _dbResolveEntityPathForRename === 'function'
         ? _dbResolveEntityPathForRename(dbPath, oldName)
         : Promise.resolve(_entityPath(dbPath, oldName));
       renamePathPromise.then(renamePath => apiPost('/entity/rename', { path: renamePath, new_name: newName })).then(() => {
         _dbUndoRename(dbPath, oldName, newName, _renCtx);
-        _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
         _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
         setTimeout(doAfter, 50);
-      }).catch(() => { renderPivot(_renCtx); doAfter(); });
+      }).catch(() => {
+        _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+        if (typeof showStatus === 'function') showStatus('名前の変更に失敗しました', true);
+        doAfter();
+      });
     }
   });
-  inp.addEventListener('blur', commit);
+  attachInlineBlurCommit(inp, commit);
 }
 
 // アクティブセル復元ヘルパー
@@ -274,7 +384,17 @@ function restoreActiveCellByRow(rowIdx, colIdx, _attempt) {
     }
     const row = dataRows[Math.min(rowIdx, dataRows.length - 1)];
     if (row) {
-      const cell = row.children[colIdx] || row.children[0];
+      // colIdx には数値インデックスの他に、エントリ名列は位置が固定でないため
+      // 'entity' / 'first-prop' の指定も受け付ける（クラス/属性ベースで解決する）。
+      let cell;
+      if (colIdx === 'entity') {
+        cell = row.querySelector('.col-entity');
+      } else if (colIdx === 'first-prop') {
+        cell = row.children[typeof _dbFirstPropertyColIndex === 'function' ? _dbFirstPropertyColIndex(row) : 1];
+      } else {
+        // colIdx が見つからない場合はエントリ名列へ（位置は並べ替えで変わり得るのでクラスで探す）
+        cell = row.children[colIdx] || row.querySelector('.col-entity');
+      }
       if (cell) setActiveCell(cell);
     }
   }, 30);
@@ -287,18 +407,18 @@ function restoreActiveCellByEntityName(entityName) {
   for (const row of dataRows) {
     const label = row.querySelector('.entity-name-label');
     if (label && label.textContent === entityName) {
-      setActiveCell(row.children[0]);
+      setActiveCell(row.querySelector('.col-entity'));
       return;
     }
   }
   // Step 2: チャンク分割中で対象行が未生成の可能性。進行中ならポーリングで待機
   const ctx = (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
   if (ctx && ctx._renderInProgress) {
-    _waitForEntityRow(ctx, entityName, (tr) => setActiveCell(tr.children[0]));
+    _waitForEntityRow(ctx, entityName, (tr) => setActiveCell(tr.querySelector('.col-entity')));
     return;
   }
   // 見つからなければ先頭行
-  if (dataRows.length > 0) setActiveCell(dataRows[0].children[0]);
+  if (dataRows.length > 0) setActiveCell(dataRows[0].querySelector('.col-entity'));
 }
 
 // 空セルへの直接インライン入力
@@ -401,7 +521,7 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
       }
       return;
     }
-    const td = (propName && tr.querySelector(`td[data-prop-name="${CSS.escape(propName)}"]`)) || tr.children[0];
+    const td = (propName && tr.querySelector(`td[data-prop-name="${CSS.escape(propName)}"]`)) || tr.querySelector('.col-entity');
     if (td) setActiveCell(td);
   }, 50);
 }
@@ -653,7 +773,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         const candIdx = result?.candidate_index;
         const undoFn = (candIdx != null)
           ? async () => {
-            await _apiPutValue({file: filePath, property: propName, candidate_index: candIdx}, { _delete: true });
+            await _apiPutValue({file: filePath, entry_path: entityPath, property: propName, candidate_index: candIdx}, { _delete: true });
             if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
               await _applyBidirectionalRelationSync({
                 sourceDbPath: dbPath,
@@ -725,6 +845,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       // フォールバック条件 (group化中等) では従来通り全再描画
       if (optimisticValue) {
         optimisticValue.file = filePath;
+        optimisticValue.entry_path = entityPath;
         optimisticValue.candidate_index = result?.candidate_index;
         optimisticValue.property = propName;
         optimisticValue.status = optimisticValue.status || writeStatus;
@@ -738,6 +859,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           if (!Array.isArray(_entData[propName])) _entData[propName] = [];
           _entData[propName].push({
             property: propName,
+            entry_path: entityPath,
             value: value,
             status: writeStatus,
             note: '',
@@ -757,6 +879,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         removeLocalCellValue(optimisticValue);
         refreshCellDisplayNow([], '');
       }
+      if (dbPath && typeof selectDatabase === 'function') {
+        try { await selectDatabase(dbPath, ctx || undefined, { silent: true }); } catch {}
+      }
+      if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       cancel();
     }
   };
@@ -873,6 +999,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
               if (result) {
                 currentRef = {
                   file: result.path || currentRef.file,
+                  entry_path: entityPath,
                   property: propName,
                   candidate_index: result.candidate_index,
                   value: oldValue,
@@ -922,7 +1049,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       || null;
     const selected = new Set(splitMultiSelectValue(existing?.value || ''));
     const baseOptions = Array.isArray(ptc?.options) ? ptc.options : [];
-    const optionSet = new Set([...baseOptions, ...selected]);
+    const dynamicResult = window.MeldexDbDynamicOptions?.resolve?.(ptc, entData) || null;
+    const dynamicOptions = dynamicResult?.options || [];
+    const invalidDynamicSelections = dynamicResult
+      ? [...selected].filter(value => value && !dynamicOptions.includes(value))
+      : [];
+    const optionSet = new Set([...baseOptions, ...dynamicOptions, ...selected]);
     const dd = document.createElement('div');
     dd.className = 'cell-inline-dd status-dropdown';
     dd.style.cssText = 'max-height:300px;overflow-y:auto;min-width:180px;';
@@ -952,6 +1084,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     search.placeholder = '検索...';
     search.style.cssText = 'width:100%;padding:3px 6px;margin-bottom:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;';
     dd.appendChild(search);
+    if (invalidDynamicSelections.length) {
+      const warning = document.createElement('div');
+      warning.setAttribute('role', 'alert');
+      warning.style.cssText = 'margin:2px 0 4px;padding:5px 7px;border:1px solid var(--warning,#d6a100);border-radius:3px;color:var(--warning,#d6a100);font-size:11px;line-height:1.4;';
+      warning.textContent = `現在のページ数・開始位置では使えない選択値があります（${invalidDynamicSelections.join('、')}）。設定は自動削除されません。`;
+      dd.appendChild(warning);
+    }
     const listDiv = document.createElement('div');
     const toggleValue = (opt) => {
       if (!opt) return;
@@ -979,7 +1118,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         cb.type = 'checkbox';
         cb.checked = selected.has(opt);
         item.appendChild(cb);
-        if (typeof createDbOptionColorDot === 'function') {
+        if (typeof appendDbOptionColorSwatch === 'function') {
+          appendDbOptionColorSwatch(item, { dbPath, propName, option: opt, ctx });
+        } else if (typeof createDbOptionColorDot === 'function') {
           const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
           if (dot) item.appendChild(dot);
         }
@@ -1060,7 +1201,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           pointerCloser = null;
           return;
         }
-        if (!dd.contains(e.target)) {
+        if (!dd.contains(e.target) && !e.target.closest?.('.gb-palette-popup')) {
           closeMultiSelectDropdown(true);
         }
       };
@@ -1258,6 +1399,25 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     saveAndRestore('true', null);
     return;
   }
+  // --- カラー: 共通カラーパレットで色を選ぶ ---
+  if (type === 'color') {
+    // カラーはインラインエディタではなくポップアップのパレットで選ぶので、+ボタンは隠さず戻す
+    if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
+    if (typeof openColorPalette !== 'function') { cancel(); return; }
+    const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+    let handled = false, saveTimer = null;
+    openColorPalette(addBtn && addBtn.isConnected ? addBtn : td, '', (color) => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
+        if (handled || !nv) return;
+        handled = true;
+        saveAndRestore(nv, null);
+      }, 250);
+    });
+    setActiveCell(td);
+    return;
+  }
   // --- リンク: フォルダツリーのダイアログから選択 ---
   if (type === 'link') {
     if (typeof startDbLinkCellEdit === 'function') {
@@ -1302,7 +1462,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     (ptc.options || []).forEach(opt => {
       const item = document.createElement('div');
       item.className = 'status-dropdown-item';
-      if (typeof createDbOptionColorDot === 'function') {
+      if (typeof appendDbOptionColorSwatch === 'function') {
+        appendDbOptionColorSwatch(item, { dbPath, propName, option: opt, ctx });
+      } else if (typeof createDbOptionColorDot === 'function') {
         const dot = createDbOptionColorDot(typeof getDbOptionColor === 'function' ? getDbOptionColor(ptc, opt) : '');
         if (dot) item.appendChild(dot);
       }
@@ -1340,7 +1502,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           pointerCloser = null;
           return;
         }
-        if (!dd.contains(e.target)) closeSelectDropdown(true);
+        if (!dd.contains(e.target) && !e.target.closest?.('.gb-palette-popup')) closeSelectDropdown(true);
       };
       document.addEventListener('pointerdown', pointerCloser);
     }, 0);
@@ -1419,9 +1581,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (isSelfRef && entityName) {
         entryList = entryList.filter(e => e.name !== entityName);
       }
-      if (entryList.length === 0) {
-        showStatus('参照先シートにエントリがありません: ' + relDb, true); cancel(); return;
-      }
+      // 参照先シートにエントリが無くても、検索欄からの新規作成に使えるようドロップダウン自体は表示する
       const dd = document.createElement('div');
       dd.className = 'cell-inline-dd status-dropdown';
       dd.style.cssText = 'max-height:250px;overflow-y:auto;min-width:180px;';
@@ -1454,6 +1614,40 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           if (dd.isConnected) search.focus({ preventScroll: true });
         });
       };
+      // 既存エントリをクリックした時と同じ確定処理（新規作成後もこの経路を通す）
+      const selectRelationEntry = (entry) => {
+        if (isMulti) {
+          toggleRelationEntry(entry);
+        } else {
+          closeDropdown();
+          saveAndRestore(entry.id, null);
+        }
+      };
+      // 検索欄に完全一致が無い文字列を参照先シートへ新規エントリとして作成し、そのまま選択する
+      // （Notionのリレーション追加と同じUX）。連打防止は creatingRelationEntry フラグで行う。
+      let creatingRelationEntry = false;
+      const handleCreateNewRelationEntry = async (rawName) => {
+        const trimmed = String(rawName || '').trim();
+        if (!trimmed || creatingRelationEntry) return;
+        creatingRelationEntry = true;
+        try {
+          const sanitized = trimmed.replace(/[\\/:*?"<>|]/g, '_');
+          await apiPost('/entity/create', { parent_path: relDb, name: sanitized });
+          // 名前解決とロールアップの参照先キャッシュを同時に無効化する
+          if (typeof _invalidateRelationTargetCaches === 'function') _invalidateRelationTargetCaches(relDb);
+          else _relationCache[relDb] = null;
+          const map = typeof _getRelationMap === 'function' ? await _getRelationMap(relDb) : null;
+          const newId = (map?.nameToId && map.nameToId[sanitized]) || sanitized;
+          const newEntry = { name: sanitized, id: newId };
+          entryList.push(newEntry);
+          entryList.sort((a, b) => a.name.localeCompare(b.name));
+          selectRelationEntry(newEntry);
+        } catch (e) {
+          showStatus('エントリの作成に失敗: ' + (e?.message || e), true);
+        } finally {
+          creatingRelationEntry = false;
+        }
+      };
       const renderList = (filter) => {
         listDiv.innerHTML = '';
         const filtered = filter ? entryList.filter(e => e.name.toLowerCase().includes(filter.toLowerCase())) : entryList;
@@ -1477,23 +1671,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           if (selected.includes(entry.id)) item.style.color = 'var(--accent)';
           item.onmouseenter = () => { item.style.background = 'var(--bg4)'; };
           item.onmouseleave = () => { item.style.background = ''; };
-          item._ddActivate = () => {
-            if (isMulti) {
-              toggleRelationEntry(entry);
-            } else {
-              closeDropdown();
-              saveAndRestore(entry.id, null);
-            }
-          };
+          item._ddActivate = () => selectRelationEntry(entry);
           item.addEventListener('click', (e) => {
             if (isMulti) {
               e.preventDefault();
               e.stopPropagation();
-              toggleRelationEntry(entry);
-            } else {
-              closeDropdown();
-              saveAndRestore(entry.id, null);
             }
+            selectRelationEntry(entry);
           });
           listDiv.appendChild(item);
         });
@@ -1502,6 +1686,20 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           empty.style.cssText = 'padding:6px 8px;color:var(--fg2);font-size:12px;font-style:italic;';
           empty.textContent = '該当なし';
           listDiv.appendChild(empty);
+        }
+        // 該当なしの文字列を新規エントリとして追加（部分一致候補の有無に関わらず末尾に表示）
+        const trimmedFilter = (filter || '').trim();
+        if (trimmedFilter && !entryList.some(e => e.name === trimmedFilter)) {
+          const addItem = document.createElement('div');
+          addItem.className = 'dd-nav-item status-dropdown-item';
+          addItem.dataset.ddAdd = '1';
+          addItem.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;color:var(--accent);';
+          addItem.innerHTML = lucide('plus', 12) + ' 「' + esc(trimmedFilter) + '」を新規作成';
+          addItem.onmouseenter = () => { addItem.style.background = 'var(--bg4)'; };
+          addItem.onmouseleave = () => { addItem.style.background = ''; };
+          addItem._ddActivate = () => handleCreateNewRelationEntry(trimmedFilter);
+          addItem.addEventListener('click', () => handleCreateNewRelationEntry(trimmedFilter));
+          listDiv.appendChild(addItem);
         }
       };
       renderList('');
@@ -1643,7 +1841,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); commit(e.shiftKey ? 'left' : 'right'); }
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); committed = true; cancelFn(); }
     });
-    inp.addEventListener('blur', () => commit(null));
+    // 入力欄の中をクリックしただけ（キャレット移動）や日本語変換中は確定しない
+    if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(inp, () => commit(null));
+    else inp.addEventListener('blur', () => commit(null));
   }
 }
 
@@ -1662,9 +1862,12 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : [...(pivotData?.properties || [])];
   const order = getColOrder(dbPath, { ctx }) || fallbackOrder;
-  // 新しい列の初期名は選んだ列タイプ名にする（型未指定はテキスト）。
-  const _newColType = (typeConfig && typeof typeConfig === 'object' && typeConfig.type) ? typeConfig.type : 'text';
-  const base = (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
+  // 新しい列の初期名は typeConfig.initialName があればそれを優先する。
+  // 無ければ選んだ列タイプ名にする（型未指定はテキスト）。
+  const _hasTypeConfig = !!(typeConfig && typeof typeConfig === 'object');
+  const _newColType = (_hasTypeConfig && typeConfig.type) ? typeConfig.type : 'text';
+  const _initialName = (_hasTypeConfig && typeof typeConfig.initialName === 'string') ? typeConfig.initialName.trim() : '';
+  const base = _initialName || (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
   let idx = 1, name = base;
   while (order.includes(name)) { idx++; name = base + idx; }
   const refIdx = order.indexOf(refProp);
@@ -1675,7 +1878,10 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     order.push(name);
   }
   setColOrder(dbPath, order, { skipHistory: true, ctx });
-  setPropertyType(dbPath, name, (typeConfig && typeof typeConfig === 'object') ? typeConfig : { type: 'text' });
+  // typeConfig.initialName は列名決定のみに使うヒントであり、列タイプ設定として保存しない。
+  const typeConfigToSave = _hasTypeConfig ? { ...typeConfig } : { type: 'text' };
+  delete typeConfigToSave.initialName;
+  setPropertyType(dbPath, name, typeConfigToSave);
   renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
   setTimeout(() => {
@@ -1782,7 +1988,7 @@ function _openPivotAggregationDropdown(anchor, aggTypes, currentKey, onSelect) {
   }, 0);
 }
 
-function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx) {
+function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx, footerOptions) {
   ctx = ctx || _currentPaneState();
   const _ftblId = ctx.tableId || 'pivot-table';
   const tfoot = _paneEl(ctx, '#' + _ftblId + ' tfoot');
@@ -1796,28 +2002,57 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
   const showFooter = typeof getShowFooter === 'function' ? getShowFooter(dbPath, { ctx }) : (getDbViewConfig(dbPath).showFooter || false);
   if (!showFooter) return;
 
+  const { renderedCols, entityColumnPinned, pinnedOffsets, entityWidth } = footerOptions || {};
+  // 幅はヘッダー・データ行と同じ CSS 変数から取る（ズレると固定列だけ横にずれる）
+  const rowControlsWidth = typeof _dbRowControlsWidth === 'function'
+    ? _dbRowControlsWidth(_paneEl(ctx, '#' + _ftblId))
+    : 56;
+
   const tr = document.createElement('tr');
   tr.setAttribute('role', 'row');
+
+  // 行先頭コントロール列に対応する空セル（列数を揃えるため）
+  const tdControls = document.createElement('td');
+  tdControls.className = 'col-row-controls';
+  tdControls.setAttribute('role', 'cell');
+  tdControls.setAttribute('aria-hidden', 'true');
+  tr.appendChild(tdControls);
+
   const tdLabel = document.createElement('td');
   tdLabel.className = 'col-entity';
+  tdLabel.dataset.dbColToken = '__entity__';
   tdLabel.setAttribute('role', 'rowheader');
   tdLabel.setAttribute('aria-label', '集計');
   tdLabel.textContent = '集計';
   tdLabel.style.fontStyle = 'italic';
-  const _footerEntW = (savedWidths && savedWidths['__entity__']) || 120;
+  const _footerEntW = entityWidth || (savedWidths && savedWidths['__entity__']) || 120;
   tdLabel.style.width = _footerEntW + 'px';
   tdLabel.style.minWidth = _footerEntW + 'px';
-  tr.appendChild(tdLabel);
+  tdLabel.style.maxWidth = _footerEntW + 'px';
 
-  let pLeftOffset = _footerEntW;
-  visibleProps.forEach(propName => {
+  // フェーズ2: エントリ名列（集計ラベル）も他の列と同じ並べ替え順序（renderedCols）で配置する
+  const cols = Array.isArray(renderedCols) && renderedCols.length ? renderedCols : ['__entity__', ...visibleProps];
+  const effectivePinnedOffsets = pinnedOffsets || (typeof _dbPinnedColumnOffsets === 'function'
+    ? _dbPinnedColumnOffsets(cols, pinnedCols, entityColumnPinned, savedWidths, _footerEntW, rowControlsWidth)
+    : {});
+  cols.forEach(token => {
+    if (token === '__entity__') {
+      const entityLeft = effectivePinnedOffsets.__entity__;
+      const entityShouldStick = entityColumnPinned && Number.isFinite(entityLeft);
+      tdLabel.style.position = entityShouldStick ? 'sticky' : '';
+      tdLabel.style.left = entityShouldStick ? entityLeft + 'px' : '';
+      tr.appendChild(tdLabel);
+      return;
+    }
+    const propName = token;
     const td = document.createElement('td');
+    td.dataset.dbColToken = propName;
     td.setAttribute('role', 'cell');
     td.setAttribute('aria-label', `集計 / ${propName}`);
     if (pinnedCols.includes(propName)) {
       td.classList.add('col-pinned');
-      td.style.left = pLeftOffset + 'px';
-      pLeftOffset += (savedWidths[propName] || 100);
+      const pinnedLeft = effectivePinnedOffsets[propName];
+      if (Number.isFinite(pinnedLeft)) td.style.left = pinnedLeft + 'px';
     }
 
     const countType = countTypes[propName] || 'none';
@@ -1927,14 +2162,19 @@ function _scrollDbActiveCellIntoView(td) {
     ? Math.max(0, headerRect.height)
     : 0;
   const cellIndex = td.parentElement ? Array.from(td.parentElement.children).indexOf(td) : -1;
+  const isEntityCell = td.classList.contains('col-entity');
+  // 行先頭コントロール列（＋/ハンドル/チェックボックス）は常に固定表示。
+  const controlsRect = table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row) td.col-row-controls')?.getBoundingClientRect?.();
+  // エントリ名列は「先頭にある間」だけ固定表示（entity-col-unpinned クラスで判定）。
+  // 対象セル自身がエントリ名列の場合は、自分自身の幅を左端リミットに含めない。
   const entityPinned = !!table && !table.classList.contains('entity-col-unpinned');
-  const entityRect = entityPinned && cellIndex > 0
+  const entityRect = entityPinned && !isEntityCell && cellIndex > 0
     ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row) td.col-entity')?.getBoundingClientRect?.()
     : null;
   const pad = 4;
   const topLimit = scrollRect.top + headerHeight + pad;
   const bottomLimit = scrollRect.bottom - pad;
-  const leftLimit = scrollRect.left + (entityRect?.width || 0) + pad;
+  const leftLimit = scrollRect.left + (controlsRect?.width || 0) + (entityRect?.width || 0) + pad;
   const rightLimit = scrollRect.right - pad;
   let deltaTop = 0;
   let deltaLeft = 0;
@@ -2016,9 +2256,9 @@ function _markDbCellRange(table, anchor, target) {
     const tr = a.rows[r];
     if (!tr) continue;
     const maxCol = tr.children.length - 2;
-    for (let c = colStart; c <= Math.min(colEnd, maxCol); c += 1) {
+    for (let c = Math.max(colStart, DB_ROW_CONTROLS_COL_COUNT); c <= Math.min(colEnd, maxCol); c += 1) {
       const cell = tr.children[c];
-      if (!cell || cell.classList.contains('col-add-prop-cell')) continue;
+      if (!cell || cell.classList.contains('col-add-prop-cell') || cell.classList.contains('col-row-controls')) continue;
       cell.classList.add('db-range-selected');
       cell.setAttribute('aria-selected', 'true');
     }
@@ -2027,7 +2267,7 @@ function _markDbCellRange(table, anchor, target) {
 }
 
 function _setDbCellRangeSelected(cell, selected) {
-  if (!cell || cell.classList.contains('col-add-prop-cell')) return;
+  if (!cell || cell.classList.contains('col-add-prop-cell') || cell.classList.contains('col-row-controls')) return;
   cell.classList.toggle('db-range-selected', !!selected);
   if (selected) cell.setAttribute('aria-selected', 'true');
   else cell.removeAttribute('aria-selected');
@@ -2108,6 +2348,122 @@ function _dbBulkPasteStartCell(table) {
   return activeCell?.dataset?.propName && table?.contains?.(activeCell) ? activeCell : null;
 }
 
+// 複数選択セルの候補値ステータスを一括変更する（選択中の全セルが候補値ちょうど1個・編集可能・
+// ステータス機能ONのときだけ対象。1つでも 0個/2個以上/編集不可のセルがあれば null を返しボタンを出さない）。
+function _dbBulkStatusTargets(table, ctx) {
+  if (!ctx) return null;
+  const dbPath = ctx.dbPath || state.currentDbPath || '';
+  if (!dbPath || typeof getStatusEnabled !== 'function' || !getStatusEnabled(dbPath)) return null;
+  const data = ctx.pivotData || state.pivotData;
+  if (!data || !data.entities) return null;
+  const cells = _dbSelectedDataCells(table, true);
+  if (cells.length <= 1) return null;
+  const targets = [];
+  for (const td of cells) {
+    if (typeof _dbCellAllowsPaste === 'function' && !_dbCellAllowsPaste(td, ctx)) return null;
+    const { entityName, propName } = _dbCellEntityAndProp(td);
+    const values = data.entities?.[entityName]?.[propName];
+    if (!Array.isArray(values) || values.length !== 1) return null;
+    targets.push({ td, entityName, propName, val: values[0] });
+  }
+  return targets.length ? targets : null;
+}
+
+// 同一エントリファイル内の複数値へ順にステータスを書き込む。1件書き込むとエントリのリビジョンが
+// 上がるため、同ファイルの後続書き込みへ最新リビジョンを引き継がないと 409 競合で弾かれる
+// （複数セルが同じ行＝同じエントリに属する一括変更で必ず発生する）。取り消し/やり直し時は各値の
+// entry_revision が直前バッチの書き込み順でズレているため、先に同一ファイルの最新リビジョンを
+// 集約し、最初の書き込みから正しい baseRevision を使う。
+async function _dbWriteStatusesThreaded(items, statusFor) {
+  const revByFile = {};
+  for (const it of items) {
+    const val = it && (it.val || it);
+    if (!val || !val.file) continue;
+    const r = Number(val.entry_revision ?? val.revision);
+    if (Number.isInteger(r) && (revByFile[val.file] == null || r > revByFile[val.file])) revByFile[val.file] = r;
+  }
+  for (const it of items) {
+    const val = it && (it.val || it);
+    if (!val) continue;
+    const f = val.file;
+    if (f && revByFile[f] != null) val.entry_revision = revByFile[f];
+    const st = statusFor(it);
+    await _apiPutValue(val, { new_status: st });
+    val.status = st;
+    if (f && val.entry_revision != null) revByFile[f] = val.entry_revision;
+  }
+}
+
+async function _dbApplyBulkCellStatus(table, ctx, targets, newStatus) {
+  if (!Array.isArray(targets) || !targets.length) return;
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  const snapshots = targets.map(t => ({ val: t.val, oldStatus: t.val?.status ?? '' }));
+  try {
+    await _dbWriteStatusesThreaded(targets, () => newStatus);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('ステータスの一括変更に失敗しました', true);
+    if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+    return;
+  }
+  // 取り消し（1操作で全セルを元に戻す）。同一エントリ内の複数値もリビジョンを引き継いで書き込む。
+  if (typeof historyPush === 'function') {
+    const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
+    const applyAll = async (statusFor) => {
+      await _dbWriteStatusesThreaded(snapshots, statusFor);
+      if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+    };
+    historyPush(
+      'ステータス一括変更: ' + newStatus + ' (' + snapshots.length + ' 件)',
+      () => applyAll(s => s.oldStatus),
+      () => applyAll(() => newStatus),
+      scope
+    );
+  }
+  if (typeof showStatus === 'function') showStatus('ステータスを一括変更: ' + newStatus + ' (' + targets.length + ' 件)');
+  if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+}
+
+function _dbShowBulkCellStatusMenu(anchorEl, table) {
+  const ctx = _dbContextForCell(table) || _dbContextForCell(activeCell);
+  const targets = _dbBulkStatusTargets(table, ctx);
+  if (!targets) {
+    if (typeof showStatus === 'function') showStatus('候補値が1つのセルだけを選択してください');
+    return;
+  }
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+  const dd = document.createElement('div');
+  dd.className = 'status-dropdown';
+  const statuses = typeof getStatusList === 'function' ? getStatusList(dbPath) : [];
+  statuses.forEach(stObj => {
+    const st = stObj.name;
+    const item = document.createElement('div');
+    item.className = 'status-dropdown-item';
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;display:inline-block;';
+    dot.style.background = stObj.color;
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(' ' + st));
+    item.addEventListener('click', () => {
+      if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+      _dbApplyBulkCellStatus(table, ctx, targets, st).catch(() => {
+        if (typeof showStatus === 'function') showStatus('ステータスの一括変更に失敗しました', true);
+      });
+    });
+    dd.appendChild(item);
+  });
+  document.body.appendChild(dd);
+  if (typeof positionPopup === 'function' && anchorEl) {
+    positionPopup(dd, anchorEl.getBoundingClientRect());
+  } else if (anchorEl) {
+    const rect = anchorEl.getBoundingClientRect();
+    dd.style.position = 'fixed';
+    dd.style.left = rect.left + 'px';
+    dd.style.top = (rect.bottom + 2) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(dd);
+  }
+}
+
 function _updateDbCellBulkBar(table) {
   const targetTable = table || activeCell?.closest?.('table') || (typeof _currentPivotTable === 'function' ? _currentPivotTable() : null);
   if (!targetTable || !targetTable.isConnected) {
@@ -2179,6 +2535,13 @@ function _updateDbCellBulkBar(table) {
       if (typeof showStatus === 'function') showStatus('セルの貼り付けに失敗しました', true);
     });
   });
+  // ステータス一括変更（選択中の全セルが候補値ちょうど1個・ステータス機能ONのときだけ表示）
+  const _bulkStatusCtx = _dbContextForCell(targetTable) || _dbContextForCell(activeCell);
+  if (_dbBulkStatusTargets(targetTable, _bulkStatusCtx)) {
+    const statusBtn = makeButton('ステータス変更', 'db-cell-bulk-status', () => {
+      _dbShowBulkCellStatusMenu(statusBtn, targetTable);
+    });
+  }
   makeButton('削除', 'db-cell-bulk-delete', () => {
     _dbClearSelectedCells(targetTable).catch(() => {
       if (typeof showStatus === 'function') showStatus('セルの削除に失敗しました', true);
@@ -2229,7 +2592,11 @@ function _dbPointerDataCell(event) {
   const td = target.closest('td[data-prop-name]');
   if (!td || !td.isConnected) return null;
   if (td.closest('tr.new-entity-row, tr.new-entity-spacer-row, tr.group-header-row')) return null;
-  if (target.closest('.status-dot,.cell-checkbox,.chat-prop-cell,.db-action-btn,.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor')) return null;
+  // .cell-add-btn は各セルの pointerdown ハンドラ（gb-db-table.part02.js:540）も除外している。
+  // document capture の当リスナが先に発火して選択へ横取りすると、＋ボタン本来のクリックが潰れるため、
+  // ここでも同じ除外を掛ける。（.cell-select-val は pointerdown では除外しない＝チップ上からの押下でも
+  // セル選択/範囲ドラッグを開始できるようにする。値の編集はチップ自身の click ハンドラで開く）
+  if (target.closest('.cell-add-btn,.status-dot,.cell-checkbox,.chat-prop-cell,.db-action-btn,.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor')) return null;
   return td;
 }
 
@@ -2418,6 +2785,9 @@ function _dbOpenExistingCellValueEditorFromData(td, ctx) {
 
 function _dbStartCellInlineEditor(td, options = {}) {
   if (!td || td.classList?.contains('col-entity')) return false;
+  // 編集開始を新しいフォーカス所有権として記録する。直前の非同期保存が遅れて
+  // 同じセルを復元しても、この編集や続くTab移動を上書きしないようにする。
+  if (typeof setActiveCell === 'function') setActiveCell(td, { scroll: false });
   const ctx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(td, { dbPath: state.currentDbPath })
     : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
@@ -2433,13 +2803,6 @@ function _dbStartCellInlineEditor(td, options = {}) {
     ? _entityPath(dbPath, entityName, (ctx && ctx.pivotData) || state.pivotData)
     : `${dbPath}/${entityName}.md`;
   startCellInlineAdd(td, entityPath, entityName, propName);
-  if (options.initialText && !_dbCellUsesPickerEditor(ptc)) {
-    const inp = td.querySelector('.cell-inline-input');
-    if (inp) {
-      inp.value = options.initialText;
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  }
   return true;
 }
 
@@ -2522,6 +2885,10 @@ function _dbCancelNativeEditorForSheetShortcut(e) {
 
 function _dbShortcutShouldCloseTransientUi(e) {
   if (!e) return false;
+  // ドロップダウンの検索・新規値入力欄やメニュー内のリネーム入力にフォーカスがある間は、
+  // Delete/Backspace/Ctrl+C/V をネイティブのテキスト編集として扱い、ポップアップを閉じない。
+  const _ae = document.activeElement;
+  if (_ae && _dbIsNativeEditingElement(_ae) && _dbActiveNativeElementInTransientUi()) return false;
   const isInternalRangePaste = _dbIsInternalRangePasteShortcut(e);
   if (_dbIsNativeEditingElement(document.activeElement) && !_dbActiveNativeElementInTransientUi() && !isInternalRangePaste && !_dbShouldBypassNativeEditorForSheetShortcut(e)) return false;
   if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'v'].includes(String(e.key || '').toLowerCase())) return true;
@@ -2581,23 +2948,13 @@ function _dbVisibleDataRows(table) {
 function _dbHandleCellEditorKey(e, colIdx, targetCell) {
   if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return false;
   const cell = targetCell || activeCell;
-  if (!cell || colIdx <= 0) return false;
+  // 行先頭コントロール列（常に colIdx 0）は対象外。エントリ名列は位置に関わらずクラスで判定する
+  // （フェーズ2でエントリ名列も並べ替え可能になり、colIdx が固定でなくなったため）。
+  if (!cell || colIdx < DB_ROW_CONTROLS_COL_COUNT || cell.classList.contains('col-entity')) return false;
   if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
     _dbStartCellInlineEditor(cell, { preferExistingValue: true });
     return true;
-  }
-  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const ctx = typeof _dbPaneContextFromEvent === 'function'
-      ? _dbPaneContextFromEvent(cell, { dbPath: state.currentDbPath })
-      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-    const ptc = _dbCellPropertyType(cell, ctx);
-    const hasValue = _dbCellHasAnyValue(cell, ctx);
-    if (_dbCellUsesPickerEditor(ptc) || !hasValue) {
-      e.preventDefault();
-      _dbStartCellInlineEditor(cell, { initialText: e.key, preferExistingValue: _dbCellUsesPickerEditor(ptc) && hasValue });
-      return true;
-    }
   }
   return false;
 }
@@ -2740,6 +3097,29 @@ function _dbCellMutationGroupKey(target, ctx) {
   return `${dbPath}\n${entityName || ''}`;
 }
 
+// 一括セル保存で同時に飛ばす /api/value リクエスト数の上限。エントリ（行）が異なる
+// セルは本来並列に保存できるが、無制限に並列化すると単一ライターのシート SQLite へ
+// 書き込みが殺到し、ロック待ちが積み上がってかえって遅く・タイムアウトしやすくなる。
+const DB_CELL_SAVE_CONCURRENCY = 3;
+
+// items を最大 limit 並列で worker に通し、結果を元の順序で返す簡易プール。
+async function _dbRunWithConcurrencyLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function runner() {
+    while (true) {
+      const current = nextIndex++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current], current);
+    }
+  }
+  const poolSize = Math.min(Math.max(1, limit), items.length);
+  const runners = [];
+  for (let i = 0; i < poolSize; i++) runners.push(runner());
+  await Promise.all(runners);
+  return results;
+}
+
 async function _dbRunCellMutationsByEntity(targets, ctx, mutate) {
   const groups = new Map();
   (targets || []).forEach(item => {
@@ -2748,13 +3128,18 @@ async function _dbRunCellMutationsByEntity(targets, ctx, mutate) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   });
-  const groupedResults = await Promise.all(Array.from(groups.values()).map(async group => {
-    const results = [];
-    for (const item of group) {
-      results.push(await mutate(item));
-    }
-    return results;
-  }));
+  // 群（同一エントリ）内は従来どおり直列。群どうしは並列だが同時実行数を上限で平準化する。
+  const groupedResults = await _dbRunWithConcurrencyLimit(
+    Array.from(groups.values()),
+    DB_CELL_SAVE_CONCURRENCY,
+    async group => {
+      const results = [];
+      for (const item of group) {
+        results.push(await mutate(item));
+      }
+      return results;
+    },
+  );
   return groupedResults.flat();
 }
 
@@ -3067,7 +3452,13 @@ async function _dbClearSelectedCells(table) {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.isComposing || e.keyCode === 229) return;
+  if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) {
+    // IMEへ既定動作は渡したまま、シート内外のキー処理へ伝播させない。
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+    return;
+  }
+  if (typeof _dbInlineConsumeImeBoundaryKey === 'function' && _dbInlineConsumeImeBoundaryKey(e)) return;
   const bypassNativeSheetShortcut = _dbShouldBypassNativeEditorForSheetShortcut(e);
   const nativeInTransientUi = _dbActiveNativeElementInTransientUi();
   const routedStaleNativeEditor = _dbCancelStaleNativeEditorForSheetShortcut(e);
@@ -3109,6 +3500,20 @@ document.addEventListener('keydown', (e) => {
   const tr = keyCell.parentElement;
   if (!tr || !table.contains(tr)) return;
   const colIdx = Array.from(tr.children).indexOf(keyCell);
+  // エントリ名セルの Enter → インライン名称編集開始 (通常セルの Enter/F2 編集と対称)。
+  // 既存の Enter 処理 (_dbHandleCellEditorKey) より前で分岐し、非該当時はそのまま下へ流す。
+  if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && keyCell.classList.contains('col-entity')
+      && typeof startEntityInlineRename === 'function') {
+    e.preventDefault();
+    const nameSpan = keyCell.querySelector('.entity-name-label');
+    const oldName = nameSpan ? nameSpan.textContent : '';
+    const renameCtx = typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(keyCell, { dbPath: state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    const dbPath = (renameCtx && renameCtx.dbPath) || state.currentDbPath || '';
+    startEntityInlineRename(keyCell, nameSpan, oldName, dbPath);
+    return;
+  }
   _dbHandleCellEditorKey(e, colIdx, keyCell);
 }, true);
 
@@ -3127,6 +3532,12 @@ document.addEventListener('keydown', (e) => {
     } catch {}
   };
   if (e.defaultPrevented) return;
+  if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) {
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+    return;
+  }
+  if (typeof _dbInlineConsumeImeBoundaryKey === 'function' && _dbInlineConsumeImeBoundaryKey(e)) return;
   // ドロップダウンやメニューが開いている場合はそちらのキーナビに任せる
   const nativeInTransientUi = _dbActiveNativeElementInTransientUi();
   const routedStaleNativeEditor = _dbCancelStaleNativeEditorForSheetShortcut(e);
@@ -3138,8 +3549,6 @@ document.addEventListener('keydown', (e) => {
     setNavDebug({ phase: 'before-table', reason: 'transient-ui-blocked' });
     return;
   }
-  if (e.isComposing || e.keyCode === 229) return;
-
   const shortcutKey = String(e.key || '').toLowerCase();
   const preferSelectionTable = ((e.ctrlKey || e.metaKey) && !e.altKey && (shortcutKey === 'c' || shortcutKey === 'v'))
     || ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey);
@@ -3157,8 +3566,8 @@ document.addEventListener('keydown', (e) => {
   let keyCell = _dbKeyboardActiveCell(table, e.target);
   if (!keyCell) {
     setNavDebug({ phase: 'cell', reason: 'no-key-cell', dataRowsLength: dataRows.length });
-    if (dataRows.length > 0 && dataRows[0].children.length > 1) {
-      setActiveCell(dataRows[0].children[1]);
+    if (dataRows.length > 0 && dataRows[0].children.length > DB_ROW_CONTROLS_COL_COUNT) {
+      setActiveCell(dataRows[0].children[DB_ROW_CONTROLS_COL_COUNT]);
     }
     return;
   }
@@ -3176,7 +3585,7 @@ document.addEventListener('keydown', (e) => {
     });
     activeCell = null;
     rangeAnchorCell = null;
-    if (dataRows.length > 0 && dataRows[0].children.length > 1) setActiveCell(dataRows[0].children[1]);
+    if (dataRows.length > 0 && dataRows[0].children.length > DB_ROW_CONTROLS_COL_COUNT) setActiveCell(dataRows[0].children[DB_ROW_CONTROLS_COL_COUNT]);
     return;
   }
   const cells = Array.from(tr.children);
@@ -3237,18 +3646,6 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'a') {
-    e.preventDefault();
-    const first = _dbCellAt(table, 0, 0);
-    const last = _dbCellAt(table, dataRows.length - 1, maxCol);
-    if (first && last) {
-      rangeAnchorCell = first;
-      setActiveCell(last, { preserveRange: true });
-      _markDbCellRange(table, first, last);
-    }
-    return;
-  }
-
   if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
     e.preventDefault();
     const anchor = rangeAnchorCell || keyCell;
@@ -3257,10 +3654,10 @@ document.addEventListener('keydown', (e) => {
     let targetCol = colIdx;
     if (e.key === 'ArrowUp') targetRow = e.ctrlKey || e.metaKey ? 0 : rowIdx - 1;
     else if (e.key === 'ArrowDown') targetRow = e.ctrlKey || e.metaKey ? dataRows.length - 1 : rowIdx + 1;
-    else if (e.key === 'ArrowLeft') targetCol = e.ctrlKey || e.metaKey ? 0 : colIdx - 1;
+    else if (e.key === 'ArrowLeft') targetCol = e.ctrlKey || e.metaKey ? DB_ROW_CONTROLS_COL_COUNT : Math.max(DB_ROW_CONTROLS_COL_COUNT, colIdx - 1);
     else if (e.key === 'ArrowRight') targetCol = e.ctrlKey || e.metaKey ? maxCol : colIdx + 1;
     const targetCell = _dbCellAt(table, targetRow, targetCol);
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) {
+    if (targetCell && !targetCell.classList.contains('col-add-prop-cell') && !targetCell.classList.contains('col-row-controls')) {
       setActiveCell(targetCell, { preserveRange: true });
       _markDbCellRange(table, anchor, targetCell);
     }
@@ -3291,19 +3688,22 @@ document.addEventListener('keydown', (e) => {
     nextRow = rowIdx + 1;
     e.preventDefault();
   }
-  else if (e.key === 'ArrowLeft') { nextCol = Math.max(0, colIdx - 1); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft') { nextCol = Math.max(DB_ROW_CONTROLS_COL_COUNT, colIdx - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { nextCol = Math.min(maxCol, colIdx + 1); e.preventDefault(); }
   else if (e.key === 'Tab') {
     e.preventDefault();
     if (e.shiftKey) {
       nextCol = colIdx - 1;
-      if (nextCol < 0) { nextCol = maxCol; nextRow = rowIdx - 1; }
+      if (nextCol < DB_ROW_CONTROLS_COL_COUNT) { nextCol = maxCol; nextRow = rowIdx - 1; }
       nextRow = Math.max(0, nextRow);
     } else {
       nextCol = colIdx + 1;
       if (nextCol > maxCol) {
-        if (isLastRow) { triggerNewEntity(table, dataRows, 1); return; }
-        nextCol = 1; nextRow = rowIdx + 1;
+        // 行末で次の行へ折り返す際は、エントリ名列の位置に関わらず「最初のプロパティ列」へ移動する
+        // （毎行エントリ名の位置で止まると Tab によるデータ連続入力の妨げになるため）。
+        const firstPropCol = _dbFirstPropertyColIndex(tr);
+        if (isLastRow) { triggerNewEntity(table, dataRows, firstPropCol); return; }
+        nextCol = firstPropCol; nextRow = rowIdx + 1;
       }
     }
     nextRow = Math.min(dataRows.length - 1, nextRow);
@@ -3316,9 +3716,18 @@ document.addEventListener('keydown', (e) => {
   const targetRow = dataRows[nextRow];
   if (targetRow) {
     const targetCell = targetRow.children[nextCol];
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) setActiveCell(targetCell);
+    if (targetCell && !targetCell.classList.contains('col-add-prop-cell') && !targetCell.classList.contains('col-row-controls')) setActiveCell(targetCell);
   }
 }, true);
+
+// エントリ名列がどこにあっても「最初のプロパティ列」の実DOM列インデックスを返す。
+// プロパティセルは data-prop-name 属性を持つが、行先頭コントロール列・エントリ名列は持たない。
+function _dbFirstPropertyColIndex(tr) {
+  if (!tr) return DB_ROW_CONTROLS_COL_COUNT;
+  const cells = Array.from(tr.children);
+  const idx = cells.findIndex(td => td.hasAttribute('data-prop-name'));
+  return idx >= 0 ? idx : DB_ROW_CONTROLS_COL_COUNT;
+}
 
 // 新規エントリ追加（キーボード用）
 async function triggerNewEntity(table, dataRows, focusCol) {
@@ -3348,12 +3757,13 @@ async function triggerNewEntity(table, dataRows, focusCol) {
   };
   const focusCreatedRow = (newRow, name, allowImmediate = false) => {
     if (!allowImmediate && !shouldKeepCreateFocus()) return;
-    const col = focusCol || 0;
-    const td = newRow.children[col];
+    // エントリ名列は並べ替え可能で位置が固定でないため、クラスで探す（列インデックスに依存しない）。
+    const entityTd = newRow.querySelector('.col-entity');
+    const td = focusCol ? (newRow.children[focusCol] || entityTd) : entityTd;
     if (td) setActiveCell(td);
-    if (col === 0 || !focusCol) {
+    if (!focusCol || td === entityTd) {
       const label = newRow.querySelector('.entity-name-label');
-      if (label) startEntityInlineRename(td || newRow.children[0], label, name, _db);
+      if (label) startEntityInlineRename(td || entityTd, label, name, _db);
     }
   };
   if (typeof _dbCreateEntityOptimistic === 'function') {
@@ -3474,6 +3884,7 @@ function startColResize(e, th, colIndex, propName) {
     lastWidth = Math.max(60, Math.round(width));
     th.style.width = lastWidth + 'px';
     th.style.minWidth = lastWidth + 'px';
+    th.style.maxWidth = lastWidth + 'px';
     setColWidth(colIndex, lastWidth, table);
     if (typeof _dbReflowPinnedColumnOffsets === 'function') _dbReflowPinnedColumnOffsets(table);
   };
@@ -3510,6 +3921,7 @@ function setColWidth(colIndex, width, table) {
     if (cell) {
       cell.style.width = nextWidth + 'px';
       cell.style.minWidth = nextWidth + 'px';
+      cell.style.maxWidth = nextWidth + 'px';
     }
   });
 }

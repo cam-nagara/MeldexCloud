@@ -102,9 +102,10 @@
     const text = document.createElement('span');
     text.textContent = message;
     bar.appendChild(text);
-    (opts.actions || []).forEach((action) => {
+    (opts.actions || []).forEach((action, index) => {
       const button = document.createElement('button');
       button.type = 'button';
+      button.dataset.e2eId = `cloud-banner-${opts.kind || 'status'}-action-${index + 1}`;
       button.className = action.primary
         ? 'meldex-cloud-banner-action meldex-cloud-banner-action-primary'
         : 'meldex-cloud-banner-action';
@@ -718,7 +719,7 @@
             <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">Dropbox App key</label>
             <input id="cloud-custom-app-key" class="gb-input" type="text" value="${_esc(initial.customAppKey)}" placeholder="Dropbox App key" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
             <label style="display:block;font-size:12px;color:#969696;margin:12px 0 4px;">redirect URI 上書き（任意）</label>
-            <input id="cloud-redirect-override" class="gb-input" type="text" value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
+            <input id="cloud-redirect-override" class="gb-input" type="text" data-gb-path-input value="${_esc(initial.redirectOverride)}" placeholder="${_esc(_auth().buildRedirectUri())}" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
             <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">自分でDropbox OAuthアプリを作った場合だけ設定します。上書きできるのは現在のCloud URL、予備HTTPS URL、<code>http://localhost:8080/</code>、<code>http://localhost:8001/</code>、<code>http://localhost:8001/?desktop=1</code> だけです。Dropbox App Consoleにも同じURLをredirect URIとして登録してください。</div>
             <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
           </div>
@@ -797,6 +798,7 @@
           if (!selected?.path) return;
           input.value = selected.path;
           _auth().setVaultPath(selected.path);
+          _auth().setVaultNamespaceKind?.(selected.namespaceKind);
           setError('');
         } catch (err) {
           setError(err?.message || String(err));

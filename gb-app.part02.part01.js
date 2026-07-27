@@ -97,6 +97,40 @@ navPush = function(entry, paneId) {
   }
 };
 
+// 履歴再生では navPush() が navNavigating により記録を抑止するため、同じタブの
+// 表示先は履歴エントリから先に確定する。これにより、読み込み側の非同期処理や
+// ペインブリッジ初期化状態に左右されず、戻る/進むが別タブを汚さない。
+function _applyNavEntryToBoundTab(navState, entry) {
+  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return;
+  if (typeof GBLayout === 'undefined') return;
+  const pane = GBLayout.findNode?.(GBLayout.root, navState.paneId)?.node;
+  const tab = pane?.tabs?.find(candidate => candidate.id === navState.tabId);
+  if (!tab) return;
+  const nextType = typeof _normalizeOpenTypeForNav === 'function'
+    ? _normalizeOpenTypeForNav(entry.type)
+    : entry.type;
+  const typeChanged = tab.type !== nextType;
+  if (typeChanged && typeof removeComponentInstance === 'function') {
+    removeComponentInstance(tab.id);
+  }
+  tab.type = nextType;
+  tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
+  tab.path = entry.path || entry.dbPath || '';
+  tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
+    ? GBTabs.tabIcon(nextType)
+    : tab.icon;
+  tab.state = {
+    ...(typeChanged ? {} : (tab.state || {})),
+    ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
+    ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+  };
+  if (typeChanged) GBLayout.render();
+  else {
+    const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+    if (labelEl) labelEl.textContent = tab.label;
+  }
+}
+
 // ナビゲーション履歴の戻る/進む
 function navBack(paneId) {
   const navState = _getNavState(paneId);
@@ -107,6 +141,7 @@ function navBack(paneId) {
   navNavigating = true;
   try {
     if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+    _applyNavEntryToBoundTab(navState, entry);
     _withNavFlag(navOpen(entry));
   } catch (e) {
     navNavigating = false;
@@ -129,6 +164,7 @@ function navForward(paneId) {
   navNavigating = true;
   try {
     if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+    _applyNavEntryToBoundTab(navState, entry);
     _withNavFlag(navOpen(entry));
   } catch (e) {
     navNavigating = false;
@@ -173,6 +209,7 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
       navNavigating = true;
       try {
         if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+        _applyNavEntryToBoundTab(navState, entry);
         _withNavFlag(navOpen(entry));
       } catch (e) {
         navNavigating = false;
@@ -269,6 +306,8 @@ window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, tr
 
 // DB表示設定（シートメタデータを正、localStorageを即時キャッシュとして使う）
 const _dbViewConfigBackendSaveTimers = new Map();
+const _dbViewConfigBackendSaveRunners = new Map();
+const _dbViewConfigBackendSavePromises = new Map();
 
 function getDbViewConfigStorageKey(dbPath) {
   const fileId = _pathToFileId(dbPath);
@@ -572,26 +611,58 @@ function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
   const writeBlocked = () => typeof isProductionManagementWriteBlocked === 'function'
     && isProductionManagementWriteBlocked(dbPath, options.ctx);
   if (writeBlocked()) return Promise.resolve(false);
-  const run = () => writeBlocked() ? Promise.resolve(false) : apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
-    .then(() => true)
-    .catch((error) => {
-      console.warn('[Meldex] シート表示設定を保存できませんでした', error);
-      return false;
-    });
+  const run = () => {
+    const previous = _dbViewConfigBackendSavePromises.get(key);
+    const promise = Promise.resolve(previous).catch(() => {}).then(() => (
+      writeBlocked() ? false : apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
+        .then(() => true)
+        .catch((error) => {
+          console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+          return false;
+        })
+    ))
+      .finally(() => {
+        if (_dbViewConfigBackendSavePromises.get(key) === promise) {
+          _dbViewConfigBackendSavePromises.delete(key);
+        }
+      });
+    _dbViewConfigBackendSavePromises.set(key, promise);
+    return promise;
+  };
+  _dbViewConfigBackendSaveRunners.set(key, run);
   if (_dbViewConfigBackendSaveTimers.has(key)) {
     clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
     _dbViewConfigBackendSaveTimers.delete(key);
   }
-  if (options.immediate === true) return run();
+  if (options.immediate === true) {
+    _dbViewConfigBackendSaveRunners.delete(key);
+    return run();
+  }
   const timer = setTimeout(() => {
     _dbViewConfigBackendSaveTimers.delete(key);
-    run();
+    const pendingRun = _dbViewConfigBackendSaveRunners.get(key);
+    _dbViewConfigBackendSaveRunners.delete(key);
+    (pendingRun || run)();
   }, 180);
   _dbViewConfigBackendSaveTimers.set(key, timer);
   return Promise.resolve(true);
 }
 function _hasPendingDbViewConfigBackendSave(dbPath) {
   return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
+}
+async function flushPendingDbViewConfigBackendSave(dbPath) {
+  const key = String(dbPath || '');
+  const timer = _dbViewConfigBackendSaveTimers.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    _dbViewConfigBackendSaveTimers.delete(key);
+    const run = _dbViewConfigBackendSaveRunners.get(key);
+    _dbViewConfigBackendSaveRunners.delete(key);
+    if (run) await run();
+  }
+  const inFlight = _dbViewConfigBackendSavePromises.get(key);
+  if (inFlight) await Promise.resolve(inFlight).catch(() => {});
+  return true;
 }
 function getDbViewConfig(dbPath) {
   const fileId = _pathToFileId(dbPath);
@@ -618,7 +689,14 @@ function _dbViewConfigHistoryScope(dbPath) {
   return (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
 }
 function _refreshDbViewConfigAfterHistory(dbPath) {
-  if (!dbPath || state.currentDbPath !== dbPath) return;
+  if (!dbPath) return;
+  // state.currentDbPath だけで判定すると、取り消し直前に対象タブへ切り替えた
+  // 直後（そのタブ自身の再読み込みがまだ state に追いついていないタイミング）に
+  // 「表示中でない」と誤判定して黙って何もしない事故が起きる（v0.7.056）。
+  // GBLayout上で実際にそのタブがアクティブかどうかも併せて確認する。
+  const isCurrentlyShown = state.currentDbPath === dbPath
+    || (typeof _dbFindActiveTabPaneForPath === 'function' && !!_dbFindActiveTabPaneForPath(dbPath));
+  if (!isCurrentlyShown) return;
   const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
   if (typeof selectDatabase === 'function') {
     Promise.resolve(selectDatabase(dbPath, ctx, {
@@ -1039,6 +1117,18 @@ const _apiFetchInFlightGets = new Map();
 const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
 const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
+// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
+// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
+// ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
+const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
+const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
+function _gbAppApiFetchDefaultTimeout(path) {
+  const pathname = String(path || '').split('?')[0];
+  return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
+    ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
+    : GB_APP_API_FETCH_TIMEOUT_MS;
+}
 const _gbAppApiFetchBrowseCache = new Map();
 let _gbAppApiFetchCacheGeneration = 0;
 
@@ -1197,7 +1287,7 @@ async function apiFetch(path, opts) {
         const requestedTimeout = Number(requestOpts?.timeoutMs);
         const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
           ? Math.min(requestedTimeout, 300000)
-          : GB_APP_API_FETCH_TIMEOUT_MS;
+          : _gbAppApiFetchDefaultTimeout(path);
         const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
         if (perfInfo) {
           _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {

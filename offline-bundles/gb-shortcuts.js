@@ -94,6 +94,8 @@ const GB_SHORTCUTS = {
   'db.bulkEdit':          { key: 'ctrl+e',       label: '選択エントリを一括編集',     scope: 'database' },
   'db.copy':              { key: 'ctrl+c',       label: 'セル値のコピー',            scope: 'database' },
   'db.paste':             { key: 'ctrl+v',       label: 'セル値の貼り付け',          scope: 'database' },
+  'db.selectAllRows':      { key: 'ctrl+a',       label: '全エントリを選択',          scope: 'database' },
+  'db.deselectAllRows':    { key: 'ctrl+d',       label: 'エントリ選択を解除',        scope: 'database' },
   'db.escape':            { key: 'escape',       label: '編集キャンセル / 選択解除',  scope: 'database' },
   'db.filter':            { key: 'ctrl+shift+l', label: 'フィルタの表示/非表示',      scope: 'database' },
 
@@ -364,6 +366,8 @@ function _saveCustomShortcuts(custom, options) {
     : null;
   localStorage.setItem(_SHORTCUT_STORAGE_KEY, JSON.stringify(custom));
   if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
+  if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar();
+  if (typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar();
   if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
     pushLocalStorageSettingsHistory(
       options?.label || '設定: ショートカット変更',
@@ -427,6 +431,53 @@ function updateScriptnoteShortcutStatusbar(targetEl) {
   if (!sc) return;
   if (!targetEl && typeof state !== 'undefined' && state.view !== 'scriptnote') return;
   sc.textContent = getScriptnoteShortcutStatusText();
+}
+
+function getDatabaseShortcutStatusText() {
+  return [
+    _shortcutStatusItem('db.tab', '次のセル'),
+    _shortcutStatusItem('db.enter', '開く / 編集'),
+    _shortcutStatusItem('db.edit', 'セル編集'),
+    _shortcutStatusItem('db.newEntry', 'エントリ追加'),
+    _shortcutStatusItem('db.newProp', '列追加'),
+    _shortcutStatusItem('db.search', '検索'),
+    _shortcutStatusItem('db.replace', '置換'),
+    _shortcutStatusItem('db.advancedFilter', '詳細フィルタ'),
+    _shortcutStatusItem('db.bulkEdit', '一括編集'),
+    _shortcutStatusItem('db.copy', 'コピー'),
+    _shortcutStatusItem('db.paste', '貼り付け'),
+    _shortcutStatusItem('db.selectAllRows', '全行選択'),
+    _shortcutStatusItem('db.deselectAllRows', '行選択解除'),
+    _shortcutStatusItem('db.escape', 'キャンセル'),
+    _shortcutStatusItem('db.filter', 'フィルタ表示'),
+  ].filter(Boolean).join(' | ');
+}
+
+function updateDatabaseShortcutStatusbar(targetEl) {
+  const sc = targetEl || document.getElementById('sb-shortcuts');
+  if (!sc) return;
+  const databaseViews = ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'];
+  if (!targetEl && typeof state !== 'undefined' && !databaseViews.includes(state.view)) return;
+  sc.textContent = getDatabaseShortcutStatusText();
+}
+
+function getCsvShortcutStatusText() {
+  return [
+    _shortcutStatusItem('csv.tab', '右のセル'),
+    _shortcutStatusItem('csv.enter', '編集確定'),
+    _shortcutStatusItem('csv.edit', 'セル編集'),
+    _shortcutStatusItem('csv.copy', 'コピー'),
+    _shortcutStatusItem('csv.selectAll', '全セル選択'),
+    _shortcutStatusItem('csv.search', '検索'),
+    _shortcutStatusItem('csv.escape', 'キャンセル'),
+  ].filter(Boolean).join(' | ');
+}
+
+function updateCsvShortcutStatusbar(targetEl) {
+  const sc = targetEl || document.getElementById('sb-shortcuts');
+  if (!sc) return;
+  if (!targetEl && typeof state !== 'undefined' && state.view !== 'csv') return;
+  sc.textContent = getCsvShortcutStatusText();
 }
 
 function _runScriptnoteShortcutAction(id, e) {
@@ -861,7 +912,8 @@ const _shortcutHandlers = {
     const tr = activeCell.parentElement;
     const colIdx = Array.from(tr.children).indexOf(activeCell);
     const rowIdx = dataRows.indexOf(tr);
-    if (colIdx === 0) {
+    // エントリ名列は並べ替え可能で位置が固定でないため、colIdx ではなくクラスで判定する
+    if (activeCell.classList.contains('col-entity')) {
       const nameLabel = activeCell.querySelector('.entity-name-label');
       if (nameLabel) nameLabel.click();
     } else {
@@ -889,7 +941,8 @@ const _shortcutHandlers = {
     const table = activeCell?.closest?.('table') || document.getElementById('pivot-table');
     const tr = activeCell.parentElement;
     const colIdx = Array.from(tr.children).indexOf(activeCell);
-    if (colIdx === 0) {
+    // エントリ名列は並べ替え可能で位置が固定でないため、colIdx ではなくクラスで判定する
+    if (activeCell.classList.contains('col-entity')) {
       const nameLabel = activeCell.querySelector('.entity-name-label');
       if (nameLabel) {
         const entityName = nameLabel.textContent;
@@ -943,17 +996,30 @@ const _shortcutHandlers = {
   },
   'db.copy': () => { return false; },
   'db.paste': () => { return false; },
+  'db.selectAllRows': () => {
+    const cell = typeof _dbActiveCellForRowShortcut === 'function' ? _dbActiveCellForRowShortcut() : null;
+    if (!cell || (typeof _dbRowShortcutHasNativeEditor === 'function' && _dbRowShortcutHasNativeEditor())) return false;
+    const ctx = typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(cell)
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    if (!ctx || typeof _selectAllPaneRows !== 'function') return false;
+    return _selectAllPaneRows(ctx);
+  },
+  'db.deselectAllRows': () => {
+    const cell = typeof _dbActiveCellForRowShortcut === 'function' ? _dbActiveCellForRowShortcut() : null;
+    if (!cell || (typeof _dbRowShortcutHasNativeEditor === 'function' && _dbRowShortcutHasNativeEditor())) return false;
+    const ctx = typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(cell)
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    if (!ctx || typeof _clearPaneRowSelection !== 'function') return false;
+    return _clearPaneRowSelection(ctx);
+  },
   'db.escape': () => {
     const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
     const selectedSet = ctx?._selectedEntities || state._selectedEntities;
     if (!selectedSet || !selectedSet.size) return false;
-    selectedSet.clear();
-    const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(ctx) : document.getElementById('pivot-table');
-    table?.querySelectorAll?.('.row-select-cb:checked')?.forEach(cb => {
-      cb.checked = false;
-      cb.closest('tr')?.classList.remove('row-selected');
-    });
-    if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
+    if (typeof _clearPaneRowSelection === 'function') _clearPaneRowSelection(ctx);
+    else selectedSet.clear();
   },
   'db.filter': () => {
     const btn = document.getElementById('btn-filter');

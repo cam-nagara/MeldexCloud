@@ -6,6 +6,7 @@
   const APP_MODE_KEY = 'meldex-dropbox-app-mode';
   const CUSTOM_APP_KEY = 'meldex-dropbox-custom-app-key';
   const VAULT_PATH_KEY = 'meldex-dropbox-vault-path';
+  const VAULT_NAMESPACE_KEY = 'meldex-dropbox-vault-namespace';
   const SETTINGS_PATH_KEY = 'meldex-dropbox-settings-path';
   const REDIRECT_OVERRIDE_KEY = 'meldex-dropbox-redirect-override';
   const DEFAULT_VAULT_PATH = '/MeldexVault';
@@ -18,7 +19,53 @@
   const PENDING_MAX_AGE_MS = 30 * 60 * 1000;
   const DROPBOX_API_MAX_RETRIES = 3;
   const DROPBOX_RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+  const AUTH_CHANNEL_NAME = 'meldex-dropbox-auth-session-v1';
   let _memoryPending = null;
+  let _authChannel = null;
+
+  function _dispatchSessionChanged(detail) {
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:dropbox-auth-session-changed', {
+        detail: { ...(detail || {}) },
+      }));
+    } catch {}
+  }
+
+  function _notifySessionChanged(session, connected) {
+    const detail = {
+      connected: !!connected,
+      accountId: String(session?.accountId || ''),
+      savedAt: String(session?.savedAt || ''),
+      remote: false,
+    };
+    _dispatchSessionChanged(detail);
+    try {
+      _authChannel?.postMessage?.({
+        connected: detail.connected,
+        accountId: detail.accountId,
+        savedAt: detail.savedAt,
+      });
+    } catch {}
+  }
+
+  function _initializeAuthChannel() {
+    if (typeof window.BroadcastChannel !== 'function' || typeof window.addEventListener !== 'function') return;
+    try {
+      _authChannel = new window.BroadcastChannel(AUTH_CHANNEL_NAME);
+      _authChannel.addEventListener('message', (event) => {
+        const data = event?.data;
+        if (!data || typeof data !== 'object') return;
+        _dispatchSessionChanged({
+          connected: !!data.connected,
+          accountId: String(data.accountId || ''),
+          savedAt: String(data.savedAt || ''),
+          remote: true,
+        });
+      });
+    } catch {
+      _authChannel = null;
+    }
+  }
 
   function _openDb() {
     return new Promise((resolve, reject) => {
@@ -122,6 +169,14 @@
 
   function setVaultPath(path) {
     _writeStorage(VAULT_PATH_KEY, _normalizeVaultPath(path) || DEFAULT_VAULT_PATH);
+  }
+
+  function getVaultNamespaceKind() {
+    return _readStorage(VAULT_NAMESPACE_KEY, 'home') === 'team_root' ? 'team_root' : 'home';
+  }
+
+  function setVaultNamespaceKind(value) {
+    _writeStorage(VAULT_NAMESPACE_KEY, value === 'team_root' ? 'team_root' : 'home');
   }
 
   function getSettingsPath() {
@@ -475,6 +530,7 @@
       savedAt: new Date(now).toISOString(),
     };
     await _idbPut(SESSION_KEY, next);
+    _notifySessionChanged(next, true);
     return next;
   }
 
@@ -483,7 +539,9 @@
   }
 
   async function clearSession() {
+    const current = await getSession().catch(() => null);
     await _idbDelete(SESSION_KEY);
+    _notifySessionChanged(current, false);
   }
 
   async function exchangeCode(code, pending) {
@@ -522,16 +580,33 @@
     });
   }
 
-  function _pathRootHeaderFromAccount(account) {
+  function _normalizeNamespaceKind(value) {
+    return value === 'team_root' ? 'team_root' : 'home';
+  }
+
+  function _pathRootHeaderFromAccount(account, namespaceKind) {
+    if (_normalizeNamespaceKind(namespaceKind) !== 'team_root') return '';
     const rootInfo = account?.root_info || null;
     const rootNamespaceId = rootInfo?.root_namespace_id || '';
     if (!rootNamespaceId || rootInfo?.['.tag'] !== 'team') return '';
     return JSON.stringify({ '.tag': 'root', root: rootNamespaceId });
   }
 
-  async function getPathRootHeader() {
+  async function getNamespaceContext(refresh) {
+    const account = await getCurrentAccount(!!refresh);
+    const rootInfo = account?.root_info || null;
+    const isTeam = rootInfo?.['.tag'] === 'team';
+    return {
+      accountId: String(account?.account_id || ''),
+      isTeam,
+      homeNamespaceId: String(rootInfo?.home_namespace_id || ''),
+      rootNamespaceId: String(rootInfo?.root_namespace_id || ''),
+    };
+  }
+
+  async function getPathRootHeader(namespaceKind) {
     const account = await getCurrentAccount(false);
-    return _pathRootHeaderFromAccount(account);
+    return _pathRootHeaderFromAccount(account, namespaceKind);
   }
 
   async function getValidSession() {
@@ -664,10 +739,10 @@
     throw new Error(`${label || 'Dropbox API'} の呼び出しに失敗しました: ${lastError?.message || String(lastError)}`);
   }
 
-  async function _fileApiHeaders(route, baseHeaders) {
+  async function _fileApiHeaders(route, baseHeaders, options) {
     const headers = { ...(baseHeaders || {}) };
     if (/^files\//.test(String(route || ''))) {
-      const pathRoot = await getPathRootHeader();
+      const pathRoot = await getPathRootHeader(options?.namespaceKind);
       if (pathRoot) headers['Dropbox-API-Path-Root'] = pathRoot;
     }
     return headers;
@@ -690,7 +765,7 @@
     }
   }
 
-  async function apiRpc(route, body) {
+  async function apiRpc(route, body, options) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await getValidAccessToken();
       if (!token) throw new Error('Dropboxへもう一度接続してください');
@@ -699,7 +774,7 @@
         headers: await _fileApiHeaders(route, {
           Authorization: 'Bearer ' + token,
           'Content-Type': 'application/json',
-        }),
+        }, options),
         body: body == null ? 'null' : JSON.stringify(body),
       }));
       if (response.ok) {
@@ -719,7 +794,7 @@
     throw new Error('Dropboxへもう一度接続してください');
   }
 
-  async function apiContent(route, arg, init) {
+  async function apiContent(route, arg, init, options) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await getValidAccessToken();
       if (!token) throw new Error('Dropboxへもう一度接続してください');
@@ -729,7 +804,7 @@
         Authorization: 'Bearer ' + token,
         'Dropbox-API-Arg': _jsonHeaderValue(arg || {}),
         ...(requestInit.headers || {}),
-      });
+      }, options);
       const response = await _fetchDropboxWithRetry(route, async () => fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit));
       if (response.ok) return response;
       if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) {
@@ -767,6 +842,8 @@
     hasConfiguredAppKey,
     getVaultPath,
     setVaultPath,
+    getVaultNamespaceKind,
+    setVaultNamespaceKind,
     getSettingsPath,
     setSettingsPath,
     getRedirectOverride,
@@ -785,10 +862,12 @@
     clearPending,
     getPendingAuth,
     refreshSession,
+    getNamespaceContext,
     getPathRootHeader,
     apiRpc,
     apiContent,
     getCurrentAccount,
     getSpaceUsage,
   };
+  _initializeAuthChannel();
 })();

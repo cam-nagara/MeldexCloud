@@ -496,7 +496,7 @@ async function openPage(label, path, opts) {
       if (isStalePageLoad()) return;
     }
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
-    const html = mdToHtml(raw);
+    const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
     _prepareEmbeddedMediaControls(pc);
     _loadPageIcon();
@@ -1400,6 +1400,35 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
     return;
   }
 
+  // カラー列は、テキスト入力ではなく共通カラーパレットで色を選んで追加する。
+  const _ptcAdd = (parentDb && typeof getPropertyTypes === 'function') ? getPropertyTypes(parentDb)[propName] : null;
+  if (_ptcAdd?.type === 'color' && typeof openColorPalette === 'function') {
+    let saved = false;
+    let saveTimer = null;
+    openColorPalette(valuesEl, '', (color) => {
+      if (saved) return;
+      const hex = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(color || '').trim()) ? color.trim() : '';
+      clearTimeout(saveTimer);
+      if (!hex) return;
+      // ライブ変更のたびに保存せず、色が落ち着いてから1回だけ候補値を追加する
+      saveTimer = setTimeout(async () => {
+        if (saved) return;
+        saved = true;
+        try {
+          await _apiPostValue(entityPath, propName, hex, '採用', '');
+          const fresh = await apiFetch('/entity?path=' + encodeURIComponent(entityPath)).catch(() => null);
+          if (fresh && fresh.properties) renderEntityPropsGridInto(grid, fresh, entityPath, opts);
+          else {
+            if (!Array.isArray(data.properties[propName])) data.properties[propName] = [];
+            data.properties[propName].push({ property: propName, value: hex, status: '採用', note: '', file: entityPath });
+            renderEntityPropsGridInto(grid, data, entityPath, opts);
+          }
+        } catch (e) { showStatus('候補値の追加に失敗しました', true); }
+      }, 300);
+    });
+    return;
+  }
+
   const statusOn = !parentDb || typeof getStatusEnabled !== 'function' || getStatusEnabled(parentDb);
   const row = document.createElement('div');
   row.className = 'entry-prop-inline-add';
@@ -1538,7 +1567,19 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.draggable = layoutEditMode;
     const nameEl = document.createElement('div');
     nameEl.className = 'entry-prop-name';
-    nameEl.textContent = (layoutEditMode ? '☰ ' : '') + propName;
+    if (layoutEditMode) nameEl.appendChild(document.createTextNode('☰ '));
+    // 各列名の前に列タイプのアイコンを表示する
+    if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'entry-prop-type-icon';
+      typeIcon.setAttribute('aria-hidden', 'true');
+      typeIcon.innerHTML = lucide(getPropertyTypeIcon(propTypes[propName]?.type), 14);
+      nameEl.appendChild(typeIcon);
+    }
+    const nameText = document.createElement('span');
+    nameText.className = 'entry-prop-name-text';
+    nameText.textContent = propName;
+    nameEl.appendChild(nameText);
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
@@ -1598,7 +1639,19 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       e.stopPropagation();
       _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
     });
-    valuesEl.appendChild(addBtn);
+    // ＋（候補値を追加）は独立行ではなく、値群の末尾（最後の値と同じ行）にインライン配置する。
+    const lastValueEl = !layoutEditMode
+      ? Array.from(valuesEl.children).reverse().find(el => el.classList && el.classList.contains('cell-value'))
+      : null;
+    if (lastValueEl) {
+      const tail = document.createElement('div');
+      tail.className = 'entry-prop-value-tail';
+      valuesEl.insertBefore(tail, lastValueEl);
+      tail.appendChild(lastValueEl);
+      tail.appendChild(addBtn);
+    } else {
+      valuesEl.appendChild(addBtn);
+    }
     card.appendChild(valuesEl);
 
     // D&D 並べ替え (DB 単位の順序保存。同 DB のすべてのエントリ表示で共有)
@@ -1680,6 +1733,21 @@ function _setEntityCreateActionButton(button, iconName, label) {
 
 function renderEntityPage(data) {
   // data = {entity, properties: {propName: [{value, status, note, file, ...}]}, page_content}
+  if (window.MeldexEntityDetail?.mount) {
+    const entityPath = state.currentEntityPath;
+    const controller = window.MeldexEntityDetail.mount({
+      root: document.getElementById('entity-view'),
+      path: entityPath,
+      surface: 'main',
+      data,
+    });
+    controller.ready.then((mounted) => {
+      if (!mounted || state.currentEntityPath !== entityPath) return;
+      if (typeof _renderEntityActions === 'function') _renderEntityActions(data, entityPath);
+      if (typeof _renderEntityBacklinks === 'function') _renderEntityBacklinks(data, entityPath);
+    });
+    return;
+  }
   document.getElementById('entity-title').textContent = data.entity || '';
 
   const entityPath = state.currentEntityPath;
@@ -1762,7 +1830,7 @@ function renderEntityPage(data) {
   ft.dataset.entityPath = entityPath;
   // Markdown→HTML変換してからauto-link適用 (rawContent は冒頭で取得済み)
   if (hasNote) {
-    const ftHtml = applyAutoLinks(mdToHtml(rawContent), entityPath);
+    const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath);
     ft.innerHTML = ftHtml;
   } else {
     // ノート未作成時はエディタ自体を非表示にしているため innerHTML 不要
@@ -1804,7 +1872,7 @@ function renderEntityPage(data) {
       const saved = await _saveEntityFreeText(ep, md);
       if (!saved) return;
       showStatus('自由記述を保存しました', false, { passiveSave: true });
-      this.innerHTML = applyAutoLinks(mdToHtml(md), ep);
+      this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep);
     } catch (e) { showStatus('自由記述の保存に失敗しました', true); }
   };
 
@@ -1882,7 +1950,7 @@ let rtSavedSelection = null;
 
 function _rtEditableFromNode(node) {
   const el = node?.nodeType === 1 ? node : node?.parentElement;
-  const editable = el?.closest?.('#page-content, #entity-freetext, #dp-editable') || null;
+  const editable = el?.closest?.('#page-content, #entity-freetext, #dp-editable, .meldex-entity-detail-editor') || null;
   if (!editable || editable.contentEditable !== 'true') return null;
   return editable;
 }
@@ -2303,8 +2371,13 @@ function stripAutoLinks(html) {
 /* ==============================
    Markdown ↔ HTML 変換
    ============================== */
-function mdToHtml(md) {
+// options.basePath: 本文が属するノートのパス。相対メディアパス（WebClipperのクリップ本文など）を
+// 解決する基準になる。省略した場合は従来どおり src をそのまま出力する。
+function mdToHtml(md, options) {
   if (!md) return '';
+  const _prevMediaBasePath = _mdMediaBasePath;
+  _mdMediaBasePath = String((options && options.basePath) || '');
+  try {
   // 改行コード正規化（CRLF→LF）
   md = md.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   // フロントマター（YAML）を除去
@@ -2570,6 +2643,9 @@ function mdToHtml(md) {
     html = _tmp.innerHTML;
   } catch (_) {}
   return html;
+  } finally {
+    _mdMediaBasePath = _prevMediaBasePath;
+  }
 }
 
 // MD から <!--nl:ID--> を抽出して Set で返す。
@@ -2741,6 +2817,48 @@ function _noteLinkifyBareUrls(html) {
   return root.innerHTML;
 }
 
+// ノート本文の相対メディアパスを解決するための基準パス。mdToHtml 実行中だけ値が入る
+// （mdToHtml は同期処理なので、描画が入れ子になっても保存・復元で正しく戻る）。
+// WebClipperで保存したクリップ本文は `_assets/画像.jpg`（ノートフォルダ基準）や
+// `Web Clipper/_assets/画像.jpg`（保存先フォルダ基準・旧形式）のような相対パスを含む。
+// 相対パスのままだと <img src> がアプリ自身のURL基準で解決されてしまい画像が出ないため、
+// ここで保存先基準のパスへ直してからファイル取得URLに変換する。
+var _mdMediaBasePath = '';
+
+function _mdNormalizeVaultRelPath(path) {
+  const out = [];
+  for (const part of String(path || '').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { out.pop(); continue; }
+    out.push(part);
+  }
+  return out.join('/');
+}
+
+// Markdown中の相対メディアパスを保存先基準のパスへ解決する。
+// 解決できない場合（基準パス未設定・絶対URL・データURL等）は空文字列を返す。
+function _mdResolvedMediaPath(src) {
+  const raw = String(src || '').trim();
+  if (!raw) return '';
+  // 絶対URL / ルート相対 / データURL / ページ内アンカーはそのまま扱う
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|#)/i.test(raw)) return '';
+  const base = String(_mdMediaBasePath || '').replace(/\\/g, '/');
+  if (!base) return '';
+  const dir = base.replace(/\/[^/]*$/, '');
+  let rel = raw.replace(/&amp;/g, '&');
+  try { rel = decodeURIComponent(rel); } catch (_) {}
+  rel = rel.replace(/\\/g, '/');
+  if (!dir) return _mdNormalizeVaultRelPath(rel);
+  // 旧形式（WebClipperの古いクリップ）は保存先フォルダ名から始まる完全パスなので二重に連結しない
+  if (rel === dir || rel.startsWith(dir + '/')) return _mdNormalizeVaultRelPath(rel);
+  const dirName = dir.split('/').pop();
+  const relHead = rel.split('/')[0];
+  if (dirName && relHead === dirName) {
+    return _mdNormalizeVaultRelPath(dir + '/' + rel.slice(relHead.length + 1));
+  }
+  return _mdNormalizeVaultRelPath(dir + '/' + rel);
+}
+
 // インラインMarkdown変換
 function inlinemd(text) {
   let s = esc(text);
@@ -2757,7 +2875,7 @@ function inlinemd(text) {
   // 取り消し線
   s = s.replace(/~~(.+?)~~/g, '<s>$1</s>');
   // 画像（リンクより先に処理。!が先にリンクとしてマッチするのを防止）
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, altFull, src) => {
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, altFull, srcRaw) => {
     // 拡張alt解析: ![alt|w=300|path=...](src)
     const parts = altFull.split('|');
     const alt = parts[0];
@@ -2766,6 +2884,13 @@ function inlinemd(text) {
       if (parts[i].startsWith('w=')) w = parseInt(parts[i].slice(2));
       if (parts[i].startsWith('path=')) dataPath = parts[i].slice(5);
       if (parts[i].startsWith('type=')) mediaType = parts[i].slice(5).toLowerCase();
+    }
+    // 相対パス（WebClipperのクリップ本文など）は保存先基準のパスへ直してから取得URLにする
+    let src = srcRaw;
+    const resolvedPath = _mdResolvedMediaPath(srcRaw);
+    if (resolvedPath) {
+      src = '/api/file-raw?path=' + encodeURIComponent(resolvedPath);
+      if (!dataPath) dataPath = esc(resolvedPath);
     }
     const wStyle = w ? `width:${w}px;` : 'max-width:100%;';
     const isManagedMedia = dataPath || src.includes('/file-raw?') || src.includes('/media/file?');
@@ -3269,6 +3394,7 @@ function _relationLinkEntityName(el) {
 function _resolveContextLinkTarget(rawTarget) {
   const target = rawTarget?.closest ? rawTarget : rawTarget?.parentElement;
   if (!target) return null;
+  if (target.closest('.status-dot')) return null;
   const sourcePaneId = target.closest('.gb-pane')?.dataset?.paneId || '';
 
   const autoLink = target.closest('.auto-link[data-path]');
@@ -3435,7 +3561,7 @@ function _showLinkContextMenu(e, linkTarget) {
     });
   }
   if (!linkTarget.localAnchor) {
-    addItem('layers-2', 'サブパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
+    addItem('layers-2', 'フロートパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
       linkType: linkTarget.linkType || '',
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
@@ -3661,11 +3787,21 @@ document.addEventListener('pointercancel', (e) => {
 }, true);
 
 // 詳細パネルにファイルのメタ情報を表示
+async function _fileInfoMetadata(filePath, preloadedMeta) {
+  const preloaded = preloadedMeta && typeof preloadedMeta === 'object' ? preloadedMeta : null;
+  const needsEmbeddedMetadata = preloaded?.embedded === undefined;
+  if (preloaded && !needsEmbeddedMetadata) return preloaded;
+  const fetched = await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath))
+    .then(response => response.ok ? response.json() : null)
+    .catch(() => null);
+  return fetched ? { ...(preloaded || {}), ...fetched } : preloaded;
+}
+
 async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
   const fileName = filePath.split(/[/\\]/).pop();
   const ext = fileName.split('.').pop().toLowerCase();
   try {
-    const meta = preloadedMeta || await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : null).catch(() => null);
+    const meta = await _fileInfoMetadata(filePath, preloadedMeta);
     const folderPath = filePath.replace(/[/\\][^/\\]+$/, '');
     const folderName = folderPath.split(/[/\\]/).pop();
     const typeLabel = ext === 'md' ? 'ノート' : ext === 'json' ? 'シナリオ/シート' : ext === 'board' ? 'ボード' : ext;
@@ -3680,15 +3816,21 @@ async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
       if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${new Date(meta.modified).toLocaleString('ja-JP')}</td></tr>`;
       if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">サイズ</td><td style="padding:4px 0;">${_formatFileSize(meta.size)}</td></tr>`;
     }
-    html += `</table><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
+    html += `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div><div data-auto-tag-run-path="${esc(filePath)}" data-auto-tag-run-recursive="0"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
     if (typeof showDetailPanel === 'function') {
       await showDetailPanel(html);
-      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
+      const detailRoot = document.getElementById('rp-detail') || document;
+      const embeddedHost = [...detailRoot.querySelectorAll('[data-file-embedded-metadata-path]')]
+        .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
+      window.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
+      if (typeof hydrateAutoTagRunPanels === 'function') hydrateAutoTagRunPanels(detailRoot);
+      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(detailRoot);
     }
   } catch {
     // ファイル情報取得失敗時も基本情報を表示（entity APIフォールバックは不要）
     if (typeof showDetailPanel === 'function') {
-      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
+      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-auto-tag-run-path="${esc(filePath)}" data-auto-tag-run-recursive="0"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
+      if (typeof hydrateAutoTagRunPanels === 'function') hydrateAutoTagRunPanels(document.getElementById('rp-detail') || document);
       if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     }
   }

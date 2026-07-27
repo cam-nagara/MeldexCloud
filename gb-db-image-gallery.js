@@ -162,7 +162,16 @@ function _imagePropOpenPath(item) {
   return '';
 }
 
-function openImagePropertyItemInViewer(item) {
+function openImagePropertyItemInViewer(item, options = {}) {
+  const sheetContext = window.MeldexViewerSheetContext?.create?.({
+    item,
+    entityPath: options.entityPath,
+    propName: options.propName,
+    ctx: options.ctx,
+  });
+  const sheetViewerUrl = sheetContext
+    ? window.MeldexViewerSheetContext.viewerUrl(sheetContext)
+    : '';
   const imagePath = _imagePropOpenPath(item);
   if (imagePath) {
     const label = item?.caption || item?.filename || imagePath.split('/').pop() || imagePath;
@@ -182,7 +191,7 @@ function openImagePropertyItemInViewer(item) {
       _navPushWithViewState(activePaneId ? { paneId: activePaneId } : null, null);
     }
     if (typeof openMedia === 'function') {
-      openMedia(label, imagePath, mediaType);
+      openMedia(label, imagePath, mediaType, sheetViewerUrl ? { viewerUrl: sheetViewerUrl } : undefined);
       return true;
     }
     if (typeof openViewer === 'function') {
@@ -195,7 +204,14 @@ function openImagePropertyItemInViewer(item) {
   // 戻る操作で再生できないため従来どおり openViewer 直呼びのまま履歴対象外で開く。
   const imageUrl = _imageSrc(item, false);
   if (imageUrl && typeof openViewer === 'function') {
-    openViewer(imageUrl);
+    if (sheetViewerUrl) {
+      if (typeof navPush === 'function') {
+        navPush({ type: 'html', label: item?.caption || item?.filename || '画像', path: sheetViewerUrl, urlExternal: true });
+      }
+      openViewer(sheetViewerUrl);
+    } else {
+      openViewer(imageUrl);
+    }
     return true;
   }
   return false;
@@ -261,7 +277,7 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
     const thumb = e.target?.closest?.('.gb-image-thumb');
     const idx = thumb && wrap.contains(thumb) ? parseInt(thumb.dataset.imageIndex || '0', 10) : 0;
     const item = items[Number.isFinite(idx) ? idx : 0] || items[0];
-    if (!openImagePropertyItemInViewer(item)) {
+    if (!openImagePropertyItemInViewer(item, { entityPath, propName, ctx: options.ctx })) {
       showStatus('画像を開けませんでした', true);
     }
   });

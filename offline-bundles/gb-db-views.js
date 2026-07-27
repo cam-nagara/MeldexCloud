@@ -69,7 +69,8 @@ function startSavedViewInlineRename(tab, idx, ctx) {
     }
     renderDbViewTabs(ctx);
   };
-  input.addEventListener('blur', finish);
+  if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(input, finish);
+  else input.addEventListener('blur', finish);
   input.addEventListener('keydown', (ke) => {
     if (ke.key === 'Enter') input.blur();
     if (ke.key === 'Escape') { input.value = view.name; input.blur(); }
@@ -195,6 +196,9 @@ function _defaultDbSavedViewName(viewMode, index = 0) {
   return index > 0 ? base + ' ' + (index + 1) : base;
 }
 
+// ビュータブの単/ダブルクリック判定用。ビュー選択でタブが同期再描画されるため
+// native dblclick が発火しない。クリック間隔を追跡して文字列部分の二度押しを判定する。
+let _lastViewTabClick = null;
 function renderDbViewTabs(ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
@@ -226,6 +230,7 @@ function renderDbViewTabs(ctx) {
     tab.style.position = 'relative';
     const vtDef = VIEW_TYPES.find(vt => vt.mode === (v.viewMode || 'pivot'));
     const labelSpan = document.createElement('span');
+    labelSpan.className = 'view-tab-label';
     labelSpan.innerHTML = (vtDef ? lucide(vtDef.icon, 12) + ' ' : '') + esc(v.name);
     tab.appendChild(labelSpan);
     // ホバー時の「...」ボタン
@@ -241,17 +246,29 @@ function renderDbViewTabs(ctx) {
     tab.appendChild(moreBtn);
     tab.addEventListener('mouseenter', () => { moreBtn.style.opacity = '1'; });
     tab.addEventListener('mouseleave', () => { moreBtn.style.opacity = '0'; });
-    tab.addEventListener('click', (e) => { if (e.target === moreBtn || moreBtn.contains(e.target)) return; loadSavedView(i, ctx); });
+    // 単クリックはビュー選択。文字列部分（.view-tab-label）のダブルクリックはビュー名の
+    // インラインリネーム。ビュー選択でタブが同期再描画され native dblclick が発火しないため、
+    // クリック間隔をモジュール変数で追跡して二度押しを判定する（「…」ボタンやタブ余白では発火しない）。
+    tab.addEventListener('click', (e) => {
+      if (e.target === moreBtn || moreBtn.contains(e.target)) return;
+      const onLabel = (e.target === labelSpan || labelSpan.contains(e.target));
+      if (onLabel) {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const paneKey = String(ctx?.paneId || ctx?.id || 'main');
+        const last = _lastViewTabClick;
+        if (last && last.paneKey === paneKey && last.dbPath === dbPath && last.idx === i && (now - last.t) < 450) {
+          _lastViewTabClick = null;
+          startSavedViewInlineRename(tab, i, ctx);
+          return;
+        }
+        _lastViewTabClick = { paneKey, dbPath, idx: i, t: now };
+      }
+      loadSavedView(i, ctx);
+    });
     tab.oncontextmenu = (e) => { e.preventDefault(); showViewTabMenu(e, i, false, ctx); };
     if (typeof addLongPressHandler === 'function') {
       addLongPressHandler(tab, (e) => showViewTabMenu(e, i, false, ctx));
     }
-
-    // ダブルクリック: インラインリネーム
-    tab.ondblclick = (e) => {
-      e.stopPropagation();
-      startSavedViewInlineRename(tab, i, ctx);
-    };
 
     // D&D: タブ順序入れ替え
     tab.draggable = true;
@@ -435,6 +452,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const thumbnailSize = activeView?.thumbnailSize || 'small';
   const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
+  const defaultPanel = cfg.defaultPanel || 'main';
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
@@ -462,6 +480,13 @@ async function _showDbConfigModal(dbPath, ctx) {
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
             </select>
           </label>
+          <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します')}
+            <select id="dbcfg-default-panel">
+              <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
+              <option value="float"${defaultPanel === 'float' ? ' selected' : ''}>フロートパネル</option>
+              <option value="sidebar"${defaultPanel === 'sidebar' ? ' selected' : ''}>サイドバー</option>
+            </select>
+          </div>
         </div>
         <div class="dbcfg-display-actions">
           <button type="button" id="dbcfg-grid-border">枠線設定...</button>
@@ -590,6 +615,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     viewSettingsTarget.entityColumnPinned = o.querySelector('#dbcfg-entity-pinned')?.checked !== false;
     viewSettingsTarget.thumbnailSize = o.querySelector('#dbcfg-thumbnail-size')?.value || 'small';
     c.statusEnabled = !!o.querySelector('#dbcfg-status-enabled')?.checked;
+    c.defaultPanel = o.querySelector('#dbcfg-default-panel')?.value || 'main';
     // ステータス一覧の保存
     const statusList = [];
     statusDiv.querySelectorAll('div').forEach(row => {
@@ -1439,6 +1465,7 @@ function renderGallery(ctx) {
     : Object.keys(entitiesMap)
       .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
       .sort();
+  ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
       _dbRenderEmptyStateWithCreate(container, 'image', 'エントリがありません', 'エントリを追加して開始してください', ctx);
@@ -1817,6 +1844,7 @@ function renderKanban(ctx) {
     : Object.keys(entitiesMap)
       .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
       .sort();
+  ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
       _dbRenderEmptyStateWithCreate(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください', ctx);
@@ -1879,6 +1907,7 @@ function renderKanban(ctx) {
     // カラムヘッダー
     const colHeader = document.createElement('div');
     colHeader.className = 'kanban-column-header';
+    let optionHeaderColor = '';
     if (groupByProp === '_status') {
       const dot = document.createElement('span');
       dot.className = 'kanban-dot';
@@ -1887,10 +1916,12 @@ function renderKanban(ctx) {
     } else if (typeof createDbOptionColorDot === 'function' && typeof getDbOptionColor === 'function') {
       const groupPtc = propTypes[groupByProp];
       if (groupPtc && (groupPtc.type === 'select' || groupPtc.type === 'multi-select')) {
-        const optionDot = createDbOptionColorDot(getDbOptionColor(groupPtc, colKey));
+        optionHeaderColor = getDbOptionColor(groupPtc, colKey);
+        const optionDot = createDbOptionColorDot(optionHeaderColor);
         if (optionDot) { optionDot.classList.add('kanban-dot'); colHeader.appendChild(optionDot); }
       }
     }
+    if (typeof applyDbOptionHeaderColor === 'function') applyDbOptionHeaderColor(colHeader, optionHeaderColor);
     const colTitle = document.createElement('span');
     colTitle.textContent = colKey;
     colHeader.appendChild(colTitle);
@@ -1977,16 +2008,17 @@ function renderKanban(ctx) {
               const oldRichHtml = target.rich_html || '';
               const oldRelations = Array.isArray(target.relations) ? JSON.parse(JSON.stringify(target.relations)) : [];
               const oldPublishedIn = Array.isArray(target.published_in) ? JSON.parse(JSON.stringify(target.published_in)) : [];
-              let currentRef = { file: target.file, property: target.property || groupByProp, candidate_index: target.candidate_index };
+              const entityPath = _entityPath(dbPath, entityName);
+              let currentRef = { file: target.file, entry_path: entityPath, property: target.property || groupByProp, candidate_index: target.candidate_index };
               await _apiPutValue(target, { _delete: true });
               historyPush('カンバン移動: ' + entityName,
                 async () => {
-                  const result = await _apiPostValue(_entityPath(dbPath, entityName), groupByProp, oldVal, oldStatus, oldNote, oldRichHtml, {
+                  const result = await _apiPostValue(entityPath, groupByProp, oldVal, oldStatus, oldNote, oldRichHtml, {
                     relations: oldRelations,
                     published_in: oldPublishedIn,
                     created: target.created || '',
                   });
-                  currentRef = { file: result?.path || result?.file || currentRef.file, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+                  currentRef = { file: result?.path || result?.file || currentRef.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
                   await selectDatabase(dbPath, ctx);
                 },
                 async () => { await _apiPutValue(currentRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
@@ -2007,13 +2039,13 @@ function renderKanban(ctx) {
             try {
               const entityPath = _entityPath(dbPath, entityName);
               const result = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-              let createdRef = { file: result?.path || result?.file, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+              let createdRef = { file: result?.path || result?.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
               if (createdRef.file) {
                 historyPush('カンバン移動: ' + entityName,
                   async () => { await _apiPutValue(createdRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
                   async () => {
                     const redo = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-                    createdRef = { file: redo?.path || redo?.file || createdRef.file, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
+                    createdRef = { file: redo?.path || redo?.file || createdRef.file, entry_path: entityPath, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
                     await selectDatabase(dbPath, ctx);
                   },
                   _dbScope(dbPath)

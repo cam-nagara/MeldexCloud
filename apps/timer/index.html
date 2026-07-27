@@ -8,8 +8,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Meldex Timer">
-  <link rel="manifest" href="apps/timer/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-title" content="Meldex BETA">
+  <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="MeldexTimer_icon_256.png">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -67,6 +67,9 @@
   <script src="gb-resource-url.js"></script>
   <script src="gb-dropbox-auth.js"></script>
   <script src="gb-source-folder-registry.js"></script>
+  <script src="gb-workspace-shared-ledger.js"></script>
+  <script src="gb-workspace-ledger-io.js"></script>
+  <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
   <script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
@@ -78,6 +81,7 @@
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
+  <script src="gb-path-utils.js"></script>
   <script src="gb-icon-assets.js"></script>
   <script src="gb-ui.js"></script>
   <script src="gb-modal-shell.js"></script>
@@ -89,10 +93,10 @@
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
   <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
-  <script src="standalone-pwa-install.js"></script>
   <script src="gb-component.js"></script>
   <script src="gb-tool-timer.js"></script>
   <script src="gb-tool-timer-advanced.js"></script>

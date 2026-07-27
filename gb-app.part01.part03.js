@@ -90,19 +90,35 @@ function _navPushWithViewState(ctx, entityName) {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const cfg = getDbViewConfig(dbPath);
+  const viewIdx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx;
   const viewMode = getCurrentViewMode(dbPath, { ctx });
   const container = _getDbViewScrollContainer(ctx, viewMode);
-  _forcedNavPush({
+  let savedView = null;
+  try {
+    const source = Array.isArray(cfg.savedViews) && Number.isInteger(viewIdx) ? cfg.savedViews[viewIdx] : null;
+    savedView = source ? JSON.parse(JSON.stringify(source)) : null;
+  } catch {}
+  const snapshot = {
     type: 'pivot',
     path: dbPath,
     label: dbPath.split('/').pop() || dbPath,
-    viewIdx: Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx,
+    viewIdx,
+    viewSnapshot: savedView ? { viewIdx, savedView } : null,
     scrollState: {
       scrollLeft: container?.scrollLeft || 0,
       scrollTop: container?.scrollTop || 0,
       focusedEntity: entityName || null,
     },
-  }, ctx?.paneId);
+  };
+  const navState = _getNavState(ctx?.paneId);
+  const current = navState.history[navState.index];
+  if (current && current.path === dbPath && ['pivot', 'database', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(current.type)) {
+    navState.history[navState.index] = snapshot;
+    _refreshPaneNavUi(navState.paneId);
+    _persistPaneNavState(navState);
+    return;
+  }
+  _forcedNavPush(snapshot, ctx?.paneId);
 }
 
 function navOpen(entry, opts) {
@@ -117,16 +133,27 @@ function navOpen(entry, opts) {
     return selectDatabase(entry.path, null, {
       ...(o || {}),
       restoreViewIdx: entry.viewIdx,
+      restoreViewSnapshot: entry.viewSnapshot,
       restoreScrollState: entry.scrollState,
     });
   }
   if (entry.type === 'scriptnote' && typeof openScenarioInScriptNote === 'function') return openScenarioInScriptNote(entry.path, entry.label, o);
-  if (entry.type === 'media' || entry.type === 'image' || entry.type === 'video' || entry.type === 'audio') return openMedia(entry.label, entry.path, entry.mediaType || (entry.type === 'media' ? 'image' : entry.type), o);
+  if (entry.type === 'media' || entry.type === 'image' || entry.type === 'video' || entry.type === 'audio') {
+    return openMedia(
+      entry.label,
+      entry.path,
+      entry.mediaType || (entry.type === 'media' ? 'image' : entry.type),
+      { ...(o || {}), viewerUrl: entry.viewerUrl || o?.viewerUrl },
+    );
+  }
   if (entry.type === 'html') {
     if (entry.urlExternal && typeof openViewer === 'function') return openViewer(entry.path);
     return openHtmlFile(entry.label, entry.path, o);
   }
   if (entry.type === 'folder') return openFolder(entry.label, entry.path, o);
+  if (entry.type === 'archive' && typeof openArchiveFolder === 'function') {
+    return openArchiveFolder(entry.archivePath, entry.member || '', o);
+  }
   if (entry.type === 'calendar') return openCalendarFile(entry.label, entry.path, o);
   if (entry.type === 'smart-db' && typeof openSmartDbFile === 'function') return openSmartDbFile(entry.label, entry.path, o);
 }

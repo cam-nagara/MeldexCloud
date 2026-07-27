@@ -1,3 +1,129 @@
+    }
+
+    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
+    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
+    if (!restored) {
+      const _paneHasTabs = _paneLayoutHasAnyTabs();
+      if (!_paneHasTabs) showView('welcome');
+    }
+
+    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
+    _scheduleStartupDatabaseViewTabsRepair();
+    _hideStartupSplash();
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.visible', initStartedAt, { restored });
+    }
+    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
+      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
+        _refreshDbViewConfigAfterHistory(state.currentDbPath);
+      }
+    });
+    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
+      initGlobalFilterBar();
+      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
+        _highlightLastOutlinerNodeAfterStartup();
+        showStatus('準備完了');
+      });
+    });
+  } catch (e) {
+    showStatus('ソースフォルダ情報の取得に失敗しました', true);
+  }
+  _hideStartupSplash();
+}
+/* ==============================
+   表示切替
+   ============================== */
+function showView(viewName, ctx) {
+  const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
+  const isDbViewName = (name) => ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
+  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
+  if (ctx && ctx.containerEl) {
+    const isDbView = isDbViewName(viewName);
+    const c = ctx.containerEl;
+    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
+    if (hasPaneViewSurfaces) {
+      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
+      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
+      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+      _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
+      ctx.viewMode = viewName;
+      return;
+    }
+  }
+  // ビュー切替前にボードの未保存を即時保存
+  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
+    if (typeof bdSave === 'function') bdSave();
+  }
+  // ボードから離れたらノートタブを非表示
+  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
+    hideBoardNoteTab();
+  }
+  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
+  if (viewName !== 'folder') {
+    const fvBar = document.getElementById('fv-bulk-bar');
+    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
+  }
+  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
+    clearBoardDetailTabs();
+  }
+  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
+  const isDbView = isDbViewName(viewName);
+  const _setDisplay = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = value;
+  };
+  _setDisplay('login-view', 'none');
+  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
+  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
+  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+  _setDisplay('smart-db-view', resolvedViewName === 'smart-db' ? 'flex' : 'none');
+  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
+  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
+  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
+  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
+  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
+  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
+  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
+  // app-toolbarの表示切替
+  const appTb = document.getElementById('app-toolbar');
+  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // ページビュー: app-toolbarにリッチテキストツールバー表示
+  const showRtInAppbar = (resolvedViewName === 'page');
+  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
+  const hasAppTb = isDbView || showRtInAppbar;
+  if (appTb) appTb.classList.toggle('visible', hasAppTb);
+  // エントリビュー: エントリ内ツールバー
+  const entityRt = document.getElementById('entity-rt-toolbar');
+  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
+  // ステータスバーのショートカットヘルプ
+  const sc = document.getElementById('sb-shortcuts');
+  if (isDbView) {
+    const csvSheetActive = typeof isCsvSheetModeActive === 'function' && isCsvSheetModeActive();
+    if (csvSheetActive && typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar(sc);
+    else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
+    else sc.textContent = '';
+  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
+    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
+  } else if (resolvedViewName === 'scriptnote') {
+    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
+    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+  } else {
+    sc.textContent = '';
+  }
+
+  state.view = viewName;
 
   // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
   if (typeof ann !== 'undefined') {
@@ -772,129 +898,3 @@ function _getTrustedEmbeddedMessageIframe(e) {
   };
   addCandidate((typeof _getActiveIframe === 'function') ? _getActiveIframe() : null);
   addCandidate(document.getElementById('html-iframe'));
-  document.querySelectorAll('iframe').forEach(addCandidate);
-  for (const iframe of candidates) {
-    if (!iframe?.contentWindow || e.source !== iframe.contentWindow) continue;
-    const iframeSrc = iframe.getAttribute('src') || iframe.src || '';
-    if (!_gbIsTrustedInternalViewerUrl(iframeSrc)) continue;
-    if (e.origin === window.location.origin || e.origin === 'null') return iframe;
-  }
-  return null;
-}
-
-function _isTrustedEmbeddedMessage(e) {
-  return !!_getTrustedEmbeddedMessageIframe(e);
-}
-
-function _syncViewerCurrentFileFromMessage(msg) {
-  const path = typeof msg?.path === 'string' ? msg.path : '';
-  if (!path) return false;
-  state.currentPagePath = path;
-  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
-  if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
-  return true;
-}
-
-const _VIEWER_FOLDER_NAV_FILE_EXTS = new Set([
-  '.png', '.apng', '.jpg', '.jpeg', '.jpe', '.jfif', '.gif', '.bmp', '.webp',
-  '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic', '.heif', '.psd', '.psb',
-  '.pdf',
-]);
-const _viewerFolderNavDisplayableCache = new Map();
-
-function _viewerFolderNavCleanPath(path) {
-  return String(path || '').replace(/\\/g, '/').split('#')[0].split('?')[0].replace(/\/+$/, '');
-}
-
-function _viewerFolderNavExt(path) {
-  const name = _viewerFolderNavCleanPath(path).split('/').pop() || '';
-  const index = name.lastIndexOf('.');
-  return index >= 0 ? name.slice(index).toLowerCase() : '';
-}
-
-function _viewerFolderNavIsDisplayableFile(path) {
-  return _VIEWER_FOLDER_NAV_FILE_EXTS.has(_viewerFolderNavExt(path));
-}
-
-function _viewerFolderNavParentPath(path) {
-  const clean = _viewerFolderNavCleanPath(path);
-  if (!clean) return '';
-  if (!_viewerFolderNavIsDisplayableFile(clean)) return clean;
-  const index = clean.lastIndexOf('/');
-  return index >= 0 ? clean.slice(0, index) : '';
-}
-
-function _viewerFolderNavCurrentFolderFromMessage(msg) {
-  const folderPath = _viewerFolderNavCleanPath(msg?.folderPath || '');
-  if (folderPath) return folderPath;
-  return _viewerFolderNavParentPath(msg?.currentPath || msg?.path || state.currentPagePath || '');
-}
-
-function _viewerFolderNavNodePath(node) {
-  return _viewerFolderNavCleanPath(node?._nodeData?.path || node?.dataset?.path || '');
-}
-
-function _viewerFolderNavPathMatches(nodePath, targetPath) {
-  if (typeof _outlinerHighlightPathMatches === 'function') return _outlinerHighlightPathMatches(nodePath, targetPath);
-  const a = _viewerFolderNavCleanPath(nodePath).toLowerCase();
-  const b = _viewerFolderNavCleanPath(targetPath).toLowerCase();
-  return !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a));
-}
-
-function _viewerFolderNavIsFolderNode(node) {
-  const data = node?._nodeData || {};
-  if (!node || node.style?.display === 'none') return false;
-  return data.type === 'folder' || data._isRoot === true;
-}
-
-function _viewerFolderNavFolderNodes() {
-  const candidates = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')];
-  return candidates.filter(node => _viewerFolderNavIsFolderNode(node) && _viewerFolderNavNodePath(node));
-}
-
-function _viewerFolderNavFindIndex(nodes, targetPath) {
-  if (!targetPath) return -1;
-  return nodes.findIndex(node => _viewerFolderNavPathMatches(_viewerFolderNavNodePath(node), targetPath));
-}
-
-function _viewerFolderNavDelay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function _viewerFolderNavEnsureNodeExpanded(node) {
-  const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
-  if (!toggle || toggle.dataset.expanded === undefined || toggle.dataset.expanded === 'true') return false;
-  const childrenDiv = node.querySelector(':scope > .tree-children');
-  toggle.click();
-  for (let i = 0; i < 30; i++) {
-    await _viewerFolderNavDelay(100);
-    if (!childrenDiv) break;
-    if (!childrenDiv.classList.contains('collapsed') && childrenDiv.dataset.loaded === 'true') break;
-  }
-  return true;
-}
-
-async function _viewerFolderNavEnsureAncestorsExpanded(node) {
-  const ancestors = [];
-  let parent = node?.parentElement?.closest?.('.tree-node') || null;
-  while (parent) {
-    ancestors.unshift(parent);
-    parent = parent.parentElement?.closest?.('.tree-node') || null;
-  }
-  for (const ancestor of ancestors) {
-    await _viewerFolderNavEnsureNodeExpanded(ancestor);
-  }
-}
-
-async function _viewerFolderNavRevealCurrentFolder(folderPath) {
-  if (!folderPath) return;
-  if (typeof _autoExpandToPath === 'function') {
-    try { await _autoExpandToPath(folderPath, true); } catch {}
-  }
-  if (typeof highlightOutlinerNode === 'function') {
-    try { highlightOutlinerNode(folderPath, { noScroll: true }); } catch {}
-  }
-  await _viewerFolderNavDelay(50);
-}
-
-function _viewerFolderNavDisplayableFromBrowseItems(items) {

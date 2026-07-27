@@ -496,7 +496,7 @@ async function openPage(label, path, opts) {
       if (isStalePageLoad()) return;
     }
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
-    const html = mdToHtml(raw);
+    const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
     _prepareEmbeddedMediaControls(pc);
     _loadPageIcon();

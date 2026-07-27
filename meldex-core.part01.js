@@ -18,6 +18,16 @@ const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
 let _apiFetchBrowseCacheGeneration = 0;
 
+// シートのIME変換中キーは、後から登録されたメニュー／ショートカットの
+// Escape・Enter処理より先に止める。既定動作はキャンセルせずIMEへ渡す。
+function _meldexProtectSheetImeKeyEvent(event) {
+  if (!(event?.isComposing || event?.keyCode === 229)) return;
+  if (!event.target?.closest?.('td[data-prop-name]')) return;
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
+}
+window.addEventListener('keydown', _meldexProtectSheetImeKeyEvent, true);
+
 function _apiFetchMethod(opts) {
   return String(opts?.method || 'GET').toUpperCase();
 }
@@ -64,12 +74,34 @@ async function apiFetch(path, opts) {
   }
   let requestPromise = null;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
+  const requestedTimeout = Number(opts?.timeoutMs);
+  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? Math.min(requestedTimeout, 300000)
+    : API_FETCH_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     requestPromise = (async () => {
       const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
+      delete fetchOpts.timeoutMs;
       const res = await fetch(API_BASE.replace(/\/+$/, '') + path, fetchOpts);
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const raw = await res.text();
+          if (raw) {
+            try {
+              const payload = JSON.parse(raw);
+              detail = payload?.detail || payload?.error || payload?.message || raw;
+            } catch {
+              detail = raw;
+            }
+          }
+        } catch {}
+        detail = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+        const error = new Error(`HTTP ${res.status}: ${res.statusText}${detail ? ` — ${detail}` : ''}`);
+        error.status = res.status;
+        throw error;
+      }
       return await res.json();
     })();
     if (cacheKey) _apiFetchBrowseInFlight.set(cacheKey, requestPromise);
@@ -87,7 +119,7 @@ async function apiFetch(path, opts) {
     if (e.name === 'AbortError') {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
-      const err = new Error('リクエストがタイムアウトしました');
+      const err = new Error(`リクエストがタイムアウトしました（${Math.round(timeoutMs / 1000)}秒）`);
       err.name = 'AbortError';
       err.isTimeout = true;
       throw err;
@@ -485,6 +517,49 @@ function formatFileSize(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
+// applyMiddleEllipsis() 用の使い回しcanvasコンテキスト（毎回生成しない）
+let _ellipsisMeasureCtx = null;
+function _ellipsisMeasureWidth(text, font) {
+  if (!_ellipsisMeasureCtx) _ellipsisMeasureCtx = document.createElement('canvas').getContext('2d');
+  if (!_ellipsisMeasureCtx) return -1;
+  _ellipsisMeasureCtx.font = font;
+  return _ellipsisMeasureCtx.measureText(text).width;
+}
+// 長いパス/URLを要素の実効幅に収まるよう「先頭…末尾ファイル名」形式で中略表示する共通ヘルパー。
+// ソースフォルダ一覧・フォルダピッカー・スタッフ保存場所・クラウド競合リゾルバ等、欄内に
+// フルパスを一行表示する箇所で使う。GBPathUtils.ellipsizePath() に委譲し、収まる文字数を
+// canvas measureTextで二分探索する。el.title には常にフルテキストを設定する（ホバーで確認可）。
+function applyMiddleEllipsis(el, fullText) {
+  if (!el) return;
+  const text = String(fullText == null ? '' : fullText);
+  el.title = text;
+  const ellipsizeFn = window.GBPathUtils?.ellipsizePath;
+  const width = el.clientWidth;
+  // 未マウント・幅0（インライン要素等）・GBPathUtils未ロード時は文字数フォールバック（60文字）
+  if (!width || !ellipsizeFn) {
+    el.textContent = ellipsizeFn ? ellipsizeFn(text, 60) : text;
+    return;
+  }
+  const style = getComputedStyle(el);
+  const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  const available = Math.max(0, width - paddingX);
+  if (text.length < 2 || _ellipsisMeasureWidth(text, font) <= available) {
+    el.textContent = text;
+    return;
+  }
+  // 収まる最大文字数(maxChars)を二分探索。1以下はellipsizePathが安全フォールバックする
+  // （中略せず全文を返す）ため、探索の下限は2からにする。
+  let lo = 2, hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (_ellipsisMeasureWidth(ellipsizeFn(text, mid), font) <= available) lo = mid;
+    else hi = mid - 1;
+  }
+  el.textContent = ellipsizeFn(text, lo);
+}
+if (typeof window !== 'undefined') window.applyMiddleEllipsis = applyMiddleEllipsis;
+
 let _saveDialogQueue = [];
 let _saveDialogActive = false;
 
@@ -685,6 +760,7 @@ const LUCIDE = {
   book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M8 7h6"/>',
   board: '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M12 8v4"/><path d="M8 16l4-4"/><path d="M16 16l-4-4"/>',
   brush: '<path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/>',
+  paintBucket: '<path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2a2 2 0 0 0 2.8 0Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 17a5 5 0 0 1-10 0c0-2 5-7 5-7s5 5 5 7Z"/>',
   penTool: '<path d="M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"/><path d="m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"/><path d="m2.3 2.3 7.286 7.286"/><circle cx="11" cy="11" r="2"/>',
   box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
   fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
@@ -865,7 +941,7 @@ const UI_TYPE_ICONS = {
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
-  tags: 'tags',
+  tags: 'tag',
   annotation: 'stickyNote',
   sticky: 'clipboardList',
   history: 'history',
@@ -1005,6 +1081,9 @@ function replaceIcons(root) {
     else if (cls.includes('ico-funnel')) name = 'funnel';
     else if (cls.includes('ico-type')) name = 'type';
     else if (cls.includes('ico-table')) name = 'table';
+    // 右レール タグパネル等のタグアイコン（ico-tags は ico-tag より前に置く）
+    else if (cls.includes('ico-tags')) name = 'tags';
+    else if (cls.includes('ico-tag')) name = 'tag';
     // v0.5.147 書字方向・インデント・引用
     else if (cls.includes('ico-textAlignStart')) name = 'textAlignStart';
     else if (cls.includes('ico-kanban')) name = 'kanban';

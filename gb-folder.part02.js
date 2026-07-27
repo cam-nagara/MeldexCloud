@@ -39,6 +39,7 @@ function _renderPreviewContent(item) {
   } else if (item.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;
+    window.MeldexMediaPlayback?.prepare(video);
     video.style.cssText = 'width:100%;max-height:100%;margin-bottom:8px;border-radius:4px;object-fit:contain;';
     video.src = _folderItemRawUrl(item);
     frag.appendChild(video);
@@ -146,6 +147,12 @@ function _renderDetailContent(item) {
   }
   frag.appendChild(actions);
 
+  if (item.path && typeof renderAutoTagRunPanel === 'function') {
+    const autoTagPanel = document.createElement('div');
+    renderAutoTagRunPanel(autoTagPanel, item.path, { recursive: item.type === 'folder' });
+    frag.appendChild(autoTagPanel);
+  }
+
   if (item.path && typeof renderGlobalTagTargetEditor === 'function') {
     const tagBox = document.createElement('div');
     renderGlobalTagTargetEditor(tagBox, item.path, { compact: true, boxed: false });
@@ -186,6 +193,7 @@ function showFolderPreview(item) {
     } else {
       previewPane.innerHTML = '';
       previewPane.appendChild(_renderPreviewContent(item));
+      window.MeldexMediaPlayback?.start(previewPane.querySelector('video'));
     }
   }
 
@@ -718,12 +726,15 @@ function _fdButton(label, onClick) {
   return btn;
 }
 
-function showFolderDisplaySettings() {
+function showFolderDisplaySettings(options) {
+  const filterOnly = options?.filterOnly === true;
   // 既存メニューを閉じる
   document.querySelectorAll('.fd-dropdown').forEach(el => el.remove());
 
   const cfg = getFolderDisplayConfig();
-  const btn = document.querySelector('[data-action="showFolderDisplaySettings()"]');
+  const btn = document.querySelector(filterOnly
+    ? '[data-action="showFolderFilterSettings()"]'
+    : '[data-action="showFolderDisplaySettings()"]');
   const rect = btn?.getBoundingClientRect?.() || { left: window.innerWidth / 2, bottom: window.innerHeight / 2 };
 
   const menu = document.createElement('div');
@@ -778,13 +789,14 @@ function showFolderDisplaySettings() {
     menu.appendChild(el);
   });
 
+  const filterStartIndex = menu.childNodes.length;
   _fdSep(menu);
 
   const resetBtn = _fdButton('解除', () => {
     if (typeof _clearFolderFilters === 'function') _clearFolderFilters();
     renderFolderGrid();
     menu.remove();
-    showFolderDisplaySettings();
+    showFolderFilterSettings();
   });
   resetBtn.dataset.folderFilterReset = 'true';
   _fdSection(menu, 'フィルタ', resetBtn);
@@ -963,6 +975,14 @@ function showFolderDisplaySettings() {
   periodRow.appendChild(customRow);
   menu.appendChild(periodRow);
   syncCustomVisibility();
+  if (filterOnly) {
+    for (let i = 0; i < filterStartIndex; i += 1) menu.firstChild?.remove();
+    if (menu.firstElementChild?.classList?.contains('gb-context-menu-sep')) {
+      menu.firstElementChild.remove();
+    }
+  } else {
+    while (menu.childNodes.length > filterStartIndex) menu.lastChild?.remove();
+  }
   if (typeof attachMeldexDropdownCloseButton === 'function') {
     attachMeldexDropdownCloseButton(menu, {
       trigger: btn,
@@ -974,26 +994,26 @@ function showFolderDisplaySettings() {
 
   // 画面外補正
   clampPopupToViewport(menu);
-  searchInput.focus({ preventScroll: true });
-  if (membershipsPromise && typeof membershipsPromise.then === 'function') {
+  if (filterOnly) searchInput.focus({ preventScroll: true });
+  if (filterOnly && membershipsPromise && typeof membershipsPromise.then === 'function') {
     membershipsPromise.then((changed) => {
       if (!changed) return;
       const latestCfg = getFolderDisplayConfig();
       if (typeof _folderHasActiveFolderFilter === 'function' && _folderHasActiveFolderFilter(latestCfg)) renderFolderGrid();
       if (document.body.contains(menu)) {
         menu.remove();
-        showFolderDisplaySettings();
+        showFolderFilterSettings();
       }
     }).catch(() => {});
   }
-  if (tagsPromise && typeof tagsPromise.then === 'function') {
+  if (filterOnly && tagsPromise && typeof tagsPromise.then === 'function') {
     tagsPromise.then((changed) => {
       if (!changed) return;
       const latestCfg = getFolderDisplayConfig();
       if (typeof _folderHasActiveTagFilter === 'function' && _folderHasActiveTagFilter(latestCfg)) renderFolderGrid();
       if (document.body.contains(menu)) {
         menu.remove();
-        showFolderDisplaySettings();
+        showFolderFilterSettings();
       }
     }).catch(() => {});
   }
@@ -1004,6 +1024,10 @@ function showFolderDisplaySettings() {
     };
     document.addEventListener('pointerdown', closer);
   }, 0);
+}
+
+function showFolderFilterSettings() {
+  return showFolderDisplaySettings({ filterOnly: true });
 }
 
 function openFolderSlideshow() {

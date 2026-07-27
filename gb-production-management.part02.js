@@ -1034,6 +1034,10 @@
 
   function _pmUnitLabel(value, prefix) {
     const text = String(value || '').trim();
+    const spread = text.match(new RegExp('^' + prefix + '?(\\d+)\\s*[-–—~〜～/・]\\s*' + prefix + '?(\\d+)$', 'i'));
+    if (spread && Number(spread[2]) === Number(spread[1]) + 1) {
+      return _pmFormatUnitLabel(Number(spread[1]), prefix) + '-' + _pmFormatUnitLabel(Number(spread[2]), prefix);
+    }
     const number = text.match(/\d+/)?.[0];
     if (number && (new RegExp('^' + prefix + '\\d+', 'i')).test(text)) return _pmFormatUnitLabel(Number(number), prefix);
     if (/^\d+$/.test(text)) return _pmFormatUnitLabel(Number(text), prefix);
@@ -1083,6 +1087,49 @@
       rows.push({ _entry_name: _pmTaskTitle(path, target, scale, content), '作品タイトル': workTitle, 'ページ': usesMangaUnits ? (path[0] || '') : '', 'コマ': usesMangaUnits ? (path[1] || '全体') : '', '階層パス': unitId, '階層ラベル': config.labels.join(','), 'プリセット種別': config.preset, ...levels, '作業作成粒度': config.granularity || `階層${path.length || 1}単位`, '作業対象リスト': target, '作業内容リスト': content, '作業規模リスト': scale, '対象数': '1', '状況': '未着手', '目標作業時間_値': '1', 'ページソート値': String(_pmSortPath(path)), '作成キー': key });
     }))));
     return rows;
+  }
+
+  function _pmCloudTaskStructureDeps() {
+    return {
+      propValue: _pmCloudPropValue,
+      belongsToWork: _pmCloudTaskBelongsToWork,
+      hash: _pmHash,
+      findWork: _pmCloudFindWork,
+      listTasks: _pmCloudListAllTaskEntries,
+      buildRows: _pmBuildTaskRows,
+      validateRows: _pmCloudValidateTaskRows,
+      error: _pmCloudError,
+      init: _pmCloudInit,
+      mutationJournal: _pmCloudMutationJournal,
+      root: _pmCloudRoot,
+      journalDirectory: _pmCloudJournalDirectory,
+      journalText: _pmCloudJournalText,
+      ensureSheet: _pmCloudEnsureSheet,
+      uniqueEntryPath: _pmCloudUniqueEntryPath,
+      clone: _pmCloudClone,
+      frontmatterText: _pmCloudFrontmatterText,
+      writeNewEntry: _pmCloudWriteNewEntry,
+      updateEntry: _pmCloudUpdateEntryAtPath,
+      rollback: _pmCloudRollbackMutation,
+    };
+  }
+
+  function _pmCloudPreviewTaskStructure(provider, internals, body) {
+    return window.MeldexProductionCloudTaskStructure.preview(
+      provider,
+      internals,
+      body,
+      _pmCloudTaskStructureDeps(),
+    );
+  }
+
+  function _pmCloudApplyTaskStructure(provider, internals, body) {
+    return window.MeldexProductionCloudTaskStructure.apply(
+      provider,
+      internals,
+      body,
+      _pmCloudTaskStructureDeps(),
+    );
   }
 
   function _pmTaskDimension(body, keys, fallback, label) {

@@ -264,13 +264,15 @@ async function chatSend(options = {}) {
   }
   const hasWorkspaceIdOption = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
   const hasSourceFolderOption = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
-  const requestWorkspaceId = hasWorkspaceIdOption
-    ? String(options.workspaceId || '')
-    : (hasSourceFolderOption ? '' : (typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : ''));
-  const requestSourceFolder = hasSourceFolderOption
-    ? String(options.sourceFolder || '')
-    : (requestWorkspaceId ? '' : _chatRequireSourceFolder());
-  if (!requestWorkspaceId && !requestSourceFolder) return false;
+  const storageOptions = {};
+  if (hasWorkspaceIdOption) storageOptions.workspaceId = String(options.workspaceId || '');
+  if (hasSourceFolderOption) storageOptions.sourceFolder = String(options.sourceFolder || '');
+  const storageContext = window.GBChatStorageContext?.requireForAi
+    ? await window.GBChatStorageContext.requireForAi(storageOptions)
+    : null;
+  const requestWorkspaceId = String(storageContext?.workspaceId || '');
+  const requestSourceFolder = String(storageContext?.sourceFolder || '');
+  if (!storageContext || (!requestWorkspaceId && !requestSourceFolder)) return false;
   if (!usingDeferredMessages && _pendingAtts.length > 0) {
     if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
       const readyAttachments = await _chatWaitForPendingAttachmentUploads(_pendingAtts);

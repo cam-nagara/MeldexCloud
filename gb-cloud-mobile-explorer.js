@@ -528,15 +528,20 @@
       return;
     }
     const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.alt = '';
-    img.src = typeof _folderItemRawUrl === 'function'
+    const generatedThumbnail = type === 'video';
+    const rawUrl = typeof _folderItemRawUrl === 'function'
       ? _folderItemRawUrl(item)
       : '/api/file-raw?path=' + encodeURIComponent(item.path);
+    const thumbnailUrl = typeof _folderItemThumbnailUrl === 'function'
+      ? _folderItemThumbnailUrl(item, 384)
+      : '/api/thumbnail?path=' + encodeURIComponent(item.path) + '&size=384';
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = generatedThumbnail ? thumbnailUrl : rawUrl;
     img.onerror = () => {
-      if (!img.dataset.thumbFallback && typeof _folderItemThumbnailUrl === 'function') {
+      if (!generatedThumbnail && !img.dataset.thumbFallback) {
         img.dataset.thumbFallback = '1';
-        img.src = _folderItemThumbnailUrl(item, 384);
+        img.src = thumbnailUrl;
         return;
       }
       const fallback = document.createElement('span');

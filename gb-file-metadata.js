@@ -1,0 +1,292 @@
+/* 画像・文書の埋め込み情報表示と、画像の評価・メモ編集 */
+(() => {
+  const cache = new Map();
+
+  function embeddedOf(meta) {
+    return meta?.embedded && typeof meta.embedded === 'object' ? meta.embedded : null;
+  }
+
+  function webclipOf(meta) {
+    const embedded = embeddedOf(meta);
+    const value = meta?.webclip || embedded?.webclip;
+    return value && typeof value === 'object' ? value : null;
+  }
+
+  function httpUrl(value) {
+    try {
+      const parsed = new URL(String(value || '').trim());
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function row(label, value, className = '') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'file-embedded-row' + (className ? ' ' + className : '');
+    const key = document.createElement('span');
+    key.className = 'file-embedded-key';
+    key.textContent = label;
+    const content = document.createElement('span');
+    content.className = 'file-embedded-value';
+    content.textContent = value == null ? '' : String(value);
+    wrapper.append(key, content);
+    return { wrapper, content };
+  }
+
+  function dimensionText(embedded, image) {
+    const width = Number(embedded?.width || image?.naturalWidth || 0);
+    const height = Number(embedded?.height || image?.naturalHeight || 0);
+    return width > 0 && height > 0 ? `${width} × ${height} px` : '';
+  }
+
+  async function load(path, preloaded, options = {}) {
+    const key = String(path || '');
+    if (!key) return preloaded || null;
+    if (!options.force && preloaded?.embedded !== undefined) {
+      cache.set(key, preloaded);
+      return preloaded;
+    }
+    if (!options.force && cache.has(key)) return cache.get(key);
+    const pending = apiFetch('/file-meta?path=' + encodeURIComponent(key), { silentError: true })
+      .then(meta => {
+        cache.set(key, meta);
+        return meta;
+      })
+      .catch(() => {
+        cache.delete(key);
+        return null;
+      });
+    cache.set(key, pending);
+    const resolved = await pending;
+    if (resolved && cache.get(key) === pending) cache.set(key, resolved);
+    return resolved;
+  }
+
+  async function update(path, patch) {
+    const meta = await apiPost('/file-meta', { path, ...patch }, { silentError: true });
+    cache.set(String(path), meta);
+    refreshRatingControls(path, meta);
+    return meta;
+  }
+
+  function setRatingButtons(group, rating) {
+    const current = Math.max(0, Math.min(5, Number(rating) || 0));
+    group.dataset.rating = String(current);
+    group.closest('.fv-image-rating-host')?.classList.toggle('has-rating', current > 0);
+    group.querySelectorAll('button').forEach((button, index) => {
+      const active = index < current;
+      button.classList.toggle('is-active', active);
+      button.textContent = active ? '★' : '☆';
+      button.setAttribute('aria-pressed', String(index + 1 === current));
+    });
+  }
+
+  function ratingControl(path, meta, options = {}) {
+    const embedded = embeddedOf(meta) || {};
+    const group = document.createElement('div');
+    group.className = options.compact ? 'file-rating file-rating--compact' : 'file-rating';
+    group.dataset.fileRatingPath = String(path || '');
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', '評価');
+    const editable = embedded.editable === true;
+    for (let value = 1; value <= 5; value++) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.value = String(value);
+      button.setAttribute('aria-label', `評価 ${value}`);
+      button.disabled = !editable;
+      button.title = editable ? `${value}つ星に設定（同じ評価を押すと解除）` : 'この形式の評価は閲覧のみです';
+      button.addEventListener('click', async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!editable || group.dataset.saving === '1') return;
+        const previous = Number(group.dataset.rating) || 0;
+        const next = previous === value ? 0 : value;
+        group.dataset.saving = '1';
+        setRatingButtons(group, next);
+        try {
+          await update(path, { rating: next });
+          if (typeof showStatus === 'function') showStatus(next ? `評価を${next}つ星にしました` : '評価を解除しました');
+        } catch (error) {
+          setRatingButtons(group, previous);
+          if (typeof showStatus === 'function') showStatus('評価を保存できませんでした: ' + (error?.message || error), true);
+        } finally {
+          delete group.dataset.saving;
+        }
+      });
+      group.appendChild(button);
+    }
+    setRatingButtons(group, embedded.rating);
+    return group;
+  }
+
+  function refreshRatingControls(path, meta) {
+    const target = String(path || '');
+    document.querySelectorAll('[data-file-rating-path]').forEach(group => {
+      if (group.dataset.fileRatingPath === target) {
+        setRatingButtons(group, embeddedOf(meta)?.rating);
+      }
+    });
+  }
+
+  function appendLinkRow(host, label, value) {
+    const url = httpUrl(value);
+    if (!url) return;
+    const built = row(label, '');
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = url;
+    built.content.appendChild(link);
+    host.appendChild(built.wrapper);
+  }
+
+  function appendMetadataGroups(host, embedded) {
+    const groups = Array.isArray(embedded?.groups) ? embedded.groups : [];
+    if (!groups.length) return;
+    const heading = document.createElement('div');
+    heading.className = 'file-embedded-heading';
+    heading.textContent = '埋め込み情報';
+    host.appendChild(heading);
+    groups.forEach((group, index) => {
+      const items = Array.isArray(group?.items) ? group.items : [];
+      if (!items.length) return;
+      const details = document.createElement('details');
+      details.className = 'file-embedded-group';
+      details.open = index === 0;
+      const summary = document.createElement('summary');
+      summary.textContent = `${group.name || '情報'}（${items.length}）`;
+      details.appendChild(summary);
+      const list = document.createElement('div');
+      list.className = 'file-embedded-list';
+      items.forEach(item => {
+        list.appendChild(row(item?.label || item?.key || '項目', item?.value || '').wrapper);
+      });
+      details.appendChild(list);
+      host.appendChild(details);
+    });
+  }
+
+  function renderEditor(host, path, meta) {
+    if (!host) return;
+    host.replaceChildren();
+    const embedded = embeddedOf(meta);
+    const webclip = webclipOf(meta);
+    if (!embedded && !webclip) {
+      const empty = document.createElement('div');
+      empty.className = 'file-embedded-empty';
+      empty.textContent = '表示できる埋め込み情報はありません';
+      host.appendChild(empty);
+      return;
+    }
+
+    if (embedded?.width && embedded?.height) {
+      host.appendChild(row('画像サイズ', dimensionText(embedded)).wrapper);
+    }
+    if (embedded?.kind === 'image') {
+      const ratingRow = row('評価', '');
+      ratingRow.content.appendChild(ratingControl(path, meta));
+      host.appendChild(ratingRow.wrapper);
+    }
+    appendLinkRow(host, '元ページ', webclip?.page_url);
+    appendLinkRow(host, '画像URL', webclip?.image_url);
+    if (webclip?.clipped_at) {
+      host.appendChild(row('保存日時', webclip.clipped_at).wrapper);
+    }
+
+    if (embedded?.kind === 'image') {
+      const memo = document.createElement('div');
+      memo.className = 'file-embedded-memo';
+      const label = document.createElement('label');
+      label.textContent = webclip ? 'WebClipperメモ' : 'メモ';
+      const textarea = document.createElement('textarea');
+      textarea.value = String(embedded.note || webclip?.note || '');
+      textarea.placeholder = 'メモを入力';
+      textarea.disabled = embedded.editable !== true;
+      const actions = document.createElement('div');
+      actions.className = 'file-embedded-memo-actions';
+      const hint = document.createElement('span');
+      hint.textContent = embedded.editable === true
+        ? '画像ファイル内へ保存します'
+        : 'この形式のメモは閲覧のみです';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = 'メモを保存';
+      save.disabled = embedded.editable !== true;
+      save.addEventListener('click', async () => {
+        if (save.disabled) return;
+        save.disabled = true;
+        try {
+          const nextMeta = await update(path, { note: textarea.value });
+          textarea.value = String(embeddedOf(nextMeta)?.note || '');
+          if (typeof showStatus === 'function') showStatus('メモを画像ファイルへ保存しました');
+        } catch (error) {
+          if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
+        } finally {
+          save.disabled = embedded.editable !== true;
+        }
+      });
+      textarea.addEventListener('keydown', event => {
+        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.preventDefault();
+          save.click();
+        }
+      });
+      actions.append(hint, save);
+      memo.append(label, textarea, actions);
+      host.appendChild(memo);
+    }
+    appendMetadataGroups(host, embedded);
+  }
+
+  function attachFolderCard(thumb, item, image) {
+    if (!thumb || item?.type !== 'image' || !item?.path) return;
+    thumb.classList.add('fv-thumb--embedded');
+    const dimensions = document.createElement('span');
+    dimensions.className = 'fv-image-dimensions';
+    const ratingHost = document.createElement('div');
+    ratingHost.className = 'fv-image-rating-host';
+    thumb.append(dimensions, ratingHost);
+
+    const showDimensions = embedded => {
+      const text = dimensionText(embedded, image);
+      dimensions.textContent = text;
+      dimensions.hidden = !text;
+      const card = thumb.closest('.fv-item');
+      const nameCell = card?.querySelector('.fv-list-name');
+      let inline = nameCell?.querySelector('.fv-list-image-dimensions');
+      if (nameCell && text && !inline) {
+        inline = document.createElement('span');
+        inline.className = 'fv-list-image-dimensions';
+        nameCell.appendChild(inline);
+      }
+      if (inline) inline.textContent = text ? `  ·  ${text}` : '';
+    };
+    const hydrate = async () => {
+      if (!thumb.isConnected) return;
+      showDimensions(null);
+      const meta = await load(item.path);
+      if (!meta || !thumb.isConnected) return;
+      item.embedded = embeddedOf(meta);
+      showDimensions(item.embedded);
+      ratingHost.replaceChildren(ratingControl(item.path, meta, { compact: true }));
+    };
+    if (image?.complete && image.naturalWidth) {
+      queueMicrotask(hydrate);
+    } else if (image) {
+      image.addEventListener('load', hydrate, { once: true });
+    } else {
+      queueMicrotask(hydrate);
+    }
+  }
+
+  window.MeldexEmbeddedMetadata = {
+    attachFolderCard,
+    dimensionText,
+    load,
+    renderEditor,
+    update,
+  };
+})();

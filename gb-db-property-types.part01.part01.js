@@ -80,6 +80,45 @@ function setPropertyType(dbPath, propName, typeConfig, ctxOverride) {
   return _savePropertyTypesToBackend(targetPath, undefined, ctxOverride);
 }
 
+// 列タイプ変更を Undo/Redo 履歴へ積む共通処理（列名リネームの historyPush と揃える）。
+// 呼ぶのはユーザー起点の型変更2経路（列設定パネル/モーダルの applyPropertyType と
+// ヘッダーメニューのクイック型切替）だけ。低レベルの setPropertyType には入れない
+// （新規列追加やセル入力時のオプション自動追加など内部呼び出しまで履歴を汚すため）。
+// 合成後の type が実際に変わった時だけ積む（単位・オプション等の同型サブ編集は無視）。
+function _ptPushTypeChangeHistory(dbPath, propName, beforeConfig, afterConfig, ctx) {
+  if (typeof historyPush !== 'function' || typeof _dbScope !== 'function') return;
+  if (!dbPath || !propName) return;
+  const beforeType = (beforeConfig && beforeConfig.type) || 'text';
+  const afterType = (afterConfig && afterConfig.type) || 'text';
+  if (beforeType === afterType) return;
+  const before = JSON.parse(JSON.stringify(beforeConfig || {}));
+  const after = JSON.parse(JSON.stringify(afterConfig || {}));
+  // 双方向リレーションの設定/解除は対応先シートの列タイプも書き換える。undo/redo は
+  // 元シートの設定だけを戻し、対応先シートは自動で戻さない（別シートの永続データを
+  // 黙って書き換えると並行編集を壊すため）。どちらかが双方向のときだけ、undo 時にその旨を通知する。
+  const crossSheet = !!before.bidirectional || !!after.bidirectional;
+  const _resolveCtx = () => (typeof _ptContextForDbPath === 'function' ? _ptContextForDbPath(dbPath) : ctx);
+  const _restore = (cfg, notify) => {
+    const rc = _resolveCtx();
+    setPropertyType(dbPath, propName, JSON.parse(JSON.stringify(cfg)), rc);
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(rc, dbPath);
+    // 設定パネルが開いていれば型ドロップダウンの表示も同期する（開いていなければ no-op）
+    if (typeof renderDbPropertySettingsPanel === 'function'
+        && typeof document !== 'undefined'
+        && document.querySelector('#detail-tab-db-property-settings')) {
+      try { renderDbPropertySettingsPanel(dbPath, propName); } catch {}
+    }
+    if (notify && crossSheet && typeof showStatus === 'function') {
+      showStatus('対応先シート側のリレーション設定は自動では戻りません', true);
+    }
+  };
+  historyPush('列タイプ変更: ' + propName,
+    () => { _restore(before, true); },   // undo: 変更前の型へ
+    () => { _restore(after, false); },   // redo: 変更後の型へ
+    (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
+  );
+}
+
 const _ptBackendSaveQueues = {};
 
 function _dbDeletedPropsArrayFromConfig(cfg) {
@@ -125,8 +164,10 @@ function isDbPropertyDeleted(dbPath, propName) {
 function filterDeletedDbProperties(dbPath, props) {
   if (!Array.isArray(props)) return [];
   const deleted = new Set(getDeletedDbProperties(dbPath));
-  if (deleted.size === 0) return props.filter(Boolean);
-  return props.filter(prop => prop && !deleted.has(prop));
+  // '__entity__' はエントリ名列を表す予約トークン（フェーズ2でcolOrderに含まれ得る）。
+  // 通常のプロパティ一覧（フィルタ/条件付き書式/列タイプ設定等）には流れ込ませない。
+  if (deleted.size === 0) return props.filter(prop => prop && prop !== '__entity__');
+  return props.filter(prop => prop && prop !== '__entity__' && !deleted.has(prop));
 }
 
 function _markDbPropertyDeletedInConfig(cfg, propName) {
@@ -297,6 +338,27 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   return true;
 }
 
+// 保存に送る property_types を組み立てる。
+// フォルダノートの property_types は「送った内容でまるごと置き換え」られるため、
+// そのシートのメタデータをまだ読み込んでいない状態（＝画面に出していないシート）で
+// ローカルにある分だけを送ると、他の列の型設定を巻き添えで消してしまう。
+// メタデータ未読込のときだけサーバーの現在値を取り直し、ローカルの変更を重ねる。
+async function _ptPropertyTypesPayloadForSave(targetPath, ctxOverride) {
+  const localTypes = getPropertyTypes(targetPath, ctxOverride) || {};
+  if (_ptMetadataForDbPath(targetPath, ctxOverride)) return localTypes;
+  try {
+    const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(targetPath));
+    const remote = { ...((meta && meta.property_types) || {}) };
+    // 削除済みの列まで拾い直すと、削除操作が取り消されたように見えてしまう。
+    // 削除の記録が残っている列はサーバー側の値から取り除いてから重ねる。
+    _dbDeletedPropsArrayFromConfig(getDbViewConfig(targetPath)).forEach(name => { delete remote[name]; });
+    return { ...remote, ...localTypes };
+  } catch (e) {
+    console.warn('列タイプ保存前のシート情報取得に失敗:', e);
+    return null;
+  }
+}
+
 async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
   if (typeof isProductionManagementWriteBlocked === 'function'
@@ -317,12 +379,16 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
     try {
       while (queue.dirty) {
         queue.dirty = false;
-        const payload = {
-          property_types: getPropertyTypes(targetPath, ctxOverride)
-        };
+        const propertyTypes = await _ptPropertyTypesPayloadForSave(targetPath, ctxOverride);
+        const payload = {};
+        if (propertyTypes) payload.property_types = propertyTypes;
         if (queue.extraMetadata && typeof queue.extraMetadata === 'object') {
           Object.assign(payload, queue.extraMetadata);
           queue.extraMetadata = {};
+        }
+        if (!Object.keys(payload).length) {
+          showStatus('列タイプを保存できませんでした。時間をおいて再度お試しください', true);
+          continue;
         }
         try {
           if (typeof isProductionManagementWriteBlocked === 'function'
@@ -330,6 +396,7 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
           await apiPut('/db-metadata?path=' + encodeURIComponent(targetPath), payload);
         } catch (e) {
           console.warn('プロパティ型設定のバックエンド保存に失敗:', e);
+          showStatus('列タイプの保存に失敗しました: ' + (e?.message || e), true);
         }
       }
       // ふりがな型の設定・解除はルビ辞書の内容を変えるため、保存確定後に再読込する
@@ -341,6 +408,16 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
     }
   })();
   return queue.promise;
+}
+
+async function waitForPendingDbPropertyTypeSaves(dbPath) {
+  const key = _ptNormalizeDbPath(dbPath || '');
+  for (let pass = 0; pass < 20; pass += 1) {
+    const queue = _ptBackendSaveQueues[key];
+    if (!queue?.promise) return true;
+    await Promise.resolve(queue.promise).catch(() => {});
+  }
+  return false;
 }
 
 function _escapeRegExpForPropName(text) {
@@ -551,7 +628,7 @@ function _renameViewConfigPropReferences(target, oldName, newName) {
 // 対象にしてしまう。埋め込みシート（グローバル _panes レジストリに未登録）から呼ぶ場合は特に
 // 必須（_dbFindPaneContextForPath() のレジストリ探索では見つからないため）。渡さない場合は
 // 従来通りの再解決にフォールバックする（挙動は変わらない）。2026-07-15 フェーズD1で確認。
-async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
+async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}) {
   if (!dbPath || !oldName || !newName || oldName === newName) return false;
   const renameProtectionLevel = _dbSchemaProtectionLevel(dbPath, oldName);
   if (renameProtectionLevel) {
@@ -622,8 +699,32 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
   }
   const entities = pivotData?.entities || {};
   const valueErrors = [];
-  const movedEntities = [];
   const movedValueRefs = [];
+  // 描画に使う pivotData の列名を付け替える共通処理。properties と entities を一緒に
+  // 付け替える（properties だけ新名にして entities を旧名のまま残すと、その pivotData を
+  // 描画するペインがヘッダー新名＋空セル＝データ消失に見えるため）。付け替え元のキーが
+  // 既に無ければ no-op＝冪等。分割ビューで同一シートを別ペインに開いている場合の
+  // state.pivotData（別オブジェクト）にも同じ移行を適用する。
+  const _renamePivotLocal = (pd, fromName, toName) => {
+    if (!pd) return;
+    if (Array.isArray(pd.properties)) {
+      pd.properties = [...new Set(pd.properties.map(n => (n === fromName ? toName : n)))];
+    }
+    if (pd.entities && typeof pd.entities === 'object') {
+      Object.values(pd.entities).forEach(ent => {
+        if (ent && Array.isArray(ent[fromName])) {
+          ent[toName] = ent[fromName].map(v => ({ ...v, property: toName }));
+          delete ent[fromName];
+        }
+      });
+    }
+  };
+  const _applyPivotRename = (fromName, toName) => {
+    _renamePivotLocal(pivotData, fromName, toName);
+    if (_ptIsCurrentDbPath(dbPath) && state.pivotData && state.pivotData !== pivotData) {
+      _renamePivotLocal(state.pivotData, fromName, toName);
+    }
+  };
   const restoreBeforeConfig = async () => {
     saveDbViewConfig(dbPath, beforeCfg);
     const restoredTypes = Object.keys(beforePropertyTypes).length ? beforePropertyTypes : (beforeCfg.propertyTypes || {});
@@ -641,6 +742,25 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
       try { await _apiPutValue(ref, { new_property: oldName }); } catch {}
     }
   };
+  // 楽観的描画のロールバック: 付け替えた pivotData を旧名へ戻し、設定も戻して再描画する。
+  const rollbackOptimistic = async () => {
+    _applyPivotRename(newName, oldName);
+    await restoreBeforeConfig();
+    if (typeof renderPivot === 'function' && targetCtx) renderPivot(targetCtx);
+  };
+  // レガシー（旧マークダウン）形式は下の逐次経路でサーバーへ値を移送する。楽観的に
+  // entities を新名へ移すと ent[oldName] が消えて逐次 PUT が飛ばなくなるため、移送前に
+  // 旧名の値配列（参照）をスナップショットしておく。
+  const fallbackMoves = [];
+  for (const ent of Object.values(entities)) {
+    if (ent && Array.isArray(ent[oldName])) fallbackMoves.push({ vals: ent[oldName] });
+  }
+  // 楽観的描画: サーバー往復を待たず、ローカルの表示モデル（pivotData の列名・値、
+  // 直前に更新済みの viewConfig / state.dbMetadata.property_types）を新名へ付け替えて
+  // 即座に描画する。これで「Enter しても反映されない」を解消する。サーバー保存が失敗した
+  // 場合は rollbackOptimistic() で元に戻す。
+  _applyPivotRename(oldName, newName);
+  if (typeof renderPivot === 'function' && targetCtx) renderPivot(targetCtx);
   // SQLiteネイティブシートはサーバー側で列名を全エントリ一括変更する。
   // 従来は1マスずつ PUT し、そのたびにシート全体のスナップショットを保存していたため
   // 数百行の列で数百往復＋数百スナップショットになり、確定に数秒かかっていた。
@@ -652,7 +772,7 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
     if (bulk && bulk.ok && !bulk.fallback) {
       bulkRenamed = true;
     } else if (bulk && bulk.conflict) {
-      await restoreBeforeConfig();
+      await rollbackOptimistic();
       showStatus('同じ名前の列が既にあります: ' + newName, true);
       return false;
     }
@@ -661,65 +781,26 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
     // 一括経路が使えない場合は従来の逐次経路へフォールバックする
   }
 
-  if (bulkRenamed) {
-    Object.values(entities).forEach(ent => {
-      if (ent && Array.isArray(ent[oldName])) {
-        ent[newName] = ent[oldName].map(v => ({ ...v, property: newName }));
-        delete ent[oldName];
-      }
-    });
-  } else {
-    for (const ent of Object.values(entities)) {
-      const vals = ent?.[oldName];
-      if (!Array.isArray(vals)) continue;
+  if (!bulkRenamed) {
+    // レガシー形式: スナップショットした旧名の値をサーバーへ逐次移送する。
+    // pivotData の表示は既に楽観移送済みなので、ここではサーバー側だけを更新する。
+    for (const { vals } of fallbackMoves) {
       const moveVals = vals.slice().sort((a, b) => (Number(b?.candidate_index) || 0) - (Number(a?.candidate_index) || 0));
       for (const val of moveVals) {
         try {
           await _apiPutValue(val, { new_property: newName });
-          val.property = newName;
           movedValueRefs.push({ ...val, property: newName });
         }
         catch (e) { valueErrors.push(e); }
       }
       if (valueErrors.length) {
         await rollbackMovedValues();
-        await restoreBeforeConfig();
+        await rollbackOptimistic();
         const msg = valueErrors[0]?.message || valueErrors[0] || '値の更新に失敗しました';
         showStatus('列名変更に失敗: ' + msg, true);
         throw valueErrors[0] || new Error('rename value update failed');
       }
-      movedEntities.push({ ent, vals });
     }
-    movedEntities.forEach(({ ent, vals }) => {
-      ent[newName] = vals.map(v => ({ ...v, property: newName }));
-      delete ent[oldName];
-    });
-  }
-  // 描画に使う pivotData の列名を付け替える。properties 配列の付け替えが抜けていると、
-  // renderPivot() は colOrder ∪ pivotData.properties ∪ propertyTypes から列を組み立て
-  // 生キーをヘッダーに出すため、旧名がそのまま残り「リネームが反映されない」ように見える。
-  // entities も一緒に付け替える。properties だけ新名にして entities を旧名のまま残すと、
-  // その pivotData を描画するペインがヘッダー新名＋空セル（データ消失に見える）になる。
-  // value-move 済みの pivotData では entities 側は no-op（旧名キーが既に無い）＝冪等。
-  // 分割ビューで同一シートを別ペインに開いている場合の state.pivotdata（別オブジェクト）にも
-  // 同じ移行を適用し、そのペインが空セルにならないようにする。
-  const _renamePivotLocal = (pd) => {
-    if (!pd) return;
-    if (Array.isArray(pd.properties)) {
-      pd.properties = [...new Set(pd.properties.map(n => (n === oldName ? newName : n)))];
-    }
-    if (pd.entities && typeof pd.entities === 'object') {
-      Object.values(pd.entities).forEach(ent => {
-        if (ent && Array.isArray(ent[oldName])) {
-          ent[newName] = ent[oldName].map(v => ({ ...v, property: newName }));
-          delete ent[oldName];
-        }
-      });
-    }
-  };
-  _renamePivotLocal(pivotData);
-  if (_ptIsCurrentDbPath(dbPath) && state.pivotData && state.pivotData !== pivotData) {
-    _renamePivotLocal(state.pivotData);
   }
   if (typeof updatePropertyLayoutForRename === 'function') {
     await updatePropertyLayoutForRename(dbPath, oldName, newName);
@@ -732,6 +813,22 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride) {
     }).catch((e) => console.warn('列名変更時の注釈参照更新に失敗:', e));
   }
   await _savePropertyTypesToBackend(dbPath);
+  // Undo/Redo: 列削除と同型に、逆方向/順方向の renameDbProperty を呼び直す。
+  // skipHistory で undo/redo 実行時の再帰 push を防ぐ。ctx はクロージャ実行時に再解決し、
+  // ペインの開き直しにも追従させる（捕捉した targetCtx は stale になり得る）。
+  if (!opts.skipHistory && typeof historyPush === 'function' && typeof _dbScope === 'function') {
+    historyPush('列名変更: ' + oldName + ' → ' + newName,
+      async () => { // undo: 新名 → 旧名へ戻す
+        await renameDbProperty(dbPath, newName, oldName, _ptContextForDbPath(dbPath), { skipHistory: true });
+        if (typeof selectDatabase === 'function') selectDatabase(dbPath, _ptContextForDbPath(dbPath));
+      },
+      async () => { // redo: 旧名 → 新名へ再適用
+        await renameDbProperty(dbPath, oldName, newName, _ptContextForDbPath(dbPath), { skipHistory: true });
+        if (typeof selectDatabase === 'function') selectDatabase(dbPath, _ptContextForDbPath(dbPath));
+      },
+      (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
+    );
+  }
   return true;
 }
 
@@ -779,6 +876,7 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
   // 型別オプションを表示
   _ptSetState(root, current, [...existingValues], propName, dbPath, pivotData, ctx);
   onPropertyTypeChange(root);
+  if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
 }
 
 // DB一覧から選択するピッカー（relation参照先DB・MSRソース用）
@@ -873,12 +971,24 @@ function _attachDbPicker(input, dbPath) {
   // inputの隣にピッカーボタンを追加
   if (input.dataset.dbPickerAttached) return;
   input.dataset.dbPickerAttached = '1';
-  let row = input.parentNode;
+  let stack = input.closest?.('.db-picker-field-stack') || null;
+  const inputHost = input.parentElement?.classList?.contains('gb-middle-ellipsis-input-wrap')
+    ? input.parentElement
+    : input;
+  let row = inputHost.parentNode;
   if (!row || !row.classList || !row.classList.contains('db-picker-input-row')) {
+    stack = document.createElement('div');
+    stack.className = 'db-picker-field-stack';
     row = document.createElement('div');
     row.className = 'db-picker-input-row';
-    input.parentNode.insertBefore(row, input);
-    row.appendChild(input);
+    inputHost.parentNode.insertBefore(stack, inputHost);
+    stack.appendChild(row);
+    row.appendChild(inputHost);
+  } else if (!stack) {
+    stack = document.createElement('div');
+    stack.className = 'db-picker-field-stack';
+    row.parentNode.insertBefore(stack, row);
+    stack.appendChild(row);
   }
   // 作品フォルダ内のシートを候補（datalist）として提示する
   const listId = 'db-picker-dl-' + Math.random().toString(36).slice(2, 8);
@@ -890,7 +1000,7 @@ function _attachDbPicker(input, dbPath) {
   const scopeHint = document.createElement('div');
   scopeHint.className = 'db-picker-scope-hint';
   scopeHint.hidden = true;
-  row.parentNode.insertBefore(scopeHint, row.nextSibling);
+  stack.appendChild(scopeHint);
   let _rootsCache = null;
   const _ensureRoots = async () => {
     if (_rootsCache) return _rootsCache;
@@ -959,6 +1069,7 @@ function _attachDbPicker(input, dbPath) {
     _openDbTreePicker(btn, dbs, input, dbPath);
   });
   row.appendChild(btn);
+  window.GBPathUtils?.bindMiddleEllipsisInput?.(input);
 }
 
 // 「一覧から選択」: 全ワークスペース/ソース/ホームを横断するフォルダツリーからシートを選ぶ
@@ -1062,135 +1173,6 @@ function _openDbTreePicker(anchorBtn, dbs, input, dbPath) {
     const closer = (ev) => { if (!pop.contains(ev.target) && ev.target !== anchorBtn) { pop.remove(); document.removeEventListener('pointerdown', closer); } };
     document.addEventListener('pointerdown', closer);
   }, 50);
-}
-
-// マルチソースリレーション設定UI描画
-function _renderMsrSources(sources, mode, root) {
-  const scope = _ptResolveRoot(root);
-  const container = _ptGet('pt-msr-sources', scope);
-  if (!container) return;
-  container.innerHTML = '';
-  const stateInfo = _ptState(scope);
-  const rawMyProps = stateInfo.pivotData?.properties || [];
-  const myProps = typeof filterDeletedDbProperties === 'function'
-    ? filterDeletedDbProperties(stateInfo.dbPath || state.currentDbPath || '', rawMyProps)
-    : rawMyProps;
-
-  sources.forEach((src, idx) => {
-    const div = document.createElement('div');
-    div.className = 'msr-source-row';
-
-    // DB パス
-    const dbRow = document.createElement('div');
-    dbRow.className = 'msr-field-row';
-    dbRow.innerHTML = '<span>シート:</span>';
-    const dbInput = document.createElement('input');
-    dbInput.type = 'text'; dbInput.className = 'msr-db-input';
-    dbInput.value = src.db || ''; dbInput.placeholder = '例: 開発/デバッグリスト';
-    dbRow.appendChild(dbInput);
-    _attachDbPicker(dbInput, _ptState(scope)?.dbPath);
-    div.appendChild(dbRow);
-
-    // ラベル
-    const lblRow = document.createElement('div');
-    lblRow.className = 'msr-field-row';
-    lblRow.innerHTML = '<span>ラベル:</span>';
-    const lblInput = document.createElement('input');
-    lblInput.type = 'text'; lblInput.className = 'msr-label-input';
-    lblInput.value = src.label || ''; lblInput.placeholder = '(シート名から自動生成)';
-    lblRow.appendChild(lblInput);
-    div.appendChild(lblRow);
-
-    // マッチ条件（自動モード時のみ）
-    if (mode === 'auto') {
-      const rulesDiv = document.createElement('div');
-      rulesDiv.className = 'msr-rules';
-      const rulesLabel = document.createElement('div');
-      rulesLabel.className = 'msr-rules-label';
-      rulesLabel.textContent = 'マッチ条件:';
-      rulesDiv.appendChild(rulesLabel);
-
-      const rules = src.matchRules || [];
-      rules.forEach((rule, ri) => {
-        const ruleRow = document.createElement('div');
-        ruleRow.className = 'msr-rule-row';
-
-        // 自DBプロパティ
-        const mySelect = document.createElement('select');
-        mySelect.className = 'msr-my-prop';
-        myProps.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; if (p === rule.myProp) o.selected = true; mySelect.appendChild(o); });
-        ruleRow.appendChild(mySelect);
-
-        ruleRow.appendChild(document.createTextNode(' = 参照先の '));
-
-        // 参照先プロパティ（テキスト入力）
-        const remoteInput = document.createElement('input');
-        remoteInput.type = 'text'; remoteInput.className = 'msr-remote-prop';
-        remoteInput.value = rule.remoteProp || ''; remoteInput.placeholder = '列名';
-        remoteInput.className = 'msr-remote-prop';
-        ruleRow.appendChild(remoteInput);
-
-        // 削除ボタン
-        const delRule = document.createElement('button');
-        delRule.innerHTML = lucide('x', 12); delRule.className = 'pt-small-btn';
-        delRule.addEventListener('click', () => {
-          const s = _collectMsrSources(scope);
-          s[idx].matchRules.splice(ri, 1);
-          _renderMsrSources(s, mode, scope);
-        });
-        ruleRow.appendChild(delRule);
-        rulesDiv.appendChild(ruleRow);
-      });
-
-      // + 条件追加
-      const addRule = document.createElement('button');
-      addRule.textContent = '+ 条件を追加'; addRule.className = 'pt-small-btn';
-      addRule.addEventListener('click', () => {
-        const s = _collectMsrSources(scope);
-        if (!s[idx].matchRules) s[idx].matchRules = [];
-        s[idx].matchRules.push({ myProp: '', remoteProp: '' });
-        _renderMsrSources(s, mode, scope);
-      });
-      rulesDiv.appendChild(addRule);
-      div.appendChild(rulesDiv);
-    }
-
-    // ソース削除
-    const delBtn = document.createElement('button');
-    delBtn.innerHTML = lucide('x', 12) + ' ソース削除'; delBtn.className = 'pt-small-btn muted';
-    delBtn.addEventListener('click', () => {
-      const s = _collectMsrSources(scope);
-      s.splice(idx, 1);
-      _renderMsrSources(s, mode, scope);
-    });
-    div.appendChild(delBtn);
-
-    container.appendChild(div);
-  });
-}
-
-// マルチソースリレーション設定をUIから収集
-function _collectMsrSources(root) {
-  const container = _ptGet('pt-msr-sources', root);
-  if (!container) return [];
-  const sources = [];
-  container.querySelectorAll('.msr-source-row').forEach(row => {
-    const src = {
-      db: row.querySelector('.msr-db-input')?.value?.trim() || '',
-      label: row.querySelector('.msr-label-input')?.value?.trim() || '',
-    };
-    const rules = [];
-    row.querySelectorAll('.msr-rules > div:not(:last-child)').forEach(ruleRow => {
-      if (!ruleRow.querySelector('.msr-my-prop')) return;
-      rules.push({
-        myProp: ruleRow.querySelector('.msr-my-prop')?.value || '',
-        remoteProp: ruleRow.querySelector('.msr-remote-prop')?.value || '',
-      });
-    });
-    if (rules.length > 0) src.matchRules = rules;
-    sources.push(src);
-  });
-  return sources;
 }
 
 // ボタンプロパティのアクション設定UI描画

@@ -2,7 +2,10 @@
 (function () {
   'use strict';
 
-  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const DB_VIEW_TYPES = new Set([
+    'database', 'db', 'pivot', 'gallery', 'kanban', 'timeline',
+    'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form',
+  ]);
   const LEGACY_CONTAINER_IDS = {
     board: 'bd-canvas',
     folder: 'folder-view',
@@ -18,6 +21,9 @@
     gallery: 'db-view-container',
     kanban: 'db-view-container',
     timeline: 'db-view-container',
+    calendar: 'db-view-container',
+    tasks: 'db-view-container',
+    shifts: 'db-view-container',
     chart: 'db-view-container',
     graph: 'db-view-container',
     form: 'db-view-container',
@@ -88,10 +94,29 @@
     return result !== false;
   }
 
-  async function _flushPendingEditorBeforeReload(type) {
-    if (type !== 'page' && type !== 'entity') return;
-    if (typeof flushPendingEditorAutosave !== 'function') return;
-    await Promise.resolve(flushPendingEditorAutosave()).catch(() => {});
+  async function _flushPendingEditorBeforeReload(type, path) {
+    if (type === 'page' || type === 'entity') {
+      if (typeof flushPendingEditorAutosave === 'function') {
+        await Promise.resolve(flushPendingEditorAutosave()).catch(() => {});
+      }
+      return;
+    }
+    if (!DB_VIEW_TYPES.has(type)) return;
+    // click/focusout で開始したセル保存を追跡マップへ登録させてから待つ。
+    await Promise.resolve();
+    if (typeof waitForPendingDbValueMutations === 'function') {
+      await waitForPendingDbValueMutations(path);
+    }
+    if (typeof flushPendingDbPropertySettings === 'function') {
+      await flushPendingDbPropertySettings(path);
+    }
+    if (typeof flushPendingDbViewConfigBackendSave === 'function') {
+      await flushPendingDbViewConfigBackendSave(path);
+    }
+    // 列設定の確定処理が値・双方向リレーション保存を派生させる場合に備え、最後に再確認する。
+    if (typeof waitForPendingDbValueMutations === 'function') {
+      await waitForPendingDbValueMutations(path);
+    }
   }
 
   function _clearLegacyDataset(type) {
@@ -115,7 +140,6 @@
     const opts = _bridgeOpts(paneId);
     _clearLegacyDataset(type);
     return _withTargetPane(paneId, async () => {
-      await _flushPendingEditorBeforeReload(type);
       if (type === 'folder' && typeof openFolder === 'function') return _handled(() => openFolder(label, path, opts));
       if (type === 'page' && typeof openPage === 'function') return _handled(() => openPage(label, path, opts));
       if (type === 'entity' && typeof selectEntity === 'function') return _handled(() => selectEntity(path, opts));
@@ -151,6 +175,7 @@
     const path = _tabPath(tab);
     const label = _tabLabel(tab, path);
     try {
+      await _flushPendingEditorBeforeReload(tab?.type || '', path);
       const handled = await _reloadComponent(tab) || (path ? await _reloadLegacyTab(tab, path, label, current.paneId) : false);
       if (!handled) {
         if (typeof showStatus === 'function') showStatus('この表示は再読み込み対象ではありません', true);

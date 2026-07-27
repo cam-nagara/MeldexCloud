@@ -135,7 +135,8 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
       setTimeout(save, 0);
     }
   };
-  input.addEventListener('blur', finish);
+  if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(input, finish);
+  else input.addEventListener('blur', finish);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(); }
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restore(); }

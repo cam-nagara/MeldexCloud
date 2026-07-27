@@ -638,16 +638,28 @@
     timer: 'timer',
     history: 'history',
     annotation: 'stickyNote',
+    tags: 'tag',
     // その他
     search: 'search',
   };
+  function _dockTabTypeIconName(type) {
+    if (typeof uiTypeIconName === 'function') {
+      const shared = uiTypeIconName(type);
+      if (shared) return shared;
+    }
+    if (typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function') {
+      const shared = GBTabs.tabIcon(type);
+      if (shared) return shared;
+    }
+    return _TAB_TYPE_ICON_MAP[type] || 'page';
+  }
   function _dockTabTypeIcon(type, size) {
-    const name = _TAB_TYPE_ICON_MAP[type] || 'square';
+    const name = _dockTabTypeIconName(type);
     return (typeof lucide === 'function') ? lucide(name, size) : '';
   }
   function _railIcon(iconName, size) {
     if (_TAB_TYPE_ICON_MAP[iconName]) return _dockTabTypeIcon(iconName, size);
-    return (typeof lucide === 'function') ? lucide(iconName || 'square', size) : '';
+    return (typeof lucide === 'function') ? lucide(iconName || 'page', size) : '';
   }
   function _collectPanesInGroup(root) {
     const out = [];

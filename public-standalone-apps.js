@@ -48,7 +48,7 @@
       icon: 'MeldexQuickMemo_icon_128.png',
       windowsAsset: 'MeldexQuickMemo.zip',
       cloudUrl: 'apps/quick-memo/',
-      description: '短いメモや共有URLをすばやく保存できます。ホーム画面に追加してすぐ開けます。',
+      description: '短いメモや共有URLを、Meldex Cloudの共通接続ですばやく保存できます。',
     }),
   ]);
 
@@ -75,7 +75,7 @@
     download.dataset.standaloneDownload = app.id;
     download.dataset.standaloneAsset = app.windowsAsset;
     download.setAttribute('aria-disabled', 'true');
-    const cloud = node('a', 'button', 'クラウド版を開いてホームに追加');
+    const cloud = node('a', 'button', 'Meldex Cloudで開く');
     cloud.href = app.cloudUrl;
     actions.append(download, cloud);
 

@@ -51,6 +51,10 @@ function _folderDisplayLabel(label, path) {
 }
 
 function _folderItemRawUrl(item) {
+  if (item?.archive_path && item?.archive_member) {
+    return '/api/archive/file?path=' + encodeURIComponent(item.archive_path)
+      + '&member=' + encodeURIComponent(item.archive_member);
+  }
   if (item?.external_reference) {
     return item.external_raw_url || ('/api/external-reference/raw?path=' + encodeURIComponent(item.path));
   }
@@ -63,6 +67,10 @@ function _folderItemThumbnailUrl(item, size = 384) {
 
 function _folderItemViewerUrl(item, embed) {
   const suffix = embed ? '&embed=1' : '';
+  if (item?.archive_path && item?.archive_member) {
+    return '/viewer?archive=' + encodeURIComponent(item.archive_path)
+      + '&member=' + encodeURIComponent(item.archive_member) + suffix;
+  }
   return '/viewer?file=' + encodeURIComponent(item.path) + suffix;
 }
 

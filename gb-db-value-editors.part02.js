@@ -22,7 +22,11 @@ function createCommonTagsValueElement(rawValue, entityPath, propName) {
         chip.className = 'multi-select-tag common-tags-tag';
         chip.textContent = tag.name || '';
         const color = typeof api.effectiveTagColor === 'function' ? api.effectiveTagColor(tag, groupsById) : '';
-        if (color && typeof applyDbOptionChipColor === 'function') applyDbOptionChipColor(chip, color);
+        if (color && /^var\(--[-\w]+\)$/.test(color)) {
+          chip.style.background = color;
+        } else if (color && typeof applyDbOptionChipColor === 'function') {
+          applyDbOptionChipColor(chip, color);
+        }
         container.appendChild(chip);
       });
     }).catch(() => {});
@@ -50,6 +54,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   if (!propTypeConfig || propTypeConfig.type === 'text') {
     return createValueElement(val, entityPath, propName, thumbSize, { ...options, dbPath, filter: filterMode });
   }
+  const type = propTypeConfig.type;
 
   // ボタン型: 値なし、ボタンのみ表示
   if (propTypeConfig.type === 'button') {
@@ -91,12 +96,15 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);
 
-  // Status dot（採用状況フィルタ無効時 or DB側でステータス機能 OFF の場合は非表示）
-  if (filterMode !== 'disabled' && getStatusEnabled(dbPath)) {
+  // リレーションはロールアップの参照可否にも使うため、常にステータスを変更できるようにする。
+  // その他の型は、採用状況フィルタ使用時または候補値が複数ある場合だけ表示する。
+  const relationStatusEditable = type === 'relation' || type === 'multi-relation';
+  if (relationStatusEditable || (filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
     dot.style.background = _getStatusColor(val.status, dbPath);
     dot.title = val.status || '案';
+    dot._dbStatusDropdownArgs = { val, entityPath, propName };
     dot.addEventListener('click', (e) => { e.stopPropagation(); showStatusDropdown(dot, val, entityPath, propName); });
     row.appendChild(dot);
   }
@@ -124,8 +132,6 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   const v = typeof _cellUiValueToString === 'function'
     ? _cellUiValueToString(val.value)
     : (val.value == null ? '' : String(val.value));
-  const type = propTypeConfig.type;
-
   if (type === 'image' && typeof createImagePropertyValueElement === 'function') {
     row.appendChild(createImagePropertyValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options));
     return row;
@@ -168,6 +174,59 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       } catch (e) { showStatus('保存に失敗: ' + (e?.message || e), true); }
     });
     row.appendChild(cb);
+    return row;
+  }
+
+  if (type === 'color') {
+    const swatch = document.createElement('span');
+    swatch.className = 'cell-color-swatch value-text';
+    const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+    const applyColor = (hex) => {
+      const ok = HEX.test(String(hex || '').trim());
+      swatch.style.background = ok ? hex.trim() : '';
+      swatch.classList.toggle('is-empty', !ok);
+      swatch.textContent = ok ? '' : '色を設定';
+      if (ok) swatch.title = hex.trim(); else swatch.removeAttribute('title');
+    };
+    applyColor(v);
+    swatch.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      if (lockMsg) { showStatus(lockMsg); return; }
+      if (typeof openColorPalette !== 'function') return;
+      let saveTimer = null;
+      openColorPalette(swatch, v || '', (color) => {
+        applyColor(color); // ライブでスウォッチへ反映
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(async () => {
+          const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
+          if (nv === (v || '')) return;
+          try {
+            const hasExisting = val?.file && val.candidate_index != null;
+            if (hasExisting) {
+              await _apiPutValue(val, { new_value: nv });
+              _dbUndoValue(propName + ': ' + (v || '') + ' → ' + nv, val, v, nv);
+            } else {
+              const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
+              val.file = result?.path || entityPath;
+              val.property = propName;
+              val.candidate_index = result?.candidate_index;
+              val.status = '採用';
+              const pivotData = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null) || state.pivotData;
+              const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
+              const entityData = pivotData?.entities?.[entityName];
+              if (entityData) {
+                if (!Array.isArray(entityData[propName])) entityData[propName] = [];
+                if (!entityData[propName].includes(val)) entityData[propName].push(val);
+              }
+            }
+            val.value = nv;
+            if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(swatch, entityPath, propName);
+          } catch (err) { showStatus('保存に失敗: ' + (err?.message || err), true); }
+        }, 250);
+      });
+    });
+    row.appendChild(swatch);
     return row;
   }
 
@@ -512,8 +571,13 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const tag = document.createElement('span');
       tag.className = 'msr-tag';
       // DBラベルバッジ
-      const srcIdx = sources.findIndex(s => s.db === entry.db);
-      const label = (srcIdx >= 0 && sources[srcIdx].label) ? sources[srcIdx].label : (entry.db.split('/').pop() || '?');
+      const srcIdx = sources.findIndex((s, index) =>
+        (_msrRuntimeSourceId(s, index) === entry.sourceId)
+        || (!entry.sourceId && s.db === entry.db));
+      const source = srcIdx >= 0 ? sources[srcIdx] : null;
+      const sheetLabel = entry.db.split('/').pop() || '?';
+      const detailLabel = source?.label || (_msrSourceKind(source) === 'relation' ? source?.relationProp : '');
+      const label = detailLabel ? sheetLabel + '/' + detailLabel : sheetLabel;
       const badge = document.createElement('span');
       badge.className = 'msr-badge msr-badge-' + Math.max(0, Math.min(srcIdx, 4));
       badge.textContent = label;
@@ -618,13 +682,58 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   return createValueElement(val, entityPath, propName, thumbSize, { ...options, dbPath, filter: filterMode });
 }
 
-// マルチソースリレーション値パーサ: "db1::id1, db2::id2" → [{ db, id }]
+function _msrSourceKind(source) {
+  return source?.kind === 'relation' ? 'relation' : 'sheet';
+}
+
+function _msrRuntimeSourceId(source, index) {
+  if (source?.sourceId) return source.sourceId;
+  const seed = [_msrSourceKind(source), source?.db || '', source?.relationProp || '', source?.label || '', index].join('|');
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return 'msr-legacy-' + (hash >>> 0).toString(36);
+}
+
+function _msrCanonicalValue(values) {
+  return (values || []).map(value => {
+    const base = [value.db || '', value.id || ''].join('::');
+    return value.sourceId ? base + '::' + value.sourceId : base;
+  }).join(', ');
+}
+
+function _msrAdoptedValues(values) {
+  return (Array.isArray(values) ? values : []).filter(value => {
+    const status = value?.status || '採用';
+    return status === '採用' || status === '掲載済み';
+  });
+}
+
+function _msrRelationValueReferences(values, currentId, currentName) {
+  const expected = new Set([String(currentId || ''), String(currentName || '')].filter(Boolean));
+  return _msrAdoptedValues(values).some(value =>
+    String(value?.value || '').split(',').map(item => item.trim()).filter(Boolean).some(item => expected.has(item))
+  );
+}
+
+function _msrCurrentEntityIdentity(entityPath, dbPath, ctx) {
+  const name = typeof _getPivotEntityName === 'function'
+    ? _getPivotEntityName(entityPath)
+    : String(entityPath || '').split('/').pop().replace(/\.md$/i, '');
+  const data = ctx?.pivotData || state.pivotData;
+  const entityData = data?.entities?.[name] || {};
+  return { name, id: entityData._id || name };
+}
+
+// canonical: "db::entryId::sourceId"。旧 "db::entryId" も読み取る。
 function _parseMsrValue(v) {
   if (!v) return [];
   return v.split(',').map(s => s.trim()).filter(Boolean).map(s => {
-    const sep = s.indexOf('::');
-    if (sep < 0) return { db: '', id: s };
-    return { db: s.substring(0, sep), id: s.substring(sep + 2) };
+    const parts = s.split('::');
+    if (parts.length < 2) return { db: '', id: s, sourceId: '' };
+    return { db: parts[0], id: parts[1], sourceId: parts.slice(2).join('::') };
   });
 }
 
@@ -651,24 +760,70 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
   dd.appendChild(search);
 
   const currentVals = _parseMsrValue(val?.value || '');
+  const hadLegacyValues = currentVals.some(value => !value.sourceId);
+  currentVals.forEach(value => {
+    if (value.sourceId) return;
+    const sourceIndex = sources.findIndex(source => source.db === value.db);
+    value.sourceId = sourceIndex >= 0
+      ? _msrRuntimeSourceId(sources[sourceIndex], sourceIndex)
+      : _msrRuntimeSourceId({ kind: 'sheet', db: value.db }, -1);
+  });
   const initialVals = currentVals.map(v => ({ ...v }));
-  const msrValueText = (values) => (values || []).map(v => v.db + '::' + v.id).join(', ');
+  const msrValueText = _msrCanonicalValue;
   let didChange = false;
-  const isSelected = (db, id) => currentVals.some(v => v.db === db && v.id === id);
+  const isSelected = (db, id, sourceId) => currentVals.some(v =>
+    v.db === db && v.id === id && (v.sourceId ? v.sourceId === sourceId : true));
 
   const listDiv = document.createElement('div');
 
   // 全ソースDBのエントリをロード
-  const allEntries = []; // { db, id, name, label }
-  for (const src of sources) {
+  const allEntries = []; // { db, id, name, label, sourceId, dangling? }
+  const currentIdentity = _msrCurrentEntityIdentity(entityPath, dbPath, ctx);
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+    const src = sources[sourceIndex];
     if (!src.db) continue;
+    const sourceId = _msrRuntimeSourceId(src, sourceIndex);
     try {
       const map = await _getRelationMap(src.db);
-      const label = src.label || src.db.split('/').pop();
+      const sheetName = src.db.split('/').pop();
+      const detailLabel = src.label || (_msrSourceKind(src) === 'relation' ? src.relationProp : '');
+      const label = detailLabel ? sheetName + '/' + detailLabel : sheetName;
       for (const [id, name] of Object.entries(map.idToName)) {
-        allEntries.push({ db: src.db, id, name, label });
+        if (_msrSourceKind(src) === 'relation') {
+          const remoteData = map.entities?.[name] || {};
+          if (!src.relationProp
+            || !_msrRelationValueReferences(remoteData[src.relationProp], currentIdentity.id, currentIdentity.name)) continue;
+        }
+        allEntries.push({ db: src.db, id, name, label, sourceId });
       }
-    } catch {}
+    } catch (error) {
+      console.warn('マルチソースリレーションの候補を読み込めませんでした:', src.db, error);
+    }
+  }
+  for (const selected of currentVals) {
+    const selectedSourceIndex = sources.findIndex((source, index) =>
+      (_msrRuntimeSourceId(source, index) === selected.sourceId)
+      || (!selected.sourceId && source.db === selected.db));
+    const selectedSource = selectedSourceIndex >= 0 ? sources[selectedSourceIndex] : null;
+    const sourceId = selected.sourceId || (selectedSource ? _msrRuntimeSourceId(selectedSource, selectedSourceIndex) : '');
+    if (allEntries.some(entry => entry.db === selected.db && entry.id === selected.id && entry.sourceId === sourceId)) continue;
+    let name = selected.id;
+    try {
+      name = await _resolveRelationName(selected.id, selected.db) || selected.id;
+    } catch (error) {
+      console.warn('マルチソースリレーションの現在値を解決できませんでした:', selected.db, selected.id, error);
+    }
+    const sheetName = selected.db.split('/').pop() || '?';
+    const detailLabel = selectedSource?.label
+      || (_msrSourceKind(selectedSource) === 'relation' ? selectedSource?.relationProp : '');
+    allEntries.unshift({
+      db: selected.db,
+      id: selected.id,
+      name,
+      label: detailLabel ? sheetName + '/' + detailLabel : sheetName,
+      sourceId,
+      dangling: true,
+    });
   }
 
   const renderList = (filter) => {
@@ -678,11 +833,12 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
     // ソースDB別にグループ化
     const groups = {};
     filtered.forEach(e => {
-      if (!groups[e.db]) groups[e.db] = { label: e.label, entries: [] };
-      groups[e.db].entries.push(e);
+      const groupKey = e.db + '::' + e.sourceId;
+      if (!groups[groupKey]) groups[groupKey] = { db: e.db, label: e.label, entries: [] };
+      groups[groupKey].entries.push(e);
     });
 
-    for (const [db, group] of Object.entries(groups)) {
+    for (const group of Object.values(groups)) {
       // グループヘッダー
       const header = document.createElement('div');
       header.style.cssText = 'padding:4px 8px;font-size:11px;font-weight:bold;color:var(--fg2);border-bottom:1px solid var(--border);';
@@ -690,7 +846,7 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
       listDiv.appendChild(header);
 
       group.entries.forEach(entry => {
-        const sel = isSelected(entry.db, entry.id);
+        const sel = isSelected(entry.db, entry.id, entry.sourceId);
         const item = document.createElement('div');
         item.className = 'dd-nav-item';
         item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
@@ -699,13 +855,16 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
         item.onmouseleave = () => { item.style.background = sel ? 'rgba(86,156,214,0.15)' : ''; };
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = sel;
         item.appendChild(cb);
-        item.appendChild(document.createTextNode(entry.name));
+        item.appendChild(document.createTextNode(entry.name + (entry.dangling ? '（現在の値・候補外）' : '')));
         item.addEventListener('click', () => {
-          const idx = currentVals.findIndex(v => v.db === entry.db && v.id === entry.id);
+          const idx = currentVals.findIndex(v =>
+            v.db === entry.db && v.id === entry.id
+            && (v.sourceId ? v.sourceId === entry.sourceId : true));
           const nextVals = currentVals.slice();
-          if (idx >= 0) nextVals.splice(idx, 1); else nextVals.push({ db: entry.db, id: entry.id });
+          if (idx >= 0) nextVals.splice(idx, 1);
+          else nextVals.push({ db: entry.db, id: entry.id, sourceId: entry.sourceId });
           currentVals.splice(0, currentVals.length, ...nextVals);
-          didChange = msrValueText(currentVals) !== msrValueText(initialVals);
+          didChange = hadLegacyValues || msrValueText(currentVals) !== msrValueText(initialVals);
           renderList(search.value);
           if (dd.isConnected) search.focus({ preventScroll: true });
         });
@@ -784,8 +943,11 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
 async function _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPath) {
   const results = [];
   const pts = getPropertyTypes(dbPath);
+  const currentId = entityData?._id || entityName;
 
-  for (const src of (ptc.sources || [])) {
+  const sources = ptc.sources || [];
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+    const src = sources[sourceIndex];
     if (!src.db) continue;
     try {
       const map = await _getRelationMap(src.db);
@@ -797,6 +959,19 @@ async function _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPa
 
       for (const [remoteName, remoteData] of Object.entries(remoteEntities)) {
         const remoteId = remoteData._id || remoteName;
+        if (_msrSourceKind(src) === 'relation') {
+          if (src.relationProp
+            && _msrRelationValueReferences(remoteData[src.relationProp], currentId, entityName)) {
+            results.push({
+              db: src.db,
+              id: remoteId,
+              sourceId: _msrRuntimeSourceId(src, sourceIndex),
+              name: remoteName,
+              label: src.label || src.relationProp || src.db.split('/').pop(),
+            });
+          }
+          continue;
+        }
         let allMatch = true;
 
         for (const rule of (src.matchRules || [])) {
@@ -826,7 +1001,13 @@ async function _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPa
         }
 
         if (allMatch && (src.matchRules || []).length > 0) {
-          results.push({ db: src.db, id: remoteId, name: remoteName, label: src.label || src.db.split('/').pop() });
+          results.push({
+            db: src.db,
+            id: remoteId,
+            sourceId: _msrRuntimeSourceId(src, sourceIndex),
+            name: remoteName,
+            label: src.label || src.db.split('/').pop(),
+          });
         }
       }
     } catch (e) {
@@ -859,7 +1040,7 @@ async function _autoCollectAllMsrProps(dbPath, ctx) {
     for (const [propName, ptc] of msrProps) {
       try {
         const collected = await _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPath);
-        const newValue = collected.map(r => r.db + '::' + r.id).join(', ');
+        const newValue = _msrCanonicalValue(collected);
 
         const vals = entityData[propName] || [];
         const adoptedVal = vals.find(v => {

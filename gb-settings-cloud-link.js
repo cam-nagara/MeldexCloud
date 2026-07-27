@@ -219,7 +219,11 @@
         return;
       }
       try {
-        ledgerIO.addJoinedWorkspace({ dropboxPath: picked.path, name: picked.name });
+        ledgerIO.addJoinedWorkspace({
+          dropboxPath: picked.path,
+          name: picked.name,
+          namespaceKind: picked.namespaceKind,
+        });
       } catch (e) {
         if (typeof showStatus === 'function') showStatus('参加できませんでした: ' + _errorText(e), true);
         return;
@@ -262,7 +266,7 @@
       // （readWorkspaceLedgerStatus が exists:false で返す）。
       let ledgerStatus = null;
       try {
-        ledgerStatus = await ledgerIO.readWorkspaceLedgerStatus(picked.path);
+        ledgerStatus = await ledgerIO.readWorkspaceLedgerStatus(picked.path, picked.namespaceKind);
       } catch (e) {
         if (typeof showStatus === 'function') showStatus('共有状態を確認できませんでした: ' + _errorText(e), true);
         return;
@@ -290,14 +294,18 @@
           // フォルダツリーへ何も出ない空振りになる）。
           const nextRoots = existingRoots.filter((r) => String(r?.relPath || '') !== '');
           nextRoots.push({ provider: 'dropbox', relPath: '', name: picked.name });
-          await ledgerIO.writeWorkspaceLedger(picked.path, nextRoots);
+          await ledgerIO.writeWorkspaceLedger(picked.path, nextRoots, picked.namespaceKind);
         } catch (e) {
           if (typeof showStatus === 'function') showStatus('共有ワークスペースにできませんでした: ' + _errorText(e), true);
           return;
         }
 
         try {
-          ledgerIO.addJoinedWorkspace({ dropboxPath: picked.path, name: picked.name });
+          ledgerIO.addJoinedWorkspace({
+            dropboxPath: picked.path,
+            name: picked.name,
+            namespaceKind: picked.namespaceKind,
+          });
         } catch (e) {
           if (typeof showStatus === 'function') showStatus('参加できませんでした: ' + _errorText(e), true);
           return;
@@ -305,7 +313,11 @@
         if (typeof showStatus === 'function') showStatus(`「${picked.name}」を共有ワークスペースにしました`);
       } else {
         try {
-          ledgerIO.addJoinedWorkspace({ dropboxPath: picked.path, name: picked.name });
+          ledgerIO.addJoinedWorkspace({
+            dropboxPath: picked.path,
+            name: picked.name,
+            namespaceKind: picked.namespaceKind,
+          });
         } catch (e) {
           if (typeof showStatus === 'function') showStatus('参加できませんでした: ' + _errorText(e), true);
           return;

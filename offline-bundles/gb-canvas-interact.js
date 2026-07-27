@@ -1330,6 +1330,7 @@ function bdInitInteraction(root) {
           ? parsed.items
           : [{ name: parsed?.name || '', path: parsed?.path || '', type: parsed?.type || '' }];
         const extIsImage = lowerPath => ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.svg','.avif','.ico'].some(ext => lowerPath.endsWith(ext));
+        const extIsVideo = lowerPath => ['.mp4','.m4v','.mov','.webm','.ogv','.avi','.mkv','.wmv','.mpg','.mpeg'].some(ext => lowerPath.endsWith(ext));
         const pendingNodes = [];
         const addedIds = [];
         items.forEach((item, index) => {
@@ -1337,9 +1338,11 @@ function bdInitInteraction(root) {
           if (!path) return;
           const name = String(item?.name || path.split(/[/\\]/).pop() || path).trim() || path;
           const lower = path.toLowerCase();
-          const imgUrl = (item?.type === 'image' || extIsImage(lower))
+          const isImage = item?.type === 'image' || extIsImage(lower);
+          const isVideo = item?.type === 'video' || extIsVideo(lower);
+          const imgUrl = isImage
             ? API_BASE + '/file-raw?path=' + encodeURIComponent(path)
-            : '';
+            : (isVideo ? API_BASE + '/thumbnail?path=' + encodeURIComponent(path) + '&size=512' : '');
           const linkType = item?.type || (typeof _bdInferLinkType === 'function' ? _bdInferLinkType(path, '') : '');
           const offsetX = (index % 4) * 260;
           const offsetY = Math.floor(index / 4) * 220;

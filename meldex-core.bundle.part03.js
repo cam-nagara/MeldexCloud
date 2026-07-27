@@ -1,3 +1,82 @@
+          persist();
+        };
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+      });
+      note.appendChild(handle);
+    });
+  }
+
+  function _isEmbeddedStandaloneNoteItem(item, data) {
+    if (!item || data?.deleted) return false;
+    const type = String(item.type || '');
+    const shape = String(item.shape || data?.shape || '');
+    const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
+    if (type === 'comment') {
+      return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;
+    }
+    return type === 'note' || type === 'sticky';
+  }
+
+  function _renderNote(item, data) {
+    if (!data) return null;
+    const note = document.createElement('div');
+    note.className = 'ann-note ann-note-embedded ' + (item.shape || 'sticky');
+    note.dataset.annId = item.id || '';
+    note._annData = data;
+    _applyNotePosition(note, data);
+    note.style.width = (data.width || 180) + 'px';
+    note.style.height = (data.height || 100) + 'px';
+    _applyNoteColor(note, item.color || '#c48080');
+    note.style.opacity = item.opacity ?? 1;
+    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
+    note.addEventListener('pointerdown', (e) => {
+      // 右クリック/中クリックが bd-canvas の pointerdown ハンドラまで伝播すると
+      // ボード側の右クリックメニュー (bdContextMenu) が付箋メニューと重なって
+      // 出てしまうため、付箋内のポインター押下は親へ伝播させない。
+      if (e.button !== 0) e.stopPropagation();
+      notesLayer.querySelectorAll('.ann-note-selected').forEach(el => el.classList.remove('ann-note-selected'));
+      note.classList.add('ann-note-selected');
+    });
+
+    const header = document.createElement('div');
+    header.className = 'ann-note-header';
+    const dateStr = item.created ? String(item.created).substring(0, 16).replace('T', ' ') : '';
+    const displayUser = (item.user && item.user !== 'anonymous') ? item.user : (data.user || (typeof getUsername === 'function' ? getUsername() : item.user || 'anonymous'));
+    const headerLabel = document.createElement('span');
+    headerLabel.className = 'ann-note-user';
+    const userIcon = document.createElement('span');
+    userIcon.className = 'ann-user-icon';
+    userIcon.innerHTML = _userIconHtml(displayUser);
+    const userText = document.createElement('span');
+    userText.className = 'ann-user-name';
+    userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'ann-note-delete-btn';
+    deleteBtn.dataset.annDelete = '1';
+    deleteBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-delete`;
+    deleteBtn.setAttribute('aria-label', '注釈を削除');
+    deleteBtn.title = '削除';
+    deleteBtn.innerHTML = lucide('x', 12);
+    _normalizeEmbeddedNoteIcon(deleteBtn, 12);
+    headerLabel.appendChild(userIcon);
+    headerLabel.appendChild(userText);
+    header.appendChild(headerLabel);
+    header.appendChild(deleteBtn);
+    note.tabIndex = -1;
+    note.setAttribute('aria-haspopup', 'menu');
+    note.appendChild(header);
+
+    let saveTimer = null;
+    let editor = null;
+    const persist = () => {
+      const next = _notePayload(data, editor, note);
+      Object.assign(data, next);
+      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+        item._pendingData = next;
+        return;
+      }
       if (_updateBoardAnnotation(item.id, { data: next })) return;
       _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
     };
@@ -819,82 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
         if (_saElementHit(el, pt.x, pt.y, 10)) {
           try {
             if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);
-            el.remove();
-          } catch (error) {
-            _saReportSaveFailure(error, '注釈を削除できませんでした');
-          }
-          break;
-        }
-      }
-      for (const n of container.querySelectorAll('.sa-note')) {
-        const r = n.getBoundingClientRect(); const cr = container.getBoundingClientRect();
-        const nx = r.left - cr.left, ny = r.top - cr.top;
-        if (pt.x >= nx - 5 && pt.x <= nx + r.width + 5 && pt.y >= ny - 5 && pt.y <= ny + r.height + 5) {
-          await _saDeleteNoteElement(n);
-          break;
-        }
-      }
-      return;
-    }
-    const targetPath = _saCurrentTargetPath();
-    if (!targetPath) {
-      _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
-      return;
-    }
-    _ann.drawing = true;
-    _ann.targetPath = targetPath;
-    _ann.path = [[pt.x, pt.y]]; _ann.pressures = [e.pressure || 0.5];
-    svg.setPointerCapture(e.pointerId);
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if (!_ann.drawing) return;
-    const pt = _toCoords(e.clientX, e.clientY);
-    _ann.path.push([pt.x, pt.y]); _ann.pressures.push(e.pressure || 0.5);
-    let preview = layer.querySelector('.ann-preview');
-    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
-    if (!preview || preview.tagName.toLowerCase() !== previewTag) { preview?.remove(); preview = document.createElementNS(_svgNS, previewTag); preview.classList.add('ann-preview'); layer.appendChild(preview); }
-    if (_ann.tool === 'rect') {
-      _saApplyRect(preview, _saRectData(_ann.path), _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'lasso') {
-      preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
-      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
-      preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-width', '1'); preview.setAttribute('stroke-dasharray', '4,4');
-    } else {
-      preview.setAttribute('d', _pathD(_ann.path)); preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
-      preview.setAttribute('stroke-width', _ann.tool === 'pen' ? '3' : '12');
-      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_saNormalizeOpacity(_ann.opacity, 1) * 0.5) : String(_saNormalizeOpacity(_ann.opacity, 1))); preview.setAttribute('stroke-linecap', 'round');
-    }
-  });
-
-  svg.addEventListener('pointerup', async () => {
-    if (!_ann.drawing) return;
-    _ann.drawing = false;
-    layer.querySelector('.ann-preview')?.remove();
-    if (_ann.path.length < 2) {
-      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
-      return;
-    }
-    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
-    const data = type === 'rect' ? _saRectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
-    const targetPath = _ann.targetPath || _saCurrentTargetPath();
-    if (!targetPath || _saCurrentTargetPath() !== targetPath) {
-      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
-      return;
-    }
-    try {
-      const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
-      if (_saCurrentTargetPath() !== targetPath) return;
-      if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);
-      else _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, res.id);
-    } catch (error) { _saReportSaveFailure(error); }
-    finally { _ann.path = []; _ann.pressures = []; _ann.targetPath = ''; }
-  });
-
-  function _isStandaloneNoteAnnotation(item, data) {
-    if (!item || data?.deleted) return false;
-    const type = String(item.type || '');
-    const shape = String(item.shape || data?.shape || '');
-    const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
-    if (type === 'comment') {
-      return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;

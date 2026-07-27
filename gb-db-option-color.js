@@ -2,8 +2,7 @@
    セレクト / マルチセレクトの選択肢（option）ごとの色設定。
    - 色の保存場所: property_types[propName].optionColors = { [option値]: '#rrggbb' }
    - options 配列自体は文字列のまま変更しない（追加のみの互換変更）
-   - 設定場所はプロパティ設定画面のみ。セル編集ドロップダウンには色を「表示」するだけで、
-     ドロップダウン内からの色変更は第2弾（2026-07-18 確定仕様）
+   - プロパティ設定画面とセル編集ドロップダウンの両方から共通カラーパレットで変更できる
    - リネーム/削除で孤立した色キーは自動削除しない（options textarea の autosave デバウンス中に
      行が一時的に消えるため）。UI表示は現存 options のみに絞る
 */
@@ -47,6 +46,21 @@ function applyDbOptionChipColor(el, hex) {
   if (fg) el.style.color = fg;
 }
 
+// グループ行 / カンバン列ヘッダーへ候補色と自動コントラスト色を適用する。
+function applyDbOptionHeaderColor(el, hex) {
+  if (!el) return;
+  const safeHex = _dbOptionColorIsValidHex(hex) ? hex.trim() : '';
+  if (!safeHex) {
+    el.classList.remove('db-option-color-header');
+    el.style.removeProperty('--db-option-bg');
+    el.style.removeProperty('--db-option-fg');
+    return;
+  }
+  el.classList.add('db-option-color-header');
+  el.style.setProperty('--db-option-bg', safeHex);
+  el.style.setProperty('--db-option-fg', dbOptionTextColorFor(safeHex));
+}
+
 // ドロップダウン項目先頭に挿入する色ドット（DOM要素）。hex が無効なら null
 function createDbOptionColorDot(hex) {
   const safeHex = _dbOptionColorIsValidHex(hex) ? hex.trim() : '';
@@ -69,10 +83,133 @@ function dbOptionColorDotHtml(hex) {
 // グループ化ヘッダー（テーブルの行グループ / カンバン列）用に、groupByProp が select 系なら
 // groupKey に対応する色ドットHTMLを返す。対象外なら空文字
 function dbOptionColorDotHtmlForGroup(dbPath, groupByProp, groupKey, ctx) {
+  return dbOptionColorDotHtml(getDbOptionColorForGroup(dbPath, groupByProp, groupKey, ctx));
+}
+
+function getDbOptionColorForGroup(dbPath, groupByProp, groupKey, ctx) {
   if (!dbPath || !groupByProp || typeof getPropertyTypes !== 'function') return '';
   const ptc = (getPropertyTypes(dbPath, ctx) || {})[groupByProp];
   if (!ptc || (ptc.type !== 'select' && ptc.type !== 'multi-select')) return '';
-  return dbOptionColorDotHtml(getDbOptionColor(ptc, groupKey));
+  return getDbOptionColor(ptc, groupKey);
+}
+
+function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
+  const safeHex = _dbOptionColorIsValidHex(color) ? color.trim() : '';
+  const contexts = typeof _dbPaneContextsForPath === 'function'
+    ? _dbPaneContextsForPath(dbPath)
+    : [];
+  if (ctx && !contexts.includes(ctx)) contexts.push(ctx);
+  const roots = contexts.map(item => item?.containerEl).filter(Boolean);
+  if (!roots.length && typeof document !== 'undefined') roots.push(document);
+
+  roots.forEach(root => {
+    root.querySelectorAll?.('td[data-prop-name]').forEach(td => {
+      if (td.dataset.propName !== propName) return;
+      td.querySelectorAll('.cell-select-val, .multi-select-tag').forEach(chip => {
+        if ((chip.textContent || '').trim() === String(option)) applyDbOptionChipColor(chip, safeHex);
+      });
+    });
+
+    const groupBy = typeof getGroupBy === 'function' ? getGroupBy(dbPath, ctx) : '';
+    if (groupBy === propName) {
+      root.querySelectorAll?.('tr.group-header-row').forEach(row => {
+        if (row.dataset.groupKey !== String(option)) return;
+        applyDbOptionHeaderColor(row, safeHex);
+        const cell = row.querySelector('td');
+        const existing = cell?.querySelector('.db-option-color-dot');
+        if (existing) existing.remove();
+        const dot = createDbOptionColorDot(safeHex);
+        if (dot && cell) {
+          const toggle = cell.querySelector('.group-toggle');
+          if (toggle?.nextSibling) cell.insertBefore(dot, toggle.nextSibling);
+          else cell.appendChild(dot);
+        }
+      });
+    }
+
+    const kanbanGroupBy = typeof getKanbanGroupBy === 'function' ? getKanbanGroupBy(dbPath, ctx) : '';
+    if (kanbanGroupBy === propName) {
+      root.querySelectorAll?.('.kanban-column-header').forEach(header => {
+        const title = header.querySelector('span:not(.kanban-dot):not(.kanban-count)');
+        if ((title?.textContent || '').trim() !== String(option)) return;
+        applyDbOptionHeaderColor(header, safeHex);
+        const existing = header.querySelector('.kanban-dot');
+        if (existing) existing.remove();
+        const dot = createDbOptionColorDot(safeHex);
+        if (dot) {
+          dot.classList.add('kanban-dot');
+          header.insertBefore(dot, header.firstChild);
+        }
+      });
+    }
+  });
+}
+
+// --- セル編集ドロップダウンからの色設定（第2弾: 2026-07-24） ---
+// 選択肢の色を optionColors に保存する。低レベルの setPropertyType を使い、state.dbMetadata（同期更新）と
+// バックエンドへ反映する。Undo/Redo は積まない（軽微な表示変更のため）。
+async function setDbOptionColorAndSave(dbPath, propName, option, color, ctx) {
+  if (!dbPath || !propName || option == null) return false;
+  if (typeof getPropertyTypes !== 'function' || typeof setPropertyType !== 'function') return false;
+  const cfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || {}));
+  const colors = { ...(cfg.optionColors || {}) };
+  if (_dbOptionColorIsValidHex(color)) colors[String(option)] = color.trim();
+  else delete colors[String(option)];
+  if (Object.keys(colors).length) cfg.optionColors = colors;
+  else delete cfg.optionColors;
+  try {
+    await setPropertyType(dbPath, propName, cfg, ctx);
+    refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx);
+  } catch (error) {
+    if (typeof showStatus === 'function') {
+      showStatus(`選択肢の背景色を保存できませんでした: ${error?.message || '保存エラー'}`, true);
+    }
+    return false;
+  }
+  return true;
+}
+
+// ドロップダウンの選択肢項目に「背景色を設定」できる色スウォッチを付ける。
+// クリックで共通カラーパレットを開き、選んだ色を optionColors に保存する。
+// opts: { dbPath, propName, option, ctx, getConfig?, onChanged? }
+function appendDbOptionColorSwatch(itemEl, opts) {
+  if (!itemEl || !opts || typeof openColorPalette !== 'function') return null;
+  const { dbPath, propName, option, ctx } = opts;
+  const getConfig = typeof opts.getConfig === 'function'
+    ? opts.getConfig
+    : () => (typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {})[propName] : null);
+  const sw = document.createElement('button');
+  sw.type = 'button';
+  sw.className = 'db-option-color-swatch';
+  sw.title = '背景色を設定';
+  sw.setAttribute('aria-label', String(option) + ' の背景色を設定');
+  sw.style.cssText = 'width:14px;height:14px;flex:0 0 auto;border:1px solid var(--border);border-radius:3px;cursor:pointer;padding:0;box-sizing:border-box;';
+  const paint = (hexOverride) => {
+    const hex = hexOverride != null ? hexOverride : getDbOptionColor(getConfig(), option);
+    sw.style.background = _dbOptionColorIsValidHex(hex) ? hex.trim() : 'transparent';
+  };
+  paint();
+  // ドロップダウン項目のクリック（値のトグル/選択）へ伝播させない
+  sw.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+  sw.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openColorPalette(sw, getDbOptionColor(getConfig(), option) || '', (color) => {
+      paint(color); // ライブでスウォッチへ反映
+      clearTimeout(sw._dbOptionColorSaveTimer);
+      // ライブ変更のたびに保存せずデバウンスして setPropertyType を呼ぶ
+      sw._dbOptionColorSaveTimer = setTimeout(() => {
+        setDbOptionColorAndSave(dbPath, propName, option, color, ctx).then((ok) => {
+          if (ok) {
+            if (typeof opts.onChanged === 'function') opts.onChanged();
+          } else {
+            paint();
+          }
+        });
+      }, 250);
+    });
+  });
+  itemEl.appendChild(sw);
+  return sw;
 }
 
 // プロパティ設定画面: 選択肢の色エディタを描画する。
@@ -95,7 +232,7 @@ function renderDbOptionColorEditor(container, scope) {
     const raw = textarea ? textarea.value : '';
     const opts = raw.split('\n').map(s => s.trim()).filter(Boolean);
     const seen = new Set();
-    opts.forEach(opt => {
+    opts.forEach((opt, optionIndex) => {
       if (seen.has(opt)) return;
       seen.add(opt);
       const row = document.createElement('div');
@@ -109,7 +246,7 @@ function renderDbOptionColorEditor(container, scope) {
       const swatch = document.createElement('button');
       swatch.type = 'button';
       swatch.className = 'gb-fmt-swatch';
-      swatch.dataset.e2eId = 'pt-select-option-color-swatch';
+      swatch.dataset.e2eId = `pt-select-option-color-swatch-${optionIndex}`;
       swatch.title = opt + ' の色';
       swatch.setAttribute('aria-label', opt + 'の色を選択');
       row.appendChild(swatch);

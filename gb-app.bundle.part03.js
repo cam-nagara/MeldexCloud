@@ -1,3 +1,67 @@
+  });
+  const anchor = e.currentTarget || e.target?.closest?.('button') || e.target;
+  const rect = anchor.getBoundingClientRect();
+  document.body.appendChild(dd);
+  if (typeof positionPopup === 'function') positionPopup(dd, rect, { prefer: 'bottom', gap: 2 });
+  else {
+    const z = _getZoom();
+    dd.style.left = (rect.left / z) + 'px';
+    dd.style.top = (rect.bottom / z + 2) + 'px';
+    clampPopupToViewport(dd);
+  }
+  const firstItem = dd.querySelector('.ab-dropdown-item');
+  let dropdownClosed = false;
+  function closeDropdown(restoreFocus) {
+    if (dropdownClosed) return;
+    dropdownClosed = true;
+    dd.remove();
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    if (restoreFocus && anchor?.focus) anchor.focus();
+  }
+  function closeOnPointer(ev) {
+    if (!dd.contains(ev.target)) closeDropdown(false);
+  }
+  function closeOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeDropdown(true);
+      return;
+    }
+    const menuItems = [...dd.querySelectorAll('.ab-dropdown-item')];
+    const current = menuItems.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[(current + 1 + menuItems.length) % menuItems.length].focus();
+    } else if (ev.key === 'ArrowUp' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[(current - 1 + menuItems.length) % menuItems.length].focus();
+    } else if (ev.key === 'Home' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[0].focus();
+    } else if (ev.key === 'End' && menuItems.length) {
+      ev.preventDefault();
+      menuItems[menuItems.length - 1].focus();
+    }
+  }
+  setTimeout(() => {
+    if (dropdownClosed || !dd.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
+  }, 0);
+  firstItem?.focus();
+}
+
+function showNavHistoryDropdown(e, direction) {
+  return showPaneNavHistoryDropdown(e, null, direction);
+}
+
+function updateNavBreadcrumb() {}
+
+let _pointerNavPaneId = null;
+
+function _handlePointerNavigationButtons(e) {
+  if (e.button !== 3 && e.button !== 4) return;
   const ae = document.activeElement;
   if (ae && (ae.contentEditable === 'true' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
   const paneId = _pointerNavPaneId || e.target?.closest?.('.gb-pane')?.dataset?.paneId || undefined;
@@ -20,6 +84,8 @@ window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, tr
 
 // DB表示設定（シートメタデータを正、localStorageを即時キャッシュとして使う）
 const _dbViewConfigBackendSaveTimers = new Map();
+const _dbViewConfigBackendSaveRunners = new Map();
+const _dbViewConfigBackendSavePromises = new Map();
 
 function getDbViewConfigStorageKey(dbPath) {
   const fileId = _pathToFileId(dbPath);
@@ -323,26 +389,58 @@ function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
   const writeBlocked = () => typeof isProductionManagementWriteBlocked === 'function'
     && isProductionManagementWriteBlocked(dbPath, options.ctx);
   if (writeBlocked()) return Promise.resolve(false);
-  const run = () => writeBlocked() ? Promise.resolve(false) : apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
-    .then(() => true)
-    .catch((error) => {
-      console.warn('[Meldex] シート表示設定を保存できませんでした', error);
-      return false;
-    });
+  const run = () => {
+    const previous = _dbViewConfigBackendSavePromises.get(key);
+    const promise = Promise.resolve(previous).catch(() => {}).then(() => (
+      writeBlocked() ? false : apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
+        .then(() => true)
+        .catch((error) => {
+          console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+          return false;
+        })
+    ))
+      .finally(() => {
+        if (_dbViewConfigBackendSavePromises.get(key) === promise) {
+          _dbViewConfigBackendSavePromises.delete(key);
+        }
+      });
+    _dbViewConfigBackendSavePromises.set(key, promise);
+    return promise;
+  };
+  _dbViewConfigBackendSaveRunners.set(key, run);
   if (_dbViewConfigBackendSaveTimers.has(key)) {
     clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
     _dbViewConfigBackendSaveTimers.delete(key);
   }
-  if (options.immediate === true) return run();
+  if (options.immediate === true) {
+    _dbViewConfigBackendSaveRunners.delete(key);
+    return run();
+  }
   const timer = setTimeout(() => {
     _dbViewConfigBackendSaveTimers.delete(key);
-    run();
+    const pendingRun = _dbViewConfigBackendSaveRunners.get(key);
+    _dbViewConfigBackendSaveRunners.delete(key);
+    (pendingRun || run)();
   }, 180);
   _dbViewConfigBackendSaveTimers.set(key, timer);
   return Promise.resolve(true);
 }
 function _hasPendingDbViewConfigBackendSave(dbPath) {
   return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
+}
+async function flushPendingDbViewConfigBackendSave(dbPath) {
+  const key = String(dbPath || '');
+  const timer = _dbViewConfigBackendSaveTimers.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    _dbViewConfigBackendSaveTimers.delete(key);
+    const run = _dbViewConfigBackendSaveRunners.get(key);
+    _dbViewConfigBackendSaveRunners.delete(key);
+    if (run) await run();
+  }
+  const inFlight = _dbViewConfigBackendSavePromises.get(key);
+  if (inFlight) await Promise.resolve(inFlight).catch(() => {});
+  return true;
 }
 function getDbViewConfig(dbPath) {
   const fileId = _pathToFileId(dbPath);
@@ -369,7 +467,14 @@ function _dbViewConfigHistoryScope(dbPath) {
   return (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
 }
 function _refreshDbViewConfigAfterHistory(dbPath) {
-  if (!dbPath || state.currentDbPath !== dbPath) return;
+  if (!dbPath) return;
+  // state.currentDbPath だけで判定すると、取り消し直前に対象タブへ切り替えた
+  // 直後（そのタブ自身の再読み込みがまだ state に追いついていないタイミング）に
+  // 「表示中でない」と誤判定して黙って何もしない事故が起きる（v0.7.056）。
+  // GBLayout上で実際にそのタブがアクティブかどうかも併せて確認する。
+  const isCurrentlyShown = state.currentDbPath === dbPath
+    || (typeof _dbFindActiveTabPaneForPath === 'function' && !!_dbFindActiveTabPaneForPath(dbPath));
+  if (!isCurrentlyShown) return;
   const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
   if (typeof selectDatabase === 'function') {
     Promise.resolve(selectDatabase(dbPath, ctx, {
@@ -790,111 +895,6 @@ const _apiFetchInFlightGets = new Map();
 const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
 const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
-const _gbAppApiFetchBrowseCache = new Map();
-let _gbAppApiFetchCacheGeneration = 0;
-
-function _gbAppApiFetchMethod(opts) {
-  return String(opts?.method || 'GET').toUpperCase();
-}
-
-function _gbAppApiFetchClonePayload(payload) {
-  if (typeof structuredClone === 'function') {
-    try { return structuredClone(payload); } catch {}
-  }
-  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
-}
-
-function _gbAppApiFetchCanonicalGetPath(path) {
-  try {
-    const url = new URL(String(path || ''), 'http://meldex.local');
-    const params = [...url.searchParams.entries()]
-      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
-    const query = params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
-    return url.pathname + (query ? '?' + query : '');
-  } catch {
-    return String(path || '');
-  }
-}
-
-function _apiFetchInFlightKey(path, opts) {
-  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.signal) return '';
-  const nonBenignKeys = Object.keys(opts || {}).filter(key => !['method', 'silentError', 'skipBrowseCache'].includes(key));
-  if (nonBenignKeys.length > 0) return '';
-  return _gbAppApiFetchCanonicalGetPath(path)
-    + '|silent=' + (opts?.silentError === true ? '1' : '0')
-    + '|skipBrowseCache=' + (opts?.skipBrowseCache === true ? '1' : '0');
-}
-
-function _gbAppApiFetchBrowseCacheKey(path, opts) {
-  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
-  try {
-    const url = new URL(String(path || ''), 'http://meldex.local');
-    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
-  } catch {
-    return '';
-  }
-}
-
-function _gbAppApiFetchInvalidateReadCaches() {
-  _gbAppApiFetchCacheGeneration += 1;
-  _gbAppApiFetchBrowseCache.clear();
-  _apiFetchInFlightGets.clear();
-  if (typeof _clearBrowseItemResolvedTypeCache === 'function') _clearBrowseItemResolvedTypeCache();
-}
-
-function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
-  _gbAppApiFetchBrowseCache.set(cacheKey, {
-    at: Date.now(),
-    payload: _gbAppApiFetchClonePayload(payload),
-  });
-  while (_gbAppApiFetchBrowseCache.size > GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES) {
-    const oldestKey = _gbAppApiFetchBrowseCache.keys().next().value;
-    if (!oldestKey) break;
-    _gbAppApiFetchBrowseCache.delete(oldestKey);
-  }
-}
-
-function _apiFetchBackendPerf(res) {
-  try {
-    const raw = res?.headers?.get?.('x-meldex-perf') || '';
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function _logPerfEvent(label, startedAt, detail) {
-  try {
-    const durationMs = _perfElapsedMs(startedAt);
-    const payload = {
-      ...(detail || {}),
-      message: `[perf] ${label}: ${durationMs}ms`,
-      perf: true,
-      label,
-      durationMs,
-    };
-    if (typeof console !== 'undefined' && typeof console.info === 'function') {
-      console.info('[Meldex perf] ' + payload.message, payload);
-    }
-    if (typeof _sendLog === 'function') _sendLog('info', payload);
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-function _gbAppApiFetchIsAbortError(e) {
-  return !!e && (e.name === 'AbortError' || e.code === 20);
-}
-
-// 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
-// タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
-async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
-  const controller = new AbortController();
-  const externalSignal = requestOpts?.signal || null;
-  const fetchOpts = { ...(requestOpts || {}) };
-  delete fetchOpts.timeoutMs;
-  let timedOut = false;
-  let onExternalAbort = null;
-  if (externalSignal) {
-    if (externalSignal.aborted) {
+// シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
+// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
+// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる

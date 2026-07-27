@@ -1126,7 +1126,16 @@ body.chat-composer-resizing {
 #status-bar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
 #status-bar .sb-sep { color: var(--bg4); margin: 0 6px; flex-shrink: 0; }
 #sb-msg { min-width: 0; }
-#sb-shortcuts { flex-shrink: 0; max-width: 35%; }
+#status-bar > #sb-shortcuts {
+  flex: 1 1 320px;
+  min-width: 180px;
+  max-width: 45%;
+  margin-left: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-overflow: clip;
+  scrollbar-width: thin;
+}
 body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
 #gb-mobile-status-toast {
   display: none;
@@ -1226,7 +1235,6 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #app-toolbar .tb-spacer {
     display: none !important;
   }
-  #app-toolbar .db-toolbar-view-switcher,
   #app-toolbar .db-toolbar-display-actions,
   #app-toolbar .db-toolbar-actions-right {
     min-width: 0 !important;

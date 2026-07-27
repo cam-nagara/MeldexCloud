@@ -170,12 +170,7 @@
         if (remaining-- > 0) window.setTimeout?.(attempt, 50);
         return;
       }
-      const active = document.activeElement;
-      const meaningful = active && active !== document.body && active !== document.documentElement && active !== source
-        && active.isConnected && active.getClientRects?.().length;
-      if (!meaningful) {
-        try { source.focus({ preventScroll: true }); } catch (_error) { source.focus?.(); }
-      }
+      try { source.focus({ preventScroll: true }); } catch (_error) { source.focus?.(); }
     };
     window.setTimeout?.(attempt, 0);
   }

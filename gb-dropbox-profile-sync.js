@@ -365,7 +365,43 @@
   async function _readProfileStore() {
     const transport = await _resolveTransport();
     const result = await transport.read(_profileStorePath());
-    return { store: _normalizeStore(result.store), rev: String(result.rev || '') };
+    const current = { store: _normalizeStore(result.store), rev: String(result.rev || '') };
+    if (Object.keys(current.store.profiles).length || !String(transport.id || '').startsWith('dropbox-api')) {
+      return current;
+    }
+    const legacyStore = await _readLegacyTeamProfileStore();
+    if (!legacyStore || !Object.keys(legacyStore.profiles).length) return current;
+    await transport.write(_profileStorePath(), legacyStore, { ifMatch: current.rev });
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:dropbox-profile-store-migrated', {
+        detail: { from: 'team_root', to: 'home', profileCount: Object.keys(legacyStore.profiles).length },
+      }));
+    } catch {}
+    const migrated = await transport.read(_profileStorePath());
+    return { store: _normalizeStore(migrated.store), rev: String(migrated.rev || '') };
+  }
+
+  async function _readLegacyTeamProfileStore() {
+    const auth = _auth();
+    if (!auth?.apiContent || !auth?.getNamespaceContext) return null;
+    let context = null;
+    try {
+      context = await auth.getNamespaceContext(false);
+    } catch {}
+    if (!context?.isTeam) return null;
+    try {
+      const response = await auth.apiContent(
+        'files/download',
+        { path: _profileStorePath() },
+        undefined,
+        { namespaceKind: 'team_root' },
+      );
+      const parsed = _safeJsonParse(await response.text(), null);
+      return parsed && typeof parsed === 'object' ? _normalizeStore(parsed) : null;
+    } catch (error) {
+      if (_isNotFoundError(error)) return null;
+      throw error;
+    }
   }
 
   async function _writeProfileStore(store, rev) {

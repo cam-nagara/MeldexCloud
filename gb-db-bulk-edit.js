@@ -25,6 +25,106 @@ function _getSelectedEntities(ctx) {
   return [...selected];
 }
 
+function _setPaneAllRowsSelected(ctx, shouldSelect) {
+  const c = ctx || _currentPaneState();
+  const selected = _ensureSelectedEntities(c);
+  if (!c || !selected) return false;
+  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const paneRoot = table || c.containerEl || document;
+  const entityNames = shouldSelect && Array.isArray(c._lastEntityNames)
+    ? c._lastEntityNames.filter(Boolean)
+    : [];
+  const nameSet = new Set(entityNames);
+
+  selected.clear();
+  nameSet.forEach(name => selected.add(name));
+  let lastChecked = null;
+  paneRoot.querySelectorAll('.row-select-cb').forEach(cb => {
+    const checked = shouldSelect && nameSet.has(cb.dataset.entityName);
+    cb.checked = checked;
+    cb.closest('tr')?.classList.toggle('row-selected', checked);
+    if (checked) lastChecked = cb;
+  });
+  paneRoot._lastSelectedCb = lastChecked;
+  paneRoot._pendingShiftAnchor = null;
+  paneRoot._dragSelectState = null;
+  c._dragSelectState = null;
+  _updateBulkEditBar(c);
+  return true;
+}
+
+function _selectAllPaneRows(ctx) {
+  return _setPaneAllRowsSelected(ctx, true);
+}
+
+function _clearPaneRowSelection(ctx) {
+  return _setPaneAllRowsSelected(ctx, false);
+}
+
+function _dbActiveCellForRowShortcut() {
+  const cell = typeof _dbCurrentVisualActiveCell === 'function'
+    ? _dbCurrentVisualActiveCell()
+    : (typeof activeCell !== 'undefined' ? activeCell : null);
+  if (!cell?.isConnected || !cell.classList?.contains('active-cell')) return null;
+  const style = typeof getComputedStyle === 'function' ? getComputedStyle(cell) : null;
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+  if (typeof cell.getClientRects === 'function'
+      && cell.getClientRects().length === 0
+      && !cell.offsetWidth
+      && !cell.offsetHeight) return null;
+  return cell;
+}
+
+function _dbRowShortcutHasNativeEditor() {
+  const target = document.activeElement;
+  return !!(target && target.isConnected !== false
+    && (target.isContentEditable || target.contentEditable === 'true'
+      || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'));
+}
+
+function _dbPaneContextForCanvas(canvas) {
+  if (typeof getAllPanes === 'function') {
+    const panes = Object.values(getAllPanes() || {});
+    const match = panes.find(ctx => ctx?.containerEl?.contains?.(canvas));
+    if (match) return match;
+  }
+  return typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+}
+
+function _isPivotBlankCanvasClick(event, canvas) {
+  if (!event || event.button !== 0 || event.target !== canvas) return false;
+  const rect = canvas.getBoundingClientRect?.();
+  if (!rect) return true;
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  return x >= 0 && y >= 0 && x < canvas.clientWidth && y < canvas.clientHeight;
+}
+
+document.addEventListener('click', event => {
+  const canvas = event.target?.matches?.('#pivot-view, .pivot-view') ? event.target : null;
+  if (!canvas || !_isPivotBlankCanvasClick(event, canvas)) return;
+  _clearPaneRowSelection(_dbPaneContextForCanvas(canvas));
+});
+
+// 単独シートは中央ショートカットレジストリを読み込まないため、同じ行選択操作をここで補完する。
+// メイン画面では runMeldexShortcutById が存在するので中央ハンドラだけが処理する。
+document.addEventListener('keydown', event => {
+  if (typeof runMeldexShortcutById === 'function') return;
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+  const key = String(event.key || '').toLowerCase();
+  if (key !== 'a' && key !== 'd') return;
+  const cell = _dbActiveCellForRowShortcut();
+  if (!cell || _dbRowShortcutHasNativeEditor()) return;
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(cell)
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  if (!ctx) return;
+  event.preventDefault();
+  if (key === 'a') _selectAllPaneRows(ctx);
+  else _clearPaneRowSelection(ctx);
+});
+
 function _updateBulkEditBar(ctx) {
   const c = ctx || _currentPaneState();
   const paneId = (c && c.paneId) || 'main';
@@ -97,33 +197,13 @@ function _updateBulkEditBar(ctx) {
     ? window.GBSelectionFloatMenu.button('選択解除', {
         e2eId: 'db-bulk-clear-' + paneId,
         muted: true,
-        onClick: () => {
-          const c2 = ctx || _currentPaneState();
-          if (c2 && c2._selectedEntities) c2._selectedEntities.clear();
-          const tblSel = '#' + ((c2 && c2.tableId) || 'pivot-table');
-          const paneRoot = _paneEl(c2, tblSel) || document;
-          paneRoot.querySelectorAll('.row-select-cb:checked').forEach(cb => {
-            cb.checked = false;
-            cb.closest('tr')?.classList.remove('row-selected');
-          });
-          _updateBulkEditBar(c2);
-        },
+        onClick: () => _clearPaneRowSelection(ctx || _currentPaneState()),
       })
     : document.createElement('button');
   if (!window.GBSelectionFloatMenu) {
     clearBtn.textContent = '選択解除';
     clearBtn.dataset.e2eId = 'db-bulk-clear-' + paneId;
-    clearBtn.addEventListener('click', () => {
-    const c2 = ctx || _currentPaneState();
-    if (c2 && c2._selectedEntities) c2._selectedEntities.clear();
-    const tblSel = '#' + ((c2 && c2.tableId) || 'pivot-table');
-    const paneRoot = _paneEl(c2, tblSel) || document;
-    paneRoot.querySelectorAll('.row-select-cb:checked').forEach(cb => {
-      cb.checked = false;
-      cb.closest('tr')?.classList.remove('row-selected');
-    });
-    _updateBulkEditBar(c2);
-    });
+    clearBtn.addEventListener('click', () => _clearPaneRowSelection(ctx || _currentPaneState()));
   }
   bar.appendChild(clearBtn);
 
@@ -167,7 +247,7 @@ async function _bulkReplaceEntityPropValues(entityPath, prop, values) {
   const current = [...((entity?.properties || {})[prop] || [])].sort((a, b) => (b.candidate_index ?? 0) - (a.candidate_index ?? 0));
   for (const v of current) {
     if (v.candidate_index != null && v.file) {
-      await _apiPutValue({ file: v.file, property: prop, candidate_index: v.candidate_index }, { _delete: true });
+      await _apiPutValue({ file: v.file, entry_path: entityPath, property: prop, candidate_index: v.candidate_index }, { _delete: true });
     } else if (v.file) {
       await apiPost('/outliner/delete', { path: v.file });
     }
@@ -504,18 +584,18 @@ function _showBulkEditModal(entityNames, ctx) {
             const extras = existingVals.filter(v => v !== primary).sort((a, b) => (b.candidate_index ?? 0) - (a.candidate_index ?? 0));
             for (const v of extras) {
               if (v.candidate_index != null && v.file) {
-                await _apiPutValue({ file: v.file, property: prop, candidate_index: v.candidate_index }, { _delete: true });
+                await _apiPutValue({ file: v.file, entry_path: ep, property: prop, candidate_index: v.candidate_index }, { _delete: true });
               } else if (v.file) {
                 await apiPost('/outliner/delete', { path: v.file });
               }
             }
           } else {
             const res = await _apiPostValue(ep, prop, value, status, '');
-            createdRef = { file: res?.path || res?.file || ep, property: res?.property || prop, candidate_index: res?.candidate_index };
+            createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_index: res?.candidate_index };
           }
         } else {
           const res = await _apiPostValue(ep, prop, value, status, '');
-          createdRef = { file: res?.path || res?.file || ep, property: res?.property || prop, candidate_index: res?.candidate_index };
+          createdRef = { file: res?.path || res?.file || ep, entry_path: ep, property: res?.property || prop, candidate_index: res?.candidate_index };
         }
         if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation')
             && typeof _clearCascadeDependentValues === 'function') {

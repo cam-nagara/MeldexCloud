@@ -105,10 +105,12 @@ function onPropertyTypeChange(root) {
 
   if (type === 'select' || type === 'multi-select') {
     const opts = current.options || existing;
+    const optionColorHelp = fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます。セル編集時の選択肢ドロップダウンからも設定できます')
+      .replace('<span ', '<span data-e2e-id="pt-select-option-color-help" ');
     optDiv.innerHTML = `<div class="field"><label>選択肢（1行1項目）</label>
       <textarea id="pt-select-options" rows="5">${esc(opts.join('\n'))}</textarea>
     </div>
-    <div class="field"><label>選択肢の色 ${fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます（ドロップダウン内からの変更は非対応）')}</label>
+    <div class="field"><label>選択肢の色 ${optionColorHelp}</label>
       <div id="pt-select-option-colors" class="pt-option-color-list"></div>
     </div>`;
     scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };

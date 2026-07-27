@@ -340,19 +340,35 @@ function _navPushWithViewState(ctx, entityName) {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const cfg = getDbViewConfig(dbPath);
+  const viewIdx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx;
   const viewMode = getCurrentViewMode(dbPath, { ctx });
   const container = _getDbViewScrollContainer(ctx, viewMode);
-  _forcedNavPush({
+  let savedView = null;
+  try {
+    const source = Array.isArray(cfg.savedViews) && Number.isInteger(viewIdx) ? cfg.savedViews[viewIdx] : null;
+    savedView = source ? JSON.parse(JSON.stringify(source)) : null;
+  } catch {}
+  const snapshot = {
     type: 'pivot',
     path: dbPath,
     label: dbPath.split('/').pop() || dbPath,
-    viewIdx: Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx,
+    viewIdx,
+    viewSnapshot: savedView ? { viewIdx, savedView } : null,
     scrollState: {
       scrollLeft: container?.scrollLeft || 0,
       scrollTop: container?.scrollTop || 0,
       focusedEntity: entityName || null,
     },
-  }, ctx?.paneId);
+  };
+  const navState = _getNavState(ctx?.paneId);
+  const current = navState.history[navState.index];
+  if (current && current.path === dbPath && ['pivot', 'database', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(current.type)) {
+    navState.history[navState.index] = snapshot;
+    _refreshPaneNavUi(navState.paneId);
+    _persistPaneNavState(navState);
+    return;
+  }
+  _forcedNavPush(snapshot, ctx?.paneId);
 }
 
 function navOpen(entry, opts) {
@@ -367,16 +383,27 @@ function navOpen(entry, opts) {
     return selectDatabase(entry.path, null, {
       ...(o || {}),
       restoreViewIdx: entry.viewIdx,
+      restoreViewSnapshot: entry.viewSnapshot,
       restoreScrollState: entry.scrollState,
     });
   }
   if (entry.type === 'scriptnote' && typeof openScenarioInScriptNote === 'function') return openScenarioInScriptNote(entry.path, entry.label, o);
-  if (entry.type === 'media' || entry.type === 'image' || entry.type === 'video' || entry.type === 'audio') return openMedia(entry.label, entry.path, entry.mediaType || (entry.type === 'media' ? 'image' : entry.type), o);
+  if (entry.type === 'media' || entry.type === 'image' || entry.type === 'video' || entry.type === 'audio') {
+    return openMedia(
+      entry.label,
+      entry.path,
+      entry.mediaType || (entry.type === 'media' ? 'image' : entry.type),
+      { ...(o || {}), viewerUrl: entry.viewerUrl || o?.viewerUrl },
+    );
+  }
   if (entry.type === 'html') {
     if (entry.urlExternal && typeof openViewer === 'function') return openViewer(entry.path);
     return openHtmlFile(entry.label, entry.path, o);
   }
   if (entry.type === 'folder') return openFolder(entry.label, entry.path, o);
+  if (entry.type === 'archive' && typeof openArchiveFolder === 'function') {
+    return openArchiveFolder(entry.archivePath, entry.member || '', o);
+  }
   if (entry.type === 'calendar') return openCalendarFile(entry.label, entry.path, o);
   if (entry.type === 'smart-db' && typeof openSmartDbFile === 'function') return openSmartDbFile(entry.label, entry.path, o);
 }
@@ -748,6 +775,40 @@ navPush = function(entry, paneId) {
   }
 };
 
+// 履歴再生では navPush() が navNavigating により記録を抑止するため、同じタブの
+// 表示先は履歴エントリから先に確定する。これにより、読み込み側の非同期処理や
+// ペインブリッジ初期化状態に左右されず、戻る/進むが別タブを汚さない。
+function _applyNavEntryToBoundTab(navState, entry) {
+  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return;
+  if (typeof GBLayout === 'undefined') return;
+  const pane = GBLayout.findNode?.(GBLayout.root, navState.paneId)?.node;
+  const tab = pane?.tabs?.find(candidate => candidate.id === navState.tabId);
+  if (!tab) return;
+  const nextType = typeof _normalizeOpenTypeForNav === 'function'
+    ? _normalizeOpenTypeForNav(entry.type)
+    : entry.type;
+  const typeChanged = tab.type !== nextType;
+  if (typeChanged && typeof removeComponentInstance === 'function') {
+    removeComponentInstance(tab.id);
+  }
+  tab.type = nextType;
+  tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
+  tab.path = entry.path || entry.dbPath || '';
+  tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
+    ? GBTabs.tabIcon(nextType)
+    : tab.icon;
+  tab.state = {
+    ...(typeChanged ? {} : (tab.state || {})),
+    ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
+    ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+  };
+  if (typeChanged) GBLayout.render();
+  else {
+    const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+    if (labelEl) labelEl.textContent = tab.label;
+  }
+}
+
 // ナビゲーション履歴の戻る/進む
 function navBack(paneId) {
   const navState = _getNavState(paneId);
@@ -758,6 +819,7 @@ function navBack(paneId) {
   navNavigating = true;
   try {
     if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+    _applyNavEntryToBoundTab(navState, entry);
     _withNavFlag(navOpen(entry));
   } catch (e) {
     navNavigating = false;
@@ -780,6 +842,7 @@ function navForward(paneId) {
   navNavigating = true;
   try {
     if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+    _applyNavEntryToBoundTab(navState, entry);
     _withNavFlag(navOpen(entry));
   } catch (e) {
     navNavigating = false;
@@ -824,6 +887,7 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
       navNavigating = true;
       try {
         if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+        _applyNavEntryToBoundTab(navState, entry);
         _withNavFlag(navOpen(entry));
       } catch (e) {
         navNavigating = false;
@@ -834,67 +898,3 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
       closeDropdown(false);
     });
     dd.appendChild(item);
-  });
-  const anchor = e.currentTarget || e.target?.closest?.('button') || e.target;
-  const rect = anchor.getBoundingClientRect();
-  document.body.appendChild(dd);
-  if (typeof positionPopup === 'function') positionPopup(dd, rect, { prefer: 'bottom', gap: 2 });
-  else {
-    const z = _getZoom();
-    dd.style.left = (rect.left / z) + 'px';
-    dd.style.top = (rect.bottom / z + 2) + 'px';
-    clampPopupToViewport(dd);
-  }
-  const firstItem = dd.querySelector('.ab-dropdown-item');
-  let dropdownClosed = false;
-  function closeDropdown(restoreFocus) {
-    if (dropdownClosed) return;
-    dropdownClosed = true;
-    dd.remove();
-    document.removeEventListener('pointerdown', closeOnPointer, true);
-    document.removeEventListener('keydown', closeOnKey, true);
-    if (restoreFocus && anchor?.focus) anchor.focus();
-  }
-  function closeOnPointer(ev) {
-    if (!dd.contains(ev.target)) closeDropdown(false);
-  }
-  function closeOnKey(ev) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeDropdown(true);
-      return;
-    }
-    const menuItems = [...dd.querySelectorAll('.ab-dropdown-item')];
-    const current = menuItems.indexOf(document.activeElement);
-    if (ev.key === 'ArrowDown' && menuItems.length) {
-      ev.preventDefault();
-      menuItems[(current + 1 + menuItems.length) % menuItems.length].focus();
-    } else if (ev.key === 'ArrowUp' && menuItems.length) {
-      ev.preventDefault();
-      menuItems[(current - 1 + menuItems.length) % menuItems.length].focus();
-    } else if (ev.key === 'Home' && menuItems.length) {
-      ev.preventDefault();
-      menuItems[0].focus();
-    } else if (ev.key === 'End' && menuItems.length) {
-      ev.preventDefault();
-      menuItems[menuItems.length - 1].focus();
-    }
-  }
-  setTimeout(() => {
-    if (dropdownClosed || !dd.isConnected) return;
-    document.addEventListener('pointerdown', closeOnPointer, true);
-    document.addEventListener('keydown', closeOnKey, true);
-  }, 0);
-  firstItem?.focus();
-}
-
-function showNavHistoryDropdown(e, direction) {
-  return showPaneNavHistoryDropdown(e, null, direction);
-}
-
-function updateNavBreadcrumb() {}
-
-let _pointerNavPaneId = null;
-
-function _handlePointerNavigationButtons(e) {
-  if (e.button !== 3 && e.button !== 4) return;

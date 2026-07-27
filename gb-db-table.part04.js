@@ -21,6 +21,7 @@ function _dbDisposeVirtualRows(ctx) {
   if (!v) return;
   if (v.scroller && v.onScroll) v.scroller.removeEventListener('scroll', v.onScroll);
   if (v.onResize) window.removeEventListener('resize', v.onResize);
+  if (v.resizeObserver) v.resizeObserver.disconnect();
   if (v.raf) cancelAnimationFrame(v.raf);
   if (ctx?._dbVirtualBacklinkTimer) {
     clearTimeout(ctx._dbVirtualBacklinkTimer);
@@ -137,7 +138,7 @@ function _dbRunVirtualRowRenderer(ctx, config) {
   if (!ctx || !tbody || !Array.isArray(rowTasks) || !scroller) return false;
   const table = tbody.closest('table');
 
-  const colSpan = (config.visibleProps?.length || 0) + 2;
+  const colSpan = (config.visibleProps?.length || 0) + 3;
   const topSpacer = _dbCreateVirtualSpacerRow('db-virtual-spacer-row db-virtual-spacer-top', colSpan);
   const bottomSpacer = _dbCreateVirtualSpacerRow('db-virtual-spacer-row db-virtual-spacer-bottom', colSpan);
   const anchor = config.renderMoreRow || config.newEntryRow || null;
@@ -161,6 +162,8 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     raf: 0,
     onScroll: null,
     onResize: null,
+    resizeObserver: null,
+    forceNextRender: false,
     renderNow: null,
     renderToken,
   };
@@ -211,18 +214,34 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     }
   };
 
-  const requestRender = () => {
+  const requestRender = (force = false) => {
+    vState.forceNextRender = vState.forceNextRender || force;
     if (vState.raf) return;
     vState.raf = requestAnimationFrame(() => {
       vState.raf = 0;
-      renderVisible(false);
+      const shouldForce = vState.forceNextRender;
+      vState.forceNextRender = false;
+      renderVisible(shouldForce);
     });
   };
   vState.renderNow = renderVisible;
-  vState.onScroll = requestRender;
-  vState.onResize = requestRender;
+  vState.onScroll = () => requestRender(false);
+  vState.onResize = () => requestRender(true);
   scroller.addEventListener('scroll', vState.onScroll, { passive: true });
   window.addEventListener('resize', vState.onResize);
+  if (typeof ResizeObserver === 'function') {
+    let lastWidth = scroller.clientWidth;
+    let lastHeight = scroller.clientHeight;
+    vState.resizeObserver = new ResizeObserver(() => {
+      const nextWidth = scroller.clientWidth;
+      const nextHeight = scroller.clientHeight;
+      if (nextWidth === lastWidth && nextHeight === lastHeight) return;
+      lastWidth = nextWidth;
+      lastHeight = nextHeight;
+      requestRender(true);
+    });
+    vState.resizeObserver.observe(scroller);
+  }
   renderVisible(true);
   return true;
 }

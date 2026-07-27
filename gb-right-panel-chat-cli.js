@@ -104,14 +104,22 @@
 
   function cliChatSelectedModelValue(provider) {
     const key = String(provider || '').trim();
+    const normalizeLegacyCodexModel = value => {
+      const normalized = String(value || '').trim();
+      if (key === 'codex' && ['Codex CLI', 'gpt-5-codex', 'gpt-5.3-codex', 'gpt-5.5', 'gpt-5.6'].includes(normalized)) {
+        try { localStorage.removeItem('chat-model:' + key); } catch {}
+        return cliChatDefaultModelSentinel();
+      }
+      return normalized;
+    };
     const modelSelect = document.getElementById('chat-model');
     if (modelSelect && typeof _chatState !== 'undefined' && _chatState.provider === key && modelSelect.value) {
-      return modelSelect.value;
+      return normalizeLegacyCodexModel(modelSelect.value);
     }
     let stored = '';
     try { stored = localStorage.getItem('chat-model:' + key) || ''; } catch { stored = ''; }
-    if (stored) return stored;
-    if (typeof _chatState !== 'undefined' && _chatState.provider === key && _chatState.model) return _chatState.model;
+    if (stored) return normalizeLegacyCodexModel(stored);
+    if (typeof _chatState !== 'undefined' && _chatState.provider === key && _chatState.model) return normalizeLegacyCodexModel(_chatState.model);
     const configured = cliChatConfiguredModelOverride(key);
     if (configured) return configured;
     return cliChatDefaultModelSentinel();
@@ -281,7 +289,56 @@
       const command = item.command || meta.command || key;
       return { ok: false, message: `${item.label || meta.label} のコマンドが見つかりません。${command} をインストールし、Meldexを起動した環境のPATHから実行できるようにしてください。` };
     }
+    if (item.compatible === false) {
+      const minimum = item.minimum_version ? `（必要: ${item.minimum_version}以上）` : '';
+      return {
+        ok: false,
+        errorCode: 'cli_update_required',
+        message: item.compatibility_message || `${item.label || meta.label}の更新が必要です${minimum}。`,
+        action: key === 'codex'
+          ? 'ターミナルで `npm install -g @openai/codex@latest` を実行し、Meldexを再起動してください。'
+          : '',
+      };
+    }
     return { ok: true, message: '' };
+  }
+
+  async function saveCliChatProviderNotice(provider, status) {
+    const message = [status?.message, status?.action].filter(Boolean).join('\n\n').trim();
+    if (!message || typeof _chatState === 'undefined' || !Array.isArray(_chatState.messages)) {
+      if (typeof chatAddSystem === 'function') chatAddSystem(message);
+      return false;
+    }
+    const previous = _chatState.messages[_chatState.messages.length - 1];
+    if (previous?.error_code === status?.errorCode && String(previous?.content || '') === message) {
+      if (typeof chatAddMessage === 'function') {
+        chatAddMessage('assistant', message, {
+          provider,
+          model: cliChatModelLabel(provider),
+          error: true,
+          error_code: status?.errorCode || 'cli_config_incompatible',
+        });
+      }
+      return false;
+    }
+    const notice = {
+      role: 'assistant',
+      content: message,
+      provider,
+      model: cliChatModelLabel(provider),
+      timestamp: typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString(),
+      error: true,
+      error_code: status?.errorCode || 'cli_config_incompatible',
+    };
+    _chatState.messages.push(notice);
+    if (typeof chatAddMessage === 'function') {
+      chatAddMessage('assistant', message, {
+        ...notice,
+        messageIndex: _chatState.messages.length - 1,
+      });
+    }
+    if (typeof chatAutoSave === 'function') await chatAutoSave({ silent: true });
+    return true;
   }
 
   function contentToText(content) {
@@ -688,7 +745,17 @@
       const index = detail.indexOf(marker);
       if (index >= 0) detail = detail.slice(0, index).trim();
     }
-    const lines = detail.split('\n').map(line => line.trimEnd()).filter(Boolean);
+    detail = detail
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer=[削除]')
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[削除]')
+      .replace(/\b(?:ghp_|AIza|AKIA|ya29\.)[A-Za-z0-9._/-]{8,}\b/g, '[削除]')
+      .replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*[:=]\s*[^\s,;]+/g, '$1=[削除]');
+    const lines = detail.split('\n').map(line => line.trimEnd()).filter(line => {
+      if (!line) return false;
+      const lower = line.toLowerCase();
+      return !(lower.includes('pid') && (lower.includes('成功:') || lower.includes('success:'))
+        && (lower.includes('終了') || lower.includes('terminated')));
+    });
     detail = lines.slice(-12).join('\n').trim();
     if (detail.length > 1200) detail = detail.slice(0, 1200).trimEnd() + '\n...（CLIログを省略しました）';
     return detail;
@@ -700,6 +767,9 @@
   }
 
   function cliChatErrorAllowsContinuation(error) {
+    if (['cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
+      return false;
+    }
     const message = String(error?.message || error || '');
     return /タイムアウト|返答がなかった|応答がなかった|timed?\s*out|timeout/i.test(message);
   }
@@ -740,7 +810,17 @@
     const provider = String(options.provider || _chatState.provider || '').trim();
     const providerStatus = cliChatProviderReadyStatus(provider);
     if (!providerStatus.ok) {
-      if (typeof chatAddSystem === 'function') chatAddSystem(providerStatus.message || ((cliChatMeta(provider)?.label || provider) + ' のCLIチャット設定を確認してください。'));
+      if (providerStatus.errorCode) {
+        resetSessionContinuityForCurrentChat({
+          provider,
+          sessionId: String(options.sessionId || _chatState.sessionId || ''),
+          silent: true,
+        });
+      }
+      await saveCliChatProviderNotice(provider, {
+        ...providerStatus,
+        message: providerStatus.message || ((cliChatMeta(provider)?.label || provider) + ' のCLIチャット設定を確認してください。'),
+      });
       return false;
     }
     if (typeof _captureChatSessionTitleFromInput === 'function') _captureChatSessionTitleFromInput();
@@ -764,13 +844,15 @@
 
     const hasWorkspaceIdOption = Object.prototype.hasOwnProperty.call(options || {}, 'workspaceId');
     const hasSourceFolderOption = Object.prototype.hasOwnProperty.call(options || {}, 'sourceFolder');
-    const requestWorkspaceId = hasWorkspaceIdOption
-      ? String(options.workspaceId || '')
-      : (hasSourceFolderOption ? '' : (typeof _chatWorkspaceIdValue === 'function' ? String(_chatWorkspaceIdValue() || '') : ''));
-    const requestSourceFolder = hasSourceFolderOption
-      ? String(options.sourceFolder || '')
-      : (requestWorkspaceId ? '' : (typeof _chatRequireSourceFolder === 'function' ? _chatRequireSourceFolder() : ''));
-    if (!requestWorkspaceId && !requestSourceFolder) return false;
+    const storageOptions = {};
+    if (hasWorkspaceIdOption) storageOptions.workspaceId = String(options.workspaceId || '');
+    if (hasSourceFolderOption) storageOptions.sourceFolder = String(options.sourceFolder || '');
+    const storageContext = window.GBChatStorageContext?.requireForAi
+      ? await window.GBChatStorageContext.requireForAi(storageOptions)
+      : null;
+    const requestWorkspaceId = String(storageContext?.workspaceId || '');
+    const requestSourceFolder = String(storageContext?.sourceFolder || '');
+    if (!storageContext || (!requestWorkspaceId && !requestSourceFolder)) return false;
     if (!usingDeferredMessages && attachments.length > 0) {
       if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
         const readyAttachments = await _chatWaitForPendingAttachmentUploads(attachments);
@@ -863,6 +945,7 @@
     _chatState.streamingTargetPath = streamTargetPath;
     _chatState.lastImplicitTargetPath = streamTargetPath;
     cliChatSetSendButtonStreaming(true);
+    if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
     const activity = createCliChatActivity(provider);
     const _scrollHandler = () => {
       _autoScroll = typeof _chatIsScrolledNearBottom === 'function'
@@ -1067,7 +1150,13 @@
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
-            appendCliThinking(chunk, 'CLIの進行ログを受信中...');
+            markCliOutput();
+            refreshActivityStatus('CLIの進行ログを受信中...');
+            const safeChunk = summarizeCliChatErrorDetail(chunk);
+            if (safeChunk && streamVisibleInCurrentChat()) {
+              appendCliChatLog(activity.log, safeChunk);
+              ensureActivityVisible();
+            }
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
           } else if (data.type === 'cli_session_update') {
@@ -1075,22 +1164,36 @@
               rememberCliChatSessionContinuity(cliSessionScope, data.cli_session_id);
             }
           } else if (data.type === 'error') {
-            const detail = summarizeCliChatErrorDetail(stderrText);
-            throw new Error((data.error || 'CLIチャットでエラーが発生しました') + (detail ? '\n\nCLIログ:\n' + detail : ''));
+            const detail = summarizeCliChatErrorDetail(data.detail || stderrText);
+            if (detail) appendCliThinking('CLIエラー詳細:\n' + detail, 'CLIエラーを確認中...');
+            const streamError = new Error(data.error || 'CLIチャットでエラーが発生しました');
+            streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
+            streamError.detail = detail;
+            streamError.action = String(data.action || '');
+            if (['cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
+              resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
+            }
+            throw streamError;
           } else if (data.type === 'done') {
             if (activity.status && streamVisibleInCurrentChat()) activity.status.textContent = 'CLIが完了しました';
           }
         }
       }
       activity.wrapper.remove();
-      cliCompleted = true;
-      if (!fullText.trim() && stderrText.trim()) fullText = stderrText.trim();
-      if (!fullText.trim() && !stderrText.trim()) {
+      if (!fullText.trim()) {
         const label = cliChatMeta(provider)?.label || provider || 'CLI';
-        fullText = sawCliEvent
-          ? `${label} は終了しましたが、返答が空でした。\n\nMeldexから起動した時だけ確認画面や権限確認で止まる場合があります。設定 > LLM > CLIチャットと、作業フォルダの信頼設定を確認してください。`
-          : `${label} の実行結果を受け取れませんでした。\n\nMeldexから起動したCLIがすぐ終了した可能性があります。設定 > LLM > CLIチャットと、Meldexを再起動した後のPATHを確認してください。`;
+        const emptyError = new Error(
+          sawCliEvent
+            ? `${label}は終了しましたが、回答が空でした。`
+            : `${label}の実行結果を受け取れませんでした。`
+        );
+        emptyError.errorCode = 'cli_empty_response';
+        emptyError.detail = summarizeCliChatErrorDetail(stderrText);
+        emptyError.action = 'CLIの更新・ログイン・モデル設定を確認してから再送信してください。';
+        resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
+        throw emptyError;
       }
+      cliCompleted = true;
       if (fullText.trim()) {
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(fullText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
@@ -1131,9 +1234,10 @@
         const label = cliChatMeta(provider)?.label || provider || 'CLI';
         const recoverable = cliChatErrorAllowsContinuation(error);
         const autoContinuing = recoverable && prepareAutoContinue(error?.message || error);
+        const actionText = String(error?.action || '').trim();
         const errorText = autoContinuing
           ? `${label} の実行が時間内に終わりませんでした。\n\n作業を分割して、自動で続きから実行します。`
-          : `${label} がエラーで終了しました。\n\n${error?.message || error}`;
+          : `${label} がエラーで終了しました。\n\n${error?.message || error}${actionText ? '\n\n' + actionText : ''}`;
         if (!streamVisibleInCurrentChat()) assistantDiv = null;
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(errorText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, errorText, []);
@@ -1147,6 +1251,9 @@
           model: streamModelLabel,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           error: !autoContinuing,
+          error_code: error?.errorCode || 'cli_exit_nonzero',
+          error_detail: error?.detail || '',
+          action: actionText,
           auto_continue: !!autoContinuing,
           ...(cliThinkingText.trim() ? { thinking: cliThinkingText } : {}),
         });
@@ -1167,6 +1274,7 @@
         _chatState.streamingProvider = '';
         _chatState.streamingTargetPath = '';
         cliChatSetSendButtonStreaming(false);
+        if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
         if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
         if (autoContinueRequest) {
@@ -1301,7 +1409,10 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     installCliChatPatches();
-    loadCliChatConfig().then(() => {
+    loadCliChatConfig().then(async () => {
+      if (window.GBChatProviderDefault?.applyFirstRun) {
+        await window.GBChatProviderDefault.applyFirstRun({ configLoaded: true });
+      }
       if (isCliChatProvider(_chatState.provider) && typeof updateChatModels === 'function') updateChatModels({ suppressNotify: true });
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
     });

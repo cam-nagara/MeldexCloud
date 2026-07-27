@@ -171,7 +171,7 @@ function _createPaneDOM(paneId) {
 
   // ビュー切替
   const viewSwitcher = document.createElement('div');
-  viewSwitcher.className = 'db-pane-view-switcher';
+  viewSwitcher.className = 'db-pane-view-switcher db-view-switcher';
   const tabs = document.createElement('div');
   tabs.id = 'db-view-tabs-' + paneId;
   tabs.className = 'db-view-tabs';

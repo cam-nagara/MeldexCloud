@@ -64,14 +64,26 @@ async function _syncDetailPanel(label, path, type, opts) {
     if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.clearDetailPaneShell === 'function') {
       GBPaneBridge.clearDetailPaneShell();
     }
+    // ここは「開いているエントリに表示中の詳細を追従させる」ための同期処理。
+    // 開いていないフロートパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
+    // フロートパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
+    const drawerOpen = !!window.MeldexCloudMobileSideDrawer?.isOpen?.();
+    const subPanelOpen = typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.isOpen === 'function'
+      ? GBSubPanel.isOpen('entity')
+      : false;
+    if (!drawerOpen && !subPanelOpen) return false;
     return openEntityInSplit(path, label);
   }
   // ペインシステム（#rp-detailが.gb-pane-content配下）ではcfg.visibleに関係なく同期する。
-  // レガシーな独立パネルの場合のみ cfg.visible をチェックする。
+  // render中は #rp-detail が一時的に #legacy-views へ退避される。その瞬間に
+  // detail-panel-cfg.visible を見て openRightPanelTab('detail') を呼ぶと、
+  // ペイン再描画→詳細同期→再オープンが再帰してChromeを固める。
+  // GBLayoutが有効ならDOM上の一時的な親に関係なくペインシステム扱いにする。
   const rpDetail = document.getElementById('rp-detail');
   const inPane = rpDetail && rpDetail.closest('.gb-pane-content');
+  const paneLayoutActive = typeof GBLayout !== 'undefined' && !!GBLayout.root;
   let shouldOpenDetailPanel = false;
-  if (!inPane) {
+  if (!inPane && !paneLayoutActive) {
     const cfg = _getDetailPanelCfg();
     if (!cfg.visible) return;
     shouldOpenDetailPanel = !!(rpDetail && typeof _openDetailRightPanel === 'function');

@@ -43,6 +43,19 @@
   }
 
   // ツールバー更新（v5.0: ツールバーをペインのcontentEl先頭に動的配置）
+  // そのパネルが今ツール本体（スケジュール・ボード・シナリオ・タイマー等）を表示しているか。
+  // 表示中ならシート用ツールバーを差し込まない。_scheduleToolbarRecheck() は古いビュー名を
+  // 抱えたまま遅延実行されるため、タブを切り替えた後に「シート表示中」として再挿入され、
+  // ツール本体の上にシートのツールバーが重なる（二重表示）ことがある。
+  function _paneShowsComponentTool(paneInfo) {
+    const node = paneInfo?.node;
+    const tabs = node?.tabs;
+    if (!Array.isArray(tabs)) return false;
+    const idx = node.activeTabIndex;
+    if (!(idx >= 0 && idx < tabs.length)) return false;
+    return COMPONENT_TYPES.has(tabs[idx]?.type);
+  }
+
   function _updateToolbars(viewName) {
     const toolbarContext = _resolveToolbarContext(viewName);
     const toolbarViewName = toolbarContext.viewName;
@@ -74,7 +87,8 @@
       const mountPaneId = effectiveToolbarContext.paneId || paneId;
       if (mountPaneId) {
         const paneInfo = GBLayout.paneMap[mountPaneId];
-        if (paneInfo && paneInfo.contentEl && appTb.parentNode !== paneInfo.contentEl) {
+        if (paneInfo && paneInfo.contentEl && appTb.parentNode !== paneInfo.contentEl
+            && !_paneShowsComponentTool(paneInfo)) {
           paneInfo.contentEl.insertBefore(appTb, paneInfo.contentEl.firstChild);
         }
       }
@@ -91,7 +105,12 @@
 
     const sc = document.getElementById('sb-shortcuts');
     if (sc) {
-      if (effectiveIsDbView) sc.textContent = '';
+      if (effectiveIsDbView) {
+        const csvSheetActive = typeof isCsvSheetModeActive === 'function' && isCsvSheetModeActive();
+        if (csvSheetActive && typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar(sc);
+        else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
+        else sc.textContent = '';
+      }
       else if (['entity', 'page'].includes(effectiveToolbarViewName)) {
         sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き';
       } else if (effectiveToolbarViewName === 'scriptnote') {
@@ -144,12 +163,21 @@
           const isReplaying = typeof navNavigating !== 'undefined' && navNavigating;
           const folderTab = !isReplaying && pane.tabs.find(t => t.type === 'folder');
           if (folderTab) {
+            const folderTabIsActive = pane.tabs[pane.activeTabIndex] === folderTab;
             folderTab.label = label;
             folderTab.path = path;
             folderTab.state = {};
             const fi = pane.tabs.indexOf(folderTab);
-            pane.activeTabIndex = fi;
-            GBLayout.render();
+            if (folderTabIsActive) {
+              // 同じフォルダタブ内の移動ではペイン全体を再描画しない。
+              // full render はフォルダツリーDOMも一時退避・再配置するため、
+              // ツリー全体が縦に揺れる原因になる。
+              const tabEl = GBLayout.paneMap[targetPaneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+              if (tabEl) tabEl.textContent = label;
+            } else {
+              pane.activeTabIndex = fi;
+              GBLayout.render();
+            }
             GBLayout.saveLayout({ immediate: true });
           } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
             const tab = pane.tabs[pane.activeTabIndex];
@@ -474,12 +502,24 @@
         return null;
       }
     }
+    const _MAIN_PANEL_TAB_TYPES = new Set(['folder', 'page', 'scriptnote', 'database', 'board', 'calendar', 'smart-db']);
+    function _isMainPanelPane(paneId) {
+      const pane = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
+      return !!(pane && (pane.meldexRole === 'main' || pane.id === 'pane-main'));
+    }
+    function _guardMainPanelTabType(paneId, toolType) {
+      if (!_isMainPanelPane(paneId) || _MAIN_PANEL_TAB_TYPES.has(toolType)) return true;
+      if (typeof showStatus === 'function') showStatus('補助パネルはメインパネルでは開けません', true);
+      return false;
+    }
+
     window.addPanelMenuTool = function(toolType, options) {
       // ＋ボタン／パネルメニューから呼ばれた時は、メニューを開いたペインへ追加する。
       // paneId 未指定の既存呼び出しだけ、現在アクティブなペインを使う。
       const paneId = options?.paneId || GBLayout.activePane;
       if (!paneId) return null;
       if (!GBLayout.findNode?.(GBLayout.root, paneId)) return null;
+      if (!_guardMainPanelTabType(paneId, toolType)) return null;
       if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
         return null;
@@ -502,6 +542,7 @@
       const paneId = options?.paneId || GBLayout.activePane;
       if (!paneId) return null;
       if (!GBLayout.findNode?.(GBLayout.root, paneId)) return null;
+      if (!_guardMainPanelTabType(paneId, 'version')) return null;
       if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
         return null;

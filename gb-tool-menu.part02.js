@@ -567,3 +567,229 @@ function _createFolderRow(name, path, isSelected, onSelect, depth, icon) {
   });
   return row;
 }
+
+function _dictReadingStatus(status) {
+  const normalized = String(status || '').trim();
+  return normalized || '(未設定)';
+}
+
+function _dictEntryReadings(entry) {
+  if (!entry || !entry.text) return [];
+  const candidates = Array.isArray(entry.readings) && entry.readings.length
+    ? entry.readings
+    : (entry.ruby ? [{ value: entry.ruby, status: entry.status }] : []);
+  return candidates
+    .map((reading) => ({
+      value: String(reading?.value || reading?.ruby || '').trim(),
+      status: _dictReadingStatus(reading?.status),
+    }))
+    .filter((reading) => reading.value);
+}
+
+function _prepareDictExport(entries, allowedStatuses) {
+  const lines = [];
+  const statuses = new Set();
+  const pairs = new Set();
+  let withoutReading = 0;
+  let duplicateCount = 0;
+  (entries || []).forEach((entry) => {
+    const text = String(entry?.text || '').trim();
+    if (!text) return;
+    const readings = _dictEntryReadings(entry);
+    if (!readings.length) {
+      withoutReading += 1;
+      return;
+    }
+    readings.forEach((reading) => statuses.add(reading.status));
+    readings.forEach((reading) => {
+      if (allowedStatuses && !allowedStatuses.has(reading.status)) return;
+      const pairKey = reading.value + '\u0000' + text;
+      if (pairs.has(pairKey)) {
+        duplicateCount += 1;
+        return;
+      }
+      pairs.add(pairKey);
+      lines.push(reading.value + '\t' + text + '\t固有名詞');
+    });
+  });
+  return { lines, statuses: [...statuses], withoutReading, duplicateCount };
+}
+
+// 辞書出力で出力ステータスを選ぶダイアログ。
+// 戻り値: Set=書き出し、null=キャンセル。
+function _showDictStatusDialog(statuses, summary) {
+  return new Promise((resolve) => {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.dataset.e2eId = 'dict-status-dialog-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.cssText = 'max-width:360px;width:auto;';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', '辞書に出力するステータスを選択');
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  body.style.padding = '16px';
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight:600;margin-bottom:8px;';
+  title.textContent = '辞書に出力するステータス';
+  body.appendChild(title);
+  const toggleRow = document.createElement('div');
+  toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;';
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.type = 'button';
+  selectAllBtn.className = 'gb-btn gb-btn-sm';
+  selectAllBtn.textContent = 'すべて選択';
+  const clearAllBtn = document.createElement('button');
+  clearAllBtn.type = 'button';
+  clearAllBtn.className = 'gb-btn gb-btn-sm';
+  clearAllBtn.textContent = 'すべて解除';
+  toggleRow.append(selectAllBtn, clearAllBtn);
+  body.appendChild(toggleRow);
+  const listWrap = document.createElement('div');
+  listWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;max-height:50vh;overflow:auto;';
+  const boxes = [];
+  (statuses || []).forEach(st => {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = st === '採用';
+    cb.dataset.status = st;
+    boxes.push(cb);
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(st));
+    listWrap.appendChild(row);
+  });
+  body.appendChild(listWrap);
+  const reason = document.createElement('div');
+  reason.dataset.e2eId = 'dict-status-selection-reason';
+  reason.style.cssText = 'min-height:18px;margin-top:8px;color:var(--fg2);font-size:12px;';
+  const excluded = Number(summary?.withoutReading) || 0;
+  reason.textContent = excluded > 0 ? `ルビのない${excluded}件は除外されます。` : '';
+  body.appendChild(reason);
+  const btnRow = document.createElement('div');
+  btnRow.className = 'btn-row';
+  btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px;';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'cancel-btn';
+  cancelBtn.textContent = 'キャンセル';
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.className = 'primary';
+  okBtn.textContent = '書き出し';
+  btnRow.append(cancelBtn, okBtn);
+  body.appendChild(btnRow);
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  if (typeof replaceIcons === 'function') replaceIcons(overlay);
+  const updateState = () => {
+    const selectedCount = boxes.filter((box) => box.checked).length;
+    okBtn.disabled = selectedCount === 0;
+    if (!selectedCount) reason.textContent = '出力するステータスを1つ以上選択してください。';
+    else reason.textContent = excluded > 0 ? `ルビのない${excluded}件は除外されます。` : '';
+  };
+  const close = (result) => {
+    if (overlay.parentNode) overlay.remove();
+    resolve(result);
+  };
+  boxes.forEach((box) => box.addEventListener('change', updateState));
+  selectAllBtn.addEventListener('click', () => {
+    boxes.forEach((box) => { box.checked = true; });
+    updateState();
+  });
+  clearAllBtn.addEventListener('click', () => {
+    boxes.forEach((box) => { box.checked = false; });
+    updateState();
+  });
+  cancelBtn.addEventListener('click', () => close(null));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      close(null);
+    }
+  });
+  okBtn.addEventListener('click', () => {
+    const allowed = new Set(boxes.filter(b => b.checked).map(b => b.dataset.status));
+    if (!allowed.size) return;
+    close(allowed);
+  });
+  updateState();
+  const initialFocus = boxes.find((box) => box.checked) || boxes[0] || cancelBtn;
+  initialFocus.focus();
+  });
+}
+
+// 辞書ファイル出力（IME辞書形式）。ステータスで出力対象を絞り込める。
+let _dictExportInProgress = false;
+async function _exportDictFile() {
+  if (_dictExportInProgress) {
+    showStatus('辞書を準備しています。しばらくお待ちください');
+    return;
+  }
+  _dictExportInProgress = true;
+  try {
+    showStatus('辞書を準備中…');
+    const work = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
+    const url = work ? '/link-dict?work=' + encodeURIComponent(work) : '/link-dict';
+    let data;
+    try {
+      data = await apiFetch(url, { timeoutMs: 120000 });
+    } catch (error) {
+      showStatus(`辞書データの取得に失敗しました: ${error?.message || '通信エラー'}`, true);
+      return;
+    }
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    const prepared = _prepareDictExport(entries, new Set());
+    if (prepared.statuses.length === 0) {
+      showStatus('ルビ付きエントリがありません', true);
+      return;
+    }
+    const STATUS_ORDER = ['採用', '掲載済み', '連載中', '確定', '案', '草稿', '保留', 'ボツ', '(未設定)'];
+    const present = prepared.statuses.sort((a, b) => {
+      const ia = STATUS_ORDER.indexOf(a), ib = STATUS_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    const allowed = await _showDictStatusDialog(present, prepared);
+    if (!allowed) {
+      showStatus('辞書出力をキャンセルしました');
+      return;
+    }
+    let output;
+    try {
+      output = _prepareDictExport(entries, allowed);
+    } catch (error) {
+      showStatus(`辞書データの生成に失敗しました: ${error?.message || 'データ形式エラー'}`, true);
+      return;
+    }
+    if (output.lines.length === 0) {
+      showStatus('選択したステータスの辞書エントリがありません', true);
+      return;
+    }
+    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
+      showStatus('保存ダイアログを初期化できませんでした', true);
+      return;
+    }
+    const excluded = [];
+    if (output.withoutReading) excluded.push(`ルビなし${output.withoutReading}件`);
+    if (output.duplicateCount) excluded.push(`重複${output.duplicateCount}件`);
+    await MeldexExportSave.saveText(output.lines.join('\n'), {
+        filename: (work ? work.replace(/[\\/]/g, '_') + '_' : '') + 'dictionary.txt',
+        extension: '.txt',
+        dialogTitle: '辞書ファイルを書き出し',
+        filetypes: [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']],
+        bom: true,
+        okMessage: `${output.lines.length}件の辞書エントリを出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
+        cancelMessage: '辞書ファイルの保存をキャンセルしました',
+        errorMessage: '辞書ファイルの保存に失敗しました',
+    });
+  } catch (error) {
+    showStatus(`辞書ファイルの出力に失敗しました: ${error?.message || '不明なエラー'}`, true);
+  } finally {
+    _dictExportInProgress = false;
+  }
+}

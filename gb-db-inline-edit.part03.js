@@ -14,9 +14,12 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : [...(pivotData?.properties || [])];
   const order = getColOrder(dbPath, { ctx }) || fallbackOrder;
-  // 新しい列の初期名は選んだ列タイプ名にする（型未指定はテキスト）。
-  const _newColType = (typeConfig && typeof typeConfig === 'object' && typeConfig.type) ? typeConfig.type : 'text';
-  const base = (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
+  // 新しい列の初期名は typeConfig.initialName があればそれを優先する。
+  // 無ければ選んだ列タイプ名にする（型未指定はテキスト）。
+  const _hasTypeConfig = !!(typeConfig && typeof typeConfig === 'object');
+  const _newColType = (_hasTypeConfig && typeConfig.type) ? typeConfig.type : 'text';
+  const _initialName = (_hasTypeConfig && typeof typeConfig.initialName === 'string') ? typeConfig.initialName.trim() : '';
+  const base = _initialName || (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
   let idx = 1, name = base;
   while (order.includes(name)) { idx++; name = base + idx; }
   const refIdx = order.indexOf(refProp);
@@ -27,7 +30,10 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     order.push(name);
   }
   setColOrder(dbPath, order, { skipHistory: true, ctx });
-  setPropertyType(dbPath, name, (typeConfig && typeof typeConfig === 'object') ? typeConfig : { type: 'text' });
+  // typeConfig.initialName は列名決定のみに使うヒントであり、列タイプ設定として保存しない。
+  const typeConfigToSave = _hasTypeConfig ? { ...typeConfig } : { type: 'text' };
+  delete typeConfigToSave.initialName;
+  setPropertyType(dbPath, name, typeConfigToSave);
   renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
   setTimeout(() => {
@@ -134,7 +140,7 @@ function _openPivotAggregationDropdown(anchor, aggTypes, currentKey, onSelect) {
   }, 0);
 }
 
-function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx) {
+function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx, footerOptions) {
   ctx = ctx || _currentPaneState();
   const _ftblId = ctx.tableId || 'pivot-table';
   const tfoot = _paneEl(ctx, '#' + _ftblId + ' tfoot');
@@ -148,28 +154,57 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
   const showFooter = typeof getShowFooter === 'function' ? getShowFooter(dbPath, { ctx }) : (getDbViewConfig(dbPath).showFooter || false);
   if (!showFooter) return;
 
+  const { renderedCols, entityColumnPinned, pinnedOffsets, entityWidth } = footerOptions || {};
+  // 幅はヘッダー・データ行と同じ CSS 変数から取る（ズレると固定列だけ横にずれる）
+  const rowControlsWidth = typeof _dbRowControlsWidth === 'function'
+    ? _dbRowControlsWidth(_paneEl(ctx, '#' + _ftblId))
+    : 56;
+
   const tr = document.createElement('tr');
   tr.setAttribute('role', 'row');
+
+  // 行先頭コントロール列に対応する空セル（列数を揃えるため）
+  const tdControls = document.createElement('td');
+  tdControls.className = 'col-row-controls';
+  tdControls.setAttribute('role', 'cell');
+  tdControls.setAttribute('aria-hidden', 'true');
+  tr.appendChild(tdControls);
+
   const tdLabel = document.createElement('td');
   tdLabel.className = 'col-entity';
+  tdLabel.dataset.dbColToken = '__entity__';
   tdLabel.setAttribute('role', 'rowheader');
   tdLabel.setAttribute('aria-label', '集計');
   tdLabel.textContent = '集計';
   tdLabel.style.fontStyle = 'italic';
-  const _footerEntW = (savedWidths && savedWidths['__entity__']) || 120;
+  const _footerEntW = entityWidth || (savedWidths && savedWidths['__entity__']) || 120;
   tdLabel.style.width = _footerEntW + 'px';
   tdLabel.style.minWidth = _footerEntW + 'px';
-  tr.appendChild(tdLabel);
+  tdLabel.style.maxWidth = _footerEntW + 'px';
 
-  let pLeftOffset = _footerEntW;
-  visibleProps.forEach(propName => {
+  // フェーズ2: エントリ名列（集計ラベル）も他の列と同じ並べ替え順序（renderedCols）で配置する
+  const cols = Array.isArray(renderedCols) && renderedCols.length ? renderedCols : ['__entity__', ...visibleProps];
+  const effectivePinnedOffsets = pinnedOffsets || (typeof _dbPinnedColumnOffsets === 'function'
+    ? _dbPinnedColumnOffsets(cols, pinnedCols, entityColumnPinned, savedWidths, _footerEntW, rowControlsWidth)
+    : {});
+  cols.forEach(token => {
+    if (token === '__entity__') {
+      const entityLeft = effectivePinnedOffsets.__entity__;
+      const entityShouldStick = entityColumnPinned && Number.isFinite(entityLeft);
+      tdLabel.style.position = entityShouldStick ? 'sticky' : '';
+      tdLabel.style.left = entityShouldStick ? entityLeft + 'px' : '';
+      tr.appendChild(tdLabel);
+      return;
+    }
+    const propName = token;
     const td = document.createElement('td');
+    td.dataset.dbColToken = propName;
     td.setAttribute('role', 'cell');
     td.setAttribute('aria-label', `集計 / ${propName}`);
     if (pinnedCols.includes(propName)) {
       td.classList.add('col-pinned');
-      td.style.left = pLeftOffset + 'px';
-      pLeftOffset += (savedWidths[propName] || 100);
+      const pinnedLeft = effectivePinnedOffsets[propName];
+      if (Number.isFinite(pinnedLeft)) td.style.left = pinnedLeft + 'px';
     }
 
     const countType = countTypes[propName] || 'none';
@@ -279,14 +314,19 @@ function _scrollDbActiveCellIntoView(td) {
     ? Math.max(0, headerRect.height)
     : 0;
   const cellIndex = td.parentElement ? Array.from(td.parentElement.children).indexOf(td) : -1;
+  const isEntityCell = td.classList.contains('col-entity');
+  // 行先頭コントロール列（＋/ハンドル/チェックボックス）は常に固定表示。
+  const controlsRect = table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row) td.col-row-controls')?.getBoundingClientRect?.();
+  // エントリ名列は「先頭にある間」だけ固定表示（entity-col-unpinned クラスで判定）。
+  // 対象セル自身がエントリ名列の場合は、自分自身の幅を左端リミットに含めない。
   const entityPinned = !!table && !table.classList.contains('entity-col-unpinned');
-  const entityRect = entityPinned && cellIndex > 0
+  const entityRect = entityPinned && !isEntityCell && cellIndex > 0
     ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row) td.col-entity')?.getBoundingClientRect?.()
     : null;
   const pad = 4;
   const topLimit = scrollRect.top + headerHeight + pad;
   const bottomLimit = scrollRect.bottom - pad;
-  const leftLimit = scrollRect.left + (entityRect?.width || 0) + pad;
+  const leftLimit = scrollRect.left + (controlsRect?.width || 0) + (entityRect?.width || 0) + pad;
   const rightLimit = scrollRect.right - pad;
   let deltaTop = 0;
   let deltaLeft = 0;
@@ -368,9 +408,9 @@ function _markDbCellRange(table, anchor, target) {
     const tr = a.rows[r];
     if (!tr) continue;
     const maxCol = tr.children.length - 2;
-    for (let c = colStart; c <= Math.min(colEnd, maxCol); c += 1) {
+    for (let c = Math.max(colStart, DB_ROW_CONTROLS_COL_COUNT); c <= Math.min(colEnd, maxCol); c += 1) {
       const cell = tr.children[c];
-      if (!cell || cell.classList.contains('col-add-prop-cell')) continue;
+      if (!cell || cell.classList.contains('col-add-prop-cell') || cell.classList.contains('col-row-controls')) continue;
       cell.classList.add('db-range-selected');
       cell.setAttribute('aria-selected', 'true');
     }
@@ -379,7 +419,7 @@ function _markDbCellRange(table, anchor, target) {
 }
 
 function _setDbCellRangeSelected(cell, selected) {
-  if (!cell || cell.classList.contains('col-add-prop-cell')) return;
+  if (!cell || cell.classList.contains('col-add-prop-cell') || cell.classList.contains('col-row-controls')) return;
   cell.classList.toggle('db-range-selected', !!selected);
   if (selected) cell.setAttribute('aria-selected', 'true');
   else cell.removeAttribute('aria-selected');
@@ -460,6 +500,122 @@ function _dbBulkPasteStartCell(table) {
   return activeCell?.dataset?.propName && table?.contains?.(activeCell) ? activeCell : null;
 }
 
+// 複数選択セルの候補値ステータスを一括変更する（選択中の全セルが候補値ちょうど1個・編集可能・
+// ステータス機能ONのときだけ対象。1つでも 0個/2個以上/編集不可のセルがあれば null を返しボタンを出さない）。
+function _dbBulkStatusTargets(table, ctx) {
+  if (!ctx) return null;
+  const dbPath = ctx.dbPath || state.currentDbPath || '';
+  if (!dbPath || typeof getStatusEnabled !== 'function' || !getStatusEnabled(dbPath)) return null;
+  const data = ctx.pivotData || state.pivotData;
+  if (!data || !data.entities) return null;
+  const cells = _dbSelectedDataCells(table, true);
+  if (cells.length <= 1) return null;
+  const targets = [];
+  for (const td of cells) {
+    if (typeof _dbCellAllowsPaste === 'function' && !_dbCellAllowsPaste(td, ctx)) return null;
+    const { entityName, propName } = _dbCellEntityAndProp(td);
+    const values = data.entities?.[entityName]?.[propName];
+    if (!Array.isArray(values) || values.length !== 1) return null;
+    targets.push({ td, entityName, propName, val: values[0] });
+  }
+  return targets.length ? targets : null;
+}
+
+// 同一エントリファイル内の複数値へ順にステータスを書き込む。1件書き込むとエントリのリビジョンが
+// 上がるため、同ファイルの後続書き込みへ最新リビジョンを引き継がないと 409 競合で弾かれる
+// （複数セルが同じ行＝同じエントリに属する一括変更で必ず発生する）。取り消し/やり直し時は各値の
+// entry_revision が直前バッチの書き込み順でズレているため、先に同一ファイルの最新リビジョンを
+// 集約し、最初の書き込みから正しい baseRevision を使う。
+async function _dbWriteStatusesThreaded(items, statusFor) {
+  const revByFile = {};
+  for (const it of items) {
+    const val = it && (it.val || it);
+    if (!val || !val.file) continue;
+    const r = Number(val.entry_revision ?? val.revision);
+    if (Number.isInteger(r) && (revByFile[val.file] == null || r > revByFile[val.file])) revByFile[val.file] = r;
+  }
+  for (const it of items) {
+    const val = it && (it.val || it);
+    if (!val) continue;
+    const f = val.file;
+    if (f && revByFile[f] != null) val.entry_revision = revByFile[f];
+    const st = statusFor(it);
+    await _apiPutValue(val, { new_status: st });
+    val.status = st;
+    if (f && val.entry_revision != null) revByFile[f] = val.entry_revision;
+  }
+}
+
+async function _dbApplyBulkCellStatus(table, ctx, targets, newStatus) {
+  if (!Array.isArray(targets) || !targets.length) return;
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  const snapshots = targets.map(t => ({ val: t.val, oldStatus: t.val?.status ?? '' }));
+  try {
+    await _dbWriteStatusesThreaded(targets, () => newStatus);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('ステータスの一括変更に失敗しました', true);
+    if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+    return;
+  }
+  // 取り消し（1操作で全セルを元に戻す）。同一エントリ内の複数値もリビジョンを引き継いで書き込む。
+  if (typeof historyPush === 'function') {
+    const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
+    const applyAll = async (statusFor) => {
+      await _dbWriteStatusesThreaded(snapshots, statusFor);
+      if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+    };
+    historyPush(
+      'ステータス一括変更: ' + newStatus + ' (' + snapshots.length + ' 件)',
+      () => applyAll(s => s.oldStatus),
+      () => applyAll(() => newStatus),
+      scope
+    );
+  }
+  if (typeof showStatus === 'function') showStatus('ステータスを一括変更: ' + newStatus + ' (' + targets.length + ' 件)');
+  if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+}
+
+function _dbShowBulkCellStatusMenu(anchorEl, table) {
+  const ctx = _dbContextForCell(table) || _dbContextForCell(activeCell);
+  const targets = _dbBulkStatusTargets(table, ctx);
+  if (!targets) {
+    if (typeof showStatus === 'function') showStatus('候補値が1つのセルだけを選択してください');
+    return;
+  }
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+  const dd = document.createElement('div');
+  dd.className = 'status-dropdown';
+  const statuses = typeof getStatusList === 'function' ? getStatusList(dbPath) : [];
+  statuses.forEach(stObj => {
+    const st = stObj.name;
+    const item = document.createElement('div');
+    item.className = 'status-dropdown-item';
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;display:inline-block;';
+    dot.style.background = stObj.color;
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(' ' + st));
+    item.addEventListener('click', () => {
+      if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+      _dbApplyBulkCellStatus(table, ctx, targets, st).catch(() => {
+        if (typeof showStatus === 'function') showStatus('ステータスの一括変更に失敗しました', true);
+      });
+    });
+    dd.appendChild(item);
+  });
+  document.body.appendChild(dd);
+  if (typeof positionPopup === 'function' && anchorEl) {
+    positionPopup(dd, anchorEl.getBoundingClientRect());
+  } else if (anchorEl) {
+    const rect = anchorEl.getBoundingClientRect();
+    dd.style.position = 'fixed';
+    dd.style.left = rect.left + 'px';
+    dd.style.top = (rect.bottom + 2) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(dd);
+  }
+}
+
 function _updateDbCellBulkBar(table) {
   const targetTable = table || activeCell?.closest?.('table') || (typeof _currentPivotTable === 'function' ? _currentPivotTable() : null);
   if (!targetTable || !targetTable.isConnected) {
@@ -531,6 +687,13 @@ function _updateDbCellBulkBar(table) {
       if (typeof showStatus === 'function') showStatus('セルの貼り付けに失敗しました', true);
     });
   });
+  // ステータス一括変更（選択中の全セルが候補値ちょうど1個・ステータス機能ONのときだけ表示）
+  const _bulkStatusCtx = _dbContextForCell(targetTable) || _dbContextForCell(activeCell);
+  if (_dbBulkStatusTargets(targetTable, _bulkStatusCtx)) {
+    const statusBtn = makeButton('ステータス変更', 'db-cell-bulk-status', () => {
+      _dbShowBulkCellStatusMenu(statusBtn, targetTable);
+    });
+  }
   makeButton('削除', 'db-cell-bulk-delete', () => {
     _dbClearSelectedCells(targetTable).catch(() => {
       if (typeof showStatus === 'function') showStatus('セルの削除に失敗しました', true);
@@ -581,7 +744,11 @@ function _dbPointerDataCell(event) {
   const td = target.closest('td[data-prop-name]');
   if (!td || !td.isConnected) return null;
   if (td.closest('tr.new-entity-row, tr.new-entity-spacer-row, tr.group-header-row')) return null;
-  if (target.closest('.status-dot,.cell-checkbox,.chat-prop-cell,.db-action-btn,.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor')) return null;
+  // .cell-add-btn は各セルの pointerdown ハンドラ（gb-db-table.part02.js:540）も除外している。
+  // document capture の当リスナが先に発火して選択へ横取りすると、＋ボタン本来のクリックが潰れるため、
+  // ここでも同じ除外を掛ける。（.cell-select-val は pointerdown では除外しない＝チップ上からの押下でも
+  // セル選択/範囲ドラッグを開始できるようにする。値の編集はチップ自身の click ハンドラで開く）
+  if (target.closest('.cell-add-btn,.status-dot,.cell-checkbox,.chat-prop-cell,.db-action-btn,.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor')) return null;
   return td;
 }
 
@@ -770,6 +937,9 @@ function _dbOpenExistingCellValueEditorFromData(td, ctx) {
 
 function _dbStartCellInlineEditor(td, options = {}) {
   if (!td || td.classList?.contains('col-entity')) return false;
+  // 編集開始を新しいフォーカス所有権として記録する。直前の非同期保存が遅れて
+  // 同じセルを復元しても、この編集や続くTab移動を上書きしないようにする。
+  if (typeof setActiveCell === 'function') setActiveCell(td, { scroll: false });
   const ctx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(td, { dbPath: state.currentDbPath })
     : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
@@ -785,13 +955,6 @@ function _dbStartCellInlineEditor(td, options = {}) {
     ? _entityPath(dbPath, entityName, (ctx && ctx.pivotData) || state.pivotData)
     : `${dbPath}/${entityName}.md`;
   startCellInlineAdd(td, entityPath, entityName, propName);
-  if (options.initialText && !_dbCellUsesPickerEditor(ptc)) {
-    const inp = td.querySelector('.cell-inline-input');
-    if (inp) {
-      inp.value = options.initialText;
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  }
   return true;
 }
 
@@ -874,6 +1037,10 @@ function _dbCancelNativeEditorForSheetShortcut(e) {
 
 function _dbShortcutShouldCloseTransientUi(e) {
   if (!e) return false;
+  // ドロップダウンの検索・新規値入力欄やメニュー内のリネーム入力にフォーカスがある間は、
+  // Delete/Backspace/Ctrl+C/V をネイティブのテキスト編集として扱い、ポップアップを閉じない。
+  const _ae = document.activeElement;
+  if (_ae && _dbIsNativeEditingElement(_ae) && _dbActiveNativeElementInTransientUi()) return false;
   const isInternalRangePaste = _dbIsInternalRangePasteShortcut(e);
   if (_dbIsNativeEditingElement(document.activeElement) && !_dbActiveNativeElementInTransientUi() && !isInternalRangePaste && !_dbShouldBypassNativeEditorForSheetShortcut(e)) return false;
   if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'v'].includes(String(e.key || '').toLowerCase())) return true;
@@ -933,23 +1100,13 @@ function _dbVisibleDataRows(table) {
 function _dbHandleCellEditorKey(e, colIdx, targetCell) {
   if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) return false;
   const cell = targetCell || activeCell;
-  if (!cell || colIdx <= 0) return false;
+  // 行先頭コントロール列（常に colIdx 0）は対象外。エントリ名列は位置に関わらずクラスで判定する
+  // （フェーズ2でエントリ名列も並べ替え可能になり、colIdx が固定でなくなったため）。
+  if (!cell || colIdx < DB_ROW_CONTROLS_COL_COUNT || cell.classList.contains('col-entity')) return false;
   if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
     _dbStartCellInlineEditor(cell, { preferExistingValue: true });
     return true;
-  }
-  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const ctx = typeof _dbPaneContextFromEvent === 'function'
-      ? _dbPaneContextFromEvent(cell, { dbPath: state.currentDbPath })
-      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-    const ptc = _dbCellPropertyType(cell, ctx);
-    const hasValue = _dbCellHasAnyValue(cell, ctx);
-    if (_dbCellUsesPickerEditor(ptc) || !hasValue) {
-      e.preventDefault();
-      _dbStartCellInlineEditor(cell, { initialText: e.key, preferExistingValue: _dbCellUsesPickerEditor(ptc) && hasValue });
-      return true;
-    }
   }
   return false;
 }

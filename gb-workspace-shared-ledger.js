@@ -206,6 +206,7 @@
       if (!workspace || typeof workspace !== 'object') continue;
       const wsId = String(workspace.id || '').trim();
       const wsDropboxPath = String(workspace.dropboxPath || '').trim();
+      const namespaceKind = workspace.namespaceKind === 'team_root' ? 'team_root' : 'home';
       if (!wsId || !wsDropboxPath) continue;
       const rawRoots = workspace.roots;
       if (!Array.isArray(rawRoots)) continue;
@@ -216,12 +217,13 @@
         existingIds.add(normalized.id);
         if (normalized.deleted) continue;
         const resolved = _joinDropboxPath(wsDropboxPath, normalized.relPath || '');
-        const key = resolved.toLowerCase();
+        const key = `${namespaceKind}:${resolved.toLowerCase()}`;
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
         merged.push({
           id: normalized.id,
           provider: 'dropbox',
+          namespaceKind,
           name: normalized.name,
           visible: normalized.visible,
           relPath: normalized.relPath,
@@ -244,7 +246,8 @@
       const dropboxPath = accountRoot.dropboxPath;
       if (!dropboxPath) continue;
       const resolved = _joinDropboxPath(String(dropboxPath), '');
-      const key = resolved.toLowerCase();
+      const namespaceKind = accountRoot.namespaceKind === 'team_root' ? 'team_root' : 'home';
+      const key = `${namespaceKind}:${resolved.toLowerCase()}`;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       const entry = Object.assign({}, accountRoot, {

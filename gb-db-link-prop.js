@@ -195,22 +195,34 @@ async function _dbLinkCommitValue(args) {
     const filePath = result?.path || '';
     if (optimisticValue) {
       optimisticValue.file = filePath;
+      optimisticValue.entry_path = entityPath;
       optimisticValue.candidate_index = result?.candidate_index;
       optimisticValue.property = propName;
     }
     if (!refreshedLocally && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
     if (filePath && typeof historyPush === 'function') {
-      const candIdx = result?.candidate_index;
+      let currentRef = {
+        file: filePath,
+        entry_path: entityPath,
+        property: result?.property || propName,
+        candidate_index: result?.candidate_index,
+      };
       const dbScope = typeof _dbScopeForPath === 'function'
         ? _dbScopeForPath(dbPath)
         : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
       historyPush('リンク設定: ' + propName + '=' + newPath,
         async () => {
-          await _apiPutValue({ file: filePath, property: propName, candidate_index: candIdx }, { _delete: true });
+          await _apiPutValue(currentRef, { _delete: true });
           if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
         },
         async () => {
-          await _apiPostValue(entityPath, propName, newPath, '採用', '');
+          const redo = await _apiPostValue(entityPath, propName, newPath, '採用', '');
+          currentRef = {
+            file: redo?.path || redo?.file || currentRef.file,
+            entry_path: entityPath,
+            property: redo?.property || propName,
+            candidate_index: redo?.candidate_index,
+          };
           if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
         },
         dbScope

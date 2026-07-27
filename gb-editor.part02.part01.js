@@ -75,6 +75,35 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
     return;
   }
 
+  // カラー列は、テキスト入力ではなく共通カラーパレットで色を選んで追加する。
+  const _ptcAdd = (parentDb && typeof getPropertyTypes === 'function') ? getPropertyTypes(parentDb)[propName] : null;
+  if (_ptcAdd?.type === 'color' && typeof openColorPalette === 'function') {
+    let saved = false;
+    let saveTimer = null;
+    openColorPalette(valuesEl, '', (color) => {
+      if (saved) return;
+      const hex = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(color || '').trim()) ? color.trim() : '';
+      clearTimeout(saveTimer);
+      if (!hex) return;
+      // ライブ変更のたびに保存せず、色が落ち着いてから1回だけ候補値を追加する
+      saveTimer = setTimeout(async () => {
+        if (saved) return;
+        saved = true;
+        try {
+          await _apiPostValue(entityPath, propName, hex, '採用', '');
+          const fresh = await apiFetch('/entity?path=' + encodeURIComponent(entityPath)).catch(() => null);
+          if (fresh && fresh.properties) renderEntityPropsGridInto(grid, fresh, entityPath, opts);
+          else {
+            if (!Array.isArray(data.properties[propName])) data.properties[propName] = [];
+            data.properties[propName].push({ property: propName, value: hex, status: '採用', note: '', file: entityPath });
+            renderEntityPropsGridInto(grid, data, entityPath, opts);
+          }
+        } catch (e) { showStatus('候補値の追加に失敗しました', true); }
+      }, 300);
+    });
+    return;
+  }
+
   const statusOn = !parentDb || typeof getStatusEnabled !== 'function' || getStatusEnabled(parentDb);
   const row = document.createElement('div');
   row.className = 'entry-prop-inline-add';
@@ -213,7 +242,19 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.draggable = layoutEditMode;
     const nameEl = document.createElement('div');
     nameEl.className = 'entry-prop-name';
-    nameEl.textContent = (layoutEditMode ? '☰ ' : '') + propName;
+    if (layoutEditMode) nameEl.appendChild(document.createTextNode('☰ '));
+    // 各列名の前に列タイプのアイコンを表示する
+    if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'entry-prop-type-icon';
+      typeIcon.setAttribute('aria-hidden', 'true');
+      typeIcon.innerHTML = lucide(getPropertyTypeIcon(propTypes[propName]?.type), 14);
+      nameEl.appendChild(typeIcon);
+    }
+    const nameText = document.createElement('span');
+    nameText.className = 'entry-prop-name-text';
+    nameText.textContent = propName;
+    nameEl.appendChild(nameText);
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
@@ -273,7 +314,19 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       e.stopPropagation();
       _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
     });
-    valuesEl.appendChild(addBtn);
+    // ＋（候補値を追加）は独立行ではなく、値群の末尾（最後の値と同じ行）にインライン配置する。
+    const lastValueEl = !layoutEditMode
+      ? Array.from(valuesEl.children).reverse().find(el => el.classList && el.classList.contains('cell-value'))
+      : null;
+    if (lastValueEl) {
+      const tail = document.createElement('div');
+      tail.className = 'entry-prop-value-tail';
+      valuesEl.insertBefore(tail, lastValueEl);
+      tail.appendChild(lastValueEl);
+      tail.appendChild(addBtn);
+    } else {
+      valuesEl.appendChild(addBtn);
+    }
     card.appendChild(valuesEl);
 
     // D&D 並べ替え (DB 単位の順序保存。同 DB のすべてのエントリ表示で共有)
@@ -355,6 +408,21 @@ function _setEntityCreateActionButton(button, iconName, label) {
 
 function renderEntityPage(data) {
   // data = {entity, properties: {propName: [{value, status, note, file, ...}]}, page_content}
+  if (window.MeldexEntityDetail?.mount) {
+    const entityPath = state.currentEntityPath;
+    const controller = window.MeldexEntityDetail.mount({
+      root: document.getElementById('entity-view'),
+      path: entityPath,
+      surface: 'main',
+      data,
+    });
+    controller.ready.then((mounted) => {
+      if (!mounted || state.currentEntityPath !== entityPath) return;
+      if (typeof _renderEntityActions === 'function') _renderEntityActions(data, entityPath);
+      if (typeof _renderEntityBacklinks === 'function') _renderEntityBacklinks(data, entityPath);
+    });
+    return;
+  }
   document.getElementById('entity-title').textContent = data.entity || '';
 
   const entityPath = state.currentEntityPath;
@@ -437,7 +505,7 @@ function renderEntityPage(data) {
   ft.dataset.entityPath = entityPath;
   // Markdown→HTML変換してからauto-link適用 (rawContent は冒頭で取得済み)
   if (hasNote) {
-    const ftHtml = applyAutoLinks(mdToHtml(rawContent), entityPath);
+    const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath);
     ft.innerHTML = ftHtml;
   } else {
     // ノート未作成時はエディタ自体を非表示にしているため innerHTML 不要
@@ -479,7 +547,7 @@ function renderEntityPage(data) {
       const saved = await _saveEntityFreeText(ep, md);
       if (!saved) return;
       showStatus('自由記述を保存しました', false, { passiveSave: true });
-      this.innerHTML = applyAutoLinks(mdToHtml(md), ep);
+      this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep);
     } catch (e) { showStatus('自由記述の保存に失敗しました', true); }
   };
 
@@ -557,7 +625,7 @@ let rtSavedSelection = null;
 
 function _rtEditableFromNode(node) {
   const el = node?.nodeType === 1 ? node : node?.parentElement;
-  const editable = el?.closest?.('#page-content, #entity-freetext, #dp-editable') || null;
+  const editable = el?.closest?.('#page-content, #entity-freetext, #dp-editable, .meldex-entity-detail-editor') || null;
   if (!editable || editable.contentEditable !== 'true') return null;
   return editable;
 }
@@ -978,5 +1046,10 @@ function stripAutoLinks(html) {
 /* ==============================
    Markdown ↔ HTML 変換
    ============================== */
-function mdToHtml(md) {
+// options.basePath: 本文が属するノートのパス。相対メディアパス（WebClipperのクリップ本文など）を
+// 解決する基準になる。省略した場合は従来どおり src をそのまま出力する。
+function mdToHtml(md, options) {
   if (!md) return '';
+  const _prevMediaBasePath = _mdMediaBasePath;
+  _mdMediaBasePath = String((options && options.basePath) || '');
+  try {

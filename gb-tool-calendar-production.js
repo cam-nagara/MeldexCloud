@@ -24,7 +24,6 @@
     { key: 'targets', id: 'production-managed-targets', label: '作業対象', icon: 'crosshair' },
     { key: 'contents', id: 'production-managed-contents', label: '作業内容', icon: 'listChecks' },
     { key: 'scales', id: 'production-managed-scales', label: '作業規模', icon: 'gauge' },
-    { key: 'staff', id: 'production-managed-staff', label: 'スタッフ', icon: 'users' },
   ];
 
   function _pmIcon(name, size = 14) {

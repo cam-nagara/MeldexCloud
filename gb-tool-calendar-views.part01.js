@@ -153,6 +153,68 @@ function _calRecurringInteractionBlocked(component, ev) {
   return true;
 }
 
+// === 複数選択イベントのグループD&D移動: 日付演算ヘルパー ===
+// サーバーが自動生成する予定（シフト/休憩/勤怠/工程タスク）は直接更新できず409になるため、
+// グループ移動の「他の選択イベント」からは除外する（ドラッグしたイベント自身はこの判定をしない）。
+function _calGroupMoveSourceBlocked(ev) {
+  return ['shift', 'shift-break', 'attendance', 'production-task'].includes(String(ev?.calendar_source || ''));
+}
+
+// fromValue（旧開始日時）から toDateStr（新しい日付）までの日数差を返す（時刻は無視）
+function _calDateDayDelta(fromValue, toDateStr) {
+  const fromDate = _calParseDateValue(fromValue);
+  const toDate = _calParseDateValue(toDateStr);
+  if (!fromDate || !toDate) return 0;
+  const fromMid = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
+  const toMid = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate());
+  return Math.round((toMid - fromMid) / 86400000);
+}
+
+// 日付/日時値を days 日シフトする（元の表記形式=日付のみ/日時を維持する）
+function _calShiftValueByDays(component, value, days) {
+  if (!value || !days) return value;
+  const parsed = _calParseDateValue(value);
+  if (!parsed) return value;
+  const shifted = _calDateAddDays(parsed, days);
+  return _calIsDateOnlyValue(value) ? _calDateOnlyString(shifted) : component._localDateTimeStr(shifted);
+}
+
+// 日時値を deltaMs ミリ秒シフトする（日付のみ値は呼び出し側で _calShiftValueByDays を使うこと）
+function _calShiftValueByMs(component, value, deltaMs) {
+  if (!value || !deltaMs) return value;
+  const parsed = _calParseDateValue(value);
+  if (!parsed) return value;
+  return component._localDateTimeStr(new Date(parsed.getTime() + deltaMs));
+}
+
+// 月表示・終日帯ドロップ用: グループ内の他イベントを dayDelta 日シフトするパッチを作る
+// （0日シフトや対象値なしは null を返し、呼び出し側でAPI呼び出しを省略させる＝変更なし扱い）
+function _calDayShiftPatch(component, ev, dayDelta) {
+  if (!dayDelta) return null;
+  const patch = {};
+  if (ev.start) patch.start = _calShiftValueByDays(component, ev.start, dayDelta);
+  if (ev.end) patch.end = _calShiftValueByDays(component, ev.end, dayDelta);
+  return Object.keys(patch).length ? patch : null;
+}
+
+// 週/日/複数日セルドロップ用: 他イベントを移動先へ合わせてシフトするパッチを作る
+// （終日イベントは日単位、時刻付きイベントはミリ秒単位でシフトする。共に無変化は null＝対象外）
+function _calWeekShiftPatch(component, ev, deltaMs) {
+  if (ev.all_day) {
+    const days = Math.round(deltaMs / 86400000);
+    if (!days) return null;
+    const patch = {};
+    if (ev.start) patch.start = _calShiftValueByDays(component, ev.start, days);
+    if (ev.end) patch.end = _calShiftValueByDays(component, ev.end, days);
+    return Object.keys(patch).length ? patch : null;
+  }
+  if (!deltaMs) return null;
+  const patch = {};
+  if (ev.start) patch.start = _calShiftValueByMs(component, ev.start, deltaMs);
+  if (ev.end) patch.end = _calShiftValueByMs(component, ev.end, deltaMs);
+  return Object.keys(patch).length ? patch : null;
+}
+
 CalendarComponent.prototype._sanitizeEventColor = function(color) {
   const raw = String(color || '').trim();
   if (!raw) return 'var(--cal-event-bg, var(--cal-accent, var(--accent)))';
@@ -272,6 +334,48 @@ CalendarComponent.prototype._restoreEventLocal = function(snapshot) {
   if (idx >= 0) this._events[idx] = snapshot;
 };
 
+// 選択中の複数イベントをまとめて移動する（グループD&D）。
+// ドラッグしたイベントが2件以上の選択に含まれる場合のみ処理し、それ以外は false を返す
+// （呼び出し側はこれまでどおり単一移動を行う）。ドラッグイベントは呼び出し側が計算した
+// 従来パッチ（draggedApplyPatch=ローカル反映用、draggedApiPatch=サーバー送信用）をそのまま使い、
+// 他の選択イベントは otherPatchFn(ev) が返すパッチ（null なら変更なし/対象外）を使う。
+CalendarComponent.prototype._moveSelectedEventGroup = async function(draggedEv, draggedApplyPatch, draggedApiPatch, otherPatchFn) {
+  const draggedId = draggedEv?.id;
+  const selection = this._eventSelection ? this._eventSelection() : null;
+  if (!draggedId || !selection || selection.size < 2 || !selection.has(draggedId)) return false;
+
+  const targets = [{ id: draggedId, applyPatch: draggedApplyPatch, apiPatch: draggedApiPatch }];
+  let skipped = 0;
+  (this._selectedEventRecords ? this._selectedEventRecords() : []).forEach(other => {
+    if (!other || other.id === draggedId) return;
+    if (other._recurrence_instance || _calGroupMoveSourceBlocked(other)) { skipped += 1; return; }
+    const patch = otherPatchFn(other);
+    if (patch && Object.keys(patch).length) targets.push({ id: other.id, applyPatch: patch, apiPatch: patch });
+  });
+
+  const before = targets.map(t => this._snapshotEventLocal(t.id));
+  this._pushUndo('イベント移動');
+  targets.forEach(t => this._applyEventLocal(t.id, t.applyPatch));
+  this._render();
+
+  const results = await Promise.allSettled(targets.map(t => apiPut('/cal/events/' + t.id, t.apiPatch)));
+  let failed = 0;
+  results.forEach((result, i) => {
+    if (result.status !== 'rejected') return;
+    failed += 1;
+    this._restoreEventLocal(before[i]);
+  });
+
+  const notices = [];
+  if (failed) notices.push(`${failed}件の移動に失敗`);
+  if (skipped) notices.push(`${skipped}件は移動できないためスキップしました`);
+  if (notices.length) this._showStatus(notices.join(' / '), true);
+
+  await this._loadEvents();
+  this._render();
+  return true;
+};
+
 CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
   const eventId = e.dataTransfer.getData('application/x-cal-event');
   if (!eventId) return;
@@ -286,6 +390,14 @@ CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
     newEnd = this._localDateTimeStr(new Date(new Date(newStart).getTime() + dur));
   }
   if (newStart === oldStart && (!ev.end || newEnd === ev.end)) return;
+  const dayDelta = _calDateDayDelta(oldStart, dateStr);
+  const grouped = await this._moveSelectedEventGroup(
+    ev,
+    { start: newStart, end: newEnd || ev.end || '' },
+    { start: newStart, end: newEnd || undefined },
+    other => _calDayShiftPatch(this, other, dayDelta)
+  );
+  if (grouped) return;
   const before = this._snapshotEventLocal(eventId);
   try {
     this._pushUndo('イベント移動');
@@ -362,7 +474,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
   rootEl.querySelectorAll('.gb-cal-all-day-cell').forEach(cell => {
     cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.12)'; });
     cell.addEventListener('dragleave', () => { cell.style.background = ''; });
-    cell.addEventListener('drop', (e) => {
+    cell.addEventListener('drop', async (e) => {
       e.preventDefault(); cell.style.background = '';
       const d = e.dataTransfer.getData('application/x-cal-move');
       if (!d) return;
@@ -371,11 +483,14 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
       if (!ev) return;
       if (_calRecurringInteractionBlocked(this, ev)) return;
       const dateStr = cell.dataset.date;
-      const before = this._snapshotEventLocal(id);
       const spanDays = _calAllDayDateSpan(ev);
       const startDate = _calParseDateValue(dateStr);
       const endDate = spanDays <= 1 ? dateStr : _calDateOnlyString(_calDateAddDays(startDate, spanDays));
       const patch = { start: dateStr, end: endDate, all_day: 1 };
+      const dayDelta = _calDateDayDelta(ev.start, dateStr);
+      const grouped = await this._moveSelectedEventGroup(ev, patch, patch, other => _calDayShiftPatch(this, other, dayDelta));
+      if (grouped) return;
+      const before = this._snapshotEventLocal(id);
       this._pushUndo('イベント移動');
       this._applyEventLocal(id, patch);
       this._render();
@@ -650,7 +765,7 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
     // D&Dドロップ受け入れ
     cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.15)'; });
     cell.addEventListener('dragleave', () => { cell.style.background = ''; });
-    cell.addEventListener('drop', (e) => {
+    cell.addEventListener('drop', async (e) => {
       e.preventDefault(); cell.style.background = '';
       const d = e.dataTransfer.getData('application/x-cal-move');
       if (!d) return;
@@ -662,13 +777,17 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       if (!range) return;
       const dur = allDay || ev.all_day ? 3600000 : Math.max(15 * 60000, range.end - range.start);
       const ns = new Date(cell.dataset.date + 'T' + String(parseInt(cell.dataset.hour)).padStart(2,'0') + ':00');
-      self._pushUndo('イベント移動');
-      const before = self._snapshotEventLocal(id);
       const nextStart = self._localDateTimeStr(ns);
       const nextEnd = self._localDateTimeStr(new Date(ns.getTime()+dur));
-      self._applyEventLocal(id, { start: nextStart, end: nextEnd, all_day: 0 });
+      const patch = { start: nextStart, end: nextEnd, all_day: 0 };
+      const deltaMs = ns.getTime() - range.start.getTime();
+      const grouped = await self._moveSelectedEventGroup(ev, patch, patch, other => _calWeekShiftPatch(self, other, deltaMs));
+      if (grouped) return;
+      self._pushUndo('イベント移動');
+      const before = self._snapshotEventLocal(id);
+      self._applyEventLocal(id, patch);
       self._render();
-      apiPut('/cal/events/' + id, { start: nextStart, end: nextEnd, all_day: 0 })
+      apiPut('/cal/events/' + id, patch)
         .then(() => self._loadEvents())
         .then(() => self._render())
         .catch(() => {

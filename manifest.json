@@ -76,5 +76,79 @@
       "type": "image/png",
       "purpose": "any"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "ノート",
+      "short_name": "ノート",
+      "url": "./apps/note/",
+      "icons": [
+        {
+          "src": "./MeldexNote_icon_128.png",
+          "sizes": "128x128",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "シナリオ",
+      "short_name": "シナリオ",
+      "url": "./apps/scenario/",
+      "icons": [
+        {
+          "src": "./MeldexScenario_icon_128.png",
+          "sizes": "128x128",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "ボード",
+      "short_name": "ボード",
+      "url": "./apps/board/",
+      "icons": [
+        {
+          "src": "./MeldexBoard_icon_128.png",
+          "sizes": "128x128",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "シート",
+      "short_name": "シート",
+      "url": "./apps/sheet/",
+      "icons": [
+        {
+          "src": "./MeldexSheet_icon_128.png",
+          "sizes": "128x128",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "タイマー",
+      "short_name": "タイマー",
+      "url": "./apps/timer/",
+      "icons": [
+        {
+          "src": "./MeldexTimer_icon_128.png",
+          "sizes": "128x128",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "クイックメモ",
+      "short_name": "メモ",
+      "url": "./apps/quick-memo/",
+      "icons": [
+        {
+          "src": "./MeldexQuickMemo_icon_128.png",
+          "sizes": "128x128",
+          "type": "image/png"
+        }
+      ]
+    }
   ]
 }

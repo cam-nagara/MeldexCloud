@@ -1,9 +1,26 @@
-const QUICK_MEMO_CACHE = 'meldex-quick-memo-v2';
+const QUICK_MEMO_CACHE = 'meldex-quick-memo-v3';
 const QUICK_MEMO_CACHE_PREFIX = 'meldex-quick-memo-';
 const QUICK_MEMO_ASSETS = [
   'quick-memo.html',
   'quick-memo.css',
   'quick-memo.js',
+  'quick-memo-editor.js',
+  'quick-memo-drawing.js',
+  'quick-memo-library.js',
+  'gb-split-loader.js',
+  'meldex-core.js',
+  'meldex-core.bundle.js',
+  'meldex-core.bundle.part01.js',
+  'meldex-core.bundle.part02.js',
+  'meldex-core.bundle.part03.js',
+  'meldex-core.bundle.part04.js',
+  'meldex-core.part01.js',
+  'meldex-core.part02.js',
+  'meldex-core.part02.part01.js',
+  'meldex-core.part02.part02.js',
+  'meldex-core.part03.js',
+  'standalone-profile.js',
+  'standalone-profile.css',
   'quick-memo.webmanifest',
   'Meldex_icon_32.png',
   'Meldex_icon_192.png',

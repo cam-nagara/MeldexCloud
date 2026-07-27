@@ -26,6 +26,8 @@
   async function runBackgroundJob(startPath, body, options) {
     options = options || {};
     const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+    const onStarted = typeof options.onStarted === 'function' ? options.onStarted : null;
+    const signal = options.signal || null;
     const pollIntervalMs = options.pollIntervalMs || JOB_POLL_INTERVAL_MS;
     const maxPolls = options.maxPolls || JOB_MAX_POLLS;
     if (typeof apiPost !== 'function' || typeof apiFetch !== 'function') {
@@ -42,9 +44,29 @@
       // 未ジョブ化エンドポイントとの後方互換: 返り値をそのまま最終結果として扱う
       return started;
     }
+    if (onStarted) onStarted(jobId, started);
+
+    let cancelRequested = false;
+    async function cancelIfRequested() {
+      if (!signal?.aborted || cancelRequested) return false;
+      try {
+        await apiPost('/jobs/' + encodeURIComponent(jobId) + '/cancel', {}, { silentError: true });
+        cancelRequested = true;
+      } catch (cause) {
+        const error = new Error(
+          '中止要求を送信できませんでした。処理は裏側で続いている可能性があります。'
+        );
+        error.name = 'CancelRequestError';
+        error.jobId = jobId;
+        error.cause = cause;
+        throw error;
+      }
+      return true;
+    }
 
     let missCount = 0;
     for (let i = 0; i < maxPolls; i += 1) {
+      await cancelIfRequested();
       let job;
       try {
         job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
@@ -64,6 +86,12 @@
         try { onProgress(job.progress || {}, job); } catch (_) { /* 表示更新失敗は無視 */ }
       }
       if (job.status === 'done') return job.result || {};
+      if (job.status === 'cancelled' || job.status === 'canceled') {
+        const error = new Error('処理を中止しました');
+        error.name = 'AbortError';
+        error.jobId = jobId;
+        throw error;
+      }
       if (job.status === 'error') {
         const error = new Error(job.error || '処理に失敗しました');
         error.jobError = job;

@@ -40,33 +40,18 @@
     { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
   ];
 
-  const DEFAULT_PANEL_SECTIONS = [
-    {
-      title: '作業パネル',
-      items: [
-        { label: 'フォルダ', icon: 'folder', type: 'folder' },
-        { label: 'ノート', icon: 'fileText', type: 'page' },
-        { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote' },
-        { label: 'シート', icon: 'database', type: 'database' },
-        { label: 'ボード', icon: 'presentation', type: 'board' },
-        { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
-        { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
-      ],
-    },
-    {
-      title: '補助パネル',
-      items: [
-        { label: 'フォルダツリー', icon: 'folderTree', type: 'outliner' },
-        { label: 'ビューワー', icon: 'tvMinimal', type: 'preview' },
-        { label: 'オプション', icon: 'slidersHorizontal', type: 'detail' },
-        { label: 'バージョン管理', icon: 'gitBranch', type: 'version' },
-        { label: 'チャット', icon: 'messagesSquare', type: 'chat' },
-        { label: 'タイマー', icon: 'timer', type: 'timer' },
-        { label: 'ヒストリー', icon: 'history', type: 'history' },
-        { label: '注釈', icon: 'stickyNote', type: 'annotation' },
-      ],
-    },
-  ];
+  const DEFAULT_PANEL_SECTIONS = [{
+    title: '',
+    items: [
+      { label: 'フォルダ', icon: 'folder', type: 'folder' },
+      { label: 'ノート', icon: 'fileText', type: 'page' },
+      { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote' },
+      { label: 'シート', icon: 'database', type: 'database' },
+      { label: 'ボード', icon: 'presentation', type: 'board' },
+      { label: 'スケジュール', icon: 'calendar', type: 'calendar' },
+      { label: 'スマートシート', icon: 'databaseZap', type: 'smart-db' },
+    ],
+  }];
 
   const FILE_TYPE_LABELS = {
     page: 'ノート',
@@ -893,9 +878,6 @@
     const bg = typeof window._getAvatarBgColor === 'function'
       ? window._getAvatarBgColor()
       : (localStorage.getItem('meldex-avatar-bg') || '#000000');
-    const nameEl = document.getElementById('left-chrome-user-name');
-    if (nameEl) nameEl.textContent = name;
-    _renderAvatar(document.getElementById('left-chrome-user-avatar'), name, avatar, bg);
     _renderAvatar(document.getElementById('left-chrome-floating-avatar'), name, avatar, bg);
   }
 
@@ -938,10 +920,10 @@
       && rect.top < viewportHeight - 1;
   }
 
-  function _syncLeftChromePlacement(sidebarVisible) {
+  function _syncLeftChromePlacement() {
     const floating = _leftChromeFloatingEl();
     if (!floating) return;
-    const dockTarget = sidebarVisible ? null : _visibleLeftDockTarget();
+    const dockTarget = _visibleLeftDockTarget();
     if (dockTarget) {
       if (floating.parentElement !== dockTarget) dockTarget.appendChild(floating);
       floating.classList.add('is-docked');
@@ -966,7 +948,7 @@
         && _elementIntersectsViewport(rect));
     }
     if (document.body) document.body.dataset.leftChromeSidebarVisible = visible ? '1' : '0';
-    _syncLeftChromePlacement(visible);
+    _syncLeftChromePlacement();
   }
 
   function _queueLeftChromeSync() {
@@ -1036,13 +1018,9 @@
   }
 
   function _bindLeftChromeActionTriggers() {
-    _bindLeftChromeButton('left-chrome-help', (event) => _openHelp(event));
     _bindLeftChromeButton('left-chrome-floating-help', (event) => _openHelp(event));
-    _bindLeftChromeButton('left-chrome-trash', () => _openTrash());
     _bindLeftChromeButton('left-chrome-floating-trash', () => _openTrash());
-    _bindLeftChromeButton('left-chrome-settings', () => _openSettings());
     _bindLeftChromeButton('left-chrome-floating-settings', () => _openSettings());
-    _bindLeftChromeButton('left-chrome-user', () => _openSettings('ユーザー'));
     _bindLeftChromeButton('left-chrome-floating-user', () => _openSettings('ユーザー'));
     _syncLeftChromeUser();
   }

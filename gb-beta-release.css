@@ -15,10 +15,29 @@
   white-space: nowrap;
 }
 
-.left-chrome-user .meldex-beta-badge {
-  margin-left: 2px;
-  align-self: center;
-  flex: 0 0 auto;
+#left-chrome-floating-user .meldex-beta-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 12px;
+  min-width: 12px;
+  height: 10px;
+  padding: 0;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 10px;
+  pointer-events: none;
+}
+
+#left-chrome-floating-user {
+  position: relative;
+  overflow: visible;
+}
+
+#left-chrome-floating-user .meldex-beta-badge::after {
+  content: "β";
+  font-size: 8px;
+  line-height: 10px;
 }
 
 .modal-overlay.meldex-beta-consent-overlay {

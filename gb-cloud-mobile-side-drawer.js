@@ -678,7 +678,7 @@
       if (typeof _dpApplyNoteFileStyle === 'function') _dpApplyNoteFileStyle(editor, fm);
       if (mdBody.trim()) {
         editor.innerHTML = typeof applyAutoLinks === 'function' && typeof mdToHtml === 'function'
-          ? applyAutoLinks(mdToHtml(mdBody), entityPath)
+          ? applyAutoLinks(mdToHtml(mdBody, { basePath: entityPath }), entityPath)
           : mdBody;
       } else {
         const placeholder = document.createElement('span');

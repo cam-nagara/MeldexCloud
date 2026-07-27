@@ -1,8 +1,8 @@
 /* gb-split-loader.js: split script loader */
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '79b9490f42dc', parts: { 'meldex-core.bundle.part01.js': 'a2e47cf1ff6c', 'meldex-core.bundle.part02.js': 'bb7dd81ceb38', 'meldex-core.bundle.part03.js': '2a116dee8c1c', 'meldex-core.bundle.part04.js': '0e1d7c5e8fbe' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'dc3aa92400e9', parts: { 'gb-app.bundle.part01.js': '58bb6770e992', 'gb-app.bundle.part02.js': '725ae0f12304', 'gb-app.bundle.part03.js': 'b80f0b7d6660', 'gb-app.bundle.part04.js': '71f1ae813e3c', 'gb-app.bundle.part05.js': '3ed74916c89b', 'gb-app.bundle.part06.js': 'a30bc3faf7f7', 'gb-app.bundle.part07.js': '895a97e09d14' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'c5ea2413a42b', parts: { 'meldex-core.bundle.part01.js': 'efec495e85fa', 'meldex-core.bundle.part02.js': 'd8e41fab5bd0', 'meldex-core.bundle.part03.js': '171d08cb7219', 'meldex-core.bundle.part04.js': '68dbe21603c0' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '07a0062f457c', parts: { 'gb-app.bundle.part01.js': '58bb6770e992', 'gb-app.bundle.part02.js': '9360e6668c6f', 'gb-app.bundle.part03.js': '4635b7ba3dd3', 'gb-app.bundle.part04.js': '3a7a43813a1f', 'gb-app.bundle.part05.js': 'dbdffc46f898', 'gb-app.bundle.part06.js': '49f8818a5f20', 'gb-app.bundle.part07.js': '90081a66b3a4' } },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'b1bcdd0d8625', parts: { 'gb-theme-manager.bundle.part01.js': 'a4c49a7875cb', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': '287af8d88185', 'gb-theme-manager.bundle.part04.js': 'fd95778f4ad8' } },
     'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '39a854447f88', parts: { 'gb-outliner.bundle.part01.js': '4d098ffc4129', 'gb-outliner.bundle.part02.js': 'c96cd45640e7', 'gb-outliner.bundle.part03.js': '533c8d6e2056', 'gb-outliner.bundle.part04.js': '2402809b2124', 'gb-outliner.bundle.part05.js': '9c0f5b256025' } },
     'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'e974fd38bfae', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '84fb07821230', 'gb-data-access-dropbox-fileops.bundle.part02.js': 'a08bc19dfd02', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'bebba910c5c4' } },
@@ -96,7 +96,7 @@
     const match = source.match(pattern);
     if (!match) return [];
     const chunks = [];
-    const chunkPattern = /['"]([^'"]+\.part\d+(?:\.part\d+)?\.js)['"]/g;
+    const chunkPattern = /['"]([^'"]+\.js)['"]/g;
     let chunkMatch;
     while ((chunkMatch = chunkPattern.exec(match[1]))) chunks.push(chunkMatch[1]);
     return chunks;

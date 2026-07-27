@@ -8,8 +8,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Meldex Sheet">
-  <link rel="manifest" href="apps/sheet/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-title" content="Meldex BETA">
+  <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="MeldexSheet_icon_256.png">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -52,10 +52,6 @@
       <button id="sheet-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="sheet-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
     <div id="sheet-db-toolbar" class="gb-toolbar" hidden>
-      <div class="db-toolbar-view-switcher" aria-label="シートビュー切替">
-        <div class="view-tabs db-view-tabs" id="db-view-tabs"></div>
-        <select id="db-view-select" class="tb-select db-view-select" title="ビュー切替" aria-label="ビュー切替"></select>
-      </div>
       <div class="tb-spacer"></div>
       <button type="button" class="tb-icon-btn" id="sheet-tb-undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button data-e2e-id="sheet-tb-undo"><span class="ico ico-undo2"></span></button>
       <button type="button" class="tb-icon-btn" id="sheet-tb-redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button data-e2e-id="sheet-tb-redo"><span class="ico ico-redo2"></span></button>
@@ -78,6 +74,10 @@
           </div>
         </div>
         <div id="db-view-container" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
+          <div class="db-main-view-switcher db-view-switcher" aria-label="シートビュー切替">
+            <div class="view-tabs db-view-tabs" id="db-view-tabs"></div>
+            <select id="db-view-select" class="tb-select db-view-select" title="ビュー切替" aria-label="ビュー切替"></select>
+          </div>
           <div id="pivot-view" style="flex:1;overflow:auto;padding:0;">
             <table id="pivot-table" role="table" aria-label="シート"><thead></thead><tbody></tbody><tfoot></tfoot></table>
           </div>
@@ -180,6 +180,9 @@
   <script src="gb-resource-url.js"></script>
   <script src="gb-dropbox-auth.js"></script>
   <script src="gb-source-folder-registry.js"></script>
+  <script src="gb-workspace-shared-ledger.js"></script>
+  <script src="gb-workspace-ledger-io.js"></script>
+  <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
   <script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
@@ -191,6 +194,7 @@
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
+  <script src="gb-path-utils.js"></script>
   <script src="gb-icon-assets.js"></script>
   <script src="gb-ui.js"></script>
   <script src="offline-bundles/gb-tooltip.js"></script>
@@ -210,10 +214,10 @@
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
+  <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
   <script src="standalone-profile.js"></script>
   <script src="standalone-workspace-tree.js"></script>
-  <script src="standalone-pwa-install.js"></script>
   <script src="gb-datetime-utils.js"></script>
   <script src="sheet-standalone-view-config.js"></script>
   <script src="gb-db-date.js"></script>

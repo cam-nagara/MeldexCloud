@@ -42,7 +42,7 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
   const endValue = shiftType === 'work' ? (existing?.end_time || '18:00') : '';
   const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
   o.innerHTML = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(350)}"><h3>${existing?'シフト編集':'新規シフト'}</h3>
-<div class="field"><label>ユーザー</label><input class="sh-user" value="${esc(user||existing?.user||this._getUser())}"></div>
+<div class="field"><label>ユーザー</label><input class="sh-user" list="sh-user-candidates" value="${esc(user||existing?.user||this._getUser())}"><datalist id="sh-user-candidates"></datalist></div>
 <div class="field"><label>日付</label><input class="sh-date" type="date" value="${shiftDate}"></div>
 <div style="display:flex;gap:8px;"><div class="field" style="flex:1;"><label>開始</label><input class="sh-start" type="time" value="${startValue}"></div>
 <div class="field" style="flex:1;"><label>終了</label><input class="sh-end" type="time" value="${endValue}"></div></div>
@@ -50,6 +50,7 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
 <div class="field"><label>メモ</label><textarea class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>
 <div class="btn-row">${existing?'<button class="sh-delete" style="color:var(--red);">削除</button>':''}<button class="sh-cancel">キャンセル</button><button class="primary sh-save">保存</button></div></div>`;
   document.body.appendChild(o);
+  this._fillShiftUserCandidates?.(o);
   const syncTimeState = () => {
     const isWork = o.querySelector('.sh-type')?.value === 'work';
     const start = o.querySelector('.sh-start');
@@ -73,6 +74,28 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     o.querySelector('.sh-delete').addEventListener('click', async () => {
       if (await this._deleteShift(existing.id)) o.remove();
     });
+  }
+};
+
+// シフトモーダルの「ユーザー」欄へ、正本スタッフ管理シート＋ワークスペースメンバーの
+// 候補を <datalist> サジェストとして流し込む（表記ゆれ対策）。あくまで補助であり、
+// 入力欄自体は free-text のまま（正本に無い未連携の人物も従来どおり直接入力できる）。
+CalendarComponent.prototype._fillShiftUserCandidates = async function(o) {
+  try {
+    const datalist = o.querySelector('#sh-user-candidates');
+    if (!datalist || typeof window.MeldexUserPicker?.getCandidates !== 'function') return;
+    const candidates = await window.MeldexUserPicker.getCandidates();
+    if (!datalist.isConnected) return; // 取得中にモーダルが閉じられていたら反映しない
+    datalist.textContent = '';
+    (candidates || []).forEach((c) => {
+      const name = String(c?.name || '').trim();
+      if (!name) return;
+      const opt = document.createElement('option');
+      opt.value = name;
+      datalist.appendChild(opt);
+    });
+  } catch (e) {
+    console.warn('シフトのユーザー候補取得に失敗しました', e);
   }
 };
 

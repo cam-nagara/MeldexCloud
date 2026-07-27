@@ -780,39 +780,6 @@ function closeCurrentView() {
   showView('welcome');
 }
 
-// 辞書ファイル出力（IME辞書形式）
-async function _exportDictFile() {
-  try {
-    const work = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
-    const url = work ? '/link-dict?work=' + encodeURIComponent(work) : '/link-dict';
-    const data = await apiFetch(url);
-    const entries = data.entries || [];
-    if (entries.length === 0) { showStatus('辞書に登録するエントリがありません', true); return; }
-    // Google日本語入力形式: 読み\t単語\t品詞
-    const lines = [];
-    for (const e of entries) {
-      if (!e.text) continue;
-      const reading = e.ruby || '';
-      if (!reading) continue;
-      lines.push(reading + '\t' + e.text + '\t' + '固有名詞');
-    }
-    if (lines.length === 0) { showStatus('ふりがな付きエントリがありません', true); return; }
-    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
-      showStatus('保存ダイアログを初期化できませんでした', true);
-      return;
-    }
-    await MeldexExportSave.saveText(lines.join('\n'), {
-      filename: (work ? work.replace(/[\\/]/g, '_') + '_' : '') + 'dictionary.txt',
-      extension: '.txt',
-      dialogTitle: '辞書ファイルを書き出し',
-      filetypes: [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']],
-      bom: true,
-      okMessage: `${lines.length}件の辞書エントリを出力しました`,
-      errorMessage: '辞書ファイルの出力に失敗しました',
-    });
-  } catch (e) { showStatus('辞書ファイルの出力に失敗しました', true); }
-}
-
 // パスをクリップボードにコピー
 function _copyCurrentFilePath() {
   const path = getCurrentFilePath();

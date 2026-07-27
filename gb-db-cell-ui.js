@@ -8,6 +8,19 @@ function _cellUiIsComposing(e) {
   return !!(e && (e.isComposing || e.keyCode === 229));
 }
 
+function _cellUiConsumeImeBoundaryKey(e) {
+  if (!e) return false;
+  const justEnded = e.target?.dataset?.dbImeJustEnded === '1'
+    || e.currentTarget?.dataset?.dbImeJustEnded === '1';
+  if (!justEnded) return false;
+  if (['Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar', 'Escape'].includes(e.key)) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+  }
+  return true;
+}
+
 function _cellUiNormalizePath(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
 }
@@ -89,6 +102,15 @@ function _cellUiScheduleAfterPaint(task) {
   } else {
     setTimeout(run, 0);
   }
+}
+
+async function _cellUiRecoverMutationFailure(dbPath, ctx, error, actionLabel) {
+  const detail = error?.message || String(error || '不明なエラー');
+  if (typeof showStatus === 'function') showStatus(`${actionLabel || '保存'}に失敗: ${detail}`, true);
+  if (!dbPath || typeof selectDatabase !== 'function') return;
+  try {
+    await selectDatabase(dbPath, ctx || undefined, { silent: true });
+  } catch {}
 }
 
 function _cellUiColumnLockMessage(dbPath, propName) {
@@ -377,6 +399,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
 
 function createValueElement(val, entityPath, propName, thumbSize, options = {}) {
   const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
+  if (val && entityPath) val.entry_path = _cellUiNormalizePath(entityPath);
   const filterMode = options.filter ?? options.ctx?.filter ?? (dbPath === state.currentDbPath ? state.filter : 'disabled');
   const row = document.createElement('div');
   row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
@@ -397,8 +420,9 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });
   row.addEventListener('mouseleave', () => { moreBtn.style.display = 'none'; });
 
-  // Status dot（採用状況フィルタ無効時 or DB側でステータス機能 OFF の場合は非表示）
-  if (filterMode !== 'disabled' && getStatusEnabled(dbPath)) {
+  // Status dot（採用状況フィルタ無効時 or DB側でステータス機能 OFF の場合は非表示）。
+  // ただし候補値が2つ以上あるセル（forceStatusDot）は、区別のためステータス機能OFFでも表示する。
+  if ((filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
     const _stColor = _getStatusColor(val.status, dbPath);
@@ -518,7 +542,9 @@ function _showValueContextMenu(e, val, entityPath, propName) {
         // Step 3: 部分更新化 (コンテキストメニュー値変更) — _refreshAfterCellEdit がフォールバックも内包
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(_menuAnchor, entityPath, propName);
         else if (currentDbPath) selectDatabase(currentDbPath, currentCtx || undefined, { silent: true });
-      } catch (e) { showStatus('保存に失敗', true); }
+      } catch (e) {
+        await _cellUiRecoverMutationFailure(currentDbPath, currentCtx, e, '保存');
+      }
     }, { placeholder: '値を変更...' });
   }
   // relation型の場合: 「リンク先を開く」を追加
@@ -558,7 +584,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
         sub.appendChild(openItem);
         const rightItem = document.createElement('div');
         rightItem.className = 'gb-context-menu-item';
-        rightItem.innerHTML = lucide('layers-2', 14) + ' サブパネルで開く';
+        rightItem.innerHTML = lucide('layers-2', 14) + ' フロートパネルで開く';
         rightItem.addEventListener('click', async () => {
           menu.remove();
           let name = idOrName;
@@ -641,7 +667,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
   const delItem = document.createElement('div');
   delItem.className = 'gb-context-menu-item';
   delItem.style.color = 'var(--red)';
-  delItem.innerHTML = lucide('trash2', 14) + ' 削除';
+  delItem.innerHTML = lucide('trash2', 14) + ' 候補値を削除';
   delItem.addEventListener('click', async () => {
     menu.remove();
     if (lockMsg) { showStatus(lockMsg, true); return; }
@@ -728,6 +754,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
           if (result) {
             currentVal = {
               file: result.path || currentVal.file,
+              entry_path: entityPath,
               property: propName,
               candidate_index: result.candidate_index,
               value: relationValue,
@@ -778,7 +805,9 @@ function _showValueContextMenu(e, val, entityPath, propName) {
         _dbScope(currentDbPath)
       );
       await selectDatabase(currentDbPath, currentCtx || undefined, { silent: true });
-    } catch (err) { showStatus('削除に失敗: ' + (err.message || err), true); }
+    } catch (err) {
+      await _cellUiRecoverMutationFailure(currentDbPath, currentCtx, err, '削除');
+    }
   });
   menu.appendChild(delItem);
   // 位置
@@ -814,6 +843,8 @@ function startInlineEdit(span, val, entityPath, propName) {
   const old = _cellUiValueToString(val.value);
   const oldRichHtml = _dbRichHtmlForValue(val);
   const editedTd = span.closest('td');
+  const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
+  const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
   const input = document.createElement('span');
   input.className = 'value-input value-input--textarea value-rich-editor';
@@ -842,8 +873,19 @@ function startInlineEdit(span, val, entityPath, propName) {
       _cellUiApplyAutoLinks(span, old, entityPath);
     }
   };
-  const restoreEditedCellSelection = (afterRender = false) => {
+  const restoreEditedCellSelection = (afterRender = false, moveTo = null) => {
     const restore = () => {
+      const currentActive = typeof _dbCurrentVisualActiveCell === 'function'
+        ? _dbCurrentVisualActiveCell()
+        : activeCell;
+      const currentFocusSeq = Number(currentActive?.dataset?.dbActiveSeq || 0);
+      // 保存待ちの間に次の編集・選択が始まった場合、古い保存の遅延復元で
+      // 新しいフォーカスやTab移動を上書きしない。
+      if (editedFocusSeq > 0 && currentFocusSeq > editedFocusSeq) return;
+      if (moveTo && editedPos && typeof _restoreCellPos === 'function') {
+        _restoreCellPos(editedPos, moveTo);
+        return;
+      }
       const target = _cellUiResolveRenderedCell(editedTd, entityPath, propName, editedRoot);
       if (target && typeof setActiveCell === 'function') setActiveCell(target, { scroll: false });
     };
@@ -855,9 +897,11 @@ function startInlineEdit(span, val, entityPath, propName) {
 
   let canceled = false;
   let done = false;
+  let composing = false;
+  let pendingBlurFinish = false;
   const isFormatSurface = (target) => !!target?.closest?.('.gb-fmt-popup, .gb-palette-popup');
 
-  const finish = async () => {
+  const finish = async (moveTo = null) => {
     if (done) return;
     done = true;
     document.removeEventListener('pointerdown', outsidePointerDown, true);
@@ -890,6 +934,7 @@ function startInlineEdit(span, val, entityPath, propName) {
               if (result) {
                 currentVal = {
                   file: result.path || currentVal.file,
+                  entry_path: entityPath,
                   property: propName,
                   candidate_index: result.candidate_index,
                   value: old,
@@ -911,16 +956,17 @@ function startInlineEdit(span, val, entityPath, propName) {
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
         else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
-        restoreEditedCellSelection(true);
+        restoreEditedCellSelection(true, moveTo);
       } catch (e) {
         span.textContent = old;
         restoreEditedCellSelection(true);
+        await _cellUiRecoverMutationFailure(dbPath, ctx, e, '削除');
       }
       return;
     }
     if (nextRichHtml) span.innerHTML = nextRichHtml;
     else span.textContent = nv || old;
-    restoreEditedCellSelection();
+    restoreEditedCellSelection(false, moveTo);
     if (nv && (nv !== old || nextRichHtml !== oldRichHtml)) {
       const saveRef = { ...val };
       val.value = nv;
@@ -935,20 +981,34 @@ function startInlineEdit(span, val, entityPath, propName) {
           showStatus('保存しました', false, { passiveSave: true });
           if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
           else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
-          restoreEditedCellSelection(true);
+          restoreEditedCellSelection(true, moveTo);
         } catch (e) {
           val.value = old;
           if (oldRichHtml) val.rich_html = oldRichHtml;
           else delete val.rich_html;
           restoreOldDisplay();
           restoreEditedCellSelection(true);
+          await _cellUiRecoverMutationFailure(dbPath, ctx, e, '保存');
         }
       });
     }
   };
 
   input.addEventListener('input', () => _cellUiAutosizeTextarea(input));
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => {
+    composing = false;
+    input.dataset.dbImeJustEnded = '1';
+    setTimeout(() => { delete input.dataset.dbImeJustEnded; }, 0);
+    if (!pendingBlurFinish) return;
+    pendingBlurFinish = false;
+    scheduleBlurFinish();
+  });
   const scheduleBlurFinish = () => {
+    if (composing) {
+      pendingBlurFinish = true;
+      return;
+    }
     setTimeout(() => {
       if (done) return;
       const active = document.activeElement;
@@ -958,13 +1018,19 @@ function startInlineEdit(span, val, entityPath, propName) {
   };
   const outsidePointerDown = (ev) => {
     if (done || input.contains(ev.target) || isFormatSurface(ev.target)) return;
+    if (composing) {
+      pendingBlurFinish = true;
+      return;
+    }
     setTimeout(finish, 0);
   };
   document.addEventListener('pointerdown', outsidePointerDown, true);
   input.addEventListener('blur', scheduleBlurFinish);
   input.addEventListener('keydown', (e) => {
     if (_cellUiIsComposing(e)) return;
+    if (_cellUiConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter' && (!e.shiftKey || e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(); }
+    if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(e.shiftKey ? 'left' : 'right'); }
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); canceled = true; finish(); }
   });
 }
@@ -1036,7 +1102,12 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
           if (!_refreshed) selectDatabase(dbPath, ctx || undefined, { silent: true });
         }
         else if (state.view === 'entity' && state.currentEntityPath) selectEntity(state.currentEntityPath);
-      } catch (e) { /* error shown */ }
+      } catch (e) {
+        val.status = oldStatus;
+        dotEl.style.background = _getStatusColor(oldStatus, dbPath);
+        dotEl.title = oldStatus;
+        await _cellUiRecoverMutationFailure(dbPath, ctx, e, 'ステータスの更新');
+      }
     });
     dd.appendChild(item);
   });
@@ -1158,8 +1229,15 @@ function _enableDropdownKeyNav(dd, itemSelector) {
       document.removeEventListener('keydown', handler, true);
       return;
     }
+    if (_cellUiIsComposing(e)) return;
+    if (_cellUiConsumeImeBoundaryKey(e)) return;
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Tab'].includes(e.key)) return;
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.altKey)) return;
+    // 検索・新規値入力欄では左右キーを候補移動に奪わず、通常のキャレット移動に任せる。
+    // 上下キーと Enter/Tab は候補ナビゲーションとして引き続き扱う。
+    const targetTag = String(e.target?.tagName || '').toUpperCase();
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+        && (targetTag === 'INPUT' || targetTag === 'TEXTAREA')) return;
     bindItems();
     const items = getItems();
     e.preventDefault();

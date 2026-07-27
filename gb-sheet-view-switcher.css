@@ -1,15 +1,17 @@
-/* シートビュー切替: ツールバー内タブ + モバイル用ドロップダウン */
+/* シートビュー切替: ツールバーとビュー表面の間 + モバイル用ドロップダウン */
 
-.db-toolbar-view-switcher {
-  display: inline-flex;
+.db-view-switcher {
+  display: flex;
   align-items: center;
   gap: 2px;
   min-width: 0;
-  flex: 1 1 auto;
-  max-width: none;
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
 }
 
-.db-toolbar-view-switcher .db-view-tabs {
+.db-view-switcher .db-view-tabs {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
@@ -25,7 +27,7 @@
   scrollbar-width: thin;
 }
 
-.db-toolbar-view-switcher .view-tab {
+.db-view-switcher .view-tab {
   flex: 0 0 auto;
 }
 
@@ -44,7 +46,7 @@
   flex: 0 0 auto;
 }
 
-.db-toolbar-view-switcher .view-tab {
+.db-view-switcher .view-tab {
   display: inline-flex;
   align-items: center;
   position: relative;
@@ -55,10 +57,8 @@
   box-sizing: border-box;
 }
 
-.db-toolbar-view-switcher .view-tab.db-view-drop-before::before,
-.db-toolbar-view-switcher .view-tab.db-view-drop-after::after,
-.db-pane-view-switcher .view-tab.db-view-drop-before::before,
-.db-pane-view-switcher .view-tab.db-view-drop-after::after {
+.db-view-switcher .view-tab.db-view-drop-before::before,
+.db-view-switcher .view-tab.db-view-drop-after::after {
   content: "";
   position: absolute;
   top: 4px;
@@ -70,26 +70,24 @@
   pointer-events: none;
 }
 
-.db-toolbar-view-switcher .view-tab.db-view-drop-before::before,
-.db-pane-view-switcher .view-tab.db-view-drop-before::before {
+.db-view-switcher .view-tab.db-view-drop-before::before {
   left: -2px;
 }
 
-.db-toolbar-view-switcher .view-tab.db-view-drop-after::after,
-.db-pane-view-switcher .view-tab.db-view-drop-after::after {
+.db-view-switcher .view-tab.db-view-drop-after::after {
   right: -2px;
 }
 
-.db-toolbar-view-switcher .view-tab.drag-over-tab,
-.db-pane-view-switcher .view-tab.drag-over-tab {
+.db-view-switcher .view-tab.drag-over-tab {
   border-bottom-color: transparent;
 }
 
-.db-toolbar-view-switcher .view-tab.active {
+.db-main-view-switcher .view-tab.active {
   background: var(--ui-bg-control-active);
+  color: var(--ui-fg-strong);
 }
 
-.db-toolbar-view-switcher .view-tab-add {
+.db-main-view-switcher .view-tab-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -101,7 +99,7 @@
   box-sizing: border-box;
 }
 
-.db-toolbar-view-switcher .view-tab-add svg,
+.db-main-view-switcher .view-tab-add svg,
 .db-toolbar-actions-right .view-tab-add svg,
 .db-toolbar-actions-right .tb-icon-btn svg,
 .db-toolbar-display-actions .tb-icon-btn svg,
@@ -118,11 +116,7 @@
 }
 
 .db-pane-view-switcher {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg2);
+  padding: 0;
 }
 
 .db-pane-view-switcher .db-view-tabs {
@@ -133,25 +127,21 @@
   position: relative;
 }
 
-@media (max-width: 768px), (pointer: coarse) {
-  .db-toolbar-view-switcher {
-    flex: 1 1 140px;
-    max-width: none;
-  }
+.db-csv-view-tab {
+  cursor: default;
+}
 
-  .db-toolbar-view-switcher .db-view-select,
-  .db-pane-view-switcher .db-view-select {
+@media (max-width: 768px), (pointer: coarse) {
+  .db-view-switcher .db-view-select {
     display: inline-block;
     flex: 1 1 auto;
   }
 
-  .db-toolbar-view-switcher .view-tab,
-  .db-pane-view-switcher .view-tab {
+  .db-view-switcher .view-tab {
     display: none;
   }
 
-  .db-toolbar-view-switcher .view-tab.active,
-  .db-pane-view-switcher .view-tab.active {
+  .db-view-switcher .view-tab.active {
     display: inline-flex;
     width: var(--ui-h-xs);
     min-width: var(--ui-h-xs);
@@ -159,21 +149,22 @@
     justify-content: center;
   }
 
-  .db-toolbar-view-switcher .view-tab.active > span:first-child,
-  .db-pane-view-switcher .view-tab.active > span:first-child {
+  .db-view-switcher .view-tab.active > span:first-child {
     display: none;
   }
 
-  .db-toolbar-view-switcher .view-tab.active .view-tab-more,
-  .db-pane-view-switcher .view-tab.active .view-tab-more {
+  .db-view-switcher .view-tab.active .view-tab-more {
     display: inline-flex !important;
     opacity: 1 !important;
     margin-left: 0 !important;
   }
 
-  .db-toolbar-view-switcher .db-view-tabs,
-  .db-pane-view-switcher .db-view-tabs {
+  .db-view-switcher .db-view-tabs {
     flex: 0 0 auto;
     overflow: visible;
+  }
+
+  body[data-csv-sheet-mode="1"] .db-main-view-switcher .db-view-tabs {
+    display: none;
   }
 }

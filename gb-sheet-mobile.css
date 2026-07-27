@@ -1,6 +1,6 @@
 /* シート専用モバイル補正 */
 
-.entry-prop-values > .cell-add-btn {
+.entry-prop-values .cell-add-btn {
   position: static;
   display: inline-flex;
   align-items: center;
@@ -17,14 +17,14 @@
   color: var(--fg2);
   appearance: none;
 }
-.entry-prop-values > .cell-add-btn:hover,
-.entry-prop-values > .cell-add-btn:focus-visible {
+.entry-prop-values .cell-add-btn:hover,
+.entry-prop-values .cell-add-btn:focus-visible {
   color: var(--ui-hover-fg);
   background: var(--ui-hover-bg);
   border-color: var(--border);
 }
 @media (pointer: coarse) {
-  .entry-prop-values > .cell-add-btn {
+  .entry-prop-values .cell-add-btn {
     width: 44px;
     height: 44px;
     min-width: 44px;
@@ -81,6 +81,11 @@
     min-width: 44px;
     width: 44px;
   }
+
+  /* ＋/ハンドル/チェックボックスが44pxタッチターゲットになるため、専用の行先頭列も合わせて拡幅する。
+     幅は変数だけを上書きする（JS 側の固定列 sticky left も同じ変数を読むため、直接 width を
+     書き換えると固定列だけ横にずれる） */
+  #pivot-table, .pivot-table { --db-row-controls-w: 144px; }
 
   #pivot-table td.col-entity .entity-name-cell-main {
     gap: 2px;
@@ -228,7 +233,4 @@
     white-space: nowrap;
   }
 
-  #tb-db .db-toolbar-view-switcher {
-    min-width: 120px;
-  }
 }

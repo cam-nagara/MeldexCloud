@@ -251,7 +251,7 @@ function _dpLoadFileInto(body, path) {
     if (fm) md = md.substring(fm.length);
     body.dataset.frontmatter = fm;
     _dpApplyNoteFileStyle(body, fm);
-    const html = md.trim() ? applyAutoLinks(mdToHtml(md), path) : '';
+    const html = md.trim() ? applyAutoLinks(mdToHtml(md, { basePath: path }), path) : '';
     body.innerHTML = html || '<span style="color:var(--fg2)">内容がありません</span>';
     body.contentEditable = 'true';
   }).catch(() => {
@@ -445,7 +445,7 @@ async function openBoardNoteTab(label, path) {
     if (fm) md = md.substring(fm.length);
     body.dataset.frontmatter = fm;
     _dpApplyNoteFileStyle(body, fm);
-    body.innerHTML = md.trim() ? applyAutoLinks(mdToHtml(md), path) : '<span style="color:var(--fg2)">内容がありません</span>';
+    body.innerHTML = md.trim() ? applyAutoLinks(mdToHtml(md, { basePath: path }), path) : '<span style="color:var(--fg2)">内容がありません</span>';
     body.contentEditable = 'true';
     _boardNoteDirty = false;
   }).catch(() => {

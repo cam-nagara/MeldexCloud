@@ -18,13 +18,26 @@
   const PRESET_OPTIONS = ['汎用', 'マンガ'];
   const SCHEDULE_TYPE_OPTIONS = ['シフト', '休み', '作業予定'];
   const TASK_GENERATION_OPTIONS = ['未作成', '作成中', '作成済み', '失敗'];
+  const PAGE_RANGE_OPTION_SOURCE = {
+    kind: 'row-page-range',
+    mode: 'single',
+    countProperty: 'ページ数',
+    fallbackCount: 99,
+  };
+  const SPREAD_RANGE_OPTION_SOURCE = {
+    ...PAGE_RANGE_OPTION_SOURCE,
+    mode: 'spread',
+    sideProperty: '開始ページの位置',
+    defaultSide: '左ページ',
+  };
 
   const PROPERTY_TYPES = {
     '作品リスト': {
       '完了': { type: 'checkbox' },
       'ページ数': { type: 'number' },
-      '見開きページ': { type: 'multi-select' },
-      'カラーページ': { type: 'multi-select' },
+      '開始ページの位置': { type: 'select', options: ['左ページ', '右ページ'] },
+      '見開きページ': { type: 'multi-select', optionSource: SPREAD_RANGE_OPTION_SOURCE },
+      'カラーページ': { type: 'multi-select', optionSource: PAGE_RANGE_OPTION_SOURCE },
       '作業作成粒度': { type: 'select', options: GRANULARITY_OPTIONS },
       '階層数': { type: 'number' },
       '階層ラベル': { type: 'text' },

@@ -147,14 +147,16 @@ const CHAT_CLI_MODEL_CATALOG = {
   claude_code: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
     { id: 'claude-fable-5', name: 'Fable 5' },
+    { id: 'claude-opus-5', name: 'Opus 5' },
     { id: 'claude-opus-4-8', name: 'Opus 4.8' },
     { id: 'claude-sonnet-5', name: 'Sonnet 5' },
     { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
   ],
   codex: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
-    { id: 'gpt-5.6', name: 'GPT-5.6' },
-    { id: 'gpt-5.5', name: 'GPT-5.5' },
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
   ],
   gemini_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
@@ -168,7 +170,7 @@ const CHAT_CLI_MODEL_CATALOG = {
 // 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
   gemini: ['gemini-2.5-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-3.1-flash-lite-preview'],
-  anthropic: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+  anthropic: ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   openai: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-nano'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
@@ -191,7 +193,7 @@ const CHAT_CLI_PROVIDERS = {
   gemini_cli: { label: 'Gemini CLI', command: 'gemini' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 4;
+const CHAT_MODELS_CACHE_VERSION = 5;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
     default: { input: 0.30, output: 2.50 },

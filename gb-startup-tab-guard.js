@@ -4,6 +4,10 @@
    ============================== */
 
 const MeldexStartupTabGuard = (() => {
+  const AUXILIARY_MAIN_TAB_TYPES = new Set([
+    'outliner', 'preview', 'detail', 'version', 'chat', 'timer',
+    'history', 'annotation', 'sticky', 'tags', 'search',
+  ]);
   const verificationJobs = new Map(); // tabId::type::path -> Promise
   const verifiedPathKeys = new Set();
   let missingTabPruneStarted = false;
@@ -124,6 +128,7 @@ const MeldexStartupTabGuard = (() => {
   }
 
   function pruneRestoredTabs() {
+    pruneAuxiliaryMainTabs();
     if (missingTabPruneStarted || !isDesktopStartupRestoreActive()) return;
     if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return;
     missingTabPruneStarted = true;
@@ -142,10 +147,33 @@ const MeldexStartupTabGuard = (() => {
     });
   }
 
+  function pruneAuxiliaryMainTabs() {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return false;
+    let changed = false;
+    GBLayout.getAllPanes(GBLayout.root).forEach(pane => {
+      if (!(pane?.meldexRole === 'main' || pane?.id === 'pane-main')) return;
+      const tabs = Array.isArray(pane.tabs) ? pane.tabs : [];
+      const kept = tabs.filter(tab => !AUXILIARY_MAIN_TAB_TYPES.has(tab?.type || ''));
+      if (kept.length === tabs.length) return;
+      pane.tabs = kept;
+      if (!pane.tabs.length && typeof GBTabs !== 'undefined' && typeof GBTabs.createTab === 'function') {
+        pane.tabs.push(GBTabs.createTab('フォルダ', 'folder', ''));
+      }
+      pane.activeTabIndex = Math.max(0, Math.min(pane.activeTabIndex || 0, pane.tabs.length - 1));
+      changed = true;
+    });
+    if (!changed) return false;
+    if (typeof GBLayout.render === 'function') GBLayout.render();
+    if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout({ immediate: true });
+    if (typeof showStatus === 'function') showStatus('メインパネルの補助パネルタブを閉じました');
+    return true;
+  }
+
   return {
     closeMissingTab,
     deferMount,
     isDesktopStartupRestoreActive,
+    pruneAuxiliaryMainTabs,
     pruneRestoredTabs,
     shouldVerifyStartupTabPath,
     startupTabPathExists,

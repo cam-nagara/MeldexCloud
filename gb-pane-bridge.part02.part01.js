@@ -62,6 +62,10 @@
     // ToolComponent で描画するタイプ
     if (COMPONENT_TYPES.has(tabType)) {
       _retractLegacyFromPane(contentEl);
+      // 直前のビュー（シート等）の残骸を消してからツール本体を載せる。
+      // comp.mount() は appendChild のみでコンテナを空にしないため、ここで消さないと積み重なる。
+      contentEl.querySelectorAll(':scope > .gb-legacy-snapshot-host').forEach(el => el.remove());
+      _retractAppToolbarFromPane(contentEl);
       let comp = getComponentInstance(activeTab.id);
       if (!comp) {
         const reg = TOOL_REGISTRY[tabType];
@@ -162,7 +166,7 @@
           ? GBChatRestore.restoreOnOpen()
           : false;
         if (!restoring && !(typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.isRestoreSuspended === 'function' && GBChatRestore.isRestoreSuspended()) && typeof switchChatMode === 'function') {
-          switchChatMode('team');
+          switchChatMode(localStorage.getItem('chat-mode') || _chatMode || 'team');
         }
       }
     } else if (toolType === 'annotation') {
@@ -579,6 +583,23 @@
     });
   }
 
+  // シート用ツールバー（#app-toolbar）をペインから退避場所へ戻す。
+  // ToolComponent 型（スケジュール・ボード・シナリオ等）の mount() は appendChild するだけで
+  // コンテナを空にしないため、直前に表示していたシートのツールバーがペインの先頭に残ったまま、
+  // その下にツール本体のUIが積まれて二重表示になる。_retractLegacyFromPane() の退避対象は
+  // レガシーコンテナのIDだけで #app-toolbar を含まないため、ここで別途戻す。
+  // ID が重複して複製されている場合に取りこぼさないよう、getElementById ではなく
+  // contentEl 配下の全一致を対象にする。
+  function _retractAppToolbarFromPane(contentEl) {
+    if (!contentEl) return;
+    const storage = document.getElementById('legacy-views');
+    if (!storage) return;
+    contentEl.querySelectorAll('#app-toolbar').forEach(appTb => {
+      appTb.classList.remove('visible');
+      storage.appendChild(appTb);
+    });
+  }
+
   function _retractContainer(containerId) {
     const storage = document.getElementById('legacy-views');
     const el = document.getElementById(containerId);
@@ -666,7 +687,7 @@
     const tab = GBTabs.createTab('フォルダ', 'folder', '');
     const newPane = GBLayout.createPaneNode(null, [tab], 0);
     const historyOptions = {
-      historyLabel: 'レイアウト: 作業パネルを作成',
+      historyLabel: 'レイアウト: メインパネルを作成',
       historyDetail: 'ファイルリンクを開く',
     };
     let newPaneId = null;

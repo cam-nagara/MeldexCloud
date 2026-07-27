@@ -104,33 +104,18 @@ function _bindPanelMenuItem(row, action) {
   });
 }
 
-const PANEL_MENU_SECTIONS = [
-  {
-    title: '作業パネル',
-    items: [
-      { label: 'フォルダ', icon: 'folder', type: 'folder', open: (paneId) => _openPanelMenuItem('folder', paneId) },
-      { label: 'ノート', icon: 'page', type: 'page', open: (paneId) => _openPanelMenuItem('page', paneId) },
-      { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote', open: (paneId) => _openPanelMenuItem('scriptnote', paneId) },
-      { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
-      { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
-      { label: 'スマートシート', icon: 'databaseSearch', type: 'smart-db', open: (paneId) => _openPanelMenuItem('smart-db', paneId) },
-    ],
-  },
-  {
-    title: '補助パネル',
-    items: [
-      { label: 'フォルダツリー', icon: 'folderTree', type: 'outliner', open: (paneId) => _openPanelMenuItem('outliner', paneId) },
-      { label: 'ビューワー', icon: 'tvMinimal', type: 'preview', open: (paneId) => _openPanelMenuItem('preview', paneId) },
-      { label: 'オプション', icon: 'slidersHorizontal', type: 'detail', open: (paneId) => _openPanelMenuItem('detail', paneId) },
-      { label: 'バージョン管理', icon: 'gitBranch', type: 'version', open: (paneId) => _openPanelMenuItem('version', paneId) },
-      { label: 'チャット', icon: 'messagesSquare', type: 'chat', open: (paneId) => _openPanelMenuItem('chat', paneId) },
-      { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
-      { label: 'タイマー', icon: 'timer', type: 'timer', open: (paneId) => _openPanelMenuItem('timer', paneId) },
-      { label: 'ヒストリー', icon: 'history', type: 'history', open: (paneId) => _openPanelMenuItem('history', paneId) },
-      { label: '注釈', icon: 'stickyNote', type: 'annotation', open: (paneId) => _openPanelMenuItem('annotation', paneId) },
-    ],
-  },
-];
+const PANEL_MENU_SECTIONS = [{
+  title: '',
+  items: [
+    { label: 'フォルダ', icon: 'folder', type: 'folder', open: (paneId) => _openPanelMenuItem('folder', paneId) },
+    { label: 'ノート', icon: 'page', type: 'page', open: (paneId) => _openPanelMenuItem('page', paneId) },
+    { label: 'シナリオ', icon: 'bookOpenText', type: 'scriptnote', open: (paneId) => _openPanelMenuItem('scriptnote', paneId) },
+    { label: 'シート', icon: 'db', type: 'database', open: (paneId) => _openPanelMenuItem('database', paneId) },
+    { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
+    { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
+    { label: 'スマートシート', icon: 'databaseSearch', type: 'smart-db', open: (paneId) => _openPanelMenuItem('smart-db', paneId) },
+  ],
+}];
 
 function showPanelMenu(e, options) {
   e?.preventDefault?.();
@@ -160,10 +145,12 @@ function showPanelMenu(e, options) {
       sep.className = 'ab-dropdown-sep';
       menu.appendChild(sep);
     }
-    const title = document.createElement('div');
-    title.style.cssText = 'padding:6px 12px 4px;font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:0.04em;';
-    title.textContent = section.title;
-    menu.appendChild(title);
+    if (section.title) {
+      const title = document.createElement('div');
+      title.style.cssText = 'padding:6px 12px 4px;font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:0.04em;';
+      title.textContent = section.title;
+      menu.appendChild(title);
+    }
     section.items.forEach((item) => {
       const row = document.createElement('div');
       row.className = 'ab-dropdown-item';

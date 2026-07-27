@@ -14,7 +14,6 @@
     ['targets', '作業対象', '作業対象リスト'],
     ['contents', '作業内容', '作業内容リスト'],
     ['scales', '作業規模', '作業規模リスト'],
-    ['staff', 'スタッフ', 'スタッフリスト'],
   ];
 
   function api() {
@@ -181,19 +180,6 @@
     return state.pmRootPath ? `${state.pmRootPath}/シート/${sheetName}` : '';
   }
 
-  // 「staff」タブは制作管理ルート配下の物理シートではなく、正本『スタッフ管理
-  // シート」（window.MeldexUserRegistry）を直接参照する（アカウント一元管理
-  // 計画書 Phase 4 §5.9手順7）。ネットワーク待ちを伴うため非同期。
-  async function resolveStaffRegistryPath() {
-    try {
-      const config = await window.MeldexUserRegistry?.getConfig?.();
-      return config?.path || '';
-    } catch (_error) {
-      return '';
-    }
-  }
-
-
   function buildWorkMeta(listData) {
     const meta = {};
     (listData?.rows || []).forEach(row => {
@@ -288,14 +274,6 @@
         if (state.selection.kind === 'managed') {
           const managed = managedListInfo(state.selection.managedKey);
           if (managed) {
-            if (managed[0] === 'staff') {
-              // 同期キャッシュのみ参照する（ここは既存選択の即時リフレッシュで
-              // あり、ネットワーク待ちはしない。未ウォームアップなら前回の
-              // パスをそのまま維持する — 空白化して埋め込みを壊さない）。
-              const cached = window.MeldexUserRegistry?.getConfigSync?.();
-              if (cached?.path) state.selection.path = cached.path;
-              return;
-            }
             state.selection.path = managedPath(state, managed[2]);
             return;
           }
@@ -358,20 +336,14 @@
     return Promise.resolve(true);
   }
 
+  // selectManagedList 自体は async 関数だが、await を使わないため呼び出しと
+  // 同じ同期ターン内で完了する（作品設定/作業対象/作業内容/作業規模タブの
+  // 選択タイミングに余計な非同期の一拍を持ち込まない）。
   async function selectManagedList(component, state, managedInfo, options = {}) {
     const [key, label, sheetName] = managedInfo;
     state.addingList = false;
     state.pendingTabKey = '';
-    // key==='staff' 以外は await を経由しない（同期のまま解決する）。既存の
-    // 作品設定/作業対象/作業内容/作業規模タブの選択タイミングに、正本の解決待ち
-    // で余計な非同期の一拍を持ち込まないため（selectManagedList 自体は async
-    // 関数だが、await に触れない実行経路は呼び出しと同じ同期ターン内で完了する）。
-    if (key === 'staff') {
-      const path = await resolveStaffRegistryPath();
-      state.selection = { kind: 'managed', managedKey: key, label, sheetName, path };
-    } else {
-      state.selection = { kind: 'managed', managedKey: key, label, sheetName, path: managedPath(state, sheetName) };
-    }
+    state.selection = { kind: 'managed', managedKey: key, label, sheetName, path: managedPath(state, sheetName) };
     renderListBar(component, state);
     component._syncSurfaceControls?.();
     syncQuickPlanToolbar(component, state);
@@ -624,6 +596,17 @@
         onReopen: sheet => selectTaskList(component, state, sheet),
       }));
     }
+    if (state.selection?.kind === 'task') {
+      const structureButton = makeButton(
+        'タスク構成を更新',
+        'panelsTopLeft',
+        event => openTaskStructureDialog(component, state, event.currentTarget),
+      );
+      structureButton.dataset.e2eId = 'gb-production-task-structure-open';
+      structureButton.title = '作品設定のページ数・見開きページを未着手タスクへ反映';
+      window.MeldexProductionUiAvailability?.markWriteControl?.(structureButton);
+      bar.appendChild(structureButton);
+    }
   }
 
   // タブを閉じる＝リスト切替バーからの非表示（タスクリスト本体は削除しない）。
@@ -637,6 +620,102 @@
       return;
     }
     renderListBar(component, state);
+  }
+
+  function openTaskStructureDialog(component, state, trigger) {
+    if (!ensureProductionWritable()) return null;
+    const workTitle = String(state.selection?.workTitle || '').trim();
+    if (!workTitle || !window.GBUI?.createModal) {
+      notify('作品別タスクリストを選択してから実行してください', true);
+      return null;
+    }
+    const panel = document.createElement('section');
+    panel.className = 'gb-production-quick-plan';
+    panel.dataset.e2eId = 'gb-production-task-structure-dialog';
+    const intro = document.createElement('p');
+    intro.textContent = `「${workTitle}」のページ数・見開き設定を、未着手タスクへ反映します。進行中・完了・予定済み・実績あり・固定済みのタスクは変更しません。`;
+    const summary = document.createElement('div');
+    summary.className = 'gb-production-bulk-summary';
+    summary.setAttribute('role', 'status');
+    summary.setAttribute('aria-live', 'polite');
+    summary.textContent = '変更内容を確認しています…';
+    const detail = document.createElement('p');
+    detail.className = 'gb-production-bulk-result';
+    detail.setAttribute('role', 'alert');
+    panel.append(intro, summary, detail);
+
+    const cancel = makeButton('閉じる', 'x');
+    const apply = makeButton('この構成に更新', 'check', null, true);
+    apply.dataset.e2eId = 'gb-production-task-structure-apply';
+    apply.disabled = true;
+    let preview = null;
+    let busy = true;
+    const dialog = window.GBUI.createModal({
+      title: 'タスク構成を更新',
+      body: panel,
+      footer: [cancel, apply],
+      closeLabel: 'タスク構成の更新を閉じる',
+      closeOnOverlay: false,
+      closeOnEsc: false,
+      extraClass: 'gb-production-modal',
+    });
+    const setBusy = value => {
+      busy = !!value;
+      dialog.modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+      cancel.disabled = busy;
+      apply.disabled = busy || !preview?.apply_allowed;
+      apply.textContent = busy ? '処理中…' : 'この構成に更新';
+    };
+    const close = () => { if (!busy) dialog.close?.(); };
+    cancel.addEventListener('click', close);
+    apply.addEventListener('click', async () => {
+      if (!preview?.fingerprint || busy) return;
+      setBusy(true);
+      detail.textContent = '';
+      try {
+        const result = await api().applyTaskStructure({
+          work_title: workTitle,
+          fingerprint: preview.fingerprint,
+        });
+        await loadSheetsAndMeta(component, state, { force: true });
+        await component._showProductionTaskWork?.(workTitle);
+        document.dispatchEvent(new CustomEvent('meldex:production-task-updated', {
+          detail: { workTitle, sourceComponent: component, structureUpdated: true },
+        }));
+        notify(
+          `${Number(result.created || 0).toLocaleString('ja-JP')}件を作成し、`
+          + `${Number(result.archived || 0).toLocaleString('ja-JP')}件をアーカイブしました。`
+          + '必要に応じて「再計算」を実行してください。',
+        );
+        busy = false;
+        dialog.close?.();
+      } catch (error) {
+        detail.textContent = error?.message || 'タスク構成を更新できませんでした。もう一度プレビューしてください。';
+        setBusy(false);
+      }
+    });
+    document.body.appendChild(dialog.overlay);
+    window.GBModalShell?.enhanceOverlay?.(dialog.overlay);
+    setBusy(true);
+    api().previewTaskStructure({ work_title: workTitle }).then((data) => {
+      preview = data;
+      const units = (data.page_units || []).join('、');
+      summary.textContent = [
+        `ページ単位: ${units || '変更なし'}`,
+        `新規 ${Number(data.create_count || 0)}件`,
+        `アーカイブ ${Number(data.archive_count || 0)}件`,
+        `保護して維持 ${Number(data.protected_count || 0)}件`,
+        `変更なし ${Number(data.unchanged_count || 0)}件`,
+      ].join(' ／ ');
+      detail.textContent = data.protected_count
+        ? '作業中・予定済みなどの保護対象は元の構成のまま残ります。'
+        : data.apply_allowed ? '内容を確認して「この構成に更新」を押してください。' : '更新が必要なタスクはありません。';
+      setBusy(false);
+    }).catch((error) => {
+      detail.textContent = error?.message || '変更内容を確認できませんでした。';
+      setBusy(false);
+    });
+    return dialog;
   }
 
   // ---------------------------------------------------------------------
@@ -996,10 +1075,10 @@
       label.textContent = '解決するには';
       const extend = makeButton('締切を延ばす', 'calendarClock', () => controls.deadline.focus());
       const reduce = makeButton('タスク数を減らす', 'listMinus', () => controls.taskCount.focus());
-      const hours = makeButton('勤務時間を設定する', 'settings2', () => {
+      const hours = makeButton('勤務時間を設定する', 'settings2', async () => {
         controls.close?.();
-        const staffList = managedListInfo('staff');
-        if (staffList) selectManagedList(component, state, staffList);
+        const opened = await window.MeldexUserRegistry?.openSheet?.();
+        if (!opened) notify('スタッフ管理シートを開けませんでした', true);
       });
       solutions.append(label, extend, reduce, hours);
       host.appendChild(solutions);

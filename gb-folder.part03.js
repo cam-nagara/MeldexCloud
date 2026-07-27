@@ -17,6 +17,13 @@ function _folderOpenType(item) {
 }
 
 function _folderRefreshCurrentFolder() {
+  if (window._archiveBrowseContext && typeof openArchiveFolder === 'function') {
+    return openArchiveFolder(
+      window._archiveBrowseContext.archivePath,
+      window._archiveBrowseContext.member,
+      { skipNavPush: true, skipSaveLastView: true },
+    );
+  }
   if (_folderPath) return openFolder(_folderPath.split(/[\\/]/).pop() || _folderPath, _folderPath);
   return Promise.resolve();
 }

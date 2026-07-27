@@ -1490,6 +1490,12 @@ async function historyPanelJump(steps, scope) {
     const ok = await cfConfirm(steps + '件の操作を元に戻しますか？');
     if (!ok) return;
   }
+  // ヒストリーパネルの「すべて」フィルタから、いま画面に無い別スコープの項目を
+  // 巻き戻すことがある。適用前に対象タブを画面へ出す（パネル取り違え対策）。
+  if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
+    const prep = await _meldexPrepareHistoryScopeTarget(targetScope);
+    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないため元に戻せません', true); return; }
+  }
   for (let i = 0; i < steps; i++) {
     await historyUndo(targetScope);
   }
@@ -1511,6 +1517,193 @@ function historyPanelClear() {
   renderHistoryList();
   renderHistoryPanel();
   showStatus('操作履歴をクリアしました');
+}
+
+/* ==============================
+   タブ→履歴スコープ解決（v0.7.056、パネル取り違えバグ修正）
+   タブ切替のたびに _historyActiveScope をアクティブペインのアクティブタブへ
+   追随させるためのヘルパー。パネルシステム経由のタブ読み込み
+   （_bridgeOpenOpts / _bridgePassiveOpenOpts）は skipHistoryScope:true のため
+   historySetScope() を呼ばない。従来はこれが原因で、タブを切り替えても
+   _historyActiveScope が「最後にフォルダツリー等から直接開いたシート」に
+   貼り付いたままになり、Ctrl+Z が画面と別のシートに効くことがあった。
+   ここではスコープ文字列を再定義せず、各ツールの既存スコープ生成関数
+   （_dbViewConfigHistoryScope / _bdHistoryScope / _schedHistoryScope /
+   ScriptNoteEditor._historyScope）をそのまま呼ぶ。
+   ============================== */
+function _meldexDbTabHistoryScope(tab) {
+  const path = tab?.path || '';
+  if (!path) return '';
+  return typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(path) : ('db:' + path);
+}
+function _meldexSmartDbTabHistoryScope(tab) {
+  const path = tab?.path || '';
+  if (!path) return '';
+  // selectSmartDb() は def._filePath があれば生パスを、無ければ 'smart-db:'+id を
+  // 既に前置した値を tab.path に格納する（gb-db-smart.js）。二重前置を避ける。
+  return path.startsWith('smart-db:') ? path : ('smart-db:' + path);
+}
+function _meldexCsvTabHistoryScope(tab) {
+  const path = tab?.path || '';
+  return path ? ('csv:' + path) : '';
+}
+function _meldexBoardTabHistoryScope(tab) {
+  const path = tab?.path || '';
+  return typeof _bdHistoryScope === 'function' ? _bdHistoryScope(path) : ('board:' + path);
+}
+function _meldexScriptNoteTabHistoryScope(tab) {
+  if (typeof getComponentInstance !== 'function') return '';
+  const editor = getComponentInstance(tab?.id)?._editor;
+  return (editor && typeof editor._historyScope === 'function') ? editor._historyScope() : '';
+}
+function _meldexScheduleTabHistoryScope(tab) {
+  if (typeof getComponentInstance !== 'function' || typeof _schedHistoryScope !== 'function') return '';
+  const comp = getComponentInstance(tab?.id);
+  return comp ? _schedHistoryScope(comp) : '';
+}
+// 共通履歴（スコープなし）を使うタブ種別。openPage()等が開いた時点で historySetScope('')
+// を呼ぶのと同じ規約に合わせる。
+function _meldexCommonHistoryTabScope() { return ''; }
+
+// タブ種別 → スコープ解決関数。ここに無い種別（フォルダツリー/チャット/注釈/検索/
+// タイマー/ヒストリーパネル等の道具パネル）は「スコープ変更なし」を意味し、
+// _meldexResolveActiveTabHistoryScope() は null を返す。
+const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
+  database: _meldexDbTabHistoryScope,
+  pivot: _meldexDbTabHistoryScope,
+  gallery: _meldexDbTabHistoryScope,
+  kanban: _meldexDbTabHistoryScope,
+  timeline: _meldexDbTabHistoryScope,
+  chart: _meldexDbTabHistoryScope,
+  graph: _meldexDbTabHistoryScope,
+  form: _meldexDbTabHistoryScope,
+  'smart-db': _meldexSmartDbTabHistoryScope,
+  csv: _meldexCsvTabHistoryScope,
+  board: _meldexBoardTabHistoryScope,
+  scriptnote: _meldexScriptNoteTabHistoryScope,
+  calendar: _meldexScheduleTabHistoryScope,
+  page: _meldexCommonHistoryTabScope,
+  entity: _meldexCommonHistoryTabScope,
+  media: _meldexCommonHistoryTabScope,
+  html: _meldexCommonHistoryTabScope,
+  folder: _meldexCommonHistoryTabScope,
+  welcome: _meldexCommonHistoryTabScope,
+  compare: _meldexCommonHistoryTabScope,
+});
+
+function _meldexActiveTabForPane(paneId) {
+  if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.findNode !== 'function') return null;
+  const targetPaneId = paneId || GBLayout.activePane;
+  if (!targetPaneId) return null;
+  const node = GBLayout.findNode(GBLayout.root, targetPaneId)?.node;
+  if (!node || !Array.isArray(node.tabs)) return null;
+  return node.tabs[node.activeTabIndex] || null;
+}
+
+// アクティブペインのアクティブタブに対応する履歴スコープを返す。
+// 戻り値 null は「このタブ種別は履歴スコープを持たない（道具パネル等）」ことを示し、
+// 呼び出し側は現在の _historyActiveScope をそのまま維持すること。
+function _meldexResolveActiveTabHistoryScope(paneId) {
+  const tab = _meldexActiveTabForPane(paneId);
+  if (!tab || !tab.type) return null;
+  const resolver = _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS[tab.type];
+  if (!resolver) return null;
+  try { return resolver(tab) || ''; } catch { return ''; }
+}
+
+// タブ切替・レイアウト再描画の合流点から呼ぶ。スコープに変化が無ければ
+// historySetScope()（renderHistoryList/Panel の再描画を伴う）を呼ばない。
+function _meldexSyncActiveTabHistoryScope() {
+  if (typeof historySetScope !== 'function') return;
+  const scope = _meldexResolveActiveTabHistoryScope();
+  if (scope !== null && scope !== _historyActiveScope) historySetScope(scope);
+}
+
+// 指定スコープに対応するタブを全パネル・全タブから探す（ヒストリーパネルの
+// 「すべて」フィルタから別スコープを明示指定して巻き戻す場合、対象タブが
+// いま画面に無いことがあるため）。同じ解決関数マップを使い、スコープ文字列の
+// 組み立てを再定義しない。
+function _meldexFindTabForHistoryScope(scope) {
+  if (!scope || typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
+  const panes = GBLayout.getAllPanes(GBLayout.root) || [];
+  for (const pane of panes) {
+    for (const tab of (pane.tabs || [])) {
+      const resolver = _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS[tab.type];
+      if (!resolver) continue;
+      let tabScope = '';
+      try { tabScope = resolver(tab) || ''; } catch { tabScope = ''; }
+      if (tabScope && tabScope === scope) return { paneId: pane.id, tabId: tab.id };
+    }
+  }
+  return null;
+}
+
+// v5.0 パネルシステム（GBLayout/GBTabs）が実在するかどうか。単独起動アプリや
+// 一部のテスト環境ではそもそも存在しない（単一ビュー前提のため「他のタブへ
+// 切り替える」という概念自体が無い）。
+function _meldexHasPaneLayout() {
+  return typeof GBLayout !== 'undefined' && !!GBLayout.root
+    && typeof GBLayout.getAllPanes === 'function' && typeof GBLayout.findNode === 'function';
+}
+
+// board:/csv: スコープの復元は、宛先の識別子を持たない「いま読み込まれている
+// ものが対象」という前提の実装になっている（_bdApplySnapshot は bd.nodes 等を
+// 無条件に上書き、_csvRestoreSnapshot は _csvData を無条件に上書き。どちらも
+// scriptnote:/schedule:/smart-db: のようにスナップショット自体から対象を
+// 逆引きしない）。そのため、タブ切替直後・対象の非同期再読み込み
+// （bdOpenBoard()/openCsvFile() の await apiFetch 区間）が終わる前に取り消しを
+// 適用すると、対象のシート/ボードの内容が「まだ読み込み中の別のボード/CSV」
+// へ書き込まれてしまう（v0.7.056、_meldexPrepareHistoryScopeTarget 追加に伴い
+// 新たに顕在化したため同時に対処）。sheet系（db:/smart-db:）は値編集がAPI経由の
+// 対象パス指定書き込みのため対象外（無関係な対象を汚染しない）。
+const _MELDEX_LIVE_SCOPE_GETTERS = Object.freeze({
+  'board:': () => (typeof bd !== 'undefined' && typeof _bdHistoryScope === 'function') ? _bdHistoryScope(bd.path) : null,
+  'csv:': () => (typeof _csvHistoryScope === 'function') ? _csvHistoryScope() : null,
+});
+
+function _meldexRiskyLiveScopePrefix(scope) {
+  return Object.keys(_MELDEX_LIVE_SCOPE_GETTERS).find(prefix => scope.startsWith(prefix)) || null;
+}
+
+function _meldexSleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 対象スコープの「いま読み込まれているものが対象」実装が、実際にそのスコープの
+// データへ追いつくまで待つ。ポーリング間隔30ms・最大3秒（ローカルAPI想定で
+// 通常は数十msで揃う）。タイムアウトした場合は false を返し、呼び出し側は
+// 適用を中止して通知すること（黙って別データへ書き込むより安全側）。
+async function _meldexWaitForLiveScopeSettle(scope, timeoutMs = 3000) {
+  const prefix = _meldexRiskyLiveScopePrefix(scope);
+  if (!prefix) return true;
+  const getter = _MELDEX_LIVE_SCOPE_GETTERS[prefix];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (getter() === scope) return true;
+    await _meldexSleep(30);
+  }
+  return getter() === scope;
+}
+
+// 取り消し・やり直しの適用前に、対象スコープのタブが画面上のアクティブタブに
+// なっていることを保証する。すでに表示中なら何もしない。見つかった場合は
+// タブを切り替え、切り替えたことが分かるよう switched を立てる（Step2のタブ切替
+// フックが _historyActiveScope を追随させるため、以後の historySetScope 呼び出しは
+// 不要）。切り替えた対象が board:/csv: スコープの場合は、その非同期再読み込みが
+// 実際に追いつくまで待ってから返す（上記コメント参照）。対象タブが見つからない
+// 場合（閉じた後等）や、切り替え後に追いつかなかった場合は ok:false を返し、
+// 呼び出し側は適用を中止して通知すること。共通履歴（scope===''）や、パネル
+// システム自体が無い環境（単独起動アプリ等、判定不能）は常に ok:true とする
+// （誤って正常な取り消しをブロックしない）。
+async function _meldexPrepareHistoryScopeTarget(scope) {
+  if (!scope || !_meldexHasPaneLayout()) return { ok: true, switched: false };
+  if (_meldexResolveActiveTabHistoryScope() === scope) return { ok: true, switched: false };
+  const match = _meldexFindTabForHistoryScope(scope);
+  if (!match) return { ok: false, switched: false };
+  if (typeof GBTabs === 'undefined' || typeof GBTabs.activateTab !== 'function') return { ok: true, switched: false };
+  GBTabs.activateTab(match.paneId, match.tabId);
+  const settled = await _meldexWaitForLiveScopeSettle(scope);
+  return { ok: settled, switched: true };
 }
 
 /* ==============================
@@ -1645,22 +1838,34 @@ function _meldexScheduleRedo() {
   }
 }
 
-function meldexUndo() {
+async function meldexUndo() {
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') { if (typeof bdUndo === 'function') bdUndo(); return; }
   if (ctx === 'embedded-sheet') { if (typeof historyUndo === 'function') historyUndo(_meldexProductionEmbedHistoryScope()); return; }
   if (ctx === 'schedule') { _meldexScheduleUndo(); return; }
   if (ctx === 'calendar') { if (typeof _calUndo === 'function') _calUndo(); return; }
-  if (typeof historyUndo === 'function') historyUndo();
+  if (typeof historyUndo !== 'function') return;
+  // 通常は _historyActiveScope が既にアクティブタブへ追随済み（Step2）のため
+  // ここでの切替は基本的に発生しない。念のための保険（例: スコープ同期漏れ）。
+  if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
+    const prep = await _meldexPrepareHistoryScopeTarget(_historyActiveScope);
+    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないため元に戻せません', true); return; }
+  }
+  historyUndo();
 }
 
-function meldexRedo() {
+async function meldexRedo() {
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') { if (typeof bdRedo === 'function') bdRedo(); return; }
   if (ctx === 'embedded-sheet') { if (typeof historyRedo === 'function') historyRedo(_meldexProductionEmbedHistoryScope()); return; }
   if (ctx === 'schedule') { _meldexScheduleRedo(); return; }
   if (ctx === 'calendar') { if (typeof _calRedo === 'function') _calRedo(); return; }
-  if (typeof historyRedo === 'function') historyRedo();
+  if (typeof historyRedo !== 'function') return;
+  if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
+    const prep = await _meldexPrepareHistoryScopeTarget(_historyActiveScope);
+    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないためやり直せません', true); return; }
+  }
+  historyRedo();
 }
 
 // 共通履歴のみを対象にした有効/無効判定。scope省略時は historyUndo/historyRedo と

@@ -4,6 +4,10 @@
 }
 
 .gb-production-bulk-create {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   color: var(--fg, #e7e7e7);
 }
 
@@ -23,11 +27,17 @@
 
 .gb-production-bulk-form {
   display: grid;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   gap: 16px;
 }
 
 .gb-production-bulk-fields {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: minmax(220px, 2fr) repeat(2, minmax(110px, 1fr));
   gap: 12px;
 }
@@ -54,6 +64,8 @@
 .gb-production-bulk-field select {
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 36px;
   padding: 7px 10px;
   border: 1px solid var(--line, #404040);
@@ -85,6 +97,8 @@
 
 .gb-production-bulk-content-grid {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
   gap: 8px;
 }

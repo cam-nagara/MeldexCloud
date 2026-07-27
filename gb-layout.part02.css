@@ -46,7 +46,7 @@
   display: flex; align-items: center; gap: 2px; padding: 0 5px;
   cursor: pointer; font-size: 11px; color: var(--fg2); white-space: nowrap;
   flex-shrink: 0; height: 30px; border-right: 1px solid var(--border);
-  max-width: 160px; user-select: none;
+  max-width: 160px; min-width: 0; user-select: none; position: relative;
   -webkit-touch-callout: none;
 }
 /* 幅不足時はラベルを隠してアイコン化（JS で gb-tabs-compact を付与） */
@@ -57,7 +57,43 @@
 .gb-tab.active { color: var(--fg); background: var(--ui-pane-tab-active-bg, var(--bg)); border-bottom: 2px solid var(--accent); }
 .gb-tab.dragging { opacity: 0.4; }
 .gb-tab-icon { flex-shrink: 0; display: flex; align-items: center; }
-.gb-tab-label { overflow: hidden; text-overflow: ellipsis; }
+.gb-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gb-tab-more {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs, 3px);
+  background: var(--ui-pane-tab-active-bg, var(--bg));
+  color: var(--fg2);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+.gb-tab:hover .gb-tab-more,
+.gb-tab:focus-within .gb-tab-more,
+.gb-tab[aria-expanded="true"] .gb-tab-more,
+.gb-tab-more[aria-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.gb-tab-more:hover,
+.gb-tab-more:focus-visible {
+  color: var(--ui-hover-fg);
+  background: var(--ui-hover-bg);
+  border-color: var(--border);
+  outline: none;
+}
+.gb-tab-more:focus-visible {
+  box-shadow: 0 0 0 2px var(--ui-accent, var(--accent));
+}
 .gb-tab-close {
   font-size: 9px; padding: 1px 2px; border-radius: 2px; opacity: 0;
   margin-left: 3px; flex-shrink: 0; cursor: pointer;
@@ -188,6 +224,7 @@
 .gb-pane-collapsed > .gb-pane-tabs .gb-tab-icon svg { width: 18px; height: 18px; }
 .gb-pane-collapsed > .gb-pane-tabs .gb-tab-label { display: none !important; }
 .gb-pane-collapsed > .gb-pane-tabs .gb-tab-close { display: none !important; }
+.gb-pane-collapsed > .gb-pane-tabs .gb-tab-more { display: none !important; }
 .gb-pane-collapsed > .gb-pane-tabs .gb-pane-nav-ctrls { display: none !important; }
 
 /* 折り畳みボタン: 先頭に表示 */
@@ -485,8 +522,9 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
   left: 0; right: 0; top: -2px; bottom: -2px;
   cursor: row-resize;
 }
-.gb-split-handle:hover::before,
-.gb-split-handle.active::before { background: color-mix(in srgb, var(--ui-selection-bg) 35%, transparent); }
+/* 当たり判定は隣のパネル側へ 2〜4px はみ出しているため、ここに色を付けるとパネル内で開いた
+   ポップアップ（シートのセルのメニュー・選択肢リスト等）の上へハイライトが重なって見える。
+   ハイライトはハンドル本体（4px、はみ出さない）の :hover / .active に任せ、当たり判定は透明のままにする。 */
 
 /* ドロップインジケータ */
 .gb-drop-indicator {
@@ -502,6 +540,7 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
   /* Part 3-1: タブ×ボタン常時表示 */
   .tab-item .tab-close { opacity: 0.5; }
   .gb-tab .gb-tab-close { opacity: 0.5; }
+  .gb-tab .gb-tab-more { display: none; }
   /* Part 3-5: パネル制御ボタン常時表示 */
   .gb-pane-collapse { opacity: 0.8; }
   .gb-pane-btn { opacity: 0.9; }

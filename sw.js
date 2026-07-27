@@ -3,9 +3,25 @@
 // fingerprint 済みとして immutable cache に保存する。
 const MELDEX_FINGERPRINT_CACHE = 'meldex-fingerprinted-v1';
 const MELDEX_FINGERPRINT_MAX_ENTRIES = 256;
+const MELDEX_UNIFIED_APP_CACHE = 'meldex-unified-app-shell-v1';
+const MELDEX_STANDALONE_ROUTES = Object.freeze([
+  './apps/note/',
+  './apps/scenario/',
+  './apps/board/',
+  './apps/sheet/',
+  './apps/timer/',
+  './apps/quick-memo/',
+]);
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(self.skipWaiting());
+  event.waitUntil(Promise.all([
+    self.skipWaiting(),
+    caches.open(MELDEX_UNIFIED_APP_CACHE)
+      .then((cache) => cache.addAll(MELDEX_STANDALONE_ROUTES.map(
+        (path) => new Request(new URL(path, self.registration.scope).href, { cache: 'reload' })
+      )))
+      .catch((error) => console.warn('Meldex SW: unified app shell cache failed', error)),
+  ]));
 });
 
 async function deleteOldFingerprintCaches() {
@@ -19,9 +35,21 @@ async function deleteOldFingerprintCaches() {
   }
 }
 
+async function deleteOldUnifiedAppCaches() {
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys
+      .filter((key) => key.startsWith('meldex-unified-app-shell-') && key !== MELDEX_UNIFIED_APP_CACHE)
+      .map((key) => caches.delete(key)));
+  } catch (e) {
+    console.warn('Meldex SW: old unified app cache cleanup failed', e);
+  }
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(Promise.all([
     deleteOldFingerprintCaches(),
+    deleteOldUnifiedAppCaches(),
     self.clients.claim(),
   ]));
 });
@@ -104,6 +132,41 @@ async function pruneFingerprintCache(cache, preferredRequest) {
 }
 
 self.addEventListener('fetch', (event) => {
-  if (!isFingerprintRequest(event.request)) return;
-  event.respondWith(respondFingerprint(event.request));
+  if (isFingerprintRequest(event.request)) {
+    event.respondWith(respondFingerprint(event.request));
+    return;
+  }
+  if (!isUnifiedStandaloneRequest(event.request)) return;
+  event.respondWith(respondUnifiedStandalone(event.request));
 });
+
+function isUnifiedStandaloneRequest(request) {
+  if (!request || request.method !== 'GET') return false;
+  let url;
+  let referrer;
+  try {
+    url = new URL(request.url);
+    referrer = request.referrer ? new URL(request.referrer) : null;
+  } catch (_) {
+    return false;
+  }
+  if (url.origin !== self.location.origin) return false;
+  const appPrefix = new URL('./apps/', self.registration.scope).pathname;
+  const apiPrefix = new URL('./api/', self.registration.scope).pathname;
+  if (url.pathname.startsWith(apiPrefix)) return false;
+  return url.pathname.startsWith(appPrefix)
+    || referrer?.pathname?.startsWith(appPrefix) === true;
+}
+
+async function respondUnifiedStandalone(request) {
+  const cache = await caches.open(MELDEX_UNIFIED_APP_CACHE);
+  try {
+    const response = await fetch(request);
+    if (response?.ok) await cache.put(request, response.clone());
+    return response;
+  } catch (error) {
+    const cached = await cache.match(request, { ignoreSearch: true });
+    if (cached) return cached;
+    throw error;
+  }
+}

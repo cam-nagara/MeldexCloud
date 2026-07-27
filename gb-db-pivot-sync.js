@@ -2,6 +2,29 @@
 
 const _relationCache = {};
 const _relationMapPromises = {};
+// 参照先シートが存在しない（/pivot が 404 相当）ことを記録する負のキャッシュ。
+// パス → { missing:true, timestamp }。列見出しの「リンク切れ」警告アイコン判定に使う。
+const _relationMissingCache = {};
+
+// 参照先へエントリを追加・変更したとき、名前解決とロールアップが同じ世代の
+// データを参照するよう、関連キャッシュを一括で破棄する。
+function _invalidateRelationTargetCaches(relationDbPath) {
+  if (!relationDbPath) return;
+  delete _relationCache[relationDbPath];
+  delete _relationMapPromises[relationDbPath];
+  delete _relationMissingCache[relationDbPath];
+  if (typeof clearRollupCache === 'function') clearRollupCache(relationDbPath);
+}
+
+// 参照先シート自体が「存在しない」と新鮮に判明しているか（リンク切れ検出用）。
+// 値の未解決（dangling）とは別で、参照先シートフォルダの欠落だけを表す。
+function _isRelationTargetMissing(relationDbPath) {
+  if (!relationDbPath) return false;
+  const miss = _relationMissingCache[relationDbPath];
+  if (!miss || !miss.missing) return false;
+  if (typeof _dbCacheIsFresh === 'function') return _dbCacheIsFresh(miss, 'relation');
+  return (Date.now() - (miss.timestamp || 0)) < 30000;
+}
 
 function _buildRelationMapEntry(data) {
   const entities = data?.entities || {};
@@ -42,12 +65,26 @@ async function _getRelationMap(relationDbPath) {
   } else if (cached && now - cached.timestamp < 30000) {
     return cached;
   }
+  // 参照先シート欠落が新鮮に判明している場合は再fetchせず空マップを返す（毎回の404再発を防ぐ）。
+  if (_isRelationTargetMissing(relationDbPath)) {
+    return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
+  }
   if (_relationMapPromises[relationDbPath]) return _relationMapPromises[relationDbPath];
   _relationMapPromises[relationDbPath] = (async () => {
     try {
-      const data = await apiFetch('/pivot?path=' + encodeURIComponent(relationDbPath));
+      // silentError: リンク切れ（参照先シート欠落）はベストエフォートで握り、
+      // グローバルなエラートースト/赤ステータスを出さない。代わりに列見出しの
+      // 警告アイコンで可視化する（本体シートの読み込みエラーは従来どおり表示される）。
+      const data = await apiFetch('/pivot?path=' + encodeURIComponent(relationDbPath), { silentError: true });
+      delete _relationMissingCache[relationDbPath];
       return _setRelationMapCache(relationDbPath, data) || _buildRelationMapEntry({});
-    } catch {
+    } catch (e) {
+      // 参照先シート自体が存在しない（404相当）ときだけ欠落として記録する。
+      // デスクトップ版は status=404、クラウド版は「シートが見つかりません」メッセージ。
+      // 500/ネットワーク等の一時エラーでは記録しない（誤検出を避け次回再試行させる）。
+      if (e && (e.status === 404 || /見つかりません|not found/i.test(String(e.message || '')))) {
+        _relationMissingCache[relationDbPath] = { missing: true, timestamp: now };
+      }
       return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
     } finally {
       delete _relationMapPromises[relationDbPath];
@@ -83,10 +120,10 @@ async function _resolveRelationName(idOrName, relationDbPath) {
   return map.idToName[idOrName] || idOrName;
 }
 
-async function _preloadRelationMapsForDb(dbPath, pivotData) {
+async function _preloadRelationMapsForDb(dbPath, pivotData, ctx) {
   if (!dbPath) return;
   if (pivotData?.entities) _setRelationMapCache(dbPath, pivotData);
-  const propTypes = getPropertyTypes(dbPath);
+  const propTypes = getPropertyTypes(dbPath, ctx);
   const targets = new Set();
   Object.values(propTypes || {}).forEach(ptc => {
     if (!ptc) return;
@@ -382,12 +419,16 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   container.innerHTML = '';
+  // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
+  // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25。gb-db-table.part02.js と同期）。
+  const forceStatusDot = values.length > 1;
   values.forEach(cellVal => {
-    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
+    container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot }));
   });
-  const statusOn = getStatusEnabled(dbPath);
-  const hasVisibleValue = values.some(v => String(v?.value || '').trim() !== '');
-  if (statusOn || values.length === 0 || (ptc?.type === 'select' && !hasVisibleValue)) {
+  // 候補値追加は基本機能。ステータス機能OFFでも値のある列型では常に＋を出す
+  // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転。gb-db-table.part02.js と同期）。
+  const nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
+  if (!ptc || !nonValueTypes.includes(ptc.type)) {
     const addBtn = document.createElement('span');
     addBtn.className = 'cell-add-btn';
     addBtn.innerHTML = lucide('plus', 14);
@@ -483,7 +524,7 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
     try { entityData._modified_by = getUsername() || entityData._modified_by || ''; } catch {}
   }
 
-  let rollupCacheCleared = false;
+  const clearedRollupTargets = new Set();
   for (const [propName, ptc] of Object.entries(propTypes)) {
     if (!ptc) continue;
     const isSource = !!ptc.source;
@@ -494,9 +535,15 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
     if (!td || td === editedTd) continue;
     const container = td.querySelector('.cell-values');
     if (!container) continue;
-    if (isRollup && !rollupCacheCleared) {
-      if (typeof clearRollupCache === 'function') clearRollupCache(dbPath);
-      rollupCacheCleared = true;
+    if (isRollup && typeof clearRollupCache === 'function') {
+      const relationConfig = propTypes[ptc.relationProp];
+      const rollupTarget = typeof _dbResolveRelationDbPath === 'function'
+        ? _dbResolveRelationDbPath(dbPath, relationConfig)
+        : ((relationConfig?.relationDb === '' ? dbPath : relationConfig?.relationDb) || '');
+      if (rollupTarget && !clearedRollupTargets.has(rollupTarget)) {
+        clearRollupCache(rollupTarget);
+        clearedRollupTargets.add(rollupTarget);
+      }
     }
     _renderDerivedCellContent(container, ptc, entityName, propName, entityData, { dbPath, ctx, propTypes, pivotData });
   }

@@ -9,7 +9,7 @@
   min-height: 180px;
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 2px solid var(--accent, #569cd6);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 16px rgba(0, 0, 0, 0.18);
   overflow: hidden;
   user-select: none;
@@ -338,4 +338,11 @@
 
 .gb-subpanel.is-maximized .gb-subpanel-resize {
   display: none;
+}
+
+body:has(.modal-overlay) .gb-subpanel,
+body:has(.gb-modal-overlay) .gb-subpanel,
+body:has(.gb-cal-modal-overlay) .gb-subpanel {
+  z-index: 200;
+  pointer-events: none;
 }

@@ -36,6 +36,7 @@ function _openFolderInMobileExplorer(label, path, openOpts) {
 
 async function openFolder(label, path, opts) {
   const openOpts = opts || {};
+  if (window.MeldexArchiveBrowser) window.MeldexArchiveBrowser.clear();
   if (_openFolderInMobileExplorer(label, path, openOpts)) return true;
   const showOpenLoading = !openOpts.silent
     && !openOpts.skipGlobalUi
@@ -459,13 +460,36 @@ function applyFolderTagFilter(tag) {
 }
 
 function _updateFolderDisplayFilterButton(cfg) {
-  const btn = document.getElementById('folder-display-filter-btn') || document.querySelector('[data-action="showFolderDisplaySettings()"]');
-  if (!btn) return;
-  const active = _folderHasActiveFilters(cfg || (typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {}));
-  btn.dataset.filterActive = active ? 'true' : 'false';
-  btn.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
-  btn.style.color = active ? 'var(--accent)' : 'var(--fg2)';
-  btn.title = active ? '表示/フィルタ（フィルタ適用中）' : '表示/フィルタ';
+  const current = cfg || (typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {});
+  const displayBtn = document.getElementById('folder-display-btn');
+  const displayIcon = document.getElementById('folder-display-icon');
+  const filterBtn = document.getElementById('folder-filter-btn');
+  const filterCount = document.getElementById('folder-filter-count');
+  const layoutIcons = { list: 'list', grid: 'grid3x3', waterfall: 'layoutGrid', hflow: 'galleryHorizontal' };
+  const icon = layoutIcons[_folderLayout] || 'grid3x3';
+  if (displayIcon) displayIcon.className = 'ico ico-' + icon;
+  if (displayBtn) {
+    displayBtn.dataset.layout = _folderLayout || 'grid';
+    displayBtn.title = '表示: ' + ({ list: 'リスト', grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び' }[_folderLayout] || 'グリッド');
+  }
+  if (!filterBtn) return;
+  const active = _folderHasActiveFilters(current);
+  const count = [
+    String(current.filterText || '').trim() ? 1 : 0,
+    ...(Array.isArray(current.filterTypes) ? current.filterTypes : []),
+    ...(Array.isArray(current.filterExts) ? current.filterExts : []),
+    ...(Array.isArray(current.filterFolders) ? current.filterFolders : []),
+    ...(Array.isArray(current.filterTags) ? current.filterTags : []),
+    current.filterModifiedPreset && current.filterModifiedPreset !== 'all' ? 1 : 0,
+  ].filter(Boolean).length;
+  filterBtn.dataset.filterActive = active ? 'true' : 'false';
+  filterBtn.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
+  filterBtn.style.color = active ? 'var(--accent)' : 'var(--fg2)';
+  filterBtn.title = active ? `フィルタ（${count}件の条件を適用中）` : 'フィルタ';
+  if (filterCount) {
+    filterCount.hidden = !active;
+    filterCount.textContent = active ? ` ${count}` : '';
+  }
 }
 
 function renderFolderGrid(opts) {
@@ -615,6 +639,7 @@ function renderFolderGrid(opts) {
 
     if (showThumbForLayout) {
       const thumb = document.createElement('div');
+      let folderPreviewImage = null;
       thumb.className = 'fv-thumb';
       if (isListLayout) {
         thumb.style.gridColumn = '1';
@@ -630,10 +655,12 @@ function renderFolderGrid(opts) {
       };
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
-        img.src = _folderItemRawUrl(item);
+        const generatedThumbnail = item.type === 'video';
+        folderPreviewImage = img;
+        img.src = generatedThumbnail ? _folderItemThumbnailUrl(item) : _folderItemRawUrl(item);
         img.loading = 'lazy';
         img.onerror = () => {
-          if (!img.dataset.thumbFallback && !item?.external_reference) {
+          if (!generatedThumbnail && !img.dataset.thumbFallback && !item?.external_reference) {
             img.dataset.thumbFallback = '1';
             img.src = _folderItemThumbnailUrl(item);
             return;
@@ -661,6 +688,7 @@ function renderFolderGrid(opts) {
         thumb.style.position = 'relative';
         thumb.appendChild(badge);
       }
+      window.MeldexEmbeddedMetadata?.attachFolderCard?.(thumb, item, folderPreviewImage);
       el.appendChild(thumb);
     }
 
@@ -892,6 +920,10 @@ function refreshVisibleFolderLockState() {
 
 // フォルダアイテムの右クリックメニュー
 function showFolderItemContextMenu(e, item, options = {}) {
+  if ((item?.archive_path || window._archiveBrowseContext) && typeof showArchiveItemContextMenu === 'function') {
+    showArchiveItemContextMenu(e, item);
+    return;
+  }
   closeColHeaderMenu();
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
   const blankTarget = !!options.blankTarget;
@@ -965,6 +997,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (item.type === 'image') {
     const openSub = addSub('別の方法で開く');
     openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)));
+    openSub.item('サイドバーで開く', () => openLinkedPathInRightPane(item.path, item.name, { linkType: item.type }), null, 'panelRight');
     openSub.item('ボードで開く', () => openImageInCanvas(item));
   }
   if (_isPureRefFolderItem(item)) {

@@ -244,7 +244,7 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
     : startValue;
 
   const dbPathForHistory = dbPath;
-  const startRef = { file: ctx.startVal.file, property: ctx.startVal.property, candidate_index: ctx.startVal.candidate_index };
+  const startRef = { file: ctx.startVal.file, entry_path: ctx.entityPath, property: ctx.startVal.property, candidate_index: ctx.startVal.candidate_index };
   const oldStartRaw = ctx.startRaw;
   const oldEndRaw = ctx.endRaw;
   let createdEndRef = null;
@@ -262,10 +262,10 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
       startWritten = true;
       if (!ctx.inlineRange && ctx.mapping.endProp) {
         if (ctx.endVal) {
-          await _apiPutValue({ file: ctx.endVal.file, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
+          await _apiPutValue({ file: ctx.endVal.file, entry_path: ctx.entityPath, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: endRaw });
         } else if (endRaw && (mode === 'redo' || mode === 'apply')) {
           const res = await _apiPostValue(ctx.entityPath, ctx.mapping.endProp, endRaw, '採用', '');
-          createdEndRef = { file: res?.path, property: res?.property || ctx.mapping.endProp, candidate_index: res?.candidate_index };
+          createdEndRef = { file: res?.path, entry_path: ctx.entityPath, property: res?.property || ctx.mapping.endProp, candidate_index: res?.candidate_index };
           localCreatedEndRef = createdEndRef;
         }
       }
@@ -289,7 +289,7 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
         await _apiPutValue(startRef, { new_value: oldStartRaw });
         if (!ctx.inlineRange && ctx.mapping.endProp) {
           if (ctx.endVal) {
-            await _apiPutValue({ file: ctx.endVal.file, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: oldEndRaw });
+            await _apiPutValue({ file: ctx.endVal.file, entry_path: ctx.entityPath, property: ctx.endVal.property, candidate_index: ctx.endVal.candidate_index }, { new_value: oldEndRaw });
           } else if (createdEndRef) {
             await _apiPutValue(createdEndRef, { _delete: true });
           }

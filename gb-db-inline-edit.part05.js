@@ -18,6 +18,7 @@ function startColResize(e, th, colIndex, propName) {
     lastWidth = Math.max(60, Math.round(width));
     th.style.width = lastWidth + 'px';
     th.style.minWidth = lastWidth + 'px';
+    th.style.maxWidth = lastWidth + 'px';
     setColWidth(colIndex, lastWidth, table);
     if (typeof _dbReflowPinnedColumnOffsets === 'function') _dbReflowPinnedColumnOffsets(table);
   };
@@ -54,6 +55,7 @@ function setColWidth(colIndex, width, table) {
     if (cell) {
       cell.style.width = nextWidth + 'px';
       cell.style.minWidth = nextWidth + 'px';
+      cell.style.maxWidth = nextWidth + 'px';
     }
   });
 }

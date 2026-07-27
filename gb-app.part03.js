@@ -282,6 +282,14 @@ window.addEventListener('message', (e) => {
   const msg = e.data;
   if (!msg || !msg.type) return;
   if (msg.type === 'viewer-current-file-changed') { _syncViewerCurrentFileFromMessage(msg); return; }
+  if (msg.type === 'viewer-sheet-context-request' && window.MeldexViewerSheetContext) {
+    window.MeldexViewerSheetContext.handleRequest(msg, e.source);
+    return;
+  }
+  if (msg.type === 'viewer-sheet-row-nav-request' && window.MeldexViewerSheetContext) {
+    window.MeldexViewerSheetContext.handleRowNavigation(msg, e.source);
+    return;
+  }
   if (msg.type === 'viewer-folder-nav-request') { _handleViewerFolderNavRequest(msg); return; }
   const reloadEmbeddedAnnotations = () => {
     const annotationView = (typeof _getAnnotationViewName === 'function') ? _getAnnotationViewName() : state.view;
@@ -472,7 +480,7 @@ function openMedia(label, path, type, opts) {
   if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
   if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
   if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'media', label, path, mediaType: type};
+    const _navEntry = {type:'media', label, path, mediaType: type, viewerUrl: openOpts.viewerUrl || ''};
     navPush(_navEntry);
   }
   if (!openOpts.skipRecent) addRecent(label, path, 'media');
@@ -484,7 +492,7 @@ function openMedia(label, path, type, opts) {
   const container = document.getElementById('media-content');
   const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
   if (type === 'image') {
-    openViewer(openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
+    openViewer(openOpts.viewerUrl || openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
     return;
   } else if (type === 'pdf') {
     openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
@@ -492,7 +500,8 @@ function openMedia(label, path, type, opts) {
   } else if (!container) {
     return;
   } else if (type === 'video') {
-    container.innerHTML = '<video src="' + esc(url) + '" controls style="max-width:100%;max-height:80vh;border-radius:4px;">動画を再生できません</video>';
+    container.innerHTML = '<video src="' + esc(url) + '" controls autoplay playsinline style="max-width:100%;max-height:80vh;border-radius:4px;">動画を再生できません</video>';
+    window.MeldexMediaPlayback?.start(container.querySelector('video'));
   } else if (type === 'audio') {
     container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
   } else {

@@ -70,6 +70,10 @@
       .replace(/\/$/, '');
   }
 
+  function normalizeNamespaceKind(value) {
+    return value === 'team_root' ? 'team_root' : 'home';
+  }
+
   function joinDropboxPath() {
     const parts = Array.from(arguments);
     const first = normalizeDropboxPath(parts.shift() || '');
@@ -111,8 +115,9 @@
     return raw || 'root';
   }
 
-  function sourceIdForDropboxPath(dropboxPath, existingIds) {
-    const base = `dropbox:${_slug(normalizeDropboxPath(dropboxPath))}`;
+  function sourceIdForDropboxPath(dropboxPath, existingIds, namespaceKind) {
+    const namespacePrefix = normalizeNamespaceKind(namespaceKind) === 'team_root' ? 'team-root:' : '';
+    const base = `dropbox:${namespacePrefix}${_slug(normalizeDropboxPath(dropboxPath))}`;
     const used = new Set(existingIds || []);
     if (!used.has(base)) return base;
     for (let index = 2; index < 1000; index += 1) {
@@ -159,12 +164,14 @@
     if (provider !== 'dropbox') return null;
     const dropboxPath = normalizeDropboxPath(root?.dropboxPath || root?.path || '');
     if (!dropboxPath) return null;
-    const id = String(root?.id || root?.sourceId || sourceIdForDropboxPath(dropboxPath, existingIds)).trim();
+    const namespaceKind = normalizeNamespaceKind(root?.namespaceKind);
+    const id = String(root?.id || root?.sourceId || sourceIdForDropboxPath(dropboxPath, existingIds, namespaceKind)).trim();
     const timestamp = _now();
     return {
       id,
       sourceId: id,
       provider: 'dropbox',
+      namespaceKind,
       dropboxPath,
       path: sourcePath(id, ''),
       name: String(root?.name || _basename(dropboxPath) || dropboxPath).trim(),
@@ -200,6 +207,7 @@
       id: normalized.id,
       sourceId: normalized.id,
       provider: 'dropbox',
+      namespaceKind: normalized.namespaceKind,
       dropboxPath: normalized.dropboxPath,
       path: sourcePath(normalized.id, ''),
       name: normalized.name,
@@ -212,16 +220,20 @@
     return normalizeRegistryPayload(_readJson(CACHE_KEY, null) || {});
   }
 
-  async function _rpc(route, body) {
+  async function _rpc(route, body, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
-    return auth.apiRpc(route, body);
+    return auth.apiRpc(route, body, {
+      namespaceKind: normalizeNamespaceKind(namespaceKind),
+    });
   }
 
-  async function _content(route, arg, init) {
+  async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
-    return auth.apiContent(route, arg, init);
+    return auth.apiContent(route, arg, init, {
+      namespaceKind: normalizeNamespaceKind(namespaceKind),
+    });
   }
 
   async function _ensureFolder(dropboxPath) {
@@ -257,6 +269,7 @@
     if (!normalized) return '';
     return JSON.stringify({
       id: normalized.id,
+      namespaceKind: normalized.namespaceKind,
       dropboxPath: normalized.dropboxPath,
       name: normalized.name,
       visible: normalized.visible,
@@ -303,8 +316,13 @@
     });
   }
 
-  async function _readRemoteRegistryWithMetadata() {
-    const response = await _content('files/download', { path: registryDropboxPath() });
+  async function _readRemoteRegistryWithMetadata(namespaceKind) {
+    const response = await _content(
+      'files/download',
+      { path: registryDropboxPath() },
+      undefined,
+      namespaceKind,
+    );
     const text = await response.text();
     let rev = '';
     try {
@@ -319,13 +337,13 @@
   }
 
   async function _readRemoteRegistry() {
-    const remote = await _readRemoteRegistryWithMetadata();
+    const remote = await _readRemoteRegistryWithMetadata('home');
     return remote.registry;
   }
 
   async function _readRemoteRegistryForWrite() {
     try {
-      return await _readRemoteRegistryWithMetadata();
+      return await _readRemoteRegistryWithMetadata('home');
     } catch (err) {
       if (_isRegistryNotFoundError(err)) return null;
       throw err;
@@ -370,21 +388,29 @@
   function _legacyRoots() {
     const oldRoots = _readJson(OLD_PWA_ROOTS_KEY, []);
     const vaultPath = normalizeDropboxPath(_auth()?.getVaultPath?.() || '/MeldexVault') || '/MeldexVault';
+    const vaultNamespaceKind = normalizeNamespaceKind(_auth()?.getVaultNamespaceKind?.());
     const candidates = [];
     if (Array.isArray(oldRoots)) {
       oldRoots.forEach((root) => {
         if (!root?.path) return;
         const raw = String(root.path);
         if (raw === '.' || raw === '') {
-          candidates.push({ dropboxPath: vaultPath, name: root.name || _basename(vaultPath), visible: root.visible !== false });
+          candidates.push({ dropboxPath: vaultPath, namespaceKind: vaultNamespaceKind, name: root.name || _basename(vaultPath), visible: root.visible !== false });
         } else if (raw.startsWith('/')) {
-          candidates.push({ dropboxPath: raw, name: root.name || _basename(raw), visible: root.visible !== false });
+          candidates.push({ dropboxPath: raw, namespaceKind: vaultNamespaceKind, name: root.name || _basename(raw), visible: root.visible !== false });
         } else {
-          candidates.push({ dropboxPath: joinDropboxPath(vaultPath, raw), name: root.name || _basename(raw), visible: root.visible !== false });
+          candidates.push({ dropboxPath: joinDropboxPath(vaultPath, raw), namespaceKind: vaultNamespaceKind, name: root.name || _basename(raw), visible: root.visible !== false });
         }
       });
     }
-    if (!candidates.length) candidates.push({ dropboxPath: vaultPath, name: _basename(vaultPath) || 'Meldex', visible: true });
+    if (!candidates.length) {
+      candidates.push({
+        dropboxPath: vaultPath,
+        namespaceKind: vaultNamespaceKind,
+        name: _basename(vaultPath) || 'Meldex',
+        visible: true,
+      });
+    }
     const usedIds = new Set();
     return candidates.map((candidate) => {
       const root = _normalizeRoot(candidate, usedIds);
@@ -401,11 +427,15 @@
         _writeJson(CACHE_KEY, remote);
         return remote;
       }
+      const migrated = await _migrateLegacyTeamRegistry();
+      if (migrated) return migrated;
       const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
       if (options?.writeIfMissing !== false) return await writeRegistry(seeded);
       return seeded;
     } catch (err) {
       if (_isRegistryNotFoundError(err)) {
+        const migrated = await _migrateLegacyTeamRegistry();
+        if (migrated) return migrated;
         const seeded = normalizeRegistryPayload({ roots: _legacyRoots() });
         if (options?.writeIfMissing !== false) {
           try { return await writeRegistry(seeded); } catch {}
@@ -421,6 +451,33 @@
       }
       throw err;
     }
+  }
+
+  async function _migrateLegacyTeamRegistry() {
+    let context = null;
+    try {
+      context = await _auth()?.getNamespaceContext?.(false);
+    } catch {}
+    if (!context?.isTeam) return null;
+    let legacy = null;
+    try {
+      legacy = await _readRemoteRegistryWithMetadata('team_root');
+    } catch (err) {
+      if (_isRegistryNotFoundError(err)) return null;
+      throw err;
+    }
+    if (!legacy?.registry?.roots?.length) return null;
+    const migrated = await writeRegistry(legacy.registry, { mergeRemote: false });
+    _dispatchRegistryMigration(migrated);
+    return migrated;
+  }
+
+  function _dispatchRegistryMigration(registry) {
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:dropbox-registry-migrated', {
+        detail: { from: 'team_root', to: 'home', rootCount: registry.roots.length },
+      }));
+    } catch {}
   }
 
   async function ensureDefaultRoots() {
@@ -445,14 +502,19 @@
       if (!ws?.id || !ws?.dropboxPath) continue;
       let wsRoots = [];
       try {
-        wsRoots = await window.MeldexWorkspaceLedgerIO.readWorkspaceLedger(ws.dropboxPath);
+        wsRoots = await window.MeldexWorkspaceLedgerIO.readWorkspaceLedger(ws.dropboxPath, ws.namespaceKind);
       } catch (err) {
         // 1つのワークスペースの読み込み失敗が、フォルダツリー全体の読み込みを
         // 止めてはならない（best-effort。他のアカウント/ワークスペースは正常に出す）。
         console.warn('[MeldexSourceFolderRegistry] ワークスペース台帳の読み込みに失敗:', ws.dropboxPath, err);
         continue;
       }
-      workspacesForMerge.push({ id: ws.id, dropboxPath: ws.dropboxPath, roots: wsRoots });
+      workspacesForMerge.push({
+        id: ws.id,
+        dropboxPath: ws.dropboxPath,
+        namespaceKind: normalizeNamespaceKind(ws.namespaceKind),
+        roots: wsRoots,
+      });
     }
 
     const merged = window.MeldexWorkspaceSharedLedger?.mergeSourceRoots
@@ -482,6 +544,7 @@
           id: namespacedId,
           sourceId: namespacedId,
           provider: 'dropbox',
+          namespaceKind: normalizeNamespaceKind(entry.namespaceKind),
           dropboxPath,
           path: sourcePath(namespacedId, ''),
           name: entry.name,
@@ -490,7 +553,10 @@
           origin: entry.origin,
           workspaceId: entry.workspaceId,
         });
-        workspaceRootsById.set(namespacedId, { dropboxPath });
+        workspaceRootsById.set(namespacedId, {
+          dropboxPath,
+          namespaceKind: normalizeNamespaceKind(entry.namespaceKind),
+        });
       } else {
         const outlinerRoot = toOutlinerRoot(entry);
         if (outlinerRoot) outlinerRoots.push(outlinerRoot);
@@ -520,14 +586,19 @@
     return writeRegistry({ ...existing, roots: nextRoots }, { baseRegistry: existing });
   }
 
-  async function addDropboxRoot(dropboxPath, name) {
+  async function addDropboxRoot(dropboxPath, name, options) {
     const normalizedPath = normalizeDropboxPath(dropboxPath);
     if (!normalizedPath) throw new Error('Dropbox内フォルダを選択してください');
+    const namespaceKind = normalizeNamespaceKind(options?.namespaceKind);
     const registry = await loadRegistry({ writeIfMissing: true });
-    const existing = registry.roots.find((root) => normalizeDropboxPath(root.dropboxPath).toLowerCase() === normalizedPath.toLowerCase() && !root.deleted);
+    const existing = registry.roots.find((root) => (
+      normalizeNamespaceKind(root.namespaceKind) === namespaceKind
+      && normalizeDropboxPath(root.dropboxPath).toLowerCase() === normalizedPath.toLowerCase()
+      && !root.deleted
+    ));
     if (existing) return toOutlinerRoot(existing);
     const usedIds = new Set(registry.roots.map((root) => root.id));
-    const root = _normalizeRoot({ dropboxPath: normalizedPath, name }, usedIds);
+    const root = _normalizeRoot({ dropboxPath: normalizedPath, name, namespaceKind }, usedIds);
     const next = { ...registry, roots: [...registry.roots, root] };
     await writeRegistry(next, { baseRegistry: registry });
     return toOutlinerRoot(root);
@@ -541,22 +612,38 @@
     // ワークスペース由来ルートを見る（フェーズ3c）。
     const wsRoot = _lastWorkspaceRootsById?.get?.(sourceId);
     if (wsRoot?.dropboxPath) {
-      return { id: sourceId, sourceId, provider: 'dropbox', dropboxPath: wsRoot.dropboxPath };
+      return {
+        id: sourceId,
+        sourceId,
+        provider: 'dropbox',
+        namespaceKind: normalizeNamespaceKind(wsRoot.namespaceKind),
+        dropboxPath: wsRoot.dropboxPath,
+      };
     }
     return null;
   }
 
-  function resolveDropboxPath(path, fallbackVaultPath) {
+  function resolveDropboxLocation(path, fallbackVaultPath) {
     const parsed = parseSourcePath(path);
     if (!parsed) {
       const fallback = normalizeDropboxPath(fallbackVaultPath || _auth()?.getVaultPath?.() || '');
       if (!fallback) throw new Error('Dropboxの保存先フォルダが未設定です');
       const relative = normalizeRelativePath(path);
-      return relative ? joinDropboxPath(fallback, relative) : fallback;
+      return {
+        path: relative ? joinDropboxPath(fallback, relative) : fallback,
+        namespaceKind: normalizeNamespaceKind(_auth()?.getVaultNamespaceKind?.()),
+      };
     }
     const root = _findRoot(parsed.sourceId);
     if (!root) throw new Error('ソースフォルダ設定が見つかりません。フォルダツリーを更新してください。');
-    return parsed.relativePath ? joinDropboxPath(root.dropboxPath, parsed.relativePath) : normalizeDropboxPath(root.dropboxPath);
+    return {
+      path: parsed.relativePath ? joinDropboxPath(root.dropboxPath, parsed.relativePath) : normalizeDropboxPath(root.dropboxPath),
+      namespaceKind: normalizeNamespaceKind(root.namespaceKind),
+    };
+  }
+
+  function resolveDropboxPath(path, fallbackVaultPath) {
+    return resolveDropboxLocation(path, fallbackVaultPath).path;
   }
 
   function virtualPathFromDropboxPath(dropboxPath, sourceId) {
@@ -567,7 +654,13 @@
     // ルートも逆引き候補に含める（_findRoot と対称に対応させる）。
     if (_lastWorkspaceRootsById) {
       for (const [id, info] of _lastWorkspaceRootsById.entries()) {
-        if (info?.dropboxPath) roots.push({ id, dropboxPath: info.dropboxPath });
+        if (info?.dropboxPath) {
+          roots.push({
+            id,
+            dropboxPath: info.dropboxPath,
+            namespaceKind: normalizeNamespaceKind(info.namespaceKind),
+          });
+        }
       }
     }
     const candidates = (sourceId ? roots.filter((root) => root.id === sourceId) : roots)
@@ -594,6 +687,7 @@
     registryDropboxPath,
     normalizeDropboxPath,
     normalizeRelativePath,
+    normalizeNamespaceKind,
     sourceIdForDropboxPath,
     sourcePath,
     parseSourcePath,
@@ -606,6 +700,7 @@
     loadOutlinerRoots,
     saveOutlinerRoots,
     addDropboxRoot,
+    resolveDropboxLocation,
     resolveDropboxPath,
     virtualPathFromDropboxPath,
   };

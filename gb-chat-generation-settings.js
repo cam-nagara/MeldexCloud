@@ -89,7 +89,7 @@ function _chatGenerationReasoningRowHtml() {
   return `${row}<div data-chat-reasoning-unsupported-note style="font-size:11px;color:var(--fg2);margin-top:-4px;">このプロバイダでは思考の深さ設定は使われません</div>`;
 }
 
-// 現行世代のClaudeモデル（Fable 5 / Opus 4.8 / Opus 4.7 / Sonnet 5）はtemperature/top_pに
+// 現行世代のClaudeモデル（Fable 5 / Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5）はtemperature/top_pに
 // 既定値以外を指定するとエラーになるため、詳細パラメータの値があっても送信時に省略される
 // （meldex_chat_stream_support.py の _anthropic_supports_sampling_params 参照）。
 // UI共通ルール: モデルのコード名やtemperature/top_pといった内部用語は基本UIに出さず、

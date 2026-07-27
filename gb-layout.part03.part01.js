@@ -652,6 +652,7 @@
     };
     const closeMenu = (restoreFocus) => {
       document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+      trigger?.setAttribute?.('aria-expanded', 'false');
       cleanup();
       if (restoreFocus) _restoreLayoutMenuFocus(trigger);
     };
@@ -778,7 +779,10 @@
   // === ペインタブ右クリックメニュー ===
   function _showTabContextMenu(e, paneId, tab) {
     // 既存メニューを除去
+    document.querySelectorAll('[aria-expanded="true"][aria-haspopup="menu"]')
+      .forEach(trigger => trigger.setAttribute('aria-expanded', 'false'));
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    e?.currentTarget?.setAttribute?.('aria-expanded', 'true');
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu tab-context-menu';
     menu.setAttribute('role', 'menu');

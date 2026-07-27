@@ -293,8 +293,36 @@
     msg.className = 'gb-section-desc';
     msg.style.marginTop = '4px';
     section.appendChild(msg);
+
+    const osSyncRow = document.createElement('div');
+    osSyncRow.style.cssText = 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;';
+    const osSync = document.createElement('button');
+    osSync.type = 'button';
+    osSync.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+    osSync.dataset.globalTagsRole = 'os-sync';
+    osSync.setAttribute('aria-label', 'OSタグを再同期');
+    osSync.innerHTML = icon('refreshCw', 14) + ' OSタグを再同期';
+    const osSyncStatus = document.createElement('span');
+    osSyncStatus.className = 'gb-section-desc';
+    osSyncRow.append(osSync, osSyncStatus);
+    section.appendChild(osSyncRow);
     container.appendChild(section);
-    return { chips, input, datalist, add, msg };
+    return { chips, input, datalist, add, msg, osSyncRow, osSync, osSyncStatus };
+  }
+
+  function renderOsTagSyncState(ui, state) {
+    if (!ui?.osSyncRow) return;
+    const applicable = !!state?.applicable;
+    ui.osSyncRow.style.display = applicable ? 'flex' : 'none';
+    if (!applicable) return;
+    ui.osSync.disabled = !state?.supported;
+    if (state?.warning) {
+      ui.osSyncStatus.textContent = state.warning;
+    } else if (state?.supported) {
+      ui.osSyncStatus.textContent = 'Windowsの画像タグと同期済み';
+    } else {
+      ui.osSyncStatus.textContent = 'この画像形式ではOSタグを利用できません';
+    }
   }
 
   async function refreshTargetEditorTags(targetPath, ui, refresh) {
@@ -318,6 +346,7 @@
       } catch (_) {}
       tags.forEach(tag => ui.chips.appendChild(targetTagChip(targetPath, tag, refresh, message => { ui.msg.textContent = message; }, groupsById)));
       ui.msg.textContent = '';
+      renderOsTagSyncState(ui, data?.os_sync);
     } catch (err) {
       ui.msg.textContent = 'タグを読み込めませんでした: ' + (err.userMessage || err.message || err);
     }
@@ -342,6 +371,22 @@
     ui.add.addEventListener('click', addCurrent);
     ui.input.addEventListener('keydown', event => {
       if (event.key === 'Enter') addCurrent();
+    });
+    ui.osSync.addEventListener('click', async () => {
+      ui.osSync.disabled = true;
+      ui.osSyncStatus.textContent = 'OSタグを照合しています...';
+      try {
+        const data = await apiPost('/global-tags/target/sync', {
+          path: normalizeTargetPath(targetPath),
+        }, { silentError: true });
+        renderOsTagSyncState(ui, data?.os_sync);
+        await refresh();
+        notifyTargetTagsChanged(targetPath);
+      } catch (err) {
+        ui.osSyncStatus.textContent = 'OSタグを再同期できませんでした: ' + (err.userMessage || err.message || err);
+      } finally {
+        ui.osSync.disabled = false;
+      }
     });
   }
 

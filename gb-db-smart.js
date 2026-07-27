@@ -588,8 +588,9 @@ async function _smartDbHighlightSourceRow(entityName, ctx) {
     const row = _smartDbFindSourceRow(entityName, ctx);
     if (row) {
       row.scrollIntoView({ block: 'center', inline: 'nearest' });
-      if (typeof setActiveCell === 'function') setActiveCell(row.children[0]);
-      else row.children[0]?.focus?.({ preventScroll: true });
+      const entityCell = row.querySelector('.col-entity') || row.children[0];
+      if (typeof setActiveCell === 'function') setActiveCell(entityCell);
+      else entityCell?.focus?.({ preventScroll: true });
       return true;
     }
     await new Promise(resolve => setTimeout(resolve, 50));

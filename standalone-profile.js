@@ -132,7 +132,11 @@
     return document.documentElement?.hasAttribute('data-standalone-cloud') === true;
   }
 
-  if (!_isStandaloneCloud()) return;
+  function _isLocalProfile() {
+    return document.body?.dataset?.standaloneProfileLocal === 'true';
+  }
+
+  if (!_isStandaloneCloud() && !_isLocalProfile()) return;
 
   let badgeEl = null;
   let popoverEl = null;
@@ -141,6 +145,7 @@
   let popoverKeydownHandler = null;
 
   function _isConnected() {
+    if (_isLocalProfile() && !_isStandaloneCloud()) return true;
     try {
       return window.MeldexStandaloneCloud?.getStatus?.()?.connected === true;
     } catch {
@@ -153,7 +158,9 @@
     const connected = _isConnected();
     const display = _displayName();
     badgeEl.classList.toggle('sa-profile-badge--guest', !connected);
-    badgeEl.title = connected ? (display || 'ユーザー設定') : 'ユーザー設定（Dropbox未接続）';
+    badgeEl.title = _isLocalProfile() && !_isStandaloneCloud()
+      ? (display || 'ユーザー設定（この端末のみ）')
+      : (connected ? (display || 'ユーザー設定') : 'ユーザー設定（Dropbox未接続）');
     badgeEl.setAttribute('aria-label', badgeEl.title);
     badgeEl.innerHTML = _avatarHtml(display, 22, !connected);
   }
@@ -175,6 +182,15 @@
 
   function _tryInsertBadge() {
     if (badgeEl && badgeEl.isConnected) return true;
+
+    const explicitSlot = document.querySelector('[data-sa-profile-slot]');
+    if (explicitSlot) {
+      badgeEl = _createBadge();
+      badgeEl.classList.add('sa-icon-btn');
+      explicitSlot.appendChild(badgeEl);
+      _renderBadgeContent();
+      return true;
+    }
 
     // 4アプリ共通: header.sa-toolbar の右端（オプションパネルボタンの隣）。
     const header = document.querySelector('header.sa-toolbar');
@@ -255,6 +271,7 @@
   }
 
   async function _saveProfile(overrides) {
+    if (_isLocalProfile() && !_isStandaloneCloud()) return;
     const sync = window.MeldexDropboxProfileSync;
     if (typeof sync?.saveCurrentProfile === 'function') {
       try {
@@ -419,7 +436,9 @@
 
     const desc = _el('p', {
       className: 'sa-profile-popover-desc',
-      text: connected
+      text: _isLocalProfile() && !_isStandaloneCloud()
+        ? 'ここで設定した名前とアイコンは、この端末のクイックメモだけに保存されます。'
+        : connected
         ? 'ここで設定した名前とアイコンは、同じDropboxにつないだ Meldex Cloud・他の端末・他の単独アプリでも使われます。'
         : 'Dropboxに接続すると、名前とアイコンが他の端末と共通になります。',
     });
@@ -493,6 +512,11 @@
   // ---- 起動時プロフィール解決 -------------------------------------------------
 
   async function _resolveOnReady() {
+    if (_isLocalProfile() && !_isStandaloneCloud()) {
+      _renderBadgeContent();
+      _refreshPopoverPreview();
+      return;
+    }
     try {
       await window.MeldexDropboxProfileSync?.resolveStartupProfile?.();
     } catch (error) {

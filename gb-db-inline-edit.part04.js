@@ -137,6 +137,29 @@ function _dbCellMutationGroupKey(target, ctx) {
   return `${dbPath}\n${entityName || ''}`;
 }
 
+// 一括セル保存で同時に飛ばす /api/value リクエスト数の上限。エントリ（行）が異なる
+// セルは本来並列に保存できるが、無制限に並列化すると単一ライターのシート SQLite へ
+// 書き込みが殺到し、ロック待ちが積み上がってかえって遅く・タイムアウトしやすくなる。
+const DB_CELL_SAVE_CONCURRENCY = 3;
+
+// items を最大 limit 並列で worker に通し、結果を元の順序で返す簡易プール。
+async function _dbRunWithConcurrencyLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function runner() {
+    while (true) {
+      const current = nextIndex++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current], current);
+    }
+  }
+  const poolSize = Math.min(Math.max(1, limit), items.length);
+  const runners = [];
+  for (let i = 0; i < poolSize; i++) runners.push(runner());
+  await Promise.all(runners);
+  return results;
+}
+
 async function _dbRunCellMutationsByEntity(targets, ctx, mutate) {
   const groups = new Map();
   (targets || []).forEach(item => {
@@ -145,13 +168,18 @@ async function _dbRunCellMutationsByEntity(targets, ctx, mutate) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   });
-  const groupedResults = await Promise.all(Array.from(groups.values()).map(async group => {
-    const results = [];
-    for (const item of group) {
-      results.push(await mutate(item));
-    }
-    return results;
-  }));
+  // 群（同一エントリ）内は従来どおり直列。群どうしは並列だが同時実行数を上限で平準化する。
+  const groupedResults = await _dbRunWithConcurrencyLimit(
+    Array.from(groups.values()),
+    DB_CELL_SAVE_CONCURRENCY,
+    async group => {
+      const results = [];
+      for (const item of group) {
+        results.push(await mutate(item));
+      }
+      return results;
+    },
+  );
   return groupedResults.flat();
 }
 
@@ -464,7 +492,13 @@ async function _dbClearSelectedCells(table) {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.isComposing || e.keyCode === 229) return;
+  if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) {
+    // IMEへ既定動作は渡したまま、シート内外のキー処理へ伝播させない。
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+    return;
+  }
+  if (typeof _dbInlineConsumeImeBoundaryKey === 'function' && _dbInlineConsumeImeBoundaryKey(e)) return;
   const bypassNativeSheetShortcut = _dbShouldBypassNativeEditorForSheetShortcut(e);
   const nativeInTransientUi = _dbActiveNativeElementInTransientUi();
   const routedStaleNativeEditor = _dbCancelStaleNativeEditorForSheetShortcut(e);
@@ -506,6 +540,20 @@ document.addEventListener('keydown', (e) => {
   const tr = keyCell.parentElement;
   if (!tr || !table.contains(tr)) return;
   const colIdx = Array.from(tr.children).indexOf(keyCell);
+  // エントリ名セルの Enter → インライン名称編集開始 (通常セルの Enter/F2 編集と対称)。
+  // 既存の Enter 処理 (_dbHandleCellEditorKey) より前で分岐し、非該当時はそのまま下へ流す。
+  if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && keyCell.classList.contains('col-entity')
+      && typeof startEntityInlineRename === 'function') {
+    e.preventDefault();
+    const nameSpan = keyCell.querySelector('.entity-name-label');
+    const oldName = nameSpan ? nameSpan.textContent : '';
+    const renameCtx = typeof _dbPaneContextFromEvent === 'function'
+      ? _dbPaneContextFromEvent(keyCell, { dbPath: state.currentDbPath })
+      : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+    const dbPath = (renameCtx && renameCtx.dbPath) || state.currentDbPath || '';
+    startEntityInlineRename(keyCell, nameSpan, oldName, dbPath);
+    return;
+  }
   _dbHandleCellEditorKey(e, colIdx, keyCell);
 }, true);
 
@@ -524,6 +572,12 @@ document.addEventListener('keydown', (e) => {
     } catch {}
   };
   if (e.defaultPrevented) return;
+  if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) {
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+    return;
+  }
+  if (typeof _dbInlineConsumeImeBoundaryKey === 'function' && _dbInlineConsumeImeBoundaryKey(e)) return;
   // ドロップダウンやメニューが開いている場合はそちらのキーナビに任せる
   const nativeInTransientUi = _dbActiveNativeElementInTransientUi();
   const routedStaleNativeEditor = _dbCancelStaleNativeEditorForSheetShortcut(e);
@@ -535,8 +589,6 @@ document.addEventListener('keydown', (e) => {
     setNavDebug({ phase: 'before-table', reason: 'transient-ui-blocked' });
     return;
   }
-  if (e.isComposing || e.keyCode === 229) return;
-
   const shortcutKey = String(e.key || '').toLowerCase();
   const preferSelectionTable = ((e.ctrlKey || e.metaKey) && !e.altKey && (shortcutKey === 'c' || shortcutKey === 'v'))
     || ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey);
@@ -554,8 +606,8 @@ document.addEventListener('keydown', (e) => {
   let keyCell = _dbKeyboardActiveCell(table, e.target);
   if (!keyCell) {
     setNavDebug({ phase: 'cell', reason: 'no-key-cell', dataRowsLength: dataRows.length });
-    if (dataRows.length > 0 && dataRows[0].children.length > 1) {
-      setActiveCell(dataRows[0].children[1]);
+    if (dataRows.length > 0 && dataRows[0].children.length > DB_ROW_CONTROLS_COL_COUNT) {
+      setActiveCell(dataRows[0].children[DB_ROW_CONTROLS_COL_COUNT]);
     }
     return;
   }
@@ -573,7 +625,7 @@ document.addEventListener('keydown', (e) => {
     });
     activeCell = null;
     rangeAnchorCell = null;
-    if (dataRows.length > 0 && dataRows[0].children.length > 1) setActiveCell(dataRows[0].children[1]);
+    if (dataRows.length > 0 && dataRows[0].children.length > DB_ROW_CONTROLS_COL_COUNT) setActiveCell(dataRows[0].children[DB_ROW_CONTROLS_COL_COUNT]);
     return;
   }
   const cells = Array.from(tr.children);
@@ -634,18 +686,6 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'a') {
-    e.preventDefault();
-    const first = _dbCellAt(table, 0, 0);
-    const last = _dbCellAt(table, dataRows.length - 1, maxCol);
-    if (first && last) {
-      rangeAnchorCell = first;
-      setActiveCell(last, { preserveRange: true });
-      _markDbCellRange(table, first, last);
-    }
-    return;
-  }
-
   if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
     e.preventDefault();
     const anchor = rangeAnchorCell || keyCell;
@@ -654,10 +694,10 @@ document.addEventListener('keydown', (e) => {
     let targetCol = colIdx;
     if (e.key === 'ArrowUp') targetRow = e.ctrlKey || e.metaKey ? 0 : rowIdx - 1;
     else if (e.key === 'ArrowDown') targetRow = e.ctrlKey || e.metaKey ? dataRows.length - 1 : rowIdx + 1;
-    else if (e.key === 'ArrowLeft') targetCol = e.ctrlKey || e.metaKey ? 0 : colIdx - 1;
+    else if (e.key === 'ArrowLeft') targetCol = e.ctrlKey || e.metaKey ? DB_ROW_CONTROLS_COL_COUNT : Math.max(DB_ROW_CONTROLS_COL_COUNT, colIdx - 1);
     else if (e.key === 'ArrowRight') targetCol = e.ctrlKey || e.metaKey ? maxCol : colIdx + 1;
     const targetCell = _dbCellAt(table, targetRow, targetCol);
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) {
+    if (targetCell && !targetCell.classList.contains('col-add-prop-cell') && !targetCell.classList.contains('col-row-controls')) {
       setActiveCell(targetCell, { preserveRange: true });
       _markDbCellRange(table, anchor, targetCell);
     }
@@ -688,19 +728,22 @@ document.addEventListener('keydown', (e) => {
     nextRow = rowIdx + 1;
     e.preventDefault();
   }
-  else if (e.key === 'ArrowLeft') { nextCol = Math.max(0, colIdx - 1); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft') { nextCol = Math.max(DB_ROW_CONTROLS_COL_COUNT, colIdx - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { nextCol = Math.min(maxCol, colIdx + 1); e.preventDefault(); }
   else if (e.key === 'Tab') {
     e.preventDefault();
     if (e.shiftKey) {
       nextCol = colIdx - 1;
-      if (nextCol < 0) { nextCol = maxCol; nextRow = rowIdx - 1; }
+      if (nextCol < DB_ROW_CONTROLS_COL_COUNT) { nextCol = maxCol; nextRow = rowIdx - 1; }
       nextRow = Math.max(0, nextRow);
     } else {
       nextCol = colIdx + 1;
       if (nextCol > maxCol) {
-        if (isLastRow) { triggerNewEntity(table, dataRows, 1); return; }
-        nextCol = 1; nextRow = rowIdx + 1;
+        // 行末で次の行へ折り返す際は、エントリ名列の位置に関わらず「最初のプロパティ列」へ移動する
+        // （毎行エントリ名の位置で止まると Tab によるデータ連続入力の妨げになるため）。
+        const firstPropCol = _dbFirstPropertyColIndex(tr);
+        if (isLastRow) { triggerNewEntity(table, dataRows, firstPropCol); return; }
+        nextCol = firstPropCol; nextRow = rowIdx + 1;
       }
     }
     nextRow = Math.min(dataRows.length - 1, nextRow);
@@ -713,9 +756,18 @@ document.addEventListener('keydown', (e) => {
   const targetRow = dataRows[nextRow];
   if (targetRow) {
     const targetCell = targetRow.children[nextCol];
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) setActiveCell(targetCell);
+    if (targetCell && !targetCell.classList.contains('col-add-prop-cell') && !targetCell.classList.contains('col-row-controls')) setActiveCell(targetCell);
   }
 }, true);
+
+// エントリ名列がどこにあっても「最初のプロパティ列」の実DOM列インデックスを返す。
+// プロパティセルは data-prop-name 属性を持つが、行先頭コントロール列・エントリ名列は持たない。
+function _dbFirstPropertyColIndex(tr) {
+  if (!tr) return DB_ROW_CONTROLS_COL_COUNT;
+  const cells = Array.from(tr.children);
+  const idx = cells.findIndex(td => td.hasAttribute('data-prop-name'));
+  return idx >= 0 ? idx : DB_ROW_CONTROLS_COL_COUNT;
+}
 
 // 新規エントリ追加（キーボード用）
 async function triggerNewEntity(table, dataRows, focusCol) {
@@ -745,12 +797,13 @@ async function triggerNewEntity(table, dataRows, focusCol) {
   };
   const focusCreatedRow = (newRow, name, allowImmediate = false) => {
     if (!allowImmediate && !shouldKeepCreateFocus()) return;
-    const col = focusCol || 0;
-    const td = newRow.children[col];
+    // エントリ名列は並べ替え可能で位置が固定でないため、クラスで探す（列インデックスに依存しない）。
+    const entityTd = newRow.querySelector('.col-entity');
+    const td = focusCol ? (newRow.children[focusCol] || entityTd) : entityTd;
     if (td) setActiveCell(td);
-    if (col === 0 || !focusCol) {
+    if (!focusCol || td === entityTd) {
       const label = newRow.querySelector('.entity-name-label');
-      if (label) startEntityInlineRename(td || newRow.children[0], label, name, _db);
+      if (label) startEntityInlineRename(td || entityTd, label, name, _db);
     }
   };
   if (typeof _dbCreateEntityOptimistic === 'function') {

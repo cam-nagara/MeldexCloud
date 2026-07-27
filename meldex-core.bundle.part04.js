@@ -1,3 +1,82 @@
+            el.remove();
+          } catch (error) {
+            _saReportSaveFailure(error, '注釈を削除できませんでした');
+          }
+          break;
+        }
+      }
+      for (const n of container.querySelectorAll('.sa-note')) {
+        const r = n.getBoundingClientRect(); const cr = container.getBoundingClientRect();
+        const nx = r.left - cr.left, ny = r.top - cr.top;
+        if (pt.x >= nx - 5 && pt.x <= nx + r.width + 5 && pt.y >= ny - 5 && pt.y <= ny + r.height + 5) {
+          await _saDeleteNoteElement(n);
+          break;
+        }
+      }
+      return;
+    }
+    const targetPath = _saCurrentTargetPath();
+    if (!targetPath) {
+      _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
+      return;
+    }
+    _ann.drawing = true;
+    _ann.targetPath = targetPath;
+    _ann.path = [[pt.x, pt.y]]; _ann.pressures = [e.pressure || 0.5];
+    svg.setPointerCapture(e.pointerId);
+  });
+
+  svg.addEventListener('pointermove', (e) => {
+    if (!_ann.drawing) return;
+    const pt = _toCoords(e.clientX, e.clientY);
+    _ann.path.push([pt.x, pt.y]); _ann.pressures.push(e.pressure || 0.5);
+    let preview = layer.querySelector('.ann-preview');
+    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    if (!preview || preview.tagName.toLowerCase() !== previewTag) { preview?.remove(); preview = document.createElementNS(_svgNS, previewTag); preview.classList.add('ann-preview'); layer.appendChild(preview); }
+    if (_ann.tool === 'rect') {
+      _saApplyRect(preview, _saRectData(_ann.path), _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'lasso') {
+      preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
+      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
+      preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-width', '1'); preview.setAttribute('stroke-dasharray', '4,4');
+    } else {
+      preview.setAttribute('d', _pathD(_ann.path)); preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
+      preview.setAttribute('stroke-width', _ann.tool === 'pen' ? '3' : '12');
+      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_saNormalizeOpacity(_ann.opacity, 1) * 0.5) : String(_saNormalizeOpacity(_ann.opacity, 1))); preview.setAttribute('stroke-linecap', 'round');
+    }
+  });
+
+  svg.addEventListener('pointerup', async () => {
+    if (!_ann.drawing) return;
+    _ann.drawing = false;
+    layer.querySelector('.ann-preview')?.remove();
+    if (_ann.path.length < 2) {
+      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
+      return;
+    }
+    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+    const data = type === 'rect' ? _saRectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const targetPath = _ann.targetPath || _saCurrentTargetPath();
+    if (!targetPath || _saCurrentTargetPath() !== targetPath) {
+      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
+      return;
+    }
+    try {
+      const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
+      if (_saCurrentTargetPath() !== targetPath) return;
+      if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);
+      else _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, res.id);
+    } catch (error) { _saReportSaveFailure(error); }
+    finally { _ann.path = []; _ann.pressures = []; _ann.targetPath = ''; }
+  });
+
+  function _isStandaloneNoteAnnotation(item, data) {
+    if (!item || data?.deleted) return false;
+    const type = String(item.type || '');
+    const shape = String(item.shape || data?.shape || '');
+    const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
+    if (type === 'comment') {
+      return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;
     }
     return type === 'note' || type === 'sticky';
   }

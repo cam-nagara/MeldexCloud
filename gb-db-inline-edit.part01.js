@@ -4,6 +4,58 @@ function _dbInlineIsComposing(e) {
   return !!(e && (e.isComposing || e.keyCode === 229));
 }
 
+function _dbInlineConsumeImeBoundaryKey(e) {
+  if (!e) return false;
+  const justEnded = e.target?.dataset?.dbImeJustEnded === '1'
+    || e.currentTarget?.dataset?.dbImeJustEnded === '1';
+  if (!justEnded) return false;
+  if (['Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar', 'Escape'].includes(e.key)) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+  }
+  return true;
+}
+
+// フォーカスが外れたときの確定を、入力欄内の操作で誤発火させないための共通処理。
+// blur に直結して確定すると、入力中の文字と文字の間をクリックしただけ（キャレット移動だけのつもり）や、
+// 日本語変換の確定操作で入力が閉じてしまう。gb-db-cell-ui.js の scheduleBlurFinish と同じ方針を、
+// シート内の各インライン入力（セル・列見出し・ビュー名など）へ共通化したもの。
+// keepFocusWithin: フォーカスが移っても確定させたくない周辺UI（書式ポップアップ等）のセレクタ。
+function attachInlineBlurCommit(inp, commit, options = {}) {
+  if (!inp || typeof commit !== 'function') return;
+  let composing = false;
+  let pendingBlur = false;
+  let finished = false;
+  const keepSelector = options.keepFocusWithin || '';
+  const commitAfterFocusCheck = () => {
+    setTimeout(() => {
+      if (finished || composing) return;
+      const active = document.activeElement;
+      if (active === inp || inp.contains(active)) return;
+      if (keepSelector && active?.closest?.(keepSelector)) return;
+      finished = true;
+      commit();
+    }, 0);
+  };
+  inp.addEventListener('compositionstart', () => { composing = true; });
+  inp.addEventListener('compositionend', () => {
+    composing = false;
+    inp.dataset.dbImeJustEnded = '1';
+    setTimeout(() => { delete inp.dataset.dbImeJustEnded; }, 0);
+    if (!pendingBlur) return;
+    pendingBlur = false;
+    commitAfterFocusCheck();
+  });
+  inp.addEventListener('blur', () => {
+    if (composing) {
+      pendingBlur = true;
+      return;
+    }
+    commitAfterFocusCheck();
+  });
+}
+
 // ctxOverride: 呼び出し側が既に持っているペインctxを直接渡すためのオプション引数。
 // 埋め込みシート（gb-tool-calendar-production-sheet-embed.js）はグローバル _panes
 // レジストリに未登録のため、_dbPaneContextFromEvent()（DOM祖先探索 + レジストリ参照）は
@@ -89,11 +141,12 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
+    if (_dbInlineConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
     if (e.key === 'Escape') { committed = true; renderPivot(ctx); restoreActiveCellByProp(oldName); }
     if (e.key === 'Tab') { e.preventDefault(); commit(); }
   });
-  inp.addEventListener('blur', commit);
+  attachInlineBlurCommit(inp, commit);
 }
 
 function _dbResolveEntityRenameContext(anchorEl, dbPath) {
@@ -148,6 +201,12 @@ function _dbRefreshEntityRenameInBackground(ctx, dbPath, entityName) {
 }
 
 function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, dbPath) {
+  // 楽観再描画より前に manualOrder も同じ名前へ付け替える。
+  // 画面だけ先に新名へ変わって manualOrder が旧名のままだと、保存完了まで一度末尾へ落ちる。
+  // 保存失敗時は呼び出し側が newName → oldName で本関数を再実行するため、順序も同時に戻る。
+  if (typeof _dbRenameLocalRefs === 'function') {
+    _dbRenameLocalRefs(dbPath, oldName, newName);
+  }
   const changed = _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName);
   if (changed && typeof renderPivot === 'function') {
     renderPivot(ctx);
@@ -202,45 +261,71 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     const newName = inp.value.trim();
     if (!newName || newName === oldName) {
       renderPivot(_renCtx);
-      restoreActiveCellByRow(rowIdx, 0);
+      restoreActiveCellByRow(rowIdx, 'entity');
       return;
     }
+    // 同名エントリが既にあれば、楽観適用で既存エントリを上書きしないようここで弾く
+    // （サーバも 409 で拒否するが、待たずに即フィードバックする）。
+    const _renEntities = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
+      || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
+    if (Object.prototype.hasOwnProperty.call(_renEntities, newName)) {
+      if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
+      renderPivot(_renCtx);
+      restoreActiveCellByRow(rowIdx, 'entity');
+      return;
+    }
+    // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
+    // 保存に失敗したら catch で旧名へ戻す。
+    _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
     try {
       const renamePath = typeof _dbResolveEntityPathForRename === 'function'
         ? await _dbResolveEntityPathForRename(dbPath, oldName)
         : _entityPath(dbPath, oldName);
       await apiPost('/entity/rename', { path: renamePath, new_name: newName });
       _dbUndoRename(dbPath, oldName, newName, _renCtx);
-      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
     } catch(e) {
-      renderPivot(_renCtx);
-      restoreActiveCellByRow(rowIdx, 0);
+      // 保存失敗: 楽観適用を取り消して旧名へ戻す
+      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+      if (typeof showStatus === 'function') showStatus('名前の変更に失敗しました', true);
+      restoreActiveCellByRow(rowIdx, 'entity');
     }
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
+    if (_dbInlineConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; renderPivot(_renCtx); restoreActiveCellByRow(rowIdx, 0); }
+    if (e.key === 'Escape') { committed = true; renderPivot(_renCtx); restoreActiveCellByRow(rowIdx, 'entity'); }
     if (e.key === 'Tab') {
       e.preventDefault();
-      // Tab: 確定して同じ行の次のセルへ
+      // Tab: 確定して同じ行の次のセルへ（エントリ名列の位置に関わらず「最初のプロパティ列」へ）
       committed = true;
       const newName = inp.value.trim();
-      const doAfter = () => restoreActiveCellByRow(rowIdx, 1);
+      const doAfter = () => restoreActiveCellByRow(rowIdx, 'first-prop');
       if (!newName || newName === oldName) { renderPivot(_renCtx); doAfter(); return; }
+      const _renEntitiesTab = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
+        || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
+      if (Object.prototype.hasOwnProperty.call(_renEntitiesTab, newName)) {
+        if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
+        renderPivot(_renCtx); doAfter(); return;
+      }
+      // 楽観的更新: 先に新名を表示してからサーバ保存
+      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       const renamePathPromise = typeof _dbResolveEntityPathForRename === 'function'
         ? _dbResolveEntityPathForRename(dbPath, oldName)
         : Promise.resolve(_entityPath(dbPath, oldName));
       renamePathPromise.then(renamePath => apiPost('/entity/rename', { path: renamePath, new_name: newName })).then(() => {
         _dbUndoRename(dbPath, oldName, newName, _renCtx);
-        _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
         _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
         setTimeout(doAfter, 50);
-      }).catch(() => { renderPivot(_renCtx); doAfter(); });
+      }).catch(() => {
+        _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+        if (typeof showStatus === 'function') showStatus('名前の変更に失敗しました', true);
+        doAfter();
+      });
     }
   });
-  inp.addEventListener('blur', commit);
+  attachInlineBlurCommit(inp, commit);
 }
 
 // アクティブセル復元ヘルパー
@@ -274,7 +359,17 @@ function restoreActiveCellByRow(rowIdx, colIdx, _attempt) {
     }
     const row = dataRows[Math.min(rowIdx, dataRows.length - 1)];
     if (row) {
-      const cell = row.children[colIdx] || row.children[0];
+      // colIdx には数値インデックスの他に、エントリ名列は位置が固定でないため
+      // 'entity' / 'first-prop' の指定も受け付ける（クラス/属性ベースで解決する）。
+      let cell;
+      if (colIdx === 'entity') {
+        cell = row.querySelector('.col-entity');
+      } else if (colIdx === 'first-prop') {
+        cell = row.children[typeof _dbFirstPropertyColIndex === 'function' ? _dbFirstPropertyColIndex(row) : 1];
+      } else {
+        // colIdx が見つからない場合はエントリ名列へ（位置は並べ替えで変わり得るのでクラスで探す）
+        cell = row.children[colIdx] || row.querySelector('.col-entity');
+      }
       if (cell) setActiveCell(cell);
     }
   }, 30);
@@ -287,18 +382,18 @@ function restoreActiveCellByEntityName(entityName) {
   for (const row of dataRows) {
     const label = row.querySelector('.entity-name-label');
     if (label && label.textContent === entityName) {
-      setActiveCell(row.children[0]);
+      setActiveCell(row.querySelector('.col-entity'));
       return;
     }
   }
   // Step 2: チャンク分割中で対象行が未生成の可能性。進行中ならポーリングで待機
   const ctx = (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
   if (ctx && ctx._renderInProgress) {
-    _waitForEntityRow(ctx, entityName, (tr) => setActiveCell(tr.children[0]));
+    _waitForEntityRow(ctx, entityName, (tr) => setActiveCell(tr.querySelector('.col-entity')));
     return;
   }
   // 見つからなければ先頭行
-  if (dataRows.length > 0) setActiveCell(dataRows[0].children[0]);
+  if (dataRows.length > 0) setActiveCell(dataRows[0].querySelector('.col-entity'));
 }
 
 // 空セルへの直接インライン入力
@@ -401,7 +496,7 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
       }
       return;
     }
-    const td = (propName && tr.querySelector(`td[data-prop-name="${CSS.escape(propName)}"]`)) || tr.children[0];
+    const td = (propName && tr.querySelector(`td[data-prop-name="${CSS.escape(propName)}"]`)) || tr.querySelector('.col-entity');
     if (td) setActiveCell(td);
   }, 50);
 }

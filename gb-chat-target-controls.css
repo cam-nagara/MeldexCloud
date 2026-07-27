@@ -1,0 +1,78 @@
+/* Chat reference target controls. */
+
+#chat-target-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  margin-bottom: 4px;
+  padding: 3px 4px 3px 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+#chat-current-target-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-target-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.chat-target-action {
+  min-height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg2);
+  color: var(--fg2);
+  cursor: pointer;
+  font: inherit;
+}
+
+.chat-target-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.chat-target-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.chat-target-action:disabled {
+  cursor: default;
+  color: var(--ui-disabled-fg, var(--fg2));
+  background: var(--ui-disabled-bg, var(--bg2));
+  border-color: var(--ui-disabled-border, var(--border));
+}
+
+.chat-target-clear,
+.chat-target-pick {
+  width: 26px;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  #chat-target-badge {
+    min-height: 46px;
+  }
+
+  .chat-target-action {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

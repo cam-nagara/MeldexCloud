@@ -248,7 +248,7 @@ async function showSettingsModal(opts) {
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
-          <input id="modal-home-folder" type="text" class="gb-input" style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
+          <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
       </section>
@@ -403,6 +403,11 @@ async function showSettingsModal(opts) {
     <!-- LLM -->
     <div class="settings-panel" data-panel="LLM" hidden>
       <section class="gb-section gb-section--boxed">
+        <div id="auto-tag-settings-container">
+          <div class="gb-section-desc">自動タグ付け設定を読み込んでいます…</div>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('messagesSquare',14)} LLMチャット APIキー ${fieldHelp('キーを入れていない会社のAIは使えません。通常はこの端末だけに保存します。別端末へ持ち回る場合は、下のCloud保存を明示的に使ってください')}</div>
         <label class="gb-field-row">
           <span class="gb-label" style="min-width:140px;">Gemini (Google)</span>
@@ -463,6 +468,10 @@ async function showSettingsModal(opts) {
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('badgeInfo',14)} カスタムインストラクション ${fieldHelp('シートのフォームで、ユーザー情報・作品前提・回答方針を項目別に入力します。送信した内容はチャットのカスタムインストラクションに反映されます')}</div>
         <button type="button" class="gb-btn gb-btn-sm" data-action="ensureChatCustomInstructionSheet()">${lucide('clipboardList',14)} 入力フォームを開く</button>
+      </section>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('puzzle',14)} スキル ${fieldHelp('特定の作業や話題で使う指示をまとめて登録します。依頼内容が該当する時だけ、チャットが自動で参照します')}</div>
+        <button type="button" class="gb-btn gb-btn-sm" data-action="ensureChatSkillsSheet()">${lucide('puzzle',14)} スキルを管理</button>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('brain',14)} ナレッジ ${fieldHelp('チャットの内容から記憶を作り、アイデア出しやプロット相談で自動的に活用します。通常は設定不要です')}</div>
@@ -658,10 +667,66 @@ async function showSettingsModal(opts) {
   o.querySelector('#staff-registry-open-btn')?.addEventListener('click', () => {
     window.MeldexUserRegistry?.openSheet?.();
   });
+  // スタッフ管理シートの保存場所を変更する小型ダイアログ。テキスト入力のみの
+  // cfPrompt を、列タイプ設定ダイアログの「一覧から選択」と同じ
+  // GBFolderPicker.pickFolder を使えるモーダルに置き換える
+  // （GBFolderPicker 未定義の環境では従来どおり cfPrompt にフォールバック）。
+  function _openStaffRegistryRelocateDialog(initialPath) {
+    if (typeof window.GBFolderPicker?.pickFolder !== 'function') {
+      return cfPrompt('スタッフ管理シートの保存場所（フォルダパス）を入力してください:', initialPath || '');
+    }
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.dataset.modalShell = 'off';
+      overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="staff-registry-relocate-title" style="min-width:420px;">
+        <h3 id="staff-registry-relocate-title">スタッフ管理シートの保存場所</h3>
+        <div class="modal-body">
+          <label for="staff-registry-relocate-input" style="display:block;margin-bottom:6px;">フォルダパス</label>
+          <div class="db-picker-input-row">
+            <input type="text" id="staff-registry-relocate-input" data-gb-path-input value="${esc(initialPath || '')}">
+            <button type="button" class="db-picker-btn" id="staff-registry-relocate-pick-btn" title="一覧から選択" aria-label="一覧から選択">${lucide('folderTree', 14)}</button>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="staff-registry-relocate-cancel-btn">キャンセル</button>
+          <button type="button" class="primary" id="staff-registry-relocate-save-btn">保存</button>
+        </div>
+      </div>`;
+      document.body.appendChild(overlay);
+      replaceIcons(overlay);
+      const input = overlay.querySelector('#staff-registry-relocate-input');
+      let pickerOpen = false; // pickFolder のポップアップ側 Escape ハンドラ（capture）が
+      // 先に走った直後でも、同じ Escape 押下でこちらまで閉じてしまわないようにするガード。
+      const finish = (val) => {
+        document.removeEventListener('keydown', onKeyDown);
+        overlay.remove();
+        resolve(val);
+      };
+      const onKeyDown = (e) => { if (e.key === 'Escape' && !pickerOpen) { e.preventDefault(); finish(null); } };
+      document.addEventListener('keydown', onKeyDown);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+      overlay.querySelector('#staff-registry-relocate-cancel-btn').addEventListener('click', () => finish(null));
+      overlay.querySelector('#staff-registry-relocate-save-btn').addEventListener('click', () => finish(input.value));
+      overlay.querySelector('#staff-registry-relocate-pick-btn').addEventListener('click', async () => {
+        pickerOpen = true;
+        const selection = await window.GBFolderPicker.pickFolder({
+          title: '保存場所のフォルダを選択',
+          initialPath: input.value,
+        });
+        pickerOpen = false;
+        if (selection && selection.path) input.value = selection.path;
+      });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(input.value); } });
+      input.focus();
+      input.select();
+    });
+  }
+
   o.querySelector('#staff-registry-relocate-btn')?.addEventListener('click', async () => {
     if (!window.MeldexUserRegistry) return;
     const current = await window.MeldexUserRegistry.getConfig().catch(() => ({ path: '' }));
-    const next = await cfPrompt('スタッフ管理シートの保存場所（フォルダパス）を入力してください:', current.path || '');
+    const next = await _openStaffRegistryRelocateDialog(current.path || '');
     if (!next || next === current.path) return;
     try {
       await window.MeldexUserRegistry.relocate(next);

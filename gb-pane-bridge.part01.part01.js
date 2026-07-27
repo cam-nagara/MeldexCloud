@@ -935,6 +935,8 @@ const GBPaneBridge = (() => {
     _pruneOrphanPaneState();
     // アクティブペインのタブタイプを state.view に同期
     _syncStateView();
+    // 取り消し・やり直しの対象スコープをアクティブタブへ追随させる（パネル取り違え対策）
+    if (typeof _meldexSyncActiveTabHistoryScope === 'function') _meldexSyncActiveTabHistoryScope();
     _mountFloatingAnnotationUi();
     // 詳細パネル・ビューワーをアクティブペインに同期
     _syncDetailForActivePane(GBLayout.activePane);

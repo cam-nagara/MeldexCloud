@@ -727,14 +727,32 @@
   }
 
   async function _addSource() {
-    const path = await _showDialog({ title: '保存先を追加', message: 'Dropbox内のフォルダパスを入力してください。例: /MeldexVault', inputLabel: 'Dropbox内のフォルダパス', inputValue: '/MeldexVault', confirmLabel: '次へ' });
-    if (!path) return;
-    const name = await _showDialog({ title: '表示名', message: 'この保存先を画面に表示する名前です。', inputLabel: '表示名', inputValue: String(path).split('/').filter(Boolean).pop() || 'Meldex', confirmLabel: '追加' });
+    let picked = null;
+    if (window.MeldexDropboxFolderPicker?.pickFolder) {
+      picked = await window.MeldexDropboxFolderPicker.pickFolder({
+        title: 'Dropboxからソースフォルダを追加',
+      });
+    } else {
+      const path = await _showDialog({ title: '保存先を追加', message: 'Dropbox内のフォルダパスを入力してください。例: /MeldexVault', inputLabel: 'Dropbox内のフォルダパス', inputValue: '/MeldexVault', confirmLabel: '次へ' });
+      if (path) {
+        picked = {
+          path,
+          name: String(path).split('/').filter(Boolean).pop() || 'Meldex',
+          namespaceKind: 'home',
+        };
+      }
+    }
+    if (!picked?.path) return;
+    const name = await _showDialog({ title: '表示名', message: 'この保存先を画面に表示する名前です。', inputLabel: '表示名', inputValue: picked.name || 'Meldex', confirmLabel: '追加' });
     if (!name) return;
     const snapshot = _snapshotView();
     _setBusy(true, '保存先を追加しています…');
     try {
-      const root = await _runtime().addSource(path, name);
+      const root = await _runtime().addSource(
+        picked.path,
+        name,
+        { namespaceKind: picked.namespaceKind },
+      );
       _renderSources();
       const loaded = await _loadCurrent({ path: root.path, clearSelection: true });
       if (loaded === false) {

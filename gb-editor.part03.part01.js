@@ -106,6 +106,9 @@
     html = _tmp.innerHTML;
   } catch (_) {}
   return html;
+  } finally {
+    _mdMediaBasePath = _prevMediaBasePath;
+  }
 }
 
 // MD から <!--nl:ID--> を抽出して Set で返す。
@@ -277,6 +280,48 @@ function _noteLinkifyBareUrls(html) {
   return root.innerHTML;
 }
 
+// ノート本文の相対メディアパスを解決するための基準パス。mdToHtml 実行中だけ値が入る
+// （mdToHtml は同期処理なので、描画が入れ子になっても保存・復元で正しく戻る）。
+// WebClipperで保存したクリップ本文は `_assets/画像.jpg`（ノートフォルダ基準）や
+// `Web Clipper/_assets/画像.jpg`（保存先フォルダ基準・旧形式）のような相対パスを含む。
+// 相対パスのままだと <img src> がアプリ自身のURL基準で解決されてしまい画像が出ないため、
+// ここで保存先基準のパスへ直してからファイル取得URLに変換する。
+var _mdMediaBasePath = '';
+
+function _mdNormalizeVaultRelPath(path) {
+  const out = [];
+  for (const part of String(path || '').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { out.pop(); continue; }
+    out.push(part);
+  }
+  return out.join('/');
+}
+
+// Markdown中の相対メディアパスを保存先基準のパスへ解決する。
+// 解決できない場合（基準パス未設定・絶対URL・データURL等）は空文字列を返す。
+function _mdResolvedMediaPath(src) {
+  const raw = String(src || '').trim();
+  if (!raw) return '';
+  // 絶対URL / ルート相対 / データURL / ページ内アンカーはそのまま扱う
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|#)/i.test(raw)) return '';
+  const base = String(_mdMediaBasePath || '').replace(/\\/g, '/');
+  if (!base) return '';
+  const dir = base.replace(/\/[^/]*$/, '');
+  let rel = raw.replace(/&amp;/g, '&');
+  try { rel = decodeURIComponent(rel); } catch (_) {}
+  rel = rel.replace(/\\/g, '/');
+  if (!dir) return _mdNormalizeVaultRelPath(rel);
+  // 旧形式（WebClipperの古いクリップ）は保存先フォルダ名から始まる完全パスなので二重に連結しない
+  if (rel === dir || rel.startsWith(dir + '/')) return _mdNormalizeVaultRelPath(rel);
+  const dirName = dir.split('/').pop();
+  const relHead = rel.split('/')[0];
+  if (dirName && relHead === dirName) {
+    return _mdNormalizeVaultRelPath(dir + '/' + rel.slice(relHead.length + 1));
+  }
+  return _mdNormalizeVaultRelPath(dir + '/' + rel);
+}
+
 // インラインMarkdown変換
 function inlinemd(text) {
   let s = esc(text);
@@ -293,7 +338,7 @@ function inlinemd(text) {
   // 取り消し線
   s = s.replace(/~~(.+?)~~/g, '<s>$1</s>');
   // 画像（リンクより先に処理。!が先にリンクとしてマッチするのを防止）
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, altFull, src) => {
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, altFull, srcRaw) => {
     // 拡張alt解析: ![alt|w=300|path=...](src)
     const parts = altFull.split('|');
     const alt = parts[0];
@@ -302,6 +347,13 @@ function inlinemd(text) {
       if (parts[i].startsWith('w=')) w = parseInt(parts[i].slice(2));
       if (parts[i].startsWith('path=')) dataPath = parts[i].slice(5);
       if (parts[i].startsWith('type=')) mediaType = parts[i].slice(5).toLowerCase();
+    }
+    // 相対パス（WebClipperのクリップ本文など）は保存先基準のパスへ直してから取得URLにする
+    let src = srcRaw;
+    const resolvedPath = _mdResolvedMediaPath(srcRaw);
+    if (resolvedPath) {
+      src = '/api/file-raw?path=' + encodeURIComponent(resolvedPath);
+      if (!dataPath) dataPath = esc(resolvedPath);
     }
     const wStyle = w ? `width:${w}px;` : 'max-width:100%;';
     const isManagedMedia = dataPath || src.includes('/file-raw?') || src.includes('/media/file?');
@@ -805,6 +857,7 @@ function _relationLinkEntityName(el) {
 function _resolveContextLinkTarget(rawTarget) {
   const target = rawTarget?.closest ? rawTarget : rawTarget?.parentElement;
   if (!target) return null;
+  if (target.closest('.status-dot')) return null;
   const sourcePaneId = target.closest('.gb-pane')?.dataset?.paneId || '';
 
   const autoLink = target.closest('.auto-link[data-path]');
@@ -971,7 +1024,7 @@ function _showLinkContextMenu(e, linkTarget) {
     });
   }
   if (!linkTarget.localAnchor) {
-    addItem('layers-2', 'サブパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
+    addItem('layers-2', 'フロートパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
       linkType: linkTarget.linkType || '',
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
@@ -1197,11 +1250,21 @@ document.addEventListener('pointercancel', (e) => {
 }, true);
 
 // 詳細パネルにファイルのメタ情報を表示
+async function _fileInfoMetadata(filePath, preloadedMeta) {
+  const preloaded = preloadedMeta && typeof preloadedMeta === 'object' ? preloadedMeta : null;
+  const needsEmbeddedMetadata = preloaded?.embedded === undefined;
+  if (preloaded && !needsEmbeddedMetadata) return preloaded;
+  const fetched = await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath))
+    .then(response => response.ok ? response.json() : null)
+    .catch(() => null);
+  return fetched ? { ...(preloaded || {}), ...fetched } : preloaded;
+}
+
 async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
   const fileName = filePath.split(/[/\\]/).pop();
   const ext = fileName.split('.').pop().toLowerCase();
   try {
-    const meta = preloadedMeta || await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : null).catch(() => null);
+    const meta = await _fileInfoMetadata(filePath, preloadedMeta);
     const folderPath = filePath.replace(/[/\\][^/\\]+$/, '');
     const folderName = folderPath.split(/[/\\]/).pop();
     const typeLabel = ext === 'md' ? 'ノート' : ext === 'json' ? 'シナリオ/シート' : ext === 'board' ? 'ボード' : ext;
@@ -1216,15 +1279,21 @@ async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
       if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${new Date(meta.modified).toLocaleString('ja-JP')}</td></tr>`;
       if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">サイズ</td><td style="padding:4px 0;">${_formatFileSize(meta.size)}</td></tr>`;
     }
-    html += `</table><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
+    html += `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div><div data-auto-tag-run-path="${esc(filePath)}" data-auto-tag-run-recursive="0"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
     if (typeof showDetailPanel === 'function') {
       await showDetailPanel(html);
-      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
+      const detailRoot = document.getElementById('rp-detail') || document;
+      const embeddedHost = [...detailRoot.querySelectorAll('[data-file-embedded-metadata-path]')]
+        .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
+      window.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
+      if (typeof hydrateAutoTagRunPanels === 'function') hydrateAutoTagRunPanels(detailRoot);
+      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(detailRoot);
     }
   } catch {
     // ファイル情報取得失敗時も基本情報を表示（entity APIフォールバックは不要）
     if (typeof showDetailPanel === 'function') {
-      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
+      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-auto-tag-run-path="${esc(filePath)}" data-auto-tag-run-recursive="0"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
+      if (typeof hydrateAutoTagRunPanels === 'function') hydrateAutoTagRunPanels(document.getElementById('rp-detail') || document);
       if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     }
   }

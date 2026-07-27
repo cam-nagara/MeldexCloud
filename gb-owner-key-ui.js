@@ -193,6 +193,7 @@
     section.className = 'gb-section gb-section--boxed gb-owner-key-section';
     section.dataset.ownerKeySection = '1';
     section.dataset.e2eId = 'owner-key-section';
+    section.dataset.settingsView = 'memory';
     section.setAttribute('role', 'region');
     section.setAttribute('aria-labelledby', 'owner-key-section-title');
     const owner = _isOwner();

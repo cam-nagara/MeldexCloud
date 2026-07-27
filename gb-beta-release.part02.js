@@ -54,7 +54,7 @@
   function _ensureDesktopBadge() {
     const oldHostBadge = document.querySelector('#left-chrome-command > .meldex-beta-badge');
     if (oldHostBadge) oldHostBadge.remove();
-    const host = document.getElementById('left-chrome-user');
+    const host = document.getElementById('left-chrome-floating-user');
     if (!host || host.querySelector('.meldex-beta-badge')) return;
     host.appendChild(_el('span', { class: 'meldex-beta-badge', text: BETA_LABEL }));
   }

@@ -21,6 +21,96 @@
     return undefined;
   }
 
+  const CLOUD_VIDEO_THUMBNAIL_EXTENSIONS = new Set([
+    'mp4', 'm4v', 'mov', 'webm', 'ogv', 'avi', 'mkv', 'wmv', 'mpg', 'mpeg',
+  ]);
+  const cloudVideoThumbnailCache = new Map();
+
+  function _isCloudVideoPath(path) {
+    const clean = String(path || '').split(/[?#]/, 1)[0];
+    const dot = clean.lastIndexOf('.');
+    return dot >= 0 && CLOUD_VIDEO_THUMBNAIL_EXTENSIONS.has(clean.slice(dot + 1).toLowerCase());
+  }
+
+  function _waitForVideoEvent(video, eventName, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let timer = 0;
+      const finish = (callback, value) => {
+        clearTimeout(timer);
+        video.removeEventListener(eventName, onReady);
+        video.removeEventListener('error', onError);
+        callback(value);
+      };
+      const onReady = () => finish(resolve);
+      const onError = () => finish(reject, new Error('動画のフレームを読み込めません'));
+      video.addEventListener(eventName, onReady);
+      video.addEventListener('error', onError);
+      timer = setTimeout(() => finish(reject, new Error('動画サムネイルの生成がタイムアウトしました')), timeoutMs);
+    });
+  }
+
+  function _canvasToJpeg(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('動画サムネイルを画像化できません'));
+      }, 'image/jpeg', 0.84);
+    });
+  }
+
+  async function _videoFileToThumbnail(file, requestedSize) {
+    const video = document.createElement('video');
+    const objectUrl = URL.createObjectURL(file);
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    try {
+      const loaded = _waitForVideoEvent(video, 'loadeddata', 15000);
+      video.src = objectUrl;
+      video.load();
+      await loaded;
+
+      const duration = Number(video.duration);
+      if (Number.isFinite(duration) && duration > 0.5) {
+        const seeked = _waitForVideoEvent(video, 'seeked', 8000);
+        video.currentTime = Math.min(1, duration * 0.1);
+        await seeked;
+      }
+
+      const sourceWidth = Math.max(1, video.videoWidth || 1);
+      const sourceHeight = Math.max(1, video.videoHeight || 1);
+      const size = Math.max(64, Math.min(1024, Number(requestedSize) || 384));
+      const scale = Math.min(1, size / Math.max(sourceWidth, sourceHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('動画サムネイルの描画先を作成できません');
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return await _canvasToJpeg(canvas);
+    } finally {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function _cloudVideoThumbnail(relativePath, provider, requestedSize) {
+    const size = Math.max(64, Math.min(1024, Number(requestedSize) || 384));
+    const cacheKey = relativePath + '\n' + size;
+    let pending = cloudVideoThumbnailCache.get(cacheKey);
+    if (!pending) {
+      pending = provider.downloadAsFile(relativePath)
+        .then(file => _videoFileToThumbnail(file, size));
+      cloudVideoThumbnailCache.set(cacheKey, pending);
+      pending.catch(() => cloudVideoThumbnailCache.delete(cacheKey));
+      while (cloudVideoThumbnailCache.size > 24) {
+        cloudVideoThumbnailCache.delete(cloudVideoThumbnailCache.keys().next().value);
+      }
+    }
+    return pending;
+  }
+
   async function providerResponse(url) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
@@ -34,12 +124,20 @@
     }
     if (url.pathname.endsWith('/thumbnail')) {
       try {
+        if (_isCloudVideoPath(relativePath)) {
+          const thumbnail = await _cloudVideoThumbnail(relativePath, provider, url.searchParams.get('size'));
+          return new Response(thumbnail, {
+            status: 200,
+            headers: { 'Content-Type': thumbnail.type || 'image/jpeg' },
+          });
+        }
         const file = await provider.downloadAsFile(relativePath);
         return new Response(await file.arrayBuffer(), {
           status: 200,
           headers: { 'Content-Type': file.type || 'application/octet-stream' },
         });
-      } catch {
+      } catch (error) {
+        console.warn('Dropboxファイルのサムネイルを生成できませんでした', error);
         return new Response('', { status: 404 });
       }
     }

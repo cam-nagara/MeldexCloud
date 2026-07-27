@@ -297,10 +297,6 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-#pivot-table[data-cell-overflow="clip"],
-.pivot-table[data-cell-overflow="clip"] {
-  width: min-content;
-}
 #pivot-table[data-cell-overflow="clip"] td,
 .pivot-table[data-cell-overflow="clip"] td {
   overflow: hidden;
@@ -310,6 +306,13 @@
   min-width: 0;
   overflow: hidden;
 }
+/* 切り詰め表示の要点は `width: 0; min-width: 100%`。
+   テーブルは table-layout:fixed + width:max-content なので、白スペースを nowrap にした
+   セル本文をそのまま置くと、ブラウザが「本文を1行で並べた幅」からテーブル幅を算出し、
+   列幅指定の合計を超えた余剰幅が各列へ配分される。その結果、切り詰めたはずの列が
+   本文1行分まで膨張し、列幅のドラッグ変更も効かなくなる。
+   width:0 で内容幅をテーブル幅の計算へ寄与させず、実際の表示幅は min-width:100%
+   （親 .cell-value の確定幅）で確保する。これで列幅は一切変わらないまま省略表示できる。 */
 #pivot-table[data-cell-overflow="clip"] .value-text,
 #pivot-table[data-cell-overflow="clip"] .db-cell-display-text,
 .pivot-table[data-cell-overflow="clip"] .value-text,
@@ -319,7 +322,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: normal;
-  min-width: 0;
+  width: 0;
+  min-width: 100%;
 }
 #pivot-table[data-cell-overflow="wrap"] .gb-image-thumb-stack,
 .pivot-table[data-cell-overflow="wrap"] .gb-image-thumb-stack {
@@ -349,11 +353,16 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+#pivot-table td[data-cell-overflow="clip"],
+.pivot-table td[data-cell-overflow="clip"] {
+  overflow: hidden;
+}
 #pivot-table td[data-cell-overflow="clip"] .cell-value,
 .pivot-table td[data-cell-overflow="clip"] .cell-value {
   min-width: 0;
   overflow: hidden;
 }
+/* width:0 + min-width:100% の意図はシート全体設定側のコメントを参照（列幅を変えずに省略表示する）。 */
 #pivot-table td[data-cell-overflow="clip"] .value-text,
 #pivot-table td[data-cell-overflow="clip"] .db-cell-display-text,
 .pivot-table td[data-cell-overflow="clip"] .value-text,
@@ -363,7 +372,32 @@
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: normal;
+  width: 0;
+  min-width: 100%;
+}
+/* 文字列ロールアップは1参照値=1表示行が仕様なので、セル全体の
+   wrap/clip 表示規則で flex 行が1行へ潰れないようにする。 */
+#pivot-table .db-cell-display-text.db-rollup-lines,
+.pivot-table .db-cell-display-text.db-rollup-lines,
+#pivot-table td[data-cell-overflow] .db-cell-display-text.db-rollup-lines,
+.pivot-table td[data-cell-overflow] .db-cell-display-text.db-rollup-lines {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   min-width: 0;
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: clip;
+  -webkit-line-clamp: unset;
+}
+#pivot-table[data-cell-overflow="clip"] .db-rollup-line,
+.pivot-table[data-cell-overflow="clip"] .db-rollup-line,
+#pivot-table td[data-cell-overflow="clip"] .db-rollup-line,
+.pivot-table td[data-cell-overflow="clip"] .db-rollup-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #pivot-table td[data-cell-overflow="wrap"] .gb-image-thumb-stack,
 .pivot-table td[data-cell-overflow="wrap"] .gb-image-thumb-stack {
@@ -398,7 +432,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: normal;
-  min-width: 0;
+  width: 0;
+  min-width: 100%;
 }
 /* エントリ名列に列個別の上書きが無いときは、シート全体の折り返し/切り詰め設定に従う
    （通常列と同じ挙動＝「シート設定に従う」を選んだときの整合性）。:not([data-cell-overflow])
@@ -422,7 +457,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: normal;
-  min-width: 0;
+  width: 0;
+  min-width: 100%;
 }
 .value-input--textarea,
 .cell-inline-input--textarea {

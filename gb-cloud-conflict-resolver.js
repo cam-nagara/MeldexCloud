@@ -37,6 +37,12 @@
     return index >= 0 ? normalized.slice(index + 1) : normalized;
   }
 
+  // パス表示欄への反映。長いパスは実効幅に収めて「先頭…末尾ファイル名」形式で中略する。
+  function _applyPathEllipsis(el, text) {
+    if (typeof applyMiddleEllipsis === 'function') applyMiddleEllipsis(el, text);
+    else el.textContent = text;
+  }
+
   function _isSnoozed() {
     try {
       const until = Number(localStorage.getItem(SNOOZE_KEY) || 0);
@@ -227,16 +233,22 @@
       button.setAttribute('aria-label', `${item.name || _basename(item.path)} ${item.path || ''}`.trim());
       if (item.path === _selectedPath) button.classList.add('active');
       button.appendChild(_el('span', 'cloud-conflict-list-name', item.name || _basename(item.path)));
-      button.appendChild(_el('span', 'cloud-conflict-list-path', item.path || ''));
+      const pathEl = _el('span', 'cloud-conflict-list-path');
+      button.appendChild(pathEl);
       button.addEventListener('click', () => selectConflict(item.path));
       list.appendChild(button);
+      // DOM接続後でないと実効幅が取れないため appendChild の後で呼ぶ
+      _applyPathEllipsis(pathEl, item.path || '');
     });
   }
 
   function _setMeta(card, label, side) {
     card.textContent = '';
     card.appendChild(_el('div', 'cloud-conflict-meta-label', label));
-    card.appendChild(_el('div', 'cloud-conflict-meta-path', side?.path || 'なし'));
+    const pathEl = _el('div', 'cloud-conflict-meta-path');
+    card.appendChild(pathEl);
+    // DOM接続後でないと実効幅が取れないため appendChild の後で呼ぶ
+    _applyPathEllipsis(pathEl, side?.path || 'なし');
     const detail = side?.exists === false
       ? '元ファイルが見つかりません'
       : `${side?.modified || '更新日時不明'} / ${Number(side?.size || 0)} bytes`;

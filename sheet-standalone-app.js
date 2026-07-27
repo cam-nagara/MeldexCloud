@@ -862,13 +862,12 @@
 
   // スマホ幅（≤820px）で優先操作だけを常時表示し、残りを「その他」ボトムシートへ畳む
   // （計画書: standalone-mobile-toolbar_plan_2026-07-20.md §4）。
-  // ビュー切替（#db-view-select を含む .db-toolbar-view-switcher）は畳み対象外にする
-  // （動的生成タブは既存の狭幅CSSがタブ/select表示を切り替える。優先/畳み対象いずれにも含めない）。
+  // ビュー切替はツールバー外の .db-main-view-switcher にあるため、畳み対象には含まれない。
   function initMobileToolbar() {
     window.MeldexStandaloneMobileToolbar?.setup({
       toolbar: '#sheet-db-toolbar',
       priority: ['#sheet-tb-undo', '#sheet-tb-redo', '#sheet-tb-filter', '#sheet-tb-sort'],
-      keep: ['.db-toolbar-view-switcher'],
+      keep: [],
       sheetTitle: 'その他',
     });
   }

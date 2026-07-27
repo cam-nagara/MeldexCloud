@@ -59,9 +59,10 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'AI・Discord',
-    desc: 'AIキー、ローカルLLM、CLI、AI使用量、Discord連携',
+    desc: '自動タグ付け、AIキー、ローカルLLM、CLI、AI使用量、Discord連携',
     icon: 'bot',
     pages: [
+      { id: 'auto-tag', label: '自動タグ付け', panels: ['LLM'], view: 'auto-tag' },
       { id: 'ai-keys', label: 'AIキー', panels: ['LLM'], view: 'ai-keys' },
       { id: 'local-llm', label: 'ローカルLLM', panels: ['LLM'], view: 'local-llm' },
       { id: 'cli', label: 'CLI', panels: ['LLM'], view: 'cli' },
@@ -131,6 +132,8 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'フォント': { tabId: 'テーマ', pageId: 'font' },
   'チャットAI': { tabId: 'AI・Discord', pageId: 'ai-keys' },
   'LLM': { tabId: 'AI・Discord', pageId: 'ai-keys' },
+  '自動タグ付け': { tabId: 'AI・Discord', pageId: 'auto-tag' },
+  '自動タグ辞書': { tabId: 'AI・Discord', pageId: 'auto-tag' },
   'ナレッジ層': { tabId: 'AI・Discord', pageId: 'memory' },
   'コスト': { tabId: 'AI・Discord', pageId: 'ai-usage' },
   'LLM費用': { tabId: 'AI・Discord', pageId: 'ai-usage' },
@@ -261,9 +264,12 @@ function _tagSettingsNavigationSections(root = document) {
     'storage',   // 16 #settings-cloud-link-card（Dropbox 状態カード）
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="LLM"]'), [
+    'auto-tag',
     'ai-keys',
     'local-llm',
     'cli',
+    'memory',
+    'memory',
     'memory',
     'memory',
   ]);

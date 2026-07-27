@@ -491,7 +491,6 @@ button.gb-context-menu-item {
 /* Part 2-1: CSV セル選択状態 */
 .csv-cell-selected { outline: 2px solid var(--accent); }
 
-body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-view-switcher,
 body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-display-actions,
 body[data-csv-sheet-mode="1"] #tb-db #btn-filter,
 body[data-csv-sheet-mode="1"] #tb-db [data-action="showDbSortMenu(event)"],
@@ -594,6 +593,24 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 .pivot-table tr:hover td.col-entity .entity-row-more-btn,
 #pivot-table td.col-entity:focus-within .entity-row-more-btn,
 .pivot-table td.col-entity:focus-within .entity-row-more-btn {
+  opacity: 1; pointer-events: auto;
+}
+
+/* テーブル行「既定パネルで開く」ボタン (entity-row-more-btn の左隣。表示制御は同じ opacity 0→1 方式) */
+.entity-row-open-btn {
+  position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; cursor: pointer;
+  color: var(--fg2); background: var(--bg2); border-radius: 3px; user-select: none;
+  opacity: 0; pointer-events: none; transition: opacity 0.1s, background 0.1s, color 0.1s;
+  z-index: 2;
+}
+.entity-row-open-btn:hover { background: var(--bg3); color: var(--accent); }
+.entity-row-open-btn svg { width: 14px; height: 14px; display: block; }
+#pivot-table tr:hover td.col-entity .entity-row-open-btn,
+.pivot-table tr:hover td.col-entity .entity-row-open-btn,
+#pivot-table td.col-entity:focus-within .entity-row-open-btn,
+.pivot-table td.col-entity:focus-within .entity-row-open-btn {
   opacity: 1; pointer-events: auto;
 }
 

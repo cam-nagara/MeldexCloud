@@ -1,3 +1,52 @@
+// 行先頭コントロール列（＋追加/ドラッグハンドル/選択チェックボックス）の分だけ、
+// キーボードナビゲーション上の「実DOM列インデックス」の最小値が 1 になる（0列目は常に非対象）。
+const DB_ROW_CONTROLS_COL_COUNT = 1;
+
+// 行先頭コントロール列の幅。正は CSS 変数 --db-row-controls-w（gb-tools.part01.part01.css）で、
+// タッチ環境では gb-sheet-mobile.css が上書きする。固定列の sticky left はこの幅を起点にするため、
+// CSS と JS で必ず同じ値を使う（ズレると固定列だけ横にずれる）。
+function _dbRowControlsWidth(tableEl) {
+  if (tableEl && typeof getComputedStyle === 'function') {
+    const w = parseFloat(getComputedStyle(tableEl).getPropertyValue('--db-row-controls-w'));
+    if (Number.isFinite(w) && w > 0) return w;
+  }
+  return 56;
+}
+
+function _dbTableUsesManualSort(ctx) {
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  const sortConfig = typeof getDbSortConfig === 'function'
+    ? getDbSortConfig(dbPath, { ctx })
+    : getDbViewConfig(dbPath).sortConfig;
+  return sortConfig?.key === 'manual';
+}
+
+function _dbTableWarnManualSortRequired() {
+  if (typeof showStatus === 'function') {
+    showStatus('行を並べ替えるには、並び替えを「マニュアル」にしてください。', true);
+  }
+}
+
+function _dbPinnedColumnOffsets(renderedCols, pinnedCols, entityColumnPinned, savedWidths, entityWidth, rowControlsWidth) {
+  const offsets = {};
+  let left = Number.isFinite(rowControlsWidth) ? rowControlsWidth : 56;
+  (Array.isArray(renderedCols) ? renderedCols : []).forEach(token => {
+    const pinned = token === '__entity__'
+      ? !!entityColumnPinned
+      : (Array.isArray(pinnedCols) && pinnedCols.includes(token));
+    if (!pinned) return;
+    offsets[token] = left;
+    const rawWidth = token === '__entity__'
+      ? entityWidth
+      : ((savedWidths && savedWidths[token]) || 100);
+    const numericWidth = Number(rawWidth);
+    left += Number.isFinite(numericWidth) && numericWidth > 0
+      ? numericWidth
+      : (token === '__entity__' ? 120 : 100);
+  });
+  return offsets;
+}
+
 function _handleTbodyDragstart(e) {
   const tbody = e.currentTarget;
   const ctx = tbody._meldexCtx;
@@ -35,12 +84,19 @@ function _handleTbodyDragstart(e) {
     return;
   }
 
-  // 2. tr (エントリ行) ドラッグ → 並び替え (複数選択時は全行)
-  // 早期 return を削除: セル領域からドラッグした場合も並び替えできるように
+  // 2. 専用ハンドルからのドラッグ → 行並び替え (複数選択時は全行)
+  // セル自体は draggable にしない。編集・選択操作と行並び替えを明確に分離する。
+  const rowHandle = target.closest('.row-drag-handle');
+  if (!rowHandle) return;
   const tr = target.closest('tr[data-entity-name]');
   if (tr) {
-    // セル内の値チップなど他の draggable はそれ自身で stopPropagation するため
-    // ここに到達するのは行レベルのドラッグのみ
+    const groupByProp = typeof getGroupBy === 'function' ? getGroupBy(ctx.dbPath, ctx) : '';
+    if (!_dbTableUsesManualSort(ctx) && !groupByProp) {
+      e.preventDefault();
+      e.stopPropagation();
+      _dbTableWarnManualSortRequired();
+      return;
+    }
     const entityName = tr.dataset.entityName;
     let payloadNames = [entityName];
     // D-5: 自分が選択中で複数選択されている場合は全選択中エントリを運ぶ
@@ -107,6 +163,8 @@ function _dbTableSetRowDropIndicator(tbody, tr, position) {
 function _handleTbodyDragover(e) {
   const tbody = e.currentTarget;
   if (!_dbTableHasInternalRowDrag(e)) return;
+  const ctx = tbody._meldexCtx;
+  if (!ctx) return;
   // 1. グループヘッダー行への dragover (グループ間 D&D)
   const gtr = e.target.closest('tr.group-header-row');
   if (gtr) {
@@ -119,6 +177,7 @@ function _handleTbodyDragover(e) {
     tbody._lastDragoverGroup = gtr;
     return;
   }
+  if (!_dbTableUsesManualSort(ctx)) return;
   const tr = e.target.closest('tr[data-entity-name]');
   if (!tr) return;
   e.preventDefault();
@@ -340,6 +399,12 @@ function _handleTbodyDrop(e) {
     _handleGroupDrop(ctx, dn, newGroupKey);
     return;
   }
+  if (!_dbTableUsesManualSort(ctx)) {
+    e.preventDefault();
+    _dbTableClearRowDropIndicator(tbody);
+    _dbTableWarnManualSortRequired();
+    return;
+  }
   const tr = e.target.closest('tr[data-entity-name]');
   if (!tr) return;
   e.preventDefault();
@@ -363,7 +428,6 @@ function _handleTbodyDrop(e) {
     ? _getCurrentDbViewConfigEntryFromConfig(cfg, { ctx })
     : null;
   const target = view || cfg;
-  target.sortConfig = { key: 'manual', dir: 'asc' };
   if (!target.manualOrder) {
     target.manualOrder = _getEntityOrderSnapshot(ctx, dbPath, ctx.pivotData?.entities || {});
     if (target.manualOrder.length === 0) {
@@ -389,8 +453,6 @@ function _handleTbodyDrop(e) {
   const newOrder = [...order];
   saveDbViewConfig(dbPath, cfg);
   renderPivot(ctx);
-  setTimeout(() => restoreActiveCellByEntityName(orderedDragged[0]), 50);
-  _restoreSelectionByEntityNames(ctx, orderedDragged);
   _dbUndoManualOrder(dbPath, orderedDragged, oldOrder, oldSortConfig, newOrder, ctx);
 }
 
@@ -438,14 +500,14 @@ function _handleTbodyDblclick(e) {
   const ctx = tbody._meldexCtx;
   if (!ctx) return;
   const target = e.target;
-  // エントリ名セル (col-entity, new-entity-row 以外) の dblclick → メインパネルで開く
+  // エントリ名セル (col-entity, new-entity-row 以外) の dblclick → インライン名称編集開始
   const colEntityTd = target.closest('td.col-entity');
   if (colEntityTd && !colEntityTd.closest('tr.new-entity-row')) {
     e.stopPropagation();
     const entityName = colEntityTd.closest('tr')?.dataset?.entityName;
-    if (entityName) {
-      if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, entityName);
-      selectEntity(_entityPath(ctx.dbPath, entityName));
+    if (entityName && typeof startEntityInlineRename === 'function') {
+      const nameSpan = colEntityTd.querySelector('.entity-name-label');
+      startEntityInlineRename(colEntityTd, nameSpan, entityName, ctx.dbPath);
     }
     return;
   }
@@ -492,14 +554,193 @@ function renderGroupHeaderRow(groupKey, names, visibleProps, groupByProp, ctx) {
   const gtd = document.createElement('td');
   gtd.setAttribute('role', 'cell');
   gtd.setAttribute('aria-label', `${groupByProp}: ${groupKey}、${names.length} 件`);
-  gtd.colSpan = visibleProps.length + 2;
+  gtd.colSpan = visibleProps.length + 3;
   const collapsed = _isGroupCollapsed(ctx, groupKey);
+  const groupColor = typeof getDbOptionColorForGroup === 'function'
+    ? getDbOptionColorForGroup((ctx && ctx.dbPath) || (typeof state !== 'undefined' ? state.currentDbPath : ''), groupByProp, groupKey, ctx)
+    : '';
   const dotHtml = typeof dbOptionColorDotHtmlForGroup === 'function'
     ? dbOptionColorDotHtmlForGroup((ctx && ctx.dbPath) || (typeof state !== 'undefined' ? state.currentDbPath : ''), groupByProp, groupKey, ctx)
     : '';
   gtd.innerHTML = `<span class="group-toggle ${collapsed ? 'collapsed' : ''}">\u25BC</span>${dotHtml}${esc(groupByProp)}: ${esc(groupKey)}<span class="group-count">${names.length} 件</span>`;
   gtr.appendChild(gtd);
+  if (typeof applyDbOptionHeaderColor === 'function') applyDbOptionHeaderColor(gtr, groupColor);
   return gtr;
+}
+
+function _dbRollupAlignmentState(ctx) {
+  if (!ctx) return null;
+  const token = ctx._renderToken || null;
+  if (!ctx._rollupAlignmentState || ctx._rollupAlignmentState.token !== token) {
+    ctx._rollupAlignmentState = { token, rows: new Map() };
+  }
+  return ctx._rollupAlignmentState;
+}
+
+function _dbRollupLineElement(text, className) {
+  const line = document.createElement('span');
+  line.className = className;
+  line.textContent = text == null || text === '' ? '' : String(text);
+  return line;
+}
+
+function _dbRenderAlignedRollupCell(record, slotCounts) {
+  const { host, result, visible } = record;
+  host.innerHTML = '';
+  host.className = 'db-cell-display-text db-rollup-lines';
+  if (!visible) return;
+  if (!result.groups.length) {
+    host.appendChild(_dbRollupLineElement('—', 'db-rollup-line'));
+    return;
+  }
+  result.groups.forEach((group, groupIndex) => {
+    const count = slotCounts[groupIndex] || 1;
+    for (let lineIndex = 0; lineIndex < count; lineIndex++) {
+      const line = _dbRollupLineElement(group.values[lineIndex] || '', 'db-rollup-line');
+      line.dataset.relationStatus = group.relationStatus || '採用';
+      host.appendChild(line);
+    }
+  });
+}
+
+function _dbRelationAlignmentStatusTarget(relationCell, group) {
+  const values = [...relationCell.querySelectorAll('.cell-values > .cell-value')];
+  const candidateIndex = Number.isInteger(group?.relationCandidateIndex)
+    ? group.relationCandidateIndex
+    : 0;
+  return values[candidateIndex]?.querySelector('.status-dot') || values[0]?.querySelector('.status-dot') || null;
+}
+
+function _dbRelationAlignmentLinkTarget(relationCell, groupIndex) {
+  const links = [...relationCell.querySelectorAll('.relation-link')];
+  const link = links[groupIndex] || links[0] || null;
+  if (!link) return relationCell.querySelector('.multi-select-tags,.cell-value');
+  return link.closest('.multi-select-tags') || link;
+}
+
+function _dbOpenAlignedRelationStatusDropdown(statusDot, ctx) {
+  const relationCell = statusDot?.closest('td[data-prop-name]');
+  if (!relationCell) return false;
+  const candidateIndex = Number.parseInt(statusDot.dataset.relationCandidateIndex || '0', 10);
+  const sourceStatusDot = _dbRelationAlignmentStatusTarget(relationCell, {
+    relationCandidateIndex: Number.isInteger(candidateIndex) ? candidateIndex : 0,
+  });
+  const dropdownArgs = sourceStatusDot?._dbStatusDropdownArgs;
+  if (dropdownArgs && typeof showStatusDropdown === 'function') {
+    showStatusDropdown(
+      statusDot,
+      dropdownArgs.val,
+      dropdownArgs.entityPath,
+      dropdownArgs.propName
+    );
+    return true;
+  }
+  sourceStatusDot?.dispatchEvent(new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+  }));
+  return Boolean(sourceStatusDot);
+}
+
+function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCounts, ctx) {
+  const firstRollup = [...rowRecord.rollups.values()][0];
+  const relationCell = [...(firstRollup?.td?.closest('tr')?.querySelectorAll('td[data-prop-name]') || [])]
+    .find(cell => cell.dataset.propName === relationProp);
+  if (!relationCell) return;
+  const cellValues = relationCell.querySelector('.cell-values');
+  if (!cellValues) return;
+
+  cellValues.querySelector('.db-rollup-relation-lines')?.remove();
+  [...cellValues.children].forEach(child => {
+    if (child.classList?.contains('db-rollup-relation-lines')) return;
+    if (child.classList?.contains('cell-add-btn')) {
+      child.hidden = false;
+      return;
+    }
+    child.hidden = true;
+  });
+  const aligned = document.createElement('div');
+  aligned.className = 'db-rollup-relation-lines';
+  if (!groups.length) {
+    aligned.appendChild(_dbRollupLineElement('—', 'db-rollup-relation-line'));
+  } else {
+    groups.forEach((group, groupIndex) => {
+      const count = slotCounts[groupIndex] || 1;
+      for (let lineIndex = 0; lineIndex < count; lineIndex++) {
+        const line = _dbRollupLineElement(group.relationName || group.relationId || '—', 'db-rollup-relation-line relation-link');
+        line.dataset.dbPath = firstRollup.result.targetDbPath || '';
+        line.dataset.entityId = group.relationId || '';
+        line.dataset.entityName = group.relationName || group.relationId || '';
+        line.dataset.relationStatus = group.relationStatus || '採用';
+        const statusDot = document.createElement('span');
+        statusDot.className = 'status-dot db-rollup-relation-status';
+        statusDot.style.background = typeof _getStatusColor === 'function'
+          ? _getStatusColor(group.relationStatus || '採用', ctx?.dbPath || '')
+          : '';
+        statusDot.title = group.relationStatus || '採用';
+        statusDot.dataset.relationCandidateIndex = String(
+          Number.isInteger(group.relationCandidateIndex) ? group.relationCandidateIndex : 0
+        );
+        line.prepend(statusDot);
+        line.addEventListener('click', (event) => {
+          if (event.target.closest('.db-rollup-relation-status')) return;
+          event.stopPropagation();
+          const target = _dbRelationAlignmentLinkTarget(relationCell, groupIndex);
+          target?.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }));
+        });
+        line.addEventListener('dblclick', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (typeof navigateToEntity === 'function') {
+            navigateToEntity(
+              group.relationName || group.relationId,
+              firstRollup.result.targetDbPath || '',
+              ctx
+            );
+          }
+        });
+        aligned.appendChild(line);
+      }
+    });
+  }
+  cellValues.appendChild(aligned);
+  relationCell.classList.add('db-rollup-aligned-relation');
+}
+
+function _dbUpdateRollupAlignment(ctx, entityName, relationProp) {
+  const stateInfo = _dbRollupAlignmentState(ctx);
+  const rowRecord = stateInfo?.rows.get(entityName + '\u0000' + relationProp);
+  if (!rowRecord?.rollups.size) return;
+  const results = [...rowRecord.rollups.values()].map(record => record.result);
+  const reference = results.find(result => result.groups.length) || results[0];
+  const groupCount = reference?.groups?.length || 0;
+  const slotCounts = Array.from({ length: groupCount }, (_, groupIndex) => {
+    return Math.max(
+      1,
+      ...results.map(result => result.groups[groupIndex]?.values?.length || 1)
+    );
+  });
+  rowRecord.rollups.forEach(record => _dbRenderAlignedRollupCell(record, slotCounts));
+  _dbRenderAlignedRelationCell(rowRecord, relationProp, reference?.groups || [], slotCounts, ctx);
+}
+
+function _dbRegisterRollupAlignment(ctx, entityName, propName, td, host, result, visible) {
+  const stateInfo = _dbRollupAlignmentState(ctx);
+  if (!stateInfo) return;
+  const relationProp = result.relationProp || '';
+  const key = entityName + '\u0000' + relationProp;
+  let rowRecord = stateInfo.rows.get(key);
+  if (!rowRecord) {
+    rowRecord = { rollups: new Map() };
+    stateInfo.rows.set(key, rowRecord);
+  }
+  rowRecord.rollups.set(propName, { td, host, result, visible });
+  _dbUpdateRollupAlignment(ctx, entityName, relationProp);
 }
 
 function renderEntityCell(entityName, propName, ctx, options) {
@@ -507,6 +748,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
   const entityData = entitiesMap[entityName];
   const td = document.createElement('td');
   td.dataset.propName = propName;
+  td.dataset.dbColToken = propName;
   if (typeof _dbE2eId === 'function') {
     td.dataset.e2eId = _dbE2eId(ctx, 'cell', entityName, propName);
   }
@@ -530,8 +772,8 @@ function renderEntityCell(entityName, propName, ctx, options) {
 
   if (pinnedCols.includes(propName)) {
     td.classList.add('col-pinned');
-    td.style.left = options.pLeftOffset + 'px';
-    options.pLeftOffset += (savedWidths[propName] || 100);
+    const pinnedLeft = options.pinnedOffsets?.[propName];
+    if (Number.isFinite(pinnedLeft)) td.style.left = pinnedLeft + 'px';
   }
 
   td.addEventListener('pointerdown', (e) => {
@@ -593,14 +835,37 @@ function renderEntityCell(entityName, propName, ctx, options) {
     container.appendChild(span);
   }
   // ロールアップ型: リレーション先の集計値を非同期表示
-  else if (ptc && ptc.type === 'rollup' && ptc.relationProp && typeof calcRollupValue === 'function') {
+  // 設定が未完了（リレーション列が未選択）のままここで値の表示へ落とすと、
+  // 元のテキスト値がそのまま出てテキスト列と見分けが付かなくなるため、
+  // 「まだ集計していない列」だと分かる表示にして値編集の見た目にはしない。
+  else if (ptc && ptc.type === 'rollup' && (!ptc.relationProp || typeof calcRollupValue !== 'function')) {
+    const span = document.createElement('span');
+    span.className = 'db-cell-display-text db-cell-unconfigured';
+    span.style.cssText = 'font-size:13px;color:var(--fg2);';
+    span.textContent = '未設定';
+    span.title = '列タイプの設定でリレーション列と参照先の列を指定してください';
+    container.appendChild(span);
+    colorValues = [];
+  }
+  else if (ptc && ptc.type === 'rollup') {
     const span = document.createElement('span');
     span.className = 'db-cell-display-text';
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
     span.textContent = '...';
     container.appendChild(span);
     colorValues = [];
+    const renderToken = ctx?._renderToken || null;
     calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath, ctx?.filter).then(val => {
+      if ((renderToken && ctx?._renderToken !== renderToken) || !td.isConnected) return;
+      if (val?.kind === 'rollup-values') {
+        let rollupValues = [{ value: val.text, status: '採用' }];
+        if (advFilters.length > 0) rollupValues = applyAdvancedFilters(rollupValues, propName, advFilters);
+        span.style.color = 'var(--fg)';
+        _dbRegisterRollupAlignment(ctx, entityName, propName, td, span, val, rollupValues.length > 0);
+        const cc = getCellColor(val.text, propName, dbPath, ctx);
+        if (cc) { td.style.background = cc.bg; td.style.color = cc.fg; }
+        return;
+      }
       const displayValue = val === '-' ? '-' : String(val);
       let rollupValues = [{ value: displayValue, status: '採用' }];
       if (advFilters.length > 0) rollupValues = applyAdvancedFilters(rollupValues, propName, advFilters);
@@ -616,7 +881,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
       }
       const cc = getCellColor(displayValue, propName, dbPath, ctx);
       if (cc) { td.style.background = cc.bg; td.style.color = cc.fg; }
-    }).catch(() => { span.textContent = '#ERR'; span.style.color = 'var(--red)'; });
+    }).catch(() => {
+      if ((renderToken && ctx?._renderToken !== renderToken) || !td.isConnected) return;
+      span.textContent = '#ERR';
+      span.style.color = 'var(--red)';
+    });
   }
   // ボタン型: 値を持たず、常にボタンを表示 (click は tbody 委譲で処理)
   else if (ptc && ptc.type === 'button') {
@@ -658,6 +927,16 @@ function renderEntityCell(entityName, propName, ctx, options) {
     colorValues = values.length > 0 ? values : [val];
     container.appendChild(createTypedValueElement(val, ep, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
   }
+  // 数式型: 数式が未入力のうちはロールアップと同じく「未設定」を出す（下のコメント参照）
+  else if (ptc && ptc.type === 'formula' && !ptc.formula) {
+    const span = document.createElement('span');
+    span.className = 'db-cell-display-text db-cell-unconfigured';
+    span.style.cssText = 'font-size:13px;color:var(--fg2);';
+    span.textContent = '未設定';
+    span.title = '列タイプの設定で数式を入力してください';
+    container.appendChild(span);
+    colorValues = [];
+  }
   // 数式型: 値ファイルではなく計算結果を表示
   else if (ptc && ptc.type === 'formula' && ptc.formula) {
     const result = formulaEvalForEntity(ptc.formula, entityData, { propTypes, dbPath });
@@ -681,18 +960,21 @@ function renderEntityCell(entityName, propName, ctx, options) {
     }
     container.appendChild(span);
   } else {
+    // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
+    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。
+    const _forceStatusDot = values.length > 1;
     values.forEach(val => {
       container.appendChild(
-        ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter })
-            : createValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, { dbPath, ctx, filter: ctx?.filter })
+        ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
+            : createValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
       );
     });
 
-    // ステータス機能 OFF の DB では複数候補値追加を許可しない
-    const _statusOn = getStatusEnabled(dbPath);
-    const _hasVisibleValue = values.some(v => String(v?.value || '').trim() !== '');
-    const _allowAdd = (!ptc || ptc.type !== 'button')
-      && (_statusOn || values.length === 0 || (ptc && ptc.type === 'select' && !_hasVisibleValue));
+    // 候補値追加は基本機能。ステータス機能OFFでも値のある列型では常に＋を出す
+    // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転）。
+    // button/formula/rollup 等の非値型は上の分岐で処理されここには来ないが、防御的に除外する。
+    const _nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
+    const _allowAdd = !ptc || !_nonValueTypes.includes(ptc.type);
     if (_allowAdd) {
       const addBtn = document.createElement('span');
       addBtn.className = 'cell-add-btn';
@@ -728,13 +1010,13 @@ function renderEntityCell(entityName, propName, ctx, options) {
 }
 
 function renderEntityRow(entityName, ctx, options) {
-  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned, cellDisplayByCol } = options;
+  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned, cellDisplayByCol, renderedCols, pinnedOffsets } = options;
   const entityData = entitiesMap[entityName];
   const tr = document.createElement('tr');
   tr.dataset.entityName = entityName;
   tr.setAttribute('role', 'row');
-  // エントリD&D並べ替え (draggable は維持。dragstart/dragend/dragover/dragleave/drop は tbody 委譲)
-  tr.draggable = true;
+  // 行並べ替えは専用ハンドルだけを draggable にして、セル選択・セル編集と競合させない。
+  tr.draggable = false;
 
   if (condFmt) {
     const mainStatus = getEntityMainStatus(entityData);
@@ -744,14 +1026,28 @@ function renderEntityRow(entityName, ctx, options) {
     else if (mainStatus === 'ボツ') tr.className = 'row-status-rejected';
   }
 
+  // 行先頭コントロール列（＋追加/ドラッグハンドル/選択チェックボックス）。
+  // エントリ名列（col-entity）から独立した、常に先頭固定・並べ替え対象外の列。
+  // 中身（addRowBtn/dragHandle/cb）は既存のまま下方で生成し、controlsMain へ追加する。
+  const tdControls = document.createElement('td');
+  tdControls.className = 'col-row-controls';
+  tdControls.dataset.e2eId = _dbE2eId(ctx, 'row-controls-cell', entityName);
+  tdControls.setAttribute('role', 'cell');
+  const controlsMain = document.createElement('div');
+  controlsMain.className = 'row-controls-main';
+  tdControls.appendChild(controlsMain);
+  tr.appendChild(tdControls);
+
   const tdName = document.createElement('td');
   tdName.className = 'col-entity';
+  tdName.dataset.dbColToken = '__entity__';
   tdName.dataset.e2eId = _dbE2eId(ctx, 'entry-name-cell', entityName);
   tdName.setAttribute('role', 'rowheader');
   tdName.setAttribute('aria-label', `エントリ: ${entityName}`);
   if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
   tdName.style.width = _entityW + 'px';
   tdName.style.minWidth = _entityW + 'px';
+  tdName.style.maxWidth = _entityW + 'px';
   // エントリ名列の折り返し/切り詰め上書き（__entity__ キー）。通常列と同じ仕組み。
   const _entityColDisplay = typeof _dbColumnCellOverrideEntry === 'function'
     ? _dbColumnCellOverrideEntry(cellDisplayByCol, '__entity__') : null;
@@ -797,14 +1093,24 @@ function renderEntityRow(entityName, ctx, options) {
     e.preventDefault();
     e.stopPropagation();
   });
-  nameMain.appendChild(addRowBtn);
+  controlsMain.appendChild(addRowBtn);
 
-  // 行ドラッグハンドル (tr.draggable は既に true。視覚的な掴み所として表示)
+  // 行ドラッグハンドル
   const dragHandle = document.createElement('span');
   dragHandle.className = 'row-drag-handle';
-  dragHandle.title = 'ドラッグして並び替え';
+  dragHandle.draggable = true;
+  dragHandle.title = _dbTableUsesManualSort(ctx)
+    ? 'ドラッグして行を並べ替え'
+    : '行を並べ替えるには、並び替えを「マニュアル」にしてください';
+  dragHandle.dataset.e2eId = _dbE2eId(ctx, 'row-drag', entityName);
+  dragHandle.setAttribute('role', 'button');
+  dragHandle.setAttribute('aria-label', dragHandle.title);
   dragHandle.innerHTML = lucide('gripVertical', 12);
-  nameMain.appendChild(dragHandle);
+  dragHandle.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  controlsMain.appendChild(dragHandle);
 
   // 複数選択対応チェックボックス
   const cb = document.createElement('input');
@@ -825,7 +1131,7 @@ function renderEntityRow(entityName, ctx, options) {
     if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
   });
   // cb pointerdown / pointerover (pointerenter 代替) / Shift+click は tbody 委譲で処理
-  nameMain.appendChild(cb);
+  controlsMain.appendChild(cb);
 
   const nameSpan = document.createElement('span');
   nameSpan.className = 'entity-name-label';
@@ -834,7 +1140,34 @@ function renderEntityRow(entityName, ctx, options) {
   nameSpan.draggable = true;
   // nameSpan dragstart / dragend は tbody 委譲で処理
   tdName.style.cursor = 'pointer';
-  // tdName click / dblclick は tbody 委譲で処理 (openEntityInSplit / startEntityInlineRename)
+  // tdName click / dblclick は tbody 委譲で処理 (選択のみ / startEntityInlineRename)
+  // 既定パネルで開くボタン。行自体が draggable なので、ボタン側でドラッグ起点を止める。
+  const openBtn = document.createElement('span');
+  openBtn.className = 'entity-row-open-btn';
+  openBtn.title = '既定パネルで開く';
+  openBtn.draggable = false;
+  openBtn.innerHTML = lucide('externalLink', 14);
+  openBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+  openBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+  openBtn.addEventListener('dragstart', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  openBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
+    if (!ep) return;
+    const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
+    const target = cfg.defaultPanel || 'main';
+    const sourcePaneId = e.target.closest('.gb-pane')?.dataset?.paneId || '';
+    if (target === 'float') {
+      if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
+    } else if (target === 'sidebar') {
+      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId });
+    } else {
+      if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
+    }
+  });
   // 「...」ボタン。行自体が draggable なので、ボタン側でドラッグ起点を止める。
   const moreBtn = document.createElement('span');
   moreBtn.className = 'entity-row-more-btn';
@@ -853,16 +1186,26 @@ function renderEntityRow(entityName, ctx, options) {
     if (typeof showDbCardContextMenu === 'function') showDbCardContextMenu(e, dbPath, entityName);
   });
   nameMain.appendChild(nameSpan);
+  nameMain.appendChild(openBtn);
   nameMain.appendChild(moreBtn);
   tdName.appendChild(nameMain);
 
   // tr contextmenu は tbody 委譲 (_handleTbodyContextmenu) で処理
 
-  tr.appendChild(tdName);
-
-  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pLeftOffset: entityColumnPinned ? _entityW : 0, cellDisplayByCol };
-  visibleProps.forEach(propName => {
-    tr.appendChild(renderEntityCell(entityName, propName, ctx, cellOpts));
+  // フェーズ2: エントリ名列（tdName）もプロパティ列と同じ並べ替え順序（renderedCols）に従って配置する。
+  // renderedCols が無い場合（保存済み colOrder に '__entity__' が未含有の旧データ等）は先頭固定として扱う。
+  const cols = Array.isArray(renderedCols) && renderedCols.length ? renderedCols : ['__entity__', ...visibleProps];
+  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pinnedOffsets, cellDisplayByCol };
+  cols.forEach(token => {
+    if (token === '__entity__') {
+      const entityLeft = pinnedOffsets?.__entity__;
+      const entityShouldStick = entityColumnPinned && Number.isFinite(entityLeft);
+      tdName.style.position = entityShouldStick ? 'sticky' : '';
+      tdName.style.left = entityShouldStick ? entityLeft + 'px' : '';
+      tr.appendChild(tdName);
+      return;
+    }
+    tr.appendChild(renderEntityCell(entityName, token, ctx, cellOpts));
   });
 
   // ＋プロパティ列の空セル
@@ -875,27 +1218,53 @@ function renderEntityRow(entityName, ctx, options) {
 }
 
 function renderNewEntryRow(ctx, options) {
-  const { visibleProps, entitiesMap, dbPath, selectedCols, _tbl, _entityW } = options;
+  const { visibleProps, selectedCols, _entityW, renderedCols, pinnedCols, pinnedOffsets } = options;
   const newTr = document.createElement('tr');
   newTr.className = 'new-entity-row';
   newTr.setAttribute('role', 'row');
 
+  // 行先頭コントロール列（列数を揃えるための空セル。新規行自体に個別の＋/ハンドル/チェックボックスは無い）
+  const tdControls = document.createElement('td');
+  tdControls.className = 'col-row-controls';
+  tdControls.setAttribute('role', 'cell');
+  tdControls.setAttribute('aria-hidden', 'true');
+  newTr.appendChild(tdControls);
+
   const tdName = document.createElement('td');
   tdName.className = 'col-entity';
+  tdName.dataset.dbColToken = '__entity__';
   tdName.dataset.e2eId = _dbE2eId(ctx, 'entry-name-new');
   tdName.setAttribute('role', 'cell');
   tdName.setAttribute('aria-label', '新規エントリを追加');
   if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
   tdName.style.cssText = 'cursor:pointer;color:var(--fg2);width:' + _entityW + 'px;min-width:' + _entityW + 'px;';
+  tdName.style.maxWidth = _entityW + 'px';
   tdName.innerHTML = `<span class="ico" style="margin-right:4px;">${lucide('plus',14)}</span><span>新規</span>`;
   // click は tbody 委譲 (_handleNewEntryClick) で処理
-  newTr.appendChild(tdName);
 
-  visibleProps.forEach(propName => {
+  // フェーズ2: エントリ名列も他の列と同じ並べ替え順序（renderedCols）で配置する
+  const cols = Array.isArray(renderedCols) && renderedCols.length ? renderedCols : ['__entity__', ...visibleProps];
+  cols.forEach(token => {
+    if (token === '__entity__') {
+      const entityLeft = pinnedOffsets?.__entity__;
+      if (Number.isFinite(entityLeft)) {
+        tdName.style.position = 'sticky';
+        tdName.style.left = entityLeft + 'px';
+      }
+      newTr.appendChild(tdName);
+      return;
+    }
+    const propName = token;
     const td = document.createElement('td');
+    td.dataset.dbColToken = propName;
     td.setAttribute('role', 'cell');
     td.setAttribute('aria-label', `新規 / ${propName}`);
     if ((selectedCols || []).includes(propName)) td.classList.add('col-selected');
+    if ((pinnedCols || []).includes(propName)) {
+      td.classList.add('col-pinned');
+      const pinnedLeft = pinnedOffsets?.[propName];
+      if (Number.isFinite(pinnedLeft)) td.style.left = pinnedLeft + 'px';
+    }
     newTr.appendChild(td);
   });
   // ＋プロパティ列の空セル

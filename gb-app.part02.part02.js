@@ -28,9 +28,15 @@
 }
 
 let _startupSplashHidden = false;
+function _notifyStartupReady() {
+  if (typeof apiPost !== 'function') return;
+  void apiPost('/startup-ready', {}, { silentError: true }).catch(() => {});
+}
+
 function _hideStartupSplash() {
   if (_startupSplashHidden) return;
   _startupSplashHidden = true;
+  _notifyStartupReady();
   const splash = document.getElementById('gb-splash');
   if (!splash) return;
   splash.style.pointerEvents = 'none';
@@ -536,7 +542,10 @@ function showView(viewName, ctx) {
   // ステータスバーのショートカットヘルプ
   const sc = document.getElementById('sb-shortcuts');
   if (isDbView) {
-    sc.textContent = '';
+    const csvSheetActive = typeof isCsvSheetModeActive === 'function' && isCsvSheetModeActive();
+    if (csvSheetActive && typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar(sc);
+    else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
+    else sc.textContent = '';
   } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
     sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
   } else if (resolvedViewName === 'scriptnote') {

@@ -149,13 +149,38 @@ function _dbPathContains(path, rootPath) {
   return !!root && (p === root || p.startsWith(root + '/'));
 }
 
+function _dbIsAbsolutePath(path) {
+  const normalized = _dbNormalizePath(path);
+  return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('/');
+}
+
+// 作品フォルダー内のシートで使われている「設定/用語」のような参照先は、
+// vault 相対として送ると複数ルート環境で別の場所へ解決される。編集中シートと
+// 作品フォルダーがともに絶対パスで、実際に包含関係にある場合だけ絶対化する。
+// それ以外の従来の vault 相対パス／Cloud パスは形式を変えずに維持する。
+function _dbResolveConfiguredRelationPath(sourceDbPath, relationDbPath) {
+  const relationPath = _dbNormalizePath(String(relationDbPath || '').trim());
+  if (!relationPath || _dbIsAbsolutePath(relationPath)) return relationPath;
+  const sourcePath = _dbNormalizePath(sourceDbPath);
+  if (!_dbIsAbsolutePath(sourcePath) || typeof getWorkFolder !== 'function') return relationPath;
+  let workFolder = '';
+  try { workFolder = _dbNormalizePath(getWorkFolder()); } catch { workFolder = ''; }
+  if (!_dbIsAbsolutePath(workFolder) || !_dbPathContains(sourcePath, workFolder)) return relationPath;
+  return `${workFolder}/${relationPath.replace(/^\/+/, '')}`;
+}
+
+function _dbCanonicalizeRelationDbPathForSave(sourceDbPath, relationDbPath) {
+  if (relationDbPath === '') return '';
+  return _dbResolveConfiguredRelationPath(sourceDbPath, relationDbPath);
+}
+
 function _dbResolveRelationDbPath(sourceDbPath, propTypeConfig) {
   const ptc = propTypeConfig || {};
   if (ptc.relationDb === '' && ptc.relationDb !== undefined) return sourceDbPath || '';
-  if (ptc.relationDb) return ptc.relationDb;
+  if (ptc.relationDb) return _dbResolveConfiguredRelationPath(sourceDbPath, ptc.relationDb);
   const target = String(ptc.target || '').trim();
   if (!target) return '';
-  if (target.includes('/') || target.includes('\\')) return target.replace(/\\/g, '/');
+  if (target.includes('/') || target.includes('\\')) return _dbResolveConfiguredRelationPath(sourceDbPath, target);
   const source = String(sourceDbPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
   const base = source.includes('/') ? source.replace(/\/[^/]*$/, '') : '';
   return base ? `${base}/${target}` : target;
@@ -213,11 +238,27 @@ function _entityPath(dbPath, entityName, pivotData) {
   return _dbIsNewFormat(dbPath, pivotData) ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
 }
 
+function _stampPivotValueEntityPaths(dbPath, pivotData) {
+  if (!dbPath || !pivotData?.entities) return pivotData;
+  Object.entries(pivotData.entities).forEach(([entityName, entityData]) => {
+    const entryPath = _dbNormalizePath(_entityPath(dbPath, entityName, pivotData));
+    if (!entryPath || !entityData || typeof entityData !== 'object') return;
+    Object.values(entityData).forEach(values => {
+      if (!Array.isArray(values)) return;
+      values.forEach(value => {
+        if (value && typeof value === 'object') value.entry_path = entryPath;
+      });
+    });
+  });
+  return pivotData;
+}
+
 function _resolveEntityPathFromValObj(val) {
-  if (!val || !val.file) return state.currentEntityPath || '';
+  if (!val) return state.currentEntityPath || '';
   if (val.entry_path || val.entity_path || val.folder_path) {
     return _dbNormalizePath(val.entry_path || val.entity_path || val.folder_path);
   }
+  if (!val.file) return state.currentEntityPath || '';
   const f = String(val.file).replace(/\\/g, '/');
   const parts = f.split('/');
   const leaf = parts[parts.length - 1] || '';
@@ -258,9 +299,11 @@ function _dbRewriteEntityValuePaths(entityData, oldPath, newPath) {
   Object.values(entityData).forEach(values => {
     if (!Array.isArray(values)) return;
     values.forEach(value => {
-      if (value && String(value.file || '').replace(/\\/g, '/') === oldPath) {
-        value.file = newPath;
-      }
+      if (!value) return;
+      if (String(value.file || '').replace(/\\/g, '/') === oldPath) value.file = newPath;
+      if (String(value.entry_path || '').replace(/\\/g, '/') === oldPath) value.entry_path = newPath;
+      if (String(value.entity_path || '').replace(/\\/g, '/') === oldPath) value.entity_path = newPath;
+      if (String(value.folder_path || '').replace(/\\/g, '/') === oldPath) value.folder_path = newPath;
     });
   });
 }
@@ -336,56 +379,167 @@ function _markDbAutoVersionDirty(dbPath) {
   } catch {}
 }
 
-async function _apiPutValue(valObj, updates) {
-  const body = { ...updates };
-  delete body.__source;
-  const currentRevision = Number(valObj?.entry_revision ?? valObj?.revision ?? valObj?._revision);
-  if (Number.isInteger(currentRevision) && currentRevision >= 0 && body.baseRevision == null) {
-    body.baseRevision = currentRevision;
-  }
-  if (valObj.candidate_index != null) {
-    body.property = valObj.property;
-    body.candidate_index = valObj.candidate_index;
-  }
-  const res = await apiPut('/value?path=' + encodeURIComponent(valObj.file), body);
-  _dbApplyAutoTaskRenameResult(res);
-  if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
-  if (res?.property) valObj.property = res.property;
-  if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
-  if (res?.revision != null) valObj.entry_revision = Number(res.revision);
-  const entityPath = _resolveEntityPathFromValObj(valObj);
-  const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
-  const nextValue = updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
-  _markDbAutoVersionDirty(dbPath);
-  try {
-    if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
-  } catch {}
-  try {
-    if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onValueSaved === 'function') {
-      window.GbDbCalendarSync.onValueSaved({
-        dbPath,
-        entityPath,
-        propName: valObj.property || '',
-        newValue: nextValue,
-        oldValue: valObj.value,
-        status: updates.new_status || valObj.status,
-        source: updates.__source || '',
-      });
+// ツールバー再読み込みがセル保存中に /pivot を読み直すと、保存前の entry_revision が
+// 画面へ戻り、次の保存が「他端末で更新」と誤判定される。値保存をシート単位で追跡し、
+// 再読み込み側が保存完了まで待てるようにする。
+const _dbPendingValueMutations = new Map();
+const _dbEntryMutationChains = new Map();
+const _dbEntryRevisionCache = new Map();
+
+function _dbTrackValueMutation(dbPath, promise) {
+  const tracked = Promise.resolve(promise);
+  _dbPendingValueMutations.set(tracked, _dbNormalizePath(dbPath || ''));
+  tracked.finally(() => { _dbPendingValueMutations.delete(tracked); }).catch(() => {});
+  return tracked;
+}
+
+async function waitForPendingDbValueMutations(dbPath) {
+  const target = _dbNormalizePath(dbPath || '');
+  // 1つの保存完了直後にカスケード・双方向リレーション保存が続くため、
+  // 空になった直後も1タスク待ってから再確認する。
+  for (let pass = 0; pass < 50; pass += 1) {
+    const pending = [..._dbPendingValueMutations.entries()]
+      .filter(([, path]) => !target || path === target)
+      .map(([promise]) => promise);
+    if (pending.length) {
+      await Promise.allSettled(pending);
+      continue;
     }
-  } catch {}
-  try {
-    const ptc = dbPath && valObj.property && typeof getPropertyTypes === 'function'
-      ? getPropertyTypes(dbPath)?.[valObj.property]
-      : null;
-    if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
-  } catch {}
-  if (updates.new_rich_html !== undefined) {
-    if (updates.new_rich_html) valObj.rich_html = updates.new_rich_html;
-    else delete valObj.rich_html;
-  } else if (updates.new_value != null) {
-    delete valObj.rich_html;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const hasMore = [..._dbPendingValueMutations.values()].some(path => !target || path === target);
+    if (!hasMore) return true;
   }
-  return res;
+  return false;
+}
+
+function _dbLatestEntryRevision(entityPath, fallbackValue) {
+  const normalizedEntityPath = _dbNormalizePath(entityPath);
+  const cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));
+  if (Number.isInteger(cached) && cached >= 0) return cached;
+  const revisions = [
+    fallbackValue?.entry_revision,
+    fallbackValue?.revision,
+    fallbackValue?._revision,
+  ];
+  const dbPath = _dbPathFromEntityPath(normalizedEntityPath) || '';
+  const entityName = _dbEntityNameFromPath(normalizedEntityPath);
+  const considerPivot = (pivotData) => {
+    const revision = Number(pivotData?.entities?.[entityName]?._revision);
+    if (Number.isInteger(revision) && revision >= 0) revisions.push(revision);
+  };
+  if (typeof _dbPaneContextsForPath === 'function') {
+    _dbPaneContextsForPath(dbPath).forEach(ctx => considerPivot(ctx?.pivotData));
+  }
+  if (!dbPath || _dbNormalizePath(state.currentDbPath || '') === _dbNormalizePath(dbPath)) {
+    considerPivot(state.pivotData);
+  }
+  const known = revisions
+    .map(value => Number(value))
+    .filter(value => Number.isInteger(value) && value >= 0);
+  return known.length ? Math.max(...known) : null;
+}
+
+function _dbQueueEntryMutation(entityPath, dbPath, mutationFactory) {
+  const key = _dbNormalizePath(entityPath) || `db:${_dbNormalizePath(dbPath)}`;
+  const previous = _dbEntryMutationChains.get(key);
+  const queued = Promise.resolve(previous)
+    .catch(() => {})
+    .then(() => mutationFactory());
+  const tracked = _dbTrackValueMutation(dbPath, queued);
+  _dbEntryMutationChains.set(key, tracked);
+  tracked.finally(() => {
+    if (_dbEntryMutationChains.get(key) === tracked) _dbEntryMutationChains.delete(key);
+  }).catch(() => {});
+  return tracked;
+}
+
+function _dbPropagateEntryRevision(entityPath, revision) {
+  const nextRevision = Number(revision);
+  if (!Number.isInteger(nextRevision) || nextRevision < 0 || !entityPath) return;
+  const normalizedEntityPath = _dbNormalizePath(entityPath);
+  _dbEntryRevisionCache.set(normalizedEntityPath, nextRevision);
+  const dbPath = _dbPathFromEntityPath(normalizedEntityPath) || '';
+  const entityName = normalizedEntityPath.replace(/\.md$/i, '').split('/').pop() || '';
+  if (!entityName) return;
+  const pivots = [];
+  const addPivot = (pivotData) => {
+    if (pivotData?.entities && !pivots.includes(pivotData)) pivots.push(pivotData);
+  };
+  if (typeof _dbPaneContextsForPath === 'function') {
+    _dbPaneContextsForPath(dbPath).forEach(ctx => addPivot(ctx?.pivotData));
+  }
+  if (!dbPath || _dbNormalizePath(state.currentDbPath || '') === _dbNormalizePath(dbPath)) {
+    addPivot(state.pivotData);
+  }
+  pivots.forEach(pivotData => {
+    const entityData = pivotData.entities?.[entityName];
+    if (!entityData) return;
+    entityData._revision = nextRevision;
+    Object.values(entityData).forEach(values => {
+      if (!Array.isArray(values)) return;
+      values.forEach(value => {
+        if (value && typeof value === 'object') value.entry_revision = nextRevision;
+      });
+    });
+  });
+}
+
+async function _apiPutValue(valObj, updates) {
+  const queuedEntityPath = _resolveEntityPathFromValObj(valObj);
+  const mutationDbPath = _dbPathFromEntityPath(queuedEntityPath) || state.currentDbPath || '';
+  return _dbQueueEntryMutation(queuedEntityPath, mutationDbPath, async () => {
+    const body = { ...updates };
+    delete body.__source;
+    const requestedRevision = Number(body.baseRevision);
+    const latestRevision = _dbLatestEntryRevision(queuedEntityPath, valObj);
+    const usableRevisions = [requestedRevision, latestRevision]
+      .filter(value => Number.isInteger(value) && value >= 0);
+    if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
+    if (valObj.candidate_index != null) {
+      body.property = valObj.property;
+      body.candidate_index = valObj.candidate_index;
+    }
+    const res = await apiPut('/value?path=' + encodeURIComponent(queuedEntityPath || valObj.file), body);
+    _dbApplyAutoTaskRenameResult(res);
+    if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
+    if (res?.property) valObj.property = res.property;
+    if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
+    if (res?.revision != null) valObj.entry_revision = Number(res.revision);
+    const entityPath = _resolveEntityPathFromValObj(valObj);
+    if (res?.revision != null) _dbPropagateEntryRevision(entityPath, res.revision);
+    const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
+    const nextValue = updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
+    _markDbAutoVersionDirty(dbPath);
+    try {
+      if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
+    } catch {}
+    try {
+      if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onValueSaved === 'function') {
+        window.GbDbCalendarSync.onValueSaved({
+          dbPath,
+          entityPath,
+          propName: valObj.property || '',
+          newValue: nextValue,
+          oldValue: valObj.value,
+          status: updates.new_status || valObj.status,
+          source: updates.__source || '',
+        });
+      }
+    } catch {}
+    try {
+      const ptc = dbPath && valObj.property && typeof getPropertyTypes === 'function'
+        ? getPropertyTypes(dbPath)?.[valObj.property]
+        : null;
+      if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
+    } catch {}
+    if (updates.new_rich_html !== undefined) {
+      if (updates.new_rich_html) valObj.rich_html = updates.new_rich_html;
+      else delete valObj.rich_html;
+    } else if (updates.new_value != null) {
+      delete valObj.rich_html;
+    }
+    return res;
+  });
 }
 
 // _apiPutValue は書き込みに使ったオブジェクト自身へ新しい entry_revision 等を書き戻す。
@@ -397,48 +551,61 @@ async function _apiPutValue(valObj, updates) {
 function _syncValueRefAfterSave(saveRef, target) {
   if (!saveRef || !target || saveRef === target) return;
   if (saveRef.file !== undefined) target.file = saveRef.file;
+  if (saveRef.entry_path !== undefined) target.entry_path = saveRef.entry_path;
+  if (saveRef.entity_path !== undefined) target.entity_path = saveRef.entity_path;
+  if (saveRef.folder_path !== undefined) target.folder_path = saveRef.folder_path;
   if (saveRef.property !== undefined) target.property = saveRef.property;
   if (saveRef.candidate_index !== undefined) target.candidate_index = saveRef.candidate_index;
   if (saveRef.entry_revision !== undefined) target.entry_revision = saveRef.entry_revision;
 }
 
 async function _apiPostValue(entityPath, propName, value, status, note, richHtml, extra) {
-  const key = entityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
-  const body = { [key]: entityPath, property: propName, value, status, note: note || '' };
-  if (richHtml) body.rich_html = richHtml;
-  if (extra && typeof extra === 'object') {
-    if (Array.isArray(extra.relations)) body.relations = extra.relations;
-    if (Array.isArray(extra.published_in)) body.published_in = extra.published_in;
-    if (extra.created) body.created = extra.created;
-    const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
-    if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;
-  }
-  const res = await apiPost('/value', body);
-  _dbApplyAutoTaskRenameResult(res);
-  const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
-  _markDbAutoVersionDirty(dbPath);
-  try {
-    if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
-  } catch {}
-  try {
-    if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onValueSaved === 'function') {
-      window.GbDbCalendarSync.onValueSaved({
-        dbPath,
-        entityPath,
-        propName,
-        newValue: value,
-        oldValue: '',
-        status,
-      });
+  const mutationDbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
+  return _dbQueueEntryMutation(entityPath, mutationDbPath, async () => {
+    const key = entityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
+    const body = { [key]: entityPath, property: propName, value, status, note: note || '' };
+    if (richHtml) body.rich_html = richHtml;
+    if (extra && typeof extra === 'object') {
+      if (Array.isArray(extra.relations)) body.relations = extra.relations;
+      if (Array.isArray(extra.published_in)) body.published_in = extra.published_in;
+      if (extra.created) body.created = extra.created;
+      const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
+      if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;
     }
-  } catch {}
-  try {
-    const ptc = dbPath && propName && typeof getPropertyTypes === 'function'
-      ? getPropertyTypes(dbPath)?.[propName]
-      : null;
-    if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
-  } catch {}
-  return res;
+    const latestRevision = _dbLatestEntryRevision(entityPath);
+    const requestedRevision = Number(body.baseRevision);
+    const usableRevisions = [requestedRevision, latestRevision]
+      .filter(revision => Number.isInteger(revision) && revision >= 0);
+    if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
+    const res = await apiPost('/value', body);
+    _dbApplyAutoTaskRenameResult(res);
+    const savedEntityPath = res?.new_path || entityPath;
+    if (res?.revision != null) _dbPropagateEntryRevision(savedEntityPath, res.revision);
+    const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
+    _markDbAutoVersionDirty(dbPath);
+    try {
+      if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
+    } catch {}
+    try {
+      if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onValueSaved === 'function') {
+        window.GbDbCalendarSync.onValueSaved({
+          dbPath,
+          entityPath,
+          propName,
+          newValue: value,
+          oldValue: '',
+          status,
+        });
+      }
+    } catch {}
+    try {
+      const ptc = dbPath && propName && typeof getPropertyTypes === 'function'
+        ? getPropertyTypes(dbPath)?.[propName]
+        : null;
+      if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
+    } catch {}
+    return res;
+  });
 }
 
 function _isEntityCreateNameConflict(error) {
@@ -627,6 +794,26 @@ function _dbFindPaneContextForPath(dbPath) {
       const ctx = embed?._dbPaneContext;
       if (ctx && (!target || _dbNormalizePath(ctx.dbPath) === target)) return ctx;
     }
+  }
+  return null;
+}
+
+// dbPath を「アクティブタブ」として表示しているパネルがGBLayout上に存在するかを
+// state.currentDbPath に頼らず直接確認する（v0.7.056、パネル取り違えバグ修正）。
+// 取り消し・やり直し適用直後、対象タブへの切替（GBTabs.activateTab）はDOM上の
+// コンテナ付け替えを同期的に終えるが、そのタブ自身の再読み込み
+// （_ensureLegacyTabContent 内の非同期 selectDatabase 呼び出し）はマイクロタスクへ
+// キューされるため、state.currentDbPath の更新は1テンポ遅れる。
+// _refreshDbViewConfigAfterHistory() 等が state.currentDbPath だけを見て
+// 「対象タブは表示中でない」と誤判定し、再描画を黙ってスキップするのを防ぐ。
+function _dbFindActiveTabPaneForPath(dbPath) {
+  const target = _dbNormalizePath(dbPath);
+  if (!target || typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
+  const sheetTabTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const panes = GBLayout.getAllPanes(GBLayout.root) || [];
+  for (const pane of panes) {
+    const tab = pane.tabs?.[pane.activeTabIndex];
+    if (tab && sheetTabTypes.has(tab.type) && tab.path && _dbNormalizePath(tab.path) === target) return pane.id;
   }
   return null;
 }

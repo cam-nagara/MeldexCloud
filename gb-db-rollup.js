@@ -43,27 +43,38 @@ function clearRollupCache(dbPath) {
  */
 function resolveRelationNames(entityName, entitiesMap, relationPropName, propTypes, sourceDbPath, filterMode) {
   const ptc = propTypes?.[relationPropName];
-  if (!ptc || (ptc.type !== 'relation' && ptc.type !== 'multi-relation')) return { names: [], targetDbPath: null };
+  if (!ptc || (ptc.type !== 'relation' && ptc.type !== 'multi-relation')) return { names: [], refs: [], targetDbPath: null };
 
-  // 自己参照: relationDb が未設定または '' の場合は sourceDbPath (= 現在のDB) を指す
-  const targetDbPath = (ptc.relationDb === '' || ptc.relationDb == null)
-    ? (sourceDbPath || state.currentDbPath || null)
-    : ptc.relationDb;
-  if (!targetDbPath) return { names: [], targetDbPath: null };
+  // リレーションセルと同じ解決規則を使い、作品フォルダー相対パスも同じ参照先へ揃える
+  const effectiveSourcePath = sourceDbPath || state.currentDbPath || '';
+  const targetDbPath = typeof _dbResolveRelationDbPath === 'function'
+    ? _dbResolveRelationDbPath(effectiveSourcePath, ptc)
+    : ((ptc.relationDb === '' || ptc.relationDb == null) ? effectiveSourcePath : ptc.relationDb);
+  if (!targetDbPath) return { names: [], refs: [], targetDbPath: null };
 
   const rawVals = entitiesMap[entityName]?.[relationPropName] || [];
   const vals = filterValues(rawVals, undefined, filterMode);
-  const names = [];
-  vals.forEach(v => {
+  const refs = [];
+  vals.forEach((v, filteredIndex) => {
     if (!v.value) return;
+    const sourceIndex = rawVals.indexOf(v);
+    const candidateIndex = sourceIndex >= 0 ? sourceIndex : filteredIndex;
+    const addRef = (name) => {
+      if (!name) return;
+      refs.push({
+        name,
+        status: v.status || '採用',
+        candidateIndex,
+      });
+    };
     // multi-relationの場合、カンマ区切りの可能性
     if (ptc.type === 'multi-relation') {
-      v.value.split(',').forEach(n => { const t = n.trim(); if (t) names.push(t); });
+      v.value.split(',').forEach(n => addRef(n.trim()));
     } else {
-      names.push(v.value.trim());
+      addRef(v.value.trim());
     }
   });
-  return { names, targetDbPath };
+  return { names: refs.map(ref => ref.name), refs, targetDbPath };
 }
 
 function _rollupIdToNameMap(targetData) {
@@ -79,18 +90,164 @@ function _rollupResolveEntityNames(names, targetData) {
   return names.map(n => idToName.get(String(n)) || n);
 }
 
+function _rollupEffectiveAggregation(rollupConfig) {
+  return rollupConfig?.aggregation || 'values';
+}
+
+function _rollupValuesResult(relationProp, targetDbPath, groups) {
+  const normalizedGroups = (groups || []).map(group => ({
+    relationId: String(group?.relationId || ''),
+    relationName: String(group?.relationName || group?.relationId || '—'),
+    relationStatus: String(group?.relationStatus || '採用'),
+    relationCandidateIndex: Number.isInteger(group?.relationCandidateIndex) ? group.relationCandidateIndex : 0,
+    values: Array.isArray(group?.values) && group.values.length
+      ? group.values.map(value => String(value == null || value === '' ? '—' : value))
+      : ['—'],
+  }));
+  const text = normalizedGroups.length
+    ? normalizedGroups.flatMap(group => group.values).join('\n')
+    : '—';
+  return {
+    kind: 'rollup-values',
+    relationProp: relationProp || '',
+    targetDbPath: targetDbPath || '',
+    groups: normalizedGroups,
+    text,
+    toString() { return this.text; },
+  };
+}
+
+function _rollupSplitDisplayValue(value, propType) {
+  const text = String(value == null ? '' : value);
+  if (!text.trim()) return [];
+  const byLine = text.split(/\r?\n/).map(part => part.trim()).filter(Boolean);
+  if (!['multi-select', 'multi-user', 'multi-relation'].includes(propType)) return byLine;
+  return byLine.flatMap(part => part.split(',').map(item => item.trim()).filter(Boolean));
+}
+
+function _rollupImageDisplayStrings(rawValue) {
+  try {
+    const parsed = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    return items.map(item => {
+      if (typeof item === 'string') return item;
+      return item?.caption || item?.name || item?.filename || item?.path || item?.url || '';
+    }).filter(Boolean);
+  } catch {
+    return _rollupSplitDisplayValue(rawValue, 'text');
+  }
+}
+
+async function _rollupResolveTargetRelationStrings(values, targetPtc, targetDbPath) {
+  const relationDbPath = typeof _dbResolveRelationDbPath === 'function'
+    ? _dbResolveRelationDbPath(targetDbPath, targetPtc)
+    : ((targetPtc?.relationDb === '' || targetPtc?.relationDb == null) ? targetDbPath : targetPtc?.relationDb);
+  if (!relationDbPath) return values;
+  const relationData = await fetchRelatedDbData(relationDbPath);
+  if (!relationData?.entities) return values;
+  const idToName = _rollupIdToNameMap(relationData);
+  return values.map(value => idToName.get(String(value)) || value);
+}
+
+async function _rollupTargetDisplayStrings(entityData, targetProp, targetPtc, targetPropTypes, targetDbPath, filterMode) {
+  if (!entityData) return ['—'];
+
+  if (targetPtc?.source) {
+    const sourceValue = entityData['_' + targetPtc.source];
+    if (sourceValue == null || sourceValue === '') return ['—'];
+    if ((targetPtc.source === 'created' || targetPtc.source === 'modified')
+        && typeof _formatDateDisplay === 'function') {
+      return [_formatDateDisplay(String(sourceValue), targetPtc)];
+    }
+    return [String(sourceValue)];
+  }
+
+  if (targetPtc?.type === 'formula' && targetPtc.formula && typeof formulaEvalForEntity === 'function') {
+    const result = formulaEvalForEntity(targetPtc.formula, entityData, { propTypes: targetPropTypes, dbPath: targetDbPath });
+    return result?.error || result?.value == null || result.value === '' ? ['—'] : [String(result.value)];
+  }
+
+  const rawValues = Array.isArray(entityData[targetProp]) ? entityData[targetProp] : [];
+  const filtered = typeof filterValues === 'function'
+    ? filterValues(rawValues, undefined, filterMode)
+    : rawValues;
+  let displayValues = [];
+  filtered.forEach(item => {
+    const rawValue = item?.value;
+    if (targetPtc?.type === 'image') displayValues.push(..._rollupImageDisplayStrings(rawValue));
+    else displayValues.push(..._rollupSplitDisplayValue(rawValue, targetPtc?.type || 'text'));
+  });
+  if (!displayValues.length) return ['—'];
+
+  if (targetPtc?.type === 'relation' || targetPtc?.type === 'multi-relation') {
+    displayValues = await _rollupResolveTargetRelationStrings(displayValues, targetPtc, targetDbPath);
+  } else if (targetPtc?.type === 'date' && typeof _formatDateDisplay === 'function') {
+    displayValues = displayValues.map(value => _formatDateDisplay(value, targetPtc));
+  }
+  return displayValues.length ? displayValues : ['—'];
+}
+
+async function _rollupBuildValuesResult(refs, targetData, targetDbPath, relationProp, targetProp, filterMode) {
+  const names = refs.map(ref => ref.name);
+  const targetNames = _rollupResolveEntityNames(names, targetData);
+  const targetPropTypes = getPropertyTypes(targetDbPath);
+  const targetPtc = targetPropTypes?.[targetProp] || null;
+  const groups = [];
+
+  for (let idx = 0; idx < names.length; idx++) {
+    const relationId = names[idx];
+    const relationName = targetNames[idx] || relationId;
+    const values = await _rollupTargetDisplayStrings(
+      targetData?.entities?.[relationName],
+      targetProp,
+      targetPtc,
+      targetPropTypes,
+      targetDbPath,
+      filterMode
+    );
+    groups.push({
+      relationId,
+      relationName,
+      relationStatus: refs[idx]?.status || '採用',
+      relationCandidateIndex: refs[idx]?.candidateIndex || 0,
+      values,
+    });
+  }
+  return _rollupValuesResult(relationProp, targetDbPath, groups);
+}
+
 /* --- ロールアップ計算 --- */
 
 /**
  * 1エントリのロールアップ値を計算する
  */
 async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes, sourceDbPath, filterMode) {
-  const { relationProp, targetProp, aggregation } = rollupConfig;
-  const { names, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
-  if (names.length === 0 || !targetDbPath) return aggregation === 'count' ? 0 : '-';
+  const { relationProp, targetProp } = rollupConfig;
+  const aggregation = _rollupEffectiveAggregation(rollupConfig);
+  const { names, refs, targetDbPath } = resolveRelationNames(entityName, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
+  if (names.length === 0 || !targetDbPath) {
+    return aggregation === 'count'
+      ? 0
+      : (aggregation === 'values' ? _rollupValuesResult(relationProp, targetDbPath, []) : '-');
+  }
 
   const targetData = await fetchRelatedDbData(targetDbPath);
-  if (!targetData || !targetData.entities) return '-';
+  if (!targetData || !targetData.entities) {
+    return aggregation === 'values'
+      ? _rollupValuesResult(relationProp, targetDbPath, refs.map(ref => ({
+          relationId: ref.name,
+          relationName: ref.name,
+          relationStatus: ref.status,
+          relationCandidateIndex: ref.candidateIndex,
+          values: ['—'],
+        })))
+      : '-';
+  }
+
+  if (aggregation === 'values') {
+    return _rollupBuildValuesResult(refs, targetData, targetDbPath, relationProp, targetProp, filterMode);
+  }
+
   const targetNames = _rollupResolveEntityNames(names, targetData);
 
   // countの場合はリレーション先エントリ数を返す
@@ -121,7 +278,8 @@ async function calcRollupValue(entityName, entitiesMap, rollupConfig, propTypes,
  * @returns {Promise<Map<string, string|number>>} entityName → 集計値
  */
 async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propTypes, sourceDbPath, filterMode) {
-  const { relationProp, targetProp, aggregation } = rollupConfig;
+  const { relationProp, targetProp } = rollupConfig;
+  const aggregation = _rollupEffectiveAggregation(rollupConfig);
   const results = new Map();
 
   // 参照先DBを1回だけ取得
@@ -129,30 +287,47 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
   if (!sampleEntity) return results;
   const { targetDbPath } = resolveRelationNames(sampleEntity, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
   if (!targetDbPath) {
-    entityNames.forEach(en => results.set(en, '-'));
+    entityNames.forEach(en => results.set(
+      en,
+      aggregation === 'values' ? _rollupValuesResult(relationProp, '', []) : '-'
+    ));
     return results;
   }
 
   const targetData = await fetchRelatedDbData(targetDbPath);
   if (!targetData || !targetData.entities) {
-    entityNames.forEach(en => results.set(en, '-'));
+    entityNames.forEach(en => results.set(
+      en,
+      aggregation === 'values' ? _rollupValuesResult(relationProp, targetDbPath, []) : '-'
+    ));
     return results;
   }
 
   const targetPropTypes = getPropertyTypes(targetDbPath);
   const targetPtc = targetPropTypes?.[targetProp] || null;
 
-  entityNames.forEach(en => {
-    const { names } = resolveRelationNames(en, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
+  for (const en of entityNames) {
+    const { names, refs } = resolveRelationNames(en, entitiesMap, relationProp, propTypes, sourceDbPath, filterMode);
     if (names.length === 0) {
-      results.set(en, aggregation === 'count' ? 0 : '-');
-      return;
+      results.set(
+        en,
+        aggregation === 'count'
+          ? 0
+          : (aggregation === 'values' ? _rollupValuesResult(relationProp, targetDbPath, []) : '-')
+      );
+      continue;
     }
+
+    if (aggregation === 'values') {
+      results.set(en, await _rollupBuildValuesResult(refs, targetData, targetDbPath, relationProp, targetProp, filterMode));
+      continue;
+    }
+
     const targetNames = _rollupResolveEntityNames(names, targetData);
 
     if (aggregation === 'count') {
       results.set(en, targetNames.filter(n => targetData.entities[n]).length);
-      return;
+      continue;
     }
 
     const subMap = {};
@@ -166,12 +341,12 @@ async function calcRollupColumn(entitiesMap, entityNames, rollupConfig, propType
 
     if (subNames.length === 0) {
       results.set(en, '-');
-      return;
+      continue;
     }
 
     const val = calcAggregation(targetProp, subMap, subNames, aggregation, targetPtc, targetPropTypes, filterMode);
     results.set(en, val);
-  });
+  }
 
   return results;
 }
@@ -191,22 +366,36 @@ function buildRollupOptionsHtml(current, dbProperties, propTypes, root) {
   const initialTargetType = current?.targetProp ? propTypes?.[current.targetProp]?.type : '';
   const aggOptions = _rollupAggregationOptionsForType(initialTargetType);
 
+  // リレーション列が1つも無いシートでは、空のドロップダウンを出すと
+  // 「選べないのに理由が分からない」状態になるため、その場で理由を出す。
+  const hasRelationProps = relationProps.length > 0;
+
   let html = '<div class="field"><label>リレーション列</label>';
-  html += '<select id="rollup-relation-prop">';
-  html += '<option value="">選択...</option>';
-  relationProps.forEach(p => {
-    const sel = current?.relationProp === p ? ' selected' : '';
-    html += '<option value="' + esc(p) + '"' + sel + '>' + esc(p) + '</option>';
-  });
-  html += '</select></div>';
+  html += '<select id="rollup-relation-prop"' + (hasRelationProps ? '' : ' disabled') + '>';
+  if (!hasRelationProps) {
+    html += '<option value="">リレーション列がありません</option>';
+  } else {
+    html += '<option value="">選択...</option>';
+    relationProps.forEach(p => {
+      const sel = current?.relationProp === p ? ' selected' : '';
+      html += '<option value="' + esc(p) + '"' + sel + '>' + esc(p) + '</option>';
+    });
+  }
+  html += '</select>';
+  if (!hasRelationProps) {
+    html += '<div class="pt-hint">先にリレーション列を作ると、その参照先を集計できます。</div>';
+  }
+  html += '</div>';
 
   html += '<div class="field"><label>参照先の列</label>';
-  html += '<select id="rollup-target-prop"><option value="">読み込み中...</option></select></div>';
+  html += '<select id="rollup-target-prop"><option value="">'
+       + (current?.relationProp ? '読み込み中...' : 'リレーション列を選ぶと表示されます')
+       + '</option></select></div>';
 
-  html += '<div class="field"><label>集計タイプ</label>';
-  html += '<select id="rollup-aggregation" data-current="' + esc(current?.aggregation || 'count') + '">';
+  html += '<div class="field"><label>表示方法</label>';
+  html += '<select id="rollup-aggregation" data-current="' + esc(current?.aggregation || 'values') + '">';
   aggOptions.forEach(a => {
-    const sel = current?.aggregation === a.key ? ' selected' : '';
+    const sel = (current?.aggregation || 'values') === a.key ? ' selected' : '';
     html += '<option value="' + a.key + '"' + sel + '>' + a.label + '</option>';
   });
   html += '</select></div>';
@@ -237,16 +426,17 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   if (!ptc) {
     if (seq !== scope._rollupRelationLoadSeq) return;
     sel.innerHTML = '<option value="">(リレーション先未設定)</option>';
-    _rollupSetAggregationOptionsForType('', 'count', scope);
+    _rollupSetAggregationOptionsForType('', 'values', scope);
     return;
   }
-  // 自己参照: relationDb が未設定または '' の場合は現在のDBを指す
-  const _relDb = (ptc.relationDb === '' || ptc.relationDb == null) ? dbPath : ptc.relationDb;
+  const _relDb = typeof _dbResolveRelationDbPath === 'function'
+    ? _dbResolveRelationDbPath(dbPath, ptc)
+    : ((ptc.relationDb === '' || ptc.relationDb == null) ? dbPath : ptc.relationDb);
   const targetData = await fetchRelatedDbData(_relDb);
   if (seq !== scope._rollupRelationLoadSeq || sel !== (typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop'))) return;
   if (!targetData || !targetData.properties) {
     sel.innerHTML = '<option value="">(取得失敗)</option>';
-    _rollupSetAggregationOptionsForType('', 'count', scope);
+    _rollupSetAggregationOptionsForType('', 'values', scope);
     return;
   }
 
@@ -268,11 +458,11 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   sel.onchange = () => {
     const pt = targetPropTypes?.[sel.value]?.type || '';
     const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
-    _rollupSetAggregationOptionsForType(pt, aggSel?.value || 'count', scope);
+    _rollupSetAggregationOptionsForType(pt, aggSel?.value || 'values', scope);
   };
   const selectedType = targetPropTypes?.[sel.value]?.type || '';
   const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
-  _rollupSetAggregationOptionsForType(selectedType, aggSel?.dataset.current || 'count', scope);
+  _rollupSetAggregationOptionsForType(selectedType, aggSel?.dataset.current || 'values', scope);
 }
 
 /**
@@ -283,15 +473,20 @@ function collectRollupConfig(root) {
   const get = (id) => typeof _ptGet === 'function' ? _ptGet(id, scope) : document.getElementById(id);
   const relationProp = get('rollup-relation-prop')?.value || '';
   const targetProp = get('rollup-target-prop')?.value || '';
-  const aggregation = get('rollup-aggregation')?.value || 'count';
+  const aggregation = get('rollup-aggregation')?.value || 'values';
   return { type: 'rollup', relationProp, targetProp, aggregation };
 }
 
 function _rollupAggregationOptionsForType(propType) {
+  const valuesOption = { key: 'values', label: '文字列' };
   if (typeof getAggregationTypesForProperty === 'function') {
-    return getAggregationTypesForProperty(propType || 'text').filter(a => a.key !== 'none');
+    return [
+      valuesOption,
+      ...getAggregationTypesForProperty(propType || 'text').filter(a => a.key !== 'none' && a.key !== 'values'),
+    ];
   }
   return [
+    valuesOption,
     { key: 'count', label: '件数' },
     { key: 'unique', label: 'ユニーク' },
     { key: 'empty', label: '空' },
@@ -312,7 +507,7 @@ function _rollupSetAggregationOptionsForType(propType, preferred, root) {
   const aggSel = typeof _ptGet === 'function' ? _ptGet('rollup-aggregation', scope) : document.getElementById('rollup-aggregation');
   if (!aggSel) return;
   const options = _rollupAggregationOptionsForType(propType);
-  const nextValue = options.some(a => a.key === preferred) ? preferred : 'count';
+  const nextValue = options.some(a => a.key === preferred) ? preferred : 'values';
   aggSel.innerHTML = '';
   options.forEach(a => {
     const o = document.createElement('option');

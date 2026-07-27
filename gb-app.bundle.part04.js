@@ -1,3 +1,120 @@
+// ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
+const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
+const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
+function _gbAppApiFetchDefaultTimeout(path) {
+  const pathname = String(path || '').split('?')[0];
+  return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
+    ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
+    : GB_APP_API_FETCH_TIMEOUT_MS;
+}
+const _gbAppApiFetchBrowseCache = new Map();
+let _gbAppApiFetchCacheGeneration = 0;
+
+function _gbAppApiFetchMethod(opts) {
+  return String(opts?.method || 'GET').toUpperCase();
+}
+
+function _gbAppApiFetchClonePayload(payload) {
+  if (typeof structuredClone === 'function') {
+    try { return structuredClone(payload); } catch {}
+  }
+  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
+}
+
+function _gbAppApiFetchCanonicalGetPath(path) {
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const params = [...url.searchParams.entries()]
+      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
+    const query = params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+    return url.pathname + (query ? '?' + query : '');
+  } catch {
+    return String(path || '');
+  }
+}
+
+function _apiFetchInFlightKey(path, opts) {
+  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.signal) return '';
+  const nonBenignKeys = Object.keys(opts || {}).filter(key => !['method', 'silentError', 'skipBrowseCache'].includes(key));
+  if (nonBenignKeys.length > 0) return '';
+  return _gbAppApiFetchCanonicalGetPath(path)
+    + '|silent=' + (opts?.silentError === true ? '1' : '0')
+    + '|skipBrowseCache=' + (opts?.skipBrowseCache === true ? '1' : '0');
+}
+
+function _gbAppApiFetchBrowseCacheKey(path, opts) {
+  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
+  } catch {
+    return '';
+  }
+}
+
+function _gbAppApiFetchInvalidateReadCaches() {
+  _gbAppApiFetchCacheGeneration += 1;
+  _gbAppApiFetchBrowseCache.clear();
+  _apiFetchInFlightGets.clear();
+  if (typeof _clearBrowseItemResolvedTypeCache === 'function') _clearBrowseItemResolvedTypeCache();
+}
+
+function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
+  _gbAppApiFetchBrowseCache.set(cacheKey, {
+    at: Date.now(),
+    payload: _gbAppApiFetchClonePayload(payload),
+  });
+  while (_gbAppApiFetchBrowseCache.size > GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES) {
+    const oldestKey = _gbAppApiFetchBrowseCache.keys().next().value;
+    if (!oldestKey) break;
+    _gbAppApiFetchBrowseCache.delete(oldestKey);
+  }
+}
+
+function _apiFetchBackendPerf(res) {
+  try {
+    const raw = res?.headers?.get?.('x-meldex-perf') || '';
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function _logPerfEvent(label, startedAt, detail) {
+  try {
+    const durationMs = _perfElapsedMs(startedAt);
+    const payload = {
+      ...(detail || {}),
+      message: `[perf] ${label}: ${durationMs}ms`,
+      perf: true,
+      label,
+      durationMs,
+    };
+    if (typeof console !== 'undefined' && typeof console.info === 'function') {
+      console.info('[Meldex perf] ' + payload.message, payload);
+    }
+    if (typeof _sendLog === 'function') _sendLog('info', payload);
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function _gbAppApiFetchIsAbortError(e) {
+  return !!e && (e.name === 'AbortError' || e.code === 20);
+}
+
+// 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
+// タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
+async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
+  const controller = new AbortController();
+  const externalSignal = requestOpts?.signal || null;
+  const fetchOpts = { ...(requestOpts || {}) };
+  delete fetchOpts.timeoutMs;
+  let timedOut = false;
+  let onExternalAbort = null;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
       // 理由付きabortはfetchが通常Errorを投げるため、呼び出し元キャンセルを
       // 通信障害と誤判定しないよう内部signalは標準AbortErrorへ正規化する。
       controller.abort();
@@ -48,7 +165,7 @@ async function apiFetch(path, opts) {
         const requestedTimeout = Number(requestOpts?.timeoutMs);
         const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
           ? Math.min(requestedTimeout, 300000)
-          : GB_APP_API_FETCH_TIMEOUT_MS;
+          : _gbAppApiFetchDefaultTimeout(path);
         const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
         if (perfInfo) {
           _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
@@ -379,9 +496,15 @@ async function _syncMyTeamProfile() {
 }
 
 let _startupSplashHidden = false;
+function _notifyStartupReady() {
+  if (typeof apiPost !== 'function') return;
+  void apiPost('/startup-ready', {}, { silentError: true }).catch(() => {});
+}
+
 function _hideStartupSplash() {
   if (_startupSplashHidden) return;
   _startupSplashHidden = true;
+  _notifyStartupReady();
   const splash = document.getElementById('gb-splash');
   if (!splash) return;
   splash.style.pointerEvents = 'none';
@@ -775,126 +898,3 @@ async function init() {
         await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
         restored = true;
       }
-    }
-
-    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
-    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
-    if (!restored) {
-      const _paneHasTabs = _paneLayoutHasAnyTabs();
-      if (!_paneHasTabs) showView('welcome');
-    }
-
-    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
-    _scheduleStartupDatabaseViewTabsRepair();
-    _hideStartupSplash();
-    if (typeof _logPerfEvent === 'function') {
-      _logPerfEvent('startup.visible', initStartedAt, { restored });
-    }
-    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
-      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
-        _refreshDbViewConfigAfterHistory(state.currentDbPath);
-      }
-    });
-    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
-      initGlobalFilterBar();
-      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
-        _highlightLastOutlinerNodeAfterStartup();
-        showStatus('準備完了');
-      });
-    });
-  } catch (e) {
-    showStatus('ソースフォルダ情報の取得に失敗しました', true);
-  }
-  _hideStartupSplash();
-}
-/* ==============================
-   表示切替
-   ============================== */
-function showView(viewName, ctx) {
-  const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
-  const isDbViewName = (name) => ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
-  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
-  if (ctx && ctx.containerEl) {
-    const isDbView = isDbViewName(viewName);
-    const c = ctx.containerEl;
-    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
-    if (hasPaneViewSurfaces) {
-      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
-      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
-      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
-      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
-      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
-      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
-      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
-      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
-      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-      _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
-      ctx.viewMode = viewName;
-      return;
-    }
-  }
-  // ビュー切替前にボードの未保存を即時保存
-  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
-    if (typeof bdSave === 'function') bdSave();
-  }
-  // ボードから離れたらノートタブを非表示
-  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
-    hideBoardNoteTab();
-  }
-  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
-  if (viewName !== 'folder') {
-    const fvBar = document.getElementById('fv-bulk-bar');
-    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
-  }
-  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
-    clearBoardDetailTabs();
-  }
-  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
-  const isDbView = isDbViewName(viewName);
-  const _setDisplay = (id, value) => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = value;
-  };
-  _setDisplay('login-view', 'none');
-  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
-  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
-  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
-  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
-  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
-  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
-  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
-  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
-  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-  _setDisplay('smart-db-view', resolvedViewName === 'smart-db' ? 'flex' : 'none');
-  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
-  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
-  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
-  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
-  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
-  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
-  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
-  // app-toolbarの表示切替
-  const appTb = document.getElementById('app-toolbar');
-  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
-  // ページビュー: app-toolbarにリッチテキストツールバー表示
-  const showRtInAppbar = (resolvedViewName === 'page');
-  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
-  const hasAppTb = isDbView || showRtInAppbar;
-  if (appTb) appTb.classList.toggle('visible', hasAppTb);
-  // エントリビュー: エントリ内ツールバー
-  const entityRt = document.getElementById('entity-rt-toolbar');
-  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
-  // ステータスバーのショートカットヘルプ
-  const sc = document.getElementById('sb-shortcuts');
-  if (isDbView) {
-    sc.textContent = '';
-  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
-    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
-  } else if (resolvedViewName === 'scriptnote') {
-    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
-    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
-  } else {
-    sc.textContent = '';
-  }
-
-  state.view = viewName;

@@ -11,11 +11,6 @@
   const state = {
     dirty: false,
     saving: false,
-    drawMode: false,
-    drawTool: 'pen',
-    drawing: false,
-    hasDrawing: false,
-    lastPoint: null,
     speech: null,
     recording: null,
     recordChunks: [],
@@ -30,16 +25,20 @@
     voiceStartTime: 0,
     voicePausing: false,
     installPrompt: null,
-    memoList: [],
+    textHistory: { canUndo: false, canRedo: false },
+    drawingHistory: { canUndo: false, canRedo: false },
   };
+  let editorController = null;
+  let drawingController = null;
+  let libraryController = null;
 
   document.addEventListener('DOMContentLoaded', init);
 
   function init() {
     bindElements();
+    setupControllers();
     restoreDraft();
     applyIncomingShare();
-    setupCanvas();
     bindEvents();
     switchMode(state.currentMode);
     initCloudMode();
@@ -52,76 +51,120 @@
 
   function bindElements() {
     [
-      'syncStatus', 'listBtn', 'installBtn', 'autoTagBtn', 'newMemoBtn', 'saveBtn',
+      'syncStatus', 'listBtn', 'installBtn', 'newMemoBtn', 'saveBtn',
       'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
-      'colorInput', 'widthInput', 'markerBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
+      'modeSelect', 'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
+      'colorInput', 'opacityInput', 'opacityValue', 'widthInput', 'penBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
       'voiceRecordBtn', 'voicePauseBtn', 'voiceResumeBtn', 'voiceStopBtn',
       'voicePanel', 'voiceTimer', 'voiceTranscript', 'voiceStatus',
-      'listView', 'listBackBtn', 'listSearch', 'listTagFilter', 'listContent', 'editorView',
+      'listView', 'listBackBtn', 'listSearch', 'listTagFilter', 'listContent', 'listMoreBtn', 'editorView',
     ].forEach((id) => { els[id] = document.getElementById(id); });
-    els.modeTabs = document.querySelectorAll('.qm-mode-tab');
     els.toolbarGroups = document.querySelectorAll('.qm-toolbar-group');
     els.toolbar = document.querySelector('.qm-toolbar');
   }
 
-  function bindEvents() {
-    document.querySelectorAll('[data-command]').forEach((button) => {
-      button.addEventListener('click', () => {
-        document.execCommand(button.dataset.command, false, null);
-        els.editor.focus();
+  function setupControllers() {
+    editorController = window.MeldexQuickMemoEditor.create({
+      editor: els.editor,
+      onChanged() {
+        autoFillTitle();
         scheduleSave();
-      });
+      },
+      onHistoryChange(next) {
+        state.textHistory = next;
+        updateHistoryButtons();
+      },
     });
-    ['input', 'keyup', 'paste'].forEach((eventName) => els.editor.addEventListener(eventName, scheduleSave));
-    els.editor.addEventListener('input', autoFillTitle);
+    drawingController = window.MeldexQuickMemoDrawing.create({
+      canvas: els.drawingCanvas,
+      swatch: els.colorSwatchBtn,
+      popover: els.colorPopover,
+      colorInput: els.colorInput,
+      opacityInput: els.opacityInput,
+      opacityValue: els.opacityValue,
+      widthInput: els.widthInput,
+      penBtn: els.penBtn,
+      fillBtn: els.fillBtn,
+      eraserBtn: els.eraserBtn,
+      clearBtn: els.clearDrawingBtn,
+      onChanged: scheduleSave,
+      onStatus: setStatus,
+      onHistoryChange(next) {
+        state.drawingHistory = next;
+        updateHistoryButtons();
+      },
+    });
+    libraryController = window.MeldexQuickMemoLibrary.create({
+      editorView: els.editorView,
+      listView: els.listView,
+      content: els.listContent,
+      search: els.listSearch,
+      tagFilter: els.listTagFilter,
+      moreButton: els.listMoreBtn,
+      backButton: els.listBackBtn,
+      apiBase: API_BASE,
+      readQueue: () => readJson(QUEUE_KEY, []),
+      isCloudMode,
+      cloudConnected,
+      onStatus: setStatus,
+      beforeNavigate: preserveCurrentForNavigation,
+      onOpen: openExistingMemo,
+    });
+    els.undoBtn.innerHTML = typeof window.lucide === 'function' ? window.lucide('undo2', 19) : '↶';
+    els.redoBtn.innerHTML = typeof window.lucide === 'function' ? window.lucide('redo2', 19) : '↷';
+  }
+
+  function bindEvents() {
     els.titleInput.addEventListener('input', scheduleSave);
     els.saveBtn.addEventListener('click', () => saveNow({ manual: true }));
-    els.autoTagBtn.addEventListener('click', () => saveNow({ manual: true, autoTag: true }));
     els.newMemoBtn.addEventListener('click', startNewMemo);
-    els.markerBtn.addEventListener('click', () => setDrawTool('marker'));
-    els.fillBtn.addEventListener('click', fillDrawing);
-    els.eraserBtn.addEventListener('click', () => setDrawTool('eraser'));
-    els.clearDrawingBtn.addEventListener('click', clearDrawing);
-    els.modeTabs.forEach((tab) => {
-      tab.addEventListener('click', () => switchMode(tab.dataset.mode));
-    });
+    els.modeSelect.addEventListener('change', () => switchMode(els.modeSelect.value));
+    els.undoBtn.addEventListener('click', () => runHistory('undo'));
+    els.redoBtn.addEventListener('click', () => runHistory('redo'));
     els.addTagBtn.addEventListener('click', addNewTag);
-    els.listBtn.addEventListener('click', showListView);
-    els.listBackBtn.addEventListener('click', hideListView);
-    els.listSearch.addEventListener('input', filterList);
-    els.listTagFilter.addEventListener('change', filterList);
+    els.listBtn.addEventListener('click', () => libraryController.show());
     els.installBtn.addEventListener('click', installToHome);
     els.voiceRecordBtn.addEventListener('click', startVoiceRecording);
     els.voicePauseBtn.addEventListener('click', pauseVoiceRecording);
     els.voiceResumeBtn.addEventListener('click', resumeVoiceRecording);
     els.voiceStopBtn.addEventListener('click', stopVoiceRecording);
-    window.addEventListener('resize', resizeCanvas);
     window.addEventListener('online', flushPendingQueue);
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
   }
 
   function switchMode(mode) {
-    state.currentMode = mode;
-    els.modeTabs.forEach((tab) => tab.classList.toggle('is-active', tab.dataset.mode === mode));
-    els.editor.style.display = mode === 'text' ? '' : 'none';
-    els.drawingCanvas.style.display = mode === 'pen' ? '' : 'none';
-    els.voicePanel.style.display = mode === 'voice' ? '' : 'none';
+    const nextMode = ['text', 'pen', 'voice'].includes(mode) ? mode : 'text';
+    if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
+    state.currentMode = nextMode;
+    els.modeSelect.value = state.currentMode;
+    els.editor.style.display = state.currentMode === 'text' ? '' : 'none';
+    els.drawingCanvas.style.display = state.currentMode === 'pen' ? '' : 'none';
+    els.voicePanel.style.display = state.currentMode === 'voice' ? '' : 'none';
     let hasToolbarForMode = false;
     els.toolbarGroups.forEach((group) => {
-      const shown = group.dataset.for === mode;
+      const shown = group.dataset.for === state.currentMode;
       group.style.display = shown ? '' : 'none';
       if (shown) hasToolbarForMode = true;
     });
-    // 音声モードなど、そのモード用のツールバーが無い場合は空バーを残さず折りたたむ
     if (els.toolbar) els.toolbar.style.display = hasToolbarForMode ? '' : 'none';
-    state.drawMode = mode === 'pen';
-    els.drawingCanvas.style.pointerEvents = mode === 'pen' ? 'auto' : 'none';
-    if (mode === 'pen') {
-      setTimeout(resizeCanvas, 50);
-    }
-    if (mode === 'text') {
-      focusEditorSoon();
-    }
+    editorController.setActive(state.currentMode === 'text');
+    drawingController.setActive(state.currentMode === 'pen');
+    const historyVisible = state.currentMode !== 'voice';
+    els.undoBtn.style.display = historyVisible ? '' : 'none';
+    els.redoBtn.style.display = historyVisible ? '' : 'none';
+    updateHistoryButtons();
+    if (state.currentMode === 'text') focusEditorSoon();
+  }
+
+  function updateHistoryButtons() {
+    const history = state.currentMode === 'pen' ? state.drawingHistory : state.textHistory;
+    els.undoBtn.disabled = !history.canUndo;
+    els.redoBtn.disabled = !history.canRedo;
+  }
+
+  function runHistory(action) {
+    const controller = state.currentMode === 'pen' ? drawingController : editorController;
+    controller?.[action]?.();
   }
 
   function autoFillTitle() {
@@ -157,45 +200,29 @@
     state.selectedTags = Array.isArray(draft.tags) ? [...draft.tags] : parseTags(draft.tags || '');
     _rememberTags(state.selectedTags);
     renderTagChips();
-    els.editor.innerHTML = sanitizeHtml(draft.html || '');
+    editorController.reset(sanitizeHtml(draft.html || ''));
     state.share = {
       source_url: draft.source_url || '',
       share_title: draft.share_title || '',
       source_label: draft.source_label || '',
     };
-    if (draft.drawing_png) {
-      const img = new Image();
-      img.onload = () => {
-        // 手書き画像はモード切替で非表示中に復元されることがあるため、
-        // 表示サイズに依存せず画像自身の解像度でキャンバスへ描く。
-        // (表示時の resizeCanvas() が改めて表示サイズへ合わせて再スケールする)
-        const canvas = els.drawingCanvas;
-        canvas.width = img.naturalWidth || canvas.width;
-        canvas.height = img.naturalHeight || canvas.height;
-        const ctx = context();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0);
-        state.hasDrawing = true;
-      };
-      img.src = draft.drawing_png;
-    }
+    drawingController.reset(draft.drawing_png || '');
   }
 
-  function collectMemo(options = {}) {
+  function collectMemo() {
     const now = new Date().toISOString();
     const draft = readJson(CURRENT_KEY, {});
     const memoId = draft.memo_id || newMemoId();
-    const drawing = state.hasDrawing ? els.drawingCanvas.toDataURL('image/png') : '';
+    const html = sanitizeHtml(editorController.getHtml());
     const memo = {
       memo_id: memoId,
       client_id: draft.client_id || clientId(),
       server_path: draft.server_path || '',
       title: els.titleInput.value.trim() || (els.editor.innerText.trim().split(/\r?\n/)[0] || '').slice(0, 60),
       tags: [...state.selectedTags],
-      html: sanitizeHtml(els.editor.innerHTML),
+      html,
       text: els.editor.innerText.trim(),
-      drawing_png: drawing,
+      drawing_png: drawingController.toDataURL(),
       source_url: state.share?.source_url || draft.source_url || '',
       share_title: state.share?.share_title || draft.share_title || '',
       source_label: state.share?.source_label || draft.source_label || '',
@@ -203,7 +230,6 @@
       updated_at: now,
       source: (state.share?.source_url || state.share?.share_title || state.share?.source_label) ? 'mobile-share' : 'quick-memo',
     };
-    if (options.autoTag) memo.auto_tag = true;
     return memo;
   }
 
@@ -217,7 +243,7 @@
     els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
     state.selectedTags = [];
     renderTagChips();
-    els.editor.innerHTML = '';
+    editorController.reset('');
     resetDrawingCanvas();
     writeJson(CURRENT_KEY, {
       memo_id: newMemoId(),
@@ -234,12 +260,43 @@
   }
 
   function resetDrawingCanvas() {
-    const canvas = els.drawingCanvas;
-    if (!canvas) return;
-    context().clearRect(0, 0, canvas.width, canvas.height);
-    state.hasDrawing = false;
-    state.drawing = false;
-    state.lastPoint = null;
+    drawingController.reset('');
+  }
+
+  function preserveCurrentForNavigation() {
+    const current = collectMemo();
+    if (!state.dirty && !draftHasContent(current)) return true;
+    const stored = persistDraft(current);
+    const queued = enqueueMemo(current);
+    if (!stored || !queued) throw new Error('メモを端末内へ保存できませんでした');
+    state.flushRequested = true;
+    drainQueue({ manual: false, pending: true });
+    return true;
+  }
+
+  async function openExistingMemo(memo) {
+    _stopVoiceCapture();
+    state.share = {
+      source_url: memo.source_url || '',
+      share_title: memo.share_title || '',
+      source_label: memo.source_label || '',
+    };
+    els.titleInput.value = memo.title || '';
+    state.selectedTags = Array.isArray(memo.tags) ? [...memo.tags] : parseTags(memo.tags || '');
+    _rememberTags(state.selectedTags);
+    renderTagChips();
+    editorController.reset(sanitizeHtml(memo.html || escHtml(memo.text || '').replace(/\n/g, '<br>')));
+    drawingController.reset(memo.drawing_png || '');
+    writeJson(CURRENT_KEY, {
+      ...memo,
+      memo_id: memo.memo_id || newMemoId(),
+      client_id: memo.client_id || clientId(),
+      server_path: memo.server_path || memo.path || '',
+    });
+    state.dirty = false;
+    libraryController.hide();
+    switchMode('text');
+    setStatus('過去のメモを開きました');
   }
 
   function applyIncomingShare() {
@@ -260,10 +317,9 @@
       source_label: state.share.source_label,
     });
     els.titleInput.value = shared.title || titleFromUrl(shared.url) || '';
-    els.editor.innerHTML = sharedHtml(shared);
-    if (!state.selectedTags.length) {
-      state.selectedTags.push('共有');
-    }
+    editorController.reset(sharedHtml(shared));
+    drawingController.reset('');
+    state.selectedTags = ['共有'];
     _rememberTags(state.selectedTags);
     renderTagChips();
     persistDraft(collectMemo());
@@ -337,7 +393,7 @@
   }
 
   async function saveNow(opts) {
-    const memo = collectMemo({ autoTag: !!(opts && opts.autoTag) });
+    const memo = collectMemo();
     const storedDraft = persistDraft(memo);
     const queued = enqueueMemo(memo);
     if (!storedDraft || !queued) {
@@ -401,7 +457,6 @@
             _rememberTags(state.selectedTags);
             renderTagChips();
           }
-          delete current.auto_tag;
           writeJson(CURRENT_KEY, current);
         }
       } catch {
@@ -489,19 +544,8 @@
     return `${CLOUD_SHEET_NAME}/${stamp}_${title}_${id}.md`;
   }
 
-  function autoTagSuggest(text) {
-    const lower = String(text || '').toLowerCase();
-    if (!lower.trim()) return [];
-    return state.allTags.filter((tag) => tag && lower.includes(String(tag).toLowerCase()));
-  }
-
   function cloudMemoTags(item) {
-    let tags = Array.isArray(item.tags) ? [...item.tags] : [];
-    if (item.auto_tag) {
-      const matched = autoTagSuggest(String(item.title || '') + ' ' + String(item.text || ''));
-      tags = [...new Set([...tags, ...matched])];
-    }
-    return tags;
+    return Array.isArray(item.tags) ? [...new Set(item.tags)] : [];
   }
 
   function cloudMemoBody(item) {
@@ -511,9 +555,9 @@
     const drawingRaw = String(item.drawing_png || '');
     const drawing = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/.test(drawingRaw) ? drawingRaw.replace(/\s+/g, '') : '';
     const parts = ['# ' + title, ''];
-    if (html) parts.push(html, '');
-    else if (text) parts.push(escHtml(text).replace(/\n/g, '<br>'), '');
-    if (drawing) parts.push('<figure>', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
+    if (html) parts.push('<div class="meldex-quick-memo-body">', html, '</div>', '');
+    else if (text) parts.push('<div class="meldex-quick-memo-body">', escHtml(text).replace(/\n/g, '<br>'), '</div>', '');
+    if (drawing) parts.push('<figure class="meldex-quick-memo-drawing">', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
     return parts.join('\n');
   }
 
@@ -609,7 +653,6 @@
 
   function initCloudMode() {
     if (!isCloudMode()) return;
-    if (els.listBtn) els.listBtn.style.display = 'none';
     // standalone-pwa-install.js が独自の「ホームに追加」フローティングボタンと
     // ダイアログを提供する（クラウド単独アプリ共通）。二重表示を避けるため、
     // quick-memo.js自身のインストールボタンはクラウドモードでは隠す。
@@ -798,80 +841,6 @@
     scheduleSave();
   }
 
-  // --- クイックメモ一覧 ----------------------------------------------------
-
-  async function showListView() {
-    els.editorView.style.display = 'none';
-    els.listView.style.display = '';
-    await loadMemoList();
-  }
-
-  function hideListView() {
-    els.listView.style.display = 'none';
-    els.editorView.style.display = '';
-  }
-
-  async function loadMemoList() {
-    els.listContent.innerHTML = '<div class="qm-list-empty">読み込み中...</div>';
-    try {
-      const res = await fetch(API_BASE + '/api/quick-memo/list');
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      if (!data.ok || !Array.isArray(data.memos)) throw new Error();
-      state.memoList = data.memos;
-      const allListTags = new Set();
-      data.memos.forEach((memo) => (memo.tags || []).forEach((tag) => allListTags.add(tag)));
-      els.listTagFilter.innerHTML = '<option value="">すべてのタグ</option>';
-      [...allListTags].sort().forEach((tag) => {
-        const opt = document.createElement('option');
-        opt.value = tag;
-        opt.textContent = tag;
-        els.listTagFilter.appendChild(opt);
-      });
-      renderMemoList(data.memos);
-    } catch {
-      els.listContent.innerHTML = '<div class="qm-list-empty">一覧を読み込めません。Meldexが起動しているか確認してください。</div>';
-    }
-  }
-
-  function renderMemoList(memos) {
-    if (!memos.length) {
-      els.listContent.innerHTML = '<div class="qm-list-empty">クイックメモはまだありません</div>';
-      return;
-    }
-    els.listContent.innerHTML = '';
-    memos.forEach((memo) => {
-      const item = document.createElement('div');
-      item.className = 'qm-list-item';
-      const tagsHtml = (memo.tags || []).map((tag) => '<span class="qm-list-tag">' + escHtml(tag) + '</span>').join('');
-      const date = (memo.modified || memo.created || '').slice(0, 16).replace('T', ' ');
-      item.innerHTML = '<div class="qm-list-item-title">' + escHtml(memo.title || '無題') + '</div>'
-        + '<div class="qm-list-item-preview">' + escHtml(memo.text_preview || '') + '</div>'
-        + '<div class="qm-list-item-meta"><span>' + escHtml(date) + '</span><div class="qm-list-item-tags">' + tagsHtml + '</div></div>';
-      item.addEventListener('click', () => openMemoFromList(memo));
-      els.listContent.appendChild(item);
-    });
-  }
-
-  function filterList() {
-    const query = (els.listSearch.value || '').trim().toLowerCase();
-    const tagFilter = els.listTagFilter.value;
-    const filtered = (state.memoList || []).filter((memo) => {
-      if (tagFilter && !(memo.tags || []).includes(tagFilter)) return false;
-      if (query) {
-        const text = ((memo.title || '') + ' ' + (memo.text_preview || '') + ' ' + (memo.tags || []).join(' ')).toLowerCase();
-        if (!text.includes(query)) return false;
-      }
-      return true;
-    });
-    renderMemoList(filtered);
-  }
-
-  function openMemoFromList(_memo) {
-    // 一覧からの選択は現状プレビューのみ。詳しい編集はMeldex本体で行う。
-    hideListView();
-  }
-
   // --- ホーム画面に追加（PWAインストール） -----------------------------------
 
   function listenInstallPrompt() {
@@ -913,109 +882,6 @@
     setStatus(instructions);
   }
 
-  function setupCanvas() {
-    resizeCanvas();
-    const canvas = els.drawingCanvas;
-    canvas.addEventListener('pointerdown', startDraw);
-    canvas.addEventListener('pointermove', moveDraw);
-    canvas.addEventListener('pointerup', endDraw);
-    canvas.addEventListener('pointercancel', endDraw);
-    setDrawTool('pen');
-  }
-
-  function resizeCanvas() {
-    const canvas = els.drawingCanvas;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const snapshot = state.hasDrawing ? canvas.toDataURL('image/png') : '';
-    canvas.width = Math.max(1, Math.floor(rect.width * devicePixelRatio));
-    canvas.height = Math.max(1, Math.floor(rect.height * devicePixelRatio));
-    const ctx = context();
-    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    if (snapshot) {
-      const img = new Image();
-      img.onload = () => ctx.drawImage(img, 0, 0, rect.width, rect.height);
-      img.src = snapshot;
-    }
-  }
-
-  function context() {
-    return els.drawingCanvas.getContext('2d');
-  }
-
-  function canvasPoint(event) {
-    const rect = els.drawingCanvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  }
-
-  function startDraw(event) {
-    if (!state.drawMode) return;
-    event.preventDefault();
-    els.drawingCanvas.setPointerCapture(event.pointerId);
-    state.drawing = true;
-    state.lastPoint = canvasPoint(event);
-  }
-
-  function moveDraw(event) {
-    if (!state.drawing || !state.lastPoint) return;
-    event.preventDefault();
-    const next = canvasPoint(event);
-    const ctx = context();
-    ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = Number(els.widthInput.value || 4);
-    if (state.drawTool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = Math.max(ctx.lineWidth, 10);
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = els.colorInput.value || '#4ec9b0';
-      ctx.globalAlpha = state.drawTool === 'marker' ? 0.34 : 1;
-    }
-    ctx.beginPath();
-    ctx.moveTo(state.lastPoint.x, state.lastPoint.y);
-    ctx.lineTo(next.x, next.y);
-    ctx.stroke();
-    ctx.restore();
-    state.lastPoint = next;
-    state.hasDrawing = true;
-    scheduleSave();
-  }
-
-  function endDraw(event) {
-    if (!state.drawing) return;
-    try { els.drawingCanvas.releasePointerCapture(event.pointerId); } catch {}
-    state.drawing = false;
-    state.lastPoint = null;
-    scheduleSave();
-  }
-
-  function setDrawTool(tool) {
-    state.drawTool = tool === 'marker' || tool === 'eraser' ? tool : 'pen';
-    els.markerBtn.classList.toggle('is-active', state.drawTool === 'marker');
-    els.eraserBtn.classList.toggle('is-active', state.drawTool === 'eraser');
-  }
-
-  function clearDrawing() {
-    context().clearRect(0, 0, els.drawingCanvas.width, els.drawingCanvas.height);
-    state.hasDrawing = false;
-    scheduleSave();
-  }
-
-  function fillDrawing() {
-    const rect = els.drawingCanvas.getBoundingClientRect();
-    const ctx = context();
-    ctx.save();
-    ctx.globalAlpha = 0.12;
-    ctx.fillStyle = els.colorInput.value || '#4ec9b0';
-    ctx.fillRect(0, 0, rect.width, rect.height);
-    ctx.restore();
-    state.hasDrawing = true;
-    scheduleSave();
-  }
-
   // --- 音声モード ----------------------------------------------------------
 
   async function startVoiceRecording() {
@@ -1035,6 +901,7 @@
         stream.getTracks().forEach((track) => track.stop());
         state.recording = null;
         updateVoiceUI('stopped');
+        if (recorder._meldexCancelled) return;
         const blob = new Blob(state.recordChunks, { type: recorder.mimeType || 'audio/webm' });
         await transcribeBlob(blob);
       };
@@ -1127,6 +994,7 @@
   function _stopVoiceCapture() {
     stopVoiceTimer();
     if (state.recording && state.recording.state !== 'inactive') {
+      state.recording._meldexCancelled = true;
       try { state.recording.stop(); } catch {}
     }
     state.recording = null;
@@ -1185,8 +1053,10 @@
   }
 
   function insertText(text) {
-    els.editor.focus();
-    document.execCommand('insertText', false, text + ' ');
+    editorController.mutate(() => {
+      els.editor.focus();
+      document.execCommand('insertText', false, text + ' ');
+    });
   }
 
   function blobToDataUrl(blob) {

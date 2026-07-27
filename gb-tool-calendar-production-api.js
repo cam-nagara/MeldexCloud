@@ -31,6 +31,8 @@
     createEntry: (payload) => request('/production-management/entries', { method: 'POST', body: payload }),
     previewTasks: (payload) => request('/production-management/tasks/preview', { method: 'POST', body: payload }),
     createTasks: (payload) => request('/production-management/tasks/create', { method: 'POST', body: payload, timeoutMs: 120000 }),
+    previewTaskStructure: (payload) => request('/production-management/tasks/structure/preview', { method: 'POST', body: payload }),
+    applyTaskStructure: (payload) => request('/production-management/tasks/structure/apply', { method: 'POST', body: payload, timeoutMs: 120000 }),
     taskByEvent: (eventId) => request('/production-management/task-by-event' + encodeQuery({ event_id: eventId })),
     templates: (params = {}) => request('/production-management/lists' + encodeQuery({ sheet: 'タスクテンプレート', limit: 500, ...params })),
     createTemplate: (payload) => request('/production-management/entries', {

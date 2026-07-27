@@ -9,12 +9,13 @@ const PROP_TYPE_ICON = {
   'multi-select': 'tags',
   'common-tags': 'tags',
   checkbox: 'checkSquare',
+  color: 'palette',
   date: 'calendar',
   url: 'globe',
   link: 'paperclip',
   image: 'image',
   relation: 'link2',
-  'multi-relation': 'link',
+  'multi-relation': 'link2',
   user: 'user',
   'multi-user': 'users',
   formula: 'sigma',
@@ -179,11 +180,24 @@ function _getDbSortConfigForView(dbPath, ctx) {
 }
 
 function _applyDbSortConfigForView(dbPath, sortConfig, detail, ctx) {
-  if (typeof setDbSortConfig === 'function') {
+  const pivotData = ctx?.pivotData
+    || ((typeof _ptIsCurrentDbPath === 'function' && _ptIsCurrentDbPath(dbPath)) ? state.pivotData : null);
+  const existingManualOrder = typeof getDbManualOrder === 'function'
+    ? getDbManualOrder(dbPath, { ctx })
+    : getDbViewConfig(dbPath).manualOrder;
+  if (sortConfig?.key === 'manual' && !Array.isArray(existingManualOrder) && typeof setDbManualOrder === 'function') {
+    const order = typeof _getEntityOrderSnapshot === 'function'
+      ? _getEntityOrderSnapshot(ctx, dbPath, pivotData?.entities || {})
+      : Object.keys(pivotData?.entities || {});
+    setDbManualOrder(dbPath, order, sortConfig, { label: 'シート表示: 並び替え', detail, ctx });
+  } else if (typeof setDbSortConfig === 'function') {
     setDbSortConfig(dbPath, sortConfig, { detail, ctx });
   } else {
     const c = getDbViewConfig(dbPath);
     c.sortConfig = { ...sortConfig };
+    if (sortConfig?.key === 'manual' && !Array.isArray(c.manualOrder)) {
+      c.manualOrder = Object.keys(pivotData?.entities || {});
+    }
     saveDbViewConfig(dbPath, c, { historyLabel: 'シート表示: 並び替え', historyDetail: detail || '', ctx });
   }
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
@@ -239,20 +253,49 @@ function showDbSortMenu(e, ctxOverride, dbPathOverride) {
   }, 0);
 }
 
-// 「左/右に列を挿入」サブメニューの子項目（列タイプ一覧）。
-// 選んだ列タイプでその側に列を挿入する。relation/rollup/formula 等は空で作られ、
-// 挿入直後のインラインリネーム後に「列タイプの設定...」で詳細設定する（型変更メニューと同じ流儀）。
-function _makeInsertColumnTypeChildren(refProp, direction, ctxOrDbPath) {
-  const typeItems = typeof getPropertyTypeMenuItems === 'function' ? getPropertyTypeMenuItems() : [];
-  return typeItems.map(ti => ({
-    label: lucide(ti.icon, 14) + ' ' + ti.label,
+// 日時タイプ選択時のサブメニュー項目（通常/作成日時/更新日時）。
+// 「列タイプ選択ポップアップ（＋ボタン）」と「左/右に列を挿入」の date 項目から共有する。
+function _makeDateColumnMenuChildren(refProp, direction, ctxOrDbPath) {
+  const variants = [
+    { label: '日時', initialName: '日時', cfg: { type: 'date' } },
+    { label: '作成日時', initialName: '作成日時', cfg: { type: 'date', source: 'created' } },
+    { label: '更新日時', initialName: '更新日時', cfg: { type: 'date', source: 'modified' } },
+  ];
+  return variants.map(v => ({
+    label: v.label,
     action: () => {
-      const cfg = ti.type === 'image'
-        ? { type: 'image', options: { max_count: null, accept: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'], thumbnail_size: 256 } }
-        : { type: ti.type };
-      if (typeof insertPropertyInline === 'function') insertPropertyInline(refProp, direction, ctxOrDbPath, cfg);
+      if (typeof insertPropertyInline === 'function') {
+        insertPropertyInline(refProp, direction, ctxOrDbPath, { ...v.cfg, initialName: v.initialName });
+      }
     },
   }));
+}
+
+// 「左/右に列を挿入」および「列タイプ選択ポップアップ（＋ボタン）」共通の子項目（列タイプ一覧）。
+// 選んだ列タイプでその側に列を挿入する。relation/rollup/formula 等は空で作られ、
+// 挿入直後のインラインリネーム後に「列タイプの設定...」で詳細設定する（型変更メニューと同じ流儀）。
+// date のみ、通常/作成日時/更新日時を選べるサブメニューを展開する（attachHoverSubmenu、_renderColMenuItems 経由）。
+// refProp が現在の列順に存在しない場合（例: null）は末尾に追加される（insertPropertyInline の仕様）。
+function _makeInsertColumnTypeChildren(refProp, direction, ctxOrDbPath) {
+  const typeItems = typeof getPropertyTypeMenuItems === 'function' ? getPropertyTypeMenuItems() : [];
+  return typeItems.map(ti => {
+    if (ti.type === 'date') {
+      return {
+        type: 'submenu',
+        label: lucide(ti.icon, 14) + ' ' + ti.label,
+        children: _makeDateColumnMenuChildren(refProp, direction, ctxOrDbPath),
+      };
+    }
+    const cfg = ti.type === 'image'
+      ? { type: 'image', initialName: ti.label, options: { max_count: null, accept: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'], thumbnail_size: 256 } }
+      : { type: ti.type, initialName: ti.label };
+    return {
+      label: lucide(ti.icon, 14) + ' ' + ti.label,
+      action: () => {
+        if (typeof insertPropertyInline === 'function') insertPropertyInline(refProp, direction, ctxOrDbPath, cfg);
+      },
+    };
+  });
 }
 
 // ctxOverride/dbPathOverride: 呼び出し側（例: gb-db-table.part03.js の列ヘッダ描画クロージャ）
@@ -332,11 +375,14 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride) {
           if (opts) cfg.options = opts;
           if (ti.type === 'number' && currentPtc.unit) cfg.unit = currentPtc.unit;
           if (ti.type === 'image') cfg.options = { max_count: null, accept: ['png','jpg','jpeg','gif','webp','svg'], thumbnail_size: 256 };
+          const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath) || {})[propName] || {}));
           const savePromise = setPropertyType(dbPath, propName, cfg);
           if (currentType === 'image' && ti.type !== 'image') {
             Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
           }
           renderPivot(ctx);
+          // Undo/Redo: クイック型切替も履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
+          if (typeof _ptPushTypeChangeHistory === 'function') _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, cfg, ctx);
         }
       }))
     },

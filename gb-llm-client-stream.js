@@ -406,7 +406,7 @@
   //   top_kも既定値以外だと400になるため常に省略する。
   // - "adaptiveNoXhigh": 上と同じadaptive方式だがeffort='xhigh'は未対応（highへクランプ）。
   // - どちらにも一致しないモデルは従来のbudget_tokens方式を使う。
-  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5'];
+  const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_FULL = ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5'];
   const ANTHROPIC_ADAPTIVE_THINKING_MODEL_PREFIXES_NO_XHIGH = ['claude-opus-4-6', 'claude-sonnet-4-6'];
 
   function _anthropicThinkingGeneration(model) {

@@ -67,6 +67,8 @@
       <input id="pt-auto-fill-on-create" type="text" value="${esc(curAutoCreate)}" placeholder="例: $now / $currentUser / $version / 提案">
     </div>
   `;
+  const autoFillHelp = autoFillBlock.querySelector('.gb-field-help');
+  if (autoFillHelp) autoFillHelp.dataset.e2eId = 'pt-auto-fill-on-create-help';
   optDiv.appendChild(autoFillBlock);
   _ptRefreshAutoFillVisibility(scope);
 }
@@ -202,7 +204,12 @@ async function applyPropertyType(propName, root, options = {}) {
     }
   } else if (type === 'relation' || type === 'multi-relation') {
     const dbInput = _ptGet('pt-relation-db', scope);
-    if (dbInput) config.relationDb = dbInput.value.trim();
+    if (dbInput) {
+      const inputPath = dbInput.value.trim();
+      config.relationDb = typeof _dbCanonicalizeRelationDbPathForSave === 'function'
+        ? _dbCanonicalizeRelationDbPathForSave(dbPath, inputPath)
+        : inputPath;
+    }
     const pairWith = _ptGet('pt-pair-with', scope)?.value || '';
     if (pairWith) config.pairWith = pairWith;
     const dependencyDirection = _ptGet('pt-dependency-direction', scope)?.value || '';
@@ -290,7 +297,11 @@ async function applyPropertyType(propName, root, options = {}) {
     }
   }
 
-  const savePromise = setPropertyType(dbPath, propName, config);
+  // Undo/Redo 用に変更前の型設定を控える（setPropertyType が書き換える前に取る）
+  const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || {}));
+  // 分割ペインの初回表示直後は state のグローバル参照がまだ対象ペインへ追従していない場合がある。
+  // 対象 ctx を明示して同じメタデータを更新し、初回の型設定から即座に表へ反映する。
+  const savePromise = setPropertyType(dbPath, propName, config, ctx);
   _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   if (prev.type === 'image' && type !== 'image') {
     Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
@@ -302,12 +313,28 @@ async function applyPropertyType(propName, root, options = {}) {
     for (const k in _formulaCache) delete _formulaCache[k];
   }
   if (options.render !== false) renderPivot(ctx);
+  // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
+  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
+  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
+  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
+  const _relTargetMayHaveChanged = _relTypes.includes(type)
+    && (prev.type !== type
+      || (config.relationDb || '') !== (prev.relationDb || '')
+      || type === 'multi-source-relation');
+  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
+    Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
+      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+      else if (options.render !== false) renderPivot(ctx);
+    }).catch(() => {});
+  }
   try {
     await savePromise;
   } catch (e) {
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
+  // 保存が確定してから履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
+  _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
   return config;
 }
 
@@ -508,7 +535,8 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
         if (e.key === 'Enter') { e.preventDefault(); labelInput.blur(); }
         else if (e.key === 'Escape') { e.preventDefault(); skipCommit = true; labelInput.value = entityColumnLabel; labelInput.blur(); }
       });
-      labelInput?.addEventListener('blur', commitLabel);
+      if (labelInput && typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(labelInput, commitLabel);
+      else labelInput?.addEventListener('blur', commitLabel);
     }
     target.querySelector('#entity-column-pinned')?.addEventListener('change', function() {
       if (typeof setEntityColumnPinned === 'function') {
@@ -575,6 +603,102 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
   _ptSetState(root, current, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   onPropertyTypeChange(root);
   _bindDbPropertySettingsAutosave(root, propName);
+  if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
+}
+
+// #pt-type のネイティブ<select>を、列タイプアイコン付きのカスタムドロップダウンで見た目上置き換える。
+// ネイティブselectは非表示で残し（値の読み取り・changeイベント互換を保つ）、選択時に
+// select.value を更新して change を発火する。列設定モーダル/パネル両方から呼ばれる。
+function enhancePropertyTypeSelect(root) {
+  const select = root?.querySelector?.('#pt-type');
+  if (!select || select.dataset.ptTypeEnhanced) return;
+  select.dataset.ptTypeEnhanced = '1';
+  select.style.display = 'none';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'pt-type-select-btn';
+  btn.dataset.e2eId = 'pt-type-select-btn';
+  const syncBtn = () => {
+    const t = select.value || 'text';
+    const iconName = typeof getPropertyTypeIcon === 'function' ? getPropertyTypeIcon(t) : 'alignLeft';
+    const label = typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(t) : t;
+    btn.innerHTML = '';
+    if (typeof lucide === 'function') {
+      const ic = document.createElement('span');
+      ic.className = 'pt-type-select-icon';
+      ic.innerHTML = lucide(iconName, 14);
+      btn.appendChild(ic);
+    }
+    const lb = document.createElement('span');
+    lb.className = 'pt-type-select-label';
+    lb.textContent = label;
+    btn.appendChild(lb);
+    if (typeof lucide === 'function') {
+      const caret = document.createElement('span');
+      caret.className = 'pt-type-select-caret';
+      caret.innerHTML = lucide('chevronDown', 14);
+      btn.appendChild(caret);
+    }
+  };
+  syncBtn();
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _openPropertyTypeMenu(btn, select.value, (newType) => {
+      if (newType && newType !== select.value) {
+        select.value = newType;
+        syncBtn();
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (btn.isConnected) btn.focus(); // 選択後はトリガーへフォーカスを戻す
+    });
+  });
+  select.insertAdjacentElement('afterend', btn);
+  select.addEventListener('change', syncBtn);
+}
+
+// 列タイプ選択メニュー（アイコン付き）。getPropertyTypeMenuItems() の各項目を .gb-context-menu で表示する。
+function _openPropertyTypeMenu(anchor, currentType, onPick) {
+  document.querySelectorAll('.pt-type-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu pt-type-menu';
+  menu.dataset.e2eId = 'pt-type-menu';
+  let closer = null;
+  const closeMenu = () => {
+    if (menu.parentNode) menu.remove();
+    if (closer) { document.removeEventListener('pointerdown', closer, true); closer = null; }
+  };
+  const items = typeof getPropertyTypeMenuItems === 'function' ? getPropertyTypeMenuItems() : [];
+  const curBase = typeof getPropertyTypeUiBaseType === 'function' ? getPropertyTypeUiBaseType(currentType) : currentType;
+  items.forEach(ti => {
+    const item = document.createElement('div');
+    item.className = 'gb-context-menu-item pt-type-menu-item' + (ti.type === curBase ? ' active' : '');
+    item.dataset.type = ti.type;
+    if (typeof lucide === 'function') {
+      const ic = document.createElement('span');
+      ic.className = 'pt-type-menu-icon';
+      ic.innerHTML = lucide(ti.icon, 14);
+      item.appendChild(ic);
+    }
+    const lb = document.createElement('span');
+    lb.textContent = ti.label;
+    item.appendChild(lb);
+    item.addEventListener('click', (e) => { e.stopPropagation(); closeMenu(); onPick(ti.type); });
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  menu.style.position = 'fixed';
+  menu.style.zIndex = '10050';
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, anchor.getBoundingClientRect());
+  } else {
+    const r = anchor.getBoundingClientRect();
+    menu.style.left = r.left + 'px';
+    menu.style.top = (r.bottom + 2) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+  closer = (e) => { if (!menu.contains(e.target)) closeMenu(); };
+  setTimeout(() => document.addEventListener('pointerdown', closer, true), 0);
 }
 
 function _ptSplitSelectOptionsFromTextarea(scope) {
@@ -638,8 +762,10 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     clearTimeout(timer);
     timer = setTimeout(run, delay);
   };
-  const run = async () => {
-    if (!root.isConnected) return;
+  const run = async (force = false) => {
+    // force=true はパネルを閉じる直前の確定保存。root が DOM から外れていても保存する
+    // （切り離された入力欄も値は保持されるため、編集内容を取りこぼさない）。
+    if (!force && !root.isConnected) return;
     if (saving) {
       queued = true;
       return;
@@ -659,6 +785,40 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
       }
     }
   };
+  // デバウンス待ちの編集を確定させる。パネルを閉じる/フォーカスが外へ出る直前に呼び、
+  // 「選択肢の色・名前などを編集したまま閉じると保存されず消える」取りこぼしを防ぐ。
+  const flushPending = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+      return run(true);
+    }
+    // 先行保存中に queued が立った場合も、その後の250ms待ちを残さず最後まで確定する。
+    if (saving) {
+      return new Promise(resolve => {
+        const settle = () => {
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+            Promise.resolve(run(true)).then(resolve, resolve);
+            return;
+          }
+          if (saving) {
+            setTimeout(settle, 10);
+            return;
+          }
+          resolve();
+        };
+        settle();
+      });
+    }
+  };
+  root._ptFlushAutosave = flushPending;
+  root.addEventListener('focusout', (e) => {
+    // フォーカスがパネルの外へ移ったら（別の場所をクリック／閉じるなど）確定保存する。
+    if (root.contains(e.relatedTarget)) return;
+    flushPending();
+  });
   root.addEventListener('input', (e) => {
     if (e.target?.closest?.('.db-picker-popup')) return;
     schedule();
@@ -684,8 +844,10 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
       if (e.key === 'Enter') {
         e.preventDefault();
         clearTimeout(timer);
+        timer = null; // blur→focusout→flushPending の再入による二重保存を防ぐ
         _ptApplyFastLocalSettings(root);
         run();
+        nameInput.blur(); // Enter で確定したら編集状態を抜ける（フォーカスを外す）
       } else if (e.key === 'Escape') {
         e.preventDefault();
         nameInput.value = root._ptAutosavePropName || initialPropName;
@@ -693,6 +855,19 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
       }
     });
   }
+}
+
+async function flushPendingDbPropertySettings(dbPath) {
+  const target = _ptNormalizeDbPath(dbPath || '');
+  const roots = Array.from(document.querySelectorAll('[data-pt-root]')).filter(root => {
+    const rootPath = _ptNormalizeDbPath(_ptState(root)?.dbPath || '');
+    return typeof root._ptFlushAutosave === 'function' && (!target || rootPath === target);
+  });
+  await Promise.allSettled(roots.map(root => Promise.resolve(root._ptFlushAutosave())));
+  if (typeof waitForPendingDbPropertyTypeSaves === 'function') {
+    await waitForPendingDbPropertyTypeSaves(target);
+  }
+  return true;
 }
 
 async function applyDbPropertySettings(originalPropName, root, options = {}) {
@@ -737,6 +912,10 @@ async function applyDbPropertySettings(originalPropName, root, options = {}) {
   _ptSetState(scope, getPropertyTypes(dbPath)[propName] || {}, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   const savedConfig = await applyPropertyType(propName, scope, { render: !options.auto });
   if (!savedConfig) return null;
+  // オプションパネルの自動保存（Enter確定）でも列タイプ変更をメインテーブルへ即座に反映する。
+  // applyPropertyType は auto 時に描画しない（render:false）ため、ここで現在ビューを描き直す。
+  // 表本体だけの再構築で、別サブツリーの設定パネルは閉じずフォーカスも維持される。
+  if (options.auto && typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
   if (typeof _setSelectedColumns === 'function') _setSelectedColumns(dbPath, [propName], propName);
   if (typeof state !== 'undefined') state.selectedColumn = { dbPath, propName };
   if (!options.auto) {

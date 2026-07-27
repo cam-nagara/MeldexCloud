@@ -86,6 +86,20 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
   setTimeout(apply, 120);
 }
 
+function _restoreDbNavigationViewSnapshot(dbPath, snapshot) {
+  if (!snapshot?.savedView || !Number.isInteger(snapshot.viewIdx)) return false;
+  const cfg = getDbViewConfig(dbPath);
+  if (!Array.isArray(cfg.savedViews) || snapshot.viewIdx < 0 || snapshot.viewIdx >= cfg.savedViews.length) return false;
+  try {
+    cfg.savedViews[snapshot.viewIdx] = JSON.parse(JSON.stringify(snapshot.savedView));
+  } catch {
+    return false;
+  }
+  cfg.currentViewIdx = snapshot.viewIdx;
+  saveDbViewConfig(dbPath, cfg, { skipHistory: true, skipBackend: true });
+  return true;
+}
+
 function _renderDbLoadError(ctx, error) {
   ctx = _normalizeDbRenderContext(ctx);
   clearPivot(ctx);
@@ -307,6 +321,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   }
 
   // 現在のシートビュータイプ復元（カレンダーDBは timeline=カレンダーモード）
+  if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);
   if (Number.isInteger(openOpts.restoreViewIdx)) {
     const cfgForRestore = getDbViewConfig(dbPath);
     if (Array.isArray(cfgForRestore.savedViews) && openOpts.restoreViewIdx >= 0 && openOpts.restoreViewIdx < cfgForRestore.savedViews.length) {
@@ -356,6 +371,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
     }
     if (backendViewConfigApplied) {
+      if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);
       const latestMode = getCurrentViewMode(dbPath, { ctx });
       if (latestMode && latestMode !== dbViewMode) {
         dbViewMode = latestMode;
@@ -407,6 +423,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
     const pivotData = await apiFetch(url);
+    if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
     if (isStaleDbLoad()) return;
     ctx.pivotData = pivotData;
     if (syncGlobalState) state.pivotData = ctx.pivotData; // グローバル同期
@@ -421,7 +438,11 @@ async function selectDatabase(dbPath, ctx, opts) {
       });
     }
     if (typeof _preloadRelationMapsForDb === 'function') {
-      _preloadRelationMapsForDb(dbPath, ctx.pivotData).catch(() => {});
+      // 先読みで参照先シートの欠落（リンク切れ）が判明した後、列見出しの警告アイコンを反映する。
+      // 初回コールドロードは先読み完了後に付き、2回目以降はキャッシュ済みで renderPivot 直後に即出る。
+      _preloadRelationMapsForDb(dbPath, ctx.pivotData, ctx)
+        .then(() => { if (!isStaleDbLoad() && typeof _syncRelationWarningIcons === 'function') _syncRelationWarningIcons(ctx); })
+        .catch(() => {});
     }
     const latestDbViewMode = getCurrentViewMode(dbPath);
     const effectiveLatestDbViewMode = getCurrentViewMode(dbPath, { ctx }) || latestDbViewMode;
@@ -645,6 +666,13 @@ function clearPivot(ctx) {
   const thead = _paneEl(ctx, '#' + tblId + ' thead');
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
   const tfoot = _paneEl(ctx, '#' + tblId + ' tfoot');
+  const table = _paneEl(ctx, '#' + tblId);
+  if (typeof _dbDisconnectPinnedColumnTracking === 'function') {
+    _dbDisconnectPinnedColumnTracking(table);
+  } else {
+    table?._dbPinnedWidthObserver?.disconnect?.();
+    if (table) table._dbPinnedWidthObserver = null;
+  }
   if (thead) thead.innerHTML = '';
   if (tbody) tbody.innerHTML = '';
   if (tfoot) tfoot.innerHTML = '';
@@ -793,9 +821,6 @@ function _dbUndoManualOrder(dbPath, movedNames, oldOrder, oldSortConfig, newOrde
     else target.sortConfig = { ...sortConfig };
     saveDbViewConfig(dbPath, c);
     renderPivot(ctx);
-    setTimeout(() => restoreActiveCellByEntityName(firstName), 50);
-    // 移動した全エントリの選択状態を復元（D&D 直前のチェック状態を再現）
-    _restoreSelectionByEntityNames(ctx, names);
   };
   const label = names.length > 1 ? `行移動: ${firstName} 他 ${names.length - 1} 件` : `行移動: ${firstName}`;
   historyPush(label,

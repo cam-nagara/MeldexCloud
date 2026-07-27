@@ -247,7 +247,7 @@
     flex-wrap: nowrap;
     -webkit-overflow-scrolling: touch;
   }
-  .db-toolbar-view-switcher {
+  .db-main-view-switcher {
     flex-shrink: 0;
   }
 }
@@ -272,4 +272,3 @@
   flex: 1;
   overflow: auto;
 }
-

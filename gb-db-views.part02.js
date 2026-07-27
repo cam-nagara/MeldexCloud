@@ -484,6 +484,7 @@ function renderGallery(ctx) {
     : Object.keys(entitiesMap)
       .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
       .sort();
+  ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
       _dbRenderEmptyStateWithCreate(container, 'image', 'エントリがありません', 'エントリを追加して開始してください', ctx);
@@ -862,6 +863,7 @@ function renderKanban(ctx) {
     : Object.keys(entitiesMap)
       .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
       .sort();
+  ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
       _dbRenderEmptyStateWithCreate(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください', ctx);
@@ -924,6 +926,7 @@ function renderKanban(ctx) {
     // カラムヘッダー
     const colHeader = document.createElement('div');
     colHeader.className = 'kanban-column-header';
+    let optionHeaderColor = '';
     if (groupByProp === '_status') {
       const dot = document.createElement('span');
       dot.className = 'kanban-dot';
@@ -932,10 +935,12 @@ function renderKanban(ctx) {
     } else if (typeof createDbOptionColorDot === 'function' && typeof getDbOptionColor === 'function') {
       const groupPtc = propTypes[groupByProp];
       if (groupPtc && (groupPtc.type === 'select' || groupPtc.type === 'multi-select')) {
-        const optionDot = createDbOptionColorDot(getDbOptionColor(groupPtc, colKey));
+        optionHeaderColor = getDbOptionColor(groupPtc, colKey);
+        const optionDot = createDbOptionColorDot(optionHeaderColor);
         if (optionDot) { optionDot.classList.add('kanban-dot'); colHeader.appendChild(optionDot); }
       }
     }
+    if (typeof applyDbOptionHeaderColor === 'function') applyDbOptionHeaderColor(colHeader, optionHeaderColor);
     const colTitle = document.createElement('span');
     colTitle.textContent = colKey;
     colHeader.appendChild(colTitle);
@@ -1022,16 +1027,17 @@ function renderKanban(ctx) {
               const oldRichHtml = target.rich_html || '';
               const oldRelations = Array.isArray(target.relations) ? JSON.parse(JSON.stringify(target.relations)) : [];
               const oldPublishedIn = Array.isArray(target.published_in) ? JSON.parse(JSON.stringify(target.published_in)) : [];
-              let currentRef = { file: target.file, property: target.property || groupByProp, candidate_index: target.candidate_index };
+              const entityPath = _entityPath(dbPath, entityName);
+              let currentRef = { file: target.file, entry_path: entityPath, property: target.property || groupByProp, candidate_index: target.candidate_index };
               await _apiPutValue(target, { _delete: true });
               historyPush('カンバン移動: ' + entityName,
                 async () => {
-                  const result = await _apiPostValue(_entityPath(dbPath, entityName), groupByProp, oldVal, oldStatus, oldNote, oldRichHtml, {
+                  const result = await _apiPostValue(entityPath, groupByProp, oldVal, oldStatus, oldNote, oldRichHtml, {
                     relations: oldRelations,
                     published_in: oldPublishedIn,
                     created: target.created || '',
                   });
-                  currentRef = { file: result?.path || result?.file || currentRef.file, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+                  currentRef = { file: result?.path || result?.file || currentRef.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
                   await selectDatabase(dbPath, ctx);
                 },
                 async () => { await _apiPutValue(currentRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
@@ -1052,13 +1058,13 @@ function renderKanban(ctx) {
             try {
               const entityPath = _entityPath(dbPath, entityName);
               const result = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-              let createdRef = { file: result?.path || result?.file, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
+              let createdRef = { file: result?.path || result?.file, entry_path: entityPath, property: result?.property || groupByProp, candidate_index: result?.candidate_index };
               if (createdRef.file) {
                 historyPush('カンバン移動: ' + entityName,
                   async () => { await _apiPutValue(createdRef, { _delete: true }); await selectDatabase(dbPath, ctx); },
                   async () => {
                     const redo = await _apiPostValue(entityPath, groupByProp, colKey, '採用', '');
-                    createdRef = { file: redo?.path || redo?.file || createdRef.file, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
+                    createdRef = { file: redo?.path || redo?.file || createdRef.file, entry_path: entityPath, property: redo?.property || groupByProp, candidate_index: redo?.candidate_index };
                     await selectDatabase(dbPath, ctx);
                   },
                   _dbScope(dbPath)

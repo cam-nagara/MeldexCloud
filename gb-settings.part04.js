@@ -1,4 +1,9 @@
 /* gb-settings.part04.js */
+  if (typeof saveAutoTagSettingsFromSettingsDialog === 'function') {
+    const autoTagSaveOk = await saveAutoTagSettingsFromSettingsDialog(settingsOverlay, { silent: true });
+    if (autoTagSaveOk === false) return;
+  }
+
   // 表示サイズ（zoom）
   try {
     const uiScale = document.getElementById('modal-ui-scale')?.value;
@@ -264,18 +269,18 @@ function _settingsCliProviderRows(config) {
   };
   // モデル世代交代時はここ（既定値とcodexの代表候補）を更新して新バージョンとしてリリースする。
   const defaultModels = {
-    codex: 'gpt-5.6',
+    codex: 'CLI既定（推奨）',
     claude_code: 'Claude Code',
     gemini_cli: 'Gemini CLI',
   };
   // モデル入力欄のdatalist代表候補。自由入力も引き続き可能。
   const modelCandidates = {
-    codex: ['gpt-5.6', 'gpt-5.5'],
+    codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     claude_code: ['sonnet', 'opus', 'haiku'],
     gemini_cli: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   };
   const modelTitles = {
-    codex: 'CLIへ渡すモデル名（空欄の場合はMeldexの既定モデルを使います）',
+    codex: 'CLIへ渡すモデル名（空欄はCLI自身の既定モデルを使います）',
     claude_code: 'CLIへ渡すモデル名（例: sonnet / opus / haiku。空欄はCLI側の既定モデルを使います）',
     gemini_cli: 'CLIへ渡すモデル名（空欄はCLI側の既定モデルを使います）',
   };
@@ -290,8 +295,16 @@ function _settingsCliProviderRows(config) {
     // 絞り込み候補がその文字列でフィルタされ、他候補がほぼ見えなくなる不具合があった。
     const modelValue = (!rawModel || rawModel === placeholderModel) ? '' : rawModel;
     const available = item.available !== false;
-    const statusText = available ? '検出済み' : '未検出';
-    const statusColor = available ? 'var(--accent)' : 'var(--red)';
+    const compatible = item.compatible !== false;
+    const statusText = !available
+      ? '未検出'
+      : !compatible
+        ? '更新必要'
+        : item.version
+          ? `v${item.version}`
+          : '検出済み';
+    const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
+    const compatibilityMessage = String(item.compatibility_message || '').trim();
     const datalistId = `settings-cli-chat-${_settingsCliEsc(key)}-model-list`;
     const datalistOptions = (modelCandidates[key] || []).map(value => `<option value="${_settingsCliEsc(value)}"></option>`).join('');
     return `
@@ -304,6 +317,7 @@ function _settingsCliProviderRows(config) {
         <input class="gb-input" list="${datalistId}" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(modelValue)}" placeholder="${_settingsCliEsc(placeholderModel)}" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル名')}">
         <datalist id="${datalistId}">${datalistOptions}</datalist>
         <span style="font-size:11px;color:${statusColor};white-space:nowrap;">${_settingsCliEsc(statusText)}</span>
+        ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
       </div>`;
   }).join('');
 }

@@ -22,7 +22,14 @@ async function _renderStaffRegistrySettings() {
       staff = await window.MeldexUserRegistry.listStaff({ force: true });
       duplicates = window.MeldexUserRegistry.listDuplicatesSync();
     }
-    if (locationEl) locationEl.textContent = config.path || '（未設定）';
+    if (locationEl) {
+      const staffLocationPath = config.path || '（未設定）';
+      locationEl.style.whiteSpace = 'nowrap';
+      locationEl.style.overflow = 'hidden';
+      // 長いパスは実効幅に収めて「先頭…末尾ファイル名」形式で中略表示する
+      if (typeof applyMiddleEllipsis === 'function') applyMiddleEllipsis(locationEl, staffLocationPath);
+      else locationEl.textContent = staffLocationPath;
+    }
     listEl.innerHTML = '';
     if (!staff.length) {
       listEl.innerHTML = '<div class="gb-section-desc">スタッフがいません</div>';
@@ -375,6 +382,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === 'LLM') {
       if (typeof _loadLlmConfigForSettings === 'function') _loadLlmConfigForSettings();
       if (typeof renderKnowledgeAutomationSettings === 'function') renderKnowledgeAutomationSettings(modal);
+      if (typeof renderAutoTagSettings === 'function') renderAutoTagSettings(modal);
       return;
     }
     if (canonical === 'LLMコスト') {

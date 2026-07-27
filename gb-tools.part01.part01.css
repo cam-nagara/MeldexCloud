@@ -19,6 +19,9 @@
   --db-grid-h: var(--db-show-grid); --db-grid-v: var(--db-show-grid);
   --db-grid-h-color: var(--db-grid-border); --db-grid-v-color: var(--db-grid-border);
 }
+#pivot-table th, #pivot-table td, .pivot-table th, .pivot-table td {
+  box-sizing: border-box;
+}
 #pivot-table th {
   background: var(--db-th-bg); color: var(--db-th-fg);
   font-family: var(--db-th-font, var(--ui-font, inherit));
@@ -53,12 +56,12 @@
   text-decoration-color: var(--db-cell-accent-color, currentColor);
 }
 #pivot-table tr:hover td { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-/* DB高速化v2 Step1: 画面外行のレイアウト/ペイントをスキップ。
-   contain-intrinsic-size はスクロールバー長さ計算用の推定値 (1行 ≒ 36px)。
-   group-header / new-entity-row は数が少なく恩恵が薄いため対象外 (visible に強制) */
+/* 可変高の画像セルを持つ table-row に content-visibility:auto を指定すると、
+   Chromium が行高を36pxと誤推定し、下側を空白のまま未描画にすることがある。
+   通常行は確実に描画し、大規模シートはJSの仮想行レンダラーで軽量化する。 */
 #pivot-table tbody tr {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 36px;
+  content-visibility: visible;
+  contain-intrinsic-size: none;
 }
 #pivot-table tbody tr.group-header-row,
 #pivot-table tbody tr.new-entity-row,
@@ -67,8 +70,10 @@
   content-visibility: visible;
   contain-intrinsic-size: none;
 }
+/* left は JS が付与する（行先頭コントロール列の幅ぶん右へずらす）。ここで left:0 を書くと
+   ヘッダー側（JS が 52px 相当を付与）とズレて、横スクロール時にエントリ名列だけ左へ食い込む。 */
 #pivot-table td.col-entity {
-  position: sticky; left: 0; z-index: 5;
+  position: sticky; z-index: 5;
   /* 固定列は水平スクロール時に他列が背後を通過するため、必ず不透明背景にする。
      行ホバーや条件付き書式の半透明色との二重描画を避けるため background-color を直接指定し、
      後段の半透明 background ルールで上書きされても base 色が完全不透明になるよう --bg を下敷きにする */
@@ -90,25 +95,51 @@
 }
 #pivot-table td.col-entity .entity-name-cell-main {
   display: flex; align-items: center; align-content: center; width: 100%; min-height: 20px;
-  position: relative; padding-right: 22px; box-sizing: border-box;
+  position: relative; padding-right: 42px; box-sizing: border-box;
 }
 #pivot-table td.col-entity .entity-name-label {
   display: block; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; line-height: 1.4; word-break: break-word;
 }
 #pivot-table td.col-entity:hover { color: var(--accent); }
-#pivot-table th:first-child {
-  position: sticky; left: 0; z-index: 11;
-  min-width: 120px; width: 120px;
+/* 行先頭コントロール列（＋追加/ドラッグハンドル/選択チェックボックス）。常に先頭固定・並べ替え対象外。
+   エントリ名列（col-entity）は列順に関係なく、固定設定時に JS が共通 left 値を付与する。 */
+/* 行先頭コントロール列の幅。JS 側（固定列の sticky left の起点）もこの変数を読むので、
+   タッチ環境などで広げる場合はこの変数だけを上書きする（両者がズレると固定列が横にずれる）。
+   幅の内訳: ＋(14) + 2 + ハンドル(12) + 2 + チェックボックス(16) = 46px + 左右の余白と枠線。 */
+#pivot-table, .pivot-table { --db-row-controls-w: 56px; }
+#pivot-table th.col-row-controls-header, .pivot-table th.col-row-controls-header {
+  position: sticky; left: 0; z-index: 12;
+  min-width: var(--db-row-controls-w); width: var(--db-row-controls-w); max-width: var(--db-row-controls-w);
+  background: var(--db-th-bg);
 }
-/* DB9: エントリ名列の固定解除 (entity-col-unpinned クラス時) */
+#pivot-table td.col-row-controls, .pivot-table td.col-row-controls {
+  position: sticky; left: 0; z-index: 7;
+  background-image: linear-gradient(var(--db-th-bg), var(--db-th-bg));
+  background-color: var(--db-th-bg);
+  min-width: var(--db-row-controls-w); width: var(--db-row-controls-w); max-width: var(--db-row-controls-w);
+  padding: 3px 2px;
+  overflow: hidden;
+}
+#pivot-table td.col-row-controls .row-controls-main, .pivot-table td.col-row-controls .row-controls-main {
+  display: flex; align-items: center; height: 100%;
+}
+/* DB9: エントリ名列の固定解除 */
 #pivot-table.entity-col-unpinned td.col-entity,
-#pivot-table.entity-col-unpinned th:first-child,
+#pivot-table.entity-col-unpinned th.col-entity-header,
 #pivot-table.entity-col-unpinned tfoot td.col-entity {
   position: static;
 }
 /* アクティブセル */
 #pivot-table td.active-cell {
   outline: var(--db-active-width) solid var(--db-active-color); outline-offset: -2px; z-index: 6; position: relative;
+}
+/* 範囲選択セル（Shift+矢印/ドラッグ選択の範囲全体）。gb-accessibility.css と同一定義を、
+   同ファイルを読み込まないシートホスト（標準版 sheet-standalone / クラウド / モバイル）でも
+   範囲ハイライトが表示されるようシート共通CSSにも置く。 */
+.db-range-selected {
+  background-color: rgba(86, 156, 214, 0.32) !important;
+  background-color: color-mix(in srgb, var(--selection, #264f78) 55%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--accent, #569cd6);
 }
 .pivot-table {
   border-collapse: collapse; width: max-content; table-layout: fixed;
@@ -156,13 +187,13 @@
   text-decoration-color: var(--db-cell-accent-color, currentColor);
 }
 .pivot-table tr:hover td { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-.pivot-table tbody tr { content-visibility: auto; contain-intrinsic-size: auto 36px; }
+.pivot-table tbody tr { content-visibility: visible; contain-intrinsic-size: none; }
 .pivot-table tbody tr.group-header-row,
 .pivot-table tbody tr.new-entity-row,
 .pivot-table tbody tr.db-virtual-spacer-row,
 .pivot-table tbody tr.new-entity-spacer-row { content-visibility: visible; contain-intrinsic-size: none; }
 .pivot-table td.col-entity {
-  position: sticky; left: 0; z-index: 5;
+  position: sticky; z-index: 5;
   background-image: linear-gradient(var(--db-entity-bg), var(--db-entity-bg));
   background-color: var(--db-entity-bg);
   color: var(--db-entity-fg);
@@ -178,12 +209,11 @@
   cursor: pointer; white-space: normal; vertical-align: top;
   min-width: 120px; width: 120px; overflow: hidden;
 }
-.pivot-table td.col-entity .entity-name-cell-main { display: flex; align-items: center; align-content: center; width: 100%; min-height: 20px; position: relative; padding-right: 22px; box-sizing: border-box; }
+.pivot-table td.col-entity .entity-name-cell-main { display: flex; align-items: center; align-content: center; width: 100%; min-height: 20px; position: relative; padding-right: 42px; box-sizing: border-box; }
 .pivot-table td.col-entity .entity-name-label { display: block; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; line-height: 1.4; word-break: break-word; }
 .pivot-table td.col-entity:hover { color: var(--accent); }
-.pivot-table th:first-child { position: sticky; left: 0; z-index: 11; min-width: 120px; width: 120px; }
 .pivot-table.entity-col-unpinned td.col-entity,
-.pivot-table.entity-col-unpinned th:first-child,
+.pivot-table.entity-col-unpinned th.col-entity-header,
 .pivot-table.entity-col-unpinned tfoot td.col-entity { position: static; }
 .pivot-table td.active-cell { outline: var(--db-active-width) solid var(--db-active-color); outline-offset: -2px; z-index: 6; position: relative; }
 /* 列リサイズハンドル */
@@ -231,6 +261,32 @@ th.col-drop-right::after { right: -2px; }
 .cell-value {
   display: flex; align-items: flex-start; gap: 4px; line-height: 1.4;
 }
+.db-rollup-lines,
+.db-rollup-relation-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  width: 100%;
+}
+.db-rollup-line,
+.db-rollup-relation-line {
+  min-height: 1.4em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.db-rollup-relation-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent2);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.db-rollup-relation-line:hover { color: var(--accent); }
+.db-rollup-line[data-relation-status="ボツ"],
+.db-rollup-relation-line[data-relation-status="ボツ"] { opacity: 0.5; }
 .cell-value.status-botsu { opacity: 0.5; }
 .cell-value.dragging, .entity-name-label.dragging { opacity: 0.4; }
 .cell-value[draggable="true"], .entity-name-label[draggable="true"] { cursor: grab; }
@@ -319,6 +375,8 @@ th.col-drop-right::after { right: -2px; }
 }
 #pivot-table td.active-cell .cell-add-btn,
 .pivot-table td.active-cell .cell-add-btn,
+#pivot-table td.db-range-selected .cell-add-btn,
+.pivot-table td.db-range-selected .cell-add-btn,
 td:hover .cell-add-btn { display: inline-flex; }
 .cell-add-btn:hover { color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
 
@@ -350,7 +408,8 @@ td:hover .cell-add-btn { display: inline-flex; }
 /* 行選択チェックボックス（Notion風ホバー出現） */
 .row-select-cb {
   --gb-checkbox-size-override: 16px;
-  position: static; flex: 0 0 auto; transform: none; margin: 0 4px 0 0;
+  /* 行先頭コントロール列の最後尾。右余白を持たせると列幅から溢れて右端が切れるため 0 にする */
+  position: static; flex: 0 0 auto; transform: none; margin: 0;
   width: 16px; height: 16px; cursor: pointer; opacity: 0;
   accent-color: var(--accent); z-index: 3;
   display: inline-grid; place-content: center; align-self: center;
@@ -408,6 +467,59 @@ td:hover .cell-add-btn { display: inline-flex; }
 #pivot-table tr.row-status-adopted:hover td, .pivot-table tr.row-status-adopted:hover td { background: rgba(111, 168, 220, 0.15); }
 #pivot-table tr.row-status-draft:hover td, .pivot-table tr.row-status-draft:hover td { background: rgba(206, 145, 120, 0.15); }
 #pivot-table tr.row-status-rejected:hover td, .pivot-table tr.row-status-rejected:hover td { background: rgba(150, 150, 150, 0.15); }
+/* 半透明の行状態色で sticky セルの不透明な下地を消さない。
+   横スクロールした通常列が、固定列や行コントロール列の背後から透ける回帰を防ぐ。 */
+#pivot-table tr.row-status-published, .pivot-table tr.row-status-published { --db-row-state-overlay: rgba(106, 153, 85, 0.08); }
+#pivot-table tr.row-status-adopted, .pivot-table tr.row-status-adopted { --db-row-state-overlay: rgba(111, 168, 220, 0.08); }
+#pivot-table tr.row-status-draft, .pivot-table tr.row-status-draft { --db-row-state-overlay: rgba(206, 145, 120, 0.08); }
+#pivot-table tr.row-status-rejected, .pivot-table tr.row-status-rejected { --db-row-state-overlay: rgba(150, 150, 150, 0.08); }
+#pivot-table tr.row-status-published:hover, .pivot-table tr.row-status-published:hover { --db-row-state-overlay: rgba(106, 153, 85, 0.15); }
+#pivot-table tr.row-status-adopted:hover, .pivot-table tr.row-status-adopted:hover { --db-row-state-overlay: rgba(111, 168, 220, 0.15); }
+#pivot-table tr.row-status-draft:hover, .pivot-table tr.row-status-draft:hover { --db-row-state-overlay: rgba(206, 145, 120, 0.15); }
+#pivot-table tr.row-status-rejected:hover, .pivot-table tr.row-status-rejected:hover { --db-row-state-overlay: rgba(150, 150, 150, 0.15); }
+#pivot-table tr[class*="row-status-"] td.col-pinned,
+#pivot-table tr[class*="row-status-"] td.col-row-controls,
+.pivot-table tr[class*="row-status-"] td.col-pinned,
+.pivot-table tr[class*="row-status-"] td.col-row-controls {
+  background-image:
+    linear-gradient(var(--db-row-state-overlay), var(--db-row-state-overlay)),
+    linear-gradient(var(--db-th-bg), var(--db-th-bg));
+  background-color: var(--db-th-bg);
+}
+#pivot-table tr[class*="row-status-"] td.col-entity,
+.pivot-table tr[class*="row-status-"] td.col-entity {
+  background-image:
+    linear-gradient(var(--db-row-state-overlay), var(--db-row-state-overlay)),
+    linear-gradient(var(--db-entity-bg), var(--db-entity-bg));
+  background-color: var(--db-entity-bg);
+}
+/* 行・列選択の半透明色も、固定セルでは不透明な下地と重ねる。 */
+#pivot-table tr.row-selected td.col-pinned,
+#pivot-table tr.row-selected td.col-row-controls,
+#pivot-table td.col-selected.col-pinned,
+.pivot-table tr.row-selected td.col-pinned,
+.pivot-table tr.row-selected td.col-row-controls,
+.pivot-table td.col-selected.col-pinned {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 35%, transparent),
+      color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 35%, transparent)
+    ),
+    linear-gradient(var(--db-th-bg), var(--db-th-bg)) !important;
+  background-color: var(--db-th-bg) !important;
+}
+#pivot-table tr.row-selected td.col-entity,
+#pivot-table td.col-selected.col-entity,
+.pivot-table tr.row-selected td.col-entity,
+.pivot-table td.col-selected.col-entity {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 35%, transparent),
+      color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 35%, transparent)
+    ),
+    linear-gradient(var(--db-entity-bg), var(--db-entity-bg)) !important;
+  background-color: var(--db-entity-bg) !important;
+}
 
 /* マルチセレクトタグ */
 .multi-select-tags { display: flex; flex-wrap: wrap; gap: 3px; }
@@ -441,8 +553,11 @@ td:hover .cell-add-btn { display: inline-flex; }
   border-right: var(--db-grid-v) solid var(--db-grid-v-color);
 }
 #pivot-table tfoot td.col-entity, .pivot-table tfoot td.col-entity {
-  position: sticky; left: 0; z-index: 5; background: var(--bg3);
+  position: sticky; z-index: 5; background: var(--bg3);
   font-weight: bold;
+}
+#pivot-table tfoot td.col-row-controls, .pivot-table tfoot td.col-row-controls {
+  position: sticky; left: 0; z-index: 8; background: var(--bg3);
 }
 .count-type-select {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1195,6 +1310,14 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   font-weight: bold; font-size: 13px; cursor: pointer; user-select: none;
 }
 .group-header-row:hover td { background: var(--bg4) !important; }
+.group-header-row.db-option-color-header td {
+  background: var(--db-option-bg) !important;
+  color: var(--db-option-fg) !important;
+}
+.group-header-row.db-option-color-header:hover td {
+  background: color-mix(in srgb, var(--db-option-bg) 86%, var(--db-option-fg)) !important;
+}
+.group-header-row.db-option-color-header .group-count { color: inherit; opacity: 0.78; }
 .group-header-row.group-drop-target td {
   background: color-mix(in srgb, var(--ui-selection-bg) 40%, transparent) !important;
   box-shadow: inset 0 0 0 2px var(--ui-selection-bg);
@@ -1258,6 +1381,14 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   padding: 8px 12px; font-size: 13px; font-weight: bold;
   border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 6px;
   flex-shrink: 0; user-select: none;
+}
+.kanban-column-header.db-option-color-header {
+  background: var(--db-option-bg);
+  color: var(--db-option-fg);
+}
+.kanban-column-header.db-option-color-header .kanban-count {
+  color: inherit;
+  background: color-mix(in srgb, var(--db-option-fg) 18%, transparent);
 }
 .kanban-column-header .kanban-count {
   font-size: 11px; font-weight: normal; color: var(--fg2);

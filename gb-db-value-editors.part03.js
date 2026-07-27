@@ -138,13 +138,27 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
       const status = saveOptions.status || '採用';
       const result = await _apiPostValue(entityPath, propName, nextValue, status, '');
       const filePath = result?.path || '';
-      const candIdx = result?.candidate_index;
       if (filePath && typeof historyPush === 'function') {
+        let currentRef = {
+          file: filePath,
+          entry_path: entityPath,
+          property: result?.property || propName,
+          candidate_index: result?.candidate_index,
+        };
         historyPush('値追加: ' + propName + '=' + nextValue,
-          candIdx != null
-            ? async () => { await _apiPutValue({ file: filePath, property: propName, candidate_index: candIdx }, { _delete: true }); await _valueEditorReload(dbPath, ctx); }
-            : async () => { await apiPost('/outliner/delete', { path: filePath }); await _valueEditorReload(dbPath, ctx); },
-          async () => { await _apiPostValue(entityPath, propName, nextValue, status, ''); await _valueEditorReload(dbPath, ctx); },
+          currentRef.candidate_index != null
+            ? async () => { await _apiPutValue(currentRef, { _delete: true }); await _valueEditorReload(dbPath, ctx); }
+            : async () => { await apiPost('/outliner/delete', { path: currentRef.file }); await _valueEditorReload(dbPath, ctx); },
+          async () => {
+            const redo = await _apiPostValue(entityPath, propName, nextValue, status, '');
+            currentRef = {
+              file: redo?.path || redo?.file || currentRef.file,
+              entry_path: entityPath,
+              property: redo?.property || propName,
+              candidate_index: redo?.candidate_index,
+            };
+            await _valueEditorReload(dbPath, ctx);
+          },
           typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath)
         );
       }
@@ -185,6 +199,7 @@ async function _syncPairRelation(dbPath, targetId, pairPropName, sourceId, addin
           undo: async () => {
             await _apiPutValue({
               file: createdFile,
+              entry_path: targetPath,
               property: created?.property || pairPropName,
               candidate_index: created?.candidate_index,
             }, { _delete: true });
@@ -342,101 +357,142 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
         item.appendChild(cb);
       }
       item.appendChild(document.createTextNode(entry.name));
-      item.addEventListener('click', async () => {
-        const oldVal = val?.value || '';
-        const hasPair = ptc.pairWith && isSelfRef;
-        const bidirectionalCtx = ptc.bidirectional ? { entityPath, propName, ptc } : null;
-        let selfId = '';
-        if (hasPair) {
-          const selfName = entityPath.replace(/\.md$/, '').split('/').pop();
-          const selfMap = _relationCache[relDb];
-          selfId = selfMap ? (selfMap.nameToId[selfName] || selfName) : selfName;
-        }
-        if (isMulti) {
-          const idx = currentVals.findIndex(v => v === entry.id || v === entry.name);
-          if (idx >= 0) currentVals.splice(idx, 1);
-          else currentVals.push(entry.id);
-          didChange = relationValueText(currentVals) !== relationValueText(initialVals);
-          renderList(search.value);
-          if (dd.isConnected) search.focus({ preventScroll: true });
-        } else {
-          if (oldVal === entry.id || oldVal === entry.name) { closeDropdown(); return; }
-          let cascadeClears = [];
-          _upsertLocalPivotValue(entityPath, propName, val, entry.id);
-          refreshRelationCellNow();
-          try {
-            cascadeClears = await _clearCascadeDependentValues(entityPath, propName, oldVal, entry.id);
-          } catch (e) {
-            _upsertLocalPivotValue(entityPath, propName, val, oldVal);
-            refreshRelationCellNow();
-            showStatus('カスケード依存値の更新に失敗: ' + (e?.message || e), true);
-            return;
-          }
-          try {
-            await _apiPutValue(val, { new_value: entry.id });
-          } catch (e) {
-            _upsertLocalPivotValue(entityPath, propName, val, oldVal);
-            refreshRelationCellNow();
-            await _restoreCascadeDependentValues(entityPath, cascadeClears);
-            showStatus('リレーション値の保存に失敗: ' + (e?.message || e), true);
-            await _valueEditorReload(sourceDbPath, sourceCtx);
-            return;
-          }
-          _upsertLocalPivotValue(entityPath, propName, val, entry.id);
-          didChange = true;
-          let syncError = null;
-          const syncRollbackOps = [];
-          try {
-            if (hasPair) {
-              _relationCache[relDb] = null;
-              if (oldVal) {
-                const oldPairOp = await _syncPairRelation(relDb, oldVal, ptc.pairWith, selfId, false);
-                if (oldPairOp?.undo) syncRollbackOps.push(oldPairOp.undo);
-              }
-              const newPairOp = await _syncPairRelation(relDb, entry.id, ptc.pairWith, selfId, true);
-              if (newPairOp?.undo) syncRollbackOps.push(newPairOp.undo);
-            }
-            if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
-              const bidirectionalOp = await _applyBidirectionalRelationSync({
-                sourceDbPath,
-                entityPath,
-                propName,
-                ptc,
-                oldValue: oldVal,
-                newValue: entry.id,
-              });
-              if (bidirectionalOp?.undo) syncRollbackOps.push(bidirectionalOp.undo);
-            }
-          } catch (e) {
-            syncError = e;
-          }
-          if (syncError) {
-            await _rollbackRelationSyncOps(syncRollbackOps);
-            try { await _apiPutValue(val, { new_value: oldVal }); } catch {}
-            _upsertLocalPivotValue(entityPath, propName, val, oldVal);
-            refreshRelationCellNow();
-            if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-              try { await _restoreCascadeDependentValues(entityPath, cascadeClears); } catch {}
-            }
-            showStatus('リレーション同期に失敗: ' + (syncError?.message || syncError), true);
-            closeDropdown();
-            await _valueEditorReload(sourceDbPath, sourceCtx);
-            return;
-          }
-          if (isSelfRef) {
-            const selfName = entityPath.replace(/\.md$/, '').split('/').pop();
-            const selfMap = _relationCache[relDb];
-            const selfIdForCycle = selfMap ? (selfMap.nameToId[selfName] || selfName) : selfName;
-            const circular = await _checkCircularDependency(relDb, selfIdForCycle, entry.id, propName);
-            if (circular) showStatus('⚠ 循環依存が検出されました', true);
-          }
-          _dbUndoPairValue(propName, val, oldVal, entry.id, hasPair ? relDb : null, hasPair ? entry.id : null, hasPair ? ptc.pairWith : null, selfId, true, hasPair ? oldVal : null, entityPath, cascadeClears, bidirectionalCtx);
-          closeDropdown();
-          await _finalizeRelationCellUpdate(el, entityPath, propName, ptc, cascadeClears.map(c => c.propName));
-        }
-      });
+      item.addEventListener('click', () => selectRelationEntry(entry));
       listDiv.appendChild(item);
     });
+    // 該当なしの文字列を新規エントリとして追加（部分一致候補の有無に関わらず末尾に表示）
+    const trimmedFilter = (filter || '').trim();
+    if (trimmedFilter && !entryList.some(e => e.name === trimmedFilter)) {
+      const addItem = document.createElement('div');
+      addItem.className = 'dd-nav-item';
+      addItem.dataset.ddAdd = '1';
+      addItem.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--accent);';
+      addItem.innerHTML = lucide('plus', 12) + ' 「' + esc(trimmedFilter) + '」を新規作成';
+      addItem.onmouseenter = () => { addItem.style.background = 'var(--bg4)'; };
+      addItem.onmouseleave = () => { addItem.style.background = ''; };
+      addItem._ddActivate = () => handleCreateNewRelationEntry(trimmedFilter);
+      addItem.addEventListener('click', () => handleCreateNewRelationEntry(trimmedFilter));
+      listDiv.appendChild(addItem);
+    }
+  };
+  // 既存エントリ選択時の確定処理（新規作成後もこの関数を通す。処理内容は元itemクリックハンドラーをそのまま移動）
+  const selectRelationEntry = async (entry) => {
+    const oldVal = val?.value || '';
+    const hasPair = ptc.pairWith && isSelfRef;
+    const bidirectionalCtx = ptc.bidirectional ? { entityPath, propName, ptc } : null;
+    let selfId = '';
+    if (hasPair) {
+      const selfName = entityPath.replace(/\.md$/, '').split('/').pop();
+      const selfMap = _relationCache[relDb];
+      selfId = selfMap ? (selfMap.nameToId[selfName] || selfName) : selfName;
+    }
+    if (isMulti) {
+      const idx = currentVals.findIndex(v => v === entry.id || v === entry.name);
+      if (idx >= 0) currentVals.splice(idx, 1);
+      else currentVals.push(entry.id);
+      didChange = relationValueText(currentVals) !== relationValueText(initialVals);
+      renderList(search.value);
+      if (dd.isConnected) search.focus({ preventScroll: true });
+    } else {
+      if (oldVal === entry.id || oldVal === entry.name) { closeDropdown(); return; }
+      let cascadeClears = [];
+      _upsertLocalPivotValue(entityPath, propName, val, entry.id);
+      refreshRelationCellNow();
+      try {
+        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, oldVal, entry.id);
+      } catch (e) {
+        _upsertLocalPivotValue(entityPath, propName, val, oldVal);
+        refreshRelationCellNow();
+        showStatus('カスケード依存値の更新に失敗: ' + (e?.message || e), true);
+        return;
+      }
+      try {
+        await _apiPutValue(val, { new_value: entry.id });
+      } catch (e) {
+        _upsertLocalPivotValue(entityPath, propName, val, oldVal);
+        refreshRelationCellNow();
+        await _restoreCascadeDependentValues(entityPath, cascadeClears);
+        showStatus('リレーション値の保存に失敗: ' + (e?.message || e), true);
+        await _valueEditorReload(sourceDbPath, sourceCtx);
+        return;
+      }
+      _upsertLocalPivotValue(entityPath, propName, val, entry.id);
+      didChange = true;
+      let syncError = null;
+      const syncRollbackOps = [];
+      try {
+        if (hasPair) {
+          _relationCache[relDb] = null;
+          if (oldVal) {
+            const oldPairOp = await _syncPairRelation(relDb, oldVal, ptc.pairWith, selfId, false);
+            if (oldPairOp?.undo) syncRollbackOps.push(oldPairOp.undo);
+          }
+          const newPairOp = await _syncPairRelation(relDb, entry.id, ptc.pairWith, selfId, true);
+          if (newPairOp?.undo) syncRollbackOps.push(newPairOp.undo);
+        }
+        if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
+          const bidirectionalOp = await _applyBidirectionalRelationSync({
+            sourceDbPath,
+            entityPath,
+            propName,
+            ptc,
+            oldValue: oldVal,
+            newValue: entry.id,
+          });
+          if (bidirectionalOp?.undo) syncRollbackOps.push(bidirectionalOp.undo);
+        }
+      } catch (e) {
+        syncError = e;
+      }
+      if (syncError) {
+        await _rollbackRelationSyncOps(syncRollbackOps);
+        try { await _apiPutValue(val, { new_value: oldVal }); } catch {}
+        _upsertLocalPivotValue(entityPath, propName, val, oldVal);
+        refreshRelationCellNow();
+        if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
+          try { await _restoreCascadeDependentValues(entityPath, cascadeClears); } catch {}
+        }
+        showStatus('リレーション同期に失敗: ' + (syncError?.message || syncError), true);
+        closeDropdown();
+        await _valueEditorReload(sourceDbPath, sourceCtx);
+        return;
+      }
+      if (isSelfRef) {
+        const selfName = entityPath.replace(/\.md$/, '').split('/').pop();
+        const selfMap = _relationCache[relDb];
+        const selfIdForCycle = selfMap ? (selfMap.nameToId[selfName] || selfName) : selfName;
+        const circular = await _checkCircularDependency(relDb, selfIdForCycle, entry.id, propName);
+        if (circular) showStatus('⚠ 循環依存が検出されました', true);
+      }
+      _dbUndoPairValue(propName, val, oldVal, entry.id, hasPair ? relDb : null, hasPair ? entry.id : null, hasPair ? ptc.pairWith : null, selfId, true, hasPair ? oldVal : null, entityPath, cascadeClears, bidirectionalCtx);
+      closeDropdown();
+      await _finalizeRelationCellUpdate(el, entityPath, propName, ptc, cascadeClears.map(c => c.propName));
+    }
+  };
+  // 検索欄に完全一致が無い文字列を参照先シートへ新規エントリとして作成し、そのまま選択する
+  // （Notionのリレーション追加と同じUX）。連打防止は creatingRelationEntry フラグで行う。
+  let creatingRelationEntry = false;
+  const handleCreateNewRelationEntry = async (rawName) => {
+    const trimmed = String(rawName || '').trim();
+    if (!trimmed || creatingRelationEntry) return;
+    creatingRelationEntry = true;
+    try {
+      const sanitized = trimmed.replace(/[\\/:*?"<>|]/g, '_');
+      await apiPost('/entity/create', { parent_path: relDb, name: sanitized });
+      // 名前解決とロールアップの参照先キャッシュを同時に無効化する
+      if (typeof _invalidateRelationTargetCaches === 'function') _invalidateRelationTargetCaches(relDb);
+      else _relationCache[relDb] = null;
+      const map = await _getRelationMap(relDb);
+      const newId = (map?.nameToId && map.nameToId[sanitized]) || sanitized;
+      const newEntry = { name: sanitized, id: newId };
+      entryList.push(newEntry);
+      entryList.sort((a, b) => a.name.localeCompare(b.name));
+      await selectRelationEntry(newEntry);
+    } catch (e) {
+      showStatus('エントリの作成に失敗: ' + (e?.message || e), true);
+    } finally {
+      creatingRelationEntry = false;
+    }
   };
   renderList('');
   search.oninput = () => renderList(search.value);
@@ -601,6 +657,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
             if (result) {
               currentVal = {
                 file: result.path || currentVal.file,
+                entry_path: entityPath,
                 property: propName,
                 candidate_index: result.candidate_index,
                 value: oldVal,

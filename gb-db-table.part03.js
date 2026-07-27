@@ -83,6 +83,7 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
     const nextWidth = Math.max(60, Math.round(width));
     th.style.width = nextWidth + 'px';
     th.style.minWidth = nextWidth + 'px';
+    th.style.maxWidth = nextWidth + 'px';
     handle.setAttribute('aria-valuenow', String(nextWidth));
     const table = th.closest('table');
     if (table) {
@@ -92,6 +93,7 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
         if (cell) {
           cell.style.width = nextWidth + 'px';
           cell.style.minWidth = nextWidth + 'px';
+          cell.style.maxWidth = nextWidth + 'px';
         }
       });
     } else if (typeof setColWidth === 'function') {
@@ -128,7 +130,11 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
 function _dbReflowPinnedColumnOffsets(table) {
   if (!table) return;
   const headers = Array.from(table.querySelectorAll('thead th'));
-  let left = 0;
+  // 行先頭コントロール列（常時先頭固定）の分だけ、後続の固定列オフセットを右にずらす。
+  const controlsHeader = headers.find(th => th.classList.contains('col-row-controls-header'));
+  let left = controlsHeader
+    ? Math.max(0, Math.round(controlsHeader.offsetWidth || parseFloat(controlsHeader.style.width) || 52))
+    : 0;
   headers.forEach((th, colIndex) => {
     const isEntity = th.classList.contains('col-entity-header');
     const isEntityPinned = isEntity && th.style.position === 'sticky';
@@ -144,6 +150,144 @@ function _dbReflowPinnedColumnOffsets(table) {
       left += Math.max(60, Math.round(th.offsetWidth || parseFloat(th.style.width) || 100));
     }
   });
+  _dbAlignPinnedColumnSeams(table);
+  _dbSchedulePinnedColumnSeamAlignment(table);
+}
+
+function _dbPinnedColumnCells(table, header, colIndex, isEntityPinned) {
+  const cells = [header];
+  table.querySelectorAll('tbody tr, tfoot tr').forEach(tr => {
+    const cell = tr.children[colIndex];
+    if (!cell) return;
+    if (isEntityPinned ? cell.classList.contains('col-entity') : cell.classList.contains('col-pinned')) {
+      cells.push(cell);
+    }
+  });
+  return cells;
+}
+
+function _dbSetPinnedColumnShift(table, entry, shiftPx) {
+  const transform = Math.abs(shiftPx) > 0.25 ? `translateX(${shiftPx}px)` : '';
+  _dbPinnedColumnCells(table, entry.header, entry.colIndex, entry.isEntityPinned).forEach(cell => {
+    cell.style.transform = transform;
+  });
+}
+
+// 固定列の合計幅が狭いパネルを超えると、Chrome は末尾の sticky セルを
+// スクロール領域の右端へ押し戻し、直前の固定列へ重ねてしまう。実際の描画座標を基準に
+// 各固定列を順番に継ぎ目へ戻し、固定列の間から通常列が見える隙間・重なりを防ぐ。
+function _dbAlignPinnedColumnSeams(table) {
+  if (!table?.isConnected) return;
+  const headers = Array.from(table.querySelectorAll('thead th'));
+  const entries = headers.map((header, colIndex) => {
+    const isEntity = header.classList.contains('col-entity-header');
+    const isEntityPinned = isEntity && header.style.position === 'sticky';
+    const isPinned = header.classList.contains('col-pinned');
+    return (isEntityPinned || isPinned)
+      ? { header, colIndex, isEntityPinned }
+      : null;
+  }).filter(Boolean);
+  if (!entries.length) return;
+
+  // 前回の補正を外した同一レイアウトから再計測する。ここから補正の再適用までは
+  // 同じフレーム内なので、中間状態が画面へ描画されることはない。
+  entries.forEach(entry => _dbSetPinnedColumnShift(table, entry, 0));
+  let targetLeft = null;
+  entries.forEach((entry, index) => {
+    const rect = entry.header.getBoundingClientRect();
+    // 先頭の固定列は既存の sticky left を基準にする。狭幅時には行コントロール列自体も
+    // テーブル右端制約を受けるため、その描画位置を基準にすると固定列群全体が左へずれる。
+    if (index === 0) {
+      targetLeft = rect.right;
+      return;
+    }
+    const scaleX = entry.header.offsetWidth > 0
+      ? rect.width / entry.header.offsetWidth
+      : 1;
+    const shiftPx = (targetLeft - rect.left) / (Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1);
+    _dbSetPinnedColumnShift(table, entry, shiftPx);
+    targetLeft = entry.header.getBoundingClientRect().right;
+  });
+}
+
+function _dbSchedulePinnedColumnSeamAlignment(table) {
+  if (!table) return;
+  if (table._dbPinnedSeamTimer) clearTimeout(table._dbPinnedSeamTimer);
+  // scroll イベントが発火しない「同じ scrollLeft のままパネル幅だけ変わる」経路も拾う。
+  table._dbPinnedSeamTimer = setTimeout(() => {
+    table._dbPinnedSeamTimer = 0;
+    _dbAlignPinnedColumnSeams(table);
+  }, 32);
+  if (table._dbPinnedSeamFrame) return;
+  if (typeof requestAnimationFrame !== 'function') {
+    _dbAlignPinnedColumnSeams(table);
+    return;
+  }
+  table._dbPinnedSeamFrame = requestAnimationFrame(() => {
+    _dbAlignPinnedColumnSeams(table);
+    // scrollLeft 更新直後は sticky の右端制約が次の描画フレームで確定する場合がある。
+    // 2フレーム目でも再計測し、狭幅・拡大表示時の末尾固定列の重なりを補正する。
+    table._dbPinnedSeamFrame = requestAnimationFrame(() => {
+      table._dbPinnedSeamFrame = 0;
+      _dbAlignPinnedColumnSeams(table);
+    });
+  });
+}
+
+function _dbPinnedColumnScrollHost(table) {
+  let node = table?.parentElement;
+  while (node && node !== document.body) {
+    const overflowX = typeof getComputedStyle === 'function'
+      ? getComputedStyle(node).overflowX
+      : '';
+    if (/(auto|scroll|overlay)/.test(overflowX)) return node;
+    node = node.parentElement;
+  }
+  return table?.parentElement || null;
+}
+
+function _dbDisconnectPinnedColumnTracking(table) {
+  if (!table) return;
+  table._dbPinnedWidthObserver?.disconnect?.();
+  table._dbPinnedWidthObserver = null;
+  table._dbPinnedHostMutationObserver?.disconnect?.();
+  table._dbPinnedHostMutationObserver = null;
+  if (table._dbPinnedScrollHost && table._dbPinnedScrollHandler) {
+    table._dbPinnedScrollHost.removeEventListener('scroll', table._dbPinnedScrollHandler);
+  }
+  table._dbPinnedScrollHost = null;
+  table._dbPinnedScrollHandler = null;
+  if (table._dbPinnedSeamFrame && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(table._dbPinnedSeamFrame);
+  }
+  table._dbPinnedSeamFrame = 0;
+  if (table._dbPinnedSeamTimer) clearTimeout(table._dbPinnedSeamTimer);
+  table._dbPinnedSeamTimer = 0;
+}
+
+function _dbObservePinnedColumnWidths(table) {
+  _dbDisconnectPinnedColumnTracking(table);
+  if (!table || typeof ResizeObserver !== 'function') return;
+  const observer = new ResizeObserver(() => _dbReflowPinnedColumnOffsets(table));
+  table.querySelectorAll('thead th').forEach(header => observer.observe(header));
+  const scrollHost = _dbPinnedColumnScrollHost(table);
+  if (scrollHost) {
+    observer.observe(scrollHost);
+    const onScroll = () => _dbSchedulePinnedColumnSeamAlignment(table);
+    scrollHost.addEventListener('scroll', onScroll, { passive: true });
+    table._dbPinnedScrollHost = scrollHost;
+    table._dbPinnedScrollHandler = onScroll;
+    if (typeof MutationObserver === 'function') {
+      const hostObserver = new MutationObserver(() => _dbSchedulePinnedColumnSeamAlignment(table));
+      hostObserver.observe(scrollHost, {
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      });
+      table._dbPinnedHostMutationObserver = hostObserver;
+    }
+  }
+  table._dbPinnedWidthObserver = observer;
+  _dbSchedulePinnedColumnSeamAlignment(table);
 }
 
 function _dbClampInt(value, min, max, fallback) {
@@ -544,11 +688,16 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   if (options.applyAdvancedFilters && Array.isArray(advFilters) && advFilters.length && typeof _dbEntityPassesAdvancedFilters === 'function') {
     entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, filterMode));
   }
-  if (sortCfg.key === 'manual' && manualOrder) {
-    const order = manualOrder;
+  if (sortCfg.key === 'manual') {
+    const order = Array.isArray(manualOrder)
+      ? manualOrder
+      : (typeof _getEntityOrderSnapshot === 'function'
+          ? _getEntityOrderSnapshot(ctx, dbPath, entitiesMap)
+          : [...entityNames]);
+    const sourceIndexes = new Map(entityNames.map((name, index) => [name, index]));
     entityNames.sort((a, b) => {
       const ia = order.indexOf(a), ib = order.indexOf(b);
-      if (ia < 0 && ib < 0) return a.localeCompare(b);
+      if (ia < 0 && ib < 0) return sourceIndexes.get(a) - sourceIndexes.get(b);
       if (ia < 0) return 1; if (ib < 0) return -1;
       return ia - ib;
     });
@@ -604,6 +753,86 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   return entityNames;
 }
 
+// リンク切れ（参照先シート欠落）を列見出しに示す警告アイコンを生成する。
+// 色だけに頼らず三角形状＋aria-label で意味を担保（UI共通ルール準拠）。
+// ホバー/フォーカス/長押しの説明は gb-tooltip が data-gb-tooltip / title を拾って表示する。
+function _buildLinkWarnIcon(targetSheetName) {
+  const icon = document.createElement('span');
+  icon.className = 'th-linkwarn-icon';
+  icon.style.cssText = 'margin-left:4px;flex-shrink:0;display:inline-flex;align-items:center;color:var(--orange);';
+  icon.innerHTML = lucide('alertTriangle', 12);
+  const msg = 'リンク切れ: 参照先シート『' + (targetSheetName || '') + '』が見つかりません';
+  icon.title = msg;
+  icon.dataset.gbTooltip = msg;
+  icon.setAttribute('role', 'img');
+  icon.setAttribute('aria-label', msg);
+  return icon;
+}
+
+// リレーション列の参照先シートパスを解決する（relation / multi-relation 用）。
+function _relationColumnTargetPath(dbPath, ptc) {
+  if (!ptc) return '';
+  return typeof _dbResolveRelationDbPath === 'function'
+    ? _dbResolveRelationDbPath(dbPath, ptc)
+    : ((ptc.relationDb === '' ? dbPath : ptc.relationDb) || '');
+}
+
+// リレーション列の「参照先シート欠落（リンク切れ）」を列見出しの警告アイコンで反映する。
+// - 検出範囲: 参照先シートフォルダ自体が存在しない場合のみ（値の未解決 dangling は対象外）。
+// - 冪等: 欠落なら .th-linkwarn-icon を追加、解消なら除去。再呼び出しで最新状態に揃える。
+// - 通常シート・埋め込みシートとも同じ renderPivot 経由なので、この1関数で両対応。
+function _syncRelationWarningIcons(ctx) {
+  ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
+  if (!ctx) return;
+  const dbPath = ctx.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+  if (!dbPath) return;
+  if (typeof _isRelationTargetMissing !== 'function' || typeof _paneEl !== 'function') return;
+  const _tblId = ctx.tableId || 'pivot-table';
+  const thead = _paneEl(ctx, '#' + _tblId + ' thead');
+  if (!thead) return;
+  // 見出しの装飾処理。renderPivot の行描画前に呼ばれるため、
+  // 万一の例外で本体描画を止めないよう全体を try/catch で保護する。
+  try {
+  const propTypes = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null) || {};
+  const basename = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
+  thead.querySelectorAll('th[data-prop]').forEach(th => {
+    const propName = th.dataset.prop;
+    if (!propName || propName === '__entity__') return;
+    const ptc = propTypes[propName];
+    let targetName = '';
+    if (ptc && (ptc.type === 'relation' || ptc.type === 'multi-relation')) {
+      const target = _relationColumnTargetPath(dbPath, ptc);
+      if (target && target !== dbPath && _isRelationTargetMissing(target)) targetName = basename(target);
+    } else if (ptc && ptc.type === 'multi-source-relation') {
+      // 複数ソースのうち欠落しているシートがあれば警告（欠落シート名を列挙）。
+      const missNames = (ptc.sources || [])
+        .map(src => src && src.db)
+        .filter(sdb => sdb && sdb !== dbPath && _isRelationTargetMissing(sdb))
+        .map(basename);
+      if (missNames.length) targetName = missNames.join('・');
+    }
+    const existing = th.querySelector(':scope > .th-linkwarn-icon');
+    if (targetName) {
+      const msg = 'リンク切れ: 参照先シート『' + targetName + '』が見つかりません';
+      if (existing) {
+        if (existing.dataset.gbTooltip !== msg) {
+          existing.title = msg; existing.dataset.gbTooltip = msg; existing.setAttribute('aria-label', msg);
+        }
+      } else {
+        const icon = _buildLinkWarnIcon(targetName);
+        const label = th.querySelector(':scope > .th-label');
+        if (label && label.nextSibling) th.insertBefore(icon, label.nextSibling);
+        else th.appendChild(icon);
+      }
+    } else if (existing) {
+      existing.remove();
+    }
+  });
+  } catch (e) {
+    try { console.warn('[Meldex] リンク切れ警告アイコンの反映に失敗しました', e); } catch {}
+  }
+}
+
 function renderPivot(ctx) {
   const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || _currentPaneState());
@@ -635,6 +864,16 @@ function renderPivot(ctx) {
   }
   if (typeof filterDeletedDbProperties === 'function') props = filterDeletedDbProperties(dbPath, props);
   const visibleProps = props.filter(p => !hiddenCols.includes(p));
+
+  // 列の描画順序（'__entity__' を含む）。フェーズ2でエントリ名列もD&D並べ替え対象化。
+  // colOrder に '__entity__' が無い(=未保存/旧データ)場合は先頭補完し、従来の見た目を維持する。
+  const entityOrderRaw = colOrder ? [...colOrder] : [];
+  const renderedCols = entityOrderRaw.includes('__entity__')
+    ? entityOrderRaw.filter(p => p === '__entity__' || visibleProps.includes(p))
+    : [];
+  if (!renderedCols.includes('__entity__')) renderedCols.unshift('__entity__');
+  visibleProps.forEach(p => { if (!renderedCols.includes(p)) renderedCols.push(p); });
+  // エントリ名列は配置位置に関係なく、固定設定時は他の固定列と同じ left 計算へ含める。
 
   const entitiesMap = data.entities;
   const entityNames = _dbSortedEntityNames(data, dbPath, ctx, { propTypes, advFilters, filterMode });
@@ -692,91 +931,138 @@ function renderPivot(ctx) {
   // ヘッダー
   const headerRow = document.createElement('tr');
   headerRow.setAttribute('role', 'row');
-  const th0 = document.createElement('th');
-  th0.className = 'col-entity-header';
-  th0.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'entity');
-  const entityColumnLabel = _dbEntityColumnDisplayLabel(dbPath);
-  _setupDbColumnHeaderA11y(th0, entityColumnLabel);
-  if (selectedCols.includes('__entity__')) th0.classList.add('col-selected');
-  th0.style.position = entityColumnPinned ? 'sticky' : 'relative';
-  th0.style.left = entityColumnPinned ? '0px' : '';
-  th0.style.zIndex = entityColumnPinned ? '11' : '';
-  // エントリ名列の幅（永続化）
-  const _entityW = (savedWidths['__entity__'] || _dbDefaultEntityColumnWidth(dbPath));
-  th0.style.width = _entityW + 'px';
-  th0.style.minWidth = _entityW + 'px';
-  const th0Label = document.createElement('span');
-  th0Label.className = 'th-label';
-  th0Label.textContent = entityColumnLabel;
-  th0.appendChild(th0Label);
-  const th0MoreBtn = document.createElement('span');
-  th0MoreBtn.className = 'th-more-btn entity-th-more-btn';
-  th0MoreBtn.innerHTML = lucide('moreHorizontal', 14);
-  th0MoreBtn.title = '列メニュー';
-  th0MoreBtn.setAttribute('aria-label', entityColumnLabel + '列メニュー');
-  th0MoreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
-  th0MoreBtn.addEventListener('mouseenter', () => { th0MoreBtn.style.background = 'var(--bg4)'; });
-  th0MoreBtn.addEventListener('mouseleave', () => { th0MoreBtn.style.background = 'var(--bg2)'; });
-  th0MoreBtn.addEventListener('click', (e) => { e.stopPropagation(); showEntityColMenu(e, ctx, dbPath); });
-  th0.appendChild(th0MoreBtn);
-  th0.style.cursor = 'pointer';
-  th0.addEventListener('mouseenter', () => { th0MoreBtn.style.opacity = '1'; });
-  th0.addEventListener('mouseleave', () => { th0MoreBtn.style.opacity = '0'; });
-  th0.addEventListener('contextmenu', (e) => { e.preventDefault(); showEntityColMenu(e, ctx, dbPath); });
-  if (typeof addLongPressHandler === 'function') {
-    addLongPressHandler(th0, (e) => showEntityColMenu(e, ctx, dbPath));
-  }
-  th0.addEventListener('click', (e) => {
-    if (e.target.closest('.col-resize-handle, .th-more-btn')) return;
-    e.stopPropagation();
-    _setSelectedColumns(dbPath, ['__entity__'], '__entity__');
-    _applySelectedColumnClasses(ctx, dbPath);
-    if (typeof showDbPropertySettingsForColumn === 'function') {
-      showDbPropertySettingsForColumn(dbPath, '__entity__');
-    }
-  });
-  // リサイズハンドル
-  const th0Handle = document.createElement('div');
-  th0Handle.className = 'col-resize-handle';
-  th0Handle.dataset.e2eId = _dbE2eId(ctx, 'column-resize', 'entity');
-  _setupDbColumnResizeHandleA11y(th0Handle, th0, 0, '__entity__', dbPath, ctx);
-  th0Handle.addEventListener('pointerdown', (e) => startColResize(e, th0, 0, '__entity__'));
-  th0Handle.addEventListener('click', (e) => { e.stopPropagation(); });
-  th0Handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
-  th0.appendChild(th0Handle);
-  // D&D受け取り（他の列をエントリ名列の左側にドロップ）
-  th0.addEventListener('dragover', (e) => {
-    if (!e.dataTransfer.types.includes('text/x-col-name')) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    th0.classList.add('col-drop-right');
-  });
-  th0.addEventListener('dragleave', () => th0.classList.remove('col-drop-right'));
-  th0.addEventListener('drop', (e) => {
-    e.preventDefault();
-    const fromName = e.dataTransfer.getData('text/x-col-name');
-    th0.classList.remove('col-drop-right');
-    if (!fromName) return;
-    // エントリ名列の直後に移動 = visible 列の先頭。hidden 列は末尾保持
-    const arr = visibleProps.filter(n => n !== fromName);
-    arr.unshift(fromName);
+
+  // 行先頭コントロール列（＋追加/ドラッグハンドル/選択チェックボックス）。常に先頭固定・並べ替え対象外。
+  // 幅は gb-tools.part01.part01.css の CSS 変数 --db-row-controls-w が正（タッチ環境では拡幅される）。
+  const ROW_CONTROLS_WIDTH = typeof _dbRowControlsWidth === 'function' ? _dbRowControlsWidth(tblEl) : 56;
+  const thControls = document.createElement('th');
+  thControls.className = 'col-row-controls-header';
+  thControls.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'row-controls');
+  thControls.setAttribute('role', 'columnheader');
+  thControls.setAttribute('scope', 'col');
+  thControls.setAttribute('aria-label', '行操作');
+  headerRow.appendChild(thControls);
+
+  // 列D&D並べ替え（エントリ名列・プロパティ列で共通）
+  const _dbHandleColumnDrop = (fromName, targetToken, isLeft) => {
+    if (!fromName || fromName === targetToken) return;
+    const arr = renderedCols.filter(n => n !== fromName);
+    const idx = arr.indexOf(targetToken);
+    const insertIdx = idx >= 0 ? idx + (isLeft ? 0 : 1) : arr.length;
+    arr.splice(insertIdx, 0, fromName);
+    // hidden 列は元の colOrder の順序のまま末尾に保持
     const oldOrder = getColOrder(dbPath, { ctx }) || [];
     const hiddenInOrder = oldOrder.filter(n => hiddenCols.includes(n) && !arr.includes(n));
     setColOrder(dbPath, [...arr, ...hiddenInOrder], { ctx });
     renderPivot(ctx);
-  });
-  headerRow.appendChild(th0);
+  };
 
-  let pinnedLeftOffset = entityColumnPinned ? _entityW : 0; // エントリ列を固定しない場合は左端から固定列を始める
-  visibleProps.forEach((p, i) => {
+  const entityColumnLabel = _dbEntityColumnDisplayLabel(dbPath);
+  // エントリ名列の幅（永続化）
+  const _entityW = (savedWidths['__entity__'] || _dbDefaultEntityColumnWidth(dbPath));
+
+  const pinnedOffsets = typeof _dbPinnedColumnOffsets === 'function'
+    ? _dbPinnedColumnOffsets(renderedCols, pinnedCols, entityColumnPinned, savedWidths, _entityW, ROW_CONTROLS_WIDTH)
+    : {};
+  renderedCols.forEach((token, idx) => {
+    // 行先頭コントロール列の分だけ +1 した実DOM列インデックス（列幅リサイズ等で使用）
+    const domColIndex = idx + 1;
+
+    if (token === '__entity__') {
+      const th0 = document.createElement('th');
+      th0.className = 'col-entity-header';
+      th0.dataset.dbColToken = '__entity__';
+      th0.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'entity');
+      _setupDbColumnHeaderA11y(th0, entityColumnLabel);
+      if (selectedCols.includes('__entity__')) th0.classList.add('col-selected');
+      const entityLeft = pinnedOffsets.__entity__;
+      const entityShouldStick = entityColumnPinned && Number.isFinite(entityLeft);
+      th0.style.position = entityShouldStick ? 'sticky' : 'relative';
+      th0.style.left = entityShouldStick ? entityLeft + 'px' : '';
+      th0.style.zIndex = entityShouldStick ? '11' : '';
+      th0.style.width = _entityW + 'px';
+      th0.style.minWidth = _entityW + 'px';
+      th0.style.maxWidth = _entityW + 'px';
+      const th0Label = document.createElement('span');
+      th0Label.className = 'th-label';
+      th0Label.textContent = entityColumnLabel;
+      th0.appendChild(th0Label);
+      const th0MoreBtn = document.createElement('span');
+      th0MoreBtn.className = 'th-more-btn entity-th-more-btn';
+      th0MoreBtn.innerHTML = lucide('moreHorizontal', 14);
+      th0MoreBtn.title = '列メニュー';
+      th0MoreBtn.setAttribute('aria-label', entityColumnLabel + '列メニュー');
+      th0MoreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
+      th0MoreBtn.addEventListener('mouseenter', () => { th0MoreBtn.style.background = 'var(--bg4)'; });
+      th0MoreBtn.addEventListener('mouseleave', () => { th0MoreBtn.style.background = 'var(--bg2)'; });
+      th0MoreBtn.addEventListener('click', (e) => { e.stopPropagation(); showEntityColMenu(e, ctx, dbPath); });
+      th0.appendChild(th0MoreBtn);
+      th0.style.cursor = 'pointer';
+      th0.addEventListener('mouseenter', () => { th0MoreBtn.style.opacity = '1'; });
+      th0.addEventListener('mouseleave', () => { th0MoreBtn.style.opacity = '0'; });
+      th0.addEventListener('contextmenu', (e) => { e.preventDefault(); showEntityColMenu(e, ctx, dbPath); });
+      if (typeof addLongPressHandler === 'function') {
+        addLongPressHandler(th0, (e) => showEntityColMenu(e, ctx, dbPath));
+      }
+      th0.addEventListener('click', (e) => {
+        if (e.target.closest('.col-resize-handle, .th-more-btn')) return;
+        e.stopPropagation();
+        _setSelectedColumns(dbPath, ['__entity__'], '__entity__');
+        _applySelectedColumnClasses(ctx, dbPath);
+        if (typeof showDbPropertySettingsForColumn === 'function') {
+          showDbPropertySettingsForColumn(dbPath, '__entity__');
+        }
+      });
+      // リサイズハンドル
+      const th0Handle = document.createElement('div');
+      th0Handle.className = 'col-resize-handle';
+      th0Handle.dataset.e2eId = _dbE2eId(ctx, 'column-resize', 'entity');
+      _setupDbColumnResizeHandleA11y(th0Handle, th0, domColIndex, '__entity__', dbPath, ctx);
+      th0Handle.addEventListener('pointerdown', (e) => startColResize(e, th0, domColIndex, '__entity__'));
+      th0Handle.addEventListener('click', (e) => { e.stopPropagation(); });
+      th0Handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
+      th0.appendChild(th0Handle);
+      // D&D 列並び替え（プロパティ列と同じ機構。他の列と同様に並べ替え可能）
+      th0.draggable = true;
+      th0.addEventListener('dragstart', (e) => {
+        if (e.target.closest('.col-resize-handle, .th-more-btn')) { e.preventDefault(); return; }
+        e.dataTransfer.setData('text/x-col-name', '__entity__');
+        e.dataTransfer.effectAllowed = 'move';
+        th0.classList.add('col-dragging');
+      });
+      th0.addEventListener('dragend', () => th0.classList.remove('col-dragging'));
+      th0.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('text/x-col-name')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = th0.getBoundingClientRect();
+        const isLeftHalf = (e.clientX - rect.left) < rect.width / 2;
+        th0.classList.toggle('col-drop-left', isLeftHalf);
+        th0.classList.toggle('col-drop-right', !isLeftHalf);
+      });
+      th0.addEventListener('dragleave', () => { th0.classList.remove('col-drop-left', 'col-drop-right'); });
+      th0.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const fromName = e.dataTransfer.getData('text/x-col-name');
+        const isLeftHalf = th0.classList.contains('col-drop-left');
+        th0.classList.remove('col-drop-left', 'col-drop-right');
+        _dbHandleColumnDrop(fromName, '__entity__', isLeftHalf);
+      });
+      headerRow.appendChild(th0);
+      return;
+    }
+
+    const p = token;
     const th = document.createElement('th');
     const ptcHeader = propTypes[p];
     th.dataset.prop = p;
+    th.dataset.dbColToken = p;
     th.dataset.e2eId = _dbE2eId(ctx, 'column-header', p);
     _setupDbColumnHeaderA11y(th, p);
     const w = savedWidths[p] || 100;
     th.style.width = w + 'px';
     th.style.minWidth = w + 'px';
+    th.style.maxWidth = w + 'px';
     if (selectedCols.includes(p)) th.classList.add('col-selected');
 
     // ヘッダーラベル（タイプアイコン＋テキスト）
@@ -815,8 +1101,8 @@ function renderPivot(ctx) {
     // ピン留め
     if (pinnedCols.includes(p)) {
       th.classList.add('col-pinned');
-      th.style.left = pinnedLeftOffset + 'px';
-      pinnedLeftOffset += w;
+      const pinnedLeft = pinnedOffsets[p];
+      if (Number.isFinite(pinnedLeft)) th.style.left = pinnedLeft + 'px';
     }
 
     // ホバー表示の「...」ボタン（メニュー起動）
@@ -827,9 +1113,9 @@ function renderPivot(ctx) {
     moreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
     moreBtn.addEventListener('mouseenter', () => { moreBtn.style.background = 'var(--bg4)'; });
     moreBtn.addEventListener('mouseleave', () => { moreBtn.style.background = 'var(--bg2)'; });
-    moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showColHeaderMenu(e, p, i, ctx, dbPath); });
+    moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showColHeaderMenu(e, p, domColIndex, ctx, dbPath); });
     th.appendChild(moreBtn);
-    th.style.position = 'relative';
+    th.style.position = pinnedCols.includes(p) ? 'sticky' : 'relative';
     th.addEventListener('mouseenter', () => { moreBtn.style.opacity = '1'; });
     th.addEventListener('mouseleave', () => { moreBtn.style.opacity = '0'; });
 
@@ -837,8 +1123,8 @@ function renderPivot(ctx) {
     const handle = document.createElement('div');
     handle.className = 'col-resize-handle';
     handle.dataset.e2eId = _dbE2eId(ctx, 'column-resize', p);
-    _setupDbColumnResizeHandleA11y(handle, th, i + 1, p, dbPath, ctx);
-    handle.addEventListener('pointerdown', (e) => startColResize(e, th, i + 1, p));
+    _setupDbColumnResizeHandleA11y(handle, th, domColIndex, p, dbPath, ctx);
+    handle.addEventListener('pointerdown', (e) => startColResize(e, th, domColIndex, p));
     handle.addEventListener('click', (e) => { e.stopPropagation(); });
     handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
     th.appendChild(handle);
@@ -867,19 +1153,7 @@ function renderPivot(ctx) {
       const fromName = e.dataTransfer.getData('text/x-col-name');
       const isLeft = th.classList.contains('col-drop-left');
       th.classList.remove('col-drop-left', 'col-drop-right');
-      if (!fromName || fromName === p) return;
-      // 現在表示中の visible 順序を起点にする (colOrder が古い場合の防御)
-      // visibleProps は forEach 外のクロージャから参照できる
-      const arr = visibleProps.filter(n => n !== fromName);
-      const idx = arr.indexOf(p);
-      const insertIdx = idx >= 0 ? idx + (isLeft ? 0 : 1) : arr.length;
-      arr.splice(insertIdx, 0, fromName);
-      // hidden 列は元の colOrder の順序のまま末尾に保持
-      const oldOrder = getColOrder(dbPath, { ctx }) || [];
-      const hiddenInOrder = oldOrder.filter(n => hiddenCols.includes(n) && !arr.includes(n));
-      const newOrder = [...arr, ...hiddenInOrder];
-      setColOrder(dbPath, newOrder, { ctx });
-      renderPivot(ctx);
+      _dbHandleColumnDrop(fromName, p, isLeft);
     });
 
     // シングルクリック → プロパティメニュー（Notion風）
@@ -931,9 +1205,9 @@ function renderPivot(ctx) {
     });
 
     // 右クリックメニュー ＋ 長押しで同メニュー（タッチ/ペン）
-    th.addEventListener('contextmenu', (e) => { e.preventDefault(); showColHeaderMenu(e, p, i, ctx, dbPath); });
+    th.addEventListener('contextmenu', (e) => { e.preventDefault(); showColHeaderMenu(e, p, domColIndex, ctx, dbPath); });
     if (typeof addLongPressHandler === 'function') {
-      addLongPressHandler(th, (e) => showColHeaderMenu(e, p, i, ctx, dbPath));
+      addLongPressHandler(th, (e) => showColHeaderMenu(e, p, domColIndex, ctx, dbPath));
     }
     headerRow.appendChild(th);
   });
@@ -946,22 +1220,32 @@ function renderPivot(ctx) {
   thAdd.style.cssText = 'width:36px;min-width:36px;text-align:center;cursor:pointer;color:var(--fg2);padding:0;';
   thAdd.title = '列を追加';
   thAdd.innerHTML = lucide('plus', 16);
-  thAdd.addEventListener('click', () => {
-    const order = getColOrder(dbPath, { ctx }) || [...props];
-    const existingNames = new Set([
-      ...order,
-      ...props,
-      ...(typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, data.properties || []) : (data.properties || [])),
-      ...Object.keys(propTypes || {}),
-    ]);
-    // 新しい列の初期名は列タイプ名（この経路はテキスト列）
-    const base = (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel('text') : '') || 'テキスト';
-    let idx = 1, name = base;
-    while (existingNames.has(name)) { idx++; name = base + idx; }
-    order.push(name);
-    setColOrder(dbPath, order, { skipHistory: true, ctx });
-    setPropertyType(dbPath, name, { type: 'text' });
-    renderPivot(ctx);
+  // クリックで列タイプ選択ポップアップを表示する（「左/右に列を挿入」と同じ列タイプ一覧・
+  // 同じ日時サブメニューを共有。選んだ型で末尾に列を追加）。
+  thAdd.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu';
+    menu.dataset.e2eId = _dbE2eId(ctx, 'column-add-type-menu');
+    const items = typeof _makeInsertColumnTypeChildren === 'function'
+      ? _makeInsertColumnTypeChildren(null, 'after', ctx || dbPath)
+      : [];
+    if (typeof _renderColMenuItems === 'function') _renderColMenuItems(menu, items);
+    document.body.appendChild(menu);
+    if (typeof positionPopup === 'function') positionPopup(menu, thAdd.getBoundingClientRect());
+    setTimeout(() => {
+      const closer = (ev) => {
+        const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
+        if (!inAny) {
+          if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
+          else menu.remove();
+          document.removeEventListener('pointerdown', closer);
+        }
+      };
+      document.addEventListener('pointerdown', closer);
+    }, 0);
   });
 
   thAdd.onmouseenter = () => { if (!thAdd.querySelector('input')) thAdd.style.color = 'var(--accent)'; };
@@ -970,6 +1254,10 @@ function renderPivot(ctx) {
 
   thead.innerHTML = '';
   thead.appendChild(headerRow);
+
+  // リンク切れ（参照先シート欠落）の列見出し警告アイコンを反映（既知欠落を即時、
+  // 未判明分は先読み完了後に selectDatabase から再度この関数が呼ばれて反映される）。
+  if (typeof _syncRelationWarningIcons === 'function') _syncRelationWarningIcons(ctx);
 
   // ボディ
   if (typeof _dbDisposeVirtualRows === 'function') {
@@ -1012,7 +1300,7 @@ function renderPivot(ctx) {
     visibleProps, propTypes, entitiesMap, entityNames,
     dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols,
     selectedCols, _entityW, _tbl, _tblId, entityColumnPinned,
-    cellDisplayByCol,
+    cellDisplayByCol, renderedCols, pinnedOffsets,
   };
 
   // 行生成タスクをフラット化 (グループヘッダー + エントリ行を順序通りに並べる)
@@ -1050,19 +1338,37 @@ function renderPivot(ctx) {
   // 常に末尾に「＋新規エントリ」行を表示（Notion風）
   // 大規模シートも初期状態から全件スクロール可能にし、実DOMは仮想スクロールで画面周辺だけ作る。
   const renderMoreRow = null;
-  const newEntryRow = renderNewEntryRow(ctx, { visibleProps, entitiesMap, dbPath, selectedCols, _tbl, _entityW });
+  const newEntryRow = renderNewEntryRow(ctx, {
+    visibleProps,
+    selectedCols,
+    _entityW,
+    renderedCols,
+    pinnedCols,
+    pinnedOffsets,
+  });
   tbody.appendChild(newEntryRow);
   const newEntrySpacerRow = document.createElement('tr');
   newEntrySpacerRow.className = 'new-entity-spacer-row';
   newEntrySpacerRow.setAttribute('aria-hidden', 'true');
   newEntrySpacerRow.setAttribute('role', 'presentation');
   const newEntrySpacerCell = document.createElement('td');
-  newEntrySpacerCell.colSpan = visibleProps.length + 2;
+  newEntrySpacerCell.colSpan = visibleProps.length + 3;
   newEntrySpacerRow.appendChild(newEntrySpacerCell);
   tbody.appendChild(newEntrySpacerRow);
 
   // フッター集計行 (entityNames は確定済みなので即時計算)
-  renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx);
+  renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, savedWidths, propTypes, ctx, {
+    renderedCols,
+    entityColumnPinned,
+    pinnedOffsets,
+    entityWidth: _entityW,
+  });
+  if (tblEl && typeof _dbReflowPinnedColumnOffsets === 'function') {
+    requestAnimationFrame(() => {
+      if (tblEl.isConnected) _dbReflowPinnedColumnOffsets(tblEl);
+    });
+    if (typeof _dbObservePinnedColumnWidths === 'function') _dbObservePinnedColumnWidths(tblEl);
+  }
 
   const countEl = _paneEl(ctx, '#sb-count') || document.getElementById('sb-count');
   if (countEl) countEl.textContent = isRenderLimited
