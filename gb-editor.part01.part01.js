@@ -934,6 +934,7 @@ function _prepareEmbeddedMediaControls(root) {
   });
 
   let _mediaHideTimer = null;
+  let _dismissedMedia = null;
 
   function _cancelHideMedia() {
     clearTimeout(_mediaHideTimer);
@@ -948,6 +949,7 @@ function _prepareEmbeddedMediaControls(root) {
     if (_activeMedia) delete _activeMedia.dataset.mediaControlsActive;
     _activeMedia = null;
     if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
+      _dismissedMedia = restoreTarget;
       try { restoreTarget.focus({ preventScroll: true }); } catch (_) { restoreTarget.focus(); }
     }
   }
@@ -965,8 +967,8 @@ function _prepareEmbeddedMediaControls(root) {
     _activeMedia = media;
     _activeMedia.dataset.mediaControlsActive = '1';
     _positionMediaControls(media);
-    controls.removeAttribute('aria-hidden');
-    resizeHandle.removeAttribute('aria-hidden');
+    controls.setAttribute('aria-hidden', 'false');
+    resizeHandle.setAttribute('aria-hidden', 'false');
     if (options.focusControls) {
       const target = controls.querySelector('.active') || controls.querySelector('button');
       try { target?.focus?.({ preventScroll: true }); } catch (_) { target?.focus?.(); }
@@ -980,6 +982,7 @@ function _prepareEmbeddedMediaControls(root) {
   document.addEventListener('mouseover', (e) => {
     const media = e.target.closest('.embed-media');
     if (media) {
+      if (media === _dismissedMedia) return;
       _showMediaControls(media);
       return;
     }
@@ -990,6 +993,7 @@ function _prepareEmbeddedMediaControls(root) {
   document.addEventListener('pointerdown', (e) => {
     const media = e.target?.closest?.('.embed-media');
     if (media) {
+      _dismissedMedia = null;
       _showMediaControls(media);
       return;
     }
@@ -999,13 +1003,23 @@ function _prepareEmbeddedMediaControls(root) {
 
   document.addEventListener('focusin', (e) => {
     const media = e.target?.closest?.('.embed-media');
-    if (media) _showMediaControls(media);
+    if (!media) return;
+    if (media === _dismissedMedia) return;
+    _showMediaControls(media);
+  });
+  document.addEventListener('focusout', (e) => {
+    const media = e.target?.closest?.('.embed-media');
+    if (!media || media !== _dismissedMedia) return;
+    queueMicrotask(() => {
+      if (!media.contains(document.activeElement)) _dismissedMedia = null;
+    });
   });
 
   document.addEventListener('keydown', (e) => {
     const media = e.target?.closest?.('.embed-media');
     if (media && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
+      _dismissedMedia = null;
       _showMediaControls(media, { focusControls: true });
       return;
     }
@@ -1021,6 +1035,7 @@ function _prepareEmbeddedMediaControls(root) {
       _cancelHideMedia();
       return;
     }
+    if (e.target.closest('.embed-media') === _dismissedMedia) _dismissedMedia = null;
     if (e.target.closest('.embed-media') || e.target.closest('#media-float-controls') || e.target.id === 'media-resize-handle') {
       _scheduleHideMedia();
     }

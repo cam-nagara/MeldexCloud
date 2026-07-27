@@ -84,6 +84,7 @@
 
   function ratingControl(path, meta, options = {}) {
     const embedded = embeddedOf(meta) || {};
+    const e2ePath = String(path || '').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'file';
     const group = document.createElement('div');
     group.className = options.compact ? 'file-rating file-rating--compact' : 'file-rating';
     group.dataset.fileRatingPath = String(path || '');
@@ -94,6 +95,7 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.dataset.value = String(value);
+      button.dataset.e2eId = `file-rating-${e2ePath}-${value}`;
       button.setAttribute('aria-label', `評価 ${value}`);
       button.disabled = !editable;
       button.title = editable ? `${value}つ星に設定（同じ評価を押すと解除）` : 'この形式の評価は閲覧のみです';
@@ -241,51 +243,90 @@
     appendMetadataGroups(host, embedded);
   }
 
-  function attachFolderCard(thumb, item, image) {
-    if (!thumb || item?.type !== 'image' || !item?.path) return;
-    thumb.classList.add('fv-thumb--embedded');
-    const dimensions = document.createElement('span');
-    dimensions.className = 'fv-image-dimensions';
-    const ratingHost = document.createElement('div');
-    ratingHost.className = 'fv-image-rating-host';
-    thumb.append(dimensions, ratingHost);
+  function renderFolderTags(host, item) {
+    if (!host) return;
+    const tags = typeof _folderItemTags === 'function' ? _folderItemTags(item) : [];
+    const names = tags.map(tag => String(tag?.name || '')).filter(Boolean);
+    host.replaceChildren();
+    host.hidden = names.length === 0;
+    host.title = names.join('、');
+    names.slice(0, 3).forEach(name => {
+      const chip = document.createElement('span');
+      chip.className = 'fv-folder-tag';
+      chip.textContent = name;
+      host.appendChild(chip);
+    });
+    if (names.length > 3) {
+      const more = document.createElement('span');
+      more.className = 'fv-folder-tag fv-folder-tag--more';
+      more.textContent = `+${names.length - 3}`;
+      host.appendChild(more);
+    }
+  }
 
-    const showDimensions = embedded => {
+  function attachFolderTags(metaHost, item) {
+    if (!metaHost || !item?.path) return null;
+    const host = document.createElement('div');
+    host.className = 'fv-folder-tags';
+    host.dataset.folderTagsPath = String(item.path);
+    host._folderTagItem = item;
+    metaHost.appendChild(host);
+    renderFolderTags(host, item);
+    return host;
+  }
+
+  function refreshFolderTags(root = document) {
+    root.querySelectorAll?.('[data-folder-tags-path]').forEach(host => {
+      renderFolderTags(host, host._folderTagItem);
+    });
+  }
+
+  function attachFolderCard(thumb, item, image, options = {}) {
+    const metaHost = options.metaHost;
+    const showDimensions = options.showDimensions !== false;
+    const showRating = options.showRating !== false;
+    if (!metaHost || item?.type !== 'image' || !item?.path || (!showDimensions && !showRating)) return;
+    thumb?.classList.add('fv-thumb--embedded');
+    const dimensions = showDimensions ? document.createElement('span') : null;
+    if (dimensions) {
+      dimensions.className = 'fv-image-dimensions fv-meta-item';
+      dimensions.hidden = true;
+      metaHost.appendChild(dimensions);
+    }
+    const ratingHost = showRating ? document.createElement('div') : null;
+    if (ratingHost) {
+      ratingHost.className = 'fv-image-rating-host fv-meta-item';
+      metaHost.appendChild(ratingHost);
+    }
+
+    const updateDimensions = embedded => {
+      if (!dimensions) return;
       const text = dimensionText(embedded, image);
       dimensions.textContent = text;
       dimensions.hidden = !text;
-      const card = thumb.closest('.fv-item');
-      const nameCell = card?.querySelector('.fv-list-name');
-      let inline = nameCell?.querySelector('.fv-list-image-dimensions');
-      if (nameCell && text && !inline) {
-        inline = document.createElement('span');
-        inline.className = 'fv-list-image-dimensions';
-        nameCell.appendChild(inline);
-      }
-      if (inline) inline.textContent = text ? `  ·  ${text}` : '';
     };
     const hydrate = async () => {
-      if (!thumb.isConnected) return;
-      showDimensions(null);
-      const meta = await load(item.path);
-      if (!meta || !thumb.isConnected) return;
+      if (!metaHost.isConnected) return;
+      updateDimensions(item.embedded);
+      const preloaded = item.embedded ? { embedded: item.embedded } : null;
+      const meta = await load(item.path, preloaded);
+      if (!meta || !metaHost.isConnected) return;
       item.embedded = embeddedOf(meta);
-      showDimensions(item.embedded);
-      ratingHost.replaceChildren(ratingControl(item.path, meta, { compact: true }));
+      updateDimensions(item.embedded);
+      if (ratingHost) ratingHost.replaceChildren(ratingControl(item.path, meta, { compact: true }));
     };
-    if (image?.complete && image.naturalWidth) {
-      queueMicrotask(hydrate);
-    } else if (image) {
-      image.addEventListener('load', hydrate, { once: true });
-    } else {
-      queueMicrotask(hydrate);
+    if (image && !(image.complete && image.naturalWidth)) {
+      image.addEventListener('load', () => updateDimensions(item.embedded), { once: true });
     }
+    queueMicrotask(hydrate);
   }
 
   window.MeldexEmbeddedMetadata = {
     attachFolderCard,
+    attachFolderTags,
     dimensionText,
     load,
+    refreshFolderTags,
     renderEditor,
     update,
   };

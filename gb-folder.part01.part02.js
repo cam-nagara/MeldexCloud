@@ -435,6 +435,7 @@ function _folderBeginListColumnResize(event, column, button, container) {
 }
 
 function _folderAppendListCells(el, item) {
+  let nameCell = null;
   _folderListColumns().forEach((column, index) => {
     const gridColumn = String(index + 2);
     if (column.key === 'name') {
@@ -442,10 +443,14 @@ function _folderAppendListCells(el, item) {
       name.className = 'fv-name fv-list-cell fv-list-name';
       name.style.gridColumn = gridColumn;
       name.style.gridRow = '1';
-      name.textContent = item.name;
-      name.title = item.name;
-      name.dataset.gbTooltip = item.name;
+      const nameText = document.createElement('span');
+      nameText.className = 'fv-list-name-text';
+      nameText.textContent = item.name;
+      nameText.title = item.name;
+      nameText.dataset.gbTooltip = item.name;
+      name.appendChild(nameText);
       el.appendChild(name);
+      nameCell = name;
       return;
     }
     const cell = _folderMetaSpan('fv-list-cell fv-list-' + column.key, _folderListColumnValue(item, column.key));
@@ -453,6 +458,7 @@ function _folderAppendListCells(el, item) {
     cell.style.gridRow = '1';
     el.appendChild(cell);
   });
+  return nameCell;
 }
 
 function _folderRenderListHeader(container) {

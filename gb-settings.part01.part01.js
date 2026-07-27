@@ -293,7 +293,6 @@ async function showSettingsModal(opts) {
         <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます')}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-sheet" data-action="setMeldexDefaultApp" data-args='["sheet"]'>${lucide('table',14)} シート/CSVをMeldex Sheetにする</button>
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-note" data-action="setMeldexDefaultApp" data-args='["note"]'>${lucide('fileText',14)} MarkdownをMeldex Noteにする</button>
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} 画像/PDFをMeldex Viewerにする</button>
         </div>
@@ -882,7 +881,7 @@ function _renderDefaultAppAssociations(data) {
     el.style.color = 'var(--fg2)';
     return;
   }
-  const order = ['sheet', 'note', 'viewer'];
+  const order = ['note', 'viewer'];
   const apps = data.apps || {};
   const lines = [];
   order.forEach(appId => {

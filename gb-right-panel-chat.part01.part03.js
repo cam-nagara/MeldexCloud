@@ -56,6 +56,16 @@ function _chatFormatMessageTimestamp(value) {
   return `${compact[1]}/${pad(compact[2])}/${pad(compact[3])} ${pad(compact[4] || '0')}:${pad(compact[5] || '0')}`;
 }
 
+function _chatFormatHistoryModifiedTimestamp(value) {
+  if (value == null || value === '') return '';
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const milliseconds = numeric < 100_000_000_000 ? numeric * 1000 : numeric;
+    return _chatFormatMessageTimestamp(new Date(milliseconds).toISOString());
+  }
+  return _chatFormatMessageTimestamp(value);
+}
+
 function _ensureChatMessageId(message) {
   if (!message || typeof message !== 'object') return _newChatMessageId();
   if (!message.msg_id) message.msg_id = _newChatMessageId();

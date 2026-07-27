@@ -734,6 +734,24 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'image');
   }
 
+  // --- 自動タグ付け（フォルダは深い階層まで再帰処理） ---
+  if (!isMulti && nodeData.path && !isEntity) {
+    const recursiveAutoTag = isFolder || !!nodeData._isRoot;
+    addMenuItem(
+      recursiveAutoTag ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け',
+      () => {
+        closeTreeContextMenu();
+        if (typeof autoTagFolderTarget === 'function') {
+          autoTagFolderTarget(nodeData, { recursive: recursiveAutoTag });
+        } else {
+          showStatus('自動タグ付けを初期化できませんでした', true);
+        }
+      },
+      null,
+      'tags'
+    );
+  }
+
   // --- 台本で開く（シナリオのみ） ---
   if (!isMulti && nodeData.path && ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path)))) {
     addMenuItem('シナリオで開く', () => {

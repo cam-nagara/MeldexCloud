@@ -180,12 +180,22 @@ textarea:disabled {
 .gb-tag-management-header {
   letter-spacing: 0;
 }
-.gb-tag-management-preset-row {
-  min-width: 0;
-}
-.gb-tag-management-preset-select {
+.gb-tag-management-filter {
   width: 100%;
   box-sizing: border-box;
+}
+.gb-tag-management-presets > summary,
+.gb-tag-management-builtins > summary {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--ui-fg-muted);
+  font-size: 12px;
+}
+.gb-tag-management-presets .at-preset-option {
+  min-width: 0;
+  max-width: 100%;
 }
 .gb-tag-text-btn,
 .gb-tag-icon-btn {
@@ -235,15 +245,18 @@ body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-body,
 body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-body {
   -webkit-overflow-scrolling: touch;
 }
-body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-preset-row,
-body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-preset-row,
-body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-preset-row {
-  grid-template-columns: minmax(0, 1fr) repeat(5, 44px) !important;
-  gap: 4px !important;
-}
-body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-preset-select,
-body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-preset-select,
-body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-preset-select,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-filter,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-filter,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-filter,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-presets > summary,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-presets > summary,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-presets > summary,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-builtins > summary,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-builtins > summary,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-builtins > summary,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-presets .at-preset-option,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-presets .at-preset-option,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-presets .at-preset-option,
 body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-text-btn,
 body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-text-btn,
 body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-text-btn,

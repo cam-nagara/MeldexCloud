@@ -521,17 +521,23 @@ function renderFolderGrid(opts) {
   }
 
   const dcfg = getFolderDisplayConfig();
-  if (_folderHasActiveFolderFilter(dcfg)) _folderEnsureMemberships(_folderItems, { rerender: true });
-  if (_folderHasActiveTagFilter(dcfg)) _folderEnsureTags(_folderItems, { rerender: true });
-  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems());
-  _folderVisibleItems = filteredItems;
-  _updateFolderDisplayFilterButton(dcfg);
-  document.getElementById('folder-item-count').textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
   const showThumb = dcfg.showThumb !== false;
   const showName = dcfg.showName !== false;
   const showSize = dcfg.showSize !== false;
   const showDate = dcfg.showDate !== false;
   const showType = dcfg.showType !== false;
+  const showDimensions = dcfg.showDimensions !== false;
+  const showRating = dcfg.showRating !== false;
+  const showTags = dcfg.showTags !== false;
+  if (_folderHasActiveFolderFilter(dcfg)) _folderEnsureMemberships(_folderItems, { rerender: true });
+  const activeTagFilter = _folderHasActiveTagFilter(dcfg);
+  const tagLoadPromise = (showTags || activeTagFilter)
+    ? _folderEnsureTags(_folderItems, { rerender: activeTagFilter })
+    : null;
+  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems());
+  _folderVisibleItems = filteredItems;
+  _updateFolderDisplayFilterButton(dcfg);
+  document.getElementById('folder-item-count').textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
   const isListLayout = _folderLayout === 'list';
   const showThumbForLayout = isListLayout || showThumb;
   _folderConfigureListLayout(container, isListLayout);
@@ -568,6 +574,11 @@ function renderFolderGrid(opts) {
       });
       _ensureWaterfallResizeObserver();
     }
+    tagLoadPromise?.then(() => {
+      if (renderSeq !== _folderRenderSeq) return;
+      window.MeldexEmbeddedMetadata?.refreshFolderTags?.(container);
+      if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
+    });
   };
   const renderFolderGridChunk = () => {
     if (renderSeq !== _folderRenderSeq) return;
@@ -637,9 +648,11 @@ function renderFolderGrid(opts) {
       el.appendChild(lockBadge);
     }
 
+    let folderCardThumb = null;
+    let folderPreviewImage = null;
     if (showThumbForLayout) {
       const thumb = document.createElement('div');
-      let folderPreviewImage = null;
+      folderCardThumb = thumb;
       thumb.className = 'fv-thumb';
       if (isListLayout) {
         thumb.style.gridColumn = '1';
@@ -688,12 +701,17 @@ function renderFolderGrid(opts) {
         thumb.style.position = 'relative';
         thumb.appendChild(badge);
       }
-      window.MeldexEmbeddedMetadata?.attachFolderCard?.(thumb, item, folderPreviewImage);
       el.appendChild(thumb);
     }
 
+    let folderMetaHost = null;
     if (isListLayout) {
-      _folderAppendListCells(el, item);
+      const nameCell = _folderAppendListCells(el, item);
+      if (nameCell && ((item.type === 'image' && (showDimensions || showRating)) || showTags)) {
+        folderMetaHost = document.createElement('div');
+        folderMetaHost.className = 'fv-list-extra-meta';
+        nameCell.appendChild(folderMetaHost);
+      }
     } else if (showName) {
       const name = document.createElement('div');
       name.className = 'fv-name';
@@ -706,10 +724,22 @@ function renderFolderGrid(opts) {
     if (!isListLayout) {
       const meta = document.createElement('div');
       meta.className = 'fv-meta';
-      if (showSize && item.size != null) meta.appendChild(Object.assign(document.createElement('span'), {textContent: formatFileSize(item.size)}));
-      if (showDate && item.modified) meta.appendChild(Object.assign(document.createElement('span'), {textContent: item.modified.substring(0, 16).replace('T', ' ')}));
-      if (showType) meta.appendChild(Object.assign(document.createElement('span'), {textContent: FILE_TYPE_LABELS[item.type] || item.ext || ''}));
-      if (meta.childNodes.length > 0) el.appendChild(meta);
+      if (showSize && item.size != null) meta.appendChild(Object.assign(document.createElement('span'), {className: 'fv-meta-item', textContent: formatFileSize(item.size)}));
+      if (showDate && item.modified) meta.appendChild(Object.assign(document.createElement('span'), {className: 'fv-meta-item', textContent: item.modified.substring(0, 16).replace('T', ' ')}));
+      if (showType) meta.appendChild(Object.assign(document.createElement('span'), {className: 'fv-meta-item', textContent: FILE_TYPE_LABELS[item.type] || item.ext || ''}));
+      if (meta.childNodes.length > 0 || (item.type === 'image' && (showDimensions || showRating)) || showTags) {
+        folderMetaHost = meta;
+        el.appendChild(meta);
+      }
+    }
+
+    if (folderMetaHost) {
+      window.MeldexEmbeddedMetadata?.attachFolderCard?.(folderCardThumb, item, folderPreviewImage, {
+        metaHost: folderMetaHost,
+        showDimensions,
+        showRating,
+      });
+      if (showTags) window.MeldexEmbeddedMetadata?.attachFolderTags?.(folderMetaHost, item);
     }
 
     // クリック: 選択（Ctrl=トグル追加、Shift=範囲選択）
@@ -1006,7 +1036,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
   if (item.type !== 'folder') addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
   if (!blankTarget && item.path) {
-    addItem('自動タグ付け', () => {
+    addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
       if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
     }, null, 'tags');
   }

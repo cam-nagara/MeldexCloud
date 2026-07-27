@@ -21,8 +21,8 @@
       defaultExtension: '.mel-scenario', extensions: ['.mel-scenario', '.scriptnote.json'],
     },
     sheet: {
-      id: 'sheet', title: 'Meldex Sheet', defaultFilename: '無題.mel-sheet',
-      defaultExtension: '.mel-sheet', extensions: ['.mel-sheet', '.smart-db.json', '.csv'],
+      id: 'sheet', title: 'Meldex Sheet', defaultFilename: '',
+      defaultExtension: '', extensions: [],
     },
     timer: {
       id: 'timer', title: 'Meldex Timer', defaultFilename: '無題.mel-timer',
@@ -166,14 +166,19 @@
     const path = normalizePath(raw);
     const lower = path.toLowerCase();
     const hint = String(body?.linkType || body?.type || '').toLowerCase();
-    const app = hint.includes('board') || ['.mel-board', '.board.md'].some((ext) => lower.endsWith(ext)) ? 'board'
+    const sheetLink = ['database', 'sheet', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(hint);
+    const app = sheetLink ? 'sheet'
+      : hint.includes('board') || ['.mel-board', '.board.md'].some((ext) => lower.endsWith(ext)) ? 'board'
       : hint.includes('scenario') || hint.includes('scriptnote') || ['.mel-scenario', '.scriptnote.json'].some((ext) => lower.endsWith(ext)) ? 'scenario'
-        : hint.includes('sheet') || ['.mel-sheet', '.smart-db.json', '.csv'].some((ext) => lower.endsWith(ext)) ? 'sheet'
-          : hint.includes('timer') || ['.mel-timer', '.timer.json'].some((ext) => lower.endsWith(ext)) ? 'timer'
-            : ['.md', '.txt'].some((ext) => lower.endsWith(ext)) ? 'note' : '';
+        : hint.includes('timer') || ['.mel-timer', '.timer.json'].some((ext) => lower.endsWith(ext)) ? 'timer'
+          : ['.md', '.txt'].some((ext) => lower.endsWith(ext)) ? 'note' : '';
     if (!app) throw new Error('このリンク先を開けるMeldex単独アプリがありません');
     await ensureReady({ requireConnection: true });
-    _pathPolicy().assertFile(path, { action: 'リンク先を開く', extensions: APP_SPECS[app].extensions });
+    if (sheetLink) {
+      _pathPolicy().assertFolder(path, 'シートを開く');
+      const stat = await (await _provider()).statPath(path);
+      if (stat?.kind !== 'directory') throw new Error('通常シートのフォルダが見つかりません');
+    } else _pathPolicy().assertFile(path, { action: 'リンク先を開く', extensions: APP_SPECS[app].extensions });
     const url = new URL(`apps/${app}/`, document.baseURI || window.location.href);
     url.searchParams.set('open', path);
     window.open(url.href, '_blank', 'noopener,noreferrer');
@@ -766,10 +771,7 @@
       editor: { wrapMode: true, statusEnabled: false, viewMode: 'horizontal' },
       characters: [], characterDb: [], notes: [], rubyRules: [], rows: [], source: {},
     }, null, 2) + '\n';
-    if (id === 'sheet') return JSON.stringify({
-      type: 'smart-db', name: safeTitle === '無題' ? '' : safeTitle, sourceType: 'db-entities',
-      sources: [], filters: [], views: { table: { columns: [], sort: [] } }, activeView: 'table',
-    }, null, 2) + '\n';
+    if (id === 'sheet') return '';
     if (id === 'timer') return JSON.stringify({
       type: 'meldex-timer', version: 1, name: safeTitle === '無題' ? '' : safeTitle,
       timer: { displayMode: 'digital', totalSeconds: 300, elapsed: 0, countUp: false,

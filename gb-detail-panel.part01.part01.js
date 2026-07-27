@@ -130,7 +130,7 @@ function _detailTabButtonHtml(tab, className, label) {
 function _detailTabShellHtml() {
   return `
     <nav id="detail-tab-bar" class="gb-tabbar" role="tablist" aria-label="オプションパネルのタブ">
-      ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', 'エディタ')}
+      ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', '情報')}
       ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', '列設定')}
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
       ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジュール設定')}

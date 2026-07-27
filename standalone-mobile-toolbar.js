@@ -111,6 +111,12 @@
     btn.dataset.e2eId = _toolbarKey(entry.toolbar) + '-mtb-more';
     btn.innerHTML = typeof window.lucide === 'function' ? window.lucide('moreHorizontal', 16) : '&#8943;';
     _preventMousedownBlur(btn);
+    btn.addEventListener('mousedown', () => {
+      // 選択範囲の書式ポップアップが開いていると、その終了処理にこのクリックが
+      // 吸収されることがある。選択範囲自体はツールバー側が保持するため、
+      // ポップアップだけを先に閉じて「あふれメニュー」を確実に開く。
+      if (typeof window.closeAllFormatPopups === 'function') window.closeAllFormatPopups();
+    });
     btn.addEventListener('click', () => _toggleSheet(entry));
     entry.toolbar.appendChild(btn);
     entry.moreButton = btn;

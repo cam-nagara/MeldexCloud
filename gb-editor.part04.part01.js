@@ -527,8 +527,8 @@ document.addEventListener('keydown', async (e) => {
 
   // Escape: 検索パネルを閉じる（中央ハンドラではEscapeをglobalに登録していないため残存）
   if (e.key === 'Escape') {
-    if (document.getElementById('file-search-bar').classList.contains('open')) { closeFileSearch(); e.preventDefault(); return; }
-    if (document.getElementById('search-panel').classList.contains('open')) { closeSearchPanel(); e.preventDefault(); return; }
+    if (document.getElementById('file-search-bar')?.classList.contains('open')) { closeFileSearch(); e.preventDefault(); return; }
+    if (document.getElementById('search-panel')?.classList.contains('open')) { closeSearchPanel(); e.preventDefault(); return; }
   }
 
   // Shift+F10: 右クリックメニューをキーボードで呼び出し

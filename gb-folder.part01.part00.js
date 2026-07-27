@@ -225,6 +225,33 @@ function _folderHasActiveTagFilter(cfg) {
   return _folderFilterArray(cfg?.filterTags).length > 0;
 }
 
+function _folderTagResultKey(path, sourceFolder) {
+  const normalized = _folderTagKey(path);
+  const source = _folderTagKey(sourceFolder);
+  if (!normalized || !source) return normalized;
+  if (normalized === source) return '.';
+  return normalized.startsWith(source + '/') ? normalized.slice(source.length + 1) : normalized;
+}
+
+async function _folderEnsureTagsIndividually(targets) {
+  let changed = false;
+  for (let i = 0; i < targets.length; i += 8) {
+    const batch = targets.slice(i, i + 8);
+    await Promise.all(batch.map(async target => {
+      try {
+        const data = await apiFetch('/global-tags/target?path=' + encodeURIComponent(target.path), { silentError: true });
+        _folderStoreTagsForPath(target.path, data?.tags || []);
+        changed = true;
+      } catch {
+        _folderTagCache.set(target.key, []);
+      } finally {
+        _folderTagLoading.delete(target.key);
+      }
+    }));
+  }
+  return changed;
+}
+
 function _folderEnsureTags(items, options = {}) {
   const currentPath = _folderPath;
   const targets = [];
@@ -245,21 +272,30 @@ function _folderEnsureTags(items, options = {}) {
   targets.forEach(target => _folderTagLoading.add(target.key));
   return (async () => {
     let changed = false;
-    for (let i = 0; i < targets.length; i += 8) {
-      const batch = targets.slice(i, i + 8);
-      await Promise.all(batch.map(async target => {
-        try {
-          const data = await apiFetch('/global-tags/target?path=' + encodeURIComponent(target.path), { silentError: true });
-          _folderStoreTagsForPath(target.path, data?.tags || []);
-          changed = true;
-        } catch {
-          _folderTagCache.set(target.key, []);
-        } finally {
-          _folderTagLoading.delete(target.key);
-        }
-      }));
+    try {
+      const data = await apiFetch(
+        '/global-tags/search?tag=&path=' + encodeURIComponent(currentPath),
+        { silentError: true },
+      );
+      if (!Array.isArray(data?.results)) throw new Error('タグ一覧の形式が不正です');
+      const byPath = new Map();
+      data.results.forEach(result => {
+        byPath.set(_folderTagKey(result?.path), result?.tags || []);
+      });
+      targets.forEach(target => {
+        const resultKey = _folderTagResultKey(target.path, data.source_folder);
+        _folderStoreTagsForPath(target.path, byPath.get(resultKey) || []);
+        _folderTagLoading.delete(target.key);
+      });
+      changed = true;
+    } catch {
+      changed = await _folderEnsureTagsIndividually(targets);
     }
-    if (changed && options.rerender && _folderPath === currentPath) renderFolderGrid();
+    if (changed && options.rerender && _folderPath === currentPath) {
+      renderFolderGrid({
+        preserveSelectedPaths: (_folderSelectedItems || []).map(item => item?.path).filter(Boolean),
+      });
+    }
     return changed;
   })();
 }

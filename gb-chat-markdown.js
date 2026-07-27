@@ -687,6 +687,78 @@
     return base && child ? (base + '/' + child) : (base || child);
   }
 
+  function _pushWorkspaceResolvedVariants(list, root, target) {
+    const rel = String(target || '').trim().replace(/^[\\\/]+/, '');
+    if (!rel) return;
+    const joined = _joinWorkspacePath(root, rel);
+    _pushWorkspacePathVariants(list, joined);
+    if (_extension(rel) !== '.md') return;
+    const slash = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
+    const parent = slash >= 0 ? rel.slice(0, slash) : '';
+    const fileName = slash >= 0 ? rel.slice(slash + 1) : rel;
+    const stem = fileName.slice(0, -3);
+    if (!stem) return;
+    const sheetFolder = _joinWorkspacePath(root, _joinWorkspacePath(parent, stem));
+    _pushUniquePath(list, sheetFolder);
+    _pushUniquePath(list, _joinWorkspacePath(sheetFolder, fileName));
+  }
+
+  function _currentChatWorkFolder() {
+    try {
+      if (typeof _chatEffectiveWorkFolder === 'function') {
+        return String(_chatEffectiveWorkFolder() || '').trim();
+      }
+    } catch {}
+    try {
+      const snapshot = global.MeldexChatCurrentTarget?.snapshot?.();
+      const path = _normalizeSlashPath(snapshot?.path || '');
+      if (!path) return '';
+      if (snapshot?.kind === 'folder') return path;
+      const slash = path.lastIndexOf('/');
+      return slash > 0 ? path.slice(0, slash) : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function _workspaceTargetStem(path) {
+    const name = _basename(path).toLowerCase();
+    const suffixes = ['.smart-db.json', '.scriptnote.json', '.timer.json', '.mel-scenario', '.mel-board', '.mel-sheet', '.mel-timer', '.board.md', '.md'];
+    const suffix = suffixes.find(value => name.endsWith(value));
+    return suffix ? name.slice(0, -suffix.length) : name;
+  }
+
+  function _isWorkspaceChildPath(path, root) {
+    const cleanPath = _normalizeSlashPath(path).toLowerCase();
+    const cleanRoot = _normalizeSlashPath(root).toLowerCase();
+    return !!cleanPath && !!cleanRoot && (cleanPath === cleanRoot || cleanPath.startsWith(cleanRoot + '/'));
+  }
+
+  function _loadedWorkspacePathCandidates(target, currentFolder) {
+    const cleanTarget = _normalizeSlashPath(target);
+    const targetKey = cleanTarget.toLowerCase();
+    const targetStem = _workspaceTargetStem(cleanTarget);
+    if (!targetKey || !targetStem || !global.document?.querySelectorAll) return [];
+    const exact = [];
+    const byName = [];
+    global.document.querySelectorAll('#outliner-tree .tree-node[data-path]').forEach(node => {
+      const path = String(node?._nodeData?.path || node?.dataset?.path || '').trim();
+      if (!path) return;
+      const pathKey = _normalizeSlashPath(path).toLowerCase();
+      const nameStem = _workspaceTargetStem(node?._nodeData?.name || path);
+      if (pathKey === targetKey || pathKey.endsWith('/' + targetKey)) exact.push(path);
+      else if (nameStem === targetStem || _workspaceTargetStem(path) === targetStem) byName.push(path);
+    });
+    const chooseUnique = matches => {
+      const unique = [...new Map(matches.map(path => [_normalizeSlashPath(path).toLowerCase(), path])).values()];
+      const contextual = currentFolder ? unique.filter(path => _isWorkspaceChildPath(path, currentFolder)) : [];
+      if (contextual.length === 1) return contextual;
+      return unique.length === 1 ? unique : [];
+    };
+    const exactMatch = chooseUnique(exact);
+    return exactMatch.length ? exactMatch : chooseUnique(byName);
+  }
+
   async function _workspaceRoots() {
     if (typeof apiFetch !== 'function') return [];
     const roots = [];
@@ -747,32 +819,39 @@
       return candidates.map(item => item.path);
     }
 
+    const currentFolder = _currentChatWorkFolder();
+    const isBareTarget = !/[\\/]/.test(cleanTarget);
+    if (isBareTarget && currentFolder) _pushWorkspaceResolvedVariants(candidates, currentFolder, cleanTarget);
+    _loadedWorkspacePathCandidates(cleanTarget, currentFolder).forEach(path => _pushWorkspacePathVariants(candidates, path));
     _pushWorkspacePathVariants(candidates, cleanTarget);
     roots.forEach(root => {
       const rel = _rootPrefixedRelative(root.path, cleanTarget);
-      if (rel) _pushWorkspacePathVariants(candidates, _joinWorkspacePath(root.path, rel));
-      _pushWorkspacePathVariants(candidates, _joinWorkspacePath(root.path, cleanTarget));
+      if (rel) _pushWorkspaceResolvedVariants(candidates, root.path, rel);
+      _pushWorkspaceResolvedVariants(candidates, root.path, cleanTarget);
     });
     return candidates.map(item => item.path);
   }
 
-  async function _checkWorkspaceCandidateType(cleanPath) {
-    if (typeof apiFetch !== 'function') return '';
+  async function _checkWorkspaceCandidate(cleanPath) {
+    if (typeof apiFetch !== 'function') return { type: '', exists: false };
     try {
       const resolved = await apiFetch('/check-type?path=' + encodeURIComponent(cleanPath));
-      return String(resolved?.type || '');
+      return {
+        type: String(resolved?.type || ''),
+        exists: resolved?.exists === true || (resolved?.exists == null && String(resolved?.type || '') !== 'unknown'),
+      };
     } catch {
-      return '';
+      return { type: '', exists: false };
     }
   }
 
   async function _resolveWorkspaceTarget(target) {
     const candidates = await _workspacePathCandidates(target);
     for (const candidate of candidates) {
-      const type = await _checkWorkspaceCandidateType(candidate);
-      if (type && type !== 'unknown') return { path: candidate, type };
+      const checked = await _checkWorkspaceCandidate(candidate);
+      if (checked.exists) return { path: candidate, type: checked.type, exists: true };
     }
-    return { path: candidates[0] || target, type: '' };
+    return { path: candidates[0] || target, type: '', exists: false };
   }
 
   function _activateChatWorkspaceOpenPane() {
@@ -797,7 +876,11 @@
     const resolvedTarget = await _resolveWorkspaceTarget(target);
     const cleanPath = resolvedTarget.path;
     const label = _basename(cleanPath);
-    let type = resolvedTarget.type || await _checkWorkspaceCandidateType(cleanPath);
+    const type = resolvedTarget.type;
+    if (!resolvedTarget.exists) {
+      if (typeof showStatus === 'function') showStatus('リンク先が見つかりません: ' + label, true);
+      return false;
+    }
     const ext = _extension(cleanPath);
     const targetPaneId = _usesWorkspaceOpenPane(type, ext) ? _activateChatWorkspaceOpenPane() : '';
     const opts = { fromExplorer: true, source: 'chat-link' };
@@ -863,10 +946,17 @@
     const rawPath = _targetFromFileRawUrl(target);
     if (rawPath) return _openWorkspacePath(rawPath);
     if (_isFileUrl(target)) {
-      return _openAbsoluteLocalPath(_fileUrlToPath(target));
+      const filePath = _fileUrlToPath(target);
+      const roots = await _workspaceRoots();
+      return roots.some(root => _isWorkspaceChildPath(filePath, root.path))
+        ? _openWorkspacePath(filePath)
+        : _openAbsoluteLocalPath(filePath);
     }
     if (_isAbsoluteLocalPath(target)) {
-      return _openAbsoluteLocalPath(target);
+      const roots = await _workspaceRoots();
+      return roots.some(root => _isWorkspaceChildPath(target, root.path))
+        ? _openWorkspacePath(target)
+        : _openAbsoluteLocalPath(target);
     }
     return _openWorkspacePath(target);
   }

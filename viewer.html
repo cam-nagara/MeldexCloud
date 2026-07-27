@@ -90,7 +90,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg);
 #controls label { flex-shrink: 1; min-width: 0; overflow: hidden; }
 #controls .zoom-label, #controls .speed-label { min-width: 28px; }
 /* 狭い時に優先度の低い要素を非表示 */
-@media (max-width: 700px) {
+@media (max-width: 900px), (pointer: coarse) {
   #controls { min-height: 56px; padding: 6px; gap: 6px; overflow-x: auto; overflow-y: hidden; }
   #controls button, #controls select { min-width: 44px; min-height: 44px; padding: 0 10px; }
   #controls #seek-bar { flex: 0 0 92px; min-width: 92px; height: 44px !important; }
@@ -270,12 +270,14 @@ document.getElementById('btn-hud').classList.toggle('active', hudVisible);
 
 // PDF.js読み込み（PDF時のみ）
 let pdfjsLib = null;
-await prepareNativeInitialTarget();
-if (isPdf) {
-  // PDF.js v4.4.168 — Apache 2.0 (vendor/pdfjs/LICENSE, NOTICE)
-  pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
-}
+const viewerPreparation = (async () => {
+  await prepareNativeInitialTarget();
+  if (isPdf) {
+    // PDF.js v4.4.168 — Apache 2.0 (vendor/pdfjs/LICENSE, NOTICE)
+    pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
+  }
+})();
 
 function parseFilesParam() {
   const repeated = params.getAll('files');
@@ -544,6 +546,7 @@ function scheduleSingleFileFolderItemsRefresh(parentFolder, fileName, filePath, 
 }
 
 async function init() {
+  await viewerPreparation;
   if (isPdf) {
     showViewerLoading('PDFを読み込み中...');
     try {

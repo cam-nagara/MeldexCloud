@@ -237,8 +237,12 @@ async function renderChatHistory() {
         ? `<div style="margin-top:3px;font-size:10px;color:var(--fg2);display:flex;align-items:center;gap:4px;">${lucide('fileText', 10)} <span>${esc(targetName)}</span></div>`
         : '';
       const msgCount = item.messageCount ? `<span style="font-size:10px;color:var(--fg2);">${item.messageCount}件</span>` : '';
+      const modifiedLabel = _chatFormatHistoryModifiedTimestamp(item.modified);
+      const modifiedInfo = modifiedLabel
+        ? `<div data-chat-history-modified style="margin-top:3px;font-size:10px;color:var(--fg2);">最終更新 ${esc(modifiedLabel)}</div>`
+        : '';
       const providerIcon = getProviderIconHtml(item.provider || 'gemini', 14);
-      div.innerHTML = `<div style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}`;
+      div.innerHTML = `<div style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
       div.addEventListener('click', () => {
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       });
@@ -246,6 +250,10 @@ async function renderChatHistory() {
     });
   } catch (e) {
     listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">履歴を取得できません</div>';
+  } finally {
+    if (typeof refreshOpenChatHistorySheet === 'function') {
+      refreshOpenChatHistorySheet().catch(() => {});
+    }
   }
 }
 

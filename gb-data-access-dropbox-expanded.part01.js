@@ -836,6 +836,8 @@
     const note = await _folderFrontmatter(provider, target);
     const fm = note.frontmatter || {};
     return {
+      type: fm.type || '',
+      schema_version: fm.schema_version || 0,
       actions: Array.isArray(fm.actions) ? fm.actions : [],
       backlinks: Array.isArray(fm.backlinks) ? fm.backlinks : [],
       style: fm.style || null,

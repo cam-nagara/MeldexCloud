@@ -65,7 +65,7 @@ function normalizeSmartDbDefinition(def) {
   const next = def && typeof def === 'object' ? def : {};
   next.type = 'smart-db';
   next.name = next.name || '無題';
-  next.sourceType = next.sourceType === 'all-files' ? 'all-files' : 'db-entities';
+  next.sourceType = ['all-files', 'chat-history'].includes(next.sourceType) ? next.sourceType : 'db-entities';
   if (!Array.isArray(next.filters)) next.filters = [];
   if (!Array.isArray(next.sources)) next.sources = [];
   return _ensureSmartDbViews(next);
@@ -366,7 +366,7 @@ async function deleteSmartDb(id) {
 function renderSmartDbList() {
   const container = document.getElementById('body-smart-db');
   if (!container) return;
-  const dbs = getSavedSmartDbs();
+  const dbs = getSavedSmartDbs().filter(d => d?.systemView !== true);
   container.innerHTML = '';
   // ＋ボタン
   const addBtn = document.createElement('button');
@@ -501,6 +501,27 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
       historySetScope('smart-db:' + (def._filePath || def.id || smartDbId || ''));
     }
     if (!openOpts.skipGlobalUi) showStatus('スキャン中...');
+    if (typeof configureChatHistorySmartDbToolbar === 'function') {
+      configureChatHistorySmartDbToolbar(def);
+    }
+    if (def.sourceType === 'chat-history') {
+      const data = await (typeof loadChatHistorySmartDbData === 'function'
+        ? loadChatHistorySmartDbData(def)
+        : Promise.resolve({ items: [], total: 0, unreadableCount: 0 }));
+      if (isStaleSmartDbLoad()) return;
+      state.smartDbData = data;
+      if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
+        await showLoadingBeforeHeavyWork((data.items || []).length, '大きいチャット履歴を描画中...', { threshold: 250 });
+        if (isStaleSmartDbLoad()) return;
+      }
+      if (typeof renderChatHistorySmartDbTable === 'function') renderChatHistorySmartDbTable(def);
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
+      if (!openOpts.skipGlobalUi) {
+        const unreadable = Number(data.unreadableCount || 0);
+        showStatus(`${(data.items || []).length} / ${Number(data.total || 0)} 件${unreadable ? `（読み込み失敗 ${unreadable}件）` : ''}`, unreadable > 0);
+      }
+      return;
+    }
     if (def.sourceType === 'all-files') {
       const data = await (typeof loadGlobalIndexData === 'function'
         ? loadGlobalIndexData(def, { refresh: openOpts.forceRefresh === true })
@@ -544,23 +565,39 @@ async function selectSmartDb(smartDbId, defOverride, opts) {
     if (!openOpts.skipGlobalUi) showStatus((state.smartDbData.entities || []).length + ' 件（' + state.smartDbData.total_dbs_scanned + ' シートをスキャン）');
   } catch (e) {
     if (isStaleSmartDbLoad()) return;
+    const previousChatHistoryData = def.sourceType === 'chat-history'
+      && Array.isArray(state.smartDbData?.items)
+      && state.smartDbData?.scopeKey === def.scopeKey
+      ? state.smartDbData
+      : null;
     state.smartDbData = def.sourceType === 'all-files'
       ? { files: [], source_roots: [], total: 0 }
-      : { entities: [], filter_properties: [], total_dbs_scanned: 0 };
-    if (def.sourceType === 'all-files') {
+      : def.sourceType === 'chat-history'
+        ? {
+            ...(previousChatHistoryData || { items: [], total: 0, unreadableCount: 0, scopeKey: def.scopeKey }),
+            loadError: true,
+          }
+        : { entities: [], filter_properties: [], total_dbs_scanned: 0 };
+    if (def.sourceType === 'chat-history') {
+      if (typeof renderChatHistorySmartDbTable === 'function') renderChatHistorySmartDbTable(def);
+      if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
+    } else if (def.sourceType === 'all-files') {
       if (typeof renderGlobalIndexTable === 'function') renderGlobalIndexTable(def);
       if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
     } else {
       renderSmartDbTable();
       if (typeof renderSmartDbActiveView === 'function') renderSmartDbActiveView();
     }
-    if (!openOpts.skipGlobalUi) showStatus('スマートシート読み込み失敗', true);
+    if (!openOpts.skipGlobalUi) {
+      showStatus(def.sourceType === 'chat-history' ? 'チャット履歴の読み込みに失敗しました' : 'スマートシート読み込み失敗', true);
+    }
   } finally {
     if (loadingShown) {
       hideLoading();
       if (typeof hideLoadingMessage === 'function') {
         hideLoadingMessage('スマートシートを読み込み中...');
         hideLoadingMessage('大きいスマートシートを描画中...');
+        hideLoadingMessage('大きいチャット履歴を描画中...');
       }
     }
   }
@@ -792,6 +829,11 @@ function showSmartDbFilterModal(smartDbId) {
   if (def.sourceType === 'all-files') {
     if (typeof showGlobalIndexFilterModal === 'function') showGlobalIndexFilterModal(smartDbId);
     else showStatus('全件インデックス用フィルタを開けません', true);
+    return;
+  }
+  if (def.sourceType === 'chat-history') {
+    if (typeof showChatHistorySmartDbFilterModal === 'function') showChatHistorySmartDbFilterModal(smartDbId);
+    else showStatus('チャット履歴用フィルタを開けません', true);
     return;
   }
   const restoreTarget = _smartDbActiveElement();

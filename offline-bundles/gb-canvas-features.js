@@ -2804,7 +2804,7 @@ function bdContextMenu(e, nodeId) {
       });
       const linkifySub = sub('リンクカード化');
       linkifySub.item('ノート', () => bdLinkifyCardAs(nodeId, 'page'));
-      linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'smart-db'));
+      linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'database'));
       linkifySub.item('シナリオ', () => bdLinkifyCardAs(nodeId, 'scriptnote'));
       linkifySub.item('ボード', () => bdLinkifyCardAs(nodeId, 'board'));
       linkifySub.item('タイマー', () => bdLinkifyCardAs(nodeId, 'timer'));
@@ -3242,7 +3242,7 @@ function bdContextMenu(e, nodeId) {
     const newLinkSub = sub('新規リンクカード');
     [
       ['ノート', 'page'],
-      ['シート', 'smart-db'],
+      ['シート', 'database'],
       ['シナリオ', 'scriptnote'],
       ['ボード', 'board'],
       ['タイマー', 'timer'],

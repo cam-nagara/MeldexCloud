@@ -3,6 +3,7 @@
   'use strict';
 
   let lastSessionSignature;
+  let refreshQueue = Promise.resolve();
 
   async function sessionSignature() {
     const session = await window.MeldexDropboxAuth?.getSession?.().catch(() => null);
@@ -26,11 +27,15 @@
   }
 
   function run(force) {
-    refreshSharedSession(force).catch((error) => {
-      try {
-        window.dispatchEvent(new CustomEvent('meldex:standalone-cloud-error', { detail: { error } }));
-      } catch { /* Older embedded webviews may not support CustomEvent. */ }
-    });
+    refreshQueue = refreshQueue
+      .catch(() => {})
+      .then(() => refreshSharedSession(force))
+      .catch((error) => {
+        try {
+          window.dispatchEvent(new CustomEvent('meldex:standalone-cloud-error', { detail: { error } }));
+        } catch { /* Older embedded webviews may not support CustomEvent. */ }
+      });
+    return refreshQueue;
   }
 
   window.addEventListener('meldex:dropbox-auth-session-changed', (event) => {

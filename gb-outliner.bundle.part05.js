@@ -1,3 +1,21 @@
+        return;
+      }
+    }
+    // 確認中に全体再読込等でノードが再生成されている場合に備え、旧パスの
+    // 現在のノードを探してラベルを戻す（元の labelEl は切断されている可能性がある）
+    const liveNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(oldPath) : null;
+    const liveLabel = liveNode ? liveNode.querySelector(':scope > .tree-node-row .tree-label') : null;
+    (liveLabel || labelEl).textContent = oldName;
+    showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
+  } finally {
+    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
+  }
+}
+
+function backToPivot() {
+  state.currentEntityPath = null;
+  if (state.currentDbPath) {
+    selectDatabase(state.currentDbPath);
   } else {
     showView('pivot');
   }

@@ -1,0 +1,196 @@
+.at-job-tray {
+  position: fixed;
+  right: 16px;
+  bottom: 28px;
+  z-index: 12000;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  color: var(--fg);
+  background: var(--ui-popup-bg, var(--bg2));
+  border: 1px solid var(--ui-border-strong, var(--border));
+  border-radius: var(--ui-radius-lg, 8px);
+  box-shadow: var(--ui-shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.36));
+  overflow: hidden;
+}
+
+.at-job-tray[hidden] {
+  display: none;
+}
+
+.at-job-tray-head {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  background: var(--bg3);
+}
+
+.at-job-tray-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.at-job-tray-head > span {
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.at-job-list {
+  max-height: calc(min(70vh, 640px) - 36px);
+  overflow: auto;
+}
+
+.at-job-tray--minimized .at-job-list {
+  display: none;
+}
+
+.at-job {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ui-border, var(--border));
+}
+
+.at-job:last-child {
+  border-bottom: 0;
+}
+
+.at-job-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.at-job-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.at-job-head span,
+.at-job-stats,
+.at-job-current {
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.at-job-progress {
+  height: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: var(--bg4);
+  border-radius: 3px;
+}
+
+.at-job-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--ui-accent, var(--accent));
+  transition: width 180ms ease-out;
+}
+
+.at-job--running .at-job-progress > span[style="width:0%"] {
+  width: 22% !important;
+  animation: at-job-indeterminate 1.4s ease-in-out infinite alternate;
+}
+
+.at-job--error .at-job-progress > span,
+.at-job--partial .at-job-progress > span {
+  background: var(--danger, #e55353);
+}
+
+.at-job-message,
+.at-job-stats,
+.at-job-current {
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+
+.at-job-message {
+  font-size: 12px;
+}
+
+.at-job-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-job-failures {
+  margin-top: 8px;
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.at-job-failures summary {
+  cursor: pointer;
+  color: var(--danger, #e55353);
+}
+
+.at-job-failures ul {
+  max-height: 180px;
+  margin: 6px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.at-job-failures li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 6px;
+  padding: 5px 0;
+  border-top: 1px solid var(--ui-border, var(--border));
+}
+
+.at-job-failures li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-job-failures li > small {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.at-job-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+@keyframes at-job-indeterminate {
+  from { transform: translateX(-20%); }
+  to { transform: translateX(360%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .at-job-progress > span {
+    transition: none;
+    animation: none !important;
+  }
+}
+
+@media (max-width: 820px) {
+  .at-job-tray {
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    width: calc(100vw - 16px);
+    max-height: 55vh;
+  }
+
+  .at-job-tray-head {
+    min-height: 44px;
+  }
+
+  .at-job-actions .gb-btn {
+    min-height: 44px;
+  }
+}

@@ -34,17 +34,12 @@
       <div class="sa-menu-wrap">
         <button id="sheet-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー" data-e2e-id="sheet-menu-button"><span class="ico ico-menu"></span></button>
         <div id="sheet-menu" class="sa-menu" role="menu">
-          <button type="button" data-sheet-action="new" data-e2e-id="sheet-menu-new"><span class="ico ico-filePlus"></span>新規シート（スマートシート定義）</button>
-          <button type="button" data-sheet-action="openFolder" data-e2e-id="sheet-menu-open-folder"><span class="ico ico-folderOpen"></span>フォルダをシートとして開く...</button>
-          <button type="button" data-sheet-action="open" data-e2e-id="sheet-menu-open"><span class="ico ico-file"></span>ファイルを開く（.mel-sheet / CSV）...</button>
-          <button type="button" data-sheet-action="save" data-e2e-id="sheet-menu-save"><span class="ico ico-save"></span>保存</button>
-          <button type="button" data-sheet-action="saveAs" data-e2e-id="sheet-menu-save-as"><span class="ico ico-saveAll"></span>名前を付けて保存...</button>
+          <button type="button" data-sheet-action="new" data-e2e-id="sheet-menu-new"><span class="ico ico-filePlus"></span>新しいシートを作成...</button>
+          <button type="button" data-sheet-action="open" data-e2e-id="sheet-menu-open"><span class="ico ico-folderOpen"></span>シートを開く...</button>
           <div class="sa-menu-sep"></div>
-          <button type="button" data-sheet-action="addFilter" data-e2e-id="sheet-menu-add-filter"><span class="ico ico-funnel"></span>フィルタを追加（定義編集）</button>
-          <button type="button" data-sheet-action="syncJson" data-e2e-id="sheet-menu-sync-json"><span class="ico ico-refreshCw"></span>JSONを反映（定義編集）</button>
-          <button type="button" data-sheet-action="refreshPreview" data-e2e-id="sheet-menu-refresh-preview"><span class="ico ico-refreshCw"></span>プレビューを更新</button>
-          <div class="sa-menu-sep"></div>
-          <button type="button" data-standalone-default-apps-open data-e2e-id="sheet-menu-default-app"><span class="ico ico-fileCog"></span>既定アプリに設定...</button>
+          <button type="button" data-sheet-action="importCsv" data-e2e-id="sheet-menu-import-csv"><span class="ico ico-file"></span>CSVを読み込む...</button>
+          <button type="button" data-sheet-action="exportCsv" data-e2e-id="sheet-menu-export-csv"><span class="ico ico-saveAll"></span>CSVに書き出す...</button>
+          <button type="button" data-sheet-action="reload" data-e2e-id="sheet-menu-reload"><span class="ico ico-refreshCw"></span>再読み込み</button>
         </div>
       </div>
       <div id="sheet-title-label" class="sa-title">新規シート</div>
@@ -67,10 +62,10 @@
     </div>
     <div class="sa-body">
     <main class="sa-main sheet-main">
-      <section id="sheet-live-root" class="sheet-live-root" hidden>
-        <div id="welcome-view" style="display:none;align-items:center;justify-content:center;flex:1;color:var(--fg2);">
+      <section id="sheet-live-root" class="sheet-live-root">
+        <div id="welcome-view" style="display:flex;align-items:center;justify-content:center;flex:1;color:var(--fg2);">
           <div style="text-align:center;">
-            <div style="font-size:13px;color:var(--fg2);">フォルダまたはファイルを選択してください</div>
+            <div style="font-size:13px;color:var(--fg2);">メニューからシートを作成するか、開いてください</div>
           </div>
         </div>
         <div id="db-view-container" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
@@ -88,20 +83,6 @@
           <div id="graph-view"></div>
           <div id="form-view" class="form-view" style="display:none;flex:1;overflow:auto;"></div>
         </div>
-        <div id="smart-db-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
-          <div class="smart-db-toolbar">
-            <span class="tb-title" style="padding:0 4px;">スマートシート プレビュー</span>
-            <div class="smart-db-view-tabs" id="smart-db-view-tabs" role="tablist" aria-label="スマートシートビュー"></div>
-            <div class="tb-spacer"></div>
-            <button type="button" class="tb-icon-btn" id="sheet-tb-smart-refresh" title="更新" aria-label="更新" data-e2e-id="sheet-tb-smart-refresh"><span class="ico ico-refreshCw"></span></button>
-          </div>
-          <div id="smart-db-table-area" class="smart-db-table-area">
-            <table id="smart-db-table" class="smart-db-table" role="table" aria-label="スマートシート">
-              <thead></thead><tbody></tbody>
-            </table>
-          </div>
-          <div id="smart-db-dashboard-area" class="smart-db-dashboard-area" hidden></div>
-        </div>
         <div id="entity-view">
           <div id="entity-parent-link" style="padding:6px 12px 0;font-size:12px;color:var(--fg2);min-height:0;"></div>
           <div id="entity-title"></div>
@@ -109,52 +90,6 @@
           <div id="entity-create-note-btn" style="display:none;padding:8px 12px;"></div>
           <div id="entity-rt-toolbar" class="toolbar-group gb-toolbar" style="display:none;border-top:1px solid var(--border);"></div>
           <div id="entity-freetext" contenteditable="true"></div>
-        </div>
-      </section>
-      <div id="sheet-definition-row" class="sheet-definition-row">
-      <section id="sheet-definition-panel" class="sheet-work">
-        <div class="sheet-grid-toolbar">
-          <label class="sa-field">
-            <span>シート名</span>
-            <input id="sheet-name" type="text" value="">
-          </label>
-          <label class="sa-field">
-            <span>対象</span>
-            <select id="sheet-source-type">
-              <option value="db-entities">シート項目</option>
-              <option value="all-files">すべてのファイル</option>
-            </select>
-          </label>
-          <label class="sa-field">
-            <span>表示列</span>
-            <input id="sheet-columns" type="text" placeholder="name, path, type">
-          </label>
-        </div>
-        <div class="sheet-table-wrap">
-          <table class="sheet-table" aria-label="シート定義">
-            <thead>
-              <tr><th>種類</th><th>項目</th><th>値</th><th></th></tr>
-            </thead>
-            <tbody id="sheet-source-rows"></tbody>
-            <tbody id="sheet-filter-rows"></tbody>
-          </table>
-        </div>
-      </section>
-      <aside id="sheet-json-panel" class="sheet-side">
-        <div class="sheet-side-head">
-          <span>JSON</span>
-          <button id="sheet-format-json" class="sa-text-btn" type="button">整形</button>
-        </div>
-        <textarea id="sheet-json" spellcheck="false"></textarea>
-      </aside>
-      </div>
-      <section id="sheet-csv-panel" class="sheet-csv-panel" hidden>
-        <div class="sheet-csv-toolbar">
-          <button id="sheet-csv-add-row" class="sa-text-btn" type="button">行を追加</button>
-          <button id="sheet-csv-add-col" class="sa-text-btn" type="button">列を追加</button>
-        </div>
-        <div class="sheet-csv-table-wrap">
-          <table id="sheet-csv-table" class="sheet-csv-table" aria-label="CSV"></table>
         </div>
       </section>
     </main>
@@ -204,6 +139,7 @@
   <script src="gb-format-popup.js"></script>
   <script src="gb-events.js"></script>
   <script src="standalone-stubs.js"></script>
+  <script src="standalone-app-bootstrap.js"></script>
   <script src="gb-pane-context.js"></script>
   <script src="offline-bundles/gb-history.js"></script>
   <script src="offline-bundles/gb-detail-panel.js"></script>
@@ -254,12 +190,8 @@
   <script src="gb-db-graph.js"></script>
   <script src="gb-db-validate.js"></script>
   <script src="gb-db-actions.js"></script>
-  <script src="gb-db-smart-dashboard-view.js"></script>
-  <script src="gb-db-smart-virtual.js"></script>
   <script src="gb-db-search.js"></script>
   <script src="gb-sheet-archive.js"></script>
-  <script src="gb-db-smart.js"></script>
-  <script src="gb-db-smart-global.js"></script>
   <script src="standalone-mobile-toolbar.js"></script>
   <script src="sheet-standalone-app.js"></script>
 </body>

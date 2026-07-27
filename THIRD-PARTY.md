@@ -15,6 +15,7 @@ Meldex は以下のサードパーティ製ソフトウェア、フォント、�
 | Twemoji | グラフィック CC-BY 4.0 / コード MIT | 旧チャットスタンプ互換スプライト | https://github.com/twitter/twemoji | SVGスプライト同梱 | 必須 | `app/stamps/TWEMOJI-LICENSE.txt`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | html2canvas | MIT License | 画像書き出しフォールバック | https://github.com/niklasvh/html2canvas | JS同梱 | 必須 | `app/vendor/html2canvas.min.js` header, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | PDF.js | Apache License 2.0 / NOTICE retention | PDFビューア | https://github.com/mozilla/pdf.js | JS/worker同梱 | 必須 | `app/vendor/pdfjs/LICENSE`, `app/vendor/pdfjs/NOTICE`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
+| booru-japanese-tag | MIT License | Danbooru日本語タグプリセットの翻訳シード | https://github.com/boorutan/booru-japanese-tag | 翻訳データの派生CSVを同梱 | 必須 | `app/MeldexHome/マニュアル/サンプル/Danbooru日本語タグプリセット-LICENSE.txt`, `THIRD-PARTY.md`, `CREDITS.md` | 表記済み |
 | Radicale | GPLv3 | ローカル CalDAV サーバー | https://github.com/Kozea/Radicale | Pythonパッケージ同梱時はGPL対象 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
 | pystray | LGPLv3 | 常駐トレイ | https://github.com/moses-palmer/pystray | Pythonパッケージ同梱時は動的利用相当 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
 | pynput | LGPLv3 | ホットキー | https://github.com/moses-palmer/pynput | Pythonパッケージ同梱時は動的利用相当 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
@@ -68,6 +69,17 @@ PERFORMANCE OF THIS SOFTWARE.
 - **同梱形態**: `app/vendor/pdfjs/`
 - **ライセンス全文**: `app/vendor/pdfjs/LICENSE`
 - **NOTICE**: `app/vendor/pdfjs/NOTICE`
+
+## Tag Translation Data
+
+### booru-japanese-tag
+
+- **参照版**: commit `cec5f7eefbe5c3addd8fb9338d11435518ae8ccf`
+- **ライセンス**: MIT License
+- **出典**: https://github.com/boorutan/booru-japanese-tag
+- **用途**: WD一般タグを日本語正式名へ対応付ける翻訳シード。Meldex側の手修正訳を優先し、対象モデルの一般タグだけに絞って利用
+- **同梱形態**: `app/tools/danbooru_ja_seed.csv` を生成元として `app/MeldexHome/マニュアル/サンプル/Danbooru日本語タグプリセット.csv` へ統合
+- **ライセンス全文**: `app/MeldexHome/マニュアル/サンプル/Danbooru日本語タグプリセット-LICENSE.txt`
 
 ## Emoji Graphics
 

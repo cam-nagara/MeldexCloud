@@ -138,36 +138,25 @@
   }
 
   // ============================================================
-  // API ラッパー (タグプリセット / 自動タグ付け)
+  // API ラッパー (自動タグ辞書のプリセット所属 / 自動タグ付け)
   // ============================================================
-  async function loadPresets() {
-    if (typeof apiFetch !== 'function') return { presets: [] };
-    return apiFetch('/global-tag-presets', { silentError: true });
+  async function loadAutoTagPresets() {
+    if (typeof apiFetch !== 'function') return { preset_names: [], builtins: [] };
+    return apiFetch('/auto-tag/presets', { silentError: true });
   }
 
-  async function createPreset(payload) {
-    return apiPost('/global-tag-presets', payload || {}, { silentError: true });
-  }
-
-  async function duplicatePreset(presetId, payload) {
-    return apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/duplicate', payload || {}, { silentError: true });
-  }
-
-  async function deletePreset(presetId) {
-    return apiFetch('/global-tag-presets/' + encodeURIComponent(presetId), { method: 'DELETE', silentError: true });
-  }
-
-  async function saveCurrentPreset(presetId, payload) {
-    return apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/save-current', payload || {}, { silentError: true });
-  }
-
-  async function loadPreset(presetId, payload) {
-    const result = await apiPost('/global-tag-presets/' + encodeURIComponent(presetId) + '/load', payload || {}, { silentError: true });
-    invalidateTagsCatalogCache();
-    return result;
+  async function installAutoTagPreset(presetId, payload) {
+    return apiPost(
+      '/auto-tag/presets/' + encodeURIComponent(presetId) + '/install',
+      payload || {},
+      { silentError: true },
+    );
   }
 
   async function autoTag(payload) {
+    if (window.MeldexAutoTagJobs?.start) {
+      return window.MeldexAutoTagJobs.start(payload || {});
+    }
     const result = await apiPost('/global-tags/auto-tag', payload || {}, { silentError: true });
     invalidateTagsCatalogCache();
     return result;
@@ -188,7 +177,9 @@
     try {
       if (typeof _folderInvalidateTagsForPath === 'function') _folderInvalidateTagsForPath(path);
       const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
-      if (typeof _folderHasActiveTagFilter === 'function' && _folderHasActiveTagFilter(cfg) && typeof _folderEnsureTags === 'function') {
+      const needsFolderRefresh = cfg.showTags !== false
+        || (typeof _folderHasActiveTagFilter === 'function' && _folderHasActiveTagFilter(cfg));
+      if (needsFolderRefresh && typeof _folderEnsureTags === 'function') {
         _folderEnsureTags(typeof _folderItems !== 'undefined' ? _folderItems : [], { rerender: true });
       }
     } catch (_) {}
@@ -612,12 +603,8 @@
     updateGroup,
     deleteGroup,
     // プリセット / 自動タグ
-    loadPresets,
-    createPreset,
-    duplicatePreset,
-    deletePreset,
-    saveCurrentPreset,
-    loadPreset,
+    loadAutoTagPresets,
+    installAutoTagPreset,
     autoTag,
     // 対象ファイル別
     loadTargetTags,

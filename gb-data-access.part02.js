@@ -194,6 +194,19 @@
     return _normalizeWorkspaceStore(data);
   }
 
+  async function _resolveCloudWorkspaceFolder(workspaceId) {
+    const id = String(workspaceId || '').trim();
+    if (!id) return '';
+    const store = await _readCloudWorkspaceStore();
+    const workspace = store.workspaces.find(item => item?.id === id && item.deleted !== true);
+    if (!workspace) throw _httpError(404, 'ワークスペースが見つかりません');
+    const folder = _workspaceFolderPath(workspace.folder || '');
+    if (!folder) throw _httpError(409, 'ワークスペースのDropboxフォルダが設定されていません');
+    return folder;
+  }
+
+  window.__MeldexPwaDataAccessInternals._resolveCloudWorkspaceFolder = _resolveCloudWorkspaceFolder;
+
   async function _updateCloudWorkspaceStore(updater) {
     const provider = await _requirePwaProvider('readwrite');
     let latest = null;

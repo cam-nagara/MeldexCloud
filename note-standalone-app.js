@@ -592,8 +592,7 @@
     });
   }
 
-  async function init() {
-    await MeldexStandaloneFS.init();
+  function bindUi() {
     initLinkModalBridge();
     initOptionPanel();
     bindMenus();
@@ -603,6 +602,10 @@
     initMobileToolbar();
     bindFileSearchBar();
     bindPathChanges();
+  }
+
+  async function initializeData() {
+    await MeldexStandaloneFS.init();
     const initial = MeldexStandaloneFS.nativeInitialPath();
     if (!initial) await newNote();
     else {
@@ -615,6 +618,12 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    init().catch(error => showStatus('ノートの初期化に失敗: ' + (error.message || error), true));
+    window.MeldexStandaloneBoot = window.MeldexStandaloneBootstrap.create({
+      appId: 'note',
+      bindUi,
+      initialize: initializeData,
+      onError: error => showStatus('ノートの保存先へ接続できません: ' + (error.message || error) + '。操作すると再試行します。', true),
+    });
+    window.MeldexStandaloneBoot.start().catch(() => {});
   });
 })();

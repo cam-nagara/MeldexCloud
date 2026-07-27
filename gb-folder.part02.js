@@ -776,6 +776,9 @@ function showFolderDisplaySettings(options) {
     {key: 'showSize', label: 'サイズ'},
     {key: 'showDate', label: '更新日時'},
     {key: 'showType', label: 'タイプ'},
+    {key: 'showDimensions', label: '画像サイズ'},
+    {key: 'showRating', label: '評価'},
+    {key: 'showTags', label: 'タグ'},
   ];
 
   _fdSection(menu, '表示項目');
@@ -785,7 +788,7 @@ function showFolderDisplaySettings(options) {
       cfg[it.key] = next;
       saveFolderDisplayConfig(cfg);
       renderFolderGrid();
-    });
+    }, { dataset: { folderDisplayItem: it.key } });
     menu.appendChild(el);
   });
 
@@ -1092,8 +1095,17 @@ async function autoTagFolderTarget(item, options = {}) {
   if (!path || !window.MeldexGlobalTags?.autoTag) return;
   const recursive = options.recursive ?? (item?.type === 'folder');
   try {
-    showStatus('自動タグ付けを実行しています...');
-    const result = await window.MeldexGlobalTags.autoTag({ path, recursive });
+    showStatus('自動タグ付けを準備しています...');
+    const sourceFolder = window.MeldexAutoTagSourceFolder?.(path) || '';
+    const result = await window.MeldexGlobalTags.autoTag({
+      path,
+      recursive,
+      ...(sourceFolder ? { source_folder: sourceFolder } : {}),
+    });
+    if (result?.background) {
+      showStatus('自動タグ付けをバックグラウンドで開始しました');
+      return;
+    }
     if (result?.stopped) {
       showStatus('自動タグ付けを中断しました: ' + (result.warning || result.reason || ''), true);
       return;
@@ -1117,27 +1129,17 @@ function fvBulkAutoTag() {
     showStatus('自動タグ付けを初期化できませんでした', true);
     return;
   }
-  (async () => {
-    let stopped = null;
-    let total = 0;
-    for (const item of items) {
-      try {
-        const result = await window.MeldexGlobalTags.autoTag({ path: item.path, recursive: item.type === 'folder' });
-        if (result?.stopped) {
-          stopped = result;
-          break;
-        }
-        total += result?.total || 0;
-      } catch (err) {
-        showStatus('自動タグ付けに失敗しました: ' + (err?.userMessage || err?.message || err), true);
-        return;
-      }
-    }
-    if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
-    if (window.MeldexTagManagement?.refresh) window.MeldexTagManagement.refresh(false);
-    if (stopped) showStatus('自動タグ付けを中断しました: ' + (stopped.warning || stopped.reason || ''), true);
-    else showStatus(total + '件に自動タグ付けしました');
-  })();
+  const sourceFolder = window.MeldexAutoTagSourceFolder?.(items[0]?.path) || '';
+  window.MeldexGlobalTags.autoTag({
+    targets: items.map(item => ({ path: item.path, recursive: item.type === 'folder' })),
+    label: `${items.length}件の選択項目`,
+    ...(sourceFolder ? { source_folder: sourceFolder } : {}),
+  }).then(result => {
+    if (result?.background) showStatus('選択項目の自動タグ付けをバックグラウンドで開始しました');
+    else showStatus((result?.total || 0) + '件に自動タグ付けしました');
+  }).catch(err => {
+    showStatus('自動タグ付けに失敗しました: ' + (err?.userMessage || err?.message || err), true);
+  });
 }
 
 // formatFileSize は meldex-core.js で定義済み

@@ -281,6 +281,61 @@
   margin-top: 12px;
 }
 
+.at-install-state {
+  margin-top: 9px !important;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg3, var(--bg2)) 72%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.at-install-state--working { color: var(--accent, #5b9cff) !important; }
+.at-install-state--ready { color: var(--green, #56c475) !important; }
+.at-install-state--warn { color: var(--yellow, #d8a84e) !important; }
+.at-install-state--error { color: var(--red, #e36b6b) !important; }
+
+.at-preset-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.at-preset-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 8px;
+  color: var(--fg);
+  background: var(--bg3);
+  border: 1px solid var(--ui-border, var(--border));
+  border-radius: var(--ui-radius-md, 6px);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.at-preset-option:has(input:checked) {
+  color: var(--ui-accent, var(--accent));
+  border-color: var(--ui-accent, var(--accent));
+  background: color-mix(in srgb, var(--ui-accent, var(--accent)) 10%, var(--bg3));
+}
+
+.at-preset-option input {
+  margin: 0;
+}
+
+.at-run-presets {
+  padding: 6px 0;
+}
+
+.at-run-presets summary {
+  margin-bottom: 6px;
+  color: var(--fg2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .at-lower-grid {
   gap: 18px;
   margin-top: 18px;

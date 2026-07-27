@@ -343,7 +343,7 @@
   function _linkedFileSpec(type, label) {
     const normalized = String(type || '').trim().toLowerCase();
     if (normalized === 'board') return { suffix: BOARD_FILE_EXTENSION, type: 'board', content: _newBoardMarkdown(label) };
-    if (['database', 'sheet', 'smart-db', 'pivot'].includes(normalized)) return { suffix: '.mel-sheet', type: 'smart-db', content: _newSheetJson(label) };
+    if (normalized === 'smart-db') return { suffix: '.mel-sheet', type: 'smart-db', content: _newSheetJson(label) };
     if (['scriptnote', 'scenario'].includes(normalized)) return { suffix: '.mel-scenario', type: 'scriptnote', content: _newScriptnoteJson(label) };
     if (normalized === 'timer') return { suffix: '.mel-timer', type: 'timer', content: _newTimerJson(label) };
     return { suffix: '.md', type: 'page', content: '# ' + String(label || '無題') + '\n' };
@@ -381,6 +381,19 @@
     }
   }
 
+  async function _directoryExists(relPath) {
+    try {
+      const { parts, filename } = _splitPath(relPath);
+      let dir = _rootHandle;
+      for (const part of [...parts, filename].filter(Boolean)) {
+        dir = await dir.getDirectoryHandle(part, { create: false });
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function _uniqueUploadPath(parentPath, filename) {
     const dir = String(parentPath || '').trim().replace(/^[/\\]+/, '').replace(/[/\\]+/g, '/');
     const safe = _sanitizeFilename(filename);
@@ -403,6 +416,18 @@
     let index = 2;
     while (await _fileExists(candidate)) {
       candidate = dir ? dir + '/' + base + '-' + index + suffix : base + '-' + index + suffix;
+      index += 1;
+    }
+    return candidate;
+  }
+
+  async function _uniqueChildDirectory(parentPath, label) {
+    const dir = String(parentPath || '').trim().replace(/^[/\\]+/, '').replace(/[/\\]+/g, '/');
+    const base = _sanitizeFilename(label || '無題');
+    let candidate = dir ? dir + '/' + base : base;
+    let index = 2;
+    while (await _directoryExists(candidate) || await _fileExists(candidate)) {
+      candidate = dir ? dir + '/' + base + '-' + index : base + '-' + index;
       index += 1;
     }
     return candidate;
@@ -725,6 +750,19 @@
       const body = _jsonBody(opts);
       const type = String(body?.type || 'board').trim();
       const label = String(body?.label || '無題').trim() || '無題';
+      if (['database', 'sheet', 'pivot'].includes(type.toLowerCase())) {
+        const relPath = await _uniqueChildDirectory(body?.parent || '', label);
+        const folderName = relPath.split('/').pop() || label;
+        await _writeFileText(relPath + '/' + folderName + '.md', ''
+          + '---\n'
+          + 'type: settings-db\n'
+          + 'schema_version: 1\n'
+          + 'storage: sqlite\n'
+          + 'cloud_storage: sheet-store-v1\n'
+          + '---\n'
+          + '# ' + folderName + '\n\n');
+        return { node: { name: folderName, label: folderName, path: relPath, type: 'database' } };
+      }
       const spec = _linkedFileSpec(type, label);
       const relPath = await _uniqueChildPath(body?.parent || '', label, spec.suffix);
       await _writeFileText(relPath, spec.content);

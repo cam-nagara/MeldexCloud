@@ -929,7 +929,17 @@ body[data-mobile-ui-local="1"] .count-type-select {
 .grid-layout .fv-thumb img { width: 100%; height: auto; display: block; }
 .grid-layout .fv-icon { font-size: 36px; color: var(--fv-icon-fg, var(--fg2)); padding: 16px 0; }
 .grid-layout .fv-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.grid-layout .fv-meta { font-size: 10px; color: var(--fv-meta-fg, var(--fg2)); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid-layout .fv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px 8px;
+  min-width: 0;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--fv-meta-fg, var(--fg2));
+  text-align: center;
+}
 /* ウォーターフォール: グリッドと同じカード幅 */
 .waterfall-layout .fv-item { padding: 3px; text-align: center; }
 .waterfall-layout .fv-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -957,7 +967,8 @@ body[data-mobile-ui-local="1"] .count-type-select {
   max-width: 140px;
  }
 .waterfall-layout .fv-meta span,
-.hflow-layout .fv-meta span {
+.hflow-layout .fv-meta span,
+.grid-layout .fv-meta-item {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -999,9 +1010,33 @@ body[data-mobile-ui-local="1"] .count-type-select {
 .list-layout .fv-thumb img { max-width: 32px; max-height: 32px; object-fit: contain; }
 .list-layout .fv-icon { font-size: 18px; color: var(--fv-icon-fg, var(--fg2)); }
 .list-layout .fv-icon svg { width: 32px; height: 32px; display: block; }
-.list-layout .fv-name { flex: 1; min-width: 0; font-size: 13px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-layout .fv-name { flex: 1; min-width: 0; font-size: 13px; line-height: 18px; }
 .list-layout .fv-list-cell { min-width: 0; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fv-meta-fg, var(--fg2)); }
-.list-layout .fv-list-name { color: var(--fv-item-fg, var(--fg)); }
+.list-layout .fv-list-name {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  overflow: visible;
+  white-space: normal;
+  color: var(--fv-item-fg, var(--fg));
+}
+.fv-list-name-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fv-list-extra-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+  color: var(--fv-meta-fg, var(--fg2));
+  font-size: 10px;
+  line-height: 15px;
+}
 .list-layout .fv-list-size { text-align: right; padding-right: 24px; }
 
 /* フォルダ パネル共通 */

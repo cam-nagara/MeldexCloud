@@ -307,8 +307,7 @@
     });
   }
 
-  async function init() {
-    await MeldexStandaloneFS.init();
+  function bindUi() {
     initActiveEditorBridge();
     mountComponent();
     initMobileToolbar();
@@ -318,6 +317,10 @@
     bindDirtyObserver();
     bindPathChanges();
     updateClipStudioMenuVisibility();
+  }
+
+  async function initializeData() {
+    await MeldexStandaloneFS.init();
     const initial = MeldexStandaloneFS.nativeInitialPath();
     if (!initial) await newScenario();
     else {
@@ -334,6 +337,12 @@
   };
 
   document.addEventListener('DOMContentLoaded', () => {
-    init().catch(error => showStatus('シナリオの初期化に失敗: ' + (error.message || error), true));
+    window.MeldexStandaloneBoot = window.MeldexStandaloneBootstrap.create({
+      appId: 'scenario',
+      bindUi,
+      initialize: initializeData,
+      onError: error => showStatus('シナリオの保存先へ接続できません: ' + (error.message || error) + '。操作すると再試行します。', true),
+    });
+    window.MeldexStandaloneBoot.start().catch(() => {});
   });
 })();

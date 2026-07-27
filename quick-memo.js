@@ -36,7 +36,7 @@
 
   function init() {
     bindElements();
-    setupControllers();
+    const controllerErrors = setupControllers();
     restoreDraft();
     applyIncomingShare();
     bindEvents();
@@ -45,7 +45,10 @@
     loadTags();
     listenInstallPrompt();
     registerServiceWorker();
-    setStatus('入力できます');
+    setStatus(controllerErrors.length
+      ? '一部の補助機能を読み込めませんでした。基本操作は利用できます'
+      : '入力できます');
+    controllerErrors.forEach(error => console.error('quick memo controller initialization failed', error));
     setTimeout(flushPendingQueue, 120);
   }
 
@@ -64,54 +67,82 @@
   }
 
   function setupControllers() {
-    editorController = window.MeldexQuickMemoEditor.create({
-      editor: els.editor,
-      onChanged() {
-        autoFillTitle();
-        scheduleSave();
-      },
-      onHistoryChange(next) {
-        state.textHistory = next;
-        updateHistoryButtons();
-      },
-    });
-    drawingController = window.MeldexQuickMemoDrawing.create({
-      canvas: els.drawingCanvas,
-      swatch: els.colorSwatchBtn,
-      popover: els.colorPopover,
-      colorInput: els.colorInput,
-      opacityInput: els.opacityInput,
-      opacityValue: els.opacityValue,
-      widthInput: els.widthInput,
-      penBtn: els.penBtn,
-      fillBtn: els.fillBtn,
-      eraserBtn: els.eraserBtn,
-      clearBtn: els.clearDrawingBtn,
-      onChanged: scheduleSave,
-      onStatus: setStatus,
-      onHistoryChange(next) {
-        state.drawingHistory = next;
-        updateHistoryButtons();
-      },
-    });
-    libraryController = window.MeldexQuickMemoLibrary.create({
-      editorView: els.editorView,
-      listView: els.listView,
-      content: els.listContent,
-      search: els.listSearch,
-      tagFilter: els.listTagFilter,
-      moreButton: els.listMoreBtn,
-      backButton: els.listBackBtn,
-      apiBase: API_BASE,
-      readQueue: () => readJson(QUEUE_KEY, []),
-      isCloudMode,
-      cloudConnected,
-      onStatus: setStatus,
-      beforeNavigate: preserveCurrentForNavigation,
-      onOpen: openExistingMemo,
-    });
+    const errors = [];
+    try {
+      editorController = window.MeldexQuickMemoEditor.create({
+        editor: els.editor,
+        onChanged() {
+          autoFillTitle();
+          scheduleSave();
+        },
+        onHistoryChange(next) {
+          state.textHistory = next;
+          updateHistoryButtons();
+        },
+      });
+    } catch (error) {
+      errors.push(error);
+      editorController = {
+        setActive() {},
+        reset(html) { els.editor.innerHTML = String(html || ''); },
+        getHtml() { return els.editor.innerHTML; },
+        mutate(action) { action?.(); },
+      };
+    }
+    try {
+      drawingController = window.MeldexQuickMemoDrawing.create({
+        canvas: els.drawingCanvas,
+        swatch: els.colorSwatchBtn,
+        popover: els.colorPopover,
+        colorInput: els.colorInput,
+        opacityInput: els.opacityInput,
+        opacityValue: els.opacityValue,
+        widthInput: els.widthInput,
+        penBtn: els.penBtn,
+        fillBtn: els.fillBtn,
+        eraserBtn: els.eraserBtn,
+        clearBtn: els.clearDrawingBtn,
+        onChanged: scheduleSave,
+        onStatus: setStatus,
+        onHistoryChange(next) {
+          state.drawingHistory = next;
+          updateHistoryButtons();
+        },
+      });
+    } catch (error) {
+      errors.push(error);
+      drawingController = { setActive() {}, reset() {}, toDataURL() { return ''; } };
+    }
+    try {
+      libraryController = window.MeldexQuickMemoLibrary.create({
+        editorView: els.editorView,
+        listView: els.listView,
+        content: els.listContent,
+        search: els.listSearch,
+        tagFilter: els.listTagFilter,
+        moreButton: els.listMoreBtn,
+        backButton: els.listBackBtn,
+        apiBase: API_BASE,
+        readQueue: () => readJson(QUEUE_KEY, []),
+        isCloudMode,
+        cloudConnected,
+        onStatus: setStatus,
+        beforeNavigate: preserveCurrentForNavigation,
+        onOpen: openExistingMemo,
+      });
+    } catch (error) {
+      errors.push(error);
+      libraryController = {
+        show() { setStatus('メモ一覧を読み込めませんでした', true); },
+        hide() {
+          els.listView.style.display = 'none';
+          els.editorView.style.display = '';
+        },
+      };
+    }
     els.undoBtn.innerHTML = typeof window.lucide === 'function' ? window.lucide('undo2', 19) : '↶';
     els.redoBtn.innerHTML = typeof window.lucide === 'function' ? window.lucide('redo2', 19) : '↷';
+    return errors;
   }
 
   function bindEvents() {

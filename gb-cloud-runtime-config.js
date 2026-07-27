@@ -18,22 +18,8 @@
   "desktop": {
     "currentVersion": "0.7.071",
     "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.071/Meldex-v0.7.071.zip",
-    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases",
+    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.071",
     "versions": [
-      {
-        "version": "0.7.071",
-        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.071/Meldex-v0.7.071.zip",
-        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.071",
-        "publishedAt": "2026-07-27",
-        "assetName": "Meldex-v0.7.071.zip"
-      },
-      {
-        "version": "0.7.041",
-        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.041/Meldex-v0.7.041.zip",
-        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.041",
-        "publishedAt": "2026-07-23",
-        "assetName": "Meldex-v0.7.041.zip"
-      },
       {
         "version": "0.6.185",
         "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.185/Meldex-v0.6.185.zip",

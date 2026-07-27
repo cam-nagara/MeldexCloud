@@ -420,7 +420,11 @@ async function bdSyncLinkedSelectionToPane(path, label, linkType) {
 async function bdOpenLinkedPath(path, label, options) {
   const opts = options || {};
   const standaloneType = _bdResolveOpenType(_bdInferLinkType(path, opts.linkType));
-  const standaloneOpenable = _bdIsExternalUrl(path) || ['page', 'scriptnote', 'smart-db', 'board', 'timer'].includes(standaloneType);
+  if (standaloneType === 'smart-db' && window.MeldexBoardStandalone) {
+    if (typeof showStatus === 'function') showStatus('スマートシートはMeldex本体で開いてください', true);
+    return;
+  }
+  const standaloneOpenable = _bdIsExternalUrl(path) || ['page', 'scriptnote', 'pivot', 'board', 'timer'].includes(standaloneType);
   if (standaloneOpenable
     && typeof window !== 'undefined'
     && window.MeldexBoardStandalone
@@ -679,7 +683,7 @@ function _bdStandaloneUrlForEntry(entry) {
   if (viewerUrl) return viewerUrl;
   if (entry.type === 'page') return 'note-standalone.html?open=' + encodeURIComponent(entry.path);
   if (entry.type === 'scriptnote') return 'scenario-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db'].includes(entry.type)) {
+  if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
     return 'sheet-standalone.html?open=' + encodeURIComponent(entry.path);
   }
   if (entry.type === 'board') return 'board-standalone.html?open=' + encodeURIComponent(entry.path);

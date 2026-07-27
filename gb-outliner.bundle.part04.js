@@ -23,6 +23,24 @@
     }, null, 'image');
   }
 
+  // --- 自動タグ付け（フォルダは深い階層まで再帰処理） ---
+  if (!isMulti && nodeData.path && !isEntity) {
+    const recursiveAutoTag = isFolder || !!nodeData._isRoot;
+    addMenuItem(
+      recursiveAutoTag ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け',
+      () => {
+        closeTreeContextMenu();
+        if (typeof autoTagFolderTarget === 'function') {
+          autoTagFolderTarget(nodeData, { recursive: recursiveAutoTag });
+        } else {
+          showStatus('自動タグ付けを初期化できませんでした', true);
+        }
+      },
+      null,
+      'tags'
+    );
+  }
+
   // --- 台本で開く（シナリオのみ） ---
   if (!isMulti && nodeData.path && ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path)))) {
     addMenuItem('シナリオで開く', () => {
@@ -880,21 +898,3 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
       const found = _outlinerFindRenamedItem(items, oldName, newName);
       if (found) {
         _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName);
-        return;
-      }
-    }
-    // 確認中に全体再読込等でノードが再生成されている場合に備え、旧パスの
-    // 現在のノードを探してラベルを戻す（元の labelEl は切断されている可能性がある）
-    const liveNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(oldPath) : null;
-    const liveLabel = liveNode ? liveNode.querySelector(':scope > .tree-node-row .tree-label') : null;
-    (liveLabel || labelEl).textContent = oldName;
-    showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
-  } finally {
-    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
-  }
-}
-
-function backToPivot() {
-  state.currentEntityPath = null;
-  if (state.currentDbPath) {
-    selectDatabase(state.currentDbPath);

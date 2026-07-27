@@ -1,9 +1,10 @@
 (function () {
   'use strict';
 
-  // Eagle風タグ管理: 階層ツリー、複数選択、D&D、プリセット、タグ検索/フォルダ絞り込み。
+  // Eagle風タグ管理: 階層ツリー、複数選択、D&D、自動タグプリセット、タグ検索。
   const UNCATEGORIZED_COLLAPSE_KEY = 'meldex-tag-management-uncategorized-collapsed';
   const DRAG_MIME = 'application/x-meldex-tag-tree';
+  const INITIAL_VISIBLE_TAGS = 400;
 
   let _container = null;
   let _activeMenuCleanup = null;
@@ -13,8 +14,12 @@
   let _state = {
     tags: [],
     groups: [],
-    presets: [],
-    activePresetId: '',
+    presetNames: [],
+    builtinPresets: [],
+    selectedPresetNames: [],
+    filterText: '',
+    visibleTagLimit: INITIAL_VISIBLE_TAGS,
+    installingPresetId: '',
     loading: false,
     error: '',
     selectedKeys: [],
@@ -81,12 +86,19 @@
     try {
       const [tagData, presetData] = await Promise.all([
         api().loadTags(),
-        api().loadPresets ? api().loadPresets() : Promise.resolve({ presets: [] }),
+        api().loadAutoTagPresets
+          ? api().loadAutoTagPresets()
+          : Promise.resolve({ preset_names: [], builtins: [] }),
       ]);
       _state.tags = Array.isArray(tagData?.tags) ? tagData.tags : [];
       _state.groups = Array.isArray(tagData?.groups) ? tagData.groups : [];
-      _state.presets = Array.isArray(presetData?.presets) ? presetData.presets : [];
-      _state.activePresetId = presetData?.active_preset_id || presetData?.activePresetId || '';
+      _state.presetNames = Array.isArray(presetData?.preset_names)
+        ? presetData.preset_names
+        : (Array.isArray(tagData?.preset_names) ? tagData.preset_names : []);
+      _state.builtinPresets = Array.isArray(presetData?.builtins) ? presetData.builtins : [];
+      const available = new Set(_state.presetNames.map(name => String(name).toLocaleLowerCase('ja')));
+      _state.selectedPresetNames = (_state.selectedPresetNames || [])
+        .filter(name => available.has(String(name).toLocaleLowerCase('ja')));
       pruneSelection();
     } catch (err) {
       _state.error = err && (err.userMessage || err.message) ? (err.userMessage || err.message) : String(err);
@@ -95,7 +107,13 @@
     }
   }
 
+  function filteredTags() {
+    return window.MeldexTagPresetUI?.filteredTags?.(_state, _state.visibleTagLimit)
+      || { all: _state.tags, visible: _state.tags.slice(0, _state.visibleTagLimit) };
+  }
+
   function buildTreeData() {
+    const filtered = filteredTags();
     const groupsById = Object.fromEntries(_state.groups.map(group => [group.id, { ...group, children: [], tags: [] }]));
     const roots = [];
     _state.groups.forEach(group => {
@@ -104,7 +122,7 @@
       else roots.push(node);
     });
     const uncategorized = [];
-    _state.tags.forEach(tag => {
+    filtered.visible.forEach(tag => {
       if (tag.group_id && groupsById[tag.group_id]) groupsById[tag.group_id].tags.push(tag);
       else uncategorized.push(tag);
     });
@@ -118,7 +136,16 @@
     roots.sort(sortByIndexName);
     roots.forEach(sortGroup);
     uncategorized.sort(sortByIndexName);
-    return { roots, uncategorized, groupsById };
+    if (_state.filterText || _state.selectedPresetNames.length || filtered.visible.length < _state.tags.length) {
+      const hasContent = node => {
+        node.children = node.children.filter(hasContent);
+        return node.tags.length > 0 || node.children.length > 0;
+      };
+      for (let index = roots.length - 1; index >= 0; index -= 1) {
+        if (!hasContent(roots[index])) roots.splice(index, 1);
+      }
+    }
+    return { roots, uncategorized, groupsById, filtered };
   }
 
   function flattenTree(roots, uncategorized) {
@@ -209,8 +236,9 @@
       return;
     }
 
-    const { roots, uncategorized, groupsById } = buildTreeData();
+    const { roots, uncategorized, groupsById, filtered } = buildTreeData();
     flattenTree(roots, uncategorized);
+    body.appendChild(window.MeldexTagPresetUI?.renderFilterSummary?.(_state, filtered) || document.createTextNode(''));
     body.appendChild(renderBulkBar());
     body.appendChild(renderUncategorizedSection(uncategorized, groupsById));
     roots.forEach(group => body.appendChild(renderGroupNode(group, groupsById, 0)));
@@ -220,8 +248,23 @@
       const empty = document.createElement('div');
       empty.className = 'gb-section gb-section--boxed gb-tag-empty';
       empty.style.cssText = 'padding:10px;margin-top:8px;color:var(--fg2);font-size:12px;';
-      empty.textContent = 'タグがありません。タグを追加するか、標準タグ集プリセットを読み込んでください。';
+      empty.textContent = filtered.all.length
+        ? '表示条件に一致するタグがありません。'
+        : 'タグがありません。タグを追加するか、同梱プリセットを導入してください。';
       body.appendChild(empty);
+    }
+    if (filtered.visible.length < filtered.all.length) {
+      const more = textButton(
+        `さらに表示（残り${(filtered.all.length - filtered.visible.length).toLocaleString('ja-JP')}件）`,
+        'chevrons-down',
+        () => {
+          _state.visibleTagLimit += INITIAL_VISIBLE_TAGS;
+          render();
+        },
+        'tag-management-load-more',
+      );
+      more.style.marginTop = '8px';
+      body.appendChild(more);
     }
     if (_state.searchResults != null) body.appendChild(renderSearchResults());
     _container.appendChild(body);
@@ -243,40 +286,29 @@
     top.appendChild(refreshBtn);
     header.appendChild(top);
 
-    const presetRow = document.createElement('div');
-    presetRow.className = 'gb-tag-management-preset-row';
-    presetRow.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) repeat(5,28px);gap:4px;align-items:center;';
-    const presetSelect = document.createElement('select');
-    presetSelect.className = 'gb-select gb-tag-management-preset-select';
-    presetSelect.style.cssText = 'min-width:0;font-size:12px;padding:3px 6px;';
-    presetSelect.dataset.e2eId = 'tag-management-preset-select';
-    presetSelect.dataset.tagManagementRole = 'preset-select';
-    presetSelect.setAttribute('aria-label', 'タグプリセットを選択');
-    if (!_state.presets.length) {
-      const option = document.createElement('option');
-      option.value = '';
-      option.textContent = 'プリセットなし';
-      presetSelect.appendChild(option);
-    } else {
-      _state.presets.forEach(preset => {
-        const option = document.createElement('option');
-        option.value = preset.id;
-        option.textContent = (preset.builtin ? '標準: ' : '') + preset.name;
-        presetSelect.appendChild(option);
-      });
-      presetSelect.value = _state.activePresetId || (_state.presets[0]?.id || '');
-    }
-    presetSelect.title = 'タグプリセットを選択して読み込み';
-    presetSelect.addEventListener('change', () => {
-      if (presetSelect.value) loadPreset(presetSelect.value);
+    const presetControls = window.MeldexTagPresetUI?.renderPresetControls?.({
+      state: _state,
+      onFilterInput(search) {
+        _state.filterText = search.value;
+        _state.visibleTagLimit = INITIAL_VISIBLE_TAGS;
+        const caret = search.selectionStart || 0;
+        render();
+        const next = _container?.querySelector('[data-e2e-id="tag-management-filter"]');
+        if (next) {
+          next.focus();
+          next.setSelectionRange(caret, caret);
+        }
+      },
+      onPresetToggle(name, checked) {
+        const selected = new Set(_state.selectedPresetNames);
+        if (checked) selected.add(name);
+        else selected.delete(name);
+        _state.selectedPresetNames = [...selected];
+        _state.visibleTagLimit = INITIAL_VISIBLE_TAGS;
+        render();
+      },
     });
-    presetRow.appendChild(presetSelect);
-    presetRow.appendChild(iconButton('plus', 'プリセットを追加', onAddPreset, '', 'tag-management-preset-add'));
-    presetRow.appendChild(iconButton('copy', 'プリセットを複製', () => onDuplicatePreset(presetSelect.value), '', 'tag-management-preset-duplicate'));
-    presetRow.appendChild(iconButton('save', '現在のタグツリーをプリセットへ保存', () => onSavePreset(presetSelect.value), '', 'tag-management-preset-save'));
-    presetRow.appendChild(iconButton('download', 'プリセットを読み込み', () => presetSelect.value && loadPreset(presetSelect.value), '', 'tag-management-preset-load'));
-    presetRow.appendChild(iconButton('trash-2', 'プリセットを削除', () => onDeletePreset(presetSelect.value), 'danger', 'tag-management-preset-delete'));
-    header.appendChild(presetRow);
+    if (presetControls) header.appendChild(presetControls);
 
     const actionRow = document.createElement('div');
     actionRow.className = 'gb-tag-management-action-row';
@@ -290,6 +322,14 @@
       actionRow.appendChild(textButton('現在のフォルダを自動タグ付け', 'sparkles', () => runAutoTagForCurrentFolder(), 'tag-management-auto-tag-folder'));
     }
     header.appendChild(actionRow);
+    if (_state.builtinPresets.length) {
+      header.appendChild(window.MeldexTagPresetUI.renderBuiltinPresets({
+        state: _state,
+        textButton,
+        safeKeyPart,
+        onInstall: installBuiltinPreset,
+      }));
+    }
     return header;
   }
 
@@ -908,93 +948,23 @@
     return wrap;
   }
 
-  async function onAddPreset() {
-    try {
-      const name = await promptAsync('プリセット名', uniqueName('タグプリセット', _state.presets.map(p => p.name)));
-      if (!String(name || '').trim()) return;
-      await api().createPreset({ name: String(name).trim() });
-      await refresh(false);
-    } catch (err) {
-      reportError(err, 'プリセットを追加できませんでした');
-    }
-  }
-
-  async function onDuplicatePreset(presetId) {
-    if (!presetId) return;
-    const current = _state.presets.find(p => p.id === presetId);
-    try {
-      const name = await promptAsync('複製後のプリセット名', uniqueName((current?.name || 'タグプリセット') + ' コピー', _state.presets.map(p => p.name)));
-      if (!String(name || '').trim()) return;
-      await api().duplicatePreset(presetId, { name: String(name).trim() });
-      await refresh(false);
-    } catch (err) {
-      reportError(err, 'プリセットを複製できませんでした');
-    }
-  }
-
-  async function onDeletePreset(presetId) {
-    if (!presetId) return;
-    const current = _state.presets.find(p => p.id === presetId);
-    if (!await confirmAsync('プリセット「' + (current?.name || presetId) + '」を削除しますか？')) return;
-    try {
-      await api().deletePreset(presetId);
-      await refresh(false);
-    } catch (err) {
-      reportError(err, 'プリセットを削除できませんでした');
-    }
-  }
-
-  async function onSavePreset(presetId) {
-    if (!presetId) return;
-    const current = _state.presets.find(p => p.id === presetId);
-    if (!await confirmAsync('現在のタグツリーを「' + (current?.name || presetId) + '」へ保存しますか？')) return;
-    try {
-      await api().saveCurrentPreset(presetId);
-      await refresh(false);
-      if (typeof showStatus === 'function') showStatus('タグプリセットを保存しました');
-    } catch (err) {
-      reportError(err, 'プリセットを保存できませんでした');
-    }
-  }
-
-  async function loadPreset(presetId) {
-    if (!presetId) return;
-    const current = _state.presets.find(p => p.id === presetId);
-    if (!await confirmAsync('タグツリーを「' + (current?.name || presetId) + '」に切り替えますか？')) return;
-    try {
-      const data = await api().loadPreset(presetId);
-      _state.tags = Array.isArray(data?.tags) ? data.tags : [];
-      _state.groups = Array.isArray(data?.groups) ? data.groups : [];
-      _state.presets = Array.isArray(data?.presets) ? data.presets : _state.presets;
-      _state.activePresetId = data?.active_preset_id || presetId;
-      _state.selectedKeys = [];
-      render();
-      if (typeof showStatus === 'function') showStatus('タグプリセットを読み込みました');
-    } catch (err) {
-      reportError(err, 'プリセットを読み込めませんでした');
-    }
+  function installBuiltinPreset(item) {
+    return window.MeldexTagPresetUI?.installBuiltinPreset?.(item, {
+      state: _state,
+      render,
+      refresh,
+      reportError,
+    });
   }
 
   async function runAutoTagForCurrentFolder() {
     const path = typeof _folderPath !== 'undefined' ? _folderPath : '';
-    if (!path) {
-      if (typeof showStatus === 'function') showStatus('フォルダを開いてから実行してください', true);
-      return;
-    }
-    if (!await confirmAsync('現在のフォルダ内のファイルへ自動タグ付けを実行しますか？\n設定で選んだAI・モデルと自動タグ辞書を使います。')) return;
-    try {
-      if (typeof showStatus === 'function') showStatus('自動タグ付けを実行しています...');
-      const result = await api().autoTag({ path, recursive: false });
-      if (result?.stopped) {
-        if (typeof showStatus === 'function') showStatus('自動タグ付けを中断しました: ' + (result.warning || result.reason || ''), true);
-      } else if (typeof showStatus === 'function') {
-        showStatus((result?.total || 0) + '件に自動タグ付けしました');
-      }
-      await refresh(false);
-      if (typeof renderFolderGrid === 'function') renderFolderGrid();
-    } catch (err) {
-      reportError(err, '自動タグ付けに失敗しました');
-    }
+    return window.MeldexTagPresetUI?.runAutoTagForFolder?.(path, {
+      confirmAsync,
+      api,
+      refresh,
+      reportError,
+    });
   }
 
   async function refresh(showLoading) {

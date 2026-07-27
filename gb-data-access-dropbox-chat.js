@@ -52,6 +52,26 @@
     return normalized;
   }
 
+  function _requestWorkspaceId(url, body) {
+    return String(
+      body?.workspace_id
+      || body?.workspaceId
+      || url?.searchParams?.get('workspace_id')
+      || '',
+    ).trim();
+  }
+
+  async function _requestChatScopeFolder(url, body) {
+    const workspaceId = _requestWorkspaceId(url, body);
+    if (!workspaceId) return _requestSourceFolder(url, body);
+    const resolver = internals._resolveCloudWorkspaceFolder;
+    if (typeof resolver !== 'function') throw new Error('ワークスペースを読み込めません');
+    const normalized = _normalizeFolderPath(await resolver(workspaceId));
+    if (!normalized || normalized === '.') throw new Error('ワークスペースのDropboxフォルダが設定されていません');
+    _assertSafeChatPath(normalized, 'workspace_folder');
+    return normalized;
+  }
+
   function _assertSafeChatPath(path, field) {
     const parts = _normalizeFolderPath(path).split('/').filter(Boolean);
     if (parts.some(part => part === '.' || part === '..')) throw new Error(`${field || 'path'} が不正です`);
@@ -133,7 +153,7 @@
       'type: "chat"',
       'provider: ' + _yamlString(body?.provider || ''),
       'model: ' + _yamlString(body?.model || ''),
-      'created: ' + _yamlString(new Date().toISOString().slice(0, 10)),
+      'created: ' + _yamlString(body?._preservedCreated || new Date().toISOString()),
       'tags: ' + JSON.stringify(Array.isArray(body?.tags) ? body.tags : []),
     ];
     const title = String(body?.title || '').trim();
@@ -171,7 +191,7 @@
   function _parsePwaChatFrontmatter(raw) {
     const text = String(raw || '');
     const match = text.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!match) return { frontmatter: {}, body: text };
+    if (!match) return { frontmatter: {}, body: text, valid: false };
     const fm = {};
     match[1].split(/\r?\n/).forEach(line => {
       if (!/^[A-Za-z_][A-Za-z0-9_-]*\s*:/.test(line)) return;
@@ -189,7 +209,11 @@
       if (Array.isArray(value) || (value && typeof value === 'object')) fm[key] = value;
       else if (!Object.prototype.hasOwnProperty.call(fm, key)) fm[key] = value;
     });
-    return { frontmatter: fm, body: text.slice(match[0].length) };
+    return {
+      frontmatter: fm,
+      body: text.slice(match[0].length),
+      valid: String(fm.type || 'chat') === 'chat' && Object.keys(fm).length > 0,
+    };
   }
 
   function _yamlLiteObject(source) {
@@ -360,7 +384,14 @@
   async function _savePwaChat(provider, body, sourceFolder) {
     const savePath = _resolveChatPath(sourceFolder, body?.path || '');
     await _directoryHandle(provider, _dirname(savePath), true);
-    await provider.writeText(savePath, _chatDocumentFromPayload(body || {}));
+    let preservedCreated = '';
+    try {
+      const existing = _parsePwaChatFrontmatter(await provider.readText(savePath));
+      preservedCreated = String(existing.frontmatter.created || '');
+    } catch {
+      // 初回保存では既存ファイルがないため、そのまま新しい作成日時を使う。
+    }
+    await provider.writeText(savePath, _chatDocumentFromPayload({ ...(body || {}), _preservedCreated: preservedCreated }));
     const result = { ok: true, path: _clientPath(sourceFolder, savePath), user: String(body?.user || '') };
     const extractor = window.MeldexKnowledgeCloudExtractor;
     if (typeof extractor?.extractAfterChatSave === 'function') {
@@ -382,28 +413,68 @@
     return { frontmatter: parsed.frontmatter, messages };
   }
 
+  async function _readPwaChatHistoryRow(provider, sourceFolder, file) {
+    const raw = await provider.readText(file.path);
+    const parsed = _parsePwaChatFrontmatter(raw);
+    if (!parsed.valid) throw new Error('チャットのフロントマターを読み込めません');
+    const stats = await _fileStats(file.handle).catch(() => ({ modifiedMs: 0, modified: '' }));
+    const messages = _messagesFromParsedChat(parsed);
+    const path = _clientPath(sourceFolder, file.path);
+    const modifiedMs = Number(stats.modifiedMs || 0);
+    return {
+      id: path,
+      name: _basename(file.path).replace(/\.md$/i, ''),
+      path,
+      title: String(parsed.frontmatter.title || ''),
+      created: String(parsed.frontmatter.created || ''),
+      targetPath: String(parsed.frontmatter.targetPath || ''),
+      targetId: String(parsed.frontmatter.targetId || ''),
+      provider: String(parsed.frontmatter.provider || ''),
+      model: String(parsed.frontmatter.model || ''),
+      messageCount: messages.length,
+      modified: String(stats.modified || '') || (modifiedMs > 0 ? new Date(modifiedMs).toISOString() : ''),
+      _modifiedMs: modifiedMs,
+    };
+  }
+
+  async function _chatHistoryRows(provider, sourceFolder) {
+    const files = await _listPwaChatFiles(provider, sourceFolder);
+    const results = new Array(files.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < files.length) {
+        const index = cursor;
+        cursor += 1;
+        try {
+          results[index] = await _readPwaChatHistoryRow(provider, sourceFolder, files[index]);
+        } catch (error) {
+          results[index] = { _unreadable: true, _error: error?.message || String(error) };
+        }
+      }
+    };
+    const workerCount = Math.min(6, files.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    const rows = results.filter(row => row && !row._unreadable);
+    const unreadableCount = results.filter(row => row?._unreadable).length;
+    rows.sort((a, b) => {
+      const timeDiff = (b._modifiedMs || 0) - (a._modifiedMs || 0);
+      return timeDiff || String(b.path || '').localeCompare(String(a.path || ''), 'ja', { numeric: true });
+    });
+    return { rows, unreadableCount };
+  }
+
   async function _listPwaChats(provider, sourceFolder) {
-    const rows = [];
-    for (const file of await _listPwaChatFiles(provider, sourceFolder)) {
-      try {
-        const raw = await provider.readText(file.path);
-        const parsed = _parsePwaChatFrontmatter(raw);
-        const stats = await _fileStats(file.handle).catch(() => ({ modifiedMs: 0, modified: '' }));
-        const messages = _messagesFromParsedChat(parsed);
-        rows.push({
-          name: _basename(file.path).replace(/\.md$/i, ''),
-          path: _clientPath(sourceFolder, file.path),
-          title: String(parsed.frontmatter.title || ''),
-          targetPath: String(parsed.frontmatter.targetPath || ''),
-          targetId: String(parsed.frontmatter.targetId || ''),
-          provider: String(parsed.frontmatter.provider || ''),
-          model: String(parsed.frontmatter.model || ''),
-          messageCount: messages.length,
-          modified: stats.modifiedMs || 0,
-        });
-      } catch {}
-    }
-    return rows.sort((a, b) => (b.modified || 0) - (a.modified || 0)).slice(0, 50);
+    const { rows } = await _chatHistoryRows(provider, sourceFolder);
+    return rows.slice(0, 50).map(({ _modifiedMs, ...row }) => ({
+      ...row,
+      modified: _modifiedMs || 0,
+    }));
+  }
+
+  async function _pwaChatHistory(provider, sourceFolder) {
+    const { rows, unreadableCount } = await _chatHistoryRows(provider, sourceFolder);
+    const items = rows.map(({ name, _modifiedMs, ...row }) => row);
+    return { items, total: items.length, unreadableCount };
   }
 
   async function _searchPwaChats(provider, query, sourceFolder) {
@@ -433,12 +504,18 @@
   }
 
   handlers.push(async ({ method, body, url, pathname }) => {
-    const sourceFolder = _requestSourceFolder(url, body || {});
+    if (!pathname.startsWith('/chat/')) return NOT_HANDLED;
     if (pathname === '/chat/config' && method === 'GET') return _llmConfigShape();
     if (pathname === '/chat/config' && (method === 'PUT' || method === 'POST')) return { ok: false, unsupported: true };
+    if (pathname === '/chat/stream' && method === 'POST') return { ok: true, direct_client_stream: true };
+    const sourceFolder = await _requestChatScopeFolder(url, body || {});
     if (pathname === '/chat/list' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       return _listPwaChats(provider, sourceFolder);
+    }
+    if (pathname === '/chat/history' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _pwaChatHistory(provider, sourceFolder);
     }
     if (pathname === '/chat/search' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
@@ -452,7 +529,6 @@
       const provider = await _requirePwaProvider('readwrite');
       return _savePwaChat(provider, body || {}, sourceFolder);
     }
-    if (pathname === '/chat/stream' && method === 'POST') return { ok: true, direct_client_stream: true };
     return NOT_HANDLED;
   });
 })();

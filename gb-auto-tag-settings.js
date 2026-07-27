@@ -16,6 +16,95 @@
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
   }
 
+  function atFieldHelp(text) {
+    if (typeof fieldHelp === 'function') return fieldHelp(text);
+    return `<span class="gb-field-help" tabindex="0" data-gb-tooltip="${atEsc(text)}">?</span>`;
+  }
+
+  function atNormalizedPath(value) {
+    return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase();
+  }
+
+  function atCurrentPath() {
+    if (typeof _folderPath !== 'undefined' && _folderPath) return String(_folderPath);
+    if (typeof _tabs !== 'undefined' && typeof _activeTabId !== 'undefined') {
+      const active = _tabs.find(tab => tab?.id === _activeTabId);
+      if (active?.path) return String(active.path);
+    }
+    if (typeof state !== 'undefined') {
+      return String(
+        state.currentEntityPath
+        || state.currentPagePath
+        || state.currentDbPath
+        || state.currentBoardPath
+        || '',
+      );
+    }
+    return '';
+  }
+
+  function atSourceFolderForPath(targetPath) {
+    const candidates = [targetPath, atCurrentPath()].map(atNormalizedPath).filter(Boolean);
+    const options = typeof _chatSourceOptions === 'function' ? _chatSourceOptions() : [];
+    let match = null;
+    options.forEach(option => {
+      const rawRoot = String(option?.path || '').trim();
+      const root = atNormalizedPath(rawRoot);
+      if (!root) return;
+      if (candidates.some(path => path === root || path.startsWith(root + '/'))) {
+        if (!match || root.length > match.normalized.length) match = { path: rawRoot, normalized: root };
+      }
+    });
+    if (match) return match.path;
+    const vault = typeof state !== 'undefined' ? String(state?.vaultPath || '').trim() : '';
+    if (vault) return vault;
+    const chatSource = typeof _chatSourceFolderValue === 'function'
+      ? String(_chatSourceFolderValue() || '').trim()
+      : '';
+    return chatSource.startsWith('workspace:') ? '' : chatSource;
+  }
+
+  function atDictionaryApiPath(path, targetPath) {
+    const sourceFolder = atSourceFolderForPath(targetPath);
+    if (!sourceFolder) return path;
+    return path + (path.includes('?') ? '&' : '?') + 'source_folder=' + encodeURIComponent(sourceFolder);
+  }
+
+  function atDictionaryPayload(payload, targetPath) {
+    const sourceFolder = atSourceFolderForPath(targetPath);
+    return sourceFolder ? { ...(payload || {}), source_folder: sourceFolder } : { ...(payload || {}) };
+  }
+
+  function atPresetNames(dictionary) {
+    const fromApi = Array.isArray(dictionary?.preset_names) ? dictionary.preset_names : [];
+    const names = fromApi.length
+      ? fromApi
+      : [...new Set((dictionary?.tags || []).flatMap(tag => tag.presets || ['標準']))];
+    return names.filter(Boolean).sort((left, right) => String(left).localeCompare(String(right), 'ja'));
+  }
+
+  function atSelectedPresetNames(settings, dictionary) {
+    const available = atPresetNames(dictionary);
+    const selected = Array.isArray(settings?.preset_names) ? settings.preset_names : [];
+    const valid = selected.filter(name => available.includes(name));
+    return valid.length ? valid : available.slice(0, 1);
+  }
+
+  function atPresetOptionsHtml(dictionary, selectedNames, prefix) {
+    const selected = new Set(selectedNames || []);
+    return atPresetNames(dictionary).map((name, index) => {
+      const localOnlyHelp = name === 'Danbooru日本語'
+        ? atFieldHelp('8,000件を超える大規模辞書です。CLI AIの1,000件上限を超えるため、ローカル画像AIで使ってください。')
+        : '';
+      return `
+        <label class="at-preset-option" for="${prefix}-${index}">
+          <input id="${prefix}-${index}" type="checkbox" data-at-preset="${atEsc(name)}" ${selected.has(name) ? 'checked' : ''}>
+          <span>${atEsc(name)}${localOnlyHelp}</span>
+        </label>
+      `;
+    }).join('');
+  }
+
   function atStatus(message, error) {
     if (typeof showStatus === 'function') showStatus(message, !!error);
   }
@@ -41,11 +130,20 @@
     `;
   }
 
-  async function atLoadBundle() {
+  async function atLoadBundle(targetPath) {
+    const dictionaryPromise = apiFetch(
+      atDictionaryApiPath('/auto-tag/dictionary', targetPath),
+      { silentError: true },
+    ).catch(error => ({
+      tags: [],
+      groups: [],
+      preset_names: ['標準'],
+      load_error: error?.userMessage || error?.message || String(error),
+    }));
     const [settingsResult, modelsResult, dictionaryResult] = await Promise.all([
       apiFetch('/auto-tag/settings', { silentError: true }),
       apiFetch('/auto-tag/models', { silentError: true }),
-      apiFetch('/auto-tag/dictionary', { silentError: true }),
+      dictionaryPromise,
     ]);
     return {
       settings: settingsResult?.settings || {},
@@ -116,16 +214,26 @@
     if (!model) return '<div class="gb-section-desc">利用可能なモデルがありません。</div>';
     const guide = (model.install_guide || []).map(item => `<li>${atEsc(item)}</li>`).join('');
     const ready = atReadyLabel(model);
+    const installing = state.installing?.modelId === model.id;
     const installButton = model.local && !model.installed
-      ? `<button type="button" class="gb-btn gb-btn-sm" data-at-install="${atEsc(model.id)}">${atIcon('download', 14)} モデルを入手</button>`
+      ? `<button type="button" class="gb-btn gb-btn-sm" data-at-install="${atEsc(model.id)}" ${installing ? 'disabled' : ''}>${atIcon('download', 14)} ${installing ? '取得しています…' : 'モデルを入手'}</button>`
       : '';
     const guideLink = model.model_url
       ? `<button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-at-guide="${atEsc(model.model_url)}">${atIcon('externalLink', 14)} 公式配布元</button>`
       : '';
+    let installState = '';
+    if (installing) {
+      installState = `<p class="at-install-state at-install-state--working" data-at-install-state role="status" aria-live="polite">${atEsc(state.installing.message || 'モデルを取得しています…')}</p>`;
+    } else if (state.installNotice?.modelId === model.id) {
+      const kind = state.installNotice.error ? 'error' : 'ready';
+      installState = `<p class="at-install-state at-install-state--${kind}" data-at-install-state role="status" aria-live="polite">${atEsc(state.installNotice.message)}</p>`;
+    } else if (model.local && model.installed && !model.runtime_ready) {
+      installState = '<p class="at-install-state at-install-state--warn" data-at-install-state role="status">モデルファイルは取得済みです。現在のMeldexには画像AIの実行環境がないため、Meldexを更新または実行環境を導入して再起動してください。</p>';
+    }
     return `
       <div class="at-detail-head">
         <div>
-          <div class="at-detail-name">${atEsc(model.name)}</div>
+          <div class="at-detail-name">${atEsc(model.name)}${!model.local ? atFieldHelp('CLI AIは画像ごとに外部CLI処理を待つため、大量画像には時間がかかります。大量処理にはローカル画像AIを推奨します。') : ''}</div>
           <div class="at-ready at-ready--${ready.kind}">${atEsc(ready.text)}</div>
         </div>
         <div class="at-detail-size">${atEsc(model.size || '')}</div>
@@ -138,6 +246,7 @@
       <ol class="at-guide-list">${guide}</ol>
       ${model.local ? `<div class="at-install-path">${atIcon('folder', 12)} ${atEsc(model.install_path || '')}</div>` : ''}
       <div class="at-detail-actions">${installButton}${guideLink}</div>
+      ${installState}
     `;
   }
 
@@ -157,9 +266,15 @@
         </label>
       </div>
       <div class="at-field-block">
-        <div class="at-field-label">画像の判定方法</div>
+        <div class="at-field-label">画像の判定方法 ${atFieldHelp('CLI AIは1枚ずつ外部CLIの処理を待つため少数画像向けです。大量画像には、高速で端末内処理できるローカル画像AIを推奨します。')}</div>
         <div class="at-segments" role="group" aria-label="画像の判定方法">${atAiButtons(state)}</div>
         <p class="at-help">自動選択は端末内モデルを優先し、利用できない場合だけ設定済みCLIを使います。従量課金APIへは切り替えません。</p>
+      </div>
+      <div class="at-field-block">
+        <div class="at-field-label">自動タグプリセット ${atFieldHelp('複数選択すると、選んだプリセットに含まれるタグをまとめて候補として使います。プリセットは自動タグ辞書シートの「プリセット」列で設定します。')}</div>
+        <div class="at-preset-options" role="group" aria-label="既定の自動タグプリセット">
+          ${atPresetOptionsHtml(dictionary, atSelectedPresetNames(settings, dictionary), 'at-setting-preset')}
+        </div>
       </div>
       <div class="at-model-layout">
         <div>
@@ -192,7 +307,8 @@
         </div>
         <div class="at-dictionary-card">
           <div class="at-dictionary-title">${atIcon('tableProperties', 16)} 自動タグ辞書</div>
-          <p>正式名、別名、ホワイトリスト、タググループと階層をMeldexのシートで管理します。</p>
+          <p>正式名、別名、ホワイトリスト、プリセット所属、タググループと階層は1つの辞書シートで管理します。</p>
+          ${dictionary.load_error ? `<p class="at-help at-help--warn">辞書を読み込めませんでした。対象のソースフォルダを開いてから再試行してください。</p>` : ''}
           <div class="at-dictionary-counts">
             <span>タグ <strong>${Number(dictionary.tags?.length || 0).toLocaleString('ja-JP')}</strong></span>
             <span>グループ <strong>${Number(dictionary.groups?.length || 0).toLocaleString('ja-JP')}</strong></span>
@@ -200,11 +316,8 @@
           </div>
           <div class="at-dictionary-actions">
             <button type="button" class="gb-btn gb-btn-sm" data-at-open-dictionary>${atIcon('externalLink', 14)} シートを開く</button>
-            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-at-import>${atIcon('upload', 14)} CSVを取り込む</button>
-            <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-at-export>${atIcon('download', 14)} CSVを書き出す</button>
           </div>
-          <input type="file" accept=".csv,text/csv" data-at-csv-input hidden>
-          <p class="at-help">Eagleの group,color,tag 形式とMeldex拡張形式を読み込めます。</p>
+          <p class="at-help">プリセットの導入・CSV取込・CSV書出は、右側のタグパネルで行います。</p>
         </div>
       </div>
       <div class="at-settings-footer">
@@ -223,6 +336,11 @@
         ? input.checked
         : input.type === 'number' ? Number(input.value) : input.value;
     });
+    const presetInputs = [...host.querySelectorAll('[data-at-preset]')];
+    if (presetInputs.length) {
+      next.preset_names = presetInputs.filter(input => input.checked).map(input => input.dataset.atPreset);
+      if (!next.preset_names.length) next.preset_names = [presetInputs[0].dataset.atPreset];
+    }
     return next;
   }
 
@@ -241,25 +359,50 @@
     return true;
   }
 
-  async function atInstallModel(host, state, modelId, button) {
-    button.disabled = true;
-    button.textContent = '取得しています…';
-    atStatus('公式配布元からモデルを取得しています。完了まで画面を閉じずにお待ちください');
+  async function atInstallModel(host, state, modelId) {
+    state.installing = {
+      modelId,
+      message: '公式配布元へ接続しています…',
+    };
+    state.installNotice = null;
+    atRenderSettingsBody(host, state);
+    atStatus('公式配布元からモデルを取得しています。ほかの操作をしても取得は続きます');
     try {
-      await apiPost('/auto-tag/models/' + encodeURIComponent(modelId) + '/install', {}, { silentError: true, timeoutMs: 300000 });
+      const startPath = '/auto-tag/models/' + encodeURIComponent(modelId) + '/install';
+      const result = typeof runBackgroundJob === 'function'
+        ? await runBackgroundJob(startPath, {}, {
+          onProgress(progress) {
+            if (state.installing?.modelId !== modelId) return;
+            state.installing.message = progress?.message || 'モデルを取得しています…';
+            const installState = host.querySelector('[data-at-install-state]');
+            if (installState) installState.textContent = state.installing.message;
+          },
+        })
+        : await apiPost(startPath, {}, { silentError: true, timeoutMs: 300000 });
       const refreshed = await atLoadBundle();
       Object.assign(state, refreshed);
+      state.installing = null;
+      const installedModel = state.models.find(model => model.id === modelId) || result?.model;
+      state.installNotice = {
+        modelId,
+        error: false,
+        message: installedModel?.runtime_ready === false
+          ? 'モデルの取得は完了しました。画像AIの実行環境を導入したMeldexで再起動すると利用できます。'
+          : 'モデルの取得と利用準備が完了しました。',
+      };
       atRenderSettingsBody(host, state);
-      atStatus('モデルをインストールしました');
+      atStatus(state.installNotice.message);
     } catch (error) {
-      button.disabled = false;
-      button.textContent = 'モデルを入手';
-      atStatus('モデルを取得できませんでした: ' + (error?.userMessage || error?.message || error), true);
+      const message = 'モデルを取得できませんでした: ' + (error?.userMessage || error?.message || error);
+      state.installing = null;
+      state.installNotice = { modelId, error: true, message };
+      atRenderSettingsBody(host, state);
+      atStatus(message, true);
     }
   }
 
   function atDownloadDictionaryCsv(dictionary) {
-    const rows = [['kind', 'name', 'parent', 'aliases', 'color', 'auto_assign', 'description', 'sort_index']];
+    const rows = [['kind', 'name', 'presets', 'parent', 'aliases', 'color', 'auto_assign', 'description', 'sort_index']];
     const groups = Array.isArray(dictionary.groups) ? dictionary.groups : [];
     const byId = Object.fromEntries(groups.map(group => [group.id, group]));
     const pathFor = id => {
@@ -272,9 +415,9 @@
       }
       return names.join(' > ');
     };
-    groups.forEach(group => rows.push(['group', group.name, pathFor(group.parent_id), '', group.color || '', '', group.description || '', group.sort_index || 0]));
+    groups.forEach(group => rows.push(['group', group.name, '', pathFor(group.parent_id), '', group.color || '', '', group.description || '', group.sort_index || 0]));
     (dictionary.tags || []).forEach(tag => rows.push([
-      'tag', tag.name, pathFor(tag.group_id), (tag.aliases || []).join('\n'), tag.color || '',
+      'tag', tag.name, (tag.presets || ['標準']).join('\n'), pathFor(tag.group_id), (tag.aliases || []).join('\n'), tag.color || '',
       tag.auto_assign ? 'true' : 'false', tag.description || '', tag.sort_index || 0,
     ]));
     const quote = value => '"' + String(value ?? '').replace(/"/g, '""') + '"';
@@ -285,15 +428,6 @@
     link.download = 'meldex-auto-tag-dictionary.csv';
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  async function atImportDictionaryCsv(host, state, file) {
-    const csvText = await file.text();
-    const result = await apiPost('/auto-tag/dictionary/import', { csv_text: csvText }, { silentError: true });
-    state.dictionary = await apiFetch('/auto-tag/dictionary', { silentError: true });
-    atRenderSettingsBody(host, state);
-    atStatus(`${result?.imported || 0}件を自動タグ辞書へ取り込みました`);
-    window.MeldexGlobalTags?.invalidateTagsCatalogCache?.();
   }
 
   function atBindSettings(host, state) {
@@ -317,7 +451,7 @@
       atSaveSettingsHost(host, state).catch(error => atStatus('設定を保存できませんでした: ' + (error?.userMessage || error?.message || error), true));
     });
     host.querySelectorAll('[data-at-install]').forEach(button => {
-      button.addEventListener('click', () => atInstallModel(host, state, button.dataset.atInstall, button));
+      button.addEventListener('click', () => atInstallModel(host, state, button.dataset.atInstall));
     });
     host.querySelectorAll('[data-at-guide]').forEach(button => {
       button.addEventListener('click', () => {
@@ -325,14 +459,6 @@
       });
     });
     host.querySelector('[data-at-open-dictionary]')?.addEventListener('click', () => ensureAutoTagDictionarySheet());
-    host.querySelector('[data-at-import]')?.addEventListener('click', () => host.querySelector('[data-at-csv-input]')?.click());
-    host.querySelector('[data-at-export]')?.addEventListener('click', () => atDownloadDictionaryCsv(state.dictionary));
-    host.querySelector('[data-at-csv-input]')?.addEventListener('change', event => {
-      const file = event.target.files?.[0];
-      if (!file) return;
-      atImportDictionaryCsv(host, state, file).catch(error => atStatus('CSVを取り込めませんでした: ' + (error?.userMessage || error?.message || error), true));
-      event.target.value = '';
-    });
   }
 
   async function renderAutoTagSettings(root) {
@@ -370,7 +496,11 @@
       atStatus('自動タグ辞書の準備と編集はデスクトップ版で行ってください', true);
       return '';
     }
-    const result = await apiPost('/auto-tag/dictionary/ensure', {}, { silentError: true });
+    const result = await apiPost(
+      '/auto-tag/dictionary/ensure',
+      atDictionaryPayload({}),
+      { silentError: true },
+    );
     const dbPath = String(result?.db_path || '').trim();
     if (!dbPath) throw new Error('自動タグ辞書シートの場所を取得できませんでした');
     document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
@@ -394,7 +524,21 @@
       try {
         const file = input.files?.[0];
         if (!file) return;
-        const result = await apiPost('/auto-tag/dictionary/import', { csv_text: await file.text() }, { silentError: true });
+        const payload = atDictionaryPayload({
+          csv_text: await file.text(),
+          preset_name: String(file.name || '').replace(/\.csv$/i, '') || '標準',
+        });
+        const result = typeof runBackgroundJob === 'function'
+          ? await runBackgroundJob('/auto-tag/dictionary/import', payload, {
+            onProgress(progress) {
+              const message = progress?.message
+                || (typeof formatJobProgress === 'function'
+                  ? formatJobProgress(progress, { unit: '件', defaultPhase: 'タグ辞書へ取込中' })
+                  : 'タグ辞書へ取り込んでいます…');
+              atStatus(message);
+            },
+          })
+          : await apiPost('/auto-tag/dictionary/import', payload, { silentError: true, timeoutMs: 300000 });
         window.MeldexGlobalTags?.invalidateTagsCatalogCache?.();
         await window.MeldexTagManagement?.refresh?.(false);
         atStatus(`${result?.imported || 0}件を自動タグ辞書へ取り込みました`);
@@ -412,7 +556,7 @@
       atStatus('自動タグ辞書のCSV書出はデスクトップ版で行ってください', true);
       return false;
     }
-    const dictionary = await apiFetch('/auto-tag/dictionary', { silentError: true });
+    const dictionary = await apiFetch(atDictionaryApiPath('/auto-tag/dictionary'), { silentError: true });
     atDownloadDictionaryCsv(dictionary || {});
     atStatus('自動タグ辞書をCSVへ書き出しました');
   }
@@ -443,13 +587,24 @@
     const oldText = state.runButton.innerHTML;
     state.runButton.textContent = '実行中…';
     try {
+      const presetInputs = [...state.host.querySelectorAll('[data-at-run-preset]')];
+      const presetNames = presetInputs.filter(input => input.checked)
+        .map(input => input.dataset.atRunPreset);
+      if (presetInputs.length && !presetNames.length) {
+        atStatus('自動タグプリセットを1つ以上選択してください', true);
+        return;
+      }
       const result = await window.MeldexGlobalTags.autoTag({
         path: state.path,
         recursive: state.recursive,
+        source_folder: atSourceFolderForPath(state.path),
         ai_id: state.aiSelect.value,
         model_id: state.modelSelect.value,
+        preset_names: presetNames,
       });
-      if (result?.stopped || result?.ok === false) {
+      if (result?.background) {
+        atStatus('自動タグ付けをバックグラウンドで開始しました');
+      } else if (result?.stopped || result?.ok === false) {
         atStatus('自動タグ付けを中断しました: ' + (result.warning || result.reason || ''), true);
       } else {
         atStatus(`${result?.total || 0}件に自動タグ付けしました`);
@@ -475,16 +630,23 @@
     host.classList.add('at-run-panel');
     host.innerHTML = '<div class="at-loading">自動タグ付けを準備しています…</div>';
     try {
-      const bundle = await atLoadBundle();
+      const bundle = await atLoadBundle(path);
       host.innerHTML = `
         <div class="at-run-head">
           <div><strong>${atIcon('sparkles', 14)} 自動タグ付け</strong><small>この実行だけのAI・モデルを選べます</small></div>
           <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-at-run-dictionary>${atIcon('tableProperties', 12)} タグ辞書</button>
         </div>
-        <label><span>AI</span><select class="gb-input" data-at-run-ai>
+        <label><span>AI ${atFieldHelp('CLI AIは少数画像向けです。数百件以上では、処理時間が大幅に長くなるためローカル画像AIを推奨します。')}</span><select class="gb-input" data-at-run-ai>
           <option value="auto">自動選択</option><option value="local-wd">ローカル画像AI</option><option value="cli">CLI AI</option>
         </select></label>
         <label><span>モデル</span><select class="gb-input" data-at-run-model></select></label>
+        <details class="at-run-presets" open>
+          <summary>自動タグプリセット（複数選択可）</summary>
+          <div class="at-preset-options" role="group" aria-label="今回使う自動タグプリセット">
+            ${atPresetOptionsHtml(bundle.dictionary, atSelectedPresetNames(bundle.settings, bundle.dictionary), 'at-run-preset')
+              .replaceAll('data-at-preset=', 'data-at-run-preset=')}
+          </div>
+        </details>
         <div class="at-run-footer"><span class="at-run-ready"></span><button type="button" class="gb-btn gb-btn-primary gb-btn-sm" data-at-run>${atIcon('sparkles', 14)} 実行</button></div>
       `;
       const state = {
@@ -492,6 +654,7 @@
         path,
         recursive: !!options?.recursive,
         settings: bundle.settings,
+        dictionary: bundle.dictionary,
         models: bundle.models,
         aiSelect: host.querySelector('[data-at-run-ai]'),
         modelSelect: host.querySelector('[data-at-run-model]'),
@@ -529,4 +692,5 @@
   window.exportAutoTagDictionaryCsv = exportAutoTagDictionaryCsv;
   window.renderAutoTagRunPanel = renderAutoTagRunPanel;
   window.hydrateAutoTagRunPanels = hydrateAutoTagRunPanels;
+  window.MeldexAutoTagSourceFolder = atSourceFolderForPath;
 })();

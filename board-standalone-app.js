@@ -1091,10 +1091,14 @@
   }
 
   function _runStandaloneShortcut(intent) {
-    if (intent === 'save') return _saveCurrentBoard();
-    if (intent === 'open') return _openBoardFromMenu();
-    if (intent === 'new') return _createNewBoard();
-    return null;
+    const action = intent === 'save' ? _saveCurrentBoard
+      : intent === 'open' ? _openBoardFromMenu
+        : intent === 'new' ? _createNewBoard : null;
+    if (!action) return null;
+    const labels = { save: '保存', open: 'ボードを開くことが', new: '新規作成' };
+    return window.MeldexStandaloneBoot?.run
+      ? window.MeldexStandaloneBoot.run(labels[intent], action)
+      : action();
   }
 
   function _initStandaloneShortcuts() {
@@ -1111,10 +1115,7 @@
   // -------------------------------------------------------------------------
   // 起動シーケンス
   // -------------------------------------------------------------------------
-  async function _boot() {
-    if (typeof FS.initNativeIfAvailable === 'function') {
-      await FS.initNativeIfAvailable();
-    }
+  function _bindBootUi() {
     if (!_isSupportedBrowser()) {
       _showCompatNotice();
       return;
@@ -1122,14 +1123,28 @@
     // 「フォルダを選ぶ」ボタン
     const pickBtn = document.getElementById('board-pick-folder');
     pickBtn?.addEventListener('click', async () => {
-      const handle = await _pickRootFolder();
-      if (handle) {
-        _setRootUi(true);
-        _initBoardShell();
-        _ensureStarterBoard();
-        await _renderFileList();
+      const pick = async () => {
+        const handle = await _pickRootFolder();
+        if (handle) {
+          _setRootUi(true);
+          _initBoardShell();
+          _ensureStarterBoard();
+          await _renderFileList();
+        }
+      };
+      if (window.MeldexStandaloneBoot?.run) {
+        await window.MeldexStandaloneBoot.run('フォルダを選ぶことが', pick);
+      } else {
+        await pick();
       }
     });
+  }
+
+  async function _initializeBoardData() {
+    if (typeof FS.initNativeIfAvailable === 'function') {
+      await FS.initNativeIfAvailable();
+    }
+    if (!_isSupportedBrowser()) return;
     // 起動時に前回フォルダの復元を試みる
     const restored = await _tryRestoreSavedFolder();
     if (restored) {
@@ -1160,9 +1175,23 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _boot);
+    document.addEventListener('DOMContentLoaded', () => {
+      window.MeldexStandaloneBoot = window.MeldexStandaloneBootstrap.create({
+        appId: 'board',
+        bindUi: _bindBootUi,
+        initialize: _initializeBoardData,
+        onError: error => _showError('ボードの保存先へ接続できません: ' + (error?.message || error) + '。操作すると再試行します。'),
+      });
+      window.MeldexStandaloneBoot.start().catch(() => {});
+    });
   } else {
-    _boot();
+    window.MeldexStandaloneBoot = window.MeldexStandaloneBootstrap.create({
+      appId: 'board',
+      bindUi: _bindBootUi,
+      initialize: _initializeBoardData,
+      onError: error => _showError('ボードの保存先へ接続できません: ' + (error?.message || error) + '。操作すると再試行します。'),
+    });
+    window.MeldexStandaloneBoot.start().catch(() => {});
   }
   _bindCloudPathChanges();
   _installStandaloneAnnotationGuard();

@@ -1453,7 +1453,10 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   }
   /* フォルダビュー */
   #folder-grid { padding: 6px; }
-  .grid-layout .fv-item { width: calc(50vw - 20px) !important; }
+  .grid-layout .fv-item {
+    width: auto !important;
+    min-width: 0;
+  }
   .fv-bulk-bar {
     box-sizing: border-box !important;
     max-width: calc(100vw - 8px) !important;

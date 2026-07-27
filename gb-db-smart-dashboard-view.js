@@ -5,6 +5,7 @@ const _smartDbDashboardDbMetadataCache = {};
 
 function getSmartDbActiveView(def) {
   const target = def || state.currentSmartDb;
+  if (target?.sourceType === 'chat-history') return 'table';
   if (!target || target.activeView !== 'dashboard') return 'table';
   return 'dashboard';
 }
@@ -23,6 +24,7 @@ function getSmartDbDashboardView(def) {
 async function setSmartDbActiveView(viewName) {
   const def = state.currentSmartDb;
   if (!def) return;
+  if (def.sourceType === 'chat-history' && viewName === 'dashboard') return;
   def.activeView = viewName === 'dashboard' ? 'dashboard' : 'table';
   if (def.activeView === 'dashboard') getSmartDbDashboardView(def);
   try {
@@ -38,6 +40,7 @@ function renderSmartDbViewTabs() {
   if (!root) return;
   const active = getSmartDbActiveView();
   root.querySelectorAll('[data-smart-db-view]').forEach(btn => {
+    btn.hidden = state.currentSmartDb?.sourceType === 'chat-history' && btn.dataset.smartDbView === 'dashboard';
     const isActive = btn.dataset.smartDbView === active;
     btn.classList.toggle('active', isActive);
     btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
