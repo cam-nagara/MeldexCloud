@@ -53,9 +53,11 @@
         cache.set(key, meta);
         return meta;
       })
-      .catch(() => {
+      .catch(error => {
         cache.delete(key);
-        return null;
+        return {
+          _metadataLoadError: error?.userMessage || error?.message || String(error),
+        };
       });
     cache.set(key, pending);
     const resolved = await pending;
@@ -174,6 +176,25 @@
   function renderEditor(host, path, meta) {
     if (!host) return;
     host.replaceChildren();
+    if (meta?._metadataLoadError) {
+      const error = document.createElement('div');
+      error.className = 'file-embedded-empty file-embedded-error';
+      const message = document.createElement('span');
+      message.textContent = '埋め込み情報を読み込めませんでした: ' + meta._metadataLoadError;
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+      retry.textContent = '再試行';
+      retry.setAttribute('aria-label', '埋め込み情報を再読み込み');
+      retry.addEventListener('click', async () => {
+        retry.disabled = true;
+        const refreshed = await load(path, null, { force: true });
+        renderEditor(host, path, refreshed);
+      });
+      error.append(message, retry);
+      host.appendChild(error);
+      return;
+    }
     const embedded = embeddedOf(meta);
     const webclip = webclipOf(meta);
     if (!embedded && !webclip) {
@@ -310,7 +331,7 @@
       updateDimensions(item.embedded);
       const preloaded = item.embedded ? { embedded: item.embedded } : null;
       const meta = await load(item.path, preloaded);
-      if (!meta || !metaHost.isConnected) return;
+      if (!meta || meta._metadataLoadError || !metaHost.isConnected) return;
       item.embedded = embeddedOf(meta);
       updateDimensions(item.embedded);
       if (ratingHost) ratingHost.replaceChildren(ratingControl(item.path, meta, { compact: true }));

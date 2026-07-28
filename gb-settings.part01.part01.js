@@ -677,7 +677,6 @@ async function showSettingsModal(opts) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
-      overlay.dataset.modalShell = 'off';
       overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="staff-registry-relocate-title" style="min-width:420px;">
         <h3 id="staff-registry-relocate-title">スタッフ管理シートの保存場所</h3>
         <div class="modal-body">

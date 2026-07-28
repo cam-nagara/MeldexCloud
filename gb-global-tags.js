@@ -10,6 +10,8 @@
 
   let cache = [];
   let targetEditorSeq = 0;
+  const targetTagsCache = new Map();
+  const TARGET_TAGS_CACHE_TTL_MS = 2000;
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -33,37 +35,80 @@
   // ============================================================
   // API ラッパー (タグ)
   // ============================================================
-  async function loadTags() {
+  function normalizedSourceFolder(value) {
+    return String(value || '').trim();
+  }
+
+  function sourceCacheKey(value) {
+    return normalizedSourceFolder(value) || '__default__';
+  }
+
+  function sourceFolderForTarget(path) {
+    return normalizedSourceFolder(window.MeldexAutoTagSourceFolder?.(path));
+  }
+
+  function withSourceQuery(path, sourceFolder) {
+    const source = normalizedSourceFolder(sourceFolder);
+    if (!source) return path;
+    return path + (path.includes('?') ? '&' : '?') + 'source_folder=' + encodeURIComponent(source);
+  }
+
+  function withSourcePayload(payload, sourceFolder) {
+    const source = normalizedSourceFolder(sourceFolder);
+    return source ? { ...(payload || {}), source_folder: source } : { ...(payload || {}) };
+  }
+
+  async function loadTags(sourceFolder) {
     if (typeof apiFetch !== 'function') return { tags: [], groups: [] };
-    return apiFetch('/global-tags', { silentError: true });
+    return apiFetch(withSourceQuery('/global-tags', sourceFolder), { silentError: true });
   }
 
   // シートの共通タグ列など、大量のセル描画で同一データを繰り返し参照する用途向けの
   // 短期キャッシュ付きラッパー。タグ/グループの変更操作（作成・更新・削除）で即座に破棄される。
-  let _tagsCatalogCache = null; // { at: number, promise: Promise }
-  let _tagsCatalogLastResolved = null; // 直近で解決済みの値（同期参照用）
+  const _tagsCatalogCache = new Map(); // source_folder -> { at: number, promise: Promise }
+  const _tagsCatalogLastResolved = new Map(); // source_folder -> 直近で解決済みの値
   const TAGS_CATALOG_CACHE_TTL_MS = 3000;
-  function invalidateTagsCatalogCache() {
-    _tagsCatalogCache = null;
-  }
-  function loadTagsCached() {
-    if (_tagsCatalogCache && (Date.now() - _tagsCatalogCache.at) < TAGS_CATALOG_CACHE_TTL_MS) {
-      return _tagsCatalogCache.promise;
+  function invalidateTagsCatalogCache(sourceFolder) {
+    if (arguments.length === 0) {
+      _tagsCatalogCache.clear();
+      _tagsCatalogLastResolved.clear();
+      return;
     }
-    const promise = loadTags().then(data => {
-      _tagsCatalogLastResolved = data;
+    const key = sourceCacheKey(sourceFolder);
+    _tagsCatalogCache.delete(key);
+    _tagsCatalogLastResolved.delete(key);
+  }
+  function notifyTagsCatalogChanged(reason, result, sourceFolder) {
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:tag-dictionary-changed', {
+        detail: {
+          reason: String(reason || ''),
+          result: result || null,
+          source_folder: normalizedSourceFolder(sourceFolder),
+        },
+      }));
+    } catch {}
+  }
+  function loadTagsCached(sourceFolder) {
+    const key = sourceCacheKey(sourceFolder);
+    const cached = _tagsCatalogCache.get(key);
+    if (cached && (Date.now() - cached.at) < TAGS_CATALOG_CACHE_TTL_MS) {
+      return cached.promise;
+    }
+    const promise = loadTags(sourceFolder).then(data => {
+      _tagsCatalogLastResolved.set(key, data);
       return data;
     }).catch(err => {
-      invalidateTagsCatalogCache();
+      invalidateTagsCatalogCache(sourceFolder);
       throw err;
     });
-    _tagsCatalogCache = { at: Date.now(), promise };
+    _tagsCatalogCache.set(key, { at: Date.now(), promise });
     return promise;
   }
   // 同期参照用: 直近で解決済みのタグカタログ（未取得なら null）。フィルタ適用など
   // 「非同期を待てない場面で、できれば最新値を使いたい」用途向けのベストエフォート参照。
-  function getCachedTagsSync() {
-    return _tagsCatalogLastResolved;
+  function getCachedTagsSync(sourceFolder) {
+    return _tagsCatalogLastResolved.get(sourceCacheKey(sourceFolder)) || null;
   }
 
   // 複数条件フィルタ向け: 共通タグ列の「含む/含まない」に入力された文字列がタグ名の
@@ -77,80 +122,103 @@
       const ptc = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null;
       if (!ptc || ptc.type !== 'common-tags') return rawValue;
     } catch { return rawValue; }
-    const cached = getCachedTagsSync();
+    const cached = getCachedTagsSync(sourceFolderForTarget(dbPath));
     const allTags = Array.isArray(cached?.tags) ? cached.tags : [];
     const match = allTags.find(tag => String(tag.name || '').trim().toLowerCase() === text.toLowerCase());
     return match ? String(match.id) : rawValue;
   }
 
-  async function createTag(payload) {
-    const result = await apiPost('/global-tags', payload || {}, { silentError: true });
-    invalidateTagsCatalogCache();
+  async function createTag(payload, sourceFolder) {
+    const result = await apiPost('/global-tags', withSourcePayload(payload, sourceFolder), { silentError: true });
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('tag-created', result, sourceFolder);
     return result;
   }
 
-  async function updateTag(tagId, payload) {
+  async function updateTag(tagId, payload, sourceFolder) {
     const result = await apiFetch('/global-tags/' + encodeURIComponent(tagId), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload || {}),
+      body: JSON.stringify(withSourcePayload(payload, sourceFolder)),
       silentError: true,
     });
-    invalidateTagsCatalogCache();
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('tag-updated', result, sourceFolder);
     return result;
   }
 
-  async function deleteTag(tagId) {
-    const result = await apiFetch('/global-tags/' + encodeURIComponent(tagId), { method: 'DELETE', silentError: true });
-    invalidateTagsCatalogCache();
+  async function deleteTag(tagId, sourceFolder) {
+    const result = await apiFetch(withSourceQuery('/global-tags/' + encodeURIComponent(tagId), sourceFolder), { method: 'DELETE', silentError: true });
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('tag-deleted', result, sourceFolder);
     return result;
   }
 
   // ============================================================
   // API ラッパー (タググループ)
   // ============================================================
-  async function loadGroups() {
+  async function loadGroups(sourceFolder) {
     if (typeof apiFetch !== 'function') return { groups: [], tags: [] };
-    return apiFetch('/global-tag-groups', { silentError: true });
+    return apiFetch(withSourceQuery('/global-tag-groups', sourceFolder), { silentError: true });
   }
 
-  async function createGroup(payload) {
-    const result = await apiPost('/global-tag-groups', payload || {}, { silentError: true });
-    invalidateTagsCatalogCache();
+  async function createGroup(payload, sourceFolder) {
+    const result = await apiPost('/global-tag-groups', withSourcePayload(payload, sourceFolder), { silentError: true });
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('group-created', result, sourceFolder);
     return result;
   }
 
-  async function updateGroup(groupId, payload) {
+  async function updateGroup(groupId, payload, sourceFolder) {
     const result = await apiFetch('/global-tag-groups/' + encodeURIComponent(groupId), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload || {}),
+      body: JSON.stringify(withSourcePayload(payload, sourceFolder)),
       silentError: true,
     });
-    invalidateTagsCatalogCache();
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('group-updated', result, sourceFolder);
     return result;
   }
 
-  async function deleteGroup(groupId) {
-    const result = await apiFetch('/global-tag-groups/' + encodeURIComponent(groupId), { method: 'DELETE', silentError: true });
-    invalidateTagsCatalogCache();
+  async function deleteGroup(groupId, sourceFolder) {
+    const result = await apiFetch(withSourceQuery('/global-tag-groups/' + encodeURIComponent(groupId), sourceFolder), { method: 'DELETE', silentError: true });
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('group-deleted', result, sourceFolder);
     return result;
   }
 
   // ============================================================
   // API ラッパー (自動タグ辞書のプリセット所属 / 自動タグ付け)
   // ============================================================
-  async function loadAutoTagPresets() {
+  async function loadAutoTagPresets(sourceFolder) {
     if (typeof apiFetch !== 'function') return { preset_names: [], builtins: [] };
-    return apiFetch('/auto-tag/presets', { silentError: true });
+    return apiFetch(withSourceQuery('/auto-tag/presets', sourceFolder), { silentError: true });
   }
 
-  async function installAutoTagPreset(presetId, payload) {
-    return apiPost(
+  async function installAutoTagPreset(presetId, payload, sourceFolder) {
+    const result = await apiPost(
       '/auto-tag/presets/' + encodeURIComponent(presetId) + '/install',
-      payload || {},
+      withSourcePayload(payload, sourceFolder),
       { silentError: true },
     );
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('preset-installed', result, sourceFolder);
+    return result;
+  }
+
+  async function resolveTagDictionaryConflict(strategy, conflictId, sourceFolder) {
+    const result = await apiPost(
+      '/auto-tag/dictionary/resolve',
+      withSourcePayload({
+        strategy: String(strategy || ''),
+        conflict_id: String(conflictId || ''),
+      }, sourceFolder),
+      { silentError: true },
+    );
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged('dictionary-conflict-resolved', result, sourceFolder);
+    return result;
   }
 
   async function autoTag(payload) {
@@ -158,7 +226,7 @@
       return window.MeldexAutoTagJobs.start(payload || {});
     }
     const result = await apiPost('/global-tags/auto-tag', payload || {}, { silentError: true });
-    invalidateTagsCatalogCache();
+    invalidateTagsCatalogCache(payload?.source_folder);
     return result;
   }
 
@@ -169,11 +237,19 @@
     return String(path || '').trim();
   }
 
-  function targetTagsUrl(path) {
-    return '/global-tags/target?path=' + encodeURIComponent(normalizeTargetPath(path));
+  function targetTagsUrl(path, sourceFolder) {
+    return withSourceQuery(
+      '/global-tags/target?path=' + encodeURIComponent(normalizeTargetPath(path)),
+      sourceFolder,
+    );
   }
 
-  function notifyTargetTagsChanged(path) {
+  function targetTagsCacheKey(path, sourceFolder) {
+    return sourceCacheKey(sourceFolder) + '\n' + normalizeTargetPath(path);
+  }
+
+  function notifyTargetTagsChanged(path, sourceFolder) {
+    targetTagsCache.delete(targetTagsCacheKey(path, sourceFolder));
     try {
       if (typeof _folderInvalidateTagsForPath === 'function') _folderInvalidateTagsForPath(path);
       const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
@@ -185,28 +261,44 @@
     } catch (_) {}
   }
 
-  async function loadTargetTags(path) {
+  async function loadTargetTags(path, options) {
     if (typeof apiFetch !== 'function') return { tags: [] };
-    return apiFetch(targetTagsUrl(path), { silentError: true });
+    const sourceFolder = normalizedSourceFolder(options?.sourceFolder) || sourceFolderForTarget(path);
+    const key = targetTagsCacheKey(path, sourceFolder);
+    const cached = targetTagsCache.get(key);
+    if (!options?.force && cached && (Date.now() - cached.at) < TARGET_TAGS_CACHE_TTL_MS) {
+      return cached.promise;
+    }
+    const promise = apiFetch(targetTagsUrl(path, sourceFolder), { silentError: true }).catch(error => {
+      targetTagsCache.delete(key);
+      throw error;
+    });
+    targetTagsCache.set(key, { at: Date.now(), promise });
+    return promise;
   }
 
   async function addTargetTag(path, name) {
-    const result = await apiPost('/global-tags/target', { path: normalizeTargetPath(path), name: String(name || '').trim() }, { silentError: true });
-    notifyTargetTagsChanged(path);
+    const sourceFolder = sourceFolderForTarget(path);
+    const result = await apiPost('/global-tags/target', withSourcePayload({
+      path: normalizeTargetPath(path),
+      name: String(name || '').trim(),
+    }, sourceFolder), { silentError: true });
+    notifyTargetTagsChanged(path, sourceFolder);
     return result;
   }
 
   async function removeTargetTag(path, tag) {
     const tagKey = tag?.id || tag?.name || tag || '';
-    const result = await apiFetch(targetTagsUrl(path) + '&tag=' + encodeURIComponent(tagKey), { method: 'DELETE', silentError: true });
-    notifyTargetTagsChanged(path);
+    const sourceFolder = sourceFolderForTarget(path);
+    const result = await apiFetch(targetTagsUrl(path, sourceFolder) + '&tag=' + encodeURIComponent(tagKey), { method: 'DELETE', silentError: true });
+    notifyTargetTagsChanged(path, sourceFolder);
     return result;
   }
 
-  async function searchByTag(tag) {
+  async function searchByTag(tag, sourceFolder) {
     const name = tag?.name || tag || '';
     if (!name) return { results: [] };
-    return apiFetch('/global-tags/search?tag=' + encodeURIComponent(name), { silentError: true });
+    return apiFetch(withSourceQuery('/global-tags/search?tag=' + encodeURIComponent(name), sourceFolder), { silentError: true });
   }
 
   function openTaggedTarget(item) {
@@ -222,10 +314,10 @@
   // ============================================================
   // ファイル別タグ編集 UI (オプションパネルのファイル詳細などに埋め込み)
   // ============================================================
-  async function refreshTargetTagOptions(datalist) {
+  async function refreshTargetTagOptions(datalist, targetPath) {
     if (!datalist) return;
     try {
-      const data = await loadTags();
+      const data = await loadTagsCached(sourceFolderForTarget(targetPath));
       cache = Array.isArray(data?.tags) ? data.tags : [];
       datalist.textContent = '';
       cache.forEach(tag => {
@@ -306,21 +398,26 @@
     const applicable = !!state?.applicable;
     ui.osSyncRow.style.display = applicable ? 'flex' : 'none';
     if (!applicable) return;
-    ui.osSync.disabled = !state?.supported;
+    ui.osSync.disabled = !!ui.mutationBlocked || !state?.supported;
     if (state?.warning) {
       ui.osSyncStatus.textContent = state.warning;
     } else if (state?.supported) {
-      ui.osSyncStatus.textContent = 'Windowsの画像タグと同期済み';
+      ui.osSyncStatus.textContent = state.mode === 'explicit-only'
+        ? '必要なときだけWindowsの画像タグと照合します'
+        : 'Windowsの画像タグと同期済み';
     } else {
       ui.osSyncStatus.textContent = 'この画像形式ではOSタグを利用できません';
     }
   }
 
-  async function refreshTargetEditorTags(targetPath, ui, refresh) {
+  async function refreshTargetEditorTags(targetPath, ui, refresh, options) {
     ui.msg.textContent = 'タグを読み込んでいます...';
     try {
-      const data = await loadTargetTags(targetPath);
+      const data = await loadTargetTags(targetPath, options);
       const tags = Array.isArray(data?.tags) ? data.tags : [];
+      ui.mutationBlocked = !!data?.mutation_blocked;
+      ui.input.disabled = ui.mutationBlocked;
+      ui.add.disabled = ui.mutationBlocked;
       ui.chips.textContent = '';
       if (!tags.length) {
         const empty = document.createElement('span');
@@ -331,32 +428,62 @@
       // 実効色のために最新のグループ情報も取る
       let groupsById = {};
       try {
-        const meta = await loadTags();
+        const meta = await loadTagsCached(sourceFolderForTarget(targetPath));
         const groups = Array.isArray(meta?.groups) ? meta.groups : [];
         groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
       } catch (_) {}
-      tags.forEach(tag => ui.chips.appendChild(targetTagChip(targetPath, tag, refresh, message => { ui.msg.textContent = message; }, groupsById)));
-      ui.msg.textContent = '';
+      tags.forEach(tag => ui.chips.appendChild(targetTagChip(
+        targetPath,
+        tag,
+        refresh,
+        message => { ui.msg.textContent = message; },
+        groupsById,
+        ui.mutationBlocked,
+      )));
+      ui.msg.textContent = ui.mutationBlocked
+        ? (data?.warning || 'タグ辞書の同期競合を解消してからタグを編集してください。')
+        : '';
       renderOsTagSyncState(ui, data?.os_sync);
     } catch (err) {
-      ui.msg.textContent = 'タグを読み込めませんでした: ' + (err.userMessage || err.message || err);
+      renderTargetEditorError(ui.msg, 'タグを読み込めませんでした', err, () => refresh({ force: true }));
     }
+  }
+
+  function renderTargetEditorError(host, label, error, retry) {
+    if (!host) return;
+    host.replaceChildren();
+    const text = document.createElement('span');
+    text.textContent = label + ': ' + (error?.userMessage || error?.message || error);
+    host.appendChild(text);
+    if (typeof retry !== 'function') return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-btn gb-btn-xs gb-btn-quiet';
+    button.style.marginLeft = '6px';
+    button.textContent = '再試行';
+    button.setAttribute('aria-label', 'タグを再読み込み');
+    button.addEventListener('click', () => retry());
+    host.appendChild(button);
   }
 
   function bindTargetTagEditor(targetPath, ui, refresh) {
     const addCurrent = async () => {
+      if (ui.mutationBlocked) return;
       const name = ui.input.value.trim();
       if (!name) return;
+      ui.add.disabled = true;
       try {
         await addTargetTag(targetPath, name);
         ui.input.value = '';
         await refresh();
-        await refreshTargetTagOptions(ui.datalist);
+        await refreshTargetTagOptions(ui.datalist, targetPath);
         if (window.MeldexTagManagement && typeof window.MeldexTagManagement.refresh === 'function') {
           window.MeldexTagManagement.refresh();
         }
       } catch (err) {
-        ui.msg.textContent = 'タグを追加できませんでした: ' + (err.userMessage || err.message || err);
+        renderTargetEditorError(ui.msg, 'タグを追加できませんでした', err, refresh);
+      } finally {
+        ui.add.disabled = !!ui.mutationBlocked;
       }
     };
     ui.add.addEventListener('click', addCurrent);
@@ -364,19 +491,22 @@
       if (event.key === 'Enter') addCurrent();
     });
     ui.osSync.addEventListener('click', async () => {
+      if (ui.mutationBlocked) return;
       ui.osSync.disabled = true;
       ui.osSyncStatus.textContent = 'OSタグを照合しています...';
       try {
-        const data = await apiPost('/global-tags/target/sync', {
+        const sourceFolder = sourceFolderForTarget(targetPath);
+        targetTagsCache.delete(targetTagsCacheKey(targetPath, sourceFolder));
+        const data = await apiPost('/global-tags/target/sync', withSourcePayload({
           path: normalizeTargetPath(targetPath),
-        }, { silentError: true });
+        }, sourceFolder), { silentError: true });
         renderOsTagSyncState(ui, data?.os_sync);
         await refresh();
-        notifyTargetTagsChanged(targetPath);
+        notifyTargetTagsChanged(targetPath, sourceFolder);
       } catch (err) {
         ui.osSyncStatus.textContent = 'OSタグを再同期できませんでした: ' + (err.userMessage || err.message || err);
       } finally {
-        ui.osSync.disabled = false;
+        ui.osSync.disabled = !!ui.mutationBlocked;
       }
     });
   }
@@ -387,13 +517,13 @@
     container.textContent = '';
     if (!targetPath) return;
     const ui = buildTargetTagEditorUi(container, options);
-    const refresh = () => refreshTargetEditorTags(targetPath, ui, refresh);
+    const refresh = options => refreshTargetEditorTags(targetPath, ui, refresh, options);
     bindTargetTagEditor(targetPath, ui, refresh);
-    refreshTargetTagOptions(ui.datalist);
+    refreshTargetTagOptions(ui.datalist, targetPath);
     refresh();
   }
 
-  function targetTagChip(path, tag, refresh, onError, groupsById) {
+  function targetTagChip(path, tag, refresh, onError, groupsById, mutationBlocked) {
     const chip = document.createElement('span');
     chip.className = 'gb-tag-chip';
     chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--bg3);font-size:12px;';
@@ -417,7 +547,7 @@
       if (window.MeldexTagManagement && typeof window.MeldexTagManagement.showSearchForTag === 'function') {
         window.MeldexTagManagement.showSearchForTag(tag);
       } else {
-        searchByTag(tag);
+        searchByTag(tag, sourceFolderForTarget(path));
       }
     });
     const remove = document.createElement('button');
@@ -429,6 +559,8 @@
     remove.dataset.e2eId = `global-tags-target-remove:${targetKey}:${tagKey}`;
     remove.dataset.globalTagsRole = 'target-remove';
     remove.innerHTML = icon('x', 12) || '×';
+    remove.disabled = !!mutationBlocked;
+    if (mutationBlocked) remove.title = 'タグ辞書の同期競合を解消してから編集してください';
     remove.addEventListener('click', async () => {
       try {
         await removeTargetTag(path, tag);
@@ -470,8 +602,11 @@
   async function refreshInlineTagEditorTags(options, ui, refresh) {
     ui.msg.textContent = 'タグを読み込んでいます...';
     try {
-      const data = await loadTags();
+      const data = await loadTagsCached();
       const allTags = Array.isArray(data?.tags) ? data.tags : [];
+      ui.mutationBlocked = !!data?.mutation_blocked;
+      ui.input.disabled = ui.mutationBlocked;
+      ui.add.disabled = ui.mutationBlocked;
       const groups = Array.isArray(data?.groups) ? data.groups : [];
       const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
       const idSet = new Set((options.getIds() || []).map(id => String(id)));
@@ -483,14 +618,23 @@
         empty.textContent = 'タグはありません。';
         ui.chips.appendChild(empty);
       }
-      tags.forEach(tag => ui.chips.appendChild(inlineTagChip(tag, options, refresh, message => { ui.msg.textContent = message; }, groupsById)));
-      ui.msg.textContent = '';
+      tags.forEach(tag => ui.chips.appendChild(inlineTagChip(
+        tag,
+        options,
+        refresh,
+        message => { ui.msg.textContent = message; },
+        groupsById,
+        ui.mutationBlocked,
+      )));
+      ui.msg.textContent = ui.mutationBlocked
+        ? (data?.warning || 'タグ辞書の同期競合を解消してからタグを編集してください。')
+        : '';
     } catch (err) {
       ui.msg.textContent = 'タグを読み込めませんでした: ' + (err.userMessage || err.message || err);
     }
   }
 
-  function inlineTagChip(tag, options, refresh, onError, groupsById) {
+  function inlineTagChip(tag, options, refresh, onError, groupsById, mutationBlocked) {
     const chip = document.createElement('span');
     chip.className = 'gb-tag-chip';
     chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--bg3);font-size:12px;';
@@ -524,6 +668,8 @@
     remove.dataset.e2eId = `global-tags-inline-remove:${tagKey}`;
     remove.dataset.globalTagsRole = 'inline-remove';
     remove.innerHTML = icon('x', 12) || '×';
+    remove.disabled = !!mutationBlocked;
+    if (mutationBlocked) remove.title = 'タグ辞書の同期競合を解消してから編集してください';
     remove.addEventListener('click', () => {
       try {
         const nextIds = (options.getIds() || []).filter(id => String(id) !== String(tag.id));
@@ -540,10 +686,11 @@
 
   function bindInlineTagEditor(options, ui, refresh) {
     const addCurrent = async () => {
+      if (ui.mutationBlocked) return;
       const name = ui.input.value.trim();
       if (!name) return;
       try {
-        const data = await loadTags();
+        const data = await loadTagsCached();
         const allTags = Array.isArray(data?.tags) ? data.tags : [];
         let tag = allTags.find(t => String(t.name || '').trim().toLowerCase() === name.toLowerCase());
         if (!tag) {
@@ -552,7 +699,7 @@
             tag = created?.tag || null;
           } catch (createErr) {
             // 競合(同名タグが既に作成済み)などで失敗した場合は再取得してフォールバック
-            const retryData = await loadTags();
+            const retryData = await loadTagsCached();
             tag = (Array.isArray(retryData?.tags) ? retryData.tags : []).find(t => String(t.name || '').trim().toLowerCase() === name.toLowerCase());
             if (!tag) throw createErr;
           }
@@ -605,6 +752,7 @@
     // プリセット / 自動タグ
     loadAutoTagPresets,
     installAutoTagPreset,
+    resolveTagDictionaryConflict,
     autoTag,
     // 対象ファイル別
     loadTargetTags,

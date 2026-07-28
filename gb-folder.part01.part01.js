@@ -1035,7 +1035,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
   if (item.type !== 'folder') addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
-  if (!blankTarget && item.path) {
+  if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
     addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
       if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
     }, null, 'tags');

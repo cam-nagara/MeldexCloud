@@ -24,7 +24,7 @@
   }
 
   // --- 自動タグ付け（フォルダは深い階層まで再帰処理） ---
-  if (!isMulti && nodeData.path && !isEntity) {
+  if (!isMulti && nodeData.path && !isEntity && window.isAutoTagRuntimeAvailable?.() === true) {
     const recursiveAutoTag = isFolder || !!nodeData._isRoot;
     addMenuItem(
       recursiveAutoTag ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け',

@@ -4,6 +4,8 @@
 
   const settingsState = new WeakMap();
   const runPanelState = new WeakMap();
+  const loadBundleCache = new Map();
+  const LOAD_BUNDLE_CACHE_TTL_MS = 5000;
 
   function atEsc(value) {
     if (typeof esc === 'function') return esc(String(value ?? ''));
@@ -64,14 +66,14 @@
     return chatSource.startsWith('workspace:') ? '' : chatSource;
   }
 
-  function atDictionaryApiPath(path, targetPath) {
-    const sourceFolder = atSourceFolderForPath(targetPath);
+  function atDictionaryApiPath(path, targetPath, sourceFolderOverride) {
+    const sourceFolder = String(sourceFolderOverride || '').trim() || atSourceFolderForPath(targetPath);
     if (!sourceFolder) return path;
     return path + (path.includes('?') ? '&' : '?') + 'source_folder=' + encodeURIComponent(sourceFolder);
   }
 
-  function atDictionaryPayload(payload, targetPath) {
-    const sourceFolder = atSourceFolderForPath(targetPath);
+  function atDictionaryPayload(payload, targetPath, sourceFolderOverride) {
+    const sourceFolder = String(sourceFolderOverride || '').trim() || atSourceFolderForPath(targetPath);
     return sourceFolder ? { ...(payload || {}), source_folder: sourceFolder } : { ...(payload || {}) };
   }
 
@@ -90,15 +92,27 @@
     return valid.length ? valid : available.slice(0, 1);
   }
 
+  const AT_CLI_CATALOG_LIMIT = 2000;
+
+  function atSelectedAutoTagCount(dictionary, selectedNames) {
+    const selected = new Set((selectedNames || []).map(name => String(name)));
+    return (dictionary?.tags || []).filter(tag => {
+      if (!tag?.auto_assign) return false;
+      const presets = Array.isArray(tag.presets) && tag.presets.length ? tag.presets : ['標準'];
+      return presets.some(name => selected.has(String(name)));
+    }).length;
+  }
+
   function atPresetOptionsHtml(dictionary, selectedNames, prefix) {
     const selected = new Set(selectedNames || []);
     return atPresetNames(dictionary).map((name, index) => {
-      const localOnlyHelp = name === 'Danbooru日本語'
-        ? atFieldHelp('8,000件を超える大規模辞書です。CLI AIの1,000件上限を超えるため、ローカル画像AIで使ってください。')
+      const tagCount = atSelectedAutoTagCount(dictionary, [name]);
+      const localOnlyHelp = tagCount > AT_CLI_CATALOG_LIMIT
+        ? atFieldHelp(`${tagCount.toLocaleString('ja-JP')}件の有効タグがあります。CLI AIの2,000件上限を超えるため、ローカル画像AIで使ってください。`)
         : '';
       return `
         <label class="at-preset-option" for="${prefix}-${index}">
-          <input id="${prefix}-${index}" type="checkbox" data-at-preset="${atEsc(name)}" ${selected.has(name) ? 'checked' : ''}>
+          <input id="${prefix}-${index}" type="checkbox" data-e2e-id="${prefix}-${index}" data-at-preset="${atEsc(name)}" ${selected.has(name) ? 'checked' : ''}>
           <span>${atEsc(name)}${localOnlyHelp}</span>
         </label>
       `;
@@ -110,46 +124,66 @@
   }
 
   function isAutoTagRuntimeAvailable() {
+    const standalonePage = /(?:^|\/)[^/?#]*-standalone\.html$/i.test(location.pathname || '')
+      || /(?:^|\/)quick-memo\.html$/i.test(location.pathname || '')
+      || document.documentElement?.dataset?.standaloneApp;
+    if (standalonePage) return false;
     const dropboxMode = window.MeldexRuntimeAdapter?.isDropboxMode?.()
       || document.body?.dataset?.cloudMode === 'dropbox';
     const serverMode = window.MeldexRuntimeAdapter?.isServerMode?.()
       || document.body?.dataset?.cloudMode === 'server';
-    return !dropboxMode || !!serverMode;
+    if (serverMode) return true;
+    const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
+      && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
+    return !dropboxMode && !cloudStatic;
   }
 
-  function atRenderCloudUnavailable(host) {
-    host.innerHTML = `
-      <section class="at-cloud-unavailable" aria-labelledby="at-cloud-unavailable-title">
-        <div class="at-cloud-unavailable-icon">${atIcon('monitor-down', 22)}</div>
-        <div>
-          <h3 id="at-cloud-unavailable-title">自動タグ付けはデスクトップ版で設定します</h3>
-          <p>端末内の画像AIまたはログイン済みCLIを使うため、モデルの取得・辞書の準備・実行はデスクトップ版で行ってください。</p>
-          <p class="at-cloud-unavailable-note">Cloud版では、付いているタグの確認と手動編集をそのまま利用できます。</p>
-        </div>
-      </section>
-    `;
+  function isTagDictionaryEditingAvailable() {
+    return typeof window.apiFetch === 'function' || typeof window.apiPost === 'function';
   }
 
-  async function atLoadBundle(targetPath) {
-    const dictionaryPromise = apiFetch(
-      atDictionaryApiPath('/auto-tag/dictionary', targetPath),
-      { silentError: true },
-    ).catch(error => ({
-      tags: [],
-      groups: [],
-      preset_names: ['標準'],
-      load_error: error?.userMessage || error?.message || String(error),
-    }));
-    const [settingsResult, modelsResult, dictionaryResult] = await Promise.all([
-      apiFetch('/auto-tag/settings', { silentError: true }),
-      apiFetch('/auto-tag/models', { silentError: true }),
-      dictionaryPromise,
-    ]);
-    return {
-      settings: settingsResult?.settings || {},
-      models: Array.isArray(modelsResult?.models) ? modelsResult.models : [],
-      dictionary: dictionaryResult || { tags: [], groups: [], db_path: '' },
-    };
+  function isTagDictionarySheetOpenAvailable() {
+    return isTagDictionaryEditingAvailable()
+      && isAutoTagRuntimeAvailable()
+      && typeof window.selectDatabase === 'function';
+  }
+
+  function invalidateAutoTagBundleCache() {
+    loadBundleCache.clear();
+  }
+
+  async function atLoadBundle(targetPath, options) {
+    const cacheKey = atSourceFolderForPath(targetPath) || '__default__';
+    const cached = loadBundleCache.get(cacheKey);
+    if (!options?.force && cached && (Date.now() - cached.at) < LOAD_BUNDLE_CACHE_TTL_MS) {
+      return cached.promise;
+    }
+    const promise = (async () => {
+      const dictionaryPromise = apiFetch(
+        atDictionaryApiPath('/auto-tag/dictionary', targetPath),
+        { silentError: true },
+      ).catch(error => ({
+        tags: [],
+        groups: [],
+        preset_names: ['標準'],
+        load_error: error?.userMessage || error?.message || String(error),
+      }));
+      const [settingsResult, modelsResult, dictionaryResult] = await Promise.all([
+        apiFetch('/auto-tag/settings', { silentError: true }),
+        apiFetch('/auto-tag/models', { silentError: true }),
+        dictionaryPromise,
+      ]);
+      return {
+        settings: settingsResult?.settings || {},
+        models: Array.isArray(modelsResult?.models) ? modelsResult.models : [],
+        dictionary: dictionaryResult || { tags: [], groups: [], db_path: '' },
+      };
+    })().catch(error => {
+      loadBundleCache.delete(cacheKey);
+      throw error;
+    });
+    loadBundleCache.set(cacheKey, { at: Date.now(), promise });
+    return promise;
   }
 
   function atModelForState(state) {
@@ -275,6 +309,7 @@
         <div class="at-preset-options" role="group" aria-label="既定の自動タグプリセット">
           ${atPresetOptionsHtml(dictionary, atSelectedPresetNames(settings, dictionary), 'at-setting-preset')}
         </div>
+        <p class="at-help">CLI AIでは、選んだプリセットに含まれる有効タグの合計が2,000件までです。標準プリセットの更新や独自タグ追加で1,000件を少し超えても利用できます。上限を超える組み合わせにはローカル画像AIを使ってください。</p>
       </div>
       <div class="at-model-layout">
         <div>
@@ -353,6 +388,7 @@
       silentError: true,
     });
     state.settings = result?.settings || state.settings;
+    invalidateAutoTagBundleCache();
     const saveState = host.querySelector('[data-at-save-state]');
     if (saveState) saveState.textContent = '保存しました';
     if (!options?.silent) atStatus('自動タグ付け設定を保存しました');
@@ -379,7 +415,8 @@
           },
         })
         : await apiPost(startPath, {}, { silentError: true, timeoutMs: 300000 });
-      const refreshed = await atLoadBundle();
+      invalidateAutoTagBundleCache();
+      const refreshed = await atLoadBundle(null, { force: true });
       Object.assign(state, refreshed);
       state.installing = null;
       const installedModel = state.models.find(model => model.id === modelId) || result?.model;
@@ -467,9 +504,11 @@
     if (!host || host.dataset.atLoading === '1') return;
     if (!isAutoTagRuntimeAvailable()) {
       settingsState.delete(host);
-      atRenderCloudUnavailable(host);
+      host.hidden = true;
+      host.replaceChildren();
       return;
     }
+    host.hidden = false;
     host.dataset.atLoading = '1';
     host.innerHTML = '<div class="at-loading">自動タグ付け設定を読み込んでいます…</div>';
     try {
@@ -491,18 +530,22 @@
     return atSaveSettingsHost(host, state, options);
   }
 
-  async function ensureAutoTagDictionarySheet() {
-    if (!isAutoTagRuntimeAvailable()) {
-      atStatus('自動タグ辞書の準備と編集はデスクトップ版で行ってください', true);
+  async function ensureAutoTagDictionarySheet(targetPath, sourceFolder) {
+    if (!isTagDictionaryEditingAvailable()) {
+      atStatus('タグ辞書を編集できる保存先へ接続してください', true);
       return '';
     }
     const result = await apiPost(
       '/auto-tag/dictionary/ensure',
-      atDictionaryPayload({}),
+      atDictionaryPayload({}, targetPath, sourceFolder),
       { silentError: true },
     );
     const dbPath = String(result?.db_path || '').trim();
     if (!dbPath) throw new Error('自動タグ辞書シートの場所を取得できませんでした');
+    if (!isTagDictionarySheetOpenAvailable()) {
+      atStatus('タグ辞書を準備しました');
+      return dbPath;
+    }
     document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
     if (typeof refreshOutliner === 'function') refreshOutliner();
     if (typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
@@ -510,9 +553,9 @@
     return dbPath;
   }
 
-  async function importAutoTagDictionaryCsv() {
-    if (!isAutoTagRuntimeAvailable()) {
-      atStatus('自動タグ辞書のCSV取込はデスクトップ版で行ってください', true);
+  async function importAutoTagDictionaryCsv(targetPath, sourceFolder) {
+    if (!isTagDictionaryEditingAvailable()) {
+      atStatus('タグ辞書を編集できる保存先へ接続してください', true);
       return false;
     }
     const input = document.createElement('input');
@@ -527,7 +570,7 @@
         const payload = atDictionaryPayload({
           csv_text: await file.text(),
           preset_name: String(file.name || '').replace(/\.csv$/i, '') || '標準',
-        });
+        }, targetPath, sourceFolder);
         const result = typeof runBackgroundJob === 'function'
           ? await runBackgroundJob('/auto-tag/dictionary/import', payload, {
             onProgress(progress) {
@@ -539,7 +582,8 @@
             },
           })
           : await apiPost('/auto-tag/dictionary/import', payload, { silentError: true, timeoutMs: 300000 });
-        window.MeldexGlobalTags?.invalidateTagsCatalogCache?.();
+        window.MeldexGlobalTags?.invalidateTagsCatalogCache?.(sourceFolder || atSourceFolderForPath(targetPath));
+        invalidateAutoTagBundleCache();
         await window.MeldexTagManagement?.refresh?.(false);
         atStatus(`${result?.imported || 0}件を自動タグ辞書へ取り込みました`);
       } catch (error) {
@@ -551,12 +595,15 @@
     input.click();
   }
 
-  async function exportAutoTagDictionaryCsv() {
-    if (!isAutoTagRuntimeAvailable()) {
-      atStatus('自動タグ辞書のCSV書出はデスクトップ版で行ってください', true);
+  async function exportAutoTagDictionaryCsv(targetPath, sourceFolder) {
+    if (!isTagDictionaryEditingAvailable()) {
+      atStatus('タグ辞書を読み込める保存先へ接続してください', true);
       return false;
     }
-    const dictionary = await apiFetch(atDictionaryApiPath('/auto-tag/dictionary'), { silentError: true });
+    const dictionary = await apiFetch(
+      atDictionaryApiPath('/auto-tag/dictionary', targetPath, sourceFolder),
+      { silentError: true },
+    );
     atDownloadDictionaryCsv(dictionary || {});
     atStatus('自動タグ辞書をCSVへ書き出しました');
   }
@@ -576,10 +623,39 @@
 
   function atUpdateRunReadiness(state) {
     const model = state.models.find(item => item.id === state.modelSelect.value);
+    const presetNames = [...state.host.querySelectorAll('[data-at-run-preset]')]
+      .filter(input => input.checked)
+      .map(input => input.dataset.atRunPreset);
+    const tagCount = atSelectedAutoTagCount(state.dictionary, presetNames);
+    const usesCli = state.aiSelect.value === 'cli'
+      || (state.aiSelect.value === 'auto' && (!model?.local || !model.ready));
+    if (usesCli && tagCount > AT_CLI_CATALOG_LIMIT) {
+      state.readiness.className = 'at-run-ready at-ready--error';
+      state.readiness.textContent = `CLI上限超過（${tagCount.toLocaleString('ja-JP')}件 / 2,000件）`;
+      state.runButton.disabled = true;
+      state.runButton.title = 'プリセットを減らすか、ローカル画像AIを選んでください';
+      return;
+    }
     const ready = atReadyLabel(model);
     state.readiness.className = 'at-run-ready at-ready--' + ready.kind;
     state.readiness.textContent = ready.text;
     state.runButton.disabled = !!model?.local && !model.ready && state.aiSelect.value !== 'auto';
+    state.runButton.removeAttribute('title');
+  }
+
+  function atNormalizeRunTargets(path, options) {
+    const seen = new Set();
+    const rawTargets = Array.isArray(options?.targets) && options.targets.length
+      ? options.targets
+      : [{ path, recursive: options?.recursive }];
+    return rawTargets.map(item => ({
+      path: String(item?.path || item || '').trim(),
+      recursive: typeof item === 'object' ? !!item?.recursive : false,
+    })).filter(item => {
+      if (!item.path || seen.has(item.path)) return false;
+      seen.add(item.path);
+      return true;
+    });
   }
 
   async function atRunFromPanel(state) {
@@ -594,9 +670,19 @@
         atStatus('自動タグプリセットを1つ以上選択してください', true);
         return;
       }
+      const model = state.models.find(item => item.id === state.modelSelect.value);
+      const usesCli = state.aiSelect.value === 'cli'
+        || (state.aiSelect.value === 'auto' && (!model?.local || !model.ready));
+      const tagCount = atSelectedAutoTagCount(state.dictionary, presetNames);
+      if (usesCli && tagCount > AT_CLI_CATALOG_LIMIT) {
+        atStatus(`CLI AIで使える有効タグは2,000件までです（現在${tagCount.toLocaleString('ja-JP')}件）。プリセットを減らすか、ローカル画像AIを選んでください。`, true);
+        return;
+      }
+      const targetPayload = state.targets.length > 1
+        ? { targets: state.targets, label: state.label || `${state.targets.length}件の選択項目` }
+        : { path: state.path, recursive: state.recursive };
       const result = await window.MeldexGlobalTags.autoTag({
-        path: state.path,
-        recursive: state.recursive,
+        ...targetPayload,
         source_folder: atSourceFolderForPath(state.path),
         ai_id: state.aiSelect.value,
         model_id: state.modelSelect.value,
@@ -619,7 +705,9 @@
   }
 
   async function renderAutoTagRunPanel(host, path, options) {
-    if (!host || !path || host.dataset.atRunLoading === '1') return;
+    const targets = atNormalizeRunTargets(path, options);
+    const firstTarget = targets[0] || { path: '', recursive: false };
+    if (!host || !firstTarget.path || host.dataset.atRunLoading === '1') return;
     if (!isAutoTagRuntimeAvailable()) {
       host.hidden = true;
       host.replaceChildren();
@@ -630,16 +718,16 @@
     host.classList.add('at-run-panel');
     host.innerHTML = '<div class="at-loading">自動タグ付けを準備しています…</div>';
     try {
-      const bundle = await atLoadBundle(path);
+      const bundle = await atLoadBundle(firstTarget.path);
       host.innerHTML = `
         <div class="at-run-head">
           <div><strong>${atIcon('sparkles', 14)} 自動タグ付け</strong><small>この実行だけのAI・モデルを選べます</small></div>
-          <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-at-run-dictionary>${atIcon('tableProperties', 12)} タグ辞書</button>
+          <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-e2e-id="tag-auto-run-dictionary" data-at-run-dictionary>${atIcon('tableProperties', 12)} タグ辞書</button>
         </div>
-        <label><span>AI ${atFieldHelp('CLI AIは少数画像向けです。数百件以上では、処理時間が大幅に長くなるためローカル画像AIを推奨します。')}</span><select class="gb-input" data-at-run-ai>
+        <label><span>AI ${atFieldHelp('CLI AIは少数画像向けです。数百件以上では、処理時間が大幅に長くなるためローカル画像AIを推奨します。')}</span><select class="gb-input" data-e2e-id="tag-auto-run-ai" data-at-run-ai>
           <option value="auto">自動選択</option><option value="local-wd">ローカル画像AI</option><option value="cli">CLI AI</option>
         </select></label>
-        <label><span>モデル</span><select class="gb-input" data-at-run-model></select></label>
+        <label><span>モデル</span><select class="gb-input" data-e2e-id="tag-auto-run-model" data-at-run-model></select></label>
         <details class="at-run-presets" open>
           <summary>自動タグプリセット（複数選択可）</summary>
           <div class="at-preset-options" role="group" aria-label="今回使う自動タグプリセット">
@@ -647,12 +735,14 @@
               .replaceAll('data-at-preset=', 'data-at-run-preset=')}
           </div>
         </details>
-        <div class="at-run-footer"><span class="at-run-ready"></span><button type="button" class="gb-btn gb-btn-primary gb-btn-sm" data-at-run>${atIcon('sparkles', 14)} 実行</button></div>
+        <div class="at-run-footer"><span class="at-run-ready"></span><button type="button" class="gb-btn gb-btn-primary gb-btn-sm" data-e2e-id="tag-auto-run-execute" data-at-run>${atIcon('sparkles', 14)} 実行</button></div>
       `;
       const state = {
         host,
-        path,
-        recursive: !!options?.recursive,
+        path: firstTarget.path,
+        recursive: firstTarget.recursive,
+        targets,
+        label: String(options?.label || ''),
         settings: bundle.settings,
         dictionary: bundle.dictionary,
         models: bundle.models,
@@ -665,8 +755,13 @@
       atRunModelOptions(state);
       state.aiSelect.addEventListener('change', () => atRunModelOptions(state));
       state.modelSelect.addEventListener('change', () => atUpdateRunReadiness(state));
+      host.querySelectorAll('[data-at-run-preset]').forEach(input => {
+        input.addEventListener('change', () => atUpdateRunReadiness(state));
+      });
       state.runButton.addEventListener('click', () => atRunFromPanel(state));
-      host.querySelector('[data-at-run-dictionary]')?.addEventListener('click', () => ensureAutoTagDictionarySheet());
+      host.querySelector('[data-at-run-dictionary]')?.addEventListener('click', () => (
+        ensureAutoTagDictionarySheet(state.path, atSourceFolderForPath(state.path))
+      ));
       runPanelState.set(host, state);
     } catch (error) {
       host.innerHTML = `<div class="at-error">自動タグ付けを準備できませんでした。${atEsc(error?.userMessage || error?.message || error)}</div>`;
@@ -686,10 +781,13 @@
 
   window.renderAutoTagSettings = renderAutoTagSettings;
   window.isAutoTagRuntimeAvailable = isAutoTagRuntimeAvailable;
+  window.isTagDictionaryEditingAvailable = isTagDictionaryEditingAvailable;
+  window.isTagDictionarySheetOpenAvailable = isTagDictionarySheetOpenAvailable;
   window.saveAutoTagSettingsFromSettingsDialog = saveAutoTagSettingsFromSettingsDialog;
   window.ensureAutoTagDictionarySheet = ensureAutoTagDictionarySheet;
   window.importAutoTagDictionaryCsv = importAutoTagDictionaryCsv;
   window.exportAutoTagDictionaryCsv = exportAutoTagDictionaryCsv;
+  window.invalidateAutoTagBundleCache = invalidateAutoTagBundleCache;
   window.renderAutoTagRunPanel = renderAutoTagRunPanel;
   window.hydrateAutoTagRunPanels = hydrateAutoTagRunPanels;
   window.MeldexAutoTagSourceFolder = atSourceFolderForPath;

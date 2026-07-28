@@ -185,13 +185,34 @@ textarea:disabled {
   box-sizing: border-box;
 }
 .gb-tag-management-presets > summary,
-.gb-tag-management-builtins > summary {
+.gb-tag-management-builtins-toggle {
   min-height: 28px;
   display: flex;
   align-items: center;
   cursor: pointer;
   color: var(--ui-fg-muted);
   font-size: 12px;
+}
+.gb-tag-management-builtins-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.gb-tag-management-builtins-toggle::before {
+  content: "›";
+  margin-right: 6px;
+  font-size: 16px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+.gb-tag-management-builtins-toggle[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+.gb-tag-management-builtin-list[hidden] {
+  display: none !important;
 }
 .gb-tag-management-presets .at-preset-option {
   min-width: 0;
@@ -251,9 +272,9 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-filte
 body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-presets > summary,
 body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-presets > summary,
 body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-presets > summary,
-body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-builtins > summary,
-body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-builtins > summary,
-body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-builtins > summary,
+body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-builtins-toggle,
+body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-builtins-toggle,
+body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-builtins-toggle,
 body[data-cloud-mobile="1"] .gb-tag-management-panel .gb-tag-management-presets .at-preset-option,
 body[data-mobile-ui="1"] .gb-tag-management-panel .gb-tag-management-presets .at-preset-option,
 body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-management-presets .at-preset-option,

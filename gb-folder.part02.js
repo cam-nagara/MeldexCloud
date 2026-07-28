@@ -117,12 +117,6 @@ function _renderDetailContent(item) {
   }
   if (item.path) {
     const b = document.createElement('button');
-    b.textContent = '自動タグ付け';
-    b.addEventListener('click', () => autoTagFolderTarget(item, { recursive: item.type === 'folder' }));
-    actions.appendChild(b);
-  }
-  if (item.path) {
-    const b = document.createElement('button');
     b.textContent = '圧縮';
     b.addEventListener('click', () => compressFolderItems([item]));
     actions.appendChild(b);
@@ -146,12 +140,6 @@ function _renderDetailContent(item) {
     actions.appendChild(b);
   }
   frag.appendChild(actions);
-
-  if (item.path && typeof renderAutoTagRunPanel === 'function') {
-    const autoTagPanel = document.createElement('div');
-    renderAutoTagRunPanel(autoTagPanel, item.path, { recursive: item.type === 'folder' });
-    frag.appendChild(autoTagPanel);
-  }
 
   if (item.path && typeof renderGlobalTagTargetEditor === 'function') {
     const tagBox = document.createElement('div');
@@ -178,6 +166,15 @@ function _renderDetailContent(item) {
 
 function showFolderPreview(item) {
   if (!item) return;
+  const selectedItems = typeof _folderSelectedItems !== 'undefined'
+    ? (_folderSelectedItems || []).filter(selected => selected?.path)
+    : [];
+  const tagManagement = window.MeldexTagManagement;
+  if (selectedItems.length && typeof tagManagement?.setAutoTagTargets === 'function') {
+    tagManagement.setAutoTagTargets(selectedItems);
+  } else {
+    tagManagement?.setAutoTagTarget?.(item.path || '', item.type === 'folder');
+  }
 
   // v5.0: プレビュータブにプレビュー表示
   const previewPane = document.getElementById('gb-preview-pane');

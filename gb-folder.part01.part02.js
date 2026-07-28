@@ -719,10 +719,13 @@ function _setFolderBulkPopupTracking(enabled) {
 
 // 一括操作ポップアップの表示/非表示更新
 function _updateFolderBulkBar() {
+  const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
+  window.MeldexTagManagement?.setAutoTagTargets?.(selectedCount > 0 ? _folderSelectedItems : []);
   const bar = document.getElementById('fv-bulk-bar');
   if (!bar) return;
   _ensureFolderBulkBarChrome(bar);
-  const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
+  const autoTagButton = bar.querySelector('[data-action^="fvBulkAutoTag"]');
+  if (autoTagButton) autoTagButton.hidden = window.isAutoTagRuntimeAvailable?.() !== true;
   if (selectedCount > 0) {
     bar.classList.add('visible');
     bar.hidden = false;

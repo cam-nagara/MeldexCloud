@@ -11,6 +11,7 @@
   let _activeMenuTrigger = null;
   let _activeMenuId = 0;
   let _dragRows = [];
+  let _fetchRevision = 0;
   let _state = {
     tags: [],
     groups: [],
@@ -20,16 +21,28 @@
     filterText: '',
     visibleTagLimit: INITIAL_VISIBLE_TAGS,
     installingPresetId: '',
+    builtinPresetsOpen: false,
     loading: false,
     error: '',
+    syncWarning: '',
+    mutationBlocked: false,
+    conflictResolutionAvailable: false,
+    conflictId: '',
     selectedKeys: [],
     anchorKey: '',
     flatRows: [],
     searchTag: null,
     searchResults: null,
+    autoTagTargetPath: '',
+    autoTagTargetRecursive: false,
+    autoTagTargets: [],
+    sourceFolder: '',
   };
 
   function api() { return window.MeldexGlobalTags || null; }
+  function sourceFolderForPath(path) {
+    return String(path && window.MeldexAutoTagSourceFolder?.(path) || '').trim();
+  }
   function ic(name, size) { return typeof lucide === 'function' ? lucide(name, size || 14) : ''; }
   function esc(value) {
     if (typeof window.esc === 'function') return window.esc(value);
@@ -81,29 +94,37 @@
 
   async function fetchAll() {
     if (!api()) return;
+    const revision = ++_fetchRevision;
+    const sourceFolder = _state.sourceFolder;
     _state.loading = true;
     _state.error = '';
     try {
       const [tagData, presetData] = await Promise.all([
-        api().loadTags(),
+        api().loadTagsCached ? api().loadTagsCached(sourceFolder) : api().loadTags(sourceFolder),
         api().loadAutoTagPresets
-          ? api().loadAutoTagPresets()
+          ? api().loadAutoTagPresets(sourceFolder)
           : Promise.resolve({ preset_names: [], builtins: [] }),
       ]);
+      if (revision !== _fetchRevision || sourceFolder !== _state.sourceFolder) return;
       _state.tags = Array.isArray(tagData?.tags) ? tagData.tags : [];
       _state.groups = Array.isArray(tagData?.groups) ? tagData.groups : [];
       _state.presetNames = Array.isArray(presetData?.preset_names)
         ? presetData.preset_names
         : (Array.isArray(tagData?.preset_names) ? tagData.preset_names : []);
       _state.builtinPresets = Array.isArray(presetData?.builtins) ? presetData.builtins : [];
+      _state.syncWarning = String(tagData?.warning || '');
+      _state.mutationBlocked = !!tagData?.mutation_blocked;
+      _state.conflictResolutionAvailable = !!tagData?.conflict_resolution_available;
+      _state.conflictId = String(tagData?.conflict_id || '');
       const available = new Set(_state.presetNames.map(name => String(name).toLocaleLowerCase('ja')));
       _state.selectedPresetNames = (_state.selectedPresetNames || [])
         .filter(name => available.has(String(name).toLocaleLowerCase('ja')));
       pruneSelection();
     } catch (err) {
+      if (revision !== _fetchRevision || sourceFolder !== _state.sourceFolder) return;
       _state.error = err && (err.userMessage || err.message) ? (err.userMessage || err.message) : String(err);
     } finally {
-      _state.loading = false;
+      if (revision === _fetchRevision && sourceFolder === _state.sourceFolder) _state.loading = false;
     }
   }
 
@@ -211,8 +232,31 @@
     showSearchForTag(tag);
   }
 
+  async function resolveDictionaryConflict(strategy, label) {
+    if (!api()?.resolveTagDictionaryConflict) return;
+    const confirmed = await confirmAsync(
+      `${label}のタグ辞書を採用しますか？\n両方の内容は競合バックアップへ保存してから統一します。`,
+    );
+    if (!confirmed) return;
+    try {
+      const result = await api().resolveTagDictionaryConflict(
+        strategy,
+        _state.conflictId,
+        _state.sourceFolder,
+      );
+      if (typeof showStatus === 'function') {
+        showStatus(`タグ辞書を${label}の内容へ統一しました（競合バックアップ: ${result?.backup_path || '保存済み'}）`);
+      }
+      await refresh(false);
+    } catch (err) {
+      reportError(err, 'タグ辞書の同期競合を解消できませんでした');
+    }
+  }
+
   function render() {
     if (!_container) return;
+    const reusableAutoTagSection = _container.querySelector?.('[data-tag-auto-run-section]');
+    reusableAutoTagSection?.remove();
     _container.classList.add('gb-tag-management-panel');
     _container.setAttribute('aria-label', 'タグ管理');
     _container.textContent = '';
@@ -225,19 +269,58 @@
     const body = document.createElement('div');
     body.className = 'gb-tag-management-body';
     body.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:8px;';
+    _container.appendChild(body);
+    mountAutoTagSection(reusableAutoTagSection);
     if (_state.loading) {
-      body.innerHTML = '<div class="gb-section-desc" style="padding:12px;">タグを読み込んでいます...</div>';
-      _container.appendChild(body);
+      body.insertAdjacentHTML('beforeend', '<div class="gb-section-desc" style="padding:12px;">タグを読み込んでいます...</div>');
       return;
     }
     if (_state.error) {
-      body.innerHTML = '<div class="gb-section-desc" style="padding:12px;color:var(--danger);">タグを読み込めませんでした: ' + esc(_state.error) + '</div>';
-      _container.appendChild(body);
+      body.insertAdjacentHTML('beforeend', '<div class="gb-section-desc" style="padding:12px;color:var(--danger);">タグを読み込めませんでした: ' + esc(_state.error) + '</div>');
       return;
+    }
+    if (_state.syncWarning) {
+      const warning = document.createElement('div');
+      warning.className = 'gb-section gb-section--boxed';
+      warning.dataset.e2eId = 'tag-management-sync-warning';
+      warning.style.cssText = 'padding:8px;margin-bottom:8px;color:var(--warning,#d8a22e);font-size:12px;line-height:1.5;';
+      warning.textContent = _state.syncWarning;
+      if (
+        _state.mutationBlocked
+        && _state.conflictResolutionAvailable
+        && api()?.resolveTagDictionaryConflict
+      ) {
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;';
+        actions.append(
+          textButton(
+            'クラウド版を採用',
+            'cloud',
+            () => resolveDictionaryConflict('cloud', 'クラウド版'),
+            'tag-management-resolve-cloud',
+          ),
+          textButton(
+            'デスクトップ版を採用',
+            'monitor',
+            () => resolveDictionaryConflict('desktop', 'デスクトップ版'),
+            'tag-management-resolve-desktop',
+          ),
+        );
+        warning.appendChild(actions);
+      }
+      body.appendChild(warning);
     }
 
     const { roots, uncategorized, groupsById, filtered } = buildTreeData();
     flattenTree(roots, uncategorized);
+    if (_state.builtinPresets.length) {
+      body.appendChild(window.MeldexTagPresetUI.renderBuiltinPresets({
+        state: _state,
+        textButton,
+        safeKeyPart,
+        onInstall: installBuiltinPreset,
+      }));
+    }
     body.appendChild(window.MeldexTagPresetUI?.renderFilterSummary?.(_state, filtered) || document.createTextNode(''));
     body.appendChild(renderBulkBar());
     body.appendChild(renderUncategorizedSection(uncategorized, groupsById));
@@ -267,7 +350,106 @@
       body.appendChild(more);
     }
     if (_state.searchResults != null) body.appendChild(renderSearchResults());
-    _container.appendChild(body);
+  }
+
+  function normalizeAutoTagTargets(rawTargets) {
+    const seen = new Set();
+    return (Array.isArray(rawTargets) ? rawTargets : []).map(item => {
+      const path = String(item?.path || item || '').trim();
+      const recursive = typeof item === 'object'
+        ? (item?.recursive == null ? item?.type === 'folder' : !!item.recursive)
+        : false;
+      return { path, recursive };
+    }).filter(item => {
+      if (!item.path || seen.has(item.path)) return false;
+      seen.add(item.path);
+      return true;
+    });
+  }
+
+  function currentAutoTagTarget() {
+    let targets = normalizeAutoTagTargets(_state.autoTagTargets);
+    if (!targets.length && _state.autoTagTargetPath) {
+      targets = [{ path: _state.autoTagTargetPath, recursive: _state.autoTagTargetRecursive }];
+    }
+    if (!targets.length && typeof _folderSelectedItems !== 'undefined') {
+      targets = normalizeAutoTagTargets(_folderSelectedItems);
+    }
+    if (!targets.length && typeof _folderSelected !== 'undefined' && _folderSelected?.path) {
+      targets = normalizeAutoTagTargets([_folderSelected]);
+    }
+    if (!targets.length && typeof _folderPath !== 'undefined' && _folderPath) {
+      targets = [{ path: String(_folderPath), recursive: true }];
+    }
+    const first = targets[0] || { path: '', recursive: false };
+    return { path: first.path, recursive: first.recursive, targets };
+  }
+
+  function mountAutoTagSection(existing, force) {
+    if (!_container) return;
+    const target = currentAutoTagTarget();
+    const section = window.MeldexTagPresetUI?.renderAutoTagExecutionSection?.({
+      existing,
+      path: target.path,
+      recursive: target.recursive,
+      targets: target.targets,
+      mutationBlocked: _state.mutationBlocked,
+      mutationWarning: _state.syncWarning,
+      force: !!force,
+    });
+    if (!section) {
+      existing?.remove();
+      return;
+    }
+    const body = _container.querySelector('.gb-tag-management-body');
+    if (body) body.prepend(section);
+    else _container.appendChild(section);
+  }
+
+  function setAutoTagTargets(targets) {
+    const nextTargets = normalizeAutoTagTargets(targets);
+    const currentSignature = JSON.stringify(normalizeAutoTagTargets(_state.autoTagTargets));
+    const nextSignature = JSON.stringify(nextTargets);
+    const first = nextTargets[0] || { path: '', recursive: false };
+    const nextSourceFolder = first.path ? sourceFolderForPath(first.path) : '';
+    const sourceChanged = nextSourceFolder !== _state.sourceFolder;
+    const changed = currentSignature !== nextSignature
+      || first.path !== _state.autoTagTargetPath
+      || first.recursive !== _state.autoTagTargetRecursive;
+    _state.autoTagTargets = nextTargets;
+    _state.autoTagTargetPath = first.path;
+    _state.autoTagTargetRecursive = first.recursive;
+    _state.sourceFolder = nextSourceFolder;
+    if (sourceChanged) {
+      _fetchRevision += 1;
+      _state.tags = [];
+      _state.groups = [];
+      _state.presetNames = [];
+      _state.builtinPresets = [];
+      _state.selectedPresetNames = [];
+      _state.selectedKeys = [];
+      _state.searchTag = null;
+      _state.searchResults = null;
+      _state.error = '';
+      _state.syncWarning = '';
+      _state.mutationBlocked = false;
+      _state.conflictResolutionAvailable = false;
+      _state.conflictId = '';
+      _state.loading = true;
+    }
+    if (!_container || !changed) return;
+    if (sourceChanged) {
+      render();
+      refresh(false);
+      return;
+    }
+    const existing = _container.querySelector('[data-tag-auto-run-section]');
+    mountAutoTagSection(existing, true);
+  }
+
+  function setAutoTagTarget(path, recursive) {
+    const nextPath = String(path || '').trim();
+    setAutoTagTargets(nextPath ? [{ path: nextPath, recursive: !!recursive }] : []);
   }
 
   function renderHeader() {
@@ -313,23 +495,32 @@
     const actionRow = document.createElement('div');
     actionRow.className = 'gb-tag-management-action-row';
     actionRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
-    actionRow.appendChild(textButton('グループ追加', 'folder-plus', () => onAddGroup(null), 'tag-management-add-group'));
-    actionRow.appendChild(textButton('タグ追加', 'plus', () => onAddTag(null), 'tag-management-add-tag'));
-    if (window.isAutoTagRuntimeAvailable?.() !== false) {
-      actionRow.appendChild(textButton('タグ辞書シート', 'table-properties', () => window.ensureAutoTagDictionarySheet?.(), 'tag-management-open-dictionary'));
-      actionRow.appendChild(textButton('CSV取込', 'upload', () => window.importAutoTagDictionaryCsv?.(), 'tag-management-import-csv'));
-      actionRow.appendChild(textButton('CSV書出', 'download', () => window.exportAutoTagDictionaryCsv?.(), 'tag-management-export-csv'));
-      actionRow.appendChild(textButton('現在のフォルダを自動タグ付け', 'sparkles', () => runAutoTagForCurrentFolder(), 'tag-management-auto-tag-folder'));
+    const addGroup = textButton('グループ追加', 'folder-plus', () => onAddGroup(null), 'tag-management-add-group');
+    const addTag = textButton('タグ追加', 'plus', () => onAddTag(null), 'tag-management-add-tag');
+    addGroup.disabled = _state.mutationBlocked;
+    addTag.disabled = _state.mutationBlocked;
+    actionRow.append(addGroup, addTag);
+    if (window.isTagDictionaryEditingAvailable?.() !== false) {
+      if (window.isTagDictionarySheetOpenAvailable?.() === true) {
+        actionRow.appendChild(textButton('タグ辞書シート', 'table-properties', () => (
+          window.ensureAutoTagDictionarySheet?.(_state.autoTagTargetPath, _state.sourceFolder)
+        ), 'tag-management-open-dictionary'));
+      }
+      const importCsv = textButton('CSV取込', 'upload', () => (
+        window.importAutoTagDictionaryCsv?.(_state.autoTagTargetPath, _state.sourceFolder)
+      ), 'tag-management-import-csv');
+      importCsv.disabled = _state.mutationBlocked;
+      actionRow.appendChild(importCsv);
+      actionRow.appendChild(textButton('CSV書出', 'download', () => (
+        window.exportAutoTagDictionaryCsv?.(_state.autoTagTargetPath, _state.sourceFolder)
+      ), 'tag-management-export-csv'));
+    }
+    if (window.isAutoTagRuntimeAvailable?.() === true) {
+      const autoTagFolder = textButton('現在のフォルダを自動タグ付け', 'sparkles', () => runAutoTagForCurrentFolder(), 'tag-management-auto-tag-folder');
+      autoTagFolder.disabled = _state.mutationBlocked;
+      actionRow.appendChild(autoTagFolder);
     }
     header.appendChild(actionRow);
-    if (_state.builtinPresets.length) {
-      header.appendChild(window.MeldexTagPresetUI.renderBuiltinPresets({
-        state: _state,
-        textButton,
-        safeKeyPart,
-        onInstall: installBuiltinPreset,
-      }));
-    }
     return header;
   }
 
@@ -426,7 +617,7 @@
     head.appendChild(rowCount(countTagsRecursive(group)));
     head.appendChild(iconButton('folder-plus', 'サブグループを追加', () => onAddGroup(group.id), '', 'tag-management-group-add-group-' + safeKeyPart(group.id)));
     head.appendChild(iconButton('plus', 'このグループにタグを追加', () => onAddTag(group.id), '', 'tag-management-group-add-tag-' + safeKeyPart(group.id)));
-    head.appendChild(iconButton('more-horizontal', 'グループの操作', event => openGroupMenu(event.currentTarget, group), '', 'tag-management-group-menu-' + safeKeyPart(group.id), { menu: true }));
+    head.appendChild(iconButton('ellipsis', 'グループの操作', event => openGroupMenu(event.currentTarget, group), '', 'tag-management-group-menu-' + safeKeyPart(group.id), { menu: true }));
     head.addEventListener('click', event => {
       if (event.target.closest('button')) return;
       setSelectionFromEvent(event, key);
@@ -479,7 +670,7 @@
       row.appendChild(autoBadge);
     }
     row.appendChild(rowCount(typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : ''));
-    row.appendChild(iconButton('more-horizontal', 'タグの操作', event => openTagMenu(event.currentTarget, tag), '', 'tag-management-tag-menu-' + safeKeyPart(tag.id), { menu: true }));
+    row.appendChild(iconButton('ellipsis', 'タグの操作', event => openTagMenu(event.currentTarget, tag), '', 'tag-management-tag-menu-' + safeKeyPart(tag.id), { menu: true }));
     row.addEventListener('click', event => {
       if (event.target.closest('button')) return;
       setSelectionFromEvent(event, key);
@@ -646,10 +837,10 @@
     for (const item of unique) {
       try {
         if (item.kind === 'tag') {
-          await api().updateTag(item.id, { group_id: targetGroupId || null });
+          await api().updateTag(item.id, { group_id: targetGroupId || null }, _state.sourceFolder);
           moved += 1;
         } else if (item.kind === 'group' && item.id !== targetGroupId) {
-          await api().updateGroup(item.id, { parent_id: targetGroupId || null });
+          await api().updateGroup(item.id, { parent_id: targetGroupId || null }, _state.sourceFolder);
           moved += 1;
         }
       } catch (_) {
@@ -665,7 +856,7 @@
 
   async function toggleGroupCollapsed(group) {
     try {
-      await api().updateGroup(group.id, { collapsed: !group.collapsed });
+      await api().updateGroup(group.id, { collapsed: !group.collapsed }, _state.sourceFolder);
       await refresh(false);
     } catch (err) {
       reportError(err, 'グループを更新できませんでした');
@@ -676,7 +867,7 @@
     try {
       const name = await promptAsync('グループ名', uniqueName('新しいグループ', _state.groups.filter(g => (g.parent_id || null) === (parentId || null)).map(g => g.name)));
       if (!String(name || '').trim()) return;
-      await api().createGroup({ name: String(name).trim(), parent_id: parentId || null });
+      await api().createGroup({ name: String(name).trim(), parent_id: parentId || null }, _state.sourceFolder);
       await refresh(false);
     } catch (err) {
       reportError(err, 'グループを追加できませんでした');
@@ -687,7 +878,7 @@
     try {
       const name = await promptAsync('タグ名', uniqueName('新しいタグ', _state.tags.map(t => t.name)));
       if (!String(name || '').trim()) return;
-      await api().createTag({ name: String(name).trim(), group_id: groupId || null });
+      await api().createTag({ name: String(name).trim(), group_id: groupId || null }, _state.sourceFolder);
       await refresh(false);
     } catch (err) {
       reportError(err, 'タグを追加できませんでした');
@@ -709,14 +900,14 @@
     const next = await promptAsync('グループ名', group.name || '');
     const trimmed = String(next || '').trim();
     if (!trimmed || trimmed === group.name) return;
-    try { await api().updateGroup(group.id, { name: trimmed }); await refresh(false); }
+    try { await api().updateGroup(group.id, { name: trimmed }, _state.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'グループ名を変更できませんでした'); }
   }
 
   async function promptColorGroup(group) {
     const next = await promptAsync('グループの色 (#RRGGBB / 空欄で解除)', String(group.color || '').trim() || '#00b894');
     if (next == null) return;
-    try { await api().updateGroup(group.id, { color: String(next || '').trim() }); await refresh(false); }
+    try { await api().updateGroup(group.id, { color: String(next || '').trim() }, _state.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, '色を変更できませんでした'); }
   }
 
@@ -724,7 +915,7 @@
     const next = await promptAsync('タグ名', tag.name || '');
     const trimmed = String(next || '').trim();
     if (!trimmed || trimmed === tag.name) return;
-    try { await api().updateTag(tag.id, { name: trimmed }); await refresh(false); }
+    try { await api().updateTag(tag.id, { name: trimmed }, _state.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'タグ名を変更できませんでした'); }
   }
 
@@ -733,7 +924,7 @@
     const next = await promptAsync('別名（カンマまたは改行で区切ります）', current);
     if (next == null) return;
     try {
-      await api().updateTag(tag.id, { aliases: String(next || '') });
+      await api().updateTag(tag.id, { aliases: String(next || '') }, _state.sourceFolder);
       await refresh(false);
     } catch (err) {
       reportError(err, '別名を更新できませんでした');
@@ -742,7 +933,7 @@
 
   async function toggleAutoAssignTag(tag) {
     try {
-      await api().updateTag(tag.id, { auto_assign: !tag.auto_assign });
+      await api().updateTag(tag.id, { auto_assign: !tag.auto_assign }, _state.sourceFolder);
       await refresh(false);
       if (typeof showStatus === 'function') {
         showStatus(tag.auto_assign ? '自動付与の許可を外しました' : '自動付与を許可しました');
@@ -754,13 +945,13 @@
 
   async function onDeleteGroup(group) {
     if (!await confirmAsync('グループ「' + group.name + '」を削除しますか？\n直下のタグは未分類に戻ります。')) return;
-    try { await api().deleteGroup(group.id); await refresh(false); }
+    try { await api().deleteGroup(group.id, _state.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'グループを削除できませんでした'); }
   }
 
   async function onDeleteTag(tag) {
     if (!await confirmAsync('タグ「' + tag.name + '」を削除しますか？\nこのタグを付けたファイルからもタグが外れます。')) return;
-    try { await api().deleteTag(tag.id); await refresh(false); }
+    try { await api().deleteTag(tag.id, _state.sourceFolder); await refresh(false); }
     catch (err) { reportError(err, 'タグを削除できませんでした'); }
   }
 
@@ -770,10 +961,10 @@
     if (!await confirmAsync(rows.length + '件のタグ/グループを削除しますか？')) return;
     let failed = 0;
     for (const row of rows.filter(item => item.kind === 'tag')) {
-      try { await api().deleteTag(row.id); } catch (_) { failed += 1; }
+      try { await api().deleteTag(row.id, _state.sourceFolder); } catch (_) { failed += 1; }
     }
     for (const row of rows.filter(item => item.kind === 'group')) {
-      try { await api().deleteGroup(row.id); } catch (_) { failed += 1; }
+      try { await api().deleteGroup(row.id, _state.sourceFolder); } catch (_) { failed += 1; }
     }
     _state.selectedKeys = [];
     await refresh(false);
@@ -887,16 +1078,19 @@
 
   async function showSearchForTag(tag) {
     if (!api()) return;
+    const sourceFolder = _state.sourceFolder;
     try {
       _state.searchTag = tag;
       _state.searchResults = [];
       render();
       scrollSearchResultsIntoView();
-      const data = await api().searchByTag(tag);
+      const data = await api().searchByTag(tag, sourceFolder);
+      if (sourceFolder !== _state.sourceFolder) return;
       _state.searchResults = Array.isArray(data?.results) ? data.results : [];
       render();
       scrollSearchResultsIntoView();
     } catch (err) {
+      if (sourceFolder !== _state.sourceFolder) return;
       _state.searchResults = [];
       reportError(err, 'タグ検索に失敗しました');
       render();
@@ -948,20 +1142,46 @@
     return wrap;
   }
 
-  function installBuiltinPreset(item) {
-    return window.MeldexTagPresetUI?.installBuiltinPreset?.(item, {
-      state: _state,
-      render,
-      refresh,
-      reportError,
-    });
+  async function installBuiltinPreset(item) {
+    if (!item?.id || _state.installingPresetId) return;
+    const sourceFolder = _state.sourceFolder;
+    _state.installingPresetId = item.id;
+    render();
+    try {
+      const payload = sourceFolder ? { source_folder: sourceFolder } : {};
+      const startPath = '/auto-tag/presets/' + encodeURIComponent(item.id) + '/install';
+      const result = typeof runBackgroundJob === 'function'
+        ? await runBackgroundJob(startPath, payload, {
+          onProgress(progress) {
+            if (typeof showStatus === 'function' && progress?.message) showStatus(progress.message);
+          },
+        })
+        : await api()?.installAutoTagPreset?.(item.id, {}, sourceFolder);
+      api()?.invalidateTagsCatalogCache?.(sourceFolder);
+      window.invalidateAutoTagBundleCache?.();
+      await refresh(false);
+      if (typeof showStatus === 'function') {
+        showStatus(result?.message || `「${item.name}」を自動タグ辞書へ統合しました`);
+      }
+    } catch (error) {
+      reportError(error, `「${item.name}」を導入できませんでした`);
+    } finally {
+      _state.installingPresetId = '';
+      render();
+    }
   }
 
   async function runAutoTagForCurrentFolder() {
     const path = typeof _folderPath !== 'undefined' ? _folderPath : '';
+    const sourceFolder = _state.sourceFolder || sourceFolderForPath(path);
     return window.MeldexTagPresetUI?.runAutoTagForFolder?.(path, {
       confirmAsync,
-      api,
+      api: () => ({
+        autoTag: payload => api().autoTag({
+          ...(payload || {}),
+          ...(sourceFolder ? { source_folder: sourceFolder } : {}),
+        }),
+      }),
       refresh,
       reportError,
     });
@@ -994,6 +1214,8 @@
     render: () => render(),
     refresh,
     showSearchForTag,
+    setAutoTagTarget,
+    setAutoTagTargets,
     setContainer: container => { _container = container; },
     selectedRows,
   };

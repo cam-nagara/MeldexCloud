@@ -48,8 +48,22 @@
         + (result.skipped ? `・${Number(result.skipped).toLocaleString('ja-JP')}件対象外` : '')
         + (result.failed ? `・${Number(result.failed).toLocaleString('ja-JP')}件失敗` : '');
     }
-    if (job.status === 'error') return job.error || '処理に失敗しました';
-    if (job.status === 'cancelled') return '処理を中止しました';
+    if (job.status === 'error') {
+      const result = job.result || {};
+      const assigned = Number(result.assigned ?? result.changed ?? 0) || 0;
+      const unprocessed = Number(result.unprocessed || 0) || 0;
+      const partial = result.fatal_error
+        ? `・${assigned.toLocaleString('ja-JP')}件保存済み・${unprocessed.toLocaleString('ja-JP')}件未処理`
+        : '';
+      return (job.error || '処理に失敗しました') + partial;
+    }
+    if (job.status === 'cancelled') {
+      const result = job.result || {};
+      const assigned = Number(result.assigned ?? result.changed ?? 0) || 0;
+      const failed = Number(result.failed || 0) || 0;
+      return `処理を中止しました・${assigned.toLocaleString('ja-JP')}件保存済み`
+        + (failed ? `・${failed.toLocaleString('ja-JP')}件失敗` : '');
+    }
     if (progress.message) return progress.message;
     if (hasTotal) {
       return `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`;
@@ -180,8 +194,15 @@
       const result = job.result || {};
       const message = `${Number(result.succeeded || 0).toLocaleString('ja-JP')}件の自動タグ付けが完了しました`;
       if (typeof showStatus === 'function') showStatus(message, !!result.failed);
+    } else if (job.status === 'cancelled' && typeof showStatus === 'function') {
+      const result = job.result || {};
+      const assigned = Number(result.assigned ?? result.changed ?? 0) || 0;
+      const failed = Number(result.failed || 0) || 0;
+      const message = `自動タグ付けを中止しました: ${assigned.toLocaleString('ja-JP')}件保存済み`
+        + (failed ? `・${failed.toLocaleString('ja-JP')}件失敗` : '');
+      showStatus(message, failed > 0);
     } else if (job.status === 'error' && typeof showStatus === 'function') {
-      showStatus('自動タグ付けに失敗しました: ' + (job.error || ''), true);
+      showStatus('自動タグ付けに失敗しました: ' + progressText(job), true);
     }
   }
 

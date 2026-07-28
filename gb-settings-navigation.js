@@ -167,8 +167,36 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'フィードバック・診断': { tabId: 'フィードバック', pageId: 'feedback' },
 });
 
+function _settingsAutoTagPageVisible() {
+  if (typeof window.isAutoTagRuntimeAvailable === 'function') {
+    return window.isAutoTagRuntimeAvailable();
+  }
+  const standalone = /(?:^|\/)[^/?#]*-standalone\.html$/i.test(location.pathname || '');
+  const dropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.()
+    || document.body?.dataset?.cloudMode === 'dropbox';
+  const server = window.MeldexRuntimeAdapter?.isServerMode?.()
+    || document.body?.dataset?.cloudMode === 'server';
+  if (standalone) return false;
+  if (server) return true;
+  const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
+    && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
+  return !dropbox && !cloudStatic;
+}
+
+function _settingsNavigationRuntimeTabs() {
+  const autoTagVisible = _settingsAutoTagPageVisible();
+  return MELDEX_SETTINGS_NAVIGATION.map(tab => {
+    if (tab.id !== 'AI・Discord' || autoTagVisible) return tab;
+    return {
+      ...tab,
+      desc: 'AIキー、ローカルLLM、CLI、AI使用量、Discord連携',
+      pages: tab.pages.filter(page => page.id !== 'auto-tag'),
+    };
+  });
+}
+
 function _settingsNavigationFindTab(tabId) {
-  return MELDEX_SETTINGS_NAVIGATION.find(tab => tab.id === tabId) || null;
+  return _settingsNavigationRuntimeTabs().find(tab => tab.id === tabId) || null;
 }
 
 function _settingsNavigationFindPage(tab, pageId) {
@@ -177,7 +205,7 @@ function _settingsNavigationFindPage(tab, pageId) {
 }
 
 function getSettingsNavigationTabs() {
-  return MELDEX_SETTINGS_NAVIGATION;
+  return _settingsNavigationRuntimeTabs();
 }
 
 function _settingsDefaultTabId() {

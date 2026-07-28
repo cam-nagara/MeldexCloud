@@ -1,4 +1,4 @@
-const QUICK_MEMO_CACHE = 'meldex-quick-memo-v3';
+const QUICK_MEMO_CACHE = 'meldex-quick-memo-v4';
 const QUICK_MEMO_CACHE_PREFIX = 'meldex-quick-memo-';
 const QUICK_MEMO_ASSETS = [
   'quick-memo.html',
@@ -8,6 +8,7 @@ const QUICK_MEMO_ASSETS = [
   'quick-memo-drawing.js',
   'quick-memo-library.js',
   'gb-split-loader.js',
+  'vendor/lucide-icons.js',
   'meldex-core.js',
   'meldex-core.bundle.js',
   'meldex-core.bundle.part01.js',
@@ -19,6 +20,15 @@ const QUICK_MEMO_ASSETS = [
   'meldex-core.part02.part01.js',
   'meldex-core.part02.part02.js',
   'meldex-core.part03.js',
+  'gb-auto-tag-settings.js',
+  'gb-global-tags.js',
+  'gb-tag-preset-management.js',
+  'gb-tag-management.js',
+  'gb-data-access-dropbox-tag-csv.js',
+  'gb-data-access-dropbox-tag-safety.js',
+  'gb-data-access-dropbox-tags.js',
+  'standalone-tags.js',
+  'standalone-tags.css',
   'standalone-profile.js',
   'standalone-profile.css',
   'quick-memo.webmanifest',

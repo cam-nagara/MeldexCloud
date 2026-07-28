@@ -162,6 +162,14 @@
   font-size: 12px;
 }
 
+.file-embedded-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  color: var(--danger, var(--red, #e36b6b));
+}
+
 .fv-thumb--embedded {
   position: relative;
 }

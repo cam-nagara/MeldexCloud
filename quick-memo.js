@@ -4,7 +4,6 @@
   const QUEUE_KEY = 'meldex:quick-memo:queue:v1';
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
   const CLIENT_ID_KEY = 'meldex:quick-memo:client-id:v1';
-  const TAGS_CACHE_KEY = 'meldex:quick-memo:tags-cache:v1';
   const CLOUD_SHEET_NAME = 'クイックメモ';
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
   const els = {};
@@ -31,6 +30,7 @@
   let editorController = null;
   let drawingController = null;
   let libraryController = null;
+  let tagLoadPromise = null;
 
   document.addEventListener('DOMContentLoaded', init);
 
@@ -160,6 +160,7 @@
     els.voiceResumeBtn.addEventListener('click', resumeVoiceRecording);
     els.voiceStopBtn.addEventListener('click', stopVoiceRecording);
     window.addEventListener('online', flushPendingQueue);
+    window.addEventListener('meldex:tag-dictionary-changed', () => loadTags());
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
   }
 
@@ -229,7 +230,6 @@
     if (!draft) return;
     els.titleInput.value = draft.title || '';
     state.selectedTags = Array.isArray(draft.tags) ? [...draft.tags] : parseTags(draft.tags || '');
-    _rememberTags(state.selectedTags);
     renderTagChips();
     editorController.reset(sanitizeHtml(draft.html || ''));
     state.share = {
@@ -314,8 +314,8 @@
     };
     els.titleInput.value = memo.title || '';
     state.selectedTags = Array.isArray(memo.tags) ? [...memo.tags] : parseTags(memo.tags || '');
-    _rememberTags(state.selectedTags);
     renderTagChips();
+    await loadTags();
     editorController.reset(sanitizeHtml(memo.html || escHtml(memo.text || '').replace(/\n/g, '<br>')));
     drawingController.reset(memo.drawing_png || '');
     writeJson(CURRENT_KEY, {
@@ -351,7 +351,6 @@
     editorController.reset(sharedHtml(shared));
     drawingController.reset('');
     state.selectedTags = ['共有'];
-    _rememberTags(state.selectedTags);
     renderTagChips();
     persistDraft(collectMemo());
     scheduleSave();
@@ -485,7 +484,6 @@
           if (Array.isArray(result.tags)) {
             current.tags = result.tags;
             state.selectedTags = [...result.tags];
-            _rememberTags(state.selectedTags);
             renderTagChips();
           }
           writeJson(CURRENT_KEY, current);
@@ -698,7 +696,7 @@
       const connected = cloudConnected();
       banner.style.display = connected ? 'none' : '';
       if (connected) {
-        loadTagsCloud();
+        loadTags();
         flushPendingQueue();
       }
     }
@@ -768,60 +766,78 @@
 
   // --- タグチップ ---------------------------------------------------------
 
-  function _rememberTags(tags) {
-    if (!Array.isArray(tags) || !tags.length) return;
-    const cached = readJson(TAGS_CACHE_KEY, []);
-    state.allTags = [...new Set([...cached, ...state.allTags, ...tags])];
-    writeJson(TAGS_CACHE_KEY, state.allTags);
+  async function _loadUnifiedTagCatalog() {
+    if (window.MeldexGlobalTags?.loadTags) {
+      return window.MeldexGlobalTags.loadTags();
+    }
+    if (typeof window.apiFetch === 'function') {
+      return window.apiFetch('/global-tags', { silentError: true });
+    }
+    const response = await fetch(API_BASE + '/api/global-tags');
+    if (!response.ok) throw new Error('タグ辞書を読み込めませんでした');
+    return response.json();
   }
 
-  async function loadTags() {
-    // まずローカルキャッシュから即表示し、サーバー応答を待たずにチップを描く
-    state.allTags = [...new Set([...state.allTags, ...readJson(TAGS_CACHE_KEY, [])])];
-    renderTagChips();
-    if (isCloudMode()) {
-      await loadTagsCloud();
-      return;
+  async function _createUnifiedTag(name) {
+    const payload = { name, presets: ['標準'], auto_assign: false };
+    if (window.MeldexGlobalTags?.createTag) {
+      return window.MeldexGlobalTags.createTag(payload);
     }
+    if (typeof window.apiPost === 'function') {
+      return window.apiPost('/global-tags', payload, { silentError: true });
+    }
+    const response = await fetch(API_BASE + '/api/global-tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error('タグを追加できませんでした');
+    return response.json();
+  }
+
+  function _applyUnifiedTagCatalog(data) {
+    const tags = Array.isArray(data?.tags) ? data.tags : [];
+    const groups = Array.isArray(data?.groups) ? data.groups : [];
+    const groupsById = Object.fromEntries(groups.map(group => [group.id, group]));
+    const nextColors = {};
+    const names = [];
+    tags.forEach((tag) => {
+      const name = String(tag?.name || '').trim();
+      if (!name) return;
+      const groupColor = String(groupsById[tag.group_id]?.color || '').trim();
+      names.push(name);
+      nextColors[name] = groupColor || String(tag?.color || '').trim();
+    });
+    state.allTags = [...new Set(names)];
+    state.commonTagColors = nextColors;
+    renderTagChips();
+  }
+
+  async function _loadTagsNow() {
+    if (isCloudMode() && !cloudConnected()) return;
     try {
-      const res = await fetch(API_BASE + '/api/quick-memo/tags');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ok && Array.isArray(data.tags)) {
-          // 共通タグ（ボード/シート等と共有するグローバルタグカタログ）由来の候補を統合する。
-          // 保存形式は現行のまま文字列（タグ名）のため、共通タグも名前として扱う。
-          // 色情報だけ別途 commonTagColors に保持し、チップにスウォッチを付ける。
-          const commonTags = Array.isArray(data.commonTags) ? data.commonTags : [];
-          const commonTagNames = commonTags.map((tag) => String(tag?.name || '').trim()).filter(Boolean);
-          const nextColors = {};
-          commonTags.forEach((tag) => {
-            const name = String(tag?.name || '').trim();
-            if (name) nextColors[name] = String(tag?.color || '').trim();
-          });
-          state.commonTagColors = nextColors;
-          // サーバー側のタグ一覧と、ローカルにしかない未同期タグをマージする
-          const localOnly = readJson(TAGS_CACHE_KEY, []).filter((tag) => !data.tags.includes(tag));
-          state.allTags = [...new Set([...data.tags, ...commonTagNames, ...localOnly, ...state.selectedTags])];
-          writeJson(TAGS_CACHE_KEY, state.allTags);
-          renderTagChips();
+      let data = await _loadUnifiedTagCatalog();
+      const existing = new Set((data?.tags || []).map(tag => String(tag?.name || '').trim()).filter(Boolean));
+      const missing = [...new Set(state.selectedTags.map(tag => String(tag || '').trim()).filter(Boolean))]
+        .filter(tag => !existing.has(tag));
+      for (const name of missing) {
+        try {
+          await _createUnifiedTag(name);
+        } catch (error) {
+          if (!String(error?.message || error).includes('重複')) throw error;
         }
       }
-    } catch {}
+      if (missing.length) data = await _loadUnifiedTagCatalog();
+      _applyUnifiedTagCatalog(data);
+    } catch (error) {
+      setStatus('タグ辞書を読み込めませんでした: ' + (error?.message || error), true);
+    }
   }
 
-  async function loadTagsCloud() {
-    try {
-      if (!cloudConnected()) return;
-      // クラウド版に /api/quick-memo/tags は無いため、シートの「タグ」列に
-      // 登録済みの選択肢をそのまま候補として使う（共通タグカタログは対象外）。
-      const meta = await window.apiFetch('/db-metadata?path=' + encodeURIComponent(CLOUD_SHEET_NAME));
-      const options = meta && meta.property_types && meta.property_types['タグ'] && meta.property_types['タグ'].options;
-      if (!Array.isArray(options) || !options.length) return;
-      const localOnly = readJson(TAGS_CACHE_KEY, []).filter((tag) => !options.includes(tag));
-      state.allTags = [...new Set([...options, ...localOnly, ...state.selectedTags])];
-      writeJson(TAGS_CACHE_KEY, state.allTags);
-      renderTagChips();
-    } catch {}
+  function loadTags() {
+    if (tagLoadPromise) return tagLoadPromise;
+    tagLoadPromise = _loadTagsNow().finally(() => { tagLoadPromise = null; });
+    return tagLoadPromise;
   }
 
   function renderTagChips() {
@@ -843,7 +859,7 @@
       } else {
         chip.textContent = tag;
       }
-      chip.title = isCommonTag ? '共通タグ' : '';
+      chip.title = isCommonTag ? '統一タグ辞書' : '';
       chip.addEventListener('click', () => toggleTag(tag));
       container.appendChild(chip);
     });
@@ -857,19 +873,19 @@
     scheduleSave();
   }
 
-  function addNewTag() {
+  async function addNewTag() {
     const name = prompt('新しいタグ名を入力:');
     if (!name || !name.trim()) return;
     const tag = name.trim();
-    if (!state.allTags.includes(tag)) {
-      state.allTags.push(tag);
-      writeJson(TAGS_CACHE_KEY, state.allTags);
+    try {
+      if (!state.allTags.includes(tag)) await _createUnifiedTag(tag);
+      await loadTags();
+      if (!state.selectedTags.includes(tag)) state.selectedTags.push(tag);
+      renderTagChips();
+      scheduleSave();
+    } catch (error) {
+      setStatus('タグを追加できませんでした: ' + (error?.message || error), true);
     }
-    if (!state.selectedTags.includes(tag)) {
-      state.selectedTags.push(tag);
-    }
-    renderTagChips();
-    scheduleSave();
   }
 
   // --- ホーム画面に追加（PWAインストール） -----------------------------------

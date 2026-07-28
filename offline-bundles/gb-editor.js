@@ -3806,10 +3806,15 @@ async function _fileInfoMetadata(filePath, preloadedMeta) {
   const preloaded = preloadedMeta && typeof preloadedMeta === 'object' ? preloadedMeta : null;
   const needsEmbeddedMetadata = preloaded?.embedded === undefined;
   if (preloaded && !needsEmbeddedMetadata) return preloaded;
-  const fetched = await fetch(API_BASE + '/file-meta?path=' + encodeURIComponent(filePath))
-    .then(response => response.ok ? response.json() : null)
-    .catch(() => null);
-  return fetched ? { ...(preloaded || {}), ...fetched } : preloaded;
+  try {
+    const fetched = await apiFetch('/file-meta?path=' + encodeURIComponent(filePath), { silentError: true });
+    return fetched ? { ...(preloaded || {}), ...fetched } : preloaded;
+  } catch (error) {
+    return {
+      ...(preloaded || {}),
+      _metadataLoadError: error?.userMessage || error?.message || String(error),
+    };
+  }
 }
 
 async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
@@ -3831,21 +3836,21 @@ async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
       if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${new Date(meta.modified).toLocaleString('ja-JP')}</td></tr>`;
       if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">サイズ</td><td style="padding:4px 0;">${_formatFileSize(meta.size)}</td></tr>`;
     }
-    html += `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div><div data-auto-tag-run-path="${esc(filePath)}" data-auto-tag-run-recursive="0"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
+    html += `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
     if (typeof showDetailPanel === 'function') {
       await showDetailPanel(html);
+      window.MeldexTagManagement?.setAutoTagTarget?.(filePath, false);
       const detailRoot = document.getElementById('rp-detail') || document;
       const embeddedHost = [...detailRoot.querySelectorAll('[data-file-embedded-metadata-path]')]
         .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
       window.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
-      if (typeof hydrateAutoTagRunPanels === 'function') hydrateAutoTagRunPanels(detailRoot);
       if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(detailRoot);
     }
   } catch {
     // ファイル情報取得失敗時も基本情報を表示（entity APIフォールバックは不要）
     if (typeof showDetailPanel === 'function') {
-      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-auto-tag-run-path="${esc(filePath)}" data-auto-tag-run-recursive="0"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
-      if (typeof hydrateAutoTagRunPanels === 'function') hydrateAutoTagRunPanels(document.getElementById('rp-detail') || document);
+      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
+      window.MeldexTagManagement?.setAutoTagTarget?.(filePath, false);
       if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     }
   }
