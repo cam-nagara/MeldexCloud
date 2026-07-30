@@ -831,18 +831,70 @@
     return ok;
   }
 
+  function _chatCopyVisibleText(range) {
+    const fragment = range.cloneContents();
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:640px;visibility:hidden;white-space:pre-wrap;';
+    holder.appendChild(fragment);
+    holder.querySelectorAll(
+      'button,script,style,[hidden],[aria-hidden="true"],.chat-thinking,.chat-tool-use,.chat-code-exec,.chat-citations,.chat-cli-auth-recovery'
+    ).forEach(element => element.remove());
+    holder.querySelectorAll('img').forEach(image => {
+      image.replaceWith(document.createTextNode(image.alt || image.title || ''));
+    });
+    document.body.appendChild(holder);
+    const value = String(holder.innerText || holder.textContent || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    holder.remove();
+    return value;
+  }
+
+  function _chatCopyBodySelectionText(selectionRange, body) {
+    if (!body || !selectionRange.intersectsNode?.(body)) return '';
+    const bodyRange = document.createRange();
+    bodyRange.selectNodeContents(body);
+    const part = bodyRange.cloneRange();
+    try {
+      if (selectionRange.compareBoundaryPoints(Range.START_TO_START, bodyRange) > 0) {
+        part.setStart(selectionRange.startContainer, selectionRange.startOffset);
+      }
+      if (selectionRange.compareBoundaryPoints(Range.END_TO_END, bodyRange) < 0) {
+        part.setEnd(selectionRange.endContainer, selectionRange.endOffset);
+      }
+    } catch (_) {
+      return '';
+    }
+    return part.collapsed ? '' : _chatCopyVisibleText(part);
+  }
+
+  function _chatCopyHistoryText(range) {
+    const entries = [];
+    document.querySelectorAll('.chat-copy-message').forEach(message => {
+      if (!range.intersectsNode?.(message)) return;
+      const body = message.querySelector('.chat-copy-body');
+      const bodyText = _chatCopyBodySelectionText(range, body);
+      if (!bodyText) return;
+      const author = String(message.dataset.chatCopyAuthor || '').trim() || '発言者';
+      const time = String(message.dataset.chatCopyTime || '').trim();
+      entries.push(`${time ? `[${time}] ` : ''}${author}\n${bodyText}`);
+    });
+    return entries.join('\n\n');
+  }
+
   function _chatCopyTargetFromSelection() {
     const selection = window.getSelection();
     if (!selection || !selection.rangeCount || selection.isCollapsed) return null;
-    const text = String(selection.toString() || '');
-    if (!text.trim()) return null;
     const range = selection.getRangeAt(0);
+    const text = _chatCopyHistoryText(range);
+    if (!text.trim()) return null;
     const startEl = _nodeElement(range.startContainer);
     const endEl = _nodeElement(range.endContainer);
-    const bubble = startEl?.closest?.('.chat-message-bubble')
-      || endEl?.closest?.('.chat-message-bubble');
-    if (!bubble || !bubble.closest?.('.chat-message-row')) return null;
-    if ((startEl && !bubble.contains(startEl)) || (endEl && !bubble.contains(endEl))) return null;
+    const bubble = startEl?.closest?.('.chat-copy-message')
+      || endEl?.closest?.('.chat-copy-message');
+    if (!bubble) return null;
     return { kind: 'copy', text, bubble, range };
   }
 

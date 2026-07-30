@@ -12,7 +12,7 @@ const GB_SHORTCUTS = {
   'global.undo':          { key: 'ctrl+z',       label: '元に戻す',                  scope: 'global' },
   'global.redo':          { key: 'ctrl+y',       label: 'やり直し',                  scope: 'global' },
   'global.redo2':         { key: 'ctrl+shift+z', label: 'やり直し（代替）',           scope: 'global' },
-  'global.search':        { key: 'ctrl+f',       label: 'ファイル内検索',             scope: 'global' },
+  'global.search':        { key: 'ctrl+f',       label: '現在のパネルを検索と置換',   scope: 'global' },
   'global.vaultSearch':   { key: 'ctrl+shift+f', label: 'ソースフォルダ全体検索',     scope: 'global' },
   'global.annotation':    { key: 'alt+a',        label: '注釈ツールバーの切替',       scope: 'global' },
   'global.maxPane':       { key: 'ctrl+shift+m', label: 'パネル最大化/復元',         scope: 'global' },
@@ -88,7 +88,7 @@ const GB_SHORTCUTS = {
   'db.edit':              { key: 'f2',           label: 'セル / エントリ名を編集',   scope: 'database' },
   'db.newEntry':          { key: 'ctrl+enter',   label: '新規エントリ追加',           scope: 'database' },
   'db.newProp':           { key: 'ctrl+shift+enter', label: '新規列追加',    scope: 'database' },
-  'db.search':            { key: 'ctrl+f',       label: '現在のシートを検索',         scope: 'database' },
+  'db.search':            { key: 'ctrl+f',       label: '現在のシートを検索と置換',   scope: 'database' },
   'db.replace':           { key: 'ctrl+h',       label: '現在のシートで置換',         scope: 'database' },
   'db.advancedFilter':    { key: 'ctrl+shift+f', label: '複数条件フィルタ',           scope: 'database' },
   'db.bulkEdit':          { key: 'ctrl+e',       label: '選択エントリを一括編集',     scope: 'database' },
@@ -100,7 +100,7 @@ const GB_SHORTCUTS = {
   'db.filter':            { key: 'ctrl+shift+l', label: 'フィルタの表示/非表示',      scope: 'database' },
 
   // --- ボード ---
-  'board.search':         { key: 'ctrl+f',       label: 'ボード内を検索',            scope: 'board' },
+  'board.search':         { key: 'ctrl+f',       label: 'ボード内を検索と置換',      scope: 'board' },
   'board.replace':        { key: 'ctrl+h',       label: 'ボード内を置換',            scope: 'board' },
   'board.delete':         { key: 'delete',       label: 'カードを削除',              scope: 'board' },
   'board.selectAll':      { key: 'ctrl+a',       label: '全要素を選択',              scope: 'board' },
@@ -169,7 +169,7 @@ const GB_SHORTCUTS_DEFAULT = JSON.parse(JSON.stringify(GB_SHORTCUTS));
 function _viewToScope(view) {
   const map = {
     'page': 'note', 'entity': 'note',
-    'pivot': 'database', 'gallery': 'database', 'kanban': 'database',
+    'pivot': 'database', 'tree': 'database', 'gallery': 'database', 'kanban': 'database',
     'timeline': 'database', 'chart': 'database', 'graph': 'database',
     'board': 'board',
     'calendar': 'calendar',
@@ -456,7 +456,7 @@ function getDatabaseShortcutStatusText() {
 function updateDatabaseShortcutStatusbar(targetEl) {
   const sc = targetEl || document.getElementById('sb-shortcuts');
   if (!sc) return;
-  const databaseViews = ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'];
+  const databaseViews = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'];
   if (!targetEl && typeof state !== 'undefined' && !databaseViews.includes(state.view)) return;
   sc.textContent = getDatabaseShortcutStatusText();
 }
@@ -484,6 +484,28 @@ function _runScriptnoteShortcutAction(id, e) {
   const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
   if (!editor || typeof editor.runShortcutAction !== 'function') return false;
   return editor.runShortcutAction(id, e);
+}
+
+function _currentMainPanelSearchTool() {
+  const aliases = {
+    page: 'page', entity: 'page', note: 'page',
+    folder: 'folder',
+    board: 'board',
+    database: 'database', db: 'database', sheet: 'database', pivot: 'database',
+    tree: 'database', gallery: 'database', kanban: 'database', timeline: 'database',
+    chart: 'database', graph: 'database', 'smart-db': 'database',
+    scriptnote: 'scenario', scenario: 'scenario',
+  };
+  try {
+    const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
+    const activeTab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
+    const tabTool = aliases[String(activeTab?.type || '').toLowerCase()];
+    if (tabTool) return tabTool;
+  } catch (_) {
+    // レイアウト初期化中は従来どおりstate.viewへフォールバックする。
+  }
+  const view = typeof state !== 'undefined' ? String(state.view || '').toLowerCase() : '';
+  return aliases[view] || '';
 }
 
 
@@ -674,7 +696,7 @@ const _shortcutHandlers = {
     }
   },
   'global.new': () => {
-    const typeMap = { page: 'page', entity: 'page', pivot: 'database', gallery: 'database', kanban: 'database', board: 'board', calendar: 'calendar', csv: 'page', folder: 'page' };
+    const typeMap = { page: 'page', entity: 'page', pivot: 'database', tree: 'database', gallery: 'database', kanban: 'database', board: 'board', calendar: 'calendar', csv: 'page', folder: 'page' };
     const type = typeMap[state.view] || 'page';
     if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(type);
   },
@@ -708,25 +730,12 @@ const _shortcutHandlers = {
   'global.navBackBrowser': (e) => _shortcutHandlers['global.navBack'](e),
   'global.navForwardBrowser': (e) => _shortcutHandlers['global.navForward'](e),
   'global.search': () => {
-    // アクティブ pane のタブ種別に応じて、現在のビュー内検索バーを開く
-    try {
-      const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
-      const activeTab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
-      if (activeTab && activeTab.type === 'board' && typeof bdOpenFindBar === 'function') {
-        bdOpenFindBar('find');
-        return;
-      }
-      if (activeTab && (activeTab.type === 'database' || activeTab.type === 'sheet') && typeof openDbFindReplace === 'function') {
-        openDbFindReplace('find');
-        return;
-      }
-    } catch (_) {}
-    const bar = document.getElementById('file-search-bar');
-    if (bar && bar.classList.contains('open') && !bar.classList.contains('replace-open')) {
-      if (typeof closeFileSearch === 'function') closeFileSearch();
-    } else {
-      if (typeof openFileSearch === 'function') openFileSearch('find');
+    const tool = _currentMainPanelSearchTool();
+    if (tool && typeof openCurrentToolbarSearchReplace === 'function') {
+      openCurrentToolbarSearchReplace(tool, { trigger: document.activeElement });
+      return;
     }
+    if (typeof openFileSearch === 'function') openFileSearch('replace');
   },
   'global.vaultSearch': () => { if (typeof openSearchPanel === 'function') openSearchPanel(); },
   'global.annotation': () => { if (typeof toggleAnnotation === 'function') toggleAnnotation(); },
@@ -974,7 +983,8 @@ const _shortcutHandlers = {
   },
   'db.search': () => {
     if (!state.currentDbPath) return false;
-    if (typeof openDbFindReplace === 'function') openDbFindReplace('find');
+    if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database');
+    else if (typeof openDbFindReplace === 'function') openDbFindReplace('replace');
   },
   'db.replace': () => {
     if (!state.currentDbPath) return false;
@@ -1030,7 +1040,8 @@ const _shortcutHandlers = {
 
   'board.search': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
-    if (typeof bdOpenFindBar === 'function') bdOpenFindBar('find');
+    if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('board');
+    else if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
   },
   'board.replace': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;

@@ -149,18 +149,17 @@
     leftDock.meldexRole = 'left-sidebar';
 
     const rightPanes = [
-      _pane([_tab('ビューワー', 'preview')]),
       _pane([_tab('オプション', 'detail')]),
+      _pane([_tab('ビューワー', 'preview')]),
       _pane([_tab('バージョン管理', 'version')]),
       _pane([_tab('チャット', 'chat')]),
       _pane([_tab('タイマー', 'timer')]),
       _pane([_tab('ヒストリー', 'history')]),
       _pane([_tab('注釈', 'annotation')]),
       _pane([_tab('タグ', 'tags')]),
-      _pane([_tab('検索', 'search')]),
     ];
     rightPanes.forEach(pane => { pane.meldexRole = 'right-sidebar'; });
-    const rightDock = _panelset(rightPanes, 1, { collapsed: false, popupWidth: ratios.rightWidth });
+    const rightDock = _panelset(rightPanes, 0, { collapsed: false, popupWidth: ratios.rightWidth });
     rightDock.meldexRole = 'right-sidebar';
 
     const workDock = _dock(mainPane, { collapsed: false });

@@ -23,6 +23,8 @@ const QUICK_MEMO_ASSETS = [
   'gb-auto-tag-settings.js',
   'gb-global-tags.js',
   'gb-tag-preset-management.js',
+  'gb-tag-panel-tabs.js',
+  'gb-tag-tree-dnd.js',
   'gb-tag-management.js',
   'gb-data-access-dropbox-tag-csv.js',
   'gb-data-access-dropbox-tag-safety.js',

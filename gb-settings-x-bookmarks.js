@@ -59,7 +59,7 @@
     const folderText = data?.folder_count
       ? ` / フォルダ${data.folder_count} / フォルダ反映${data?.folder_updates || 0}`
       : (data?.folder_error ? ' / フォルダ取得失敗' : '');
-    const itemText = `新規${data?.created || 0} / 更新${data?.updated || 0} / スキップ${data?.skipped || 0} / 画像${data?.downloaded_media || 0} / 画像失敗${data?.media_failed || 0}${folderText}`;
+    const itemText = `新規${data?.created || 0} / 更新${data?.updated || 0} / スキップ${data?.skipped || 0} / 画像${data?.downloaded_media || 0} / 投稿者アイコン${data?.downloaded_author_icons || 0} / 画像失敗${data?.media_failed || 0} / アイコン失敗${data?.author_icon_failed || 0}${folderText}`;
     const reasonText = reason ? ` / 停止: ${reason}` : '';
     return `${prefix || ''}${countText}${pageText} / ${itemText}${reasonText}`;
   }

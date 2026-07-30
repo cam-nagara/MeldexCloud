@@ -127,7 +127,7 @@
   font-size: var(--ui-font-13);
   font-family: inherit;
   color: var(--ui-fg-default);
-  background: var(--ui-bg-app);
+  background: var(--ui-bg-field, var(--ui-bg-app));
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-sm);
   outline: none;
@@ -155,7 +155,7 @@
   font-size: var(--ui-font-11);
   font-family: inherit;
   color: var(--ui-fg-default);
-  background: var(--ui-bg-app);
+  background: var(--ui-bg-field, var(--ui-bg-app));
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
   outline: none;

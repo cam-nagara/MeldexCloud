@@ -794,10 +794,48 @@ function _outlinerStoredItemType(item) {
   return 'page';
 }
 
-function _openStoredOutlinerItem(item, opts) {
+function _outlinerPersistRepairedRecentType(path, type) {
+  if (!path || !type) return;
+  const recent = _outlinerReadStorageArray('meldex-recent');
+  let changed = false;
+  recent.forEach(entry => {
+    if (!entry || typeof entry !== 'object' || entry.path !== path || entry.type === type) return;
+    entry.type = type;
+    changed = true;
+  });
+  if (changed) {
+    try {
+      localStorage.setItem('meldex-recent', JSON.stringify(recent));
+    } catch {
+      // 保存不可でも今回の実体判定は有効なので、開く処理は継続する。
+    }
+  }
+}
+
+async function _outlinerResolveStoredItemType(item) {
+  const storedType = _outlinerStoredItemType(item);
+  const path = String(item?.path || '');
+  if (!path || !['folder', 'database', 'calendar'].includes(storedType) || typeof apiFetch !== 'function') {
+    return storedType;
+  }
+  try {
+    const resolved = await apiFetch('/check-type?path=' + encodeURIComponent(path), { silentError: true });
+    const actualType = String(resolved?.type || '');
+    if (!['folder', 'database', 'calendar'].includes(actualType)) return storedType;
+    if (actualType !== storedType) {
+      item.type = actualType;
+      _outlinerPersistRepairedRecentType(path, actualType);
+    }
+    return actualType;
+  } catch {
+    return storedType;
+  }
+}
+
+async function _openStoredOutlinerItem(item, opts) {
   const path = String(item?.path || '');
   const name = _outlinerStoredItemName(item);
-  const type = _outlinerStoredItemType(item);
+  const type = await _outlinerResolveStoredItemType(item);
   const openOpts = opts || { fromExplorer: true };
   if (!path && type !== 'smart-db') return;
   if (type === 'folder') openFolder(name, path, openOpts);
@@ -1022,12 +1060,14 @@ function _showRecentItemMenu(event, entry) {
   };
   const name = entry.label || entry.name || entry.path?.split('/').pop() || '?';
   const path = entry.path || '';
-  const openType = typeof _normalizeOpenTypeForNav === 'function'
-    ? _normalizeOpenTypeForNav(entry.type) : (entry.type || 'page');
-
   addItem('開く', () => _openStoredOutlinerItem(entry, { fromExplorer: true }), 'folderOpen');
   if (typeof _openInNewTab === 'function') {
-    addItem('新しいタブで開く', () => _openInNewTab(name, path, openType), 'externalLink');
+    addItem('新しいタブで開く', async () => {
+      const resolvedType = await _outlinerResolveStoredItemType(entry);
+      const openType = typeof _normalizeOpenTypeForNav === 'function'
+        ? _normalizeOpenTypeForNav(resolvedType) : (resolvedType || 'page');
+      _openInNewTab(name, path, openType);
+    }, 'externalLink');
   }
   if (typeof addToFavorites === 'function') {
     addItem('お気に入りに追加', () => addToFavorites(name, path, entry.type), 'star');

@@ -55,8 +55,8 @@ function _isAdminUser(filePath) {
   return false;
 }
 
-function checkColumnEditable(dbPath, propName) {
-  const ptc = dbPath ? getPropertyTypes(dbPath)[propName] : null;
+function checkColumnEditable(dbPath, propName, ctxOverride) {
+  const ptc = dbPath ? getPropertyTypes(dbPath, ctxOverride)[propName] : null;
   if (ptc && ptc.source) return 'この列は自動入力（読み取り専用）です';
   const lock = getColumnLock(dbPath, propName);
   if (lock === 'locked') return 'この列はロックされています';
@@ -242,11 +242,15 @@ function _stampPivotValueEntityPaths(dbPath, pivotData) {
   if (!dbPath || !pivotData?.entities) return pivotData;
   Object.entries(pivotData.entities).forEach(([entityName, entityData]) => {
     const entryPath = _dbNormalizePath(_entityPath(dbPath, entityName, pivotData));
+    const entryId = String(entityData?._id || entityData?.entry_id || '').trim();
     if (!entryPath || !entityData || typeof entityData !== 'object') return;
     Object.values(entityData).forEach(values => {
       if (!Array.isArray(values)) return;
       values.forEach(value => {
-        if (value && typeof value === 'object') value.entry_path = entryPath;
+        if (value && typeof value === 'object') {
+          value.entry_path = entryPath;
+          if (entryId) value.entry_id = entryId;
+        }
       });
     });
   });
@@ -255,6 +259,10 @@ function _stampPivotValueEntityPaths(dbPath, pivotData) {
 
 function _resolveEntityPathFromValObj(val) {
   if (!val) return state.currentEntityPath || '';
+  if (window.GbDbEntryIdentity) {
+    const resolved = window.GbDbEntryIdentity.resolvePath(val, '', '');
+    if (resolved) return resolved;
+  }
   if (val.entry_path || val.entity_path || val.folder_path) {
     return _dbNormalizePath(val.entry_path || val.entity_path || val.folder_path);
   }
@@ -439,7 +447,10 @@ function _dbLatestEntryRevision(entityPath, fallbackValue) {
   return known.length ? Math.max(...known) : null;
 }
 
-function _dbQueueEntryMutation(entityPath, dbPath, mutationFactory) {
+function _dbQueueEntryMutation(entityPath, dbPath, mutationFactory, entryRef) {
+  if (window.GbDbEntryIdentity) {
+    return window.GbDbEntryIdentity.queueMutation(entryRef || {}, entityPath, dbPath, mutationFactory);
+  }
   const key = _dbNormalizePath(entityPath) || `db:${_dbNormalizePath(dbPath)}`;
   const previous = _dbEntryMutationChains.get(key);
   const queued = Promise.resolve(previous)
@@ -487,11 +498,12 @@ function _dbPropagateEntryRevision(entityPath, revision) {
 async function _apiPutValue(valObj, updates) {
   const queuedEntityPath = _resolveEntityPathFromValObj(valObj);
   const mutationDbPath = _dbPathFromEntityPath(queuedEntityPath) || state.currentDbPath || '';
-  return _dbQueueEntryMutation(queuedEntityPath, mutationDbPath, async () => {
+  return _dbQueueEntryMutation(queuedEntityPath, mutationDbPath, async (latestEntityPath) => {
+    const writeEntityPath = latestEntityPath || _resolveEntityPathFromValObj(valObj);
     const body = { ...updates };
     delete body.__source;
     const requestedRevision = Number(body.baseRevision);
-    const latestRevision = _dbLatestEntryRevision(queuedEntityPath, valObj);
+    const latestRevision = _dbLatestEntryRevision(writeEntityPath, valObj);
     const usableRevisions = [requestedRevision, latestRevision]
       .filter(value => Number.isInteger(value) && value >= 0);
     if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
@@ -499,7 +511,7 @@ async function _apiPutValue(valObj, updates) {
       body.property = valObj.property;
       body.candidate_index = valObj.candidate_index;
     }
-    const res = await apiPut('/value?path=' + encodeURIComponent(queuedEntityPath || valObj.file), body);
+    const res = await apiPut('/value?path=' + encodeURIComponent(writeEntityPath || valObj.file), body);
     _dbApplyAutoTaskRenameResult(res);
     if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
     if (res?.property) valObj.property = res.property;
@@ -539,7 +551,7 @@ async function _apiPutValue(valObj, updates) {
       delete valObj.rich_html;
     }
     return res;
-  });
+  }, valObj);
 }
 
 // _apiPutValue は書き込みに使ったオブジェクト自身へ新しい entry_revision 等を書き戻す。
@@ -561,9 +573,11 @@ function _syncValueRefAfterSave(saveRef, target) {
 
 async function _apiPostValue(entityPath, propName, value, status, note, richHtml, extra) {
   const mutationDbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
-  return _dbQueueEntryMutation(entityPath, mutationDbPath, async () => {
-    const key = entityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
-    const body = { [key]: entityPath, property: propName, value, status, note: note || '' };
+  const entryRef = { entry_id: extra?.entry_id || '', entry_path: entityPath };
+  return _dbQueueEntryMutation(entityPath, mutationDbPath, async (latestEntityPath) => {
+    const writeEntityPath = latestEntityPath || entityPath;
+    const key = writeEntityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
+    const body = { [key]: writeEntityPath, property: propName, value, status, note: note || '' };
     if (richHtml) body.rich_html = richHtml;
     if (extra && typeof extra === 'object') {
       if (Array.isArray(extra.relations)) body.relations = extra.relations;
@@ -572,16 +586,16 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
       const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
       if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;
     }
-    const latestRevision = _dbLatestEntryRevision(entityPath);
+    const latestRevision = _dbLatestEntryRevision(writeEntityPath);
     const requestedRevision = Number(body.baseRevision);
     const usableRevisions = [requestedRevision, latestRevision]
       .filter(revision => Number.isInteger(revision) && revision >= 0);
     if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
     const res = await apiPost('/value', body);
     _dbApplyAutoTaskRenameResult(res);
-    const savedEntityPath = res?.new_path || entityPath;
+    const savedEntityPath = res?.new_path || writeEntityPath;
     if (res?.revision != null) _dbPropagateEntryRevision(savedEntityPath, res.revision);
-    const dbPath = _dbPathFromEntityPath(entityPath) || state.currentDbPath || '';
+    const dbPath = _dbPathFromEntityPath(savedEntityPath) || state.currentDbPath || '';
     _markDbAutoVersionDirty(dbPath);
     try {
       if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
@@ -605,7 +619,7 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
       if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
     } catch {}
     return res;
-  });
+  }, entryRef);
 }
 
 function _isEntityCreateNameConflict(error) {
@@ -753,9 +767,9 @@ let _dbSelectedColumns = { dbPath: '', props: [], anchor: '' };
 function _currentPivotTable(ctx) {
   const cur = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   const tableId = (cur && cur.tableId) || 'pivot-table';
-  return (typeof _paneEl === 'function' ? _paneEl(cur, '#' + tableId) : null)
-    || document.getElementById(tableId)
-    || document.getElementById('pivot-table');
+  const scoped = typeof _paneEl === 'function' ? _paneEl(cur, '#' + tableId) : null;
+  if (ctx || cur?.embedded) return scoped;
+  return scoped || document.getElementById(tableId) || document.getElementById('pivot-table');
 }
 
 function _currentPivotRows(ctx) {
@@ -809,7 +823,7 @@ function _dbFindPaneContextForPath(dbPath) {
 function _dbFindActiveTabPaneForPath(dbPath) {
   const target = _dbNormalizePath(dbPath);
   if (!target || typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
-  const sheetTabTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const sheetTabTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
   const panes = GBLayout.getAllPanes(GBLayout.root) || [];
   for (const pane of panes) {
     const tab = pane.tabs?.[pane.activeTabIndex];
@@ -846,9 +860,7 @@ function _dbPaneContextFromEvent(eventOrElement, options = {}) {
   const target = eventOrElement?.currentTarget || eventOrElement?.target || eventOrElement;
   const embeddedEl = target?.closest?.('.gb-production-sheet-embed');
   const embeddedCtx = embeddedEl?._dbPaneContext;
-  if (embeddedCtx && (!dbPath || _dbNormalizePath(embeddedCtx.dbPath) === _dbNormalizePath(dbPath))) {
-    return embeddedCtx;
-  }
+  if (embeddedCtx && !embeddedCtx.destroyed) return embeddedCtx;
   const paneEl = target?.closest?.('.gb-pane[data-pane-id]') || target?.closest?.('.gb-pane');
   const paneId = paneEl?.dataset?.paneId || '';
   if (paneId && typeof getPaneContext === 'function') {
@@ -869,7 +881,8 @@ function _dbCurrentViewModeForContext(ctx, dbPath) {
 
 function _renderCurrentDbView(ctx, dbPath) {
   const mode = _dbCurrentViewModeForContext(ctx, dbPath);
-  if (mode === 'gallery' && typeof renderGallery === 'function') renderGallery(ctx);
+  if (mode === 'tree' && typeof renderDbTreeView === 'function') renderDbTreeView(ctx);
+  else if (mode === 'gallery' && typeof renderGallery === 'function') renderGallery(ctx);
   else if (mode === 'kanban' && typeof renderKanban === 'function') renderKanban(ctx);
   else if (mode === 'timeline' && typeof renderTimeline === 'function') renderTimeline(ctx);
   else if (mode === 'chart' && typeof renderChart === 'function') renderChart(ctx);

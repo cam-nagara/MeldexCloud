@@ -46,6 +46,36 @@ function saveEntityTemplates(dbPath, templates) {
    ============================== */
 function closeColHeaderMenu() {
   document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+  const cleanup = closeColHeaderMenu._dismissCleanup;
+  delete closeColHeaderMenu._dismissCleanup;
+  if (typeof cleanup === 'function') cleanup();
+}
+
+function _installColHeaderMenuDismissHandlers() {
+  setTimeout(() => {
+    if (!document.querySelector('.gb-context-menu')) return;
+    const cleanup = () => {
+      document.removeEventListener('pointerdown', pointerCloser);
+      document.removeEventListener('keydown', keyCloser);
+      if (closeColHeaderMenu._dismissCleanup === cleanup) delete closeColHeaderMenu._dismissCleanup;
+    };
+    const pointerCloser = event => {
+      const inAny = [...document.querySelectorAll('.gb-context-menu')].some(menu => menu.contains(event.target));
+      if (inAny) return;
+      closeColHeaderMenu();
+      cleanup();
+    };
+    const keyCloser = event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeColHeaderMenu();
+      cleanup();
+    };
+    document.addEventListener('pointerdown', pointerCloser);
+    document.addEventListener('keydown', keyCloser);
+    if (typeof closeColHeaderMenu._dismissCleanup === 'function') closeColHeaderMenu._dismissCleanup();
+    closeColHeaderMenu._dismissCleanup = cleanup;
+  }, 0);
 }
 
 // メニュー上部にリネーム入力欄を挿入する共通ヘルパー
@@ -148,6 +178,11 @@ function _dbOrderedPropertyNamesForMenu(dbPath, ctx) {
   return ordered;
 }
 
+function _refreshDbColumnMenuView(ctx, dbPath) {
+  if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+  else if (typeof renderPivot === 'function') renderPivot(ctx);
+}
+
 function _makeHiddenColumnMenuItems(dbPath, ctx) {
   const hiddenCols = typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, { ctx }) || []) : [];
   const hiddenOrdered = _dbOrderedPropertyNamesForMenu(dbPath, ctx).filter(propName => hiddenCols.includes(propName));
@@ -156,7 +191,7 @@ function _makeHiddenColumnMenuItems(dbPath, ctx) {
   const showOne = (propName) => {
     const current = getHiddenCols(dbPath, { ctx }) || [];
     setHiddenCols(dbPath, current.filter(name => name !== propName), { ctx, detail: propName });
-    if (typeof renderPivot === 'function') renderPivot(ctx);
+    _refreshDbColumnMenuView(ctx, dbPath);
   };
   return [
     ...hiddenOrdered.map(propName => ({
@@ -168,7 +203,7 @@ function _makeHiddenColumnMenuItems(dbPath, ctx) {
       label: lucide('eye', 14) + ' すべて表示',
       action: () => {
         setHiddenCols(dbPath, [], { ctx, detail: 'すべて表示' });
-        if (typeof renderPivot === 'function') renderPivot(ctx);
+        _refreshDbColumnMenuView(ctx, dbPath);
       },
     },
   ];
@@ -231,10 +266,10 @@ function _makeDbGlobalSortMenuItems(dbPath, ctx) {
 
 function showDbSortMenu(e, ctxOverride, dbPathOverride) {
   closeColHeaderMenu();
-  closeAllDropdowns();
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: dbPathOverride || state.currentDbPath })
     : null);
+  closeAllDropdowns(ctx || e?.target || e?.currentTarget);
   const dbPath = dbPathOverride || ctx?.dbPath || state.currentDbPath;
   if (!dbPath) return;
   const menu = document.createElement('div');
@@ -308,12 +343,12 @@ function _makeInsertColumnTypeChildren(refProp, direction, ctxOrDbPath) {
 // フェーズD1で確認）。override を渡せば、この不正確な再解決を経由せず「実際にこの列ヘッダを
 // 描画したペイン」を使えるため、列メニューの全操作（並び替え・グループ化・列固定・非表示・
 // 型変更・削除・リネーム）が埋め込みシート自身を正しく対象にする。
-function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride) {
+function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, menuOptions = {}) {
   closeColHeaderMenu();
-  closeAllDropdowns();
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: dbPathOverride || state.currentDbPath })
     : null);
+  closeAllDropdowns(ctx || e?.target || e?.currentTarget);
   const dbPath = dbPathOverride || ctx?.dbPath || state.currentDbPath;
   const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function'
     && isProductionManagementSheetPath(dbPath);
@@ -335,14 +370,18 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride) {
         const selected = _getSelectedColumns(dbPath).map(name => name === propName ? newName : name);
         _setSelectedColumns(dbPath, selected, newName);
       }
-      if (typeof renderPivot === 'function') renderPivot(ctx);
+      _refreshDbColumnMenuView(ctx, dbPath);
     }, { placeholder: '列名を変更...' });
   }
 
   const currentPtc = getPropertyTypes(dbPath, ctx)[propName] || { type: 'text' };
   const currentType = currentPtc.type || 'text';
   const currentUiType = typeof getPropertyTypeUiBaseType === 'function' ? getPropertyTypeUiBaseType(currentType) : currentType;
-  const colDisplayOverride = typeof getDbColumnCellDisplay === 'function' ? getDbColumnCellDisplay(dbPath, propName) : null;
+  const colDisplayOverride = typeof getDbColumnCellDisplay === 'function'
+    ? getDbColumnCellDisplay(dbPath, propName, ctx)
+    : null;
+  const columnFilterActive = typeof isDbColumnFilterActive === 'function'
+    && isDbColumnFilterActive(dbPath, propName, ctx);
 
   // プロパティ型サブメニュー項目
   const typeItems = getPropertyTypeMenuItems();
@@ -376,11 +415,11 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride) {
           if (ti.type === 'number' && currentPtc.unit) cfg.unit = currentPtc.unit;
           if (ti.type === 'image') cfg.options = { max_count: null, accept: ['png','jpg','jpeg','gif','webp','svg'], thumbnail_size: 256 };
           const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath) || {})[propName] || {}));
-          const savePromise = setPropertyType(dbPath, propName, cfg);
+          const savePromise = setPropertyType(dbPath, propName, cfg, ctx);
           if (currentType === 'image' && ti.type !== 'image') {
             Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
           }
-          renderPivot(ctx);
+          _refreshDbColumnMenuView(ctx, dbPath);
           // Undo/Redo: クイック型切替も履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
           if (typeof _ptPushTypeChangeHistory === 'function') _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, cfg, ctx);
         }
@@ -391,45 +430,62 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride) {
     { type: 'sep' },
     // 左/右に列を挿入（トップレベル。各サブメニューで挿入する列タイプを選ぶ）
     ...(!productionWriteBlocked ? [
-      { type: 'submenu', label: '← 左に列を挿入', children: _makeInsertColumnTypeChildren(propName, 'left', ctx || dbPath) },
+      ...(!menuOptions.protectLeftEdge
+        ? [{ type: 'submenu', label: '← 左に列を挿入', children: _makeInsertColumnTypeChildren(propName, 'left', ctx || dbPath) }]
+        : []),
       { type: 'submenu', label: '→ 右に列を挿入', children: _makeInsertColumnTypeChildren(propName, 'right', ctx || dbPath) },
       { type: 'sep' },
     ] : []),
+    {
+      label: lucide('filter', 14) + ' この列をフィルター...' + (columnFilterActive ? '（適用中）' : ''),
+      action: () => {
+        if (typeof showDbColumnFilterPopup === 'function') showDbColumnFilterPopup(e, propName, ctx, dbPath);
+      },
+    },
     // 並び替え（この列を基準に）
     { type: 'submenu', label: lucide('arrowUpDown', 14) + ' 並び替え', children: (() => {
-      const sc = _getDbSortConfigForView(dbPath, ctx);
+      const sc = menuOptions.includeManualSort && typeof getDbSortConfig === 'function'
+        ? (getDbSortConfig(dbPath, { ctx }) || { key: 'manual', dir: 'asc' })
+        : _getDbSortConfigForView(dbPath, ctx);
       return [
         { label: (sc.key === propName && sc.dir === 'asc' ? radioMark(true) : '　') + 'この列で昇順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'asc' }, propName + ' 昇順', ctx) },
         { label: (sc.key === propName && sc.dir === 'desc' ? radioMark(true) : '　') + 'この列で降順', action: () => _applyDbSortConfigForView(dbPath, { key: propName, dir: 'desc' }, propName + ' 降順', ctx) },
+        ...(menuOptions.includeManualSort ? [
+          { type: 'sep' },
+          {
+            label: (sc.key === 'manual' || !sc.key ? radioMark(true) : '　') + '階層の並び順',
+            action: () => _applyDbSortConfigForView(dbPath, { key: 'manual', dir: 'asc' }, '階層の並び順', ctx),
+          },
+        ] : []),
       ];
     })() },
-    { type: 'submenu', label: 'この列でグループ化', children: [
+    ...(!menuOptions.omitGroupBy ? [{ type: 'submenu', label: 'この列でグループ化', children: [
       { label: (groupBy === propName ? radioMark(true) : '　') + 'グループ化する', action: () => { setGroupBy(dbPath, propName, { ctx }); renderPivot(ctx); }},
       { label: (groupBy !== propName ? radioMark(true) : '　') + 'グループ化しない', action: () => { setGroupBy(dbPath, null, { ctx }); renderPivot(ctx); }},
-    ]},
+    ]}] : []),
     { type: 'sep' },
     // 列操作サブメニュー
     { type: 'submenu', label: lucide('columns', 14) + ' 列操作',
       children: [
-        { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal(propName, dbPath) },
+        { label: lucide('ruler', 14) + ' 列幅を数値指定...', action: () => _showBulkColumnWidthModal(propName, ctx || dbPath) },
         // 「列の表示と順序...」はツールバーへ移設（2026-07-19 ユーザー指示）
         { type: 'submenu', label: '列を固定', children: [
           { label: (pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定する', action: () => {
             const pc = getPinnedCols(dbPath, { ctx });
             if (!pc.includes(propName)) setPinnedCols(dbPath, [...pc, propName], { ctx });
-            renderPivot(ctx);
+            _refreshDbColumnMenuView(ctx, dbPath);
           }},
           { label: (!pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定しない', action: () => {
             const pc = getPinnedCols(dbPath, { ctx });
             if (pc.includes(propName)) setPinnedCols(dbPath, pc.filter(c => c !== propName), { ctx });
-            renderPivot(ctx);
+            _refreshDbColumnMenuView(ctx, dbPath);
           }},
         ]},
-        { label: 'この列を非表示', action: () => {
+        ...(!menuOptions.protectVisibility ? [{ label: 'この列を非表示', action: () => {
           const hc = getHiddenCols(dbPath, { ctx });
           if (!hc.includes(propName)) setHiddenCols(dbPath, [...hc, propName], { ctx });
-          renderPivot(ctx);
-        }},
+          _refreshDbColumnMenuView(ctx, dbPath);
+        }}] : []),
         {
           type: 'submenu',
           label: lucide('eye', 14) + ' 非表示列を表示',
@@ -468,7 +524,10 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride) {
       label: lucide(curLock === 'locked' ? 'lock' : curLock === 'admin' ? 'shield' : 'lockOpen', 14) + ' 編集制限: ' + curLockLabel,
       children: lockLabels.map(l => ({
         label: (curLock === l.key ? radioMark(true) : '\u3000') + lucide(l.icon, 14) + ' ' + l.label,
-        action: () => { setColumnLock(dbPath, propName, l.key); renderPivot(ctx); }
+        action: () => {
+          setColumnLock(dbPath, propName, l.key);
+          _refreshDbColumnMenuView(ctx, dbPath);
+        }
       }))
     });
   }

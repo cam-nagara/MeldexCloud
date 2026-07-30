@@ -8,7 +8,7 @@
   padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
   color: var(--ui-tooltip-fg, var(--ui-fg-default, #d4d4d4));
   background: var(--ui-tooltip-bg, var(--ui-popup-bg, var(--bg2, #252526)));
-  border: 1px solid var(--ui-tooltip-border, var(--ui-border, var(--border, #3c3c3c)));
+  border: 1px solid var(--ui-tooltip-border, var(--ui-popup-border, var(--ui-border-strong, var(--border, #3c3c3c))));
   border-radius: var(--ui-radius-sm, 4px);
   box-shadow: var(--ui-shadow-md, 0 4px 12px rgba(0,0,0,0.35));
   font-family: inherit;

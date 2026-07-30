@@ -226,6 +226,13 @@ function _createPaneDOM(paneId) {
   pivotView.appendChild(table);
   dbViewContainer.appendChild(pivotView);
 
+  // tree-view
+  const treeView = document.createElement('div');
+  treeView.id = 'tree-view-' + paneId;
+  treeView.className = 'tree-view';
+  treeView.style.display = 'none';
+  dbViewContainer.appendChild(treeView);
+
   // gallery-view
   const galleryView = document.createElement('div');
   galleryView.id = 'gallery-view-' + paneId;

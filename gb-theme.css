@@ -48,7 +48,7 @@ input[type=number] { -moz-appearance: textfield; }
 .gb-tooltip {
   position: fixed; z-index: 99999; pointer-events: none;
   background: var(--ui-tooltip-bg, var(--ui-popup-bg, var(--bg2, #252525))); color: var(--ui-tooltip-fg, var(--fg, #d4d4d4));
-  border: 1px solid var(--ui-tooltip-border, var(--border, #333333)); border-radius: 3px;
+  border: 1px solid var(--ui-tooltip-border, var(--ui-popup-border, var(--ui-border-strong, var(--border, #333333)))); border-radius: 3px;
   padding: 3px 8px; font-size: 11px; white-space: nowrap;
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
   opacity: 0; transition: opacity 0.15s;
@@ -63,7 +63,7 @@ input[type=number] { -moz-appearance: textfield; }
   --content-bg: var(--bg);
   --page-text-bg: var(--content-bg); --sn2-page-bg: var(--content-bg);
   --db-row-bg: var(--content-bg); --bd-bg: var(--content-bg);
-  --ui-tooltip-bg: var(--ui-popup-bg, var(--bg2)); --ui-tooltip-fg: var(--fg); --ui-tooltip-border: var(--border);
+  --ui-tooltip-bg: var(--ui-popup-bg, var(--bg2)); --ui-tooltip-fg: var(--fg); --ui-tooltip-border: var(--ui-popup-border, var(--ui-border-strong, var(--border)));
   --ui-scrollbar-track-bg: var(--bg2); --ui-scrollbar-thumb-bg: var(--bg4); --ui-scrollbar-thumb-hover-bg: var(--fg2);
   --ui-pane-tabbar-bg: var(--bg2); --ui-pane-tab-active-bg: var(--bg);
   --ui-panelset-tabbar-bg: var(--ui-pane-tabbar-bg); --ui-collapsed-tabbar-bg: var(--ui-pane-tabbar-bg); --ui-dockbar-bg: var(--ui-pane-tabbar-bg);

@@ -198,24 +198,16 @@
 }
 
 .fv-folder-tag {
-  display: inline-block;
   min-width: 0;
   max-width: 92px;
-  overflow: hidden;
-  padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--fv-meta-fg, var(--fg2));
-  font-size: 10px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.fv-folder-tag .gb-tag-chip__label {
+  max-width: 90px;
 }
 
 .fv-folder-tag--more {
-  border-color: var(--border);
-  background: var(--bg3);
+  max-width: none;
 }
 
 .list-layout .fv-image-rating-host {

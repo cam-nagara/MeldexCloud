@@ -201,12 +201,12 @@ window.addEventListener('resize', () => {
 // オーバーレイの表示/非表示トグル（メモ+付箋の描画を見せる/隠す）
 let _overlayVisible = true;
 const _ANNOTATION_TARGET_VIEW_TYPES = new Set([
-  'entity', 'page', 'database', 'pivot', 'gallery', 'kanban', 'timeline',
+  'entity', 'page', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline',
   'chart', 'graph', 'form', 'smart-db', 'compare', 'board', 'folder',
   'media', 'html', 'csv', 'scriptnote', 'calendar',
 ]);
 const _ANNOTATION_DB_VIEW_TYPES = new Set([
-  'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
+  'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
 ]);
 function _usesEmbeddedAnnotationSurface(viewName) {
   return viewName === 'board';
@@ -428,6 +428,7 @@ function _getScrollContainerForView(viewName) {
   if (viewName === 'entity') return document.getElementById('entity-view');
   if (viewName === 'database') return document.getElementById('pivot-view');
   if (viewName === 'pivot') return document.getElementById('pivot-view');
+  if (viewName === 'tree') return document.getElementById('tree-view');
   if (viewName === 'gallery') return document.getElementById('gallery-view');
   if (viewName === 'form') return document.getElementById('form-view');
   if (viewName === 'kanban') return document.getElementById('kanban-view');

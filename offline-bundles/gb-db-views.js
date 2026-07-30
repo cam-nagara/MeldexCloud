@@ -34,6 +34,7 @@ function setCurrentViewIdx(dbPath, idx, options = {}) {
 
 const VIEW_TYPES = [
   {mode:'pivot', icon:'table', label:'テーブル'},
+  {mode:'tree', icon:'listTree', label:'ツリー'},
   {mode:'gallery', icon:'layoutGrid', label:'ギャラリー'},
   {mode:'kanban', icon:'columns', label:'カンバン'},
   {mode:'calendar', icon:'calendar', label:'カレンダー'},
@@ -79,7 +80,7 @@ function startSavedViewInlineRename(tab, idx, ctx) {
 
 function _getViewAddMenuGroups(isCalendarCapable) {
   const groupModes = [
-    ['pivot', 'gallery', 'kanban'],
+    ['pivot', 'tree', 'gallery', 'kanban'],
     ['calendar', 'timeline'],
     ['chart', 'graph'],
     ['form'],
@@ -205,8 +206,8 @@ function renderDbViewTabs(ctx) {
   if (!dbPath) return;
   const views = getSavedViews(dbPath);
   const curIdx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : getCurrentViewIdx(dbPath);
-  const tabs = _paneEl(ctx, '.db-view-tabs') || document.getElementById('db-view-tabs');
-  const select = _paneEl(ctx, '.db-view-select') || document.getElementById('db-view-select');
+  const tabs = _paneEl(ctx, '.db-view-tabs') || (!ctx ? document.getElementById('db-view-tabs') : null);
+  const select = _paneEl(ctx, '.db-view-select') || (!ctx ? document.getElementById('db-view-select') : null);
   _renderDbViewSelect(select, ctx, views, curIdx);
   if (!tabs) {
     console.warn('[Meldex] シートビュータブの表示先が見つからないため、タブ描画をスキップしました。', { dbPath });
@@ -389,7 +390,7 @@ function renderDbNoViewsGuide(ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
   if (typeof showView === 'function') showView('pivot', ctx);
-  const container = _paneEl(ctx, '.pivot-view') || document.getElementById('pivot-view');
+  const container = _paneEl(ctx, '.pivot-view') || (!ctx ? document.getElementById('pivot-view') : null);
   if (!container) return;
   container.innerHTML = '';
   const guide = document.createElement('div');
@@ -437,7 +438,8 @@ async function _showDbConfigModal(dbPath, ctx) {
   if (!pivotData) {
     try { pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch { pivotData = null; }
   }
-  let dbMetadata = state.currentDbPath === dbPath ? state.dbMetadata : null;
+  let dbMetadata = localCtx?.dbPath === dbPath ? localCtx.dbMetadata : null;
+  if (!dbMetadata && state.currentDbPath === dbPath) dbMetadata = state.dbMetadata;
   if (!dbMetadata && typeof _getDbMetadataCached === 'function') {
     dbMetadata = await _getDbMetadataCached(dbPath, true);
   }
@@ -519,9 +521,11 @@ async function _showDbConfigModal(dbPath, ctx) {
 
   // ステータス一覧エディタ
   const statusDiv = o.querySelector('#dbcfg-status-list');
-  function _createStatusRow(name, color, index = 0) {
+  function _createStatusRow(name, color, index = 0, statusId = '') {
     const rowKey = 'dbcfg-status-' + index;
     const row = document.createElement('div');
+    row.dataset.originalStatusName = name || '';
+    row.dataset.statusId = statusId || globalThis.GbDbSchemaMutation?.newId?.('status') || '';
     row.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:3px;';
     // カラースウォッチ（共通カラーパレット）
     const swatch = document.createElement('button');
@@ -553,7 +557,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   function _renderStatusEditor() {
     statusDiv.innerHTML = '';
     getStatusList(dbPath).forEach((st, index) => {
-      const { row } = _createStatusRow(st.name, st.color, index);
+      const { row } = _createStatusRow(st.name, st.color, index, st.status_id || st.id || '');
       statusDiv.appendChild(row);
     });
   }
@@ -566,7 +570,7 @@ async function _showDbConfigModal(dbPath, ctx) {
 
   // コピー対象プロパティのチェックボックスを動的生成
   const copyPropsDiv = o.querySelector('#dbcfg-copy-props');
-  const pts = getPropertyTypes(dbPath);
+  const pts = getPropertyTypes(dbPath, localCtx);
   const hasSavedCopyProps = Array.isArray(cfg.dependentCopyProps);
   const currentCopy = hasSavedCopyProps ? cfg.dependentCopyProps : [];
   const defaultCopy = typeof _getDependentCopyProps === 'function' ? _getDependentCopyProps(dbPath, pts) : [];
@@ -618,12 +622,58 @@ async function _showDbConfigModal(dbPath, ctx) {
     c.defaultPanel = o.querySelector('#dbcfg-default-panel')?.value || 'main';
     // ステータス一覧の保存
     const statusList = [];
+    const statusRenameMap = new Map();
+    const originalStatuses = getStatusList(dbPath);
+    let statusMigration = null;
     statusDiv.querySelectorAll('div').forEach(row => {
       const name = row.querySelector('.dbcfg-st-name')?.value?.trim();
       const colorEl = row.querySelector('.dbcfg-st-color');
       const color = colorEl?.dataset?.color || '#888888';
-      if (name) statusList.push({ name, color });
+      if (name) {
+        const originalName = String(row.dataset.originalStatusName || '').trim();
+        if (originalName && originalName !== name) statusRenameMap.set(originalName, name);
+        statusList.push({ name, color, status_id: row.dataset.statusId || undefined });
+      }
     });
+    if (new Set(statusList.map(status => status.name)).size !== statusList.length) {
+      showStatus('同じ名前のステータスは複数登録できません', true);
+      return;
+    }
+    const presentOriginalNames = new Set(
+      Array.from(statusDiv.querySelectorAll(':scope > div'))
+        .map(row => String(row.dataset.originalStatusName || '').trim())
+        .filter(Boolean)
+    );
+    const removedStatuses = originalStatuses
+      .map(status => status.name)
+      .filter(name => !presentOriginalNames.has(name) && !statusRenameMap.has(name));
+    if (globalThis.GbDbSchemaMutation) {
+      try {
+        const migration = await globalThis.GbDbSchemaMutation.migrateStatuses({
+          dbPath,
+          pivotData: localCtx?.pivotData || state.pivotData,
+          mapping: statusRenameMap,
+          removed: removedStatuses,
+        });
+        statusMigration = migration;
+        migration.preserved.forEach(name => {
+          if (!statusList.some(status => status.name === name)) {
+            const oldStatus = originalStatuses.find(status => status.name === name) || {};
+            statusList.push({
+              name,
+              color: oldStatus.color || '#888888',
+              status_id: oldStatus.status_id || oldStatus.id || globalThis.GbDbSchemaMutation.newId('status'),
+            });
+          }
+        });
+        if (migration.preserved.length) {
+          showStatus('使用中のステータスは削除せず維持しました: ' + migration.preserved.join('、'));
+        }
+      } catch (e) {
+        showStatus('ステータス値の移行に失敗: ' + (e?.message || e), true);
+        return;
+      }
+    }
     c.statusList = statusList;
     // コピー対象プロパティの保存
     const checkedProps = [];
@@ -642,14 +692,26 @@ async function _showDbConfigModal(dbPath, ctx) {
     }
     _setDbCalendarMappingFallbackOnViews(c, calendarMapping);
     try {
-      await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), {
-        calendar_mapping: calendarMapping
-      });
-      saveDbViewConfig(dbPath, c);
+      if (globalThis.GbDbSchemaMutation) {
+        await globalThis.GbDbSchemaMutation.saveMetadata(dbPath, {
+          calendar_mapping: calendarMapping,
+          view_config: c,
+        }, localCtx);
+      } else {
+        await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), {
+          calendar_mapping: calendarMapping,
+          view_config: c,
+        });
+      }
+      saveDbViewConfig(dbPath, c, { skipBackend: true, ctx: localCtx });
       if (state.currentDbPath === dbPath && state.dbMetadata) state.dbMetadata.calendar_mapping = calendarMapping;
       if (typeof _invalidateDbMetadataCache === 'function') _invalidateDbMetadataCache(dbPath);
     } catch (e) {
-      showStatus('カレンダー連携設定の保存に失敗しました', true);
+      try { await statusMigration?.rollback?.(); } catch (rollbackError) {
+        console.error('ステータス値のロールバックに失敗:', rollbackError);
+      }
+      c.statusList = originalStatuses;
+      showStatus('シート設定の保存に失敗したため、ステータス変更を元に戻しました', true);
       return;
     }
     o.remove();
@@ -660,6 +722,9 @@ async function _showDbConfigModal(dbPath, ctx) {
       skipNavPush: true,
       skipSaveLastView: true,
     });
+    if (typeof _ptReloadOtherDbContexts === 'function') {
+      await _ptReloadOtherDbContexts(dbPath, localCtx);
+    }
   });
 }
 
@@ -706,6 +771,7 @@ function _makeDbViewStateFromCurrent(dbPath, viewMode, name, ctx) {
     pinnedCols: _cloneDbViewArray(activeView?.pinnedCols),
     colOrder: activeView?.colOrder == null ? null : _cloneDbViewValue(activeView.colOrder, null),
     advancedFilters: _cloneDbViewArray(activeView?.advancedFilters),
+    columnValueFilters: _cloneDbViewObject(activeView?.columnValueFilters),
     conditionalFormat: !!activeView?.conditionalFormat,
     conditionalColors: _cloneDbViewObject(activeView?.conditionalColors),
     filter: ctx?.filter ?? state.filter,
@@ -1457,13 +1523,16 @@ function renderGallery(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const hiddenCols = getHiddenCols(dbPath, { ctx });
   const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
   const propTypes = getPropertyTypes(dbPath);
   const colOrder = getColOrder(dbPath, { ctx });
   const entitiesMap = data.entities;
   const entityNames = typeof _dbSortedEntityNames === 'function'
-    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, propTypes })
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, columnValueFilters, propTypes })
     : Object.keys(entitiesMap)
-      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
+      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter)
+        && (typeof _dbEntityPassesColumnValueFilters !== 'function'
+          || _dbEntityPassesColumnValueFilters(name, entitiesMap[name], columnValueFilters, dbPath, ctx, ctx?.filter)))
       .sort();
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
@@ -1838,11 +1907,14 @@ function renderKanban(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const entitiesMap = data.entities;
   const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
   const propTypes = getPropertyTypes(dbPath);
   const entityNames = typeof _dbSortedEntityNames === 'function'
-    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, propTypes })
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, columnValueFilters, propTypes })
     : Object.keys(entitiesMap)
-      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
+      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter)
+        && (typeof _dbEntityPassesColumnValueFilters !== 'function'
+          || _dbEntityPassesColumnValueFilters(name, entitiesMap[name], columnValueFilters, dbPath, ctx, ctx?.filter)))
       .sort();
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {

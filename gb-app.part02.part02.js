@@ -267,6 +267,9 @@ async function init() {
       });
     }
     state.vaultPath = vault.path;
+    window.MeldexRegisteredSourceRoots = Array.isArray(roots)
+      ? roots.filter(root => root?.path).map(root => ({ ...root }))
+      : [];
     try {
       if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
     } catch (e) {}
@@ -467,16 +470,17 @@ async function init() {
    ============================== */
 function showView(viewName, ctx) {
   const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
-  const isDbViewName = (name) => ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
+  const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
   // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
   if (ctx && ctx.containerEl) {
     const isDbView = isDbViewName(viewName);
     const c = ctx.containerEl;
-    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
+    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #tree-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .tree-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
     if (hasPaneViewSurfaces) {
       const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
       _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
       _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+      _sv('#tree-view, .tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
       _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
       _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
       _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
@@ -485,6 +489,9 @@ function showView(viewName, ctx) {
       _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
       _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
       ctx.viewMode = viewName;
+      if (typeof _dbTreeSetOptionTabVisible === 'function') {
+        _dbTreeSetOptionTabVisible(resolvedViewName === 'tree', ctx);
+      }
       return;
     }
   }
@@ -514,6 +521,7 @@ function showView(viewName, ctx) {
   _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
   _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
   _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+  _setDisplay('tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
   _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
   _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
   _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
@@ -528,6 +536,9 @@ function showView(viewName, ctx) {
   _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
   _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
   _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
+  if (typeof _dbTreeSetOptionTabVisible === 'function') {
+    _dbTreeSetOptionTabVisible(resolvedViewName === 'tree');
+  }
   // app-toolbarの表示切替
   const appTb = document.getElementById('app-toolbar');
   _setDisplay('tb-db', isDbView ? 'contents' : 'none');

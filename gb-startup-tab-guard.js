@@ -38,7 +38,7 @@ const MeldexStartupTabGuard = (() => {
     if (viewName === 'folder') return false;
     if (viewName === 'html' && tab?.state?.urlExternal) return false;
     return [
-      'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
+      'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
       'smart-db', 'entity', 'page', 'media', 'html', 'csv', 'board', 'scriptnote',
       'calendar', 'compare',
     ].includes(viewName);
@@ -48,7 +48,7 @@ const MeldexStartupTabGuard = (() => {
     const path = tab?.path || '';
     if (!path) return true;
     const base = (typeof API_BASE !== 'undefined') ? API_BASE : '/api';
-    const dbViewTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'calendar']);
+    const dbViewTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'calendar']);
     const endpoint = dbViewTypes.has(viewName)
       ? (base + '/check-type?path=' + encodeURIComponent(path))
       : (base + '/file-meta?path=' + encodeURIComponent(path));

@@ -23,6 +23,7 @@ const GBPaneBridge = (() => {
     welcome:    'welcome-view',
     database:   'db-view-container',
     pivot:      'db-view-container',
+    tree:       'db-view-container',
     gallery:    'db-view-container',
     kanban:     'db-view-container',
     timeline:   'db-view-container',
@@ -42,6 +43,7 @@ const GBPaneBridge = (() => {
   // DB系サブビューID
   const DB_SUB_VIEWS = {
     pivot:      'pivot-view',
+    tree:       'tree-view',
     gallery:    'gallery-view',
     kanban:     'kanban-view',
     timeline:   'timeline-view',
@@ -86,6 +88,7 @@ const GBPaneBridge = (() => {
     page: 'ノート',
     database: 'シート',
     pivot: 'シート',
+    tree: 'シート',
     gallery: 'シート',
     kanban: 'シート',
     timeline: 'シート',
@@ -186,7 +189,7 @@ const GBPaneBridge = (() => {
   }
 
   function _isPathScopedLegacyType(type) {
-    return ['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'entity', 'page', 'media', 'html', 'folder', 'board', 'compare'].includes(type);
+    return ['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'entity', 'page', 'media', 'html', 'folder', 'board', 'compare'].includes(type);
   }
 
   function _legacySnapshotKey(tab) {
@@ -416,6 +419,7 @@ const GBPaneBridge = (() => {
     folder: ['#folder-grid'],
     media: ['#media-view'],
     pivot: ['#pivot-view'],
+    tree: ['#tree-view'],
     gallery: ['#gallery-view'],
     kanban: ['#kanban-view'],
     timeline: ['#timeline-view'],
@@ -782,7 +786,7 @@ const GBPaneBridge = (() => {
     const paneRenderCtx = paneCtx || (pane?.id ? { paneId: pane.id, containerEl: paneContentEl, tableId: 'pivot-table' } : null);
     if (paneRenderCtx) {
       paneRenderCtx.containerEl = paneContentEl || paneRenderCtx.containerEl;
-      if (['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName)) {
+      if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName)) {
         paneRenderCtx.dbPath = path || paneRenderCtx.dbPath;
       }
     }
@@ -837,7 +841,7 @@ const GBPaneBridge = (() => {
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevCsvPath !== path || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        else if (['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
+        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && typeof openViewer === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           openViewer(tab.state?.urlExternal ? path : '/viewer?file=' + encodeURIComponent(path), bridgeOpts);
         }

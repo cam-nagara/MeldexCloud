@@ -73,7 +73,7 @@ function _pathToFileId() { return ''; }
   }
   function _normalizeDbViewModeValue(mode) {
     const value = String(mode || '').trim();
-    return ['pivot', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
+    return ['pivot', 'tree', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
       ? value
       : 'pivot';
   }

@@ -4,7 +4,7 @@ function getCurrentPublishContext() {
   if (state?.view === 'smart-db' && state.currentSmartDb) {
     return { kind: 'smart-db', label: state.currentSmartDb.name || 'スマートシート', path: state.currentSmartDb._filePath || state.currentSmartDb.id || '' };
   }
-  if (state.currentDbPath && (state?.view === 'pivot' || ['gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(getCurrentViewMode(state.currentDbPath)))) {
+  if (state.currentDbPath && (state?.view === 'pivot' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(getCurrentViewMode(state.currentDbPath)))) {
     return { kind: 'database', label: state.currentDbPath.split('/').pop() || 'シート', path: state.currentDbPath };
   }
   if (state?.view === 'entity' && state.currentEntityPath) {

@@ -888,6 +888,10 @@
       _pmCloudManagedNameContext(provider, internals),
       body?.path,
       body?.new_name,
+      {
+        expectedEntryId: body?.expected_entry_id,
+        operationId: body?.operation_id,
+      },
     ));
   }
 

@@ -106,43 +106,7 @@
   if (!isEntity && !_locked && !nodeData._isRoot) {
     addSep();
     const delLabel = isMulti ? `削除（${selectedCount}件）` : '削除';
-    addMenuItem(delLabel, async () => {
-      closeTreeContextMenu();
-      const targets = treeSelection.getNodeData().filter(d => {
-        if (d.type === 'entity' || d._isRoot) return false;
-        if (!d.path || typeof isItemLocked !== 'function') return true;
-        return !isItemLocked(d.path);
-      });
-      if (!targets.length) {
-        showStatus('削除できる項目がありません', true);
-        return;
-      }
-      const names = targets.map(d => d.name).join('、');
-      if (!await cfConfirm(`「${names}」を削除しますか？`)) return;
-      treeSelection.clear();
-      const result = await deleteOutlinerItemsWithHistory(targets, {
-        label: targets.length + ' 件を削除',
-        detail: names,
-        onItemDeleted: (item) => {
-          _removeOutlinerNodesForPaths([item.path]);
-        },
-        refresh: async () => {
-          if (typeof loadOutliner === 'function') await loadOutliner();
-          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-        },
-      });
-      _removeOutlinerNodesForPaths(result.deletedPaths);
-      if (result.failedCount) {
-        showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました`, true);
-        loadOutliner();
-      } else if (result.succeeded.length) {
-        showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
-      } else if (result.skipped.length) {
-        showStatus('削除対象が見つからなかったため、表示を更新しました', true);
-        loadOutliner();
-      }
-    }, 'danger', 'trash2');
+    addMenuItem(delLabel, deleteContextItems, 'danger', 'trash2');
   }
 
   // --- スプリットビュー ---

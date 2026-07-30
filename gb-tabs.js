@@ -6,7 +6,7 @@ const GBTabs = (() => {
   let _tabIdCounter = 0;
 
   const TAB_ICONS = {
-    pivot: 'db', gallery: 'db', kanban: 'db', timeline: 'db',
+    pivot: 'db', tree: 'listTree', gallery: 'db', kanban: 'db', timeline: 'db',
     media: 'galleryThumbnails', html: 'globe',
     chart: 'db', graph: 'db', compare: 'columns',
     search: 'search', scriptnote: 'bookOpenText', version: 'gitBranch',

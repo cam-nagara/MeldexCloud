@@ -32,6 +32,117 @@
     return String(value ?? '');
   }
 
+  function cliAuthRequestHeaders(json = false) {
+    const headers = json ? { 'Content-Type': 'application/json' } : {};
+    if (typeof _authToken !== 'undefined' && _authToken) headers.Authorization = 'Bearer ' + _authToken;
+    return headers;
+  }
+
+  async function cliAuthResponse(response) {
+    let payload = null;
+    try { payload = await response.json(); } catch {}
+    if (!response.ok) throw new Error(payload?.detail || payload?.message || `HTTP ${response.status}`);
+    return payload || {};
+  }
+
+  function attachCliAuthRecovery(host, provider) {
+    const key = text(provider).trim();
+    if (!host || !['claude_code', 'codex'].includes(key)) return null;
+    const existing = host.querySelector('[data-cli-auth-recovery]');
+    if (existing) return existing;
+    const card = document.createElement('section');
+    card.className = 'chat-cli-auth-recovery';
+    card.dataset.cliAuthRecovery = key;
+    card.dataset.e2eId = 'chat-cli-auth-recovery-' + key;
+    const title = document.createElement('strong');
+    title.textContent = 'CLIのログインを更新';
+    const description = document.createElement('p');
+    description.textContent = 'MeldexのAPIキーへ切り替えず、CLI自身のログイン状態を確認します。';
+    const status = document.createElement('div');
+    status.className = 'chat-cli-auth-status';
+    status.setAttribute('role', 'status');
+    status.textContent = '認証状態を確認してください。';
+    const actions = document.createElement('div');
+    actions.className = 'chat-cli-auth-actions';
+    const checkButton = document.createElement('button');
+    checkButton.type = 'button';
+    checkButton.className = 'gb-btn gb-btn-sm';
+    checkButton.dataset.e2eId = 'chat-cli-auth-check-' + key;
+    checkButton.textContent = '認証状態を確認';
+    const loginButton = document.createElement('button');
+    loginButton.type = 'button';
+    loginButton.className = 'gb-btn gb-btn-sm';
+    loginButton.dataset.e2eId = 'chat-cli-auth-login-' + key;
+    loginButton.textContent = 'ログイン画面を開く';
+    const details = document.createElement('details');
+    details.className = 'chat-cli-auth-details';
+    details.hidden = true;
+    const detailsSummary = document.createElement('summary');
+    detailsSummary.textContent = '確認結果の詳細';
+    const detailsText = document.createElement('pre');
+    details.append(detailsSummary, detailsText);
+    const setBusy = value => {
+      checkButton.disabled = value;
+      loginButton.disabled = value;
+    };
+    const checkStatus = async () => {
+      setBusy(true);
+      status.textContent = 'CLIの認証状態を確認中…';
+      try {
+        const response = await fetch(
+          API_BASE + '/cli-chat/auth-status?provider=' + encodeURIComponent(key),
+          { headers: cliAuthRequestHeaders(false) },
+        );
+        const data = await cliAuthResponse(response);
+        status.textContent = data.authenticated
+          ? `${data.label || 'CLI'}はログイン済みです。質問を再送信できます。`
+          : (data.message || 'CLI側のログイン更新が必要です。');
+        status.classList.toggle('is-ok', data.authenticated === true);
+        status.classList.toggle('is-error', data.authenticated !== true);
+        const executableSummary = [data.executable_path || data.executable, data.version]
+          .filter(Boolean)
+          .join(' — ');
+        detailsText.textContent = [executableSummary, data.detail].filter(Boolean).join('\n\n');
+        details.hidden = !detailsText.textContent;
+        checkButton.textContent = '認証状態を再確認';
+      } catch (error) {
+        status.textContent = '認証状態を確認できませんでした: ' + (error?.message || error);
+        status.classList.remove('is-ok');
+        status.classList.add('is-error');
+      } finally {
+        setBusy(false);
+      }
+    };
+    checkButton.addEventListener('click', checkStatus);
+    loginButton.addEventListener('click', async () => {
+      setBusy(true);
+      status.textContent = 'ログイン用ターミナルを開いています…';
+      try {
+        const response = await fetch(API_BASE + '/cli-chat/auth-login', {
+          method: 'POST',
+          headers: cliAuthRequestHeaders(true),
+          body: JSON.stringify({ provider: key }),
+        });
+        const data = await cliAuthResponse(response);
+        status.textContent = data.message || 'ログイン完了後に認証状態を再確認してください。';
+        status.classList.remove('is-ok', 'is-error');
+        detailsText.textContent = [data.command, data.executable].filter(Boolean).join('\n\n');
+        details.hidden = !detailsText.textContent;
+        checkButton.textContent = '認証状態を再確認';
+      } catch (error) {
+        status.textContent = 'ログイン画面を開けませんでした: ' + (error?.message || error);
+        status.classList.remove('is-ok');
+        status.classList.add('is-error');
+      } finally {
+        setBusy(false);
+      }
+    });
+    actions.append(checkButton, loginButton);
+    card.append(title, description, status, actions, details);
+    host.appendChild(card);
+    return card;
+  }
+
   function shortPath(value) {
     const raw = text(value).replace(/\\/g, '/');
     if (!raw) return '';
@@ -625,6 +736,13 @@
     const row = document.createElement('div');
     const role = text(message.role || 'assistant');
     const isUser = role === 'user';
+    row.className = 'chat-copy-message chat-cli-transcript-message';
+    row.dataset.chatCopyAuthor = isUser
+      ? 'ユーザー'
+      : (role === 'tool' ? 'ツール' : label);
+    row.dataset.chatCopyTime = typeof _chatFormatMessageTimestamp === 'function'
+      ? _chatFormatMessageTimestamp(message.timestamp || '')
+      : text(message.timestamp || '');
     row.style.cssText = `align-self:${isUser ? 'flex-end' : 'flex-start'};max-width:88%;display:flex;flex-direction:column;gap:3px;`;
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
@@ -640,6 +758,7 @@
     quote.addEventListener('click', () => quoteCliMessage(message, session));
     header.appendChild(quote);
     const bubble = document.createElement('div');
+    bubble.className = 'chat-copy-body chat-message-bubble chat-message-bubble-cli';
     bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--accent)' : 'var(--bg3)'};color:${isUser ? 'var(--ui-fg-strong)' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
     bubble.textContent = messagePreview(message);
     row.append(header, bubble);
@@ -767,7 +886,7 @@
   }
 
   function cliChatErrorAllowsContinuation(error) {
-    if (['cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
+    if (['cli_auth_required', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
       return false;
     }
     const message = String(error?.message || error || '');
@@ -1170,7 +1289,7 @@
             streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
             streamError.detail = detail;
             streamError.action = String(data.action || '');
-            if (['cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
+            if (['cli_auth_required', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
               resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
             }
             throw streamError;
@@ -1217,6 +1336,7 @@
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(abortedText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, []);
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
+        if (error?.errorCode === 'cli_auth_required') attachCliAuthRecovery(assistantDiv, provider);
         streamMessages.push({
           role: 'assistant',
           content: abortedText,
@@ -1243,6 +1363,7 @@
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, errorText, []);
         else if (assistantDiv) assistantDiv.textContent = errorText;
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
+        if (!autoContinuing && error?.errorCode === 'cli_auth_required') attachCliAuthRecovery(assistantDiv, provider);
         streamMessages.push({
           role: 'assistant',
           content: errorText,
@@ -1404,8 +1525,16 @@
     providerReadyStatus: cliChatProviderReadyStatus,
     sendCliChat,
   };
+  window.MeldexCliAuthRecovery = { attach: attachCliAuthRecovery };
 
   installCliChatPatches();
+
+  document.querySelectorAll('[data-cli-auth-provider]').forEach(row => {
+    attachCliAuthRecovery(
+      row.querySelector('.chat-message-bubble'),
+      row.dataset.cliAuthProvider,
+    );
+  });
 
   document.addEventListener('DOMContentLoaded', () => {
     installCliChatPatches();
@@ -1413,7 +1542,11 @@
       if (window.GBChatProviderDefault?.applyFirstRun) {
         await window.GBChatProviderDefault.applyFirstRun({ configLoaded: true });
       }
-      if (isCliChatProvider(_chatState.provider) && typeof updateChatModels === 'function') updateChatModels({ suppressNotify: true });
+      if (typeof _chatState !== 'undefined'
+        && isCliChatProvider(_chatState.provider)
+        && typeof updateChatModels === 'function') {
+        updateChatModels({ suppressNotify: true });
+      }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
     });
     ensureCliPanel();

@@ -5,14 +5,10 @@
   if (typeof window === 'undefined') return;
   let button = null;
   let overlay = null;
+  let targetRow = null;
+  let targetEditor = null;
+  let targetPath = '';
   let observer = null;
-
-  function tagIcon() {
-    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
-      + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-      + '<path d="M20.6 13.6 11 23.2 1.8 14V2h12l6.8 6.8a3.4 3.4 0 0 1 0 4.8Z"/>'
-      + '<circle cx="7" cy="8" r="1.5"/></svg>';
-  }
 
   function isCloudMode() {
     return window.MeldexStandaloneCloud?.isCloudMode?.() === true
@@ -33,7 +29,7 @@
     node.title = 'タグ辞書';
     node.setAttribute('aria-label', 'タグ辞書');
     node.setAttribute('aria-haspopup', 'dialog');
-    node.innerHTML = tagIcon();
+    node.innerHTML = '<span class="ico ico-tags" aria-hidden="true"></span>';
     node.addEventListener('click', () => {
       if (typeof window.runStandaloneFileAction === 'function') {
         window.runStandaloneFileAction('タグ辞書を開く', openDialog);
@@ -51,11 +47,44 @@
     if (header) return { parent: header, before: header.querySelector('[data-sa-profile-badge]') };
     const board = document.querySelector('#board-canvas-root [data-bd-role="toolbar-top"]');
     if (board) return { parent: board, before: board.querySelector('.sa-mtb-more-btn') };
+    const viewer = document.querySelector('#controls');
+    if (viewer) return { parent: viewer, before: viewer.querySelector('#btn-default-apps') };
     return null;
   }
 
   function updateVisibility() {
-    if (button) button.hidden = !isCloudConnected();
+    if (button) button.hidden = false;
+    if (targetRow) targetRow.hidden = !targetPath;
+  }
+
+  function ensureTargetRow() {
+    if (targetRow?.isConnected) return true;
+    const header = document.querySelector('header.sa-toolbar');
+    const viewerControls = document.getElementById('controls');
+    if (!header?.parentNode && !viewerControls?.parentNode) return false;
+    targetRow = document.createElement('section');
+    targetRow.className = 'sa-inline-tags' + (viewerControls ? ' sa-inline-tags-viewer' : '');
+    targetRow.dataset.e2eId = 'standalone-inline-tags';
+    targetRow.setAttribute('aria-label', 'このファイルのタグ');
+    targetEditor = document.createElement('div');
+    targetEditor.className = 'sa-inline-tags-editor';
+    targetRow.appendChild(targetEditor);
+    if (header?.parentNode) header.insertAdjacentElement('afterend', targetRow);
+    else viewerControls.insertAdjacentElement('beforebegin', targetRow);
+    updateVisibility();
+    return true;
+  }
+
+  function setTargetPath(path) {
+    targetPath = String(path || '').replace(/\\/g, '/');
+    if (!ensureTargetRow()) return;
+    targetRow.hidden = !targetPath;
+    targetEditor.dataset.globalTagsTargetPath = targetPath;
+    if (targetPath && typeof window.renderGlobalTagTargetEditor === 'function') {
+      window.renderGlobalTagTargetEditor(targetEditor, targetPath, { compact: true, boxed: false });
+    } else {
+      targetEditor.replaceChildren();
+    }
   }
 
   function insertButton() {
@@ -127,7 +156,7 @@
     close.className = 'sa-tags-dialog-close';
     close.dataset.e2eId = 'standalone-tags-close';
     close.setAttribute('aria-label', '閉じる');
-    close.textContent = '×';
+    close.innerHTML = '<span class="ico ico-x" aria-hidden="true"></span>';
     close.addEventListener('click', () => closeDialog());
     head.append(title, close);
 
@@ -144,6 +173,7 @@
 
   function initialize() {
     watchInsertion();
+    ensureTargetRow();
     window.addEventListener('meldex:standalone-cloud-ready', () => {
       insertButton();
       updateVisibility();
@@ -155,6 +185,7 @@
     open: openDialog,
     close: closeDialog,
     refresh: updateVisibility,
+    setTargetPath,
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
   else initialize();

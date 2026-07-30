@@ -17,7 +17,7 @@
     backlink_board_count:     { label: '被リンク数(ボード)',   ops: ['equals','greater_than','less_than'] },
     backlink_scriptnote_count:{ label: '被リンク数(シナリオ)', ops: ['equals','greater_than','less_than'] },
     backlink_page_count:      { label: '被リンク数(ページ)',   ops: ['equals','greater_than','less_than'] },
-    size:                     { label: 'サイズ',     ops: ['greater_than','less_than','equals'] },
+    size:                     { label: 'ファイルサイズ', ops: ['greater_than','less_than','equals'] },
     modified:                 { label: '更新日時',   ops: ['after','before'] }
   };
 

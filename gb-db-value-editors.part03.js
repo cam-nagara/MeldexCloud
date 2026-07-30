@@ -1,6 +1,7 @@
 async function _showUserDropdown(anchor, val, entityPath, propName, currentValue, isMulti, options) {
   const dropdownOptions = options || {};
-  document.querySelectorAll('.user-dropdown').forEach(el => el.remove());
+  if (typeof closeAllDropdowns === 'function') closeAllDropdowns(dropdownOptions.ctx || anchor);
+  else document.querySelectorAll('.user-dropdown').forEach(el => el.remove());
 
   // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
   // ワークスペースメンバーのマージ。/team・/auth/usersへの参照はここで無くなる。
@@ -11,6 +12,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
 
   const dd = document.createElement('div');
   dd.className = 'cell-inline-dd user-dropdown';
+  if (dropdownOptions.ctx?.paneId) dd.dataset.dbPaneId = dropdownOptions.ctx.paneId;
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:180px;max-height:300px;overflow-y:auto;background:var(--ui-popup-bg, var(--bg2));border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.3);padding:4px;';
   dd.addEventListener('pointerdown', e => e.stopPropagation());
   dd.addEventListener('click', e => e.stopPropagation());
@@ -268,10 +270,10 @@ async function _checkCircularDependency(dbPath, sourceId, targetId, propName) {
 
 // リレーションドロップダウン（参照先DBのエントリ一覧）
 async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti) {
-  closeAllDropdowns();
   const isSelfRef = (ptc.relationDb === '' && ptc.relationDb !== undefined);
   const sourceDbPath = ptc.__sourceDbPath || (typeof _valueEditorDbPath === 'function' ? _valueEditorDbPath(entityPath, el) : state.currentDbPath);
   const sourceCtx = typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, el, sourceDbPath) : null;
+  closeAllDropdowns(sourceCtx || el);
   const relDb = typeof _dbResolveRelationDbPath === 'function'
     ? _dbResolveRelationDbPath(sourceDbPath, ptc)
     : (isSelfRef ? sourceDbPath : (ptc.relationDb || ''));
@@ -318,6 +320,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
 
   const dd = document.createElement('div');
   dd.className = 'status-dropdown';
+  if (sourceCtx?.paneId) dd.dataset.dbPaneId = sourceCtx.paneId;
   dd.style.cssText = 'max-height:300px;overflow-y:auto;min-width:200px;';
   dd.addEventListener('pointerdown', e => e.stopPropagation());
   dd.addEventListener('click', e => e.stopPropagation());
@@ -399,7 +402,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
       _upsertLocalPivotValue(entityPath, propName, val, entry.id);
       refreshRelationCellNow();
       try {
-        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, oldVal, entry.id);
+        cascadeClears = await _clearCascadeDependentValues(entityPath, propName, oldVal, entry.id, { dbPath: sourceDbPath, ctx: sourceCtx });
       } catch (e) {
         _upsertLocalPivotValue(entityPath, propName, val, oldVal);
         refreshRelationCellNow();
@@ -411,7 +414,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
       } catch (e) {
         _upsertLocalPivotValue(entityPath, propName, val, oldVal);
         refreshRelationCellNow();
-        await _restoreCascadeDependentValues(entityPath, cascadeClears);
+        await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath: sourceDbPath, ctx: sourceCtx });
         showStatus('リレーション値の保存に失敗: ' + (e?.message || e), true);
         await _valueEditorReload(sourceDbPath, sourceCtx);
         return;
@@ -450,7 +453,11 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
         _upsertLocalPivotValue(entityPath, propName, val, oldVal);
         refreshRelationCellNow();
         if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-          try { await _restoreCascadeDependentValues(entityPath, cascadeClears); } catch {}
+          try {
+            await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath: sourceDbPath, ctx: sourceCtx });
+          } catch (rollbackError) {
+            console.error('リレーション同期失敗後のカスケード値復旧に失敗:', rollbackError, syncError);
+          }
         }
         showStatus('リレーション同期に失敗: ' + (syncError?.message || syncError), true);
         closeDropdown();
@@ -520,7 +527,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
         if (val) val.value = nv;
         refreshRelationCellNow();
         if (typeof _clearCascadeDependentValues === 'function') {
-          cascadeClears = await _clearCascadeDependentValues(entityPath, propName, oldVal, nv);
+          cascadeClears = await _clearCascadeDependentValues(entityPath, propName, oldVal, nv, { dbPath: sourceDbPath, ctx: sourceCtx });
         }
         if (val?.file) {
           await _apiPutValue(val, { new_value: nv });
@@ -571,7 +578,11 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
         if (typeof _upsertLocalPivotValue === 'function') _upsertLocalPivotValue(entityPath, propName, val, oldVal);
         if (val) val.value = oldVal;
         if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-          try { await _restoreCascadeDependentValues(entityPath, cascadeClears); } catch {}
+          try {
+            await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath: sourceDbPath, ctx: sourceCtx });
+          } catch (rollbackError) {
+            console.error('リレーション保存失敗後のカスケード値復旧に失敗:', rollbackError, e);
+          }
         }
         refreshRelationCellNow();
         showStatus('リレーション値の保存に失敗: ' + (e?.message || e), true);
@@ -629,13 +640,14 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
 function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
   const sourceDbPath = dbPath || (typeof _valueEditorDbPath === 'function' ? _valueEditorDbPath(entityPath, el) : state.currentDbPath);
   const sourceCtx = typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, el, sourceDbPath) : null;
-  const lockMsg = _valueEditorLockMessage(sourceDbPath, propName);
+  const lockMsg = _valueEditorLockMessage(sourceDbPath, propName, sourceCtx);
   if (lockMsg) { showStatus(lockMsg); return; }
-  const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(sourceDbPath)?.[propName] : null;
+  const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(sourceDbPath, sourceCtx)?.[propName] : null;
   const effectiveOptions = Array.isArray(latestConfig?.options) ? latestConfig.options : (Array.isArray(options) ? options : []);
-  closeAllDropdowns();
+  closeAllDropdowns(sourceCtx || el);
   const dd = document.createElement('div');
   dd.className = 'status-dropdown';
+  if (sourceCtx?.paneId) dd.dataset.dbPaneId = sourceCtx.paneId;
 
   // 解除（値をクリア）
   const clearItem = document.createElement('div');
@@ -643,7 +655,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
   clearItem.style.cssText = 'color:var(--fg2);font-style:italic;';
   clearItem.textContent = '解除';
   clearItem.addEventListener('click', async () => {
-    closeAllDropdowns();
+    closeAllDropdowns(sourceCtx || el);
     if (val.value) {
       const oldVal = val.value;
       const savedStatus = val.status || '案';
@@ -692,7 +704,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
     item.appendChild(document.createTextNode(opt));
     if (val.value === opt) item.classList.add('selected');
     item.addEventListener('click', async () => {
-      closeAllDropdowns();
+      closeAllDropdowns(sourceCtx || el);
       if (opt !== val.value) {
         const oldVal = val.value || '';
         try {
@@ -726,7 +738,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
   _enableDropdownKeyNav(dd, '.status-dropdown-item');
   setTimeout(() => {
     const closer = (e) => {
-      if (!dd.contains(e.target)) { closeAllDropdowns(); document.removeEventListener('pointerdown', closer); }
+      if (!dd.contains(e.target)) { closeAllDropdowns(sourceCtx || el); document.removeEventListener('pointerdown', closer); }
     };
     document.addEventListener('pointerdown', closer);
   }, 0);

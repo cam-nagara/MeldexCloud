@@ -106,7 +106,7 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
     const newName = inp.value.trim();
     if (!newName || newName === oldName) {
       renderPivot(ctx);
-      restoreActiveCellByProp(oldName);
+      restoreActiveCellByProp(oldName, ctx);
       return;
     }
     const pivotData = (ctx && ctx.pivotData) || state.pivotData;
@@ -116,12 +116,12 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
     const existingProps = [
       ...liveProps,
       ...(getColOrder(targetDbPath, { ctx }) || []),
-      ...Object.keys(getPropertyTypes(targetDbPath) || {}),
+      ...Object.keys(getPropertyTypes(targetDbPath, ctx) || {}),
     ];
     if (existingProps.some(name => name === newName && name !== oldName)) {
       showStatus('同名の列が既にあります: ' + newName, true);
       renderPivot(ctx);
-      restoreActiveCellByProp(oldName);
+      restoreActiveCellByProp(oldName, ctx);
       return;
     }
     try {
@@ -129,21 +129,27 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
         await renameDbProperty(targetDbPath, oldName, newName, ctx);
       }
     } catch (err) {
-      showStatus('列名の変更に失敗: ' + (err?.message || err), true);
+      showStatus(
+        err?.resultUnknown
+          ? '列名変更の保存結果を確認できません。再読み込み後の表示を確認してください。'
+          : '列名の変更に失敗: ' + (err?.message || err),
+        true
+      );
       renderPivot(ctx);
-      restoreActiveCellByProp(oldName);
+      const currentProps = (ctx?.pivotData || state.pivotData)?.properties || [];
+      restoreActiveCellByProp(currentProps.includes(newName) ? newName : oldName, ctx);
       return;
     }
     const selected = _getSelectedColumns(targetDbPath).map(name => name === oldName ? newName : name);
     _setSelectedColumns(targetDbPath, selected, newName);
     renderPivot(ctx);
-    restoreActiveCellByProp(newName);
+    restoreActiveCellByProp(newName, ctx);
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
     if (_dbInlineConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; renderPivot(ctx); restoreActiveCellByProp(oldName); }
+    if (e.key === 'Escape') { committed = true; renderPivot(ctx); restoreActiveCellByProp(oldName, ctx); }
     if (e.key === 'Tab') { e.preventDefault(); commit(); }
   });
   attachInlineBlurCommit(inp, commit);
@@ -181,20 +187,23 @@ function _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName) {
 }
 
 function _dbRefreshEntityRenameInBackground(ctx, dbPath, entityName) {
-  if (!dbPath || typeof selectDatabase !== 'function') return;
+  if (!dbPath) return;
   setTimeout(() => {
     if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-    Promise.resolve(selectDatabase(dbPath, ctx, {
-      silent: true,
-      skipRecent: true,
-      skipNavPush: true,
-      skipSaveLastView: true,
-      skipAutoVersion: true,
-    })).then(() => {
+    const reload = window.GbDbEntryIdentity
+      ? window.GbDbEntryIdentity.reload(ctx, dbPath)
+      : selectDatabase(dbPath, ctx, {
+          silent: true,
+          skipRecent: true,
+          skipNavPush: true,
+          skipSaveLastView: true,
+          skipAutoVersion: true,
+        });
+    Promise.resolve(reload).then(() => {
       if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
       setTimeout(() => {
         if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctx)) return;
-        restoreActiveCellByEntityName(entityName);
+        restoreActiveCellByEntityName(entityName, ctx);
       }, 50);
     }).catch(() => {});
   }, 0);
@@ -210,7 +219,7 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
   const changed = _dbApplyEntityRenameLocally(ctx, dbPath, oldName, newName);
   if (changed && typeof renderPivot === 'function') {
     renderPivot(ctx);
-    setTimeout(() => restoreActiveCellByEntityName(newName), 50);
+    setTimeout(() => restoreActiveCellByEntityName(newName, ctx), 50);
     return true;
   }
   const tr = td?.closest?.('tr');
@@ -220,7 +229,7 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
     nameSpan.style.display = '';
   }
   td?.querySelector?.('.entity-rename-input')?.remove?.();
-  setTimeout(() => restoreActiveCellByEntityName(newName), 50);
+  setTimeout(() => restoreActiveCellByEntityName(newName, ctx), 50);
   return false;
 }
 
@@ -229,7 +238,8 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
   // 行インデックスを記憶
   const _renCtx = _dbResolveEntityRenameContext(td, dbPath);
   const _renTblId = (_renCtx && _renCtx.tableId) || 'pivot-table';
-  const table = _paneEl(_renCtx, '#' + _renTblId) || document.getElementById('pivot-table');
+  const table = _paneEl(_renCtx, '#' + _renTblId)
+    || (!_renCtx ? document.getElementById('pivot-table') : null);
   const dataRows = table ? Array.from(table.querySelectorAll('tbody tr:not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row):not(.group-header-row)')) : [];
   const rowIdx = dataRows.indexOf(td.parentElement);
 
@@ -261,7 +271,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     const newName = inp.value.trim();
     if (!newName || newName === oldName) {
       renderPivot(_renCtx);
-      restoreActiveCellByRow(rowIdx, 'entity');
+      restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
       return;
     }
     // 同名エントリが既にあれば、楽観適用で既存エントリを上書きしないようここで弾く
@@ -271,9 +281,10 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     if (Object.prototype.hasOwnProperty.call(_renEntities, newName)) {
       if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
       renderPivot(_renCtx);
-      restoreActiveCellByRow(rowIdx, 'entity');
+      restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
       return;
     }
+    const stableEntryId = _renEntities?.[oldName]?._id || _renEntities?.[oldName]?.entry_id || '';
     // 楽観的更新: サーバ保存を待たず、その場で新名を表示する（列名変更と同じ即時反映）。
     // 保存に失敗したら catch で旧名へ戻す。
     _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
@@ -281,27 +292,33 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       const renamePath = typeof _dbResolveEntityPathForRename === 'function'
         ? await _dbResolveEntityPathForRename(dbPath, oldName)
         : _entityPath(dbPath, oldName);
-      await apiPost('/entity/rename', { path: renamePath, new_name: newName });
+      await window.GbDbEntryIdentity.rename({
+        dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
+        entryId: stableEntryId,
+      });
       _dbUndoRename(dbPath, oldName, newName, _renCtx);
       _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
     } catch(e) {
-      // 保存失敗: 楽観適用を取り消して旧名へ戻す
-      _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
-      if (typeof showStatus === 'function') showStatus('名前の変更に失敗しました', true);
-      restoreActiveCellByRow(rowIdx, 'entity');
+      // 通信結果不明では、サーバー側だけ成功した変更を画面から消さない。
+      if (!e?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+      if (typeof showStatus === 'function') {
+        showStatus(e?.resultUnknown ? '保存結果を確認できません。再読み込みで確認します' : '名前の変更に失敗しました', true);
+      }
+      if (e?.resultUnknown) _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
+      restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
     }
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
     if (_dbInlineConsumeImeBoundaryKey(e)) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; renderPivot(_renCtx); restoreActiveCellByRow(rowIdx, 'entity'); }
+    if (e.key === 'Escape') { committed = true; renderPivot(_renCtx); restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx); }
     if (e.key === 'Tab') {
       e.preventDefault();
       // Tab: 確定して同じ行の次のセルへ（エントリ名列の位置に関わらず「最初のプロパティ列」へ）
       committed = true;
       const newName = inp.value.trim();
-      const doAfter = () => restoreActiveCellByRow(rowIdx, 'first-prop');
+      const doAfter = () => restoreActiveCellByRow(rowIdx, 'first-prop', 0, _renCtx);
       if (!newName || newName === oldName) { renderPivot(_renCtx); doAfter(); return; }
       const _renEntitiesTab = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
         || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
@@ -309,18 +326,25 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
         renderPivot(_renCtx); doAfter(); return;
       }
+      const stableEntryId = _renEntitiesTab?.[oldName]?._id || _renEntitiesTab?.[oldName]?.entry_id || '';
       // 楽観的更新: 先に新名を表示してからサーバ保存
       _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, oldName, newName, dbPath);
       const renamePathPromise = typeof _dbResolveEntityPathForRename === 'function'
         ? _dbResolveEntityPathForRename(dbPath, oldName)
         : Promise.resolve(_entityPath(dbPath, oldName));
-      renamePathPromise.then(renamePath => apiPost('/entity/rename', { path: renamePath, new_name: newName })).then(() => {
+      renamePathPromise.then(renamePath => window.GbDbEntryIdentity.rename({
+        dbPath, oldName, newName, path: renamePath, ctx: _renCtx,
+        entryId: stableEntryId,
+      })).then(() => {
         _dbUndoRename(dbPath, oldName, newName, _renCtx);
         _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
         setTimeout(doAfter, 50);
-      }).catch(() => {
-        _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
-        if (typeof showStatus === 'function') showStatus('名前の変更に失敗しました', true);
+      }).catch((error) => {
+        if (!error?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
+        if (typeof showStatus === 'function') {
+          showStatus(error?.resultUnknown ? '保存結果を確認できません。再読み込みで確認します' : '名前の変更に失敗しました', true);
+        }
+        if (error?.resultUnknown) _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
         doAfter();
       });
     }
@@ -329,11 +353,11 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
 }
 
 // アクティブセル復元ヘルパー
-function restoreActiveCellByProp(propName) {
+function restoreActiveCellByProp(propName, ctxOverride) {
   setTimeout(() => {
-    const table = _currentPivotTable();
+    const table = _currentPivotTable(ctxOverride);
     if (!table) return;
-    const dataRows = _currentPivotRows();
+    const dataRows = _currentPivotRows(ctxOverride);
     // プロパティ名からcolIdxを特定
     const thAll = Array.from(table.querySelectorAll('thead th'));
     const colIdx = thAll.findIndex(th => th.dataset.prop === propName);
@@ -344,17 +368,17 @@ function restoreActiveCellByProp(propName) {
   }, 30);
 }
 
-function restoreActiveCellByRow(rowIdx, colIdx, _attempt) {
+function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
   setTimeout(() => {
-    const table = _currentPivotTable();
+    const table = _currentPivotTable(ctxOverride);
     if (!table) return;
-    const dataRows = _currentPivotRows();
+    const dataRows = _currentPivotRows(ctxOverride);
     // Step 2: チャンク分割中で目的の rowIdx がまだ生成されていない可能性。
     // 進行中なら最大 30 回 (約1.5秒) リトライ
-    const ctx = (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
+    const ctx = ctxOverride || ((typeof _currentPaneState === 'function') ? _currentPaneState() : null);
     const attempt = _attempt || 0;
     if (rowIdx >= dataRows.length && ctx && ctx._renderInProgress && attempt < 30) {
-      restoreActiveCellByRow(rowIdx, colIdx, attempt + 1);
+      restoreActiveCellByRow(rowIdx, colIdx, attempt + 1, ctx);
       return;
     }
     const row = dataRows[Math.min(rowIdx, dataRows.length - 1)];
@@ -375,10 +399,10 @@ function restoreActiveCellByRow(rowIdx, colIdx, _attempt) {
   }, 30);
 }
 
-function restoreActiveCellByEntityName(entityName) {
-  const table = _currentPivotTable();
+function restoreActiveCellByEntityName(entityName, ctxOverride) {
+  const table = _currentPivotTable(ctxOverride);
   if (!table) return;
-  const dataRows = _currentPivotRows();
+  const dataRows = _currentPivotRows(ctxOverride);
   for (const row of dataRows) {
     const label = row.querySelector('.entity-name-label');
     if (label && label.textContent === entityName) {
@@ -387,7 +411,7 @@ function restoreActiveCellByEntityName(entityName) {
     }
   }
   // Step 2: チャンク分割中で対象行が未生成の可能性。進行中ならポーリングで待機
-  const ctx = (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
+  const ctx = ctxOverride || ((typeof _currentPaneState === 'function') ? _currentPaneState() : null);
   if (ctx && ctx._renderInProgress) {
     _waitForEntityRow(ctx, entityName, (tr) => setActiveCell(tr.querySelector('.col-entity')));
     return;
@@ -421,7 +445,9 @@ function _waitForEntityRow(ctx, entityName, cb) {
   const tblId = (ctx && ctx.tableId) || 'pivot-table';
   let attempts = 0;
   const tick = () => {
-    const root = _paneEl(ctx, '#' + tblId) || document;
+    if (ctx?.destroyed) return;
+    const root = _paneEl(ctx, '#' + tblId) || (!ctx ? document : null);
+    if (!root) return;
     const tr = root.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`);
     if (tr) { cb(tr); return; }
     // 描画フラグが落ちていても、直後の再描画・分割描画で行が後から出ることがある。

@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+  const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
 
   function _normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/g, '');

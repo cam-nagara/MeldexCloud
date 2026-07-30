@@ -260,24 +260,6 @@ class CompareComponent extends ToolComponent {
   }
 }
 
-// === SearchComponent ===
-class SearchComponent extends ToolComponent {
-  create() {
-    this.el = document.createElement('div');
-    this.el.className = 'gb-tool-search';
-    this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;padding:12px;';
-    this.el.innerHTML = `<div class="gb-empty-state" data-gb-tool-empty-state="search">
-      <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide('search', 42) : ''}</div>
-      <div class="gb-empty-message">検索</div>
-      <button type="button" class="gb-btn gb-btn-sm" data-gb-open-vault-search data-e2e-id="search-empty-open-vault-search" aria-label="全文検索パネルを開く">検索を開く</button>
-    </div>`;
-    this.el.querySelector('[data-gb-open-vault-search]')?.addEventListener('click', () => {
-      if (typeof openSearchPanel === 'function') openSearchPanel();
-    });
-    return this.el;
-  }
-}
-
 // === VersionComponent ===
 class VersionComponent extends ToolComponent {
   destroy() {
@@ -698,5 +680,4 @@ registerToolComponent('detail',     { cls: DetailComponent, icon: 'slidersHorizo
 registerToolComponent('folder',     { cls: FolderComponent, icon: 'folder', label: 'フォルダビュー', multi: true, requiresViewLock: true });
 registerToolComponent('media',      { cls: MediaComponent, icon: 'galleryThumbnails', label: 'メディア', multi: true, requiresViewLock: true });
 registerToolComponent('compare',    { cls: CompareComponent, icon: 'columns', label: '比較', multi: true, requiresViewLock: true });
-registerToolComponent('search',     { cls: SearchComponent, icon: 'search', label: '検索', multi: false });
 registerToolComponent('version',    { cls: VersionComponent, icon: 'gitBranch', label: 'バージョン管理', multi: true });

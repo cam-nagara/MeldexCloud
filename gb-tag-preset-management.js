@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  function filteredTags(state, visibleLimit) {
+  function filteredTags(state) {
     const selected = new Set(
       (state.selectedPresetNames || []).map(name => String(name).toLocaleLowerCase('ja')),
     );
@@ -17,7 +17,7 @@
     });
     return {
       all: matches,
-      visible: matches.slice(0, Math.max(1, Number(visibleLimit) || 1)),
+      visible: matches,
     };
   }
 
@@ -31,18 +31,33 @@
     search.value = state.filterText || '';
     search.dataset.e2eId = 'tag-management-filter';
     search.setAttribute('aria-label', 'タグ辞書を検索');
-    search.addEventListener('input', () => onFilterInput(search));
-    fragment.appendChild(search);
+    search.addEventListener('compositionstart', () => {
+      search.dataset.composing = '1';
+    });
+    search.addEventListener('compositionend', event => {
+      delete search.dataset.composing;
+      onFilterInput(search, event);
+    });
+    search.addEventListener('input', event => {
+      if (event.isComposing || search.dataset.composing === '1') return;
+      onFilterInput(search, event);
+    });
 
     const details = document.createElement('details');
     details.className = 'gb-tag-management-presets';
-    details.open = true;
+    details.dataset.e2eId = 'tag-management-preset-filter-section';
+    details.open = !!state.presetFiltersOpen;
     const summary = document.createElement('summary');
-    summary.textContent = `自動タグプリセット（${(state.presetNames || []).length}件・複数選択可）`;
-    summary.title = '選択したプリセットのタグだけを表示します。タグ自体は削除されません。';
+    const selectedNames = state.selectedPresetNames || [];
+    summary.textContent = selectedNames.length
+      ? `タグ一覧の絞り込み（${selectedNames.join('＋')}）`
+      : `タグ一覧の絞り込み（全${(state.presetNames || []).length}プリセット）`;
+    summary.title = 'タグ一覧の表示だけを絞り込みます。自動タグ付けで使うプリセットは、下の自動タグ付け欄で選びます。';
     details.appendChild(summary);
     const list = document.createElement('div');
     list.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:6px 0;';
+    list.setAttribute('role', 'group');
+    list.setAttribute('aria-label', 'タグ一覧をプリセットで絞り込み');
     if (!(state.presetNames || []).length) {
       const empty = document.createElement('span');
       empty.className = 'gb-section-desc';
@@ -61,7 +76,11 @@
       list.appendChild(label);
     });
     details.appendChild(list);
+    details.addEventListener('toggle', () => {
+      state.presetFiltersOpen = details.open;
+    });
     fragment.appendChild(details);
+    fragment.appendChild(search);
     return fragment;
   }
 
@@ -180,6 +199,34 @@
     }
   }
 
+  function updateAutoTagTargetLabel(target, targets, path, recursive) {
+    target.dataset.tagAutoTargetLabel = '1';
+    if (targets.length > 1) {
+      const recursiveCount = targets.filter(item => item.recursive).length;
+      target.textContent = `選択項目: ${targets.length.toLocaleString('ja-JP')}件`
+        + (recursiveCount ? `（フォルダ${recursiveCount.toLocaleString('ja-JP')}件は配下も対象）` : '');
+      const previewPaths = targets.slice(0, 20).map(item => item.path);
+      target.title = previewPaths.join('\n')
+        + (targets.length > previewPaths.length ? `\nほか${(targets.length - previewPaths.length).toLocaleString('ja-JP')}件` : '');
+      return;
+    }
+    target.textContent = (recursive ? 'フォルダ内すべて: ' : '対象: ') + path;
+    target.title = path;
+  }
+
+  function normalizeAutoTagTargetPath(value) {
+    let current = value;
+    for (let depth = 0; depth < 3; depth += 1) {
+      if (typeof current === 'string') return current.trim();
+      if (!current || typeof current !== 'object') return '';
+      const next = current.path ?? current.absolute_path ?? current.absolutePath
+        ?? current.full_path ?? current.fullPath ?? current.value;
+      if (next === current) return '';
+      current = next;
+    }
+    return typeof current === 'string' ? current.trim() : '';
+  }
+
   function renderAutoTagExecutionSection(options = {}) {
     if (window.isAutoTagRuntimeAvailable?.() !== true) return null;
     const seen = new Set();
@@ -187,7 +234,7 @@
       ? options.targets
       : [{ path: options.path, recursive: options.recursive }])
       .map(item => ({
-        path: String(item?.path || item || '').trim(),
+        path: normalizeAutoTagTargetPath(item),
         recursive: typeof item === 'object' ? !!item?.recursive : false,
       }))
       .filter(item => {
@@ -221,6 +268,17 @@
     section.dataset.targetPath = path;
     section.dataset.recursive = recursive ? '1' : '0';
     section.dataset.targetSignature = targetSignature;
+    const existingHost = section.querySelector?.('[data-tag-auto-run-host]');
+    const existingTarget = section.querySelector?.('[data-tag-auto-target-label]');
+    if (!options.force && path && !options.mutationBlocked && existingHost && existingTarget) {
+      updateAutoTagTargetLabel(existingTarget, targets, path, recursive);
+      window.updateAutoTagRunPanelTargets?.(existingHost, path, {
+        recursive,
+        targets,
+        label: options.label || (targets.length > 1 ? `${targets.length}件の選択項目` : ''),
+      });
+      return section;
+    }
     section.replaceChildren();
     if (!path) {
       const empty = document.createElement('div');
@@ -242,17 +300,7 @@
     const target = document.createElement('div');
     target.className = 'gb-section-desc';
     target.style.cssText = 'padding:6px 4px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-    if (targets.length > 1) {
-      const recursiveCount = targets.filter(item => item.recursive).length;
-      target.textContent = `選択項目: ${targets.length.toLocaleString('ja-JP')}件`
-        + (recursiveCount ? `（フォルダ${recursiveCount.toLocaleString('ja-JP')}件は配下も対象）` : '');
-      const previewPaths = targets.slice(0, 20).map(item => item.path);
-      target.title = previewPaths.join('\n')
-        + (targets.length > previewPaths.length ? `\nほか${(targets.length - previewPaths.length).toLocaleString('ja-JP')}件` : '');
-    } else {
-      target.textContent = (recursive ? 'フォルダ内すべて: ' : '対象: ') + path;
-      target.title = path;
-    }
+    updateAutoTagTargetLabel(target, targets, path, recursive);
     const host = document.createElement('div');
     host.dataset.tagAutoRunHost = '1';
     host.dataset.e2eId = 'tag-auto-run-host';
@@ -273,5 +321,6 @@
     installBuiltinPreset,
     runAutoTagForFolder,
     renderAutoTagExecutionSection,
+    normalizeAutoTagTargetPath,
   };
 })();

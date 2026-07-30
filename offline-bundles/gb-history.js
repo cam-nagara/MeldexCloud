@@ -249,7 +249,7 @@ async function _refreshRestoredVersionTarget(path, type) {
     await Promise.resolve(openBoard(label, path));
   } else if (state.view === 'entity' && state.currentEntityPath && typeof selectEntity === 'function') {
     await Promise.resolve(selectEntity(state.currentEntityPath));
-  } else if ((state.view === 'pivot' || state.view === 'gallery' || state.view === 'kanban' || state.view === 'timeline') && state.currentDbPath && typeof selectDatabase === 'function') {
+  } else if ((state.view === 'pivot' || state.view === 'tree' || state.view === 'gallery' || state.view === 'kanban' || state.view === 'timeline') && state.currentDbPath && typeof selectDatabase === 'function') {
     await Promise.resolve(selectDatabase(state.currentDbPath));
   }
 }
@@ -655,7 +655,7 @@ function _getCurrentVersionTarget() {
   if (state.view === 'page') { const pc = document.getElementById('page-content'); path = pc?.dataset?.path || ''; }
   else if (state.view === 'entity') { const ep = state.currentEntityPath; path = ep ? (ep.endsWith('.md') ? ep : ep + '/_freetext.md') : ''; }
   else if (state.view === 'board') { path = bd.path || ''; }
-  else if ((state.view === 'pivot' || state.view === 'gallery' || state.view === 'kanban' || state.view === 'timeline') && state.currentDbPath) { path = state.currentDbPath; type = 'db'; }
+  else if ((state.view === 'pivot' || state.view === 'tree' || state.view === 'gallery' || state.view === 'kanban' || state.view === 'timeline') && state.currentDbPath) { path = state.currentDbPath; type = 'db'; }
   else if (state.view === 'csv') { path = (typeof _csvPath !== 'undefined') ? _csvPath : ''; }
   else if (state.view === 'scriptnote') {
     const comp = activeTab?.type === 'scriptnote' && typeof getComponentInstance === 'function'
@@ -1785,7 +1785,7 @@ function _meldexScheduleActiveComponent() {
 // ため直接参照できない）。シート（データベース）が実際に画面表示されている時に
 // state.view が取り得る値の全集合。showView() を経由しない他ツールへの切替では
 // state.view はこの集合外の値（'csv'/'page'/'entity'/'board'/'folder' 等）になる。
-const _MELDEX_DB_VIEW_MODES = ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'];
+const _MELDEX_DB_VIEW_MODES = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'];
 
 // isCalendarDb()（系統(B)判定）は `state.pivotData.calendar_db` の残留値だけを見るため、
 // カレンダー表示モードのシートを閉じて別ツールへ切り替えた後も真のままになり得る

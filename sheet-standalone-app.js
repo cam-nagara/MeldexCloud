@@ -25,7 +25,7 @@
 
   function showView(viewName, ctx) {
     const resolved = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
-    const dbViews = ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'];
+    const dbViews = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'];
     const display = (id, value) => {
       const element = qs(id);
       if (element) element.style.display = value;
@@ -33,6 +33,7 @@
     display('welcome-view', resolved === 'welcome' ? 'flex' : 'none');
     display('db-view-container', dbViews.includes(viewName) ? 'flex' : 'none');
     display('pivot-view', resolved === 'pivot' ? '' : 'none');
+    display('tree-view', resolved === 'tree' ? 'flex' : 'none');
     display('gallery-view', resolved === 'gallery' ? 'flex' : 'none');
     display('kanban-view', resolved === 'kanban' ? 'flex' : 'none');
     display('timeline-view', resolved === 'timeline' ? '' : 'none');
@@ -46,17 +47,21 @@
     if (toolbar) toolbar.hidden = !dbViews.includes(viewName);
     state.view = viewName;
     if (ctx) ctx.viewMode = viewName;
+    if (typeof _dbTreeSetOptionTabVisible === 'function') {
+      _dbTreeSetOptionTabVisible(resolved === 'tree', ctx);
+    }
   }
   window.showView = showView;
 
   function setPath(path) {
     app.path = normalizePath(path);
     state.currentDbPath = app.path;
-    qs('sheet-title-label').textContent = app.path ? folderTitle(app.path) : 'シート';
+    qs('sheet-title-label').value = app.path ? folderTitle(app.path) : 'シート';
     qs('sheet-path-label').textContent = app.path
       ? MeldexStandaloneFS.pathLabel(app.path)
       : 'シートを選択してください';
     safeStorageSet(LAST_SHEET_KEY, app.path);
+    window.MeldexStandaloneTags?.setTargetPath?.(app.path);
     syncOptionPanel().catch(error => console.error('sheet option panel sync failed', error));
   }
 
@@ -289,6 +294,41 @@
     await openSheetPath(app.path, { forceReload: true });
   }
 
+  async function renameCurrentSheet() {
+    const input = qs('sheet-title-label');
+    if (!input || !app.path) return;
+    const previous = folderTitle(app.path);
+    const next = validateSheetName(input.value);
+    if (next === previous) return;
+    try {
+      const result = await apiPost('/outliner/rename', {
+        old_path: app.path,
+        new_name: next,
+        type: 'database',
+      });
+      const renamedPath = normalizePath(result?.path || result?.new_path || (
+        normalizePath(app.path).split('/').slice(0, -1).concat(next).join('/')
+      ));
+      setPath(renamedPath);
+      showStatus('シート名を変更しました');
+    } catch (error) {
+      input.value = previous;
+      throw error;
+    }
+  }
+
+  function bindTitleEditing() {
+    const input = qs('sheet-title-label');
+    input?.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      input.blur();
+    });
+    input?.addEventListener('change', () => {
+      window.runStandaloneFileAction('シート名の変更', renameCurrentSheet);
+    });
+  }
+
   function bindMenus() {
     attachStandaloneMenu(qs('sheet-menu-button'), qs('sheet-menu'));
     document.addEventListener('click', async event => {
@@ -296,6 +336,7 @@
       if (!action) return;
       if (action === 'new') await window.runStandaloneFileAction('新規作成', createSheet);
       else if (action === 'open') await window.runStandaloneFileAction('シートを開くことが', openSheet);
+      else if (action === 'workspace') window.MeldexStandaloneWorkspaceTree?.open?.();
       else if (action === 'importCsv') await window.runStandaloneFileAction('CSVを読み込むことが', importCsv);
       else if (action === 'exportCsv') await window.runStandaloneFileAction('CSVに書き出すことが', exportCsv);
       else if (action === 'reload') await window.runStandaloneFileAction('再読み込み', reloadSheet);
@@ -363,6 +404,7 @@
   function bindUi() {
     initOptionPanel();
     bindMenus();
+    bindTitleEditing();
     bindDbToolbar();
     bindShortcuts();
     window.MeldexStandaloneMobileToolbar?.setup({

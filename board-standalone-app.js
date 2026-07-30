@@ -23,6 +23,7 @@
   const TOP_TOOLBAR_HIDDEN_KEY = 'meldex-board-toolbar-top-hidden';
   const BOTTOM_TOOLBAR_HIDDEN_KEY = 'meldex-board-toolbar-bottom-hidden';
   const BOARD_FILE_EXTENSION = '.mel-board';
+  let localDrafts = null;
 
   // -------------------------------------------------------------------------
   // ブラウザ互換性チェック
@@ -138,6 +139,7 @@
     clearTimeout(window._bdTimer);
     state.path = '';
     FS.setCurrentPath?.('');
+    window.MeldexStandaloneTags?.setTargetPath?.('');
     state._preservedFrontmatter = '';
     state._loadedBoardPath = '';
     state.nodes = [];
@@ -452,6 +454,7 @@
       state._loadedBoardPath = newPath;
       if (window.state) window.state.currentBoardPath = newPath;
       FS.setCurrentPath?.(newPath);
+      window.MeldexStandaloneTags?.setTargetPath?.(newPath);
     });
   }
 
@@ -481,6 +484,7 @@
         return false;
       }
       FS.setCurrentPath?.(path);
+      window.MeldexStandaloneTags?.setTargetPath?.(path);
       _showStatus('開きました: ' + path);
       // 選択中ファイルをハイライト
       document.querySelectorAll('.bsa-file-row.active').forEach((el) => el.classList.remove('active'));
@@ -857,6 +861,25 @@
     if (typeof window.bdInitBoardShell === 'function') {
       window.bdInitBoardShell(host);
     }
+    const title = host.querySelector('[data-bd-control="title"]');
+    if (title && title.dataset.bsaEditableTitle !== '1') {
+      title.dataset.bsaEditableTitle = '1';
+      title.title = 'クリックしてボード名を編集';
+      title.setAttribute('role', 'button');
+      title.tabIndex = 0;
+      const edit = () => window._bdStartInlineBoardTitleEdit?.(title);
+      title.addEventListener('click', edit);
+      title.addEventListener('keydown', event => {
+        if (!['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        edit();
+      });
+      const syncStatus = document.createElement('span');
+      syncStatus.id = 'board-sync-status';
+      syncStatus.className = 'sa-sync-status';
+      syncStatus.setAttribute('aria-live', 'polite');
+      title.insertAdjacentElement('afterend', syncStatus);
+    }
     if (typeof window.bdInitInteraction === 'function') {
       window.bdInitInteraction(host);
     }
@@ -885,11 +908,13 @@
     return !document.getElementById('board-standalone-shell')?.classList.contains('bsa-options-collapsed');
   }
 
-  function _setOptionsPanelVisible(visible) {
+  function _setOptionsPanelVisible(visible, persist = true) {
     const shell = document.getElementById('board-standalone-shell');
     if (!shell) return;
     shell.classList.toggle('bsa-options-collapsed', !visible);
-    try { localStorage.setItem(OPTIONS_COLLAPSED_KEY, visible ? '0' : '1'); } catch (e) {}
+    if (persist) {
+      try { localStorage.setItem(OPTIONS_COLLAPSED_KEY, visible ? '0' : '1'); } catch (e) {}
+    }
     const detailBtn = document.querySelector('[data-bd-action="detail"]');
     if (detailBtn) {
       detailBtn.title = visible ? '右サイドバーを閉じる' : '右サイドバーを開く';
@@ -909,10 +934,9 @@
   function _applyStoredOptionsPanelState() {
     let stored = null;
     try { stored = localStorage.getItem(OPTIONS_COLLAPSED_KEY); } catch (e) {}
-    const cloudNarrow = window.MeldexStandaloneCloud?.isCloudMode?.() === true
-      && window.matchMedia?.('(max-width: 820px)')?.matches;
-    const collapsed = stored == null ? !!cloudNarrow : stored === '1';
-    _setOptionsPanelVisible(!collapsed);
+    const narrow = window.matchMedia?.('(max-width: 820px)')?.matches === true;
+    const collapsed = narrow || stored === '1';
+    _setOptionsPanelVisible(!collapsed, false);
   }
 
   function _closeStandaloneMenu() {
@@ -938,6 +962,9 @@
         _menuItem(hasRoot ? '保存場所を変更...' : '保存場所を選ぶ...', () => _changeRootFolder()),
         _menuItem('一覧を更新', () => _refreshBoardList(), { disabled: !hasRoot }),
       );
+    }
+    if (cloud) {
+      items.push(_menuItem('Meldexファイル', () => window.MeldexStandaloneWorkspaceTree?.open?.()));
     }
     items.push(
       _menuItem('', null, { separator: true }),
@@ -1172,6 +1199,79 @@
       _setRootUi(false);
       _createStarterBoard();
     }
+    await _initLocalDrafts();
+  }
+
+  async function _initLocalDrafts() {
+    if (!window.MeldexStandaloneLocalDrafts) return;
+    localDrafts = window.MeldexStandaloneLocalDrafts.create({
+      appId: 'board',
+      getPath: () => String(_boardState()?.path || ''),
+      capture: () => ({
+        title: (document.getElementById('bd-title')?.textContent || '新規ボード').trim(),
+        content: typeof bdToMd === 'function' ? bdToMd() : '',
+      }),
+      restore: async (snapshot, record) => {
+        if (typeof bdOpenBoard !== 'function') return;
+        const loadPath = record.remotePath
+          || `__local__/${record.localDocumentId || 'draft'}.mel-board`;
+        const originalFetch = window.apiFetch;
+        window.apiFetch = async (url, options) => {
+          const requested = new URL(String(url || ''), location.href).searchParams.get('path') || '';
+          if (requested.replace(/\\/g, '/') === loadPath) {
+            return { path: loadPath, content: snapshot.content || '', etag: record.baseRevision || '' };
+          }
+          return originalFetch(url, options);
+        };
+        try {
+          await bdOpenBoard(snapshot.title || '端末内のボード', loadPath);
+          const board = _boardState();
+          if (board) {
+            if (!record.remotePath) {
+              board.path = '';
+              board._loadedBoardPath = '';
+              if (window.state) window.state.currentBoardPath = '';
+              FS.setCurrentPath?.('');
+            }
+            board.dirty = true;
+          }
+        } finally {
+          window.apiFetch = originalFetch;
+        }
+      },
+      sync: async (snapshot, record) => {
+        const result = await apiPut('/file?path=' + encodeURIComponent(record.remotePath), {
+          content: snapshot.content || '',
+          skip_if_missing: true,
+        });
+        if (result?.queued) throw new Error('接続後に再試行します');
+        if (result?.missing || result?.skipped) throw new Error('保存先が見つかりません');
+        const board = _boardState();
+        if (board?.path === record.remotePath && typeof bdToMd === 'function' && bdToMd() === snapshot.content) {
+          board.dirty = false;
+        }
+      },
+      onStatus: (state, message) => {
+        const label = document.getElementById('board-sync-status');
+        if (label) {
+          label.textContent = message || (state === 'synced' ? '同期済み' : '');
+          label.dataset.status = state;
+        }
+        if (['conflict', 'error', 'destination-check'].includes(state)) _showError(message);
+      },
+    });
+    localDrafts.start();
+    const boardDirty = window.bdDirty;
+    if (typeof boardDirty === 'function' && boardDirty._meldexLocalDraftCapture !== true) {
+      const wrappedBoardDirty = function (...args) {
+        localDrafts?.schedule?.();
+        return boardDirty.apply(this, args);
+      };
+      wrappedBoardDirty._meldexLocalDraftCapture = true;
+      window.bdDirty = wrappedBoardDirty;
+    }
+    await localDrafts.restoreLatest();
+    localDrafts.flush();
   }
 
   if (document.readyState === 'loading') {

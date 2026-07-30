@@ -11,7 +11,49 @@
   let cache = [];
   let targetEditorSeq = 0;
   const targetTagsCache = new Map();
+  const targetTagsLastResolved = new Map();
+  const targetTagsLatestRequest = new Map();
+  let targetTagsRequestSeq = 0;
+  let targetEditorCatalogRefreshTimer = null;
   const TARGET_TAGS_CACHE_TTL_MS = 2000;
+  const COMPACT_TAG_DISPLAY_LIMIT_KEY = 'meldex.compactTagDisplayLimit.v1';
+  const DEFAULT_COMPACT_TAG_DISPLAY_LIMIT = 10;
+  const MAX_COMPACT_TAG_DISPLAY_LIMIT = 999;
+  let compactTagDisplayLimit = null;
+
+  function normalizeCompactTagDisplayLimit(value) {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_COMPACT_TAG_DISPLAY_LIMIT;
+    return Math.max(1, Math.min(MAX_COMPACT_TAG_DISPLAY_LIMIT, parsed));
+  }
+
+  function getCompactTagDisplayLimit() {
+    if (compactTagDisplayLimit != null) return compactTagDisplayLimit;
+    try {
+      compactTagDisplayLimit = normalizeCompactTagDisplayLimit(localStorage.getItem(COMPACT_TAG_DISPLAY_LIMIT_KEY));
+    } catch {
+      compactTagDisplayLimit = DEFAULT_COMPACT_TAG_DISPLAY_LIMIT;
+    }
+    return compactTagDisplayLimit;
+  }
+
+  function setCompactTagDisplayLimit(value) {
+    const limit = normalizeCompactTagDisplayLimit(value);
+    compactTagDisplayLimit = limit;
+    try {
+      localStorage.setItem(COMPACT_TAG_DISPLAY_LIMIT_KEY, String(limit));
+    } catch (_) {
+      // 端末内設定を保存できない環境でも、現在の画面には変更を反映する。
+    }
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:compact-tag-display-limit-changed', {
+        detail: { limit },
+      }));
+    } catch (_) {
+      // CustomEventを利用できない古い埋め込み環境でも設定値の保存は成功扱いにする。
+    }
+    return limit;
+  }
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -23,13 +65,119 @@
   }
 
   function effectiveTagColor(tag, groupsById) {
-    // タグの実効色 = 所属グループの色を優先、なければタグ自身の色、なければアクセント
-    if (tag && tag.group_id && groupsById && groupsById[tag.group_id]) {
-      const groupColor = tagColor(groupsById[tag.group_id].color);
+    // タグの実効色 = 所属グループから親へ遡った色を優先し、
+    // グループに色がなければタグ自身の色、最後にアクセント色を使う。
+    const visited = new Set();
+    const groupForId = groupId => (
+      groupsById instanceof Map ? groupsById.get(groupId) : groupsById?.[groupId]
+    );
+    let groupId = tag?.group_id || null;
+    while (groupId && groupForId(groupId) && !visited.has(groupId)) {
+      visited.add(groupId);
+      const group = groupForId(groupId);
+      const groupColor = tagColor(group.color);
       if (groupColor) return groupColor;
+      groupId = group.parent_id || null;
     }
     const own = tagColor(tag && tag.color);
     return own || 'var(--accent)';
+  }
+
+  function compareCatalogRows(a, b) {
+    return Number(a?.sort_index || 0) - Number(b?.sort_index || 0)
+      || String(a?.name || '').localeCompare(String(b?.name || ''), 'ja');
+  }
+
+  function groupOrderMap(groups) {
+    const rows = Array.isArray(groups) ? groups : [];
+    const byParent = new Map();
+    rows.forEach(group => {
+      const parentId = group?.parent_id || '';
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId).push(group);
+    });
+    byParent.forEach(siblings => siblings.sort(compareCatalogRows));
+    const order = new Map();
+    const visited = new Set();
+    let index = 0;
+    const visit = group => {
+      const id = String(group?.id || '');
+      if (!id || visited.has(id)) return;
+      visited.add(id);
+      order.set(id, index++);
+      (byParent.get(id) || []).forEach(visit);
+    };
+    (byParent.get('') || []).forEach(visit);
+    rows.filter(group => !visited.has(String(group?.id || '')))
+      .sort(compareCatalogRows)
+      .forEach(visit);
+    return order;
+  }
+
+  function sortTagsByGroupOrder(tags, groups) {
+    const rows = Array.isArray(tags) ? [...tags] : [];
+    const order = groupOrderMap(groups);
+    const uncategorizedRank = order.size + 1;
+    return rows.sort((a, b) => {
+      const aRank = order.has(String(a?.group_id || '')) ? order.get(String(a.group_id)) : uncategorizedRank;
+      const bRank = order.has(String(b?.group_id || '')) ? order.get(String(b.group_id)) : uncategorizedRank;
+      return aRank - bRank || compareCatalogRows(a, b);
+    });
+  }
+
+  function setDataset(element, values) {
+    Object.entries(values || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') element.dataset[key] = String(value);
+    });
+  }
+
+  function createTagChip(tag, options = {}) {
+    const groupsById = options.groupsById || {};
+    const displayName = String(options.label ?? tag?.name ?? '');
+    const chip = document.createElement('span');
+    chip.className = 'gb-tag-chip'
+      + (options.compact ? ' gb-tag-chip--compact' : '')
+      + (options.summary ? ' gb-tag-chip--summary' : '')
+      + (options.onRemove ? ' gb-tag-chip--removable' : '')
+      + (options.className ? ' ' + options.className : '');
+    chip.style.setProperty('--gb-tag-color', options.summary ? 'var(--fg2)' : effectiveTagColor(tag, groupsById));
+    chip.title = options.title || displayName;
+    setDataset(chip, options.dataset);
+
+    const label = document.createElement(typeof options.onActivate === 'function' ? 'button' : 'span');
+    if (label.tagName === 'BUTTON') label.type = 'button';
+    label.className = 'gb-tag-chip__label';
+    label.textContent = displayName;
+    label.title = options.labelTitle || options.title || displayName;
+    if (options.ariaLabel) label.setAttribute('aria-label', options.ariaLabel);
+    setDataset(label, options.labelDataset);
+    if (typeof options.onActivate === 'function') {
+      label.addEventListener('click', event => options.onActivate(event, tag));
+    }
+    chip.appendChild(label);
+
+    if (typeof options.onRemove === 'function') {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'gb-tag-chip__remove';
+      remove.title = options.removeTitle || 'タグを外す';
+      remove.setAttribute('aria-label', options.removeAriaLabel || `${displayName || 'タグ'}を外す`);
+      setDataset(remove, options.removeDataset);
+      remove.innerHTML = icon('x', 12) || '×';
+      remove.disabled = !!options.removeDisabled;
+      remove.addEventListener('click', async event => {
+        event.stopPropagation();
+        if (remove.disabled) return;
+        remove.disabled = true;
+        try {
+          await options.onRemove(event, tag);
+        } finally {
+          if (remove.isConnected) remove.disabled = !!options.removeDisabled;
+        }
+      });
+      chip.appendChild(remove);
+    }
+    return chip;
   }
 
   // ============================================================
@@ -60,14 +208,15 @@
 
   async function loadTags(sourceFolder) {
     if (typeof apiFetch !== 'function') return { tags: [], groups: [] };
-    return apiFetch(withSourceQuery('/global-tags', sourceFolder), { silentError: true });
+    return apiFetch(withSourceQuery('/global-tags', sourceFolder), { silentError: true, timeoutMs: 120000 });
   }
 
   // シートの共通タグ列など、大量のセル描画で同一データを繰り返し参照する用途向けの
   // 短期キャッシュ付きラッパー。タグ/グループの変更操作（作成・更新・削除）で即座に破棄される。
   const _tagsCatalogCache = new Map(); // source_folder -> { at: number, promise: Promise }
   const _tagsCatalogLastResolved = new Map(); // source_folder -> 直近で解決済みの値
-  const TAGS_CATALOG_CACHE_TTL_MS = 3000;
+  // 明示的な辞書更新で失効するため、通常のフォルダ切替では再取得しない。
+  const TAGS_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
   function invalidateTagsCatalogCache(sourceFolder) {
     if (arguments.length === 0) {
       _tagsCatalogCache.clear();
@@ -76,7 +225,6 @@
     }
     const key = sourceCacheKey(sourceFolder);
     _tagsCatalogCache.delete(key);
-    _tagsCatalogLastResolved.delete(key);
   }
   function notifyTagsCatalogChanged(reason, result, sourceFolder) {
     try {
@@ -89,6 +237,19 @@
       }));
     } catch {}
   }
+  function notifyDictionaryChanged(reason, sourceFolder) {
+    invalidateTagsCatalogCache(sourceFolder);
+    notifyTagsCatalogChanged(reason || 'dictionary-sheet-updated', null, sourceFolder);
+  }
+  function publishTagsCatalogMutation(reason, result, sourceFolder) {
+    const key = sourceCacheKey(sourceFolder);
+    if (Array.isArray(result?.tags) && Array.isArray(result?.groups)) {
+      _tagsCatalogLastResolved.set(key, result);
+      _tagsCatalogCache.set(key, { at: Date.now(), promise: Promise.resolve(result) });
+    } else _tagsCatalogCache.delete(key);
+    notifyTagsCatalogChanged(reason, result, sourceFolder);
+    return result;
+  }
   function loadTagsCached(sourceFolder) {
     const key = sourceCacheKey(sourceFolder);
     const cached = _tagsCatalogCache.get(key);
@@ -99,7 +260,7 @@
       _tagsCatalogLastResolved.set(key, data);
       return data;
     }).catch(err => {
-      invalidateTagsCatalogCache(sourceFolder);
+      _tagsCatalogCache.delete(key);
       throw err;
     });
     _tagsCatalogCache.set(key, { at: Date.now(), promise });
@@ -130,9 +291,7 @@
 
   async function createTag(payload, sourceFolder) {
     const result = await apiPost('/global-tags', withSourcePayload(payload, sourceFolder), { silentError: true });
-    invalidateTagsCatalogCache(sourceFolder);
-    notifyTagsCatalogChanged('tag-created', result, sourceFolder);
-    return result;
+    return publishTagsCatalogMutation('tag-created', result, sourceFolder);
   }
 
   async function updateTag(tagId, payload, sourceFolder) {
@@ -142,16 +301,21 @@
       body: JSON.stringify(withSourcePayload(payload, sourceFolder)),
       silentError: true,
     });
-    invalidateTagsCatalogCache(sourceFolder);
-    notifyTagsCatalogChanged('tag-updated', result, sourceFolder);
-    return result;
+    return publishTagsCatalogMutation('tag-updated', result, sourceFolder);
+  }
+
+  async function updateTagOrder(updates, sourceFolder) {
+    const result = await apiFetch('/global-tags/order', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withSourcePayload({ updates }, sourceFolder)),
+      silentError: true, timeoutMs: 120000,
+    });
+    return publishTagsCatalogMutation('tag-order-updated', result, sourceFolder);
   }
 
   async function deleteTag(tagId, sourceFolder) {
     const result = await apiFetch(withSourceQuery('/global-tags/' + encodeURIComponent(tagId), sourceFolder), { method: 'DELETE', silentError: true });
-    invalidateTagsCatalogCache(sourceFolder);
-    notifyTagsCatalogChanged('tag-deleted', result, sourceFolder);
-    return result;
+    return publishTagsCatalogMutation('tag-deleted', result, sourceFolder);
   }
 
   // ============================================================
@@ -164,9 +328,27 @@
 
   async function createGroup(payload, sourceFolder) {
     const result = await apiPost('/global-tag-groups', withSourcePayload(payload, sourceFolder), { silentError: true });
-    invalidateTagsCatalogCache(sourceFolder);
-    notifyTagsCatalogChanged('group-created', result, sourceFolder);
-    return result;
+    return publishTagsCatalogMutation('group-created', result, sourceFolder);
+  }
+
+  async function materializeExternalSuggestion(candidate, sourceFolder) {
+    const result = await apiPost(
+      '/external-tag-catalog/materialize',
+      withSourcePayload(
+        {
+          kind: candidate?.kind,
+          catalog_id: candidate?.catalog_id,
+          candidate,
+        },
+        sourceFolder,
+      ),
+      { silentError: true },
+    );
+    return publishTagsCatalogMutation(
+      'external-catalog-materialized',
+      result,
+      sourceFolder,
+    );
   }
 
   async function updateGroup(groupId, payload, sourceFolder) {
@@ -176,16 +358,21 @@
       body: JSON.stringify(withSourcePayload(payload, sourceFolder)),
       silentError: true,
     });
-    invalidateTagsCatalogCache(sourceFolder);
-    notifyTagsCatalogChanged('group-updated', result, sourceFolder);
-    return result;
+    return publishTagsCatalogMutation('group-updated', result, sourceFolder);
+  }
+
+  async function updateGroupOrder(updates, sourceFolder) {
+    const result = await apiFetch('/global-tag-groups/order', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withSourcePayload({ updates }, sourceFolder)),
+      silentError: true, timeoutMs: 120000,
+    });
+    return publishTagsCatalogMutation('group-order-updated', result, sourceFolder);
   }
 
   async function deleteGroup(groupId, sourceFolder) {
     const result = await apiFetch(withSourceQuery('/global-tag-groups/' + encodeURIComponent(groupId), sourceFolder), { method: 'DELETE', silentError: true });
-    invalidateTagsCatalogCache(sourceFolder);
-    notifyTagsCatalogChanged('group-deleted', result, sourceFolder);
-    return result;
+    return publishTagsCatalogMutation('group-deleted', result, sourceFolder);
   }
 
   // ============================================================
@@ -248,8 +435,57 @@
     return sourceCacheKey(sourceFolder) + '\n' + normalizeTargetPath(path);
   }
 
+  function invalidateTargetTagsCache(path, sourceFolder) {
+    const targetPath = normalizeTargetPath(path);
+    if (!targetPath) {
+      targetTagsCache.clear();
+      targetTagsLastResolved.clear();
+      targetTagsLatestRequest.clear();
+      return;
+    }
+    const resolvedSourceFolder = normalizedSourceFolder(sourceFolder) || sourceFolderForTarget(targetPath);
+    const key = targetTagsCacheKey(targetPath, resolvedSourceFolder);
+    targetTagsCache.delete(key);
+    targetTagsLastResolved.delete(key);
+    targetTagsLatestRequest.delete(key);
+  }
+
+  function primeTargetTagsCache(path, rows, options) {
+    const targetPath = normalizeTargetPath(path);
+    if (!targetPath) return null;
+    const sourceFolder = normalizedSourceFolder(options?.sourceFolder) || sourceFolderForTarget(targetPath);
+    const tags = Array.isArray(rows) ? rows : (Array.isArray(rows?.tags) ? rows.tags : []);
+    const data = {
+      ...(rows && !Array.isArray(rows) && typeof rows === 'object' ? rows : {}),
+      tags,
+      _provisional: true,
+    };
+    const key = targetTagsCacheKey(targetPath, sourceFolder);
+    const existing = targetTagsLastResolved.get(key);
+    if (existing && existing._provisional === false) return existing;
+    targetTagsLastResolved.set(key, data);
+    return data;
+  }
+
+  function getCachedTargetTagsSync(path, options) {
+    const targetPath = normalizeTargetPath(path);
+    if (!targetPath) return null;
+    const sourceFolder = normalizedSourceFolder(options?.sourceFolder) || sourceFolderForTarget(targetPath);
+    return targetTagsLastResolved.get(targetTagsCacheKey(targetPath, sourceFolder)) || null;
+  }
+
   function notifyTargetTagsChanged(path, sourceFolder) {
-    targetTagsCache.delete(targetTagsCacheKey(path, sourceFolder));
+    invalidateTargetTagsCache(path, sourceFolder);
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:target-tags-changed', {
+        detail: {
+          path: normalizeTargetPath(path),
+          sourceFolder: normalizedSourceFolder(sourceFolder) || sourceFolderForTarget(path),
+        },
+      }));
+    } catch (_) {
+      // CustomEventを利用できない古い埋め込み環境でもタグ更新自体は成功扱いにする。
+    }
     try {
       if (typeof _folderInvalidateTagsForPath === 'function') _folderInvalidateTagsForPath(path);
       const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
@@ -269,10 +505,19 @@
     if (!options?.force && cached && (Date.now() - cached.at) < TARGET_TAGS_CACHE_TTL_MS) {
       return cached.promise;
     }
-    const promise = apiFetch(targetTagsUrl(path, sourceFolder), { silentError: true }).catch(error => {
-      targetTagsCache.delete(key);
-      throw error;
-    });
+    const requestRevision = ++targetTagsRequestSeq;
+    targetTagsLatestRequest.set(key, requestRevision);
+    const promise = apiFetch(targetTagsUrl(path, sourceFolder), { silentError: true })
+      .then(data => {
+        if (targetTagsLatestRequest.get(key) === requestRevision) {
+          targetTagsLastResolved.set(key, { ...(data || {}), _provisional: false });
+        }
+        return data;
+      })
+      .catch(error => {
+        if (targetTagsLatestRequest.get(key) === requestRevision) targetTagsCache.delete(key);
+        throw error;
+      });
     targetTagsCache.set(key, { at: Date.now(), promise });
     return promise;
   }
@@ -390,7 +635,7 @@
     osSyncRow.append(osSync, osSyncStatus);
     section.appendChild(osSyncRow);
     container.appendChild(section);
-    return { chips, input, datalist, add, msg, osSyncRow, osSync, osSyncStatus };
+    return { chips, input, datalist, add, msg, osSyncRow, osSync, osSyncStatus, compact: options?.compact === true };
   }
 
   function renderOsTagSyncState(ui, state) {
@@ -410,41 +655,63 @@
     }
   }
 
+  function renderTargetEditorTagsData(targetPath, ui, refresh, data) {
+    const tags = Array.isArray(data?.tags) ? data.tags : [];
+    const provisional = !!data?._provisional;
+    ui.mutationBlocked = provisional || !!data?.mutation_blocked;
+    ui.input.disabled = ui.mutationBlocked;
+    ui.add.disabled = ui.mutationBlocked;
+    ui.chips.textContent = '';
+    const cachedCatalog = getCachedTagsSync(sourceFolderForTarget(targetPath));
+    const groups = Array.isArray(cachedCatalog?.groups) ? cachedCatalog.groups : [];
+    const groupsById = Object.fromEntries(groups.map(group => [group.id, group]));
+    const orderedTags = sortTagsByGroupOrder(tags, groups);
+    if (!orderedTags.length) {
+      const empty = document.createElement('span');
+      empty.className = 'gb-section-desc';
+      empty.textContent = 'タグはありません。';
+      ui.chips.appendChild(empty);
+    }
+    const blockedReason = provisional
+      ? '編集状態を確認しています'
+      : (data?.warning || 'タグ辞書の同期競合を解消してからタグを編集してください。');
+    orderedTags.forEach(tag => ui.chips.appendChild(targetTagChip(
+      targetPath,
+      tag,
+      refresh,
+      message => { ui.msg.textContent = message; },
+      groupsById,
+      ui.mutationBlocked,
+      blockedReason,
+      ui.compact,
+    )));
+    ui.msg.textContent = provisional
+      ? '編集状態を確認しています...'
+      : (ui.mutationBlocked ? blockedReason : '');
+    renderOsTagSyncState(ui, provisional ? null : data?.os_sync);
+    if (!cachedCatalog && !ui.catalogRefreshPending) {
+      ui.catalogRefreshPending = true;
+      loadTagsCached(sourceFolderForTarget(targetPath)).then(() => {
+        ui.catalogRefreshPending = false;
+        if (ui.chips.isConnected) renderTargetEditorTagsData(targetPath, ui, refresh, data);
+      }).catch(() => {
+        ui.catalogRefreshPending = false;
+      });
+    }
+  }
+
   async function refreshTargetEditorTags(targetPath, ui, refresh, options) {
-    ui.msg.textContent = 'タグを読み込んでいます...';
+    const revision = (ui.refreshRevision || 0) + 1;
+    ui.refreshRevision = revision;
+    const immediate = options?.force ? null : getCachedTargetTagsSync(targetPath);
+    if (immediate) renderTargetEditorTagsData(targetPath, ui, refresh, immediate);
+    else ui.msg.textContent = 'タグを読み込んでいます...';
     try {
       const data = await loadTargetTags(targetPath, options);
-      const tags = Array.isArray(data?.tags) ? data.tags : [];
-      ui.mutationBlocked = !!data?.mutation_blocked;
-      ui.input.disabled = ui.mutationBlocked;
-      ui.add.disabled = ui.mutationBlocked;
-      ui.chips.textContent = '';
-      if (!tags.length) {
-        const empty = document.createElement('span');
-        empty.className = 'gb-section-desc';
-        empty.textContent = 'タグはありません。';
-        ui.chips.appendChild(empty);
-      }
-      // 実効色のために最新のグループ情報も取る
-      let groupsById = {};
-      try {
-        const meta = await loadTagsCached(sourceFolderForTarget(targetPath));
-        const groups = Array.isArray(meta?.groups) ? meta.groups : [];
-        groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
-      } catch (_) {}
-      tags.forEach(tag => ui.chips.appendChild(targetTagChip(
-        targetPath,
-        tag,
-        refresh,
-        message => { ui.msg.textContent = message; },
-        groupsById,
-        ui.mutationBlocked,
-      )));
-      ui.msg.textContent = ui.mutationBlocked
-        ? (data?.warning || 'タグ辞書の同期競合を解消してからタグを編集してください。')
-        : '';
-      renderOsTagSyncState(ui, data?.os_sync);
+      if (revision !== ui.refreshRevision || !ui.chips.isConnected) return;
+      renderTargetEditorTagsData(targetPath, ui, refresh, data);
     } catch (err) {
+      if (revision !== ui.refreshRevision || !ui.msg.isConnected) return;
       renderTargetEditorError(ui.msg, 'タグを読み込めませんでした', err, () => refresh({ force: true }));
     }
   }
@@ -496,13 +763,13 @@
       ui.osSyncStatus.textContent = 'OSタグを照合しています...';
       try {
         const sourceFolder = sourceFolderForTarget(targetPath);
-        targetTagsCache.delete(targetTagsCacheKey(targetPath, sourceFolder));
+        invalidateTargetTagsCache(targetPath, sourceFolder);
         const data = await apiPost('/global-tags/target/sync', withSourcePayload({
           path: normalizeTargetPath(targetPath),
         }, sourceFolder), { silentError: true });
         renderOsTagSyncState(ui, data?.os_sync);
-        await refresh();
         notifyTargetTagsChanged(targetPath, sourceFolder);
+        await refresh({ force: true });
       } catch (err) {
         ui.osSyncStatus.textContent = 'OSタグを再同期できませんでした: ' + (err.userMessage || err.message || err);
       } finally {
@@ -523,54 +790,43 @@
     refresh();
   }
 
-  function targetTagChip(path, tag, refresh, onError, groupsById, mutationBlocked) {
-    const chip = document.createElement('span');
-    chip.className = 'gb-tag-chip';
-    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--bg3);font-size:12px;';
-    const swatch = document.createElement('span');
-    swatch.style.cssText = 'width:9px;height:9px;border-radius:50%;border:1px solid var(--border);';
-    swatch.style.background = effectiveTagColor(tag, groupsById || {});
-    const name = document.createElement('button');
-    name.type = 'button';
-    name.className = 'gb-btn gb-btn-xs gb-btn-quiet';
-    name.style.padding = '0';
+  function targetTagChip(path, tag, refresh, onError, groupsById, mutationBlocked, blockedReason, compact) {
     const displayName = tag.name || '';
-    name.textContent = displayName;
-    name.title = 'このタグの項目を検索';
-    name.setAttribute('aria-label', (displayName || 'タグ') + 'の項目を検索');
     const targetKey = normalizeTargetPath(path);
     const tagKey = String(tag?.id || tag?.name || 'tag');
-    name.dataset.e2eId = `global-tags-target-search:${targetKey}:${tagKey}`;
-    name.dataset.globalTagsRole = 'target-search';
-    name.addEventListener('click', () => {
-      // タグ管理タブが開いていればそちらで検索結果を表示、そうでなければ後方互換でメッセージ
-      if (window.MeldexTagManagement && typeof window.MeldexTagManagement.showSearchForTag === 'function') {
-        window.MeldexTagManagement.showSearchForTag(tag);
-      } else {
-        searchByTag(tag, sourceFolderForTarget(path));
-      }
+    return createTagChip(tag, {
+      compact: compact === true,
+      groupsById: groupsById || {},
+      labelTitle: 'このタグの項目を検索',
+      ariaLabel: (displayName || 'タグ') + 'の項目を検索',
+      labelDataset: {
+        e2eId: `global-tags-target-search:${targetKey}:${tagKey}`,
+        globalTagsRole: 'target-search',
+      },
+      onActivate() {
+        if (window.MeldexTagManagement && typeof window.MeldexTagManagement.showSearchForTag === 'function') {
+          window.MeldexTagManagement.showSearchForTag(tag);
+        } else {
+          searchByTag(tag, sourceFolderForTarget(path));
+        }
+      },
+      removeDisabled: !!mutationBlocked,
+      removeTitle: mutationBlocked
+        ? (blockedReason || 'タグ辞書の同期競合を解消してから編集してください')
+        : 'タグを外す',
+      removeDataset: {
+        e2eId: `global-tags-target-remove:${targetKey}:${tagKey}`,
+        globalTagsRole: 'target-remove',
+      },
+      async onRemove() {
+        try {
+          await removeTargetTag(path, tag);
+          await refresh();
+        } catch (err) {
+          if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
+        }
+      },
     });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'gb-btn gb-btn-xs gb-btn-quiet';
-    remove.style.padding = '0 2px';
-    remove.title = 'タグを外す';
-    remove.setAttribute('aria-label', (displayName || 'タグ') + 'を外す');
-    remove.dataset.e2eId = `global-tags-target-remove:${targetKey}:${tagKey}`;
-    remove.dataset.globalTagsRole = 'target-remove';
-    remove.innerHTML = icon('x', 12) || '×';
-    remove.disabled = !!mutationBlocked;
-    if (mutationBlocked) remove.title = 'タグ辞書の同期競合を解消してから編集してください';
-    remove.addEventListener('click', async () => {
-      try {
-        await removeTargetTag(path, tag);
-        await refresh();
-      } catch (err) {
-        if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
-      }
-    });
-    chip.append(swatch, name, remove);
-    return chip;
   }
 
   function hydrateTargetEditors(root) {
@@ -610,7 +866,10 @@
       const groups = Array.isArray(data?.groups) ? data.groups : [];
       const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
       const idSet = new Set((options.getIds() || []).map(id => String(id)));
-      const tags = allTags.filter(tag => idSet.has(String(tag.id)));
+      const tags = sortTagsByGroupOrder(
+        allTags.filter(tag => idSet.has(String(tag.id))),
+        groups,
+      );
       ui.chips.textContent = '';
       if (!tags.length) {
         const empty = document.createElement('span');
@@ -635,53 +894,53 @@
   }
 
   function inlineTagChip(tag, options, refresh, onError, groupsById, mutationBlocked) {
-    const chip = document.createElement('span');
-    chip.className = 'gb-tag-chip';
-    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--bg3);font-size:12px;';
-    const swatch = document.createElement('span');
-    swatch.style.cssText = 'width:9px;height:9px;border-radius:50%;border:1px solid var(--border);';
-    swatch.style.background = effectiveTagColor(tag, groupsById || {});
-    const name = document.createElement('button');
-    name.type = 'button';
-    name.className = 'gb-btn gb-btn-xs gb-btn-quiet';
-    name.style.padding = '0';
     const displayName = tag.name || '';
-    name.textContent = displayName;
-    name.title = 'このタグの項目を検索';
-    name.setAttribute('aria-label', (displayName || 'タグ') + 'の項目を検索');
     const tagKey = String(tag?.id || tag?.name || 'tag');
-    name.dataset.e2eId = `global-tags-inline-search:${tagKey}`;
-    name.dataset.globalTagsRole = 'inline-search';
-    name.addEventListener('click', () => {
-      if (window.MeldexTagManagement && typeof window.MeldexTagManagement.showSearchForTag === 'function') {
-        window.MeldexTagManagement.showSearchForTag(tag);
-      } else {
-        searchByTag(tag);
-      }
+    return createTagChip(tag, {
+      groupsById: groupsById || {},
+      labelTitle: 'このタグの項目を検索',
+      ariaLabel: (displayName || 'タグ') + 'の項目を検索',
+      labelDataset: {
+        e2eId: `global-tags-inline-search:${tagKey}`,
+        globalTagsRole: 'inline-search',
+      },
+      onActivate() {
+        if (window.MeldexTagManagement && typeof window.MeldexTagManagement.showSearchForTag === 'function') {
+          window.MeldexTagManagement.showSearchForTag(tag);
+        } else {
+          searchByTag(tag);
+        }
+      },
+      removeDisabled: !!mutationBlocked,
+      removeTitle: mutationBlocked
+        ? 'タグ辞書の同期競合を解消してから編集してください'
+        : 'タグを外す',
+      removeDataset: {
+        e2eId: `global-tags-inline-remove:${tagKey}`,
+        globalTagsRole: 'inline-remove',
+      },
+      onRemove() {
+        try {
+          const nextIds = (options.getIds() || []).filter(id => String(id) !== String(tag.id));
+          options.setIds(nextIds);
+          if (typeof options.onChange === 'function') options.onChange();
+          refresh();
+        } catch (err) {
+          if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
+        }
+      },
     });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'gb-btn gb-btn-xs gb-btn-quiet';
-    remove.style.padding = '0 2px';
-    remove.title = 'タグを外す';
-    remove.setAttribute('aria-label', (displayName || 'タグ') + 'を外す');
-    remove.dataset.e2eId = `global-tags-inline-remove:${tagKey}`;
-    remove.dataset.globalTagsRole = 'inline-remove';
-    remove.innerHTML = icon('x', 12) || '×';
-    remove.disabled = !!mutationBlocked;
-    if (mutationBlocked) remove.title = 'タグ辞書の同期競合を解消してから編集してください';
-    remove.addEventListener('click', () => {
-      try {
-        const nextIds = (options.getIds() || []).filter(id => String(id) !== String(tag.id));
-        options.setIds(nextIds);
-        if (typeof options.onChange === 'function') options.onChange();
-        refresh();
-      } catch (err) {
-        if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
-      }
+  }
+
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('meldex:tag-dictionary-changed', () => {
+      clearTimeout(targetEditorCatalogRefreshTimer);
+      targetEditorCatalogRefreshTimer = setTimeout(() => {
+        document.querySelectorAll('[data-global-tags-target-path]').forEach(container => {
+          renderTargetTagEditor(container, container.dataset.globalTagsTargetPath || '', { compact: true });
+        });
+      }, 80);
     });
-    chip.append(swatch, name, remove);
-    return chip;
   }
 
   function bindInlineTagEditor(options, ui, refresh) {
@@ -741,13 +1000,17 @@
     getCachedTagsSync,
     resolveCommonTagsFilterValueSync,
     invalidateTagsCatalogCache,
+    notifyDictionaryChanged,
     createTag,
     updateTag,
+    updateTagOrder,
     deleteTag,
     // グループ
     loadGroups,
     createGroup,
+    materializeExternalSuggestion,
     updateGroup,
+    updateGroupOrder,
     deleteGroup,
     // プリセット / 自動タグ
     loadAutoTagPresets,
@@ -756,12 +1019,21 @@
     autoTag,
     // 対象ファイル別
     loadTargetTags,
+    primeTargetTagsCache,
+    getCachedTargetTagsSync,
+    invalidateTargetTagsCache,
     addTargetTag,
     removeTargetTag,
     searchByTag,
     openTaggedTarget,
+    // コンパクト表示
+    getCompactTagDisplayLimit,
+    setCompactTagDisplayLimit,
     // 色
     tagColor,
     effectiveTagColor,
+    groupOrderMap,
+    sortTagsByGroupOrder,
+    createTagChip,
   };
 })();

@@ -301,7 +301,7 @@ body.bsa-resizing-sidebar * {
   min-width: 220px;
   padding: 4px;
   background: var(--bg2, #252525);
-  border: 1px solid var(--border, #444);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, #444)));
   border-radius: 6px;
   box-shadow: 0 12px 32px rgba(0,0,0,0.34);
 }
@@ -542,7 +542,7 @@ body:not(.bsa-board-ready) .bsa-annotation-fab {
   transform: translateX(-50%) translateY(20px);
   background: var(--bg3, #2f2f2f);
   color: var(--fg, #e4e4e4);
-  border: 1px solid var(--border, #444);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, #444)));
   border-radius: 4px;
   padding: 8px 16px;
   font-size: 13px;
@@ -619,7 +619,7 @@ body:not(.bsa-board-ready) .bsa-annotation-fab {
     padding: 10px 14px;
   }
 
-  html[data-standalone-cloud] #board-right-sidebar {
+  #board-right-sidebar {
     position: fixed;
     z-index: 9980;
     top: env(safe-area-inset-top, 0px);
@@ -631,7 +631,7 @@ body:not(.bsa-board-ready) .bsa-annotation-fab {
     box-shadow: -14px 0 32px rgba(0, 0, 0, 0.38);
   }
 
-  html[data-standalone-cloud] #board-sidebar-resizer {
+  #board-sidebar-resizer {
     display: none;
   }
 }

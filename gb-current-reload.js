@@ -3,7 +3,7 @@
   'use strict';
 
   const DB_VIEW_TYPES = new Set([
-    'database', 'db', 'pivot', 'gallery', 'kanban', 'timeline',
+    'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline',
     'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form',
   ]);
   const LEGACY_CONTAINER_IDS = {
@@ -180,6 +180,12 @@
       if (!handled) {
         if (typeof showStatus === 'function') showStatus('この表示は再読み込み対象ではありません', true);
         return false;
+      }
+      if (tab?.type === 'folder' && typeof _folderRefreshTags === 'function') {
+        await _folderRefreshTags(
+          typeof _folderItems !== 'undefined' ? _folderItems : [],
+          { rerender: true, all: true },
+        );
       }
       if (typeof showStatus === 'function') showStatus('再読み込みしました');
       return true;

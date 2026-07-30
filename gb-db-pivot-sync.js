@@ -229,9 +229,9 @@ function _getPivotRowCellByProp(targetEl, propName) {
   return idx >= 0 ? tr.children[idx + 1] || null : null;
 }
 
-function _getCascadeDependents(sourcePropName, dbPath) {
+function _getCascadeDependents(sourcePropName, dbPath, ctx) {
   if (!dbPath || !sourcePropName) return [];
-  const pts = getPropertyTypes(dbPath) || {};
+  const pts = getPropertyTypes(dbPath, ctx) || {};
   return Object.entries(pts)
     .filter(([propName, cfg]) => propName !== sourcePropName
       && (cfg?.type === 'relation' || cfg?.type === 'multi-relation')
@@ -308,64 +308,79 @@ async function _clearCascadeDependentValues(entityPath, sourcePropName, oldValue
   if (!entData) return [];
   const nextSourceValues = _splitDbMultiValue(newValue);
   const clears = [];
-  for (const dep of _getCascadeDependents(sourcePropName, dbPath)) {
-    const currentVals = [...(entData[dep.propName] || [])];
-    if (currentVals.length === 0) continue;
-    const deleteTargets = [];
-    const updateTargets = [];
-    for (const depVal of currentVals) {
-      const ids = _splitDbMultiValue(depVal?.value);
-      if (!ids.length) continue;
-      const validIds = [];
-      for (const id of ids) {
-        if (await _validateCascadeValue(id, entityPath, dep.ptc, nextSourceValues, { dbPath, ctx: options.ctx })) validIds.push(id);
+  try {
+    for (const dep of _getCascadeDependents(sourcePropName, dbPath, options.ctx)) {
+      const currentVals = [...(entData[dep.propName] || [])];
+      if (currentVals.length === 0) continue;
+      const deleteTargets = [];
+      const updateTargets = [];
+      for (const depVal of currentVals) {
+        const ids = _splitDbMultiValue(depVal?.value);
+        if (!ids.length) continue;
+        const validIds = [];
+        for (const id of ids) {
+          if (await _validateCascadeValue(id, entityPath, dep.ptc, nextSourceValues, { dbPath, ctx: options.ctx })) validIds.push(id);
+        }
+        if (validIds.length === ids.length) continue;
+        if (validIds.length === 0) deleteTargets.push(depVal);
+        else updateTargets.push({ value: depVal, oldValue: _dbValueToString(depVal?.value), newValue: validIds.join(', ') });
       }
-      if (validIds.length === ids.length) continue;
-      if (validIds.length === 0) deleteTargets.push(depVal);
-      else updateTargets.push({ value: depVal, oldValue: _dbValueToString(depVal?.value), newValue: validIds.join(', ') });
-    }
-    if (deleteTargets.length === 0 && updateTargets.length === 0) continue;
-    const snapshot = _snapshotPivotValues(deleteTargets);
-    const updates = [];
-    let deleteSucceeded = false;
-    const appliedUpdates = [];
-    try {
+      if (deleteTargets.length === 0 && updateTargets.length === 0) continue;
+      const snapshot = _snapshotPivotValues(deleteTargets);
+      const updates = [];
+      let deleteSucceeded = false;
+      const appliedUpdates = [];
+      try {
+        if (deleteTargets.length) {
+          await _deleteCascadeValuesOrRollback(entityPath, dep.propName, deleteTargets, snapshot);
+          deleteSucceeded = true;
+        }
+        for (const target of updateTargets) {
+          await _apiPutValue(target.value, { new_value: target.newValue });
+          appliedUpdates.push(target);
+          target.value.value = target.newValue;
+          updates.push({
+            ref: target.value,
+            oldValue: target.oldValue,
+            newValue: target.newValue,
+          });
+        }
+      } catch (err) {
+        for (const target of appliedUpdates.reverse()) {
+          try {
+            await _apiPutValue(target.value, { new_value: target.oldValue });
+            target.value.value = target.oldValue;
+          } catch (rollbackError) {
+            console.error('カスケード値移行の復旧に失敗:', rollbackError, err);
+          }
+        }
+        if (deleteSucceeded) await _rollbackCascadeValues(entityPath, dep.propName, snapshot);
+        throw err;
+      }
       if (deleteTargets.length) {
-        await _deleteCascadeValuesOrRollback(entityPath, dep.propName, deleteTargets, snapshot);
-        deleteSucceeded = true;
+        const removed = new Set(deleteTargets);
+        entData[dep.propName] = currentVals.filter(value => !removed.has(value));
       }
-      for (const target of updateTargets) {
-        await _apiPutValue(target.value, { new_value: target.newValue });
-        appliedUpdates.push(target);
-        target.value.value = target.newValue;
-        updates.push({
-          ref: target.value,
-          oldValue: target.oldValue,
-          newValue: target.newValue,
-        });
-      }
-    } catch (err) {
-      for (const target of appliedUpdates.reverse()) {
-        try {
-          await _apiPutValue(target.value, { new_value: target.oldValue });
-          target.value.value = target.oldValue;
-        } catch {}
-      }
-      if (deleteSucceeded) await _rollbackCascadeValues(entityPath, dep.propName, snapshot);
-      throw err;
+      clears.push({ propName: dep.propName, values: snapshot, updates });
     }
-    if (deleteTargets.length) {
-      const removed = new Set(deleteTargets);
-      entData[dep.propName] = currentVals.filter(value => !removed.has(value));
+  } catch (err) {
+    if (clears.length) {
+      try {
+        await _restoreCascadeDependentValues(entityPath, clears, options);
+      } catch (rollbackErr) {
+        throw new Error('cascade 値更新に失敗し、巻き戻しも失敗しました: '
+          + (err?.message || String(err)) + ' / ' + (rollbackErr?.message || String(rollbackErr)));
+      }
     }
-    clears.push({ propName: dep.propName, values: snapshot, updates });
+    throw err;
   }
   return clears;
 }
 
-async function _restoreCascadeDependentValues(entityPath, clears) {
+async function _restoreCascadeDependentValues(entityPath, clears, options = {}) {
   if (!entityPath || !Array.isArray(clears) || clears.length === 0) return;
   const errors = [];
+  const entData = _getPivotEntityData(entityPath, options.ctx);
   for (const clear of clears) {
     for (const update of (clear.updates || [])) {
       try {
@@ -377,7 +392,21 @@ async function _restoreCascadeDependentValues(entityPath, clears) {
     }
     for (const value of (clear.values || [])) {
       try {
-        await _apiPostValue(entityPath, clear.propName, _dbValueToString(value.value), value.status || '採用', value.note || '');
+        const result = await _apiPostValue(entityPath, clear.propName, _dbValueToString(value.value), value.status || '採用', value.note || '');
+        if (entData) {
+          if (!Array.isArray(entData[clear.propName])) entData[clear.propName] = [];
+          const restored = {
+            ...value,
+            file: result?.path || result?.file || value.file || '',
+            entry_path: entityPath,
+            property: result?.property || clear.propName,
+            candidate_index: result?.candidate_index,
+          };
+          const duplicate = entData[clear.propName].some(current =>
+            _dbValueToString(current?.value) === _dbValueToString(restored.value)
+            && (restored.candidate_index == null || current?.candidate_index === restored.candidate_index));
+          if (!duplicate) entData[clear.propName].push(restored);
+        }
       } catch (err) {
         errors.push(clear.propName + ': ' + (err?.message || String(err)));
       }
@@ -386,9 +415,9 @@ async function _restoreCascadeDependentValues(entityPath, clears) {
   if (errors.length) throw new Error('cascade 値の復元に失敗しました: ' + errors.join(' / '));
 }
 
-async function _redoCascadeDependentValues(entityPath, clears) {
+async function _redoCascadeDependentValues(entityPath, clears, options = {}) {
   if (!entityPath || !Array.isArray(clears) || clears.length === 0) return;
-  const entData = _getPivotEntityData(entityPath);
+  const entData = _getPivotEntityData(entityPath, options.ctx);
   if (!entData) return;
   for (const clear of clears) {
     for (const update of (clear.updates || [])) {
@@ -477,7 +506,7 @@ async function _finalizeRelationCellUpdate(targetEl, entityPath, propName, ptc, 
   if (!_shouldReloadPivotAfterRelationChange(propName, ptc, affectedProps, { dbPath, ctx })
       && _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, { dbPath, ctx })) {
     const extraProps = affectedProps || [];
-    const propTypes = getPropertyTypes(dbPath) || {};
+    const propTypes = getPropertyTypes(dbPath, ctx) || {};
     extraProps.forEach(depProp => {
       const depPtc = propTypes[depProp];
       const depTd = _getPivotRowCellByProp(targetEl, depProp);
@@ -495,7 +524,7 @@ function _tryRefreshPivotCellLocal(td, entityPath, propName, options = {}) {
   const ctx = _dbPivotContextFromTarget(td, { ...options, entityPath });
   const dbPath = _dbPivotPathForContext(ctx, options.dbPath || (typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(entityPath) : ''));
   if (!td || !dbPath) return false;
-  const ptc = getPropertyTypes(dbPath)?.[propName];
+  const ptc = getPropertyTypes(dbPath, ctx)?.[propName];
   if (_shouldReloadPivotAfterRelationChange(propName, ptc, [], { dbPath, ctx })) return false;
   if (ptc && ['formula', 'rollup', 'chat', 'multi-source-relation', 'button'].includes(ptc.type)) return false;
   const sortCfg = typeof getDbSortConfig === 'function'
@@ -514,7 +543,7 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
   if (!editedTd || !dbPath || !pivotData?.entities) return;
   const tr = editedTd.closest('tr');
   if (!tr) return;
-  const propTypes = getPropertyTypes(dbPath) || {};
+  const propTypes = getPropertyTypes(dbPath, ctx) || {};
   const entityName = _getPivotEntityName(entityPath);
   const entityData = pivotData.entities[entityName];
   if (!entityData) return;
@@ -556,8 +585,10 @@ function _cssEscapeAttr(s) {
 
 function _renderDerivedCellContent(container, ptc, entityName, propName, entityData, options = {}) {
   const dbPath = options.dbPath || _dbPivotPathForContext(options.ctx, '');
-  const propTypes = options.propTypes || (dbPath ? getPropertyTypes(dbPath) : {}) || {};
+  const propTypes = options.propTypes || (dbPath ? getPropertyTypes(dbPath, options.ctx) : {}) || {};
   const pivotData = options.pivotData || _dbPivotDataForContext(options.ctx);
+  const renderRevision = Number(container._derivedRenderRevision || 0) + 1;
+  container._derivedRenderRevision = renderRevision;
   container.innerHTML = '';
   if (ptc.source) {
     const metaKey = '_' + ptc.source;
@@ -604,6 +635,21 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
     container.appendChild(span);
     const entitiesMap = pivotData?.entities || {};
     calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath, options.ctx?.filter).then(val => {
+      if (container._derivedRenderRevision !== renderRevision || !container.isConnected) return;
+      if (val?.kind === 'rollup-values') {
+        span.style.color = 'var(--fg)';
+        const td = container.closest('td[data-prop-name]');
+        if (options.ctx && td && typeof _dbRegisterRollupAlignment === 'function') {
+          _dbRegisterRollupAlignment(options.ctx, entityName, propName, td, span, val, true);
+        } else if (typeof _dbRenderAlignedRollupCell === 'function') {
+          const slotCounts = val.groups.map(group => Math.max(1, group?.values?.length || 0));
+          _dbRenderAlignedRollupCell({ host: span, result: val, visible: true }, slotCounts);
+        } else {
+          span.textContent = val.groups.flatMap(group => group?.values || []).join('\n') || '—';
+          span.style.whiteSpace = 'pre-line';
+        }
+        return;
+      }
       const displayValue = val === '-' ? '-' : String(val);
       span.textContent = displayValue;
       span.style.color = 'var(--fg)';
@@ -612,6 +658,7 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
         span.addEventListener('click', (e) => { if (typeof _cellUiHandleAutoLinkClick === 'function') _cellUiHandleAutoLinkClick(e); });
       }
     }).catch(() => {
+      if (container._derivedRenderRevision !== renderRevision || !container.isConnected) return;
       span.textContent = '#ERR';
       span.style.color = 'var(--red)';
     });

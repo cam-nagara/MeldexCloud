@@ -1068,6 +1068,7 @@
           btn.dataset.tabId = tab.id || '';
           btn.dataset.groupId = g.id;
           btn.dataset.panelsetId = panelsetNode.id;
+          btn.dataset.tabType = tab.type || '';
           btn.dataset.e2eId = `dock-${panelsetNode.id}-${g.id}-${pane.id}-${tab.id || tabIdx}`;
           btn.title = tab.label || '';
           btn.innerHTML = _dockTabTypeIcon(tab.type, 18);
@@ -1150,6 +1151,13 @@
         });
       });
     });
+    if (fixedSide === 'right') {
+      const optionButton = dockBar.querySelector('.gb-dock-icon[data-tab-type="detail"]');
+      const firstPanelButton = dockBar.querySelector('.gb-dock-icon:not(.gb-dock-rail-toggle)');
+      if (optionButton && firstPanelButton && optionButton !== firstPanelButton) {
+        dockBar.insertBefore(optionButton, firstPanelButton);
+      }
+    }
     // ==== 本体 ====
     const body = document.createElement('div');
     body.className = 'gb-dock-body';

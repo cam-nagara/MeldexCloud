@@ -477,11 +477,15 @@ function _buildTeamMessageRow(m, me) {
   const isMine = m.from === me;
   // 行: アバター + フキダシ（行全体でalign-selfで左右配置）
   const row = document.createElement('div');
-  row.className = 'chat-message-row chat-message-row-team' + (isMine ? ' is-mine' : '');
+  row.className = 'chat-message-row chat-message-row-team chat-copy-message' + (isMine ? ' is-mine' : '');
   row.style.cssText = 'display:flex;gap:6px;max-width:85%;align-items:flex-start;' + (isMine ? 'align-self:flex-end;flex-direction:row-reverse;' : 'align-self:flex-start;flex-direction:row;');
   row.dataset.msgText = m.text;
   row.dataset.msgFrom = m.from;
   row.dataset.msgTime = m.timestamp || '';
+  row.dataset.chatCopyAuthor = m.from || me || '';
+  row.dataset.chatCopyTime = typeof _chatFormatMessageTimestamp === 'function'
+    ? _chatFormatMessageTimestamp(m.timestamp || '')
+    : String(m.timestamp || '');
   // アバター
   if (typeof _userAvatarSmall === 'function') {
     const avatar = document.createElement('span');
@@ -507,7 +511,7 @@ function _buildTeamMessageRow(m, me) {
   }
   // 本文
   const textEl = document.createElement('div');
-  textEl.className = 'chat-message-text';
+  textEl.className = 'chat-message-text chat-copy-body';
   textEl.style.cssText = 'white-space:pre-wrap;word-break:break-word;user-select:text;';
   const _so = typeof isStampOnly === 'function' && isStampOnly(m.text);
   const _hasImage = /!\[[^\]]*\]\([^)]+\)/.test(m.text || '');

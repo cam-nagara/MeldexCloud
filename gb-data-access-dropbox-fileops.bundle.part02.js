@@ -848,6 +848,10 @@
       if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: originalPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
       await _runPostMutationStep(warnings, 'trash-metadata', async () => {
         if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
       });
@@ -869,7 +873,12 @@
       }
       const destDirHandle = await _directoryHandle(provider, _dirname(destPath), true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      return { ok: true, new_path: destPath, new_name: destName };
+      const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'copy', oldPath: sourcePath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      return { ok: true, new_path: destPath, new_name: destName, ..._resultWarnings(warnings) };
     }
 
     if (pathname === '/outliner/save-as' && method === 'POST') {
@@ -889,12 +898,3 @@
         destPath = _joinPath(destFolder, destName);
       }
       const destDirHandle = await _directoryHandle(provider, destFolder, true);
-      await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      return { ok: true, new_path: destPath, new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName };
-    }
-
-    if (pathname === '/outliner/move' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
-      _rejectProductionStructureMutation(sourcePath, '移動');

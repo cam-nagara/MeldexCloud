@@ -333,19 +333,142 @@ function applyTreeNameSearch() {
   });
 }
 
-function openSearchPanel() {
-  // サイドバーが非表示なら開く
-  const sidebar = document.getElementById('sidebar');
-  if (sidebar.style.display === 'none') toggleSidebar();
-  const panel = document.getElementById('search-panel');
-  delete panel.dataset.searchPath;
-  panel.classList.add('open');
-  document.getElementById('sp-query').focus();
+const _vaultSearchPanelUi = {
+  homeParent: null,
+  homeNextSibling: null,
+  anchor: null,
+  trigger: null,
+  resizeObserver: null,
+  repositionHandler: null,
+  sidebarOptions: null,
+};
+
+function _rememberVaultSearchPanelHome(panel) {
+  if (_vaultSearchPanelUi.homeParent || !panel?.parentNode) return;
+  _vaultSearchPanelUi.homeParent = panel.parentNode;
+  _vaultSearchPanelUi.homeNextSibling = panel.nextSibling;
 }
-function closeSearchPanel() {
+
+function _snapshotVaultSearchSidebarOptions() {
+  if (_vaultSearchPanelUi.sidebarOptions) return;
+  _vaultSearchPanelUi.sidebarOptions = {
+    folderOnly: !!document.getElementById('sp-folder-only')?.checked,
+    replace: !!document.getElementById('sp-show-replace')?.checked,
+  };
+}
+
+function _stopMainVaultSearchPanelTracking() {
+  _vaultSearchPanelUi.resizeObserver?.disconnect();
+  _vaultSearchPanelUi.resizeObserver = null;
+  const handler = _vaultSearchPanelUi.repositionHandler;
+  if (handler) {
+    window.removeEventListener('resize', handler);
+    window.visualViewport?.removeEventListener('resize', handler);
+  }
+  _vaultSearchPanelUi.repositionHandler = null;
+}
+
+function _restoreVaultSearchPanelHome(panel) {
+  _stopMainVaultSearchPanelTracking();
+  const parent = _vaultSearchPanelUi.homeParent;
+  const next = _vaultSearchPanelUi.homeNextSibling;
+  if (parent && panel.parentNode !== parent) {
+    if (next?.parentNode === parent) parent.insertBefore(panel, next);
+    else parent.appendChild(panel);
+  }
+  panel.classList.remove('search-panel-main-popup');
+  delete panel.dataset.searchSurface;
+  ['left', 'top', 'maxHeight', 'maxWidth', 'overflowX', 'overflowY', 'visibility'].forEach(name => {
+    panel.style.removeProperty(name.replace(/[A-Z]/g, match => '-' + match.toLowerCase()));
+  });
+  const saved = _vaultSearchPanelUi.sidebarOptions;
+  if (saved) {
+    const folderOnly = document.getElementById('sp-folder-only');
+    if (folderOnly) folderOnly.checked = saved.folderOnly;
+    _setVaultSearchReplaceMode(saved.replace);
+  }
+  _vaultSearchPanelUi.sidebarOptions = null;
+  _vaultSearchPanelUi.anchor = null;
+  _vaultSearchPanelUi.trigger = null;
+}
+
+function _positionMainVaultSearchPanel() {
   const panel = document.getElementById('search-panel');
+  const anchor = _vaultSearchPanelUi.anchor;
+  if (!panel?.classList.contains('search-panel-main-popup') || !anchor?.isConnected) return;
+  const rect = anchor.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    closeSearchPanel({ restoreFocus: false });
+    return;
+  }
+  const zoom = typeof _getZoom === 'function' ? _getZoom() : 1;
+  const gap = 4;
+  const top = rect.bottom / zoom + gap;
+  panel.style.visibility = 'hidden';
+  panel.style.maxWidth = Math.max(160, rect.right / zoom - gap) + 'px';
+  panel.style.left = Math.max(gap, rect.right / zoom - panel.offsetWidth) + 'px';
+  panel.style.top = top + 'px';
+  panel.style.maxHeight = Math.max(120, window.innerHeight / zoom - top - gap) + 'px';
+  panel.style.visibility = 'visible';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(panel);
+}
+
+function _startMainVaultSearchPanelTracking(anchor) {
+  _stopMainVaultSearchPanelTracking();
+  const reposition = () => _positionMainVaultSearchPanel();
+  _vaultSearchPanelUi.repositionHandler = reposition;
+  window.addEventListener('resize', reposition, { passive: true });
+  window.visualViewport?.addEventListener('resize', reposition, { passive: true });
+  if (typeof ResizeObserver === 'function') {
+    _vaultSearchPanelUi.resizeObserver = new ResizeObserver(reposition);
+    _vaultSearchPanelUi.resizeObserver.observe(anchor);
+  }
+}
+
+function _openMainVaultSearchPanel(panel, options) {
+  _rememberVaultSearchPanelHome(panel);
+  const alreadyMain = panel.dataset.searchSurface === 'main';
+  if (!alreadyMain) _snapshotVaultSearchSidebarOptions();
+  _vaultSearchPanelUi.anchor = options.anchor;
+  if (!alreadyMain || !_vaultSearchPanelUi.trigger) _vaultSearchPanelUi.trigger = options.trigger || null;
+  document.body.appendChild(panel);
+  panel.dataset.searchSurface = 'main';
+  panel.classList.add('search-panel-main-popup', 'open');
+  _startMainVaultSearchPanelTracking(options.anchor);
+  _positionMainVaultSearchPanel();
+}
+
+function _focusVaultSearchQuery() {
+  const query = document.getElementById('sp-query');
+  if (!query) return;
+  try { query.focus({ preventScroll: true }); }
+  catch (_) { query.focus(); }
+}
+
+function openSearchPanel(options = {}) {
+  const panel = document.getElementById('search-panel');
+  if (!panel) return;
+  _rememberVaultSearchPanelHome(panel);
+  if (options.surface === 'main' && options.anchor) {
+    _openMainVaultSearchPanel(panel, options);
+  } else {
+    _restoreVaultSearchPanelHome(panel);
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar?.style.display === 'none') toggleSidebar();
+    delete panel.dataset.searchPath;
+    panel.classList.add('open');
+  }
+  _focusVaultSearchQuery();
+}
+
+function closeSearchPanel(options = {}) {
+  const panel = document.getElementById('search-panel');
+  if (!panel) return;
+  const trigger = panel.dataset.searchSurface === 'main' ? _vaultSearchPanelUi.trigger : null;
   panel.classList.remove('open');
   delete panel.dataset.searchPath;
+  _restoreVaultSearchPanelHome(panel);
+  if (options.restoreFocus !== false && trigger?.isConnected && !trigger.disabled) trigger.focus();
 }
 
 function _setVaultSearchReplaceMode(enabled) {
@@ -355,8 +478,8 @@ function _setVaultSearchReplaceMode(enabled) {
   if (replaceRow) replaceRow.style.display = enabled ? 'flex' : 'none';
 }
 
-function openVaultSearchReplacePanel(scopePath) {
-  openSearchPanel();
+function openVaultSearchReplacePanel(scopePath, options = {}) {
+  openSearchPanel(options);
   const panel = document.getElementById('search-panel');
   const path = String(scopePath || '').trim();
   if (path) panel.dataset.searchPath = path;
@@ -364,11 +487,19 @@ function openVaultSearchReplacePanel(scopePath) {
   const folderOnly = document.getElementById('sp-folder-only');
   if (folderOnly) folderOnly.checked = !!path;
   _setVaultSearchReplaceMode(true);
-  const q = document.getElementById('sp-query');
-  if (q) q.focus();
+  _focusVaultSearchQuery();
+  if (options.surface === 'main') _positionMainVaultSearchPanel();
 }
 
-function openCurrentToolbarSearchReplace(tool) {
+function _visibleFolderSearchToolbar() {
+  const candidates = Array.from(document.querySelectorAll('#folder-toolbar, .folder-toolbar'));
+  return candidates.find(toolbar => {
+    const rect = toolbar.getBoundingClientRect();
+    return toolbar.isConnected && rect.width > 0 && rect.height > 0 && getComputedStyle(toolbar).display !== 'none';
+  }) || document.getElementById('folder-toolbar');
+}
+
+function openCurrentToolbarSearchReplace(tool, options = {}) {
   const normalized = String(tool || '').toLowerCase();
   if (normalized === 'page' || normalized === 'note') {
     if (typeof openFileSearch === 'function') openFileSearch('replace');
@@ -382,9 +513,17 @@ function openCurrentToolbarSearchReplace(tool) {
     if (typeof openDbFindReplace === 'function') openDbFindReplace('replace');
     return;
   }
+  if (normalized === 'scriptnote' || normalized === 'scenario') {
+    const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+    const searchButton = editor?.host?.closest?.('.gb-se-root')?.querySelector?.('[data-sn-action="search"]') || null;
+    if (typeof editor?._showSearchReplacePopup === 'function') editor._showSearchReplacePopup(searchButton);
+    return;
+  }
   if (normalized === 'folder') {
     const folderPath = (typeof _folderPath !== 'undefined' && _folderPath) ? _folderPath : '';
-    openVaultSearchReplacePanel(folderPath);
+    const toolbar = _visibleFolderSearchToolbar();
+    const trigger = options.trigger || toolbar?.querySelector('button[aria-label="検索と置換"]') || null;
+    openVaultSearchReplacePanel(folderPath, { surface: 'main', anchor: toolbar, trigger });
     return;
   }
   if (typeof openFileSearch === 'function') openFileSearch('replace');

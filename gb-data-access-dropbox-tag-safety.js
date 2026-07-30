@@ -153,6 +153,103 @@
     return { assignments: restored, unresolved };
   }
 
+  function normalizeAssignmentStore(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    const assignments = source.assignments && typeof source.assignments === 'object'
+      ? { ...source.assignments }
+      : {};
+    const rawAuto = source.auto_assignments && typeof source.auto_assignments === 'object'
+      ? source.auto_assignments
+      : {};
+    const autoAssignments = {};
+    Object.entries(assignments).forEach(([path, ids]) => {
+      const assigned = Array.isArray(ids)
+        ? [...new Set(ids.map(id => String(id ?? '').trim()).filter(Boolean))]
+        : [];
+      const allowed = new Set(assigned);
+      const auto = Array.isArray(rawAuto[path])
+        ? [...new Set(rawAuto[path].map(id => String(id ?? '').trim()).filter(Boolean))]
+          .filter(id => allowed.has(id))
+        : [];
+      if (assigned.length) assignments[path] = assigned;
+      else delete assignments[path];
+      if (auto.length) autoAssignments[path] = auto;
+    });
+    const normalized = {
+      ...source,
+      version: 5,
+      assignments,
+      auto_assignments: autoAssignments,
+    };
+    return window.MeldexDropboxAssetIdentity?.normalizeStore?.(normalized) || normalized;
+  }
+
+  function promoteManualTag(store, path, tagId) {
+    const current = normalizeAssignmentStore(store);
+    current.assignments[path] = [...new Set([...(current.assignments[path] || []), tagId])];
+    const auto = (current.auto_assignments[path] || []).filter(id => id !== tagId);
+    if (auto.length) current.auto_assignments[path] = auto;
+    else delete current.auto_assignments[path];
+    return current;
+  }
+
+  function setManualTags(store, path, ids) {
+    const current = normalizeAssignmentStore(store);
+    const next = [...new Set((ids || []).map(String))];
+    if (next.length) current.assignments[path] = next;
+    else delete current.assignments[path];
+    delete current.auto_assignments[path];
+    return current;
+  }
+
+  function removeTargetTag(store, path, tagId) {
+    const current = normalizeAssignmentStore(store);
+    const assigned = (current.assignments[path] || []).filter(id => id !== tagId);
+    const auto = (current.auto_assignments[path] || []).filter(id => id !== tagId);
+    if (assigned.length) current.assignments[path] = assigned;
+    else delete current.assignments[path];
+    if (auto.length) current.auto_assignments[path] = auto;
+    else delete current.auto_assignments[path];
+    return current;
+  }
+
+  function removeTagEverywhere(store, tagId) {
+    const current = normalizeAssignmentStore(store);
+    Object.keys(current.assignments).forEach(path => {
+      const assigned = current.assignments[path].filter(id => id !== tagId);
+      const auto = (current.auto_assignments[path] || []).filter(id => id !== tagId);
+      if (assigned.length) current.assignments[path] = assigned;
+      else delete current.assignments[path];
+      if (auto.length) current.auto_assignments[path] = auto;
+      else delete current.auto_assignments[path];
+    });
+    return current;
+  }
+
+  function reverseAssignmentStore(current, before, published) {
+    const currentStore = normalizeAssignmentStore(current);
+    const beforeStore = normalizeAssignmentStore(before);
+    const publishedStore = normalizeAssignmentStore(published);
+    const assigned = reverseAssignments(
+      currentStore.assignments,
+      beforeStore.assignments,
+      publishedStore.assignments,
+    );
+    const auto = reverseAssignments(
+      currentStore.auto_assignments,
+      beforeStore.auto_assignments,
+      publishedStore.auto_assignments,
+    );
+    return {
+      store: normalizeAssignmentStore({
+        ...currentStore,
+        assignments: assigned.assignments,
+        auto_assignments: auto.assignments,
+      }),
+      unresolved: assigned.unresolved || auto.unresolved,
+    };
+  }
+
   async function pruneRecoveryFiles(provider, directory, listEntries, removeEntry, keep = 12) {
     if (typeof listEntries !== 'function' || typeof removeEntry !== 'function') return;
     try {
@@ -373,6 +470,12 @@
     sameJsonValue,
     reverseCatalogPublish,
     reverseAssignments,
+    normalizeAssignmentStore,
+    promoteManualTag,
+    setManualTags,
+    removeTargetTag,
+    removeTagEverywhere,
+    reverseAssignmentStore,
     pruneRecoveryFiles,
     rollbackCreatedCatalogTags,
     compensateCreatedTags,

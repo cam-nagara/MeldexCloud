@@ -159,11 +159,6 @@ function _renderPropertyMultiplicityControls(currentType, scopeId) {
   </div>`;
 }
 
-function _ptContextForDbPath(dbPath) {
-  if (typeof _dbFindPaneContextForPath === 'function' && dbPath) return _dbFindPaneContextForPath(dbPath);
-  return null;
-}
-
 function _ptPivotDataForDbPath(dbPath) {
   const ctx = _ptContextForDbPath(dbPath);
   if (ctx?.pivotData) return ctx.pivotData;
@@ -184,6 +179,30 @@ function _propertySettingsExistingValues(propName, pivotData) {
   return [...existingValues];
 }
 
+async function _ptRollbackOperations(operations) {
+  for (let index = operations.length - 1; index >= 0; index -= 1) {
+    try { await operations[index](); } catch (error) {
+      console.error('列設定のロールバックに失敗:', error);
+    }
+  }
+}
+
+async function _ptReloadOtherDbContexts(dbPath, currentCtx) {
+  if (typeof _dbPaneContextsForPath !== 'function') return;
+  const targets = _dbPaneContextsForPath(dbPath)
+    .filter(ctx => ctx && ctx !== currentCtx && !ctx.destroyed);
+  for (const target of targets) {
+    try {
+      if (globalThis.GbDbEntryIdentity) await globalThis.GbDbEntryIdentity.reload(target, dbPath);
+      else if (typeof selectDatabase === 'function') {
+        await selectDatabase(dbPath, target, { silent: true, skipRecent: true, skipNavPush: true });
+      }
+    } catch (error) {
+      console.warn('別画面のシート再読込に失敗:', error);
+    }
+  }
+}
+
 async function applyPropertyType(propName, root, options = {}) {
   const scope = _ptResolveRoot(root);
   window._ptActiveRoot = scope;
@@ -193,7 +212,13 @@ async function applyPropertyType(propName, root, options = {}) {
   const dbPath = stateInfo.dbPath || state.currentDbPath || '';
   const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
   const pivotData = stateInfo.pivotData || _ptPivotDataForDbPath(dbPath);
-  const prev = stateInfo.current || {};
+  const storedTypes = typeof getPropertyTypes === 'function'
+    ? getPropertyTypes(dbPath, ctx)
+    : null;
+  const prev = JSON.parse(JSON.stringify(
+    storedTypes?.[propName] || stateInfo.current || {}
+  ));
+  const relationConfigRollbackOps = [];
 
   if (type === 'select' || type === 'multi-select') {
     const textarea = _ptGet('pt-select-options', scope);
@@ -282,26 +307,74 @@ async function applyPropertyType(propName, root, options = {}) {
 
   if ((type === 'relation' || type === 'multi-relation') && config.bidirectional && typeof _ensureBidirectionalRelationConfig === 'function') {
     try {
-      Object.assign(config, await _ensureBidirectionalRelationConfig(dbPath, propName, config));
+      const ensured = await _ensureBidirectionalRelationConfig(dbPath, propName, config);
+      Object.assign(config, ensured?.config || ensured || {});
+      if (ensured?.undo) relationConfigRollbackOps.push(ensured.undo);
     } catch (e) {
+      await _ptRollbackOperations(relationConfigRollbackOps);
       showStatus('双方向リレーション設定に失敗: ' + (e?.message || e), true);
       return;
     }
   }
   if (typeof _disableBidirectionalRelationConfig === 'function') {
     try {
-      await _disableBidirectionalRelationConfig(dbPath, propName, prev, config);
+      const disabled = await _disableBidirectionalRelationConfig(dbPath, propName, prev, config);
+      if (disabled?.undo) relationConfigRollbackOps.push(disabled.undo);
     } catch (e) {
+      await _ptRollbackOperations(relationConfigRollbackOps);
       showStatus('双方向リレーション解除に失敗: ' + (e?.message || e), true);
       return;
     }
   }
 
+  let optionMigration = null;
+  if ((type === 'select' || type === 'multi-select') && globalThis.GbDbSchemaMutation) {
+    try {
+      const migration = await globalThis.GbDbSchemaMutation.migrateSelectOptions({
+        dbPath,
+        propName,
+        type,
+        oldOptions: prev.options || [],
+        newOptions: config.options || [],
+        pivotData,
+        ctx,
+      });
+      optionMigration = migration;
+      config.options = migration.options;
+      const previousIds = { ...(prev.option_ids || {}) };
+      const optionIds = {};
+      Object.entries(migration.renamed || {}).forEach(([oldValue, newValue]) => {
+        if (previousIds[oldValue]) optionIds[newValue] = previousIds[oldValue];
+      });
+      config.options.forEach(value => {
+        optionIds[value] = optionIds[value] || previousIds[value] || globalThis.GbDbSchemaMutation.newId('option');
+      });
+      config.option_ids = optionIds;
+      if (migration.preserved.length && typeof showStatus === 'function') {
+        showStatus('使用中の候補は削除せず維持しました: ' + migration.preserved.join('、'));
+      }
+    } catch (e) {
+      await _ptRollbackOperations(relationConfigRollbackOps);
+      showStatus('候補値の移行に失敗: ' + (e?.message || e), true);
+      return null;
+    }
+  }
+
   // Undo/Redo 用に変更前の型設定を控える（setPropertyType が書き換える前に取る）
-  const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || {}));
+  const beforeCfg = JSON.parse(JSON.stringify(prev));
   // 分割ペインの初回表示直後は state のグローバル参照がまだ対象ペインへ追従していない場合がある。
   // 対象 ctx を明示して同じメタデータを更新し、初回の型設定から即座に表へ反映する。
-  const savePromise = setPropertyType(dbPath, propName, config, ctx);
+  let savePromise;
+  try {
+    savePromise = Promise.resolve(setPropertyType(dbPath, propName, config, ctx));
+  } catch (e) {
+    try { await optionMigration?.rollback?.(); } catch (rollbackError) {
+      console.error('列設定保存開始失敗後の候補値復旧に失敗:', rollbackError, e);
+    }
+    await _ptRollbackOperations(relationConfigRollbackOps);
+    showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
+    return null;
+  }
   _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   if (prev.type === 'image' && type !== 'image') {
     Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
@@ -312,7 +385,10 @@ async function applyPropertyType(propName, root, options = {}) {
   if (type === 'formula') {
     for (const k in _formulaCache) delete _formulaCache[k];
   }
-  if (options.render !== false) renderPivot(ctx);
+  if (options.render !== false) {
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    else renderPivot(ctx);
+  }
   // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
   // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
   // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
@@ -330,10 +406,31 @@ async function applyPropertyType(propName, root, options = {}) {
   try {
     await savePromise;
   } catch (e) {
+    try { await optionMigration?.rollback?.(); } catch (rollbackError) {
+      console.error('候補値のロールバックに失敗:', rollbackError);
+    }
+    await _ptRollbackOperations(relationConfigRollbackOps);
+    const currentTypes = getPropertyTypes(dbPath, ctx) || {};
+    if (Object.keys(beforeCfg).length) currentTypes[propName] = JSON.parse(JSON.stringify(beforeCfg));
+    else delete currentTypes[propName];
+    const localCfg = getDbViewConfig(dbPath);
+    if (!localCfg.propertyTypes) localCfg.propertyTypes = {};
+    if (Object.keys(beforeCfg).length) localCfg.propertyTypes[propName] = JSON.parse(JSON.stringify(beforeCfg));
+    else delete localCfg.propertyTypes[propName];
+    saveDbViewConfig(dbPath, localCfg, { skipBackend: true, skipHistory: true, ctx });
+    const metadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath, ctx) : null;
+    if (metadata) metadata.property_types = currentTypes;
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    if (globalThis.GbDbEntryIdentity && ctx) {
+      try { await globalThis.GbDbEntryIdentity.reload(ctx, dbPath); } catch (reloadError) {
+        console.error('列設定保存失敗後の再読み込みに失敗:', reloadError, e);
+      }
+    }
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
   // 保存が確定してから履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
+  await _ptReloadOtherDbContexts(dbPath, ctx);
   _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
   return config;
 }
@@ -725,25 +822,9 @@ function _ptApplyFastLocalSettings(root) {
     if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
     else delete config.optionColors;
   }
-  const cfg = getDbViewConfig(dbPath);
-  if (cfg) {
-    if (!cfg.propertyTypes) cfg.propertyTypes = {};
-    cfg.propertyTypes[propName] = config;
-  }
-  const targetMetadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath) : null;
-  if (targetMetadata) {
-    if (!targetMetadata.property_types) targetMetadata.property_types = {};
-    targetMetadata.property_types[propName] = config;
-    const isCurrent = typeof _ptIsCurrentDbPath === 'function'
-      ? _ptIsCurrentDbPath(dbPath)
-      : dbPath === state.currentDbPath;
-    if (isCurrent) state.dbMetadata = targetMetadata;
-  }
   const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
-  if (ctx?.dbMetadata) {
-    if (!ctx.dbMetadata.property_types) ctx.dbMetadata.property_types = {};
-    ctx.dbMetadata.property_types[propName] = config;
-  }
+  // 入力中はDOMに紐づく一時状態だけを更新する。永続メタデータを先に書き換えると、
+  // 保存時に「変更前候補」が失われ、候補値の改名移行と失敗時ロールバックができない。
   _ptSetState(scope, config, stateInfo.existing, propName, dbPath, stateInfo.pivotData, ctx || stateInfo.ctx);
   return true;
 }

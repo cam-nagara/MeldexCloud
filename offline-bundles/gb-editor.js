@@ -3416,7 +3416,14 @@ function _resolveContextLinkTarget(rawTarget) {
   if (autoLink) {
     const path = _resolveAutoLinkPath(autoLink.dataset.path || '');
     if (!path) return null;
-    return { path, label: _contextLinkLabel(autoLink, path), linkType: autoLink.dataset.linkType || autoLink.dataset.type || '', sourcePaneId, element: autoLink };
+    return {
+      path,
+      label: _contextLinkLabel(autoLink, path),
+      linkType: autoLink.dataset.linkType || autoLink.dataset.type || '',
+      sourcePaneId,
+      element: autoLink,
+      nativeFolder: autoLink.dataset.nativeFolder === 'true',
+    };
   }
 
   const chatLink = target.closest('.chat-md-link[data-chat-link-target]');
@@ -3573,6 +3580,25 @@ function _showLinkContextMenu(e, linkTarget) {
       } else {
         window.open?.(browserUrl, '_blank', 'noopener');
       }
+    });
+  }
+  const localHostname = String(window.location?.hostname || '').toLowerCase();
+  const canOpenNativeFolder = linkTarget.nativeFolder
+    && (!localHostname || ['localhost', '127.0.0.1', '::1'].includes(localHostname))
+    && typeof apiPost === 'function';
+  if (canOpenNativeFolder) {
+    addItem('folderOpen', 'エクスプローラーで開く', () => {
+      if (typeof openNative === 'function') {
+        openNative(linkTarget.path);
+        return;
+      }
+      apiPost('/open-native', { path: linkTarget.path }, { silentError: true })
+        .then(() => {
+          if (typeof showStatus === 'function') showStatus('エクスプローラーで開きました');
+        })
+        .catch(error => {
+          if (typeof showStatus === 'function') showStatus('フォルダを開けませんでした: ' + (error?.message || error), true);
+        });
     });
   }
   if (!linkTarget.localAnchor) {
@@ -3802,6 +3828,10 @@ document.addEventListener('pointercancel', (e) => {
 }, true);
 
 // 詳細パネルにファイルのメタ情報を表示
+let _fileInfoRenderRevision = 0;
+let _fileInfoCurrentPath = '';
+let _fileInfoCurrentPromise = null;
+
 async function _fileInfoMetadata(filePath, preloadedMeta) {
   const preloaded = preloadedMeta && typeof preloadedMeta === 'object' ? preloadedMeta : null;
   const needsEmbeddedMetadata = preloaded?.embedded === undefined;
@@ -3817,43 +3847,108 @@ async function _fileInfoMetadata(filePath, preloadedMeta) {
   }
 }
 
-async function _showFileInfoInDetailPanel(filePath, preloadedMeta) {
+function _fileInfoContext(filePath) {
   const fileName = filePath.split(/[/\\]/).pop();
   const ext = fileName.split('.').pop().toLowerCase();
-  try {
-    const meta = await _fileInfoMetadata(filePath, preloadedMeta);
-    const folderPath = filePath.replace(/[/\\][^/\\]+$/, '');
-    const folderName = folderPath.split(/[/\\]/).pop();
-    const typeLabel = ext === 'md' ? 'ノート' : ext === 'json' ? 'シナリオ/シート' : ext === 'board' ? 'ボード' : ext;
-    let html = `<div style="padding:12px;">`;
-    html += `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${lucide(_fileIcon(ext),16)} ${esc(fileName)}</div>`;
-    html += `<table style="font-size:13px;color:var(--fg2);width:100%;border-collapse:collapse;">`;
-    html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">種類</td><td style="padding:4px 0;">${esc(typeLabel)}</td></tr>`;
-    html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;"><span class="auto-link" data-path="${esc(folderPath)}" style="color:var(--accent);cursor:pointer;">${esc(folderName)}</span></td></tr>`;
-    html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${esc(filePath)}</td></tr>`;
-    if (meta) {
-      if (meta.created) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">作成日時</td><td style="padding:4px 0;">${new Date(meta.created).toLocaleString('ja-JP')}</td></tr>`;
-      if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${new Date(meta.modified).toLocaleString('ja-JP')}</td></tr>`;
-      if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">サイズ</td><td style="padding:4px 0;">${_formatFileSize(meta.size)}</td></tr>`;
-    }
-    html += `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
-    if (typeof showDetailPanel === 'function') {
-      await showDetailPanel(html);
-      window.MeldexTagManagement?.setAutoTagTarget?.(filePath, false);
-      const detailRoot = document.getElementById('rp-detail') || document;
-      const embeddedHost = [...detailRoot.querySelectorAll('[data-file-embedded-metadata-path]')]
-        .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
-      window.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
-      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(detailRoot);
-    }
-  } catch {
-    // ファイル情報取得失敗時も基本情報を表示（entity APIフォールバックは不要）
-    if (typeof showDetailPanel === 'function') {
-      await showDetailPanel(`<div style="padding:12px;"><div style="font-size:15px;font-weight:bold;margin-bottom:8px;">${lucide('fileText',16)} ${esc(fileName)}</div><div style="font-size:12px;color:var(--fg2);">${esc(filePath)}</div><div data-global-tags-target-path="${esc(filePath)}"></div></div>`);
-      window.MeldexTagManagement?.setAutoTagTarget?.(filePath, false);
-      if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
-    }
+  const folderPath = filePath.replace(/[/\\][^/\\]+$/, '');
+  return {
+    fileName,
+    ext,
+    folderPath,
+    folderName: folderPath.split(/[/\\]/).pop(),
+    typeLabel: ext === 'md' ? 'ノート' : ext === 'json' ? 'シナリオ/シート' : ext === 'board' ? 'ボード' : ext,
+  };
+}
+
+function _fileInfoMetadataRowsHtml(meta) {
+  if (!meta) return '';
+  let html = '';
+  if (meta.created) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">作成日時</td><td style="padding:4px 0;">${esc(new Date(meta.created).toLocaleString('ja-JP'))}</td></tr>`;
+  if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${esc(new Date(meta.modified).toLocaleString('ja-JP'))}</td></tr>`;
+  if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">ファイルサイズ</td><td style="padding:4px 0;">${esc(_formatFileSize(meta.size))}</td></tr>`;
+  return html;
+}
+
+function _fileInfoPanelHtml(filePath, preloadedMeta) {
+  const info = _fileInfoContext(filePath);
+  return `<div style="padding:12px;" data-file-info-path="${esc(filePath)}">`
+    + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${lucide(_fileIcon(info.ext),16)} ${esc(info.fileName)}</div>`
+    + '<table style="font-size:13px;color:var(--fg2);width:100%;border-collapse:collapse;">'
+    + '<tbody>'
+    + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">種類</td><td style="padding:4px 0;">${esc(info.typeLabel)}</td></tr>`
+    + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;"><button type="button" class="auto-link" data-path="${esc(info.folderPath)}" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${esc(info.folderName)}</button></td></tr>`
+    + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${esc(filePath)}</td></tr>`
+    + '</tbody>'
+    + `<tbody data-file-info-metadata-rows>${_fileInfoMetadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
+    + `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div>`
+    + `<div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
+}
+
+function _findFileInfoPanel(detailRoot, filePath) {
+  return [...detailRoot.querySelectorAll('[data-file-info-path]')]
+    .find(element => element.dataset.fileInfoPath === filePath) || null;
+}
+
+function _applyFileInfoMetadata(detailRoot, filePath, meta) {
+  const panel = _findFileInfoPanel(detailRoot, filePath);
+  if (!panel) return;
+  const rows = panel.querySelector('[data-file-info-metadata-rows]');
+  if (rows) rows.innerHTML = _fileInfoMetadataRowsHtml(meta);
+  const embeddedHost = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
+    .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
+  window.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
+}
+
+async function _renderFileInfoInDetailPanel(filePath, preloadedMeta, revision) {
+  const metadataPromise = _fileInfoMetadata(filePath, preloadedMeta);
+  if (typeof showDetailPanel !== 'function') return;
+  if (typeof _dpSavePending === 'function' && !await _dpSavePending()) return;
+  if (revision !== _fileInfoRenderRevision) return;
+  await showDetailPanel(_fileInfoPanelHtml(filePath, preloadedMeta));
+  if (revision !== _fileInfoRenderRevision) return;
+  const detailRoot = document.getElementById('rp-detail') || document;
+  if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(detailRoot);
+  const meta = await metadataPromise;
+  if (revision !== _fileInfoRenderRevision || !_findFileInfoPanel(detailRoot, filePath)) return;
+  _applyFileInfoMetadata(detailRoot, filePath, meta);
+}
+
+function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
+  const normalizedPath = String(filePath || '').trim();
+  if (!normalizedPath) return Promise.resolve();
+  const autoTagTargets = Array.isArray(options?.autoTagTargets)
+    ? options.autoTagTargets.filter(item => item?.path)
+    : [];
+  if (autoTagTargets.length) {
+    window.MeldexTagManagement?.setAutoTagTargets?.(autoTagTargets);
+  } else {
+    window.MeldexTagManagement?.setAutoTagTarget?.(normalizedPath, false);
   }
+  const multiFileTargets = autoTagTargets.filter(item => item.type !== 'folder');
+  const renderKey = multiFileTargets.length > 1
+    ? 'multi:' + multiFileTargets.map(item => String(item.path)).sort().join('\n')
+    : normalizedPath;
+  const detailRoot = document.getElementById('rp-detail') || document;
+  if (renderKey === _fileInfoCurrentPath) {
+    if (_fileInfoCurrentPromise) return _fileInfoCurrentPromise;
+    if (_findFileInfoPanel(detailRoot, normalizedPath) || detailRoot.querySelector('[data-folder-multi-info-host]')) return Promise.resolve();
+  }
+  const revision = ++_fileInfoRenderRevision;
+  _fileInfoCurrentPath = renderKey;
+  const renderTask = multiFileTargets.length > 1 && window.MeldexFolderMultiInfo?.render
+    ? window.MeldexFolderMultiInfo.render(multiFileTargets, {
+        isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
+      })
+    : _renderFileInfoInDetailPanel(normalizedPath, preloadedMeta, revision);
+  const task = Promise.resolve(renderTask).catch(error => {
+    if (revision === _fileInfoRenderRevision) {
+      console.warn('ファイル情報パネルの更新に失敗しました', error);
+    }
+  });
+  _fileInfoCurrentPromise = task.finally(() => {
+    if (revision === _fileInfoRenderRevision) _fileInfoCurrentPromise = null;
+  });
+  return _fileInfoCurrentPromise;
 }
 
 /* linked preview helper は gb-editor-preview.js に分離 */

@@ -13,6 +13,7 @@ function _normalizeDetailTab(tab) {
   const validTabs = new Set([
     'note-editor',
     'db-property-settings',
+    'db-tree',
     'calendar-today',
     'calendar-settings',
     'calendar-production',
@@ -46,7 +47,7 @@ function _resolveDetailTabForType(type, defaultTab) {
   const compatible = {
     page: ['note-editor', 'publish'],
     folder: ['note-editor'],
-    database: ['db-property-settings', 'publish'],
+    database: ['db-property-settings', 'db-tree', 'publish'],
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'],
     calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
     csv: ['publish'],
@@ -79,7 +80,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -132,6 +133,7 @@ function _detailTabShellHtml() {
     <nav id="detail-tab-bar" class="gb-tabbar" role="tablist" aria-label="オプションパネルのタブ">
       ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', '情報')}
       ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', '列設定')}
+      ${_detailTabButtonHtml('db-tree', 'detail-tab-db-tree', 'ツリー')}
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
       ${_detailTabButtonHtml('calendar-settings', 'detail-tab-calendar detail-tab-calendar-settings', 'スケジュール設定')}
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
@@ -147,6 +149,7 @@ function _detailTabShellHtml() {
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-db-tree" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-sn2-main" class="gb-panel-body" hidden></div>
     <div id="detail-tab-calendar-today" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-calendar-settings" class="gb-panel-body-scroll" hidden></div>
@@ -333,11 +336,16 @@ function showDbTabs(visible) {
   document.querySelectorAll('.detail-tab-db-property-settings').forEach(t => {
     t.hidden = !visible;
   });
+  const treeVisible = visible && typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView();
+  document.querySelectorAll('.detail-tab-db-tree').forEach(t => {
+    t.hidden = !treeVisible;
+  });
   // バックリンクタブも DB 文脈で表示（showNoteTabs と重複してよい；上書き）
   document.querySelectorAll('.detail-tab-backlinks').forEach(t => {
     t.hidden = !(visible || noteVisible);
   });
-  if (!visible && _currentDetailTab === 'db-property-settings') {
+  if ((!visible && _currentDetailTab === 'db-property-settings')
+      || (!treeVisible && _currentDetailTab === 'db-tree')) {
     switchDetailTab(null);
   }
   _clearBacklinksTabIfHidden();

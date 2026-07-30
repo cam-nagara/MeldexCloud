@@ -109,7 +109,7 @@
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(body);
     body.innerHTML = '<div class="sidebar-empty" style="padding:8px 12px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
     try {
-      const rows = await window.MeldexWorkspaces.load({ force: true });
+      const rows = await window.MeldexWorkspaces.load({ force: true, silentError: true });
       const activeId = window.MeldexWorkspaces.getActiveId();
       body.innerHTML = '';
       if (!rows.length) {

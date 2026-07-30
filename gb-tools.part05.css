@@ -592,7 +592,7 @@
   width: min(360px, calc(100vw - 24px));
   padding: var(--ui-space-4);
   background: var(--ui-popup-bg, var(--ui-bg-panel));
-  border: 1px solid var(--ui-border);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--ui-border)));
   border-radius: var(--ui-radius-md);
   box-shadow: var(--ui-shadow-lg);
 }

@@ -160,6 +160,9 @@
       // 未登録の埋め込み専用ctx」であることを伝えるフラグ。paneId が常に findNode で
       // 見つからないことを理由にメイン画面側のctxへ差し替えられてしまう問題(P0)を防ぐ。
       embedded: true,
+      destroyed: false,
+      generation: instance._generation,
+      hostController: instance,
       dbPath: null,
       entityPath: null,
       pagePath: null,
@@ -476,8 +479,10 @@
     // ctx.writeBlocked を永続化層へ伝えてからシートを読み込む。
     if (!await _refreshWriteGuard(instance, path)) return false;
     if (generation !== instance._generation) return false;
+    instance.ctx.generation = generation;
     try {
-      await selectDatabase(path, instance.ctx, mergedOpts);
+      const result = await selectDatabase(path, instance.ctx, mergedOpts);
+      if (result === false || result?.ok === false) return false;
     } catch (error) {
       _logError(instance, 'タスクリストの読み込みに失敗しました: ' + path, error);
       if (!mergedOpts.silent && typeof showStatus === 'function') {
@@ -511,7 +516,11 @@
       return false;
     }
     const generation = ++instance._generation;
-    const mergedOpts = Object.assign({}, DEFAULT_OPEN_SKIP_OPTS, openOpts || {}, { skipGlobalState: true });
+    instance.ctx.generation = generation;
+    const mergedOpts = Object.assign({}, DEFAULT_OPEN_SKIP_OPTS, openOpts || {}, {
+      skipGlobalState: true,
+      embeddedHostDispatch: true,
+    });
     const queued = instance._openTail.then(
       () => _performOpen(instance, path, mergedOpts, generation),
       () => _performOpen(instance, path, mergedOpts, generation),
@@ -564,6 +573,8 @@
     _destroyWriteGuard(instance);
     const ctx = instance.ctx;
     if (ctx) {
+      ctx.destroyed = true;
+      ctx.generation = (ctx.generation || 0) + 1;
       ctx._renderToken = null;
       ctx._renderInProgress = false;
       if (ctx._dragSelectPointerUp) {

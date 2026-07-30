@@ -19,6 +19,8 @@
     currentMode: 'text',
     allTags: [],
     selectedTags: [],
+    selectedTagIds: [],
+    tagIdsByName: {},
     commonTagColors: {}, // 共通タグ由来の候補: 名前 → 色（#rrggbb、無ければ空文字）。スウォッチ表示用
     voiceTimerInterval: null,
     voiceStartTime: 0,
@@ -31,12 +33,19 @@
   let drawingController = null;
   let libraryController = null;
   let tagLoadPromise = null;
+  const durableMemory = new Map();
 
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', () => {
+    init().catch(error => {
+      console.error('quick memo initialization failed', error);
+      setStatus('クイックメモを初期化できませんでした: ' + (error?.message || error), true);
+    });
+  });
 
-  function init() {
+  async function init() {
     bindElements();
     const controllerErrors = setupControllers();
+    await hydrateDurableRecords();
     restoreDraft();
     applyIncomingShare();
     bindEvents();
@@ -54,7 +63,8 @@
 
   function bindElements() {
     [
-      'syncStatus', 'listBtn', 'installBtn', 'newMemoBtn', 'saveBtn',
+      'syncStatus', 'menuBtn', 'quickMemoMenu', 'listBtn', 'menuListBtn', 'workspaceBtn',
+      'installBtn', 'newMemoBtn', 'saveBtn',
       'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
       'modeSelect', 'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
       'colorInput', 'opacityInput', 'opacityValue', 'widthInput', 'penBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
@@ -142,23 +152,51 @@
     }
     els.undoBtn.innerHTML = typeof window.lucide === 'function' ? window.lucide('undo2', 19) : '↶';
     els.redoBtn.innerHTML = typeof window.lucide === 'function' ? window.lucide('redo2', 19) : '↷';
+    const iconButtons = [
+      ['penBtn', 'pencil'], ['fillBtn', 'paintBucket'], ['eraserBtn', 'eraser'],
+      ['clearDrawingBtn', 'trash2'], ['voiceRecordBtn', 'mic'], ['voicePauseBtn', 'pause'],
+      ['voiceResumeBtn', 'play'], ['voiceStopBtn', 'square'],
+    ];
+    iconButtons.forEach(([id, name]) => {
+      if (els[id] && typeof window.lucide === 'function') els[id].innerHTML = window.lucide(name, 19);
+    });
     return errors;
   }
 
   function bindEvents() {
-    els.titleInput.addEventListener('input', scheduleSave);
-    els.saveBtn.addEventListener('click', () => saveNow({ manual: true }));
-    els.newMemoBtn.addEventListener('click', startNewMemo);
-    els.modeSelect.addEventListener('change', () => switchMode(els.modeSelect.value));
-    els.undoBtn.addEventListener('click', () => runHistory('undo'));
-    els.redoBtn.addEventListener('click', () => runHistory('redo'));
-    els.addTagBtn.addEventListener('click', addNewTag);
-    els.listBtn.addEventListener('click', () => libraryController.show());
-    els.installBtn.addEventListener('click', installToHome);
-    els.voiceRecordBtn.addEventListener('click', startVoiceRecording);
-    els.voicePauseBtn.addEventListener('click', pauseVoiceRecording);
-    els.voiceResumeBtn.addEventListener('click', resumeVoiceRecording);
-    els.voiceStopBtn.addEventListener('click', stopVoiceRecording);
+    const on = (element, type, handler) => element?.addEventListener(type, handler);
+    const closeMenu = () => {
+      if (!els.quickMemoMenu) return;
+      els.quickMemoMenu.hidden = true;
+      els.menuBtn?.setAttribute('aria-expanded', 'false');
+    };
+    on(els.menuBtn, 'click', event => {
+      event.stopPropagation();
+      const open = els.quickMemoMenu?.hidden !== false;
+      if (els.quickMemoMenu) els.quickMemoMenu.hidden = !open;
+      els.menuBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    on(document, 'click', event => {
+      if (!els.quickMemoMenu?.contains(event.target) && !els.menuBtn?.contains(event.target)) closeMenu();
+    });
+    on(els.titleInput, 'input', scheduleSave);
+    on(els.saveBtn, 'click', () => { closeMenu(); saveNow({ manual: true }); });
+    on(els.newMemoBtn, 'click', () => { closeMenu(); startNewMemo(); });
+    on(els.modeSelect, 'change', () => switchMode(els.modeSelect.value));
+    on(els.undoBtn, 'click', () => runHistory('undo'));
+    on(els.redoBtn, 'click', () => runHistory('redo'));
+    on(els.addTagBtn, 'click', addNewTag);
+    on(els.listBtn, 'click', () => libraryController.show());
+    on(els.menuListBtn, 'click', () => { closeMenu(); libraryController.show(); });
+    on(els.workspaceBtn, 'click', () => {
+      closeMenu();
+      window.MeldexStandaloneWorkspaceTree?.open?.();
+    });
+    on(els.installBtn, 'click', installToHome);
+    on(els.voiceRecordBtn, 'click', startVoiceRecording);
+    on(els.voicePauseBtn, 'click', pauseVoiceRecording);
+    on(els.voiceResumeBtn, 'click', resumeVoiceRecording);
+    on(els.voiceStopBtn, 'click', stopVoiceRecording);
     window.addEventListener('online', flushPendingQueue);
     window.addEventListener('meldex:tag-dictionary-changed', () => loadTags());
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
@@ -230,6 +268,7 @@
     if (!draft) return;
     els.titleInput.value = draft.title || '';
     state.selectedTags = Array.isArray(draft.tags) ? [...draft.tags] : parseTags(draft.tags || '');
+    state.selectedTagIds = Array.isArray(draft.tag_ids) ? [...draft.tag_ids] : [];
     renderTagChips();
     editorController.reset(sanitizeHtml(draft.html || ''));
     state.share = {
@@ -251,6 +290,7 @@
       server_path: draft.server_path || '',
       title: els.titleInput.value.trim() || (els.editor.innerText.trim().split(/\r?\n/)[0] || '').slice(0, 60),
       tags: [...state.selectedTags],
+      tag_ids: [...state.selectedTagIds],
       html,
       text: els.editor.innerText.trim(),
       drawing_png: drawingController.toDataURL(),
@@ -273,6 +313,7 @@
     els.titleInput.value = '';
     els.titleInput.placeholder = 'タイトル（空なら本文の一行目）';
     state.selectedTags = [];
+    state.selectedTagIds = [];
     renderTagChips();
     editorController.reset('');
     resetDrawingCanvas();
@@ -314,6 +355,7 @@
     };
     els.titleInput.value = memo.title || '';
     state.selectedTags = Array.isArray(memo.tags) ? [...memo.tags] : parseTags(memo.tags || '');
+    state.selectedTagIds = Array.isArray(memo.tag_ids) ? [...memo.tag_ids] : [];
     renderTagChips();
     await loadTags();
     editorController.reset(sanitizeHtml(memo.html || escHtml(memo.text || '').replace(/\n/g, '<br>')));
@@ -351,6 +393,7 @@
     editorController.reset(sharedHtml(shared));
     drawingController.reset('');
     state.selectedTags = ['共有'];
+    state.selectedTagIds = [];
     renderTagChips();
     persistDraft(collectMemo());
     scheduleSave();
@@ -760,6 +803,7 @@
   }
 
   function setStatus(message, isError) {
+    if (!els.syncStatus) return;
     els.syncStatus.textContent = message;
     els.syncStatus.classList.toggle('qm-toast-error', !!isError);
   }
@@ -800,6 +844,7 @@
     const groups = Array.isArray(data?.groups) ? data.groups : [];
     const groupsById = Object.fromEntries(groups.map(group => [group.id, group]));
     const nextColors = {};
+    const nextIds = {};
     const names = [];
     tags.forEach((tag) => {
       const name = String(tag?.name || '').trim();
@@ -807,9 +852,14 @@
       const groupColor = String(groupsById[tag.group_id]?.color || '').trim();
       names.push(name);
       nextColors[name] = groupColor || String(tag?.color || '').trim();
+      nextIds[name] = String(tag?.id || '');
     });
     state.allTags = [...new Set(names)];
     state.commonTagColors = nextColors;
+    state.tagIdsByName = nextIds;
+    state.selectedTagIds = state.selectedTags
+      .map(name => nextIds[name])
+      .filter(Boolean);
     renderTagChips();
   }
 
@@ -830,7 +880,11 @@
       if (missing.length) data = await _loadUnifiedTagCatalog();
       _applyUnifiedTagCatalog(data);
     } catch (error) {
-      setStatus('タグ辞書を読み込めませんでした: ' + (error?.message || error), true);
+      const detail = String(error?.userMessage || error?.message || error);
+      const message = /404|file not found|failed to fetch|network/i.test(detail)
+        ? 'タグ辞書はMeldexへ接続すると利用できます'
+        : 'タグ辞書を読み込めませんでした: ' + detail.slice(0, 160);
+      setStatus(message, !/接続すると利用できます/.test(message));
     }
   }
 
@@ -850,15 +904,8 @@
       const isCommonTag = Object.prototype.hasOwnProperty.call(state.commonTagColors, tag);
       const commonColor = isCommonTag ? (state.commonTagColors[tag] || '') : '';
       chip.className = 'qm-tag-chip' + (state.selectedTags.includes(tag) ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : '');
-      if (isCommonTag) {
-        const swatch = document.createElement('span');
-        swatch.className = 'qm-tag-chip-swatch';
-        swatch.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;background:' + (commonColor || 'var(--accent, #569cd6)') + ';';
-        chip.appendChild(swatch);
-        chip.appendChild(document.createTextNode(tag));
-      } else {
-        chip.textContent = tag;
-      }
+      chip.textContent = tag;
+      if (commonColor) chip.style.color = commonColor;
       chip.title = isCommonTag ? '統一タグ辞書' : '';
       chip.addEventListener('click', () => toggleTag(tag));
       container.appendChild(chip);
@@ -869,18 +916,20 @@
     const idx = state.selectedTags.indexOf(tag);
     if (idx >= 0) state.selectedTags.splice(idx, 1);
     else state.selectedTags.push(tag);
+    state.selectedTagIds = state.selectedTags.map(name => state.tagIdsByName[name]).filter(Boolean);
     renderTagChips();
     scheduleSave();
   }
 
   async function addNewTag() {
-    const name = prompt('新しいタグ名を入力:');
-    if (!name || !name.trim()) return;
+    const name = await showTagPicker();
+    if (!name) return;
     const tag = name.trim();
     try {
       if (!state.allTags.includes(tag)) await _createUnifiedTag(tag);
       await loadTags();
       if (!state.selectedTags.includes(tag)) state.selectedTags.push(tag);
+      state.selectedTagIds = state.selectedTags.map(name => state.tagIdsByName[name]).filter(Boolean);
       renderTagChips();
       scheduleSave();
     } catch (error) {
@@ -1145,20 +1194,100 @@
   }
 
   function readJson(key, fallback) {
+    if (durableMemory.has(key)) return structuredClone(durableMemory.get(key));
     try {
       const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
+      const value = raw ? JSON.parse(raw) : fallback;
+      if (raw) durableMemory.set(key, value);
+      return value;
     } catch {
       return fallback;
     }
   }
 
+  function showTagPicker() {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'qm-tag-picker-overlay';
+      const dialog = document.createElement('section');
+      dialog.className = 'qm-tag-picker';
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-labelledby', 'qm-tag-picker-title');
+      const title = document.createElement('h2');
+      title.id = 'qm-tag-picker-title';
+      title.textContent = 'タグを選択';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'タグ名を入力または選択';
+      input.setAttribute('aria-label', 'タグ名');
+      input.setAttribute('list', 'qm-tag-picker-options');
+      const list = document.createElement('datalist');
+      list.id = 'qm-tag-picker-options';
+      state.allTags.forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        list.appendChild(option);
+      });
+      const actions = document.createElement('div');
+      actions.className = 'qm-tag-picker-actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'キャンセル';
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'qm-primary';
+      add.textContent = '追加';
+      actions.append(cancel, add);
+      dialog.append(title, input, list, actions);
+      overlay.appendChild(dialog);
+      document.body.appendChild(overlay);
+      let finished = false;
+      const finish = value => {
+        if (finished) return;
+        finished = true;
+        overlay.remove();
+        document.removeEventListener('keydown', onKeydown, true);
+        els.addTagBtn?.focus?.();
+        resolve(String(value || '').trim());
+      };
+      const onKeydown = event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finish('');
+        } else if (event.key === 'Enter' && document.activeElement === input) {
+          event.preventDefault();
+          finish(input.value);
+        }
+      };
+      cancel.addEventListener('click', () => finish(''));
+      add.addEventListener('click', () => finish(input.value));
+      overlay.addEventListener('pointerdown', event => {
+        if (event.target === overlay) finish('');
+      });
+      document.addEventListener('keydown', onKeydown, true);
+      input.focus();
+    });
+  }
+
   function writeJson(key, value) {
+    durableMemory.set(key, structuredClone(value));
+    const durable = window.MeldexStandaloneLocalDrafts?.putRaw?.(`quick-memo:${key}`, value);
+    durable?.catch?.(error => setStatus('端末への保存に失敗: ' + (error?.message || error), true));
     try {
       localStorage.setItem(key, JSON.stringify(value));
       return true;
     } catch {
-      return false;
+      return !!durable;
+    }
+  }
+
+  async function hydrateDurableRecords() {
+    const store = window.MeldexStandaloneLocalDrafts;
+    if (!store?.getRaw) return;
+    for (const key of [CURRENT_KEY, QUEUE_KEY]) {
+      const value = await store.getRaw(`quick-memo:${key}`, null).catch(() => null);
+      if (value != null) durableMemory.set(key, value);
     }
   }
 

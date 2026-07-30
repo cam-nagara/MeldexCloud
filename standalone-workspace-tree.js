@@ -52,11 +52,6 @@
 
   function _createDom() {
     const refs = state.refs;
-    refs.toggle = _button('Meldexファイル', 'sa-workspace-toggle', 'toggle');
-    refs.toggle.setAttribute('aria-controls', 'sa-workspace-drawer');
-    refs.toggle.setAttribute('aria-expanded', 'false');
-    refs.toggle.setAttribute('aria-label', 'Meldexの保存先フォルダを開く');
-
     refs.backdrop = _el('div', { className: 'sa-workspace-backdrop', hidden: true });
     refs.drawer = _el('aside', {
       id: 'sa-workspace-drawer', className: 'sa-workspace-drawer', role: 'dialog',
@@ -146,7 +141,7 @@
     _append(refs.dialogActions, refs.dialogCancel, refs.dialogConfirm);
     _append(refs.dialog, refs.dialogTitle, refs.dialogMessage, refs.dialogLabel, refs.dialogInput, refs.dialogActions);
 
-    document.body.append(refs.toggle, refs.backdrop, refs.drawer, refs.dialogBackdrop, refs.dialog);
+    document.body.append(refs.backdrop, refs.drawer, refs.dialogBackdrop, refs.dialog);
   }
 
   function _setStatus(message, error) {
@@ -374,7 +369,6 @@
     state.open = true;
     state.refs.backdrop.hidden = false;
     state.refs.drawer.hidden = false;
-    state.refs.toggle.setAttribute('aria-expanded', 'true');
     document.body.classList.add('sa-workspace-open');
     if (options?.title) state.refs.title.textContent = options.title;
     if (options?.refresh !== false) {
@@ -388,7 +382,6 @@
     state.open = false;
     state.refs.backdrop.hidden = true;
     state.refs.drawer.hidden = true;
-    state.refs.toggle.setAttribute('aria-expanded', 'false');
     document.body.classList.remove('sa-workspace-open');
     state.refs.title.textContent = 'Meldexファイル';
     if (state.lastFocus?.focus) state.lastFocus.focus();

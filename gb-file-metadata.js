@@ -1,6 +1,7 @@
 /* 画像・文書の埋め込み情報表示と、画像の評価・メモ編集 */
 (() => {
   const cache = new Map();
+  let folderTagCatalogRefreshTimer = null;
 
   function embeddedOf(meta) {
     return meta?.embedded && typeof meta.embedded === 'object' ? meta.embedded : null;
@@ -266,22 +267,66 @@
 
   function renderFolderTags(host, item) {
     if (!host) return;
-    const tags = typeof _folderItemTags === 'function' ? _folderItemTags(item) : [];
+    const api = window.MeldexGlobalTags;
+    const sourceFolder = String(item?.path && window.MeldexAutoTagSourceFolder?.(item.path) || '').trim();
+    const catalog = api?.getCachedTagsSync?.(sourceFolder) || null;
+    const groups = Array.isArray(catalog?.groups) ? catalog.groups : [];
+    const groupsById = Object.fromEntries(groups.map(group => [group.id, group]));
+    const rawTags = typeof _folderItemTags === 'function' ? _folderItemTags(item) : [];
+    const visibleTags = window.MeldexTagDisplayPreferences?.filterVisibleTags?.(
+      rawTags,
+      groups,
+      sourceFolder,
+    ) || rawTags;
+    const tags = typeof api?.sortTagsByGroupOrder === 'function'
+      ? api.sortTagsByGroupOrder(visibleTags, groups)
+      : visibleTags;
     const names = tags.map(tag => String(tag?.name || '')).filter(Boolean);
+    const displayLimit = window.MeldexTagDisplayPreferences?.folderTagDisplayLimit?.()
+      || api?.getCompactTagDisplayLimit?.()
+      || 10;
+    const allTagsTitle = `すべてのタグ（${names.length}件）\n${names.join('、')}`;
     host.replaceChildren();
     host.hidden = names.length === 0;
-    host.title = names.join('、');
-    names.slice(0, 3).forEach(name => {
-      const chip = document.createElement('span');
-      chip.className = 'fv-folder-tag';
-      chip.textContent = name;
+    host.title = allTagsTitle;
+    tags.slice(0, displayLimit).forEach(tag => {
+      const chip = typeof api?.createTagChip === 'function'
+        ? api.createTagChip(tag, {
+            compact: true,
+            className: 'fv-folder-tag',
+            groupsById,
+          })
+        : Object.assign(document.createElement('span'), {
+            className: 'gb-tag-chip gb-tag-chip--compact fv-folder-tag',
+            textContent: String(tag?.name || ''),
+          });
       host.appendChild(chip);
     });
-    if (names.length > 3) {
-      const more = document.createElement('span');
-      more.className = 'fv-folder-tag fv-folder-tag--more';
-      more.textContent = `+${names.length - 3}`;
+    if (names.length > displayLimit) {
+      const label = `+${names.length - displayLimit}`;
+      const more = typeof api?.createTagChip === 'function'
+        ? api.createTagChip(null, {
+            compact: true,
+            summary: true,
+            label,
+            title: allTagsTitle,
+            className: 'fv-folder-tag fv-folder-tag--more',
+          })
+        : Object.assign(document.createElement('span'), {
+            className: 'gb-tag-chip gb-tag-chip--compact gb-tag-chip--summary fv-folder-tag fv-folder-tag--more',
+            textContent: label,
+            title: allTagsTitle,
+          });
       host.appendChild(more);
+    }
+    if (!catalog && api?.loadTagsCached && host.dataset.folderTagCatalogLoading !== '1') {
+      host.dataset.folderTagCatalogLoading = '1';
+      api.loadTagsCached(sourceFolder).then(() => {
+        delete host.dataset.folderTagCatalogLoading;
+        if (host.isConnected) renderFolderTags(host, item);
+      }).catch(() => {
+        delete host.dataset.folderTagCatalogLoading;
+      });
     }
   }
 
@@ -299,6 +344,31 @@
   function refreshFolderTags(root = document) {
     root.querySelectorAll?.('[data-folder-tags-path]').forEach(host => {
       renderFolderTags(host, host._folderTagItem);
+    });
+  }
+
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('meldex:tag-dictionary-changed', () => {
+      clearTimeout(folderTagCatalogRefreshTimer);
+      folderTagCatalogRefreshTimer = setTimeout(() => {
+        const hosts = Array.from(document.querySelectorAll('[data-folder-tags-path]'));
+        const sourceFolders = new Set(hosts.map(host => String(
+          host._folderTagItem?.path && window.MeldexAutoTagSourceFolder?.(host._folderTagItem.path) || '',
+        ).trim()));
+        const loads = Array.from(sourceFolders).map(sourceFolder =>
+          window.MeldexGlobalTags?.loadTagsCached?.(sourceFolder),
+        ).filter(Boolean);
+        Promise.allSettled(loads).then(() => refreshFolderTags(document));
+      }, 80);
+    });
+    window.addEventListener('meldex:compact-tag-display-limit-changed', () => {
+      refreshFolderTags(document);
+    });
+    window.addEventListener('meldex:folder-tag-display-limit-changed', () => {
+      refreshFolderTags(document);
+    });
+    window.addEventListener('meldex:tag-group-visibility-changed', () => {
+      refreshFolderTags(document);
     });
   }
 

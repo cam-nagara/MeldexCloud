@@ -612,8 +612,9 @@ function _smartDbFindSourceRow(entityName, ctx) {
   if (!entityName) return null;
   const table = (typeof _currentPivotTable === 'function' ? _currentPivotTable(ctx) : null)
     || (typeof _paneEl === 'function' ? _paneEl(ctx, '#pivot-table') : null)
-    || document.getElementById('pivot-table');
-  const root = table || document;
+    || (!ctx ? document.getElementById('pivot-table') : null);
+  const root = table || (!ctx ? document : null);
+  if (!root) return null;
   const rows = [...root.querySelectorAll('tr[data-entity-name]')];
   return rows.find(row => row.dataset.entityName === entityName && row.getClientRects().length > 0)
     || rows.find(row => row.dataset.entityName === entityName)

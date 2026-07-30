@@ -262,7 +262,7 @@ function getCurrentFilePath() {
     const pc = document.getElementById('page-content');
     if (pc?.dataset.path) return pc.dataset.path;
   }
-  if (state?.view === 'pivot' || state?.view === 'timeline' || state?.view === 'gallery'
+  if (state?.view === 'pivot' || state?.view === 'tree' || state?.view === 'timeline' || state?.view === 'gallery'
       || state?.view === 'kanban' || state?.view === 'chart' || state?.view === 'graph' || state?.view === 'form') {
     return state.currentDbPath || null;
   }
@@ -900,4 +900,3 @@ async function _deleteCurrentFile(toolType) {
     showStatus('ファイルの削除に失敗しました: ' + (e?.message || e || ''), true);
   }
 }
-

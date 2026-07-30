@@ -60,9 +60,8 @@
     try { localStorage.setItem(key, value); } catch (e) { /* localStorage不可の環境では状態復元を諦める */ }
   }
 
-  function _isCloudNarrow() {
-    return window.MeldexStandaloneCloud?.isCloudMode?.() === true
-      && window.matchMedia?.('(max-width: 820px)')?.matches;
+  function _isNarrow() {
+    return window.matchMedia?.('(max-width: 820px)')?.matches === true;
   }
 
   function createOptionPanel(options) {
@@ -101,9 +100,9 @@
       setWidth(_storedNumber(WIDTH_KEY, defaultWidth), false);
     }
 
-    function setVisible(visible) {
+    function setVisible(visible, persist = true) {
       shell.classList.toggle('sa-options-collapsed', !visible);
-      _setStoredFlag(COLLAPSED_KEY, visible ? '0' : '1');
+      if (persist) _setStoredFlag(COLLAPSED_KEY, visible ? '0' : '1');
       (opts.toggleButtonIds || []).forEach(id => {
         const btn = document.getElementById(id);
         if (!btn) return;
@@ -120,8 +119,10 @@
 
     function applyStoredVisibility() {
       const stored = _storedFlag(COLLAPSED_KEY);
-      const collapsed = stored == null ? _isCloudNarrow() : stored === '1';
-      setVisible(!collapsed);
+      // 狭幅では編集面を最優先し、以前のデスクトップ表示状態にかかわらず閉じて開始する。
+      // この自動クローズはデスクトップ用の保存状態を上書きしない。
+      const collapsed = _isNarrow() || stored === '1';
+      setVisible(!collapsed, false);
     }
 
     function initDrag() {
@@ -169,7 +170,10 @@
     applyStoredWidth();
     applyStoredVisibility();
     ensureDetailTabShell();
-    window.addEventListener('resize', () => applyStoredWidth());
+    window.addEventListener('resize', () => {
+      applyStoredWidth();
+      if (_isNarrow() && isVisible()) setVisible(false, false);
+    });
 
     return {
       toggle,

@@ -22,6 +22,9 @@ class PaneContext {
     this.smartDbData = null;        // スマートDBデータ
     this.containerEl = null;        // このペインのDOMコンテナ
     this.tableId = null;            // ペイン固有のテーブルID
+    this.destroyed = false;         // 破棄後の非同期応答を無効化
+    this.generation = 0;            // 読込・フォーカス復元の寿命世代
+    this.hostController = null;     // 埋め込み画面の直列化コントローラー
     this._selectedEntities = new Set(); // D-5: ピボット行の選択状態 (entityName ベース)
   }
 }
@@ -50,6 +53,8 @@ function destroyPaneContext(paneId) {
   // Step 2: チャンク分割レンダリング中なら中断トークンを無効化
   const ctx = _panes[paneId];
   if (ctx) {
+    ctx.destroyed = true;
+    ctx.generation = (ctx.generation || 0) + 1;
     ctx._renderToken = null;
     ctx._renderInProgress = false;
     if (ctx._dragSelectPointerUp) {
@@ -63,15 +68,23 @@ function destroyPaneContext(paneId) {
   delete _panes[paneId];
 }
 
-/** ペイン内のDOM要素を取得（ctx.containerEl内を検索、なければdocument） */
+/** ペイン内のDOM要素を取得（明示ctxは決してdocumentへフォールバックしない） */
 function _paneEl(ctx, selector) {
-  if (ctx && ctx.containerEl) return ctx.containerEl.querySelector(selector);
+  if (ctx) {
+    if (ctx.destroyed) return null;
+    if (!ctx.containerEl) return (ctx.embedded || ctx.strictRoot) ? null : document.querySelector(selector);
+    return ctx.containerEl.querySelector(selector);
+  }
   return document.querySelector(selector);
 }
 
 /** ペイン内のDOM要素をID指定で取得 */
 function _paneElById(ctx, id) {
-  if (ctx && ctx.containerEl) return ctx.containerEl.querySelector('#' + id);
+  if (ctx) {
+    if (ctx.destroyed) return null;
+    if (!ctx.containerEl) return (ctx.embedded || ctx.strictRoot) ? null : document.getElementById(id);
+    return ctx.containerEl.querySelector('#' + id);
+  }
   return document.getElementById(id);
 }
 

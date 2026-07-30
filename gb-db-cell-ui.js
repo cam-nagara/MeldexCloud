@@ -113,8 +113,8 @@ async function _cellUiRecoverMutationFailure(dbPath, ctx, error, actionLabel) {
   } catch {}
 }
 
-function _cellUiColumnLockMessage(dbPath, propName) {
-  return (typeof checkColumnEditable === 'function') ? checkColumnEditable(dbPath, propName) : '';
+function _cellUiColumnLockMessage(dbPath, propName, ctx) {
+  return (typeof checkColumnEditable === 'function') ? checkColumnEditable(dbPath, propName, ctx) : '';
 }
 
 function _cellUiCanQuickRename(ptc) {
@@ -407,11 +407,19 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   _setupCellValueDrag(row, val, entityPath, propName);
 
   // ホバー時の「...」メニューボタン
-  const moreBtn = document.createElement('span');
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
   moreBtn.className = 'cell-value-more';
-  moreBtn.style.cssText = 'position:absolute;right:2px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);font-size:11px;background:var(--bg3);border-radius:3px;z-index:1;';
+  moreBtn.style.cssText = 'position:absolute;right:28px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);font-size:11px;background:var(--bg3);border:0;border-radius:3px;z-index:2;';
   moreBtn.innerHTML = lucide('ellipsis', 12);
   moreBtn.title = 'メニュー';
+  moreBtn.setAttribute('aria-label', '候補値のメニュー');
+  moreBtn.dataset.e2eId = _dbCellInteractiveE2eId(
+    'value-more',
+    entityPath,
+    propName,
+    val?.candidate_index ?? val?.value,
+  );
   moreBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     _showValueContextMenu(e, val, entityPath, propName);
@@ -526,7 +534,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
     ? _dbPaneContextFromEvent(e?.target || null, { dbPath: currentDbPath })
     : null;
   const _ptc = currentDbPath ? getPropertyTypes(currentDbPath, currentCtx)[propName] : null;
-  const lockMsg = _cellUiColumnLockMessage(currentDbPath, propName);
+  const lockMsg = _cellUiColumnLockMessage(currentDbPath, propName, currentCtx);
   // 上部にリネーム入力欄: 値テキストを変更
   if (typeof _addMenuRenameInput === 'function' && !lockMsg && _cellUiCanQuickRename(_ptc)) {
     const old = _cellUiValueToString(val.value);
@@ -695,21 +703,21 @@ function _showValueContextMenu(e, val, entityPath, propName) {
       const pairIds = pairCtx ? _cellUiRelationIds(relationValue) : [];
       let currentVal = { ...val };
       let cascadeClears = [];
-      const pairRollbacks = [];
-      let bidirectionalApplied = false;
+      const pairRollbackOps = [];
+      let bidirectionalOp = null;
       try {
         if (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation')
             && typeof _clearCascadeDependentValues === 'function') {
-          cascadeClears = await _clearCascadeDependentValues(entityPath, propName, relationValue, '');
+          cascadeClears = await _clearCascadeDependentValues(entityPath, propName, relationValue, '', { dbPath: currentDbPath, ctx: currentCtx });
         }
         if (pairCtx && typeof _syncPairRelation === 'function') {
           for (const id of pairIds) {
-            await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, false);
-            pairRollbacks.push(id);
+            const op = await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, false);
+            if (op?.undo) pairRollbackOps.push(op.undo);
           }
         }
         if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
-          await _applyBidirectionalRelationSync({
+          bidirectionalOp = await _applyBidirectionalRelationSync({
             sourceDbPath: currentDbPath,
             entityPath,
             propName,
@@ -717,7 +725,6 @@ function _showValueContextMenu(e, val, entityPath, propName) {
             oldValue: relationValue,
             newValue: '',
           });
-          bidirectionalApplied = true;
         }
         const candIdx = val.candidate_index;
         if (candIdx != null) {
@@ -726,25 +733,22 @@ function _showValueContextMenu(e, val, entityPath, propName) {
           await apiPost('/outliner/delete', { path: val.file });
         }
       } catch (err) {
-        if (bidirectionalApplied && bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
-          try {
-            await _applyBidirectionalRelationSync({
-              sourceDbPath: currentDbPath,
-              entityPath,
-              propName,
-              ptc: _ptc,
-              oldValue: '',
-              newValue: relationValue,
-            });
-          } catch {}
+        if (bidirectionalOp?.undo) {
+          try { await bidirectionalOp.undo(); } catch (rollbackError) {
+            console.error('候補値削除の双方向リレーション復旧に失敗:', rollbackError, err);
+          }
         }
-        if (pairCtx && pairRollbacks.length && typeof _syncPairRelation === 'function') {
-          for (const id of pairRollbacks.reverse()) {
-            try { await _syncPairRelation(pairCtx.relDb, id, pairCtx.pairPropName, pairCtx.sourceId, true); } catch {}
+        for (let i = pairRollbackOps.length - 1; i >= 0; i -= 1) {
+          try { await pairRollbackOps[i](); } catch (rollbackError) {
+            console.error('候補値削除の自己リレーション復旧に失敗:', rollbackError, err);
           }
         }
         if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-          try { await _restoreCascadeDependentValues(entityPath, cascadeClears); } catch {}
+          try {
+            await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath: currentDbPath, ctx: currentCtx });
+          } catch (rollbackError) {
+            console.error('候補値削除のカスケード値復旧に失敗:', rollbackError, err);
+          }
         }
         throw err;
       }
@@ -777,7 +781,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
             });
           }
           if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-            await _restoreCascadeDependentValues(entityPath, cascadeClears);
+            await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath: currentDbPath, ctx: currentCtx });
           }
           await selectDatabase(currentDbPath, currentCtx || undefined, { silent: true });
         },
@@ -798,7 +802,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
           if (currentVal.candidate_index != null) await _apiPutValue(currentVal, { _delete: true });
           else if (currentVal.file) await apiPost('/outliner/delete', { path: currentVal.file });
           if (cascadeClears.length && typeof _redoCascadeDependentValues === 'function') {
-            await _redoCascadeDependentValues(entityPath, cascadeClears);
+            await _redoCascadeDependentValues(entityPath, cascadeClears, { dbPath: currentDbPath, ctx: currentCtx });
           }
           await selectDatabase(currentDbPath, currentCtx || undefined, { silent: true });
         },
@@ -1054,11 +1058,12 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
   const ctx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(dotEl, { dbPath })
     : null;
-  const lockMsg = _cellUiColumnLockMessage(dbPath, propName);
+  const lockMsg = _cellUiColumnLockMessage(dbPath, propName, ctx);
   if (lockMsg) { showStatus(lockMsg); return; }
-  closeAllDropdowns();
+  closeAllDropdowns(ctx || dotEl);
   const dd = document.createElement('div');
   dd.className = 'status-dropdown';
+  if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
 
   const statuses = getStatusList(dbPath);
   statuses.forEach(stObj => {
@@ -1072,7 +1077,7 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
     item.appendChild(document.createTextNode(' ' + st));
     if (val.status === st) item.classList.add('selected');
     item.addEventListener('click', async () => {
-      closeAllDropdowns();
+      closeAllDropdowns(ctx || dotEl);
       const oldStatus = val.status || statuses[0]?.name || '案';
       try {
         await _apiPutValue(val, { new_status: st });
@@ -1088,7 +1093,10 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
           await _autoFillOnStatusChange(_ep, val.property || '', st, dbPath, { ctx });
           autoFilled = true;
         }
-        if (state.view === 'pivot' && dbPath) {
+        const currentView = typeof _dbCurrentViewModeForContext === 'function'
+          ? _dbCurrentViewModeForContext(ctx, dbPath)
+          : (ctx?.viewMode || state.view);
+        if (currentView === 'pivot' && dbPath) {
           if (autoFilled) {
             await selectDatabase(dbPath, ctx || undefined, { silent: true });
             return;
@@ -1123,14 +1131,26 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
 
   setTimeout(() => {
     const closer = (e) => {
-      if (!dd.contains(e.target)) { closeAllDropdowns(); document.removeEventListener('pointerdown', closer); }
+      if (!dd.contains(e.target)) { closeAllDropdowns(ctx || dotEl); document.removeEventListener('pointerdown', closer); }
     };
     document.addEventListener('pointerdown', closer);
   }, 0);
 }
 
-function closeAllDropdowns() {
+function closeAllDropdowns(scope) {
+  const paneId = scope?.paneId
+    || scope?.dataset?.dbPaneId
+    || scope?.dataset?.paneId
+    || scope?.closest?.('[data-pane-id]')?.dataset?.paneId
+    || '';
+  const escapedPaneId = paneId && globalThis.CSS?.escape
+    ? CSS.escape(paneId)
+    : String(paneId).replace(/["\\]/g, '\\$&');
+  const paneRoot = scope?.containerEl
+    || (paneId ? document.querySelector(`[data-pane-id="${escapedPaneId}"]`) : null);
   document.querySelectorAll('.status-dropdown, .cell-inline-dd, .user-dropdown').forEach(el => {
+    if (paneId && el.dataset.dbPaneId && el.dataset.dbPaneId !== paneId) return;
+    if (paneId && !el.dataset.dbPaneId && (!paneRoot || !paneRoot.contains(el))) return;
     try { el.dispatchEvent(new CustomEvent('db-dropdown-cancel')); } catch {}
     el.remove();
   });
@@ -1276,7 +1296,7 @@ function _enableDropdownKeyNav(dd, itemSelector) {
       else if (activeItem) activeItem.click();
     } else if (e.key === 'Escape') {
       try { dd.dispatchEvent(new CustomEvent('db-dropdown-cancel')); } catch {}
-      closeAllDropdowns();
+      closeAllDropdowns(dd);
     }
     recordDebug('after');
   };

@@ -38,6 +38,9 @@ function _sanitizeDbTemplateTypeSpecific(typeSpecific) {
   if (src.pivot && typeof src.pivot === 'object' && src.pivot.groupBy) {
     out.pivot = { groupBy: src.pivot.groupBy };
   }
+  if (src.tree && typeof src.tree === 'object' && Object.keys(src.tree).length) {
+    out.tree = _cloneTemplateData(src.tree);
+  }
   if (src.kanban && typeof src.kanban === 'object' && src.kanban.groupBy && src.kanban.groupBy !== '_status') {
     out.kanban = { groupBy: src.kanban.groupBy };
   }
@@ -82,6 +85,9 @@ function _sanitizeDbTemplateSavedView(view) {
     out.countTypes = _cloneTemplateData(view.countTypes);
   }
   if (Array.isArray(view.advancedFilters) && view.advancedFilters.length) out.advancedFilters = _cloneTemplateData(view.advancedFilters);
+  if (view.columnValueFilters && typeof view.columnValueFilters === 'object' && Object.keys(view.columnValueFilters).length) {
+    out.columnValueFilters = _cloneTemplateData(view.columnValueFilters);
+  }
   if (view.sortConfig != null) out.sortConfig = _cloneTemplateData(view.sortConfig);
   if (view.conditionalFormat) out.conditionalFormat = true;
   if (view.conditionalColors && typeof view.conditionalColors === 'object' && Object.keys(view.conditionalColors).length) {

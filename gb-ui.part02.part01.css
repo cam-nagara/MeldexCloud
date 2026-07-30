@@ -472,7 +472,7 @@
   overflow: auto;
   padding: var(--ui-space-1);
   background: var(--ui-bg-panel);
-  border: 1px solid var(--ui-border);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--ui-border)));
   border-radius: var(--ui-radius-sm);
   box-shadow: var(--ui-shadow-md);
 }

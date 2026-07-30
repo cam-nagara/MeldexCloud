@@ -1,3 +1,22 @@
+      await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
+      const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'copy', oldPath: sourcePath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      return {
+        ok: true,
+        new_path: destPath,
+        new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+        ..._resultWarnings(warnings),
+      };
+    }
+
+    if (pathname === '/outliner/move' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const sourcePath = _normalizeFolderPath(body?.path || '');
+      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
+      _rejectProductionStructureMutation(sourcePath, '移動');
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
         throw new Error('制作管理の管理リストエントリの配置は変更できません');
       }
@@ -133,6 +152,10 @@
       }
       await _moveEntry(provider, trashPath, destPath);
       const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
       await _runPostMutationStep(warnings, 'trash-metadata', async () => {
         if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
       });

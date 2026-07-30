@@ -1,6 +1,10 @@
 /* Chat target resolution: reference target is optional and independent from chat storage. */
-const _CHAT_TARGET_DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'gallery', 'kanban', 'timeline', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+const _CHAT_TARGET_DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'tasks', 'shifts', 'chart', 'graph', 'form']);
 const _CHAT_TARGET_MODES = new Set(['follow-main', 'manual', 'detached']);
+
+function _chatRuntimeState() {
+  return typeof _chatState === 'undefined' ? null : _chatState;
+}
 
 function _chatStatePath(key) {
   return (typeof state !== 'undefined' && state) ? String(state[key] || '') : '';
@@ -93,7 +97,7 @@ function _chatTargetFromViewObject(view) {
 }
 
 function _chatCurrentTargetMode() {
-  const mode = String(_chatState.currentTargetMode || '');
+  const mode = String(_chatRuntimeState()?.currentTargetMode || '');
   return _CHAT_TARGET_MODES.has(mode) ? mode : 'follow-main';
 }
 
@@ -104,10 +108,11 @@ function _chatSetCurrentTargetMode(mode) {
 }
 
 function _chatTargetSnapshot() {
+  const chatState = _chatRuntimeState();
   return {
     mode: _chatCurrentTargetMode(),
-    path: String(_chatState.currentTargetPath || ''),
-    kind: String(_chatState.currentTargetKind || ''),
+    path: String(chatState?.currentTargetPath || ''),
+    kind: String(chatState?.currentTargetKind || ''),
   };
 }
 
@@ -138,16 +143,18 @@ function _chatTargetUpdateMode(options = {}) {
 }
 
 function _chatSetCurrentTargetPath(path, kind = '', options = {}) {
+  const chatState = _chatRuntimeState();
+  if (!chatState) return '';
   const clean = _chatNormalizePath(path);
   const nextKind = clean ? String(kind || '') : '';
   const nextMode = _chatTargetUpdateMode(options);
-  if (!nextMode) return String(_chatState.currentTargetPath || '');
-  _chatState.currentTargetPath = clean;
-  _chatState.currentTargetKind = nextKind;
+  if (!nextMode) return String(chatState.currentTargetPath || '');
+  chatState.currentTargetPath = clean;
+  chatState.currentTargetKind = nextKind;
   _chatSetCurrentTargetMode(nextMode);
   if (nextMode === 'manual') {
-    _chatState.targetPath = clean;
-    _chatState.lastImplicitTargetPath = '';
+    chatState.targetPath = clean;
+    chatState.lastImplicitTargetPath = '';
   }
   _chatRefreshCurrentTargetDisplay();
   _chatPersistTargetSnapshot();
@@ -206,13 +213,15 @@ function _chatRefreshCurrentTargetDisplay() {
 }
 
 function _chatFollowCurrentOpenTarget(options = {}) {
+  const chatState = _chatRuntimeState();
+  if (!chatState) return _chatTargetSnapshot();
   if (_chatCurrentTargetMode() !== 'follow-main') return _chatTargetSnapshot();
   const target = _chatCurrentOpenTarget();
   if (target.resolved) {
-    _chatState.currentTargetPath = target.path || '';
-    _chatState.currentTargetKind = target.path ? String(target.kind || '') : '';
+    chatState.currentTargetPath = target.path || '';
+    chatState.currentTargetKind = target.path ? String(target.kind || '') : '';
   }
-  _chatState.targetPath = '';
+  chatState.targetPath = '';
   _chatRefreshCurrentTargetDisplay();
   if (options.persist !== false) _chatPersistTargetSnapshot();
   return _chatTargetSnapshot();

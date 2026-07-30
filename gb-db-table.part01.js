@@ -62,6 +62,10 @@ function showUnifiedFilterModal() {
     advFilters.forEach(f => condDiv.insertAdjacentHTML('beforeend', _ufConditionRow(f, dbPath, ctx)));
     condDiv.querySelectorAll('.uf-cond').forEach(row => _ufPopulateCommonTagsDatalist(row));
   }
+  const initialProperty = String(options.initialProperty || '');
+  if (initialProperty && !advFilters.some(filter => filter?.property === initialProperty)) {
+    condDiv.insertAdjacentHTML('beforeend', _ufConditionRow({ property: initialProperty, field: 'value', operator: 'equals', value: '' }, dbPath, ctx));
+  }
   // 列を切り替えたときに共通タグ列向けの候補(datalist)を切り替える
   condDiv?.addEventListener('change', (e) => {
     const propSelect = e.target?.closest?.('[data-field="property"]');
@@ -188,6 +192,7 @@ function _ufClear() {
   const dbPath = overlay?.dataset.ufDbPath || ctx?.dbPath || state.currentDbPath;
   setFilter('disabled', { skipReload: true, dbPath, ctx });
   if (dbPath) setAdvancedFilters(dbPath, [], { ctx });
+  if (dbPath && typeof setColumnValueFilters === 'function') setColumnValueFilters(dbPath, {}, { ctx });
   document.querySelector('.modal-overlay').remove();
   _updateFilterBadge({ dbPath, filter: 'disabled', ctx });
   if (dbPath) _ufRefreshTarget(ctx, dbPath);
@@ -477,6 +482,14 @@ function _dbEntityCreateIsEditing(renderCtx) {
   const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
   if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor')) return true;
   // セレクト/ユーザー/リレーション等のドロップダウンは body 直下に出るため、テーブル内検索では拾えない
+  if (renderCtx?.paneId) {
+    const paneId = globalThis.CSS?.escape
+      ? CSS.escape(renderCtx.paneId)
+      : String(renderCtx.paneId).replace(/["\\]/g, '\\$&');
+    return !!document.querySelector(
+      `.cell-inline-dd[data-db-pane-id="${paneId}"],.status-dropdown[data-db-pane-id="${paneId}"],.user-dropdown[data-db-pane-id="${paneId}"]`
+    );
+  }
   return !!document.querySelector('.cell-inline-dd,.status-dropdown,.user-dropdown');
 }
 
@@ -487,8 +500,10 @@ function _dbPivotFetchUrl(dbPath) {
 
 function _dbFindEntityRow(ctx, entityName) {
   const tblId = (ctx && ctx.tableId) || 'pivot-table';
-  const root = typeof _paneEl === 'function' ? (_paneEl(ctx, '#' + tblId) || document) : document;
-  return root.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`);
+  const root = typeof _paneEl === 'function'
+    ? (_paneEl(ctx, '#' + tblId) || (!ctx ? document : null))
+    : (!ctx ? document : null);
+  return root?.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`) || null;
 }
 
 function _dbStartEntityInlineRenameWhenVisible(ctx, entityName, dbPath) {
@@ -778,7 +793,8 @@ function _syncRowSelectCheckboxState(cb, ctx) {
 
 function _handleCheckboxClick(e, cb, ctx) {
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
   const allCbs = [...paneRoot.querySelectorAll('.row-select-cb')];
   const sel = typeof _ensureSelectedEntities === 'function' ? _ensureSelectedEntities(ctx) : ctx._selectedEntities;
   // Shift+クリック範囲選択: anchor は pointerdown 時に保存した _pendingShiftAnchor を優先
@@ -1004,7 +1020,8 @@ function _handleTbodyPointerdown(e) {
   }
 
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
 
   // 行の HTML5 ドラッグを一時的に無効化 (cb 操作が行ドラッグを誤起動しないように)。
   // 通常行は専用ハンドルだけを draggable にしているため、解除時は true 固定ではなく元の値へ戻す。
@@ -1065,7 +1082,8 @@ function _handleTbodyPointerover(e) {
   const cb = e.target.closest('.row-select-cb');
   if (!cb) return;
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
   if (!paneRoot._dragSelectState) return;
   if (cb.checked === paneRoot._dragSelectState.checked) return;
   const newState = !!paneRoot._dragSelectState.checked;

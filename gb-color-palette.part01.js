@@ -11,7 +11,7 @@
   style.textContent = `
 .gb-palette {
   display: flex; flex-direction: column; gap: 4px; padding: 8px;
-  background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 6px;
   width: calc(24px * 8 + 3px * 7 + 16px);
   box-shadow: 0 4px 16px rgba(0,0,0,0.5);
 }

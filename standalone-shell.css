@@ -99,6 +99,26 @@ textarea {
   text-overflow: ellipsis;
 }
 
+.sa-title-input {
+  min-width: 72px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
+.sa-title-input:hover {
+  border-color: var(--border, #454545);
+}
+
+.sa-title-input:focus {
+  border-color: var(--accent, #6aa9e9);
+  outline: 2px solid color-mix(in srgb, var(--accent, #6aa9e9) 28%, transparent);
+  outline-offset: 0;
+}
+
 .sa-path {
   flex: 0 1 auto;
   min-width: 0;
@@ -110,13 +130,28 @@ textarea {
   text-overflow: ellipsis;
 }
 
+.sa-sync-status {
+  flex: 0 1 auto;
+  max-width: min(24vw, 160px);
+  overflow: hidden;
+  color: var(--ui-fg-muted, var(--sa-muted));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-sync-status[data-status="conflict"],
+.sa-sync-status[data-status="error"] {
+  color: var(--danger, #f87171);
+}
+
 .sa-menu {
   position: fixed;
   z-index: 10020;
   display: none;
   min-width: 220px;
   padding: 6px;
-  border: 1px solid var(--border, var(--sa-border));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
   border-radius: var(--sa-radius);
   background: var(--bg2, var(--sa-bg2));
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
@@ -272,9 +307,8 @@ body.sa-resizing-option-panel * {
     --sa-option-width: min(320px, 46vw);
   }
 
-  /* Cloud/PWA版の狭幅時はボード単独版と同じく右からのスライドインドロワーにする
-     （スマホ土台。優先ボタン+あふれメニュー化などの仕上げはPhase 5で行う）。 */
-  html[data-standalone-cloud] .sa-option-panel {
+  /* 狭幅時は実行環境にかかわらず右からのドロワーにし、主編集面を狭めない。 */
+  .sa-option-panel {
     position: fixed;
     z-index: 9980;
     top: env(safe-area-inset-top, 0px);
@@ -286,7 +320,7 @@ body.sa-resizing-option-panel * {
     box-shadow: -14px 0 32px rgba(0, 0, 0, 0.38);
   }
 
-  html[data-standalone-cloud] .sa-option-resizer {
+  .sa-option-resizer {
     display: none;
   }
 }
@@ -357,7 +391,7 @@ body.sa-resizing-option-panel * {
   gap: 12px;
   min-width: 240px;
   padding: 16px 18px;
-  border: 1px solid var(--border, var(--sa-border));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
   border-radius: 8px;
   background: var(--bg2, var(--sa-bg2));
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.38);
@@ -383,7 +417,7 @@ body.sa-resizing-option-panel * {
   z-index: 10030;
   max-width: min(640px, calc(100vw - 24px));
   padding: 9px 12px;
-  border: 1px solid var(--border, var(--sa-border));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
   border-radius: 7px;
   background: var(--bg2, var(--sa-bg2));
   color: var(--fg, var(--sa-fg));
@@ -447,7 +481,7 @@ body.sa-resizing-option-panel * {
   display: none;
   min-width: 190px;
   padding: 6px;
-  border: 1px solid var(--border, var(--sa-border));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
   border-radius: 6px;
   background: var(--bg2, var(--sa-bg2));
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);

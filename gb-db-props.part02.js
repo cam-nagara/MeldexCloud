@@ -14,13 +14,7 @@
   document.body.appendChild(menu);
   positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
 
-  setTimeout(() => {
-    const closer = (ev) => {
-      const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
-      if (!inAny) { closeColHeaderMenu(); document.removeEventListener('pointerdown', closer); }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  _installColHeaderMenuDismissHandlers();
 }
 
 function _getEntryNameAutoPropertyColumns(dbPath, ctx) {
@@ -161,12 +155,16 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
   // 上部にリネーム入力欄: エントリ名変更
   _addMenuRenameInput(menu, entityName, (newName) => {
-    apiPost('/entity/rename', { path: ep, new_name: newName }).then(() => {
+    window.GbDbEntryIdentity.rename({
+      dbPath: targetDbPath,
+      oldName: entityName,
+      newName,
+      path: ep,
+      ctx,
+      entryId: pivotData?.entities?.[entityName]?._id || '',
+    }).then(() => {
       if (typeof _dbUndoRename === 'function') _dbUndoRename(targetDbPath, entityName, newName, ctx);
-      // インライン経路と同じローカルファースト即時反映（「更新」を待たずにその場で反映する）
-      if (typeof _dbCommitEntityRenameLocalFirst === 'function') {
-        _dbCommitEntityRenameLocalFirst(ctx, null, null, entityName, newName, targetDbPath);
-      }
+      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, targetDbPath);
       showStatus('名前を変更: ' + newName);
       if (typeof _dbRefreshEntityRenameInBackground === 'function') {
         _dbRefreshEntityRenameInBackground(ctx, targetDbPath, newName);
@@ -258,13 +256,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   // (既知バグ #3「手動 zoom 計算残存」の修正)
   document.body.appendChild(menu);
   positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
-  setTimeout(() => {
-    const closer = (ev) => {
-      const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
-      if (!inAny) { closeColHeaderMenu(); document.removeEventListener('pointerdown', closer); }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  _installColHeaderMenuDismissHandlers();
 }
 
 function _hasDependencyPairProps(pts) {
@@ -405,7 +397,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
       if (typeof setEntityColumnLabel === 'function') {
         setEntityColumnLabel(dbPath, clean, { ctx });
         showStatus('列名を変更しました');
-        if (typeof renderPivot === 'function') renderPivot(ctx);
+        _refreshDbColumnMenuView(ctx, dbPath);
       }
     }, { placeholder: 'エントリ名列の名前を変更...' });
   }
@@ -414,10 +406,18 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
   const entityPinned = typeof getEntityColumnPinned === 'function'
     ? getEntityColumnPinned(dbPath, { ctx })
     : true;
+  const entityFilterActive = typeof isDbColumnFilterActive === 'function'
+    && isDbColumnFilterActive(dbPath, '__entity__', ctx);
   const items = [
     { type: 'submenu', label: '並び替え', children: _makeDbGlobalSortMenuItems(dbPath, ctx) },
+    {
+      label: lucide('filter', 14) + ' この列をフィルター...' + (entityFilterActive ? '（適用中）' : ''),
+      action: () => {
+        if (typeof showDbColumnFilterPopup === 'function') showDbColumnFilterPopup(e, '__entity__', ctx, dbPath);
+      },
+    },
     // 互換テスト用: showUnifiedFilterModal()
-    { label: 'フィルタ...', action: () => showUnifiedFilterModal({ ctx }) },
+    { label: 'すべての条件フィルター...', action: () => showUnifiedFilterModal({ ctx }) },
     { type: 'sep' },
     ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' エントリ名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });
@@ -428,11 +428,11 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
       { type: 'submenu', label: '列を固定', children: [
         { label: (entityPinned ? radioMark(true) : '　') + '固定する', action: () => {
           if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, true, { ctx });
-          if (typeof renderPivot === 'function') renderPivot(ctx);
+          _refreshDbColumnMenuView(ctx, dbPath);
         }},
         { label: (!entityPinned ? radioMark(true) : '　') + '固定しない', action: () => {
           if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, false, { ctx });
-          if (typeof renderPivot === 'function') renderPivot(ctx);
+          _refreshDbColumnMenuView(ctx, dbPath);
         }},
       ]},
       {
@@ -459,13 +459,13 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
           label: '解除: ' + esc(propName),
           action: () => {
             setPinnedCols(dbPath, getPinnedCols(dbPath, { ctx }).filter(n => n !== propName), { ctx });
-            if (typeof renderPivot === 'function') renderPivot(ctx);
+            _refreshDbColumnMenuView(ctx, dbPath);
           }
         })),
         { type: 'sep' },
         { label: 'すべて解除', action: () => {
             setPinnedCols(dbPath, [], { ctx });
-            if (typeof renderPivot === 'function') renderPivot(ctx);
+            _refreshDbColumnMenuView(ctx, dbPath);
           }
         },
       ]
@@ -479,13 +479,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
   document.body.appendChild(menu);
   positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
 
-  setTimeout(() => {
-    const closer = (ev) => {
-      const inAny = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
-      if (!inAny) { closeColHeaderMenu(); document.removeEventListener('pointerdown', closer); }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  _installColHeaderMenuDismissHandlers();
 }
 
 // エントリを追加（無題N を生成して新規作成 → リネーム可能状態にする）
@@ -536,7 +530,7 @@ function _addDependencyPairProps(dbPath, ctx) {
     type: 'multi-relation', relationDb: '', pairWith: '先行', dependencyDirection: 'entry-to-target'
   });
   showStatus('依存関係の列を追加しました（先行 / 後続）');
-  renderPivot(ctx);
+  _refreshDbColumnMenuView(ctx, dbPath);
 }
 
 // 依存エントリを作成

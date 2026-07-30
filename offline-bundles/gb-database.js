@@ -10,6 +10,13 @@
 function _resolveDatabasePaneContext(ctx, options) {
   const resolveOpts = options || {};
   const explicitCtx = !!ctx;
+  if (explicitCtx && ctx.embedded
+    && (ctx.destroyed || !ctx.containerEl || !document.body.contains(ctx.containerEl))) {
+    return null;
+  }
+  if (explicitCtx && ctx.embedded) {
+    return ctx;
+  }
   let candidate = ctx || _currentPaneState();
   const containerDetached = !!(candidate?.containerEl && !document.body.contains(candidate.containerEl));
   // 埋め込みシート（MeldexProductionSheetEmbed 等）は GBLayout のレイアウトツリーへ
@@ -31,6 +38,7 @@ function _resolveDatabasePaneContext(ctx, options) {
 
 function _dbPaneHasPivotTable(ctx) {
   if (!ctx?.containerEl) return true;
+  if (typeof ctx.containerEl.querySelector !== 'function') return true;
   const tblId = ctx.tableId || 'pivot-table';
   try {
     const id = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(tblId) : String(tblId).replace(/["\\]/g, '\\$&');
@@ -42,8 +50,10 @@ function _dbPaneHasPivotTable(ctx) {
 
 function _normalizeDbRenderContext(ctx) {
   const candidate = ctx || _currentPaneState();
+  if (ctx?.embedded && (ctx.destroyed || !ctx.containerEl || !document.body.contains(ctx.containerEl))) return null;
+  if (ctx?.embedded && !_dbPaneHasPivotTable(ctx)) return null;
   if (candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
-    return _globalPaneState();
+    return ctx ? null : _globalPaneState();
   }
   return candidate;
 }
@@ -75,8 +85,7 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
     const focusedEntity = String(scrollState.focusedEntity || '').trim();
     if (!focusedEntity) return;
     const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusedEntity) : focusedEntity.replace(/"/g, '\\"');
-    const target = container.querySelector(`[data-entity-name="${escaped}"], [data-entity="${escaped}"]`)
-      || document.querySelector(`[data-entity-name="${escaped}"], [data-entity="${escaped}"]`);
+    const target = container.querySelector(`[data-entity-name="${escaped}"], [data-entity="${escaped}"]`);
     if (!target) return;
     target.classList.add('db-view-focused-entity');
     target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -102,19 +111,20 @@ function _restoreDbNavigationViewSnapshot(dbPath, snapshot) {
 
 function _renderDbLoadError(ctx, error) {
   ctx = _normalizeDbRenderContext(ctx);
+  if (!ctx) return;
   clearPivot(ctx);
   const message = 'シートを読み込めませんでした: ' + (error?.message || error || '不明なエラー');
   const safeMessage = typeof esc === 'function'
     ? esc(message)
     : String(message).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const tblId = ctx?.tableId || 'pivot-table';
-  const tbody = _paneEl(ctx, '#' + tblId + ' tbody') || document.querySelector('#pivot-table tbody');
+  const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
   if (tbody) {
     tbody.innerHTML = `<tr><td colspan="999" style="padding:24px;color:var(--fg2);">${safeMessage}</td></tr>`;
   }
   const errorHtml = `<div class="db-load-error" role="alert" style="padding:40px;text-align:center;color:var(--fg2);">${safeMessage}</div>`;
-  ['.gallery-view', '.kanban-view', '.timeline-view', '.chart-view', '.graph-view', '.form-view'].forEach(selector => {
-    const container = _paneEl(ctx, selector) || document.querySelector(selector);
+  ['.tree-view', '.gallery-view', '.kanban-view', '.timeline-view', '.chart-view', '.graph-view', '.form-view'].forEach(selector => {
+    const container = _paneEl(ctx, selector);
     if (container) container.innerHTML = errorHtml;
   });
 }
@@ -184,12 +194,33 @@ async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
 
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
-  // 埋め込みシートは pane-local ctx を正とし、メイン画面の state を同期しない。
-  // 既定は従来どおり同期するため、通常シートの挙動は変わらない。
-  const syncGlobalState = openOpts.skipGlobalState !== true;
   const dbPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   const dbPerfTargetLabel = String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || '');
   ctx = _resolveDatabasePaneContext(ctx);
+  if (!ctx) return { ok: false, destroyed: true };
+  if (ctx.embedded && ctx.hostController && openOpts.embeddedHostDispatch !== true) {
+    const opened = await ctx.hostController.open(dbPath, { ...openOpts, forceReload: true });
+    return { ok: opened !== false, stale: opened === false, destroyed: !!ctx.destroyed, dbPath };
+  }
+  const syncGlobalState = !ctx.embedded && openOpts.skipGlobalState !== true;
+  const isolatedContext = !!ctx.embedded;
+  const loadGeneration = ctx.generation || 0;
+  const previousContext = {
+    dbPath: ctx.dbPath,
+    entityPath: ctx.entityPath,
+    pivotData: ctx.pivotData,
+    dbMetadata: ctx.dbMetadata,
+    viewMode: ctx.viewMode,
+  };
+  const previousGlobal = syncGlobalState ? {
+    currentDbPath: state.currentDbPath,
+    currentEntityPath: state.currentEntityPath,
+    currentSmartDb: state.currentSmartDb,
+    smartDbData: state.smartDbData,
+    pivotData: state.pivotData,
+    dbMetadata: state.dbMetadata,
+    filter: state.filter,
+  } : null;
   const inFlightLoad = ctx?._selectDatabaseInFlight;
   if (!openOpts.forceReload && inFlightLoad && inFlightLoad.dbPath === dbPath && inFlightLoad.promise) {
     if (typeof _logPerfEvent === 'function') {
@@ -201,9 +232,14 @@ async function selectDatabase(dbPath, ctx, opts) {
     return inFlightLoad.promise;
   }
   let resolveInFlightLoad = null;
+  let finalLoadResult = null;
+  const completeLoad = result => {
+    finalLoadResult = result;
+    return result;
+  };
   const inFlightPromise = new Promise(resolve => { resolveInFlightLoad = resolve; });
   if (ctx) ctx._selectDatabaseInFlight = { dbPath, promise: inFlightPromise };
-  if (!openOpts.skipShowView && typeof deactivateCsvSheetMode === 'function') deactivateCsvSheetMode();
+  if (!isolatedContext && !openOpts.skipShowView && typeof deactivateCsvSheetMode === 'function') deactivateCsvSheetMode();
   const showOpenLoading = !openOpts.silent
     && !openOpts.skipGlobalUi
     && typeof showLoading === 'function'
@@ -243,6 +279,8 @@ async function selectDatabase(dbPath, ctx, opts) {
   const dbLoadSeq = (ctx._dbLoadSeq || 0) + 1;
   ctx._dbLoadSeq = dbLoadSeq;
   const isStaleDbLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
+    || !!ctx.destroyed
+    || (ctx.generation || 0) !== loadGeneration
     || ctx._dbLoadSeq !== dbLoadSeq
     || ctx.dbPath !== dbPath;
   const hadLocalViewConfigBeforeOpen = typeof _hasLocalDbViewConfigCache === 'function'
@@ -354,7 +392,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   const metadataPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   try {
     const dbMetadata = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
-    if (isStaleDbLoad()) return;
+    if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.dbMetadata = dbMetadata;
     if (syncGlobalState) state.dbMetadata = dbMetadata;
     const backendViewConfig = ctx.dbMetadata?.view_config;
@@ -367,7 +405,7 @@ async function selectDatabase(dbPath, ctx, opts) {
         hadLocalCache: hadLocalViewConfigBeforeOpen,
         ctx,
       });
-      if (isStaleDbLoad()) return;
+      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
       if (migratedViewConfig && ctx.dbMetadata) ctx.dbMetadata.view_config = migratedViewConfig;
     }
     if (backendViewConfigApplied) {
@@ -391,7 +429,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       });
     }
   } catch {
-    if (isStaleDbLoad()) return;
+    if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     const emptyMetadata = { actions: [], backlinks: [], style: null, theme: null, property_types: null, property_layout: null, property_layout_templates: [], publish: null, calendar_mapping: null, view_config: null };
     ctx.dbMetadata = emptyMetadata;
     if (syncGlobalState) state.dbMetadata = emptyMetadata;
@@ -424,7 +462,8 @@ async function selectDatabase(dbPath, ctx, opts) {
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
     const pivotData = await apiFetch(url);
     if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
-    if (isStaleDbLoad()) return;
+    if (window.GbDbEntryIdentity) window.GbDbEntryIdentity.registerPivot(dbPath, pivotData);
+    if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.pivotData = pivotData;
     if (syncGlobalState) state.pivotData = ctx.pivotData; // グローバル同期
     const entityCountForPerf = Object.keys(ctx.pivotData.entities || {}).length;
@@ -470,13 +509,14 @@ async function selectDatabase(dbPath, ctx, opts) {
     const entityCountForLoading = Object.keys(ctx.pivotData.entities || {}).length;
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(entityCountForLoading, '大きいシートを描画中...', { threshold: 250 });
-      if (isStaleDbLoad()) return;
+      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     }
     _renderDbViewTabsSafely(ctx);
     const hasDbViews = getSavedViews(dbPath).length > 0;
     const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
     let renderedViewMode = dbViewMode;
     if (!hasDbViews && typeof renderDbNoViewsGuide === 'function') renderDbNoViewsGuide(ctx);
+    else if (dbViewMode === 'tree' && typeof renderDbTreeView === 'function') renderDbTreeView(ctx);
     else if (dbViewMode === 'gallery') renderGallery(ctx);
     else if (dbViewMode === 'kanban') renderKanban(ctx);
     else if (dbViewMode === 'timeline' || dbViewMode === 'calendar' || dbViewMode === 'tasks' || dbViewMode === 'shifts') renderTimeline(ctx);
@@ -504,21 +544,29 @@ async function selectDatabase(dbPath, ctx, opts) {
 
     // テンプレートはメニュー/ツールバーから手動で適用
   } catch (e) {
-    if (isStaleDbLoad()) return;
-    ctx.pivotData = null;
-    ctx.dbMetadata = null;
-    if (syncGlobalState) {
-      state.pivotData = null;
-      state.dbMetadata = null;
+    if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed, error: e });
+    ctx.dbPath = previousContext.dbPath;
+    ctx.entityPath = previousContext.entityPath;
+    ctx.pivotData = previousContext.pivotData;
+    ctx.dbMetadata = previousContext.dbMetadata;
+    ctx.viewMode = previousContext.viewMode;
+    if (syncGlobalState && previousGlobal) {
+      Object.assign(state, previousGlobal);
     }
-    _renderDbLoadError(ctx, e);
+    if (previousContext.pivotData) {
+      _renderCurrentDbView(ctx, previousContext.dbPath);
+    } else {
+      _renderDbLoadError(ctx, e);
+    }
     if (!openOpts.skipGlobalUi && typeof showStatus === 'function') {
       showStatus('シート読み込みエラー: ' + (e?.message || e), true);
     }
+    return completeLoad({ ok: false, error: e });
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(dbName, dbPath, 'database');
   // エンティティ追加/削除/リネーム後にリンク辞書を更新
   if (typeof MeldexAutoLink !== 'undefined') MeldexAutoLink.scheduleReload(3000);
+  return completeLoad({ ok: true, stale: false, destroyed: false, dbPath });
   } finally {
     if (typeof _logPerfEvent === 'function') {
       const entityCount = Object.keys(ctx?.pivotData?.entities || {}).length;
@@ -540,7 +588,14 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
     }
-    if (typeof resolveInFlightLoad === 'function') resolveInFlightLoad();
+    if (typeof resolveInFlightLoad === 'function') {
+      resolveInFlightLoad(finalLoadResult || {
+        ok: false,
+        stale: true,
+        destroyed: !!ctx?.destroyed,
+        dbPath,
+      });
+    }
   }
 }
 
@@ -647,10 +702,14 @@ function _updateFilterBadge(options = {}) {
   const dbPath = options.dbPath || state.currentDbPath;
   const filterMode = options.filter == null ? state.filter : options.filter;
   const advCount = dbPath ? (getAdvancedFilters(dbPath, { ctx: options.ctx || null }) || []).length : 0;
+  const valueFilterCount = dbPath && typeof getColumnValueFilters === 'function'
+    ? Object.keys(getColumnValueFilters(dbPath, { ctx: options.ctx || null }) || {}).length
+    : 0;
   const statusLabel = filterMode === 'adopted' ? '採用のみ' : filterMode === 'nobotsu' ? 'ボツ非表示' : filterMode === 'all' ? '全表示' : '';
   const labels = [];
   if (statusLabel) labels.push(statusLabel);
   if (advCount) labels.push(advCount + '件');
+  if (valueFilterCount) labels.push(valueFilterCount + '列');
   badge.textContent = labels.join(' + ');
   badge.style.display = labels.length ? '' : 'none';
 }
@@ -676,7 +735,7 @@ function clearPivot(ctx) {
   if (thead) thead.innerHTML = '';
   if (tbody) tbody.innerHTML = '';
   if (tfoot) tfoot.innerHTML = '';
-  const countEl = _paneEl(ctx, '#sb-count') || document.getElementById('sb-count');
+  const countEl = _paneEl(ctx, '#sb-count') || (!ctx ? document.getElementById('sb-count') : null);
   if (countEl) countEl.textContent = '0 件';
 }
 
@@ -764,7 +823,7 @@ function _dbUndoPairValue(label, val, oldValue, newValue, pairDbPath, targetId, 
         });
       }
       if (entityPath && cascadeClears?.length && typeof _restoreCascadeDependentValues === 'function') {
-        await _restoreCascadeDependentValues(entityPath, cascadeClears);
+        await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
       }
       if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
     },
@@ -786,7 +845,7 @@ function _dbUndoPairValue(label, val, oldValue, newValue, pairDbPath, targetId, 
         });
       }
       if (entityPath && cascadeClears?.length && typeof _redoCascadeDependentValues === 'function') {
-        await _redoCascadeDependentValues(entityPath, cascadeClears);
+        await _redoCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
       }
       if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
     },
@@ -845,27 +904,14 @@ function _dbRenameLocalRefs(dbPath, oldName, newName) {
 }
 function _dbUndoRename(dbPath, oldName, newName, ctx) {
   const scope = _dbScope(dbPath);
-  // 即時: 直前の rename 成功に追従して manualOrder 等を更新
-  _dbRenameLocalRefs(dbPath, oldName, newName);
-  if (typeof _dbNotifyCalendarEntryRenamed === 'function') {
-    _dbNotifyCalendarEntryRenamed(dbPath, _entityPath(dbPath, oldName), _entityPath(dbPath, newName), oldName, newName);
-  }
   historyPush('名前を変更: ' + oldName + ' → ' + newName,
     async () => {
-      await apiPost('/entity/rename', { path: _entityPath(dbPath, newName), new_name: oldName });
-      _dbRenameLocalRefs(dbPath, newName, oldName);
-      if (typeof _dbNotifyCalendarEntryRenamed === 'function') {
-        _dbNotifyCalendarEntryRenamed(dbPath, _entityPath(dbPath, newName), _entityPath(dbPath, oldName), newName, oldName);
-      }
-      await selectDatabase(dbPath, ctx, { silent: true });
+      await window.GbDbEntryIdentity.rename({ dbPath, oldName: newName, newName: oldName, ctx });
+      await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     async () => {
-      await apiPost('/entity/rename', { path: _entityPath(dbPath, oldName), new_name: newName });
-      _dbRenameLocalRefs(dbPath, oldName, newName);
-      if (typeof _dbNotifyCalendarEntryRenamed === 'function') {
-        _dbNotifyCalendarEntryRenamed(dbPath, _entityPath(dbPath, oldName), _entityPath(dbPath, newName), oldName, newName);
-      }
-      await selectDatabase(dbPath, ctx, { silent: true });
+      await window.GbDbEntryIdentity.rename({ dbPath, oldName, newName, ctx });
+      await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     scope
   );
@@ -891,15 +937,6 @@ function _dbUndoRename(dbPath, oldName, newName, ctx) {
 
 
 // ビュー管理・ギャラリー・カンバン・タイムラインは gb-db-views.js に分離
-
-async function _autoRenameEntity(dbPath, entityName) {
-  const newName = _generateEntryName(dbPath, entityName);
-  if (!newName || newName === entityName) return;
-  try {
-    await apiPost('/entity/rename', { path: _entityPath(dbPath, entityName), new_name: newName });
-  } catch { /* rename failed silently */ }
-}
-
 
 /* ==============================
    autoFill プレースホルダ評価（§15.4.2 / X4 確定）

@@ -305,7 +305,7 @@ th.col-drop-right::after { right: -2px; }
 /* ステータスドロップダウン */
 .status-dropdown {
   position: absolute; z-index: 50;
-  background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--border); border-radius: 4px;
+  background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 4px;
   padding: 4px 0; min-width: 120px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
   box-sizing: border-box;
 }
@@ -379,6 +379,26 @@ th.col-drop-right::after { right: -2px; }
 .pivot-table td.db-range-selected .cell-add-btn,
 td:hover .cell-add-btn { display: inline-flex; }
 .cell-add-btn:hover { color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
+#pivot-table td .cell-value,
+.pivot-table td .cell-value {
+  padding-right: 54px;
+  box-sizing: border-box;
+}
+#pivot-table td .cell-value > .cell-value-more,
+.pivot-table td .cell-value > .cell-value-more {
+  right: 28px !important;
+  min-width: 22px;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+}
+#pivot-table td .cell-value:hover > .cell-value-more,
+.pivot-table td .cell-value:hover > .cell-value-more,
+#pivot-table td .cell-value:focus-within > .cell-value-more,
+.pivot-table td .cell-value:focus-within > .cell-value-more,
+td.active-cell .cell-value > .cell-value-more {
+  display: inline-flex !important;
+}
 
 /* 行/列選択 */
 #pivot-table tr.row-selected td, .pivot-table tr.row-selected td { background: color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 35%, transparent) !important; color: var(--db-selection-fg, var(--ui-selection-fg)) !important; }
@@ -532,6 +552,11 @@ td:hover .cell-add-btn { display: inline-flex; }
   cursor: pointer; font-size: 10px; opacity: 0.5; margin-left: 2px;
 }
 .multi-select-tag .tag-remove:hover { opacity: 1; color: var(--red); }
+.common-tags-cell .common-tags-tag.gb-tag-chip {
+  padding: 0;
+  background: var(--ui-bg-control, var(--bg3));
+  color: var(--gb-tag-color, var(--fg));
+}
 
 /* ユーザープロパティ */
 .cell-user-val:hover { background: var(--bg3); }
@@ -660,6 +685,29 @@ body[data-mobile-ui-local="1"] .count-type-select {
   text-align: left;
   justify-content: flex-start;
   font: inherit;
+}
+.gb-context-menu > .folder-context-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  cursor: default;
+}
+.gb-context-menu > .folder-context-file-actions:hover {
+  background: transparent;
+}
+.folder-context-file-actions .tb-icon-btn {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+.folder-context-file-actions .tb-icon-btn[disabled] {
+  color: var(--fg2);
+  cursor: default;
+  opacity: 0.45;
+}
+.folder-context-file-actions .folder-toolbar-danger:not(:disabled) {
+  color: var(--red);
 }
 #folder-grid.grid-layout {
   display: grid; grid-template-columns: repeat(auto-fill, var(--fv-card-w, 120px)); gap: 3px;

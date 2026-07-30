@@ -82,7 +82,7 @@ function _bdOpenExternalActionUrl(path) {
   return false;
 }
 
-const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
+const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
 const _bdResolvedLinkTypeCache = new Map();
 const _bdPreviewSummaryCache = new Map();
 let _bdLinkOpenSeq = 0;
@@ -246,7 +246,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (explicitType === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (explicitType === 'html') return { type: 'html', label: nextLabel, path: nextPath };
   if (explicitType === 'entity') return { type: 'entity', label: nextLabel, path: nextPath };
-  if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
   if (explicitType === 'smart-db') return { type: 'smart-db', label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
@@ -327,7 +327,7 @@ function _bdRetargetActiveTabInPane(targetPaneId, targetPane, entry, tabState) {
   const activeTab = tabs[index];
   if (!activeTab || activeTab.pinned) return '';
   if (activeTab.path && activeTab.path !== entry.path) {
-    const dbTypes = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
+    const dbTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']);
     if (dbTypes.has(activeTab.type) && typeof _navPushWithViewState === 'function') {
       const paneCtx = typeof getPaneContext === 'function' ? getPaneContext(targetPaneId) : null;
       _navPushWithViewState({
@@ -683,7 +683,7 @@ function _bdStandaloneUrlForEntry(entry) {
   if (viewerUrl) return viewerUrl;
   if (entry.type === 'page') return 'note-standalone.html?open=' + encodeURIComponent(entry.path);
   if (entry.type === 'scriptnote') return 'scenario-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
     return 'sheet-standalone.html?open=' + encodeURIComponent(entry.path);
   }
   if (entry.type === 'board') return 'board-standalone.html?open=' + encodeURIComponent(entry.path);
@@ -809,7 +809,7 @@ function _bdFileIcon(ext, path, linkType) {
   if (explicitType === 'scriptnote') return byType('scriptnote', 'bookOpenText');
   if (explicitType === 'board') return byType('board', 'presentation');
   if (explicitType === 'timer') return byType('timer', 'timer');
-  if (['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return byType('database', 'db');
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return byType('database', 'db');
   if (explicitType === 'smart-db') return byType('smart-db', 'databaseSearch');
   if (explicitType === 'csv') return 'table';
   if (explicitType === 'html') return 'globe';

@@ -47,7 +47,7 @@
      border を --ui-border-strong で強化、外側に強い影 + 内側に薄い白ハイライトを重ねて
      ダークテーマでも境界が明瞭に見えるようにする */
   background: var(--ui-popup-bg, var(--ui-bg-control));
-  border: 1px solid var(--ui-border-strong);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
   border-radius: var(--ui-radius-md);
   padding: var(--ui-space-2) 0;
   min-width: 160px;
@@ -235,7 +235,7 @@ button.gb-context-menu-item {
   padding: var(--ui-space-3);
   color: var(--ui-fg-default);
   background: var(--ui-popup-bg, var(--ui-bg-control));
-  border: 1px solid var(--ui-border-strong);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
   border-radius: var(--ui-radius-md);
   box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
   box-sizing: border-box;

@@ -204,6 +204,8 @@
       '#db-view-container',
       '#pivot-view',
       '.pivot-view',
+      '#tree-view',
+      '.tree-view',
       '.pivot-table',
       'td[data-prop-name]',
       'td.col-entity',

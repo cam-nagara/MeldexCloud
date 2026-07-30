@@ -1742,6 +1742,10 @@
       if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: originalPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
       await _runPostMutationStep(warnings, 'trash-metadata', async () => {
         if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
       });
@@ -1763,7 +1767,12 @@
       }
       const destDirHandle = await _directoryHandle(provider, _dirname(destPath), true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      return { ok: true, new_path: destPath, new_name: destName };
+      const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'copy', oldPath: sourcePath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      return { ok: true, new_path: destPath, new_name: destName, ..._resultWarnings(warnings) };
     }
 
     if (pathname === '/outliner/save-as' && method === 'POST') {
@@ -1784,7 +1793,17 @@
       }
       const destDirHandle = await _directoryHandle(provider, destFolder, true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      return { ok: true, new_path: destPath, new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName };
+      const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'copy', oldPath: sourcePath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      return {
+        ok: true,
+        new_path: destPath,
+        new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+        ..._resultWarnings(warnings),
+      };
     }
 
     if (pathname === '/outliner/move' && method === 'POST') {
@@ -1927,6 +1946,10 @@
       }
       await _moveEntry(provider, trashPath, destPath);
       const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
       await _runPostMutationStep(warnings, 'trash-metadata', async () => {
         if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
       });

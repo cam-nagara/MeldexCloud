@@ -229,16 +229,16 @@ async function _refreshChatDebugAvailability() {
 
 async function _initChatSourceFolderSelector() {
   const select = document.getElementById('chat-source-folder');
-  try { _chatVaultInfo = await apiFetch('/vault'); } catch { _chatVaultInfo = { path: '', name: '' }; }
+  try { _chatVaultInfo = await apiFetch('/vault', { silentError: true }); } catch { _chatVaultInfo = { path: '', name: '' }; }
   try {
-    const vaultsPayload = await apiFetch('/vaults');
+    const vaultsPayload = await apiFetch('/vaults', { silentError: true });
     _chatVaultsCache = Array.isArray(vaultsPayload?.vaults) ? vaultsPayload.vaults : [];
   } catch {
     _chatVaultsCache = [];
   }
-  try { _chatSourceFoldersCache = await apiFetch('/outliner-roots'); } catch { _chatSourceFoldersCache = []; }
+  try { _chatSourceFoldersCache = await apiFetch('/outliner-roots', { silentError: true }); } catch { _chatSourceFoldersCache = []; }
   try {
-    const workspacesPayload = await apiFetch('/workspaces');
+    const workspacesPayload = await apiFetch('/workspaces', { silentError: true });
     _chatWorkspacesCache = Array.isArray(workspacesPayload?.workspaces) ? workspacesPayload.workspaces : [];
   } catch {
     _chatWorkspacesCache = [];
@@ -682,10 +682,11 @@ function chatAddMessage(role, content, options = {}) {
 
   // ラッパー（名前+アイコン+バブル）
   const wrapper = document.createElement('div');
-  wrapper.className = 'chat-message-row chat-message-row-llm' + (isUser ? ' is-user' : ' is-assistant');
+  wrapper.className = 'chat-message-row chat-message-row-llm chat-copy-message' + (isUser ? ' is-user' : ' is-assistant');
   const msgId = options?.msg_id || options?.msgId || '';
   if (msgId) wrapper.dataset.msgId = msgId;
   if (Number.isInteger(options?.messageIndex)) wrapper.dataset.chatMessageIndex = String(options.messageIndex);
+  if (options?.error_code === 'cli_auth_required') wrapper.dataset.cliAuthProvider = String(provider || '');
   wrapper.style.cssText = isUser
     ? 'display:flex;flex-direction:column;align-items:flex-end;gap:2px;max-width:85%;align-self:flex-end;'
     : 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;align-self:flex-start;';
@@ -708,6 +709,8 @@ function chatAddMessage(role, content, options = {}) {
     header.appendChild(summaryBadge);
   }
   const timestampLabel = _chatFormatMessageTimestamp(options?.timestamp || options?.created_at || options?.createdAt || options?.time);
+  wrapper.dataset.chatCopyAuthor = name;
+  wrapper.dataset.chatCopyTime = timestampLabel;
   if (timestampLabel) {
     const timeEl = document.createElement('span');
     timeEl.className = 'chat-message-time';
@@ -805,7 +808,7 @@ function chatAddMessage(role, content, options = {}) {
 
   // バブル
   const div = document.createElement('div');
-  div.className = 'chat-message-bubble chat-message-bubble-llm' + (isUser ? ' is-user' : ' is-assistant');
+  div.className = 'chat-message-bubble chat-message-bubble-llm chat-copy-body' + (isUser ? ' is-user' : ' is-assistant');
   div.style.cssText = isUser
     ? 'background:var(--accent);color:var(--ui-fg-strong);padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
     : 'background:var(--bg3);color:var(--fg);padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;';
@@ -848,6 +851,9 @@ function chatAddMessage(role, content, options = {}) {
     div.title = `圧縮済み会話の要約（元発言 ${Number(options.original_message_count || 0)} 件）`;
   }
   if (!isUser && options?.code_exec_blocks?.length) chatRenderCodeExecBlocks(div, options.code_exec_blocks);
+  if (!isUser && options?.error_code === 'cli_auth_required') {
+    queueMicrotask(() => window.MeldexCliAuthRecovery?.attach?.(div, provider));
+  }
   _chatScrollToBottomIf(container, shouldScrollAfterAppend);
   return div;
 }

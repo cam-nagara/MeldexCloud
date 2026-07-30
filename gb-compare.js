@@ -190,7 +190,7 @@ async function _binaryCompareSummary(path, bytes, contentType, meta) {
   const lines = [
     '[バイナリ/非テキスト形式]',
     `Content-Type: ${contentType || '不明'}`,
-    `サイズ: ${Number.isFinite(size) ? size : '不明'} bytes`,
+    `ファイルサイズ: ${Number.isFinite(size) ? size : '不明'} bytes`,
     `SHA-256: ${hasBytes ? (hash || '計算不可') : '未計算（大きいファイルのため省略）'}`,
     '',
     '先頭バイト（最大512 bytes）:',

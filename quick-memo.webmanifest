@@ -19,12 +19,12 @@
   },
   "icons": [
     {
-      "src": "Meldex_icon_192.png",
-      "sizes": "192x192",
+      "src": "MeldexQuickMemo_icon_256.png",
+      "sizes": "256x256",
       "type": "image/png"
     },
     {
-      "src": "Meldex_icon_512.png",
+      "src": "MeldexQuickMemo_icon_512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

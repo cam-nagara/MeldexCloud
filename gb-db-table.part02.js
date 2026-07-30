@@ -480,7 +480,8 @@ function _handleTbodyChange(e) {
   const cb = e.target.closest('.row-select-cb');
   if (!cb) return;
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
   cb.closest('tr')?.classList.toggle('row-selected', cb.checked);
   paneRoot._lastSelectedCb = cb;
   // D-5: Set 同期

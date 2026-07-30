@@ -4,11 +4,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     : _currentPaneState();
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   // 列ロックチェック
-  const lockMsg = checkColumnEditable(dbPath, propName);
+  const lockMsg = checkColumnEditable(dbPath, propName, ctx);
   if (lockMsg) { showStatus(lockMsg); return; }
   const container = td.querySelector('.cell-values');
   if (!container) return;
-  let ptc = dbPath ? getPropertyTypes(dbPath)[propName] : null;
+  let ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
   const isPickerReplacementType = ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(type);
@@ -116,12 +116,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       .map(v => String(v ?? '').trim())
       .filter(Boolean);
   };
-  const ensureSelectOptions = (values) => {
-    if (type !== 'select' && type !== 'multi-select') return;
-    if (!dbPath || !propName || typeof setPropertyType !== 'function') return;
+  const ensureSelectOptions = async (values) => {
+    if (type !== 'select' && type !== 'multi-select') return true;
+    if (!dbPath || !propName || typeof setPropertyType !== 'function') return true;
     const nextValues = normalizeSelectOptionValues(values);
-    if (!nextValues.length) return;
-    const latest = (typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath) || {})[propName] : null) || ptc || {};
+    if (!nextValues.length) return true;
+    const latest = (typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {})[propName] : null) || ptc || {};
     const currentOptions = Array.isArray(latest.options) ? latest.options : [];
     const merged = [...currentOptions];
     let changed = false;
@@ -131,14 +131,21 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         changed = true;
       }
     });
-    if (!changed) return;
-    const nextConfig = { ...latest, type, options: merged };
+    if (!changed) return true;
+    const optionIds = { ...(latest.option_ids || {}) };
+    merged.forEach(value => {
+      optionIds[value] = optionIds[value]
+        || window.GbDbSchemaMutation?.newId?.('option')
+        || ('option_' + Date.now().toString(36));
+    });
+    const nextConfig = { ...latest, type, options: merged, option_ids: optionIds };
     ptc = { ...nextConfig };
     try {
-      const result = setPropertyType(dbPath, propName, nextConfig);
-      Promise.resolve(result).catch(e => showStatus('選択肢の保存に失敗: ' + (e?.message || e), true));
+      await Promise.resolve(setPropertyType(dbPath, propName, nextConfig, ctx));
+      return true;
     } catch (e) {
       showStatus('選択肢の保存に失敗: ' + (e?.message || e), true);
+      return false;
     }
   };
   const captureSelectedPeerCellsForBulkValueApply = () => {
@@ -196,6 +203,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (!value && value !== 'false') { cancel(); return; }
     let optimisticValue = null;
     let restoredOptimistic = false;
+    let createdValueRef = null;
+    let cascadeClears = [];
+    let bidirectionalOp = null;
+    let backendCommitted = false;
     const writeStatus = isPickerReplacementType || !getStatusEnabled(dbPath) ? '採用' : '案';
     try {
       closeInlineEditorShell();
@@ -211,31 +222,34 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         _restoreCellPos(pos, moveTo);
         restoredOptimistic = true;
       }
-      applyValueToSelectedPeerCells(value, { status: writeStatus });
       const result = await _apiPostValue(entityPath, propName, value, writeStatus, '');
       const filePath = result?.path || '';
-      let cascadeClears = [];
+      createdValueRef = {
+        file: result?.path || result?.file || '',
+        entry_path: entityPath,
+        entry_id: result?.entry_id || '',
+        property: result?.property || propName,
+        candidate_index: result?.candidate_index,
+      };
       const bidirectionalCtx = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional)
         ? { entityPath, propName, ptc }
         : null;
       if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
-        try {
-          await _applyBidirectionalRelationSync({
-            sourceDbPath: dbPath,
-            entityPath,
-            propName,
-            ptc,
-            oldValue: '',
-            newValue: value,
-          });
-        } catch (e) {
-          showStatus('双方向リレーションの同期に失敗: ' + (e?.message || e), true);
-        }
+        bidirectionalOp = await _applyBidirectionalRelationSync({
+          sourceDbPath: dbPath,
+          entityPath,
+          propName,
+          ptc,
+          oldValue: '',
+          newValue: value,
+        });
       }
       if ((type === 'relation' || type === 'multi-relation')
           && typeof _clearCascadeDependentValues === 'function') {
         cascadeClears = await _clearCascadeDependentValues(entityPath, propName, '', value, { dbPath, ctx });
       }
+      backendCommitted = true;
+      applyValueToSelectedPeerCells(value, { status: writeStatus });
       const historyScope = typeof _dbScopeForPath === 'function'
         ? _dbScopeForPath(dbPath)
         : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
@@ -255,7 +269,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
               });
             }
             if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-              await _restoreCascadeDependentValues(entityPath, cascadeClears);
+              await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
             }
             await selectDatabase(dbPath, ctx, { silent: true });
           }
@@ -272,7 +286,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
               });
             }
             if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
-              await _restoreCascadeDependentValues(entityPath, cascadeClears);
+              await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
             }
             await selectDatabase(dbPath, ctx, { silent: true });
           };
@@ -291,7 +305,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
               });
             }
             if (cascadeClears.length && typeof _redoCascadeDependentValues === 'function') {
-              await _redoCascadeDependentValues(entityPath, cascadeClears);
+              await _redoCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
             }
             await selectDatabase(dbPath, ctx, { silent: true });
           },
@@ -309,7 +323,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           note: '',
         }, ctx);
         await _finalizeRelationCellUpdate(td, entityPath, propName, ptc, cascadeClears.map(c => c.propName), { dbPath, ctx });
-        return;
+        return true;
       }
       // 楽観的増分更新: pivotData をローカルで更新してからセル DOM だけ書き換える
       // フォールバック条件 (group化中等) では従来通り全再描画
@@ -344,7 +358,31 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         await selectDatabase(dbPath, ctx, { silent: true });
       }
       if (!restoredOptimistic) _restoreCellPos(pos, moveTo);
+      return true;
     } catch(e) {
+      if (!backendCommitted) {
+        if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
+          try {
+            await _restoreCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
+          } catch (rollbackError) {
+            console.error('セル保存失敗後のカスケード値復旧に失敗:', rollbackError, e);
+          }
+        }
+        if (bidirectionalOp?.undo) {
+          try { await bidirectionalOp.undo(); } catch (rollbackError) {
+            console.error('セル保存失敗後の双方向リレーション復旧に失敗:', rollbackError, e);
+          }
+        }
+        if (createdValueRef?.candidate_index != null) {
+          try { await _apiPutValue(createdValueRef, { _delete: true }); } catch (rollbackError) {
+            console.error('セル保存失敗後の候補値削除に失敗:', rollbackError, e);
+          }
+        } else if (createdValueRef?.file) {
+          try { await apiPost('/outliner/delete', { path: createdValueRef.file }); } catch (rollbackError) {
+            console.error('セル保存失敗後の値ファイル削除に失敗:', rollbackError, e);
+          }
+        }
+      }
       if (optimisticValue) {
         removeLocalCellValue(optimisticValue);
         refreshCellDisplayNow([], '');
@@ -354,11 +392,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       cancel();
+      return false;
     }
   };
   const saveSelectAndRestore = async (value, moveTo) => {
     if (!value && value !== 'false') { cancel(); return; }
-    ensureSelectOptions(value);
+    if (!await ensureSelectOptions(value)) { cancel(); return; }
     const pivotData = (ctx && ctx.pivotData) || state.pivotData;
     const entData = pivotData?.entities?.[entityName];
     const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
@@ -386,11 +425,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         existing.value = value;
       }
       const refreshed = refreshCellDisplayNow([], value);
-      if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       _restoreCellPos(pos, moveTo);
-      applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
       await _apiPutValue(existing, { new_value: value });
       if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + value, existing, oldValue, value);
+      if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
+      applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
     } catch (e) {
       if (typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
@@ -408,9 +447,16 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     }
   };
   const splitMultiSelectValue = (value) => String(value || '').split(',').map(s => s.trim()).filter(Boolean);
-  const saveMultiSelectAndRestore = async (value, moveTo) => {
+  const reportCommonTagPartialSave = (createdTagNames) => {
+    if (!Array.isArray(createdTagNames) || !createdTagNames.length || typeof showStatus !== 'function') return;
+    showStatus(
+      'タグ「' + createdTagNames.join('、') + '」は作成されましたが、このセルへの設定に失敗しました。再度選択してください。',
+      true
+    );
+  };
+  const saveMultiSelectAndRestore = async (value, moveTo, saveOptions = {}) => {
     const nextValue = splitMultiSelectValue(value).join(', ');
-    ensureSelectOptions(splitMultiSelectValue(nextValue));
+    if (!await ensureSelectOptions(splitMultiSelectValue(nextValue))) { cancel(); return; }
     const pivotData = (ctx && ctx.pivotData) || state.pivotData;
     const entData = pivotData?.entities?.[entityName];
     const rawValues = Array.isArray(entData?.[propName]) ? entData[propName] : [];
@@ -418,7 +464,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       || rawValues.find(v => v && v.file)
       || null;
     if (!existing?.file) {
-      if (nextValue) await saveAndRestore(nextValue, moveTo);
+      if (nextValue) {
+        const saved = await saveAndRestore(nextValue, moveTo);
+        if (!saved) reportCommonTagPartialSave(saveOptions.createdTagNames);
+      }
       else cancel();
       return;
     }
@@ -446,13 +495,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         existing.value = '';
       }
       const refreshed = refreshCellDisplayNow([], nextValue);
-      if (!refreshed) selectDatabase(dbPath, ctx, { silent: true }).catch(() => {});
       _restoreCellPos(pos, moveTo);
-      applyValueToSelectedPeerCells(nextValue, {
-        status: existing.status || '採用',
-        note: existing.note || '',
-        allowEmptyClear: true,
-      });
       if (nextValue) {
         await _apiPutValue(saveRef, { new_value: nextValue });
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, existing);
@@ -487,6 +530,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           );
         }
       }
+      if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
+      applyValueToSelectedPeerCells(nextValue, {
+        status: existing.status || '採用',
+        note: existing.note || '',
+        allowEmptyClear: true,
+      });
     } catch (e) {
       if (typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, existing, oldValue, {
@@ -501,11 +550,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       refreshCellDisplayNow([], oldValue);
       cancel();
+      reportCommonTagPartialSave(saveOptions.createdTagNames);
     }
   };
   const openMultiSelectDropdown = () => {
-    document.querySelectorAll('.cell-inline-dd').forEach(el => el.remove());
-    document.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns(ctx || td);
+    const paneRoot = ctx?.containerEl || td.closest?.('.gb-pane-content,.gb-production-sheet-embed') || document;
+    paneRoot.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
       if (!td.contains(btn)) {
         btn.style.display = '';
         delete btn.dataset.editingHidden;
@@ -527,6 +578,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const optionSet = new Set([...baseOptions, ...dynamicOptions, ...selected]);
     const dd = document.createElement('div');
     dd.className = 'cell-inline-dd status-dropdown';
+    if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
     dd.style.cssText = 'max-height:300px;overflow-y:auto;min-width:180px;';
     dd.addEventListener('pointerdown', e => e.stopPropagation());
     dd.addEventListener('click', e => e.stopPropagation());
@@ -681,8 +733,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   // 共通タグ型: グローバルタグカタログ（.meldex/global-tags.json）から複数選択する
   // ドロップダウン。候補は非同期取得。検索欄に一致するタグが無い場合はその場で新規タグを作成できる。
   const openCommonTagsDropdown = () => {
-    document.querySelectorAll('.cell-inline-dd').forEach(el => el.remove());
-    document.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns(ctx || td);
+    const paneRoot = ctx?.containerEl || td.closest?.('.gb-pane-content,.gb-production-sheet-embed') || document;
+    paneRoot.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
       if (!td.contains(btn)) {
         btn.style.display = '';
         delete btn.dataset.editingHidden;
@@ -697,6 +750,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const selectedIds = new Set(splitMultiSelectValue(existing?.value || ''));
     const dd = document.createElement('div');
     dd.className = 'cell-inline-dd status-dropdown';
+    if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
     dd.dataset.e2eId = 'db-common-tags-dropdown';
     dd.style.cssText = 'max-height:300px;overflow-y:auto;min-width:200px;';
     dd.addEventListener('pointerdown', e => e.stopPropagation());
@@ -743,6 +797,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       search.style.cssText = 'width:100%;padding:3px 6px;margin-bottom:2px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;box-sizing:border-box;';
       dd.appendChild(search);
       const listDiv = document.createElement('div');
+      const createdTagNames = [];
       const toggleValue = (tagId) => {
         if (!tagId) return;
         const key = String(tagId);
@@ -762,7 +817,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           if (!tag) {
             const created = await tagsApi.createTag({ name: trimmed });
             tag = created?.tag || null;
-            if (tag) allTags.push(tag);
+            if (tag) {
+              allTags.push(tag);
+              createdTagNames.push(String(tag.name || trimmed));
+            }
           }
           if (tag) {
             selectedIds.add(String(tag.id));
@@ -787,11 +845,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           cb.type = 'checkbox';
           cb.checked = selectedIds.has(String(tag.id));
           item.appendChild(cb);
-          const dot = document.createElement('span');
           const color = typeof tagsApi.effectiveTagColor === 'function' ? tagsApi.effectiveTagColor(tag, groupsById) : 'var(--accent)';
-          dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + color + ';';
-          item.appendChild(dot);
-          item.appendChild(document.createTextNode(tag.name || ''));
+          const label = document.createElement('span');
+          label.className = 'gb-common-tag-option-label';
+          label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:' + color + ';';
+          label.textContent = tag.name || '';
+          item.appendChild(label);
           item._ddActivate = () => toggleValue(tag.id);
           item.addEventListener('click', () => toggleValue(tag.id));
           listDiv.appendChild(item);
@@ -825,10 +884,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         saveMultiSelectAndRestore('', null);
       });
       dd.appendChild(clearItem);
-      const commitCommonTagsDropdown = () => {
+      const commitCommonTagsDropdown = async () => {
         closeCommonTagsDropdown(false);
         const value = [...selectedIds].join(', ');
-        saveMultiSelectAndRestore(value, null);
+        await saveMultiSelectAndRestore(value, null, { createdTagNames });
       };
       const doneBtn = document.createElement('div');
       doneBtn.className = 'dd-nav-item status-dropdown-item';
@@ -903,8 +962,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   }
   // --- セレクト: ドロップダウン表示 ---
   if (type === 'select') {
-    document.querySelectorAll('.cell-inline-dd').forEach(el => el.remove());
-    document.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns(ctx || td);
+    const paneRoot = ctx?.containerEl || td.closest?.('.gb-pane-content,.gb-production-sheet-embed') || document;
+    paneRoot.querySelectorAll('.cell-add-btn[data-editing-hidden]').forEach(btn => {
       if (!td.contains(btn)) {
         btn.style.display = '';
         delete btn.dataset.editingHidden;
@@ -912,6 +972,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     });
     const dd = document.createElement('div');
     dd.className = 'cell-inline-dd status-dropdown';
+    if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
     let pointerCloser = null;
     const closeSelectDropdown = (shouldCancel = false) => {
       if (dd.parentNode) dd.remove();
@@ -993,6 +1054,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     _showUserDropdown(td, null, entityPath, propName, '', type === 'multi-user', {
       onCancel: cancel,
       status: '案',
+      dbPath,
+      ctx,
     });
     return;
   }
@@ -1054,6 +1117,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       // 参照先シートにエントリが無くても、検索欄からの新規作成に使えるようドロップダウン自体は表示する
       const dd = document.createElement('div');
       dd.className = 'cell-inline-dd status-dropdown';
+      if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
       dd.style.cssText = 'max-height:250px;overflow-y:auto;min-width:180px;';
       dd.addEventListener('pointerdown', e => e.stopPropagation());
       dd.addEventListener('click', e => e.stopPropagation());

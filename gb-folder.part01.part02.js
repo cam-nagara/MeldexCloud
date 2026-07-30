@@ -212,7 +212,7 @@ const FOLDER_LIST_SORT_COLUMNS = [
   { key: 'modified', label: '更新日時', width: 'minmax(132px, 150px)', minWidth: 112, defaultOrder: 'desc' },
   { key: 'createdBy', label: '作成者', width: 'minmax(96px, 128px)', minWidth: 80, defaultOrder: 'asc' },
   { key: 'modifiedBy', label: '更新者', width: 'minmax(96px, 128px)', minWidth: 80, defaultOrder: 'asc' },
-  { key: 'size', label: 'サイズ', width: 'minmax(74px, 92px)', minWidth: 68, defaultOrder: 'desc' },
+  { key: 'size', label: 'ファイルサイズ', width: 'minmax(94px, 112px)', minWidth: 88, defaultOrder: 'desc' },
 ];
 const FOLDER_LIST_COLLATOR = new Intl.Collator('ja', { numeric: true, sensitivity: 'base', ignorePunctuation: true });
 let _folderListSuppressClickUntil = 0;

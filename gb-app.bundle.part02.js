@@ -316,6 +316,7 @@ function _getDbViewScrollContainer(ctx, viewMode) {
   const mode = ['calendar', 'tasks', 'shifts'].includes(viewMode) ? 'timeline' : (viewMode || 'pivot');
   const names = {
     pivot: 'pivot-view',
+    tree: 'tree-view',
     gallery: 'gallery-view',
     kanban: 'kanban-view',
     timeline: 'timeline-view',
@@ -362,7 +363,7 @@ function _navPushWithViewState(ctx, entityName) {
   };
   const navState = _getNavState(ctx?.paneId);
   const current = navState.history[navState.index];
-  if (current && current.path === dbPath && ['pivot', 'database', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(current.type)) {
+  if (current && current.path === dbPath && ['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(current.type)) {
     navState.history[navState.index] = snapshot;
     _refreshPaneNavUi(navState.paneId);
     _persistPaneNavState(navState);
@@ -378,7 +379,7 @@ function navOpen(entry, opts) {
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
-  if (entry.type === 'pivot' || entry.type === 'database' || ['gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
+  if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
     if (entry.calendarFile && entry.type === 'timeline' && typeof openCalendarFile === 'function') return openCalendarFile(entry.label, entry.path, o);
     return selectDatabase(entry.path, null, {
       ...(o || {}),
@@ -443,7 +444,7 @@ function _tabIcon(type) {
     const shared = uiTypeIconName(type);
     if (shared) return shared;
   }
-  const icons = {pivot:'db',gallery:'db',kanban:'db',timeline:'db',media:'galleryThumbnails',html:'globe'};
+  const icons = {pivot:'db',tree:'listTree',gallery:'db',kanban:'db',timeline:'db',media:'galleryThumbnails',html:'globe'};
   return icons[type] || 'page';
 }
 
@@ -897,4 +898,3 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
       _persistPaneNavState(navState);
       closeDropdown(false);
     });
-    dd.appendChild(item);

@@ -21,6 +21,8 @@
   <link rel="stylesheet" href="gb-theme.css">
   <link rel="stylesheet" href="gb-ui.css">
   <link rel="stylesheet" href="gb-tools.css">
+  <link rel="stylesheet" href="gb-db-column-filter.css">
+  <link rel="stylesheet" href="gb-db-tree-view.css">
   <link rel="stylesheet" href="gb-format-popup.css">
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
@@ -37,13 +39,15 @@
         <div id="sheet-menu" class="sa-menu" role="menu">
           <button type="button" data-sheet-action="new" data-e2e-id="sheet-menu-new"><span class="ico ico-filePlus"></span>新しいシートを作成...</button>
           <button type="button" data-sheet-action="open" data-e2e-id="sheet-menu-open"><span class="ico ico-folderOpen"></span>シートを開く...</button>
+          <button type="button" data-sheet-action="workspace" data-cloud-workspace><span class="ico ico-folderOpen"></span>Meldexファイル</button>
           <div class="sa-menu-sep"></div>
           <button type="button" data-sheet-action="importCsv" data-e2e-id="sheet-menu-import-csv"><span class="ico ico-file"></span>CSVを読み込む...</button>
           <button type="button" data-sheet-action="exportCsv" data-e2e-id="sheet-menu-export-csv"><span class="ico ico-saveAll"></span>CSVに書き出す...</button>
           <button type="button" data-sheet-action="reload" data-e2e-id="sheet-menu-reload"><span class="ico ico-refreshCw"></span>再読み込み</button>
         </div>
       </div>
-      <div id="sheet-title-label" class="sa-title">新規シート</div>
+      <input id="sheet-title-label" class="sa-title sa-title-input" type="text" value="新規シート" aria-label="シート名" spellcheck="false">
+      <div id="sheet-sync-status" class="sa-sync-status" aria-live="polite"></div>
       <div id="sheet-path-label" class="sa-path">未保存</div>
       <button id="sheet-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="sheet-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
@@ -77,6 +81,7 @@
           <div id="pivot-view" style="flex:1;overflow:auto;padding:0;">
             <table id="pivot-table" role="table" aria-label="シート"><thead></thead><tbody></tbody><tfoot></tfoot></table>
           </div>
+          <div id="tree-view" class="tree-view"></div>
           <div id="gallery-view"></div>
           <div id="kanban-view"></div>
           <div id="timeline-view"></div>
@@ -129,8 +134,12 @@
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
+  <script src="gb-dropbox-asset-identity.js"></script>
   <script src="gb-data-access-dropbox-tag-safety.js"></script>
+  <script src="gb-dropbox-tag-catalog-normalizer.js"></script>
   <script src="gb-data-access-dropbox-tags.js"></script>
+  <script src="gb-dropbox-asset-recovery.js"></script>
+  <script src="gb-dropbox-asset-reconciliation.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
   <script src="gb-path-utils.js"></script>
@@ -160,6 +169,10 @@
   <script src="gb-auto-tag-settings.js"></script>
   <script src="gb-global-tags.js"></script>
   <script src="gb-tag-preset-management.js"></script>
+<script src="gb-tag-panel-tabs.js"></script><script src="gb-tag-tree-runtime.js"></script><script src="gb-tag-management-overlays.js"></script><script src="gb-tag-catalog-suggestions.js"></script>
+  <script src="gb-tag-display-preferences.js"></script>
+  <script src="gb-tag-group-summary.js"></script>
+  <script src="gb-tag-tree-dnd.js"></script>
   <script src="gb-tag-management.js"></script>
   <script src="standalone-tags.js"></script>
   <script src="standalone-workspace-tree.js"></script>
@@ -171,6 +184,7 @@
   <script src="gb-db-core.js"></script>
   <script src="offline-bundles/gb-db-props.js"></script>
   <script src="gb-db-advanced-filter.js"></script>
+  <script src="gb-db-column-filter.js"></script>
   <script src="offline-bundles/gb-db-property-types.js"></script>
   <script src="gb-db-pivot-sync.js"></script>
   <script src="gb-db-conditional-color.js"></script>
@@ -191,6 +205,9 @@
   <script src="gb-db-timeline-header-dnd.js"></script>
   <script src="gb-db-timeline-auto-fit.js"></script>
   <script src="gb-db-view-form.js"></script>
+  <script src="gb-db-tree-header.js"></script>
+  <script src="gb-db-tree-view.js"></script>
+  <script src="gb-db-tree-options.js"></script>
   <script src="offline-bundles/gb-db-views.js"></script>
   <script src="offline-bundles/gb-db-templates.js"></script>
   <script src="gb-db-aggregate.js"></script>
@@ -202,6 +219,8 @@
   <script src="gb-db-search.js"></script>
   <script src="gb-sheet-archive.js"></script>
   <script src="standalone-mobile-toolbar.js"></script>
+  <script src="standalone-local-drafts.js"></script>
+  <script src="standalone-offline-outbox.js"></script>
   <script src="sheet-standalone-app.js"></script>
 </body>
 </html>

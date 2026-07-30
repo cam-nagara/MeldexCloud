@@ -614,8 +614,64 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     _outlinerAppendMenuSeparator(menu);
   }
 
-  // --- 新規作成サブメニュー ---
   const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
+  const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
+    .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
+  const editableContextItems = contextOperationItems.filter(item => !isItemLocked(item.path));
+  const deleteContextItems = async () => {
+    closeTreeContextMenu();
+    const targets = treeSelection.getNodeData().filter(item => {
+      if (item.type === 'entity' || item._isRoot) return false;
+      return item.path && !isItemLocked(item.path);
+    });
+    if (!targets.length) {
+      showStatus('削除できる項目がありません', true);
+      return;
+    }
+    const names = targets.map(item => item.name).join('、');
+    if (!await cfConfirm(`「${names}」を削除しますか？`)) return;
+    treeSelection.clear();
+    const result = await deleteOutlinerItemsWithHistory(targets, {
+      label: targets.length + ' 件を削除',
+      detail: names,
+      onItemDeleted: (item) => {
+        _removeOutlinerNodesForPaths([item.path]);
+      },
+      refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    _removeOutlinerNodesForPaths(result.deletedPaths);
+    if (result.failedCount) {
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました`, true);
+      loadOutliner();
+    } else if (result.succeeded.length) {
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
+    } else if (result.skipped.length) {
+      showStatus('削除対象が見つからなかったため、表示を更新しました', true);
+      loadOutliner();
+    }
+  };
+
+  if (typeof appendFolderOperationButtons === 'function') {
+    appendFolderOperationButtons(menu, {
+      e2ePrefix: 'folder-tree-context',
+      closeMenu: closeTreeContextMenu,
+      onCopy: () => folderToolbarCopyItems(contextOperationItems),
+      onCut: () => folderToolbarCutItems(contextOperationItems),
+      onPaste: () => folderToolbarPasteToFolder(addParent),
+      onDelete: deleteContextItems,
+      copyDisabled: contextOperationItems.length === 0,
+      cutDisabled: editableContextItems.length === 0,
+      pasteDisabled: !folderToolbarCanPasteTo(addParent),
+      deleteDisabled: editableContextItems.length === 0,
+    });
+    addSep();
+  }
+
+  // --- 新規作成サブメニュー ---
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);

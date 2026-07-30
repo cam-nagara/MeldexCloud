@@ -21,6 +21,28 @@
     return undefined;
   }
 
+  function awaitCloudOperationWithSignal(operation, signal) {
+    if (!signal) return operation;
+    if (signal.aborted) return Promise.reject(new DOMException('操作が中断されました', 'AbortError'));
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort);
+        reject(new DOMException('操作が中断されました', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(operation).then(
+        value => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        error => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
   const CLOUD_VIDEO_THUMBNAIL_EXTENSIONS = new Set([
     'mp4', 'm4v', 'mov', 'webm', 'ogv', 'avi', 'mkv', 'wmv', 'mpg', 'mpeg',
   ]);
@@ -302,14 +324,15 @@
         const payload = typeof body === 'string' ? JSON.parse(body || '{}') : (body || {});
         return await window.MeldexLlmClient.streamChatAsResponse(payload, { signal: init?.signal });
       }
-      const data = await window.MeldexDataAccess.requestJson(
+      const data = await awaitCloudOperationWithSignal(window.MeldexDataAccess.requestJson(
         apiPath,
         {
           method,
           body,
           headers: init?.headers || (input instanceof Request ? input.headers : undefined),
+          signal: init?.signal,
         }
-      );
+      ), init?.signal);
       if ((apiUrl.pathname === '/cal/sync/ical/export' || apiUrl.pathname === '/calendar-db/ical/export') && data?.content != null) {
         return new Response(String(data.content || ''), {
           status: 200,

@@ -402,7 +402,8 @@ async function _appendBacklinkSummaryColumns(ctx) {
   const backlinkDefs = meta.backlinks.filter(bl => bl.summary_property);
   if (backlinkDefs.length === 0) return;
 
-  const table = _paneEl(ctx, '#pivot-table') || document.getElementById('pivot-table');
+  const tableId = ctx?.tableId || 'pivot-table';
+  const table = _paneEl(ctx, '#' + tableId) || (!ctx ? document.getElementById('pivot-table') : null);
   if (!table) return;
   const renderToken = ctx?._renderToken;
   table.querySelectorAll('[data-backlink-summary="true"]').forEach(el => el.remove());

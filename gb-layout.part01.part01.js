@@ -134,11 +134,11 @@ const GBLayout = (() => {
   }
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
-  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'search', 'version']);
+  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'version']);
   const FIXED_RAIL_RIGHT_DEFAULTS = [
-    ['ビューワー', 'preview'], ['オプション', 'detail'], ['バージョン管理', 'version'],
+    ['オプション', 'detail'], ['ビューワー', 'preview'], ['バージョン管理', 'version'],
     ['チャット', 'chat'], ['タイマー', 'timer'],
-    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['タグ', 'tags'], ['検索', 'search'],
+    ['ヒストリー', 'history'], ['注釈', 'annotation'], ['タグ', 'tags'],
   ];
 
   function _fixedRailGeneratedId(prefix) {
@@ -201,7 +201,7 @@ const GBLayout = (() => {
     rightDock.groups.forEach(group => {
       _collectFixedRailPanes(group?.root).forEach(pane => {
         if (!Array.isArray(pane.tabs)) return;
-        pane.tabs = pane.tabs.filter(tab => tab?.type !== 'calendar');
+        pane.tabs = pane.tabs.filter(tab => !['calendar', 'search'].includes(tab?.type));
         if (pane.activeTabIndex >= pane.tabs.length) pane.activeTabIndex = pane.tabs.length ? 0 : -1;
       });
     });
@@ -261,6 +261,7 @@ const GBLayout = (() => {
       if (!tabs.length) contentTabs.push(_fixedRailTab('フォルダ', 'folder'));
       tabs.forEach((tab, tabIdx) => {
         const type = tab?.type || '';
+        if (type === 'search' || type === 'calendar') return;
         if (FIXED_RAIL_LEFT_TYPES.has(type)) leftTabs.push(tab);
         else if (FIXED_RAIL_RIGHT_TYPES.has(type)) rightTabs.push(tab);
         else {

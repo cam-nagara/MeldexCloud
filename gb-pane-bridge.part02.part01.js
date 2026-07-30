@@ -242,12 +242,12 @@
   }
 
   const _ANNOTATION_HOST_TYPES = new Set([
-    'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
+    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
     'board', 'scriptnote', 'calendar',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
-    'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
+    'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
   ]);
   let _lastAnnotationPaneId = '';
 
@@ -624,7 +624,7 @@
     'version',
   ]);
   const FILE_SHOW_VIEW_TYPES = new Set(Object.keys(LEGACY_CONTAINERS).filter(type => type !== 'welcome'));
-  const TOOLBAR_DB_VIEW_TYPES = new Set(['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
+  const TOOLBAR_DB_VIEW_TYPES = new Set(['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
   const TOOLBAR_UTILITY_VIEW_TYPES = new Set([
     ...Object.keys(PANEL_CONTAINERS),
     ...Object.keys(RP_CONTAINERS),

@@ -73,7 +73,7 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
     targets = [propName];
     _setSelectedColumns(dbPath, targets, propName);
   }
-  const widths = getColWidths(dbPath);
+  const widths = getColWidths(dbPath, { ctx });
   const firstWidth = Number(widths[targets[0]] || 100);
   const sameWidth = targets.every(name => Number(widths[name] || 100) === firstWidth);
 
@@ -103,12 +103,13 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
     }
     const value = Math.max(60, parsed);
     const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-    targets.forEach(name => setColWidthPersist(dbPath, name, value, { skipHistory: true }));
+    targets.forEach(name => setColWidthPersist(dbPath, name, value, { skipHistory: true, ctx }));
     if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
       pushDbViewConfigHistory(dbPath, 'シート表示: 列幅', before, captureDbViewConfigHistory(dbPath), targets.join(' / '));
     }
     overlay.remove();
-    renderPivot(ctx);
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    else if (typeof renderPivot === 'function') renderPivot(ctx);
   });
   setTimeout(() => overlay.querySelector('#bulk-col-width-input')?.focus(), 30);
 }

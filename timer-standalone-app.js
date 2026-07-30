@@ -8,6 +8,7 @@
     dirty: false,
     sourcePayload: null,
   };
+  let localDrafts = null;
 
   function qs(id) { return document.getElementById(id); }
 
@@ -24,8 +25,11 @@
   function setPath(path) {
     app.path = String(path || '').replace(/\\/g, '/');
     MeldexStandaloneFS.setCurrentPath?.(app.path);
-    qs('timer-title-label').textContent = app.path ? titleFromPath(app.path) : 'タイマー';
+    if (!qs('timer-title-label').value || app.path) {
+      qs('timer-title-label').value = app.path ? titleFromPath(app.path) : 'タイマー';
+    }
     qs('timer-path-label').textContent = app.path ? MeldexStandaloneFS.pathLabel(app.path) : '未保存';
+    window.MeldexStandaloneTags?.setTargetPath?.(app.path);
   }
 
   function collectTimerFile() {
@@ -35,7 +39,7 @@
       ...source,
       type: 'meldex-timer',
       version: source.version || 1,
-      name: titleFromPath(app.path),
+      name: String(qs('timer-title-label')?.value || '').trim() || titleFromPath(app.path),
       timer: { ...sourceTimer, ...(app.component?.getState?.() || {}) },
     };
     app.sourcePayload = payload;
@@ -47,11 +51,13 @@
     const timerState = payload?.timer && typeof payload.timer === 'object' ? payload.timer : payload;
     app.component.restoreState(timerState || {});
     setPath(path || '');
+    qs('timer-title-label').value = String(payload?.name || titleFromPath(path));
     setDirty(false);
   }
 
   async function newTimer() {
     if (app.dirty && !(await cfConfirm('未保存の変更を破棄しますか？'))) return;
+    await localDrafts?.discardCurrent?.();
     const content = await MeldexStandaloneFS.newContent('無題');
     restoreTimer(JSON.parse(content), '');
   }
@@ -80,7 +86,10 @@
       return;
     }
     const selected = await MeldexStandaloneFS.openFile();
-    if (selected?.path) await openPath(selected.path);
+    if (selected?.path) {
+      await localDrafts?.discardCurrent?.();
+      await openPath(selected.path);
+    }
   }
 
   async function saveTimer() {
@@ -97,6 +106,7 @@
         return;
       }
       setDirty(false);
+      await localDrafts?.markSynced?.(res?.etag || '');
       showStatus('保存しました');
     } finally {
       hideLoading();
@@ -106,6 +116,7 @@
   async function saveTimerAs() {
     const saved = await MeldexStandaloneFS.saveAs(collectTimerFile(), MeldexStandaloneFS.suggestedName(app.path, '無題.mel-timer'));
     if (!saved?.path) return;
+    await localDrafts?.markSynced?.('');
     setPath(saved.path);
     setDirty(false);
     showStatus('保存しました');
@@ -120,7 +131,12 @@
       if (action === 'open') await window.runStandaloneFileAction('タイマーを開くことが', openTimer);
       if (action === 'save') await window.runStandaloneFileAction('保存', saveTimer);
       if (action === 'saveAs') await window.runStandaloneFileAction('名前を付けて保存', saveTimerAs);
+      if (action === 'workspace') window.MeldexStandaloneWorkspaceTree?.open?.();
     });
+  }
+
+  function bindTitleEditing() {
+    qs('timer-title-label')?.addEventListener('input', () => setDirty(true));
   }
 
   function bindShortcuts() {
@@ -148,6 +164,42 @@
     });
   }
 
+  async function initLocalDrafts() {
+    if (!window.MeldexStandaloneLocalDrafts) return;
+    localDrafts = window.MeldexStandaloneLocalDrafts.create({
+      appId: 'timer',
+      getPath: () => app.path,
+      capture: () => ({
+        title: qs('timer-title-label')?.value || 'タイマー',
+        content: collectTimerFile(),
+      }),
+      restore: snapshot => {
+        restoreTimer(JSON.parse(snapshot?.content || '{}'), app.path);
+        qs('timer-title-label').value = snapshot?.title || 'タイマー';
+        setDirty(true);
+      },
+      sync: async (snapshot, record) => {
+        const result = await MeldexStandaloneFS.writeText(record.remotePath, snapshot.content || '', {
+          skip_if_missing: true,
+        });
+        if (result?.missing || result?.skipped || result?.queued) {
+          throw new Error(result?.queued ? '接続後に再試行します' : '保存先が見つかりません');
+        }
+        setDirty(false);
+      },
+      onStatus: (status, message) => {
+        const label = qs('timer-sync-status');
+        if (label && ['saving', 'local-saved', 'pending', 'syncing', 'conflict', 'error'].includes(status)) {
+          label.textContent = message;
+          label.dataset.status = status;
+        }
+      },
+    });
+    localDrafts.start();
+    await localDrafts.restoreLatest();
+    localDrafts.flush();
+  }
+
   function mountTimer() {
     app.component = new TimerComponent('timer-standalone-pane', 'timer-standalone-tab');
     qs('timer-root').appendChild(app.component.create());
@@ -172,6 +224,7 @@
     mountTimer();
     initOptionPanel();
     bindMenus();
+    bindTitleEditing();
     bindShortcuts();
     bindPathChanges();
   }
@@ -187,6 +240,7 @@
         showStatus('前回のタイマーを開けなかったため、新規タイマーで起動しました', true);
       }
     }
+    await initLocalDrafts();
   }
 
   document.addEventListener('DOMContentLoaded', () => {

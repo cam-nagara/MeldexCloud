@@ -78,7 +78,7 @@
   // サイドバー・詳細・ビューワー・右パネルツール等のユーティリティペインは同期対象外
   const _DETAIL_SYNC_SKIP_TYPES = new Set(Object.keys(PANEL_CONTAINERS).concat(Object.keys(RP_CONTAINERS)));
   const _DETAIL_SYNC_SKIP_COMPONENT_TYPES = new Set(['version', 'search', 'timer']);
-  const _DETAIL_DB_VIEW_TYPES = new Set(['database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
+  const _DETAIL_DB_VIEW_TYPES = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db']);
   const _DETAIL_FILE_INFO_TYPES = new Set(['media', 'html', 'csv']);
   const _DETAIL_GLOBAL_TYPES = new Set(['page', 'entity', 'folder', 'board']);
   let _lastDetailContentPaneId = null;

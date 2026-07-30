@@ -680,7 +680,7 @@ function _purgePublishStorageForDeletedPaths(deletedPaths) {
 
 function _refreshRenamedCurrentDatabase(previousDbPath, nextDbPath) {
   if (!previousDbPath || previousDbPath === nextDbPath || typeof selectDatabase !== 'function') return;
-  const dbViews = new Set(['pivot', 'database', 'gallery', 'kanban', 'timeline', 'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+  const dbViews = new Set(['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form']);
   if (!dbViews.has(state.view)) return;
   const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
   Promise.resolve(selectDatabase(nextDbPath, ctx, {

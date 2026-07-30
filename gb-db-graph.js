@@ -145,6 +145,19 @@ async function buildGraphData(pivotData, dbPath, graphConfig, options = {}) {
   if (Array.isArray(advFilters) && advFilters.length > 0 && typeof _dbEntityPassesAdvancedFilters === 'function') {
     entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters, filterMode));
   }
+  const columnValueFilters = typeof getColumnValueFilters === 'function'
+    ? getColumnValueFilters(dbPath, { ctx: options.ctx || null })
+    : {};
+  if (typeof _dbEntityPassesColumnValueFilters === 'function' && Object.keys(columnValueFilters).length) {
+    entityNames = entityNames.filter(name => _dbEntityPassesColumnValueFilters(
+      name,
+      entities[name],
+      columnValueFilters,
+      dbPath,
+      options.ctx || null,
+      filterMode,
+    ));
+  }
   const propTypes = getPropertyTypes(dbPath);
   const nodes = [];
   const edges = [];

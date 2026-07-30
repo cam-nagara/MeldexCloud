@@ -4,14 +4,11 @@
   // Eagle風タグ管理: 階層ツリー、複数選択、D&D、自動タグプリセット、タグ検索。
   const UNCATEGORIZED_COLLAPSE_KEY = 'meldex-tag-management-uncategorized-collapsed';
   const DRAG_MIME = 'application/x-meldex-tag-tree';
-  const INITIAL_VISIBLE_TAGS = 400;
-
   let _container = null;
-  let _activeMenuCleanup = null;
-  let _activeMenuTrigger = null;
-  let _activeMenuId = 0;
   let _dragRows = [];
   let _fetchRevision = 0;
+  let _groupOrderSaving = false;
+  let _catalogRefreshTimer = 0;
   let _state = {
     tags: [],
     groups: [],
@@ -19,9 +16,9 @@
     builtinPresets: [],
     selectedPresetNames: [],
     filterText: '',
-    visibleTagLimit: INITIAL_VISIBLE_TAGS,
     installingPresetId: '',
     builtinPresetsOpen: false,
+    presetFiltersOpen: false,
     loading: false,
     error: '',
     syncWarning: '',
@@ -38,10 +35,16 @@
     autoTagTargets: [],
     sourceFolder: '',
   };
-
   function api() { return window.MeldexGlobalTags || null; }
   function sourceFolderForPath(path) {
     return String(path && window.MeldexAutoTagSourceFolder?.(path) || '').trim();
+  }
+  function treeScopeKey() {
+    return window.MeldexTagTreeRuntime?.normalizedScopeKey?.(_state.sourceFolder)
+      || String(_state.sourceFolder || '__default__');
+  }
+  function resetTreeRenderLimit() {
+    window.MeldexTagTreeRuntime?.resetRenderLimit?.(treeScopeKey());
   }
   function ic(name, size) { return typeof lucide === 'function' ? lucide(name, size || 14) : ''; }
   function esc(value) {
@@ -52,19 +55,6 @@
   function safeKeyPart(value) { return String(value || '').replace(/[^\p{L}\p{N}_:-]+/gu, '-').replace(/^-+|-+$/g, '') || 'item'; }
   function selectedSet() { return new Set(_state.selectedKeys || []); }
   function isSelected(key) { return selectedSet().has(key); }
-  function focusTrigger(el) {
-    if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(el);
-    else if (el?.focus) {
-      try { el.focus({ preventScroll: true }); } catch (_) { el.focus(); }
-    }
-  }
-  function forceTriggerFocus(el) {
-    if (!el?.isConnected || typeof el.focus !== 'function') return;
-    try { el.focus({ preventScroll: true }); } catch (_) { el.focus(); }
-  }
-  function cssZoom() {
-    try { return typeof _getZoom === 'function' ? (_getZoom() || 1) : 1; } catch (_) { return 1; }
-  }
   function isUncategorizedCollapsed() {
     try { return localStorage.getItem(UNCATEGORIZED_COLLAPSE_KEY) === '1'; } catch (_) { return false; }
   }
@@ -92,6 +82,22 @@
     return /^#[0-9a-f]{6}$/i.test(own) ? own : 'var(--accent)';
   }
 
+  function compareByOrder(a, b) {
+    return Number(a?.sort_index || 0) - Number(b?.sort_index || 0)
+      || String(a?.name || '').localeCompare(String(b?.name || ''), 'ja');
+  }
+
+  function orderedSiblingGroups(parentId) {
+    const normalizedParent = parentId || null;
+    return _state.groups
+      .filter(group => (group.parent_id || null) === normalizedParent)
+      .sort(compareByOrder);
+  }
+
+  function groupColor(group, groupsById) {
+    return effectiveTagColor({ group_id: group?.id }, groupsById);
+  }
+
   async function fetchAll() {
     if (!api()) return;
     const revision = ++_fetchRevision;
@@ -116,6 +122,7 @@
       _state.mutationBlocked = !!tagData?.mutation_blocked;
       _state.conflictResolutionAvailable = !!tagData?.conflict_resolution_available;
       _state.conflictId = String(tagData?.conflict_id || '');
+      resetTreeRenderLimit();
       const available = new Set(_state.presetNames.map(name => String(name).toLocaleLowerCase('ja')));
       _state.selectedPresetNames = (_state.selectedPresetNames || [])
         .filter(name => available.has(String(name).toLocaleLowerCase('ja')));
@@ -129,8 +136,8 @@
   }
 
   function filteredTags() {
-    return window.MeldexTagPresetUI?.filteredTags?.(_state, _state.visibleTagLimit)
-      || { all: _state.tags, visible: _state.tags.slice(0, _state.visibleTagLimit) };
+    return window.MeldexTagPresetUI?.filteredTags?.(_state)
+      || { all: _state.tags, visible: _state.tags };
   }
 
   function buildTreeData() {
@@ -147,16 +154,14 @@
       if (tag.group_id && groupsById[tag.group_id]) groupsById[tag.group_id].tags.push(tag);
       else uncategorized.push(tag);
     });
-    const sortByIndexName = (a, b) => (a.sort_index || 0) - (b.sort_index || 0)
-      || String(a.name || '').localeCompare(String(b.name || ''), 'ja');
     const sortGroup = node => {
-      node.children.sort(sortByIndexName);
-      node.tags.sort(sortByIndexName);
+      node.children.sort(compareByOrder);
+      node.tags.sort(compareByOrder);
       node.children.forEach(sortGroup);
     };
-    roots.sort(sortByIndexName);
+    roots.sort(compareByOrder);
     roots.forEach(sortGroup);
-    uncategorized.sort(sortByIndexName);
+    uncategorized.sort(compareByOrder);
     if (_state.filterText || _state.selectedPresetNames.length || filtered.visible.length < _state.tags.length) {
       const hasContent = node => {
         node.children = node.children.filter(hasContent);
@@ -255,29 +260,32 @@
 
   function render() {
     if (!_container) return;
+    const activePanelTab = window.MeldexTagPanelTabs?.activeTab?.() || 'tag-tree';
     const reusableAutoTagSection = _container.querySelector?.('[data-tag-auto-run-section]');
     reusableAutoTagSection?.remove();
     _container.classList.add('gb-tag-management-panel');
     _container.setAttribute('aria-label', 'タグ管理');
+    _container.dataset.tagPanelView = activePanelTab;
     _container.textContent = '';
     _container.style.display = 'flex';
     _container.style.flexDirection = 'column';
     _container.style.minHeight = '0';
 
-    _container.appendChild(renderHeader());
+    const panelTabs = window.MeldexTagPanelTabs?.createTabBar?.(() => render());
+    if (panelTabs) _container.appendChild(panelTabs);
 
     const body = document.createElement('div');
     body.className = 'gb-tag-management-body';
     body.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:8px;';
+    body.dataset.tagPanelView = activePanelTab;
     _container.appendChild(body);
-    mountAutoTagSection(reusableAutoTagSection);
-    if (_state.loading) {
+    if (_state.loading && !_state.tags.length && !_state.groups.length) {
       body.insertAdjacentHTML('beforeend', '<div class="gb-section-desc" style="padding:12px;">タグを読み込んでいます...</div>');
       return;
     }
     if (_state.error) {
       body.insertAdjacentHTML('beforeend', '<div class="gb-section-desc" style="padding:12px;color:var(--danger);">タグを読み込めませんでした: ' + esc(_state.error) + '</div>');
-      return;
+      if (_state.error && !_state.tags.length && !_state.groups.length) return;
     }
     if (_state.syncWarning) {
       const warning = document.createElement('div');
@@ -311,51 +319,133 @@
       body.appendChild(warning);
     }
 
-    const { roots, uncategorized, groupsById, filtered } = buildTreeData();
-    flattenTree(roots, uncategorized);
-    if (_state.builtinPresets.length) {
-      body.appendChild(window.MeldexTagPresetUI.renderBuiltinPresets({
-        state: _state,
-        textButton,
-        safeKeyPart,
-        onInstall: installBuiltinPreset,
-      }));
+    const panelControls = renderPanelControls(activePanelTab);
+    if (panelControls) body.appendChild(panelControls);
+    if (activePanelTab === 'auto-tag') {
+      mountAutoTagSection(reusableAutoTagSection);
+      if (_state.builtinPresets.length) {
+        body.appendChild(window.MeldexTagPresetUI.renderBuiltinPresets({
+          state: _state,
+          textButton,
+          safeKeyPart,
+          onInstall: installBuiltinPreset,
+        }));
+      }
+      return;
     }
-    body.appendChild(window.MeldexTagPresetUI?.renderFilterSummary?.(_state, filtered) || document.createTextNode(''));
-    body.appendChild(renderBulkBar());
-    body.appendChild(renderUncategorizedSection(uncategorized, groupsById));
-    roots.forEach(group => body.appendChild(renderGroupNode(group, groupsById, 0)));
-    bindDropTarget(body, null, 'root');
 
-    if (!roots.length && !uncategorized.length) {
-      const empty = document.createElement('div');
-      empty.className = 'gb-section gb-section--boxed gb-tag-empty';
-      empty.style.cssText = 'padding:10px;margin-top:8px;color:var(--fg2);font-size:12px;';
-      empty.textContent = filtered.all.length
-        ? '表示条件に一致するタグがありません。'
-        : 'タグがありません。タグを追加するか、同梱プリセットを導入してください。';
-      body.appendChild(empty);
-    }
-    if (filtered.visible.length < filtered.all.length) {
-      const more = textButton(
-        `さらに表示（残り${(filtered.all.length - filtered.visible.length).toLocaleString('ja-JP')}件）`,
-        'chevrons-down',
-        () => {
-          _state.visibleTagLimit += INITIAL_VISIBLE_TAGS;
-          render();
-        },
-        'tag-management-load-more',
+    const target = currentAutoTagTarget();
+    window.MeldexTagPanelTabs?.setTreeContext?.({
+      target,
+      sourceFolder: _state.sourceFolder,
+      tags: _state.tags,
+      mutationBlocked: _state.mutationBlocked,
+      warning: _state.syncWarning,
+    });
+    body.appendChild(window.MeldexTagPanelTabs?.createTargetStatus?.() || document.createTextNode(''));
+    const filterSummary = document.createElement('div');
+    filterSummary.dataset.tagTreeFilterSummary = '1';
+    body.appendChild(filterSummary);
+    const filterControls = renderTreeFilterControls();
+    if (filterControls) body.appendChild(filterControls);
+    body.appendChild(renderTreeToolbar());
+    const dynamic = document.createElement('div');
+    dynamic.dataset.tagTreeDynamic = '1';
+    dynamic.setAttribute('role', 'tree');
+    body.appendChild(dynamic);
+    renderTreeDynamic(dynamic);
+    bindDropTarget(dynamic, null, 'root');
+    window.MeldexTagPanelTabs?.mountTree?.(body);
+  }
+
+  function syncTreeFilterControls(body, filtered) {
+    const summaryHost = body?.querySelector('[data-tag-tree-filter-summary]');
+    if (summaryHost) {
+      summaryHost.replaceChildren(
+        window.MeldexTagPresetUI?.renderFilterSummary?.(_state, filtered)
+          || document.createTextNode(''),
       );
-      more.style.marginTop = '8px';
-      body.appendChild(more);
     }
-    if (_state.searchResults != null) body.appendChild(renderSearchResults());
+    const details = body?.querySelector('[data-e2e-id="tag-management-preset-filter-section"]');
+    const summary = details?.querySelector('summary');
+    if (summary) {
+      const selected = _state.selectedPresetNames || [];
+      summary.textContent = selected.length
+        ? `タグ一覧の絞り込み（${selected.join('＋')}）`
+        : `タグ一覧の絞り込み（全${(_state.presetNames || []).length}プリセット）`;
+    }
+  }
+
+  function renderTreeDynamic(host) {
+    if (!host) return;
+    window.MeldexTagGroupSummary?.ensure?.(() => {
+      if (_container?.isConnected) refreshGroupSummaryCounts();
+    });
+    const { roots, uncategorized, groupsById, filtered } = buildTreeData();
+    const flatRows = flattenTree(roots, uncategorized);
+    const visibleTagCount = flatRows.filter(row => row.kind === 'tag').length;
+    const runtime = window.MeldexTagTreeRuntime;
+    const budget = runtime?.createBudget?.(treeScopeKey(), visibleTagCount)
+      || { limit: Number.MAX_SAFE_INTEGER, total: visibleTagCount, rendered: 0, skipped: 0 };
+    const build = () => {
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(renderBulkBar());
+      fragment.appendChild(renderUncategorizedSection(uncategorized, groupsById, budget));
+      roots.forEach(group => fragment.appendChild(renderGroupNode(group, groupsById, 0, budget)));
+      const loadMore = runtime?.createLoadMoreButton?.(budget, () => refreshTreeContent());
+      if (loadMore) fragment.appendChild(loadMore);
+      if (!roots.length && !uncategorized.length) {
+        const empty = document.createElement('div');
+        empty.className = 'gb-section gb-section--boxed gb-tag-empty';
+        empty.style.cssText = 'padding:10px;margin-top:8px;color:var(--fg2);font-size:12px;';
+        empty.textContent = filtered.all.length
+          ? '表示条件に一致するタグがありません。'
+          : 'タグがありません。タグを追加するか、同梱プリセットを導入してください。';
+        fragment.appendChild(empty);
+      }
+      if (_state.searchResults != null) {
+        fragment.appendChild(window.MeldexTagManagementOverlays.renderSearchResults({
+          results: _state.searchResults,
+          tagName: _state.searchTag?.name || _state.searchTag || '',
+          icon: ic,
+          closeButton: () => iconButton('x', '結果を閉じる', () => {
+            _state.searchTag = null;
+            _state.searchResults = null;
+            refreshTreeContent();
+          }, '', 'tag-management-search-close'),
+          emptyRow,
+          onOpen: item => api()?.openTaggedTarget?.(item),
+        }));
+      }
+      return fragment;
+    };
+    if (runtime?.replaceDynamic) runtime.replaceDynamic(host, build, 'tag-tree-dynamic');
+    else host.replaceChildren(build());
+    syncTreeFilterControls(host.closest('.gb-tag-management-body'), filtered);
+  }
+
+  function refreshTreeContent() {
+    const body = _container?.querySelector('.gb-tag-management-body');
+    const dynamic = body?.querySelector('[data-tag-tree-dynamic]');
+    if (!dynamic) {
+      render();
+      return;
+    }
+    const scrollTop = body.scrollTop;
+    renderTreeDynamic(dynamic);
+    body.scrollTop = scrollTop;
+    window.MeldexTagPanelTabs?.mountTree?.(body);
+  }
+
+  function normalizeAutoTagPath(value) {
+    return window.MeldexTagPresetUI?.normalizeAutoTagTargetPath?.(value)
+      || (typeof value === 'string' ? value.trim() : '');
   }
 
   function normalizeAutoTagTargets(rawTargets) {
     const seen = new Set();
     return (Array.isArray(rawTargets) ? rawTargets : []).map(item => {
-      const path = String(item?.path || item || '').trim();
+      const path = normalizeAutoTagPath(item);
       const recursive = typeof item === 'object'
         ? (item?.recursive == null ? item?.type === 'folder' : !!item.recursive)
         : false;
@@ -402,7 +492,7 @@
       return;
     }
     const body = _container.querySelector('.gb-tag-management-body');
-    if (body) body.prepend(section);
+    if (body) body.appendChild(section);
     else _container.appendChild(section);
   }
 
@@ -420,7 +510,15 @@
     _state.autoTagTargetPath = first.path;
     _state.autoTagTargetRecursive = first.recursive;
     _state.sourceFolder = nextSourceFolder;
+    if (changed) window.MeldexTagGroupSummary?.invalidate?.();
+    const resetButton = _container?.querySelector(
+      '[data-e2e-id="tag-management-reset-target-tags"]',
+    );
+    if (resetButton) {
+      resetButton.disabled = _state.mutationBlocked || !first.path;
+    }
     if (sourceChanged) {
+      resetTreeRenderLimit();
       _fetchRevision += 1;
       _state.tags = [];
       _state.groups = [];
@@ -443,64 +541,71 @@
       refresh(false);
       return;
     }
+    const activePanelTab = window.MeldexTagPanelTabs?.activeTab?.() || 'tag-tree';
+    if (activePanelTab === 'tag-tree') {
+      window.MeldexTagPanelTabs?.setTreeContext?.({
+        target: currentAutoTagTarget(),
+        sourceFolder: _state.sourceFolder,
+        tags: _state.tags,
+        mutationBlocked: _state.mutationBlocked,
+        warning: _state.syncWarning,
+      });
+      window.MeldexTagGroupSummary?.ensure?.(() => {
+        if (_container?.isConnected) refreshGroupSummaryCounts();
+      });
+      refreshGroupSummaryCounts();
+    }
     const existing = _container.querySelector('[data-tag-auto-run-section]');
-    mountAutoTagSection(existing, true);
+    if (activePanelTab === 'auto-tag') {
+      mountAutoTagSection(existing);
+    }
   }
 
   function setAutoTagTarget(path, recursive) {
-    const nextPath = String(path || '').trim();
+    const nextPath = normalizeAutoTagPath(path);
     setAutoTagTargets(nextPath ? [{ path: nextPath, recursive: !!recursive }] : []);
   }
 
-  function renderHeader() {
-    const header = document.createElement('div');
-    header.className = 'gb-section gb-tag-management-header';
-    header.style.cssText = 'padding:8px;display:flex;flex-direction:column;gap:6px;border-bottom:1px solid var(--border);flex-shrink:0;';
-
-    const top = document.createElement('div');
-    top.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const title = document.createElement('div');
-    title.className = 'gb-section-title';
-    title.style.cssText = 'flex:1;min-width:0;display:flex;align-items:center;gap:6px;';
-    title.innerHTML = ic('tags', 15) + '<span>タグ</span>';
-    top.appendChild(title);
-    const refreshBtn = iconButton('refresh-cw', '再読み込み', () => refresh(), '', 'tag-management-refresh');
-    top.appendChild(refreshBtn);
-    header.appendChild(top);
-
-    const presetControls = window.MeldexTagPresetUI?.renderPresetControls?.({
+  function renderTreeFilterControls() {
+    return window.MeldexTagPresetUI?.renderPresetControls?.({
       state: _state,
-      onFilterInput(search) {
+      onFilterInput(search, event) {
+        if (event?.isComposing || search?.dataset?.composing === '1') return;
+        const changed = _state.filterText !== search.value;
         _state.filterText = search.value;
-        _state.visibleTagLimit = INITIAL_VISIBLE_TAGS;
+        if (changed) resetTreeRenderLimit();
         const caret = search.selectionStart || 0;
-        render();
-        const next = _container?.querySelector('[data-e2e-id="tag-management-filter"]');
-        if (next) {
-          next.focus();
-          next.setSelectionRange(caret, caret);
-        }
+        const rerender = () => {
+          refreshTreeContent();
+          const next = _container?.querySelector('[data-e2e-id="tag-management-filter"]');
+          if (next) {
+            next.focus();
+            next.setSelectionRange(caret, caret);
+          }
+        };
+        if (window.MeldexTagPanelTabs?.scheduleTreeFilterRender) {
+          window.MeldexTagPanelTabs.scheduleTreeFilterRender(rerender);
+        } else rerender();
       },
       onPresetToggle(name, checked) {
         const selected = new Set(_state.selectedPresetNames);
         if (checked) selected.add(name);
         else selected.delete(name);
         _state.selectedPresetNames = [...selected];
-        _state.visibleTagLimit = INITIAL_VISIBLE_TAGS;
-        render();
+        resetTreeRenderLimit();
+        refreshTreeContent();
       },
     });
-    if (presetControls) header.appendChild(presetControls);
+  }
 
+  function renderPanelControls(activePanelTab) {
+    const controls = document.createElement('div');
+    controls.className = 'gb-tag-management-controls';
+    controls.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:6px;';
     const actionRow = document.createElement('div');
     actionRow.className = 'gb-tag-management-action-row';
     actionRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
-    const addGroup = textButton('グループ追加', 'folder-plus', () => onAddGroup(null), 'tag-management-add-group');
-    const addTag = textButton('タグ追加', 'plus', () => onAddTag(null), 'tag-management-add-tag');
-    addGroup.disabled = _state.mutationBlocked;
-    addTag.disabled = _state.mutationBlocked;
-    actionRow.append(addGroup, addTag);
-    if (window.isTagDictionaryEditingAvailable?.() !== false) {
+    if (activePanelTab === 'tag-tree' && window.isTagDictionaryEditingAvailable?.() !== false) {
       if (window.isTagDictionarySheetOpenAvailable?.() === true) {
         actionRow.appendChild(textButton('タグ辞書シート', 'table-properties', () => (
           window.ensureAutoTagDictionarySheet?.(_state.autoTagTargetPath, _state.sourceFolder)
@@ -515,13 +620,41 @@
         window.exportAutoTagDictionaryCsv?.(_state.autoTagTargetPath, _state.sourceFolder)
       ), 'tag-management-export-csv'));
     }
-    if (window.isAutoTagRuntimeAvailable?.() === true) {
+    if (activePanelTab === 'auto-tag' && window.isAutoTagRuntimeAvailable?.() === true) {
       const autoTagFolder = textButton('現在のフォルダを自動タグ付け', 'sparkles', () => runAutoTagForCurrentFolder(), 'tag-management-auto-tag-folder');
       autoTagFolder.disabled = _state.mutationBlocked;
       actionRow.appendChild(autoTagFolder);
     }
-    header.appendChild(actionRow);
-    return header;
+    if (activePanelTab === 'auto-tag' && window.isAutoTagRuntimeAvailable?.() === true && window.MeldexAutoTagJobs?.startReset) {
+      const resetTags = textButton('対象のタグを一括リセット', 'tags', () => resetCurrentTargetTags(), 'tag-management-reset-target-tags');
+      resetTags.disabled = _state.mutationBlocked || !currentAutoTagTarget().path;
+      resetTags.classList.add('gb-btn-danger');
+      actionRow.appendChild(resetTags);
+    }
+    if (actionRow.childElementCount) controls.appendChild(actionRow);
+
+    if (activePanelTab !== 'tag-tree') return controls.childElementCount ? controls : null;
+    return controls;
+  }
+
+  function renderTreeToolbar() {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'gb-tag-tree-toolbar';
+    toolbar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 2px 4px;';
+    const label = document.createElement('strong');
+    label.className = 'gb-section-title';
+    label.textContent = 'タグツリー';
+    const addRootItem = iconButton(
+      'plus',
+      'タグまたは最上位グループを追加',
+      event => openAddMenu(event.currentTarget, null),
+      '',
+      'tag-management-add',
+      { menu: true },
+    );
+    addRootItem.disabled = _state.mutationBlocked;
+    toolbar.append(label, addRootItem);
+    return toolbar;
   }
 
   function textButton(label, icon, onClick, role) {
@@ -569,11 +702,14 @@
     label.textContent = count + '件選択中';
     bar.appendChild(label);
     bar.appendChild(textButton('削除', 'trash-2', onDeleteSelected, 'tag-management-bulk-delete'));
-    bar.appendChild(textButton('選択解除', 'x', () => { _state.selectedKeys = []; render(); }, 'tag-management-bulk-clear'));
+    bar.appendChild(textButton('選択解除', 'x', () => {
+      _state.selectedKeys = [];
+      refreshTreeContent();
+    }, 'tag-management-bulk-clear'));
     return bar;
   }
 
-  function renderUncategorizedSection(tags, groupsById) {
+  function renderUncategorizedSection(tags, groupsById, budget) {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin-bottom:6px;';
     const collapsed = isUncategorizedCollapsed();
@@ -581,15 +717,14 @@
     head.draggable = false;
     const caret = iconButton(collapsed ? 'chevron-right' : 'chevron-down', collapsed ? '展開' : '折りたたみ', () => {
       setUncategorizedCollapsed(!collapsed);
-      render();
+      refreshTreeContent();
     }, '', 'tag-management-uncategorized-toggle');
     caret.style.minWidth = '22px';
     head.appendChild(caret);
-    const swatch = document.createElement('span');
-    swatch.style.cssText = 'width:10px;height:10px;border-radius:2px;border:1px solid var(--border);background:var(--bg3);';
-    head.appendChild(swatch);
     head.appendChild(rowLabel('未分類', true));
-    head.appendChild(rowCount(tags.length));
+    const uncategorizedSummary = window.MeldexTagGroupSummary?.get?.(_state.tags, _state.groups, '')
+      || { assigned: 0, total: tags.length };
+    head.appendChild(rowCount(uncategorizedSummary.total, uncategorizedSummary.assigned, '__uncategorized__'));
     head.appendChild(iconButton('plus', '未分類にタグを追加', () => onAddTag(null), '', 'tag-management-uncategorized-add-tag'));
     bindDropTarget(head, null, 'root');
     wrap.appendChild(head);
@@ -597,35 +732,54 @@
       const box = document.createElement('div');
       box.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
       if (!tags.length) box.appendChild(emptyRow('タグなし'));
-      tags.forEach(tag => box.appendChild(renderTagRow(tag, groupsById, 0)));
+      tags.forEach(tag => {
+        if (!window.MeldexTagTreeRuntime?.takeTag
+          || window.MeldexTagTreeRuntime.takeTag(budget)) {
+          box.appendChild(renderTagRow(tag, groupsById, 0));
+        }
+      });
       wrap.appendChild(box);
     }
     return wrap;
   }
 
-  function renderGroupNode(group, groupsById, depth) {
+  function renderGroupNode(group, groupsById, depth, budget) {
     const wrap = document.createElement('div');
     wrap.style.marginLeft = (depth * 12) + 'px';
     const key = rowKey('group', group.id);
     const head = treeRowBase('group', key, depth);
     head.appendChild(iconButton(group.collapsed ? 'chevron-right' : 'chevron-down', group.collapsed ? '展開' : '折りたたみ', () => toggleGroupCollapsed(group), '', 'tag-management-group-toggle-' + safeKeyPart(group.id)));
-    const swatch = document.createElement('span');
-    const color = String(group.color || '').trim();
-    swatch.style.cssText = 'width:10px;height:10px;border-radius:2px;border:1px solid var(--border);' + (/^#[0-9a-f]{6}$/i.test(color) ? 'background:' + color + ';' : 'background:var(--bg3);');
-    head.appendChild(swatch);
-    head.appendChild(rowLabel(group.name, true));
-    head.appendChild(rowCount(countTagsRecursive(group)));
-    head.appendChild(iconButton('folder-plus', 'サブグループを追加', () => onAddGroup(group.id), '', 'tag-management-group-add-group-' + safeKeyPart(group.id)));
-    head.appendChild(iconButton('plus', 'このグループにタグを追加', () => onAddTag(group.id), '', 'tag-management-group-add-tag-' + safeKeyPart(group.id)));
-    head.appendChild(iconButton('ellipsis', 'グループの操作', event => openGroupMenu(event.currentTarget, group), '', 'tag-management-group-menu-' + safeKeyPart(group.id), { menu: true }));
+    head.appendChild(rowLabel(group.name, true, groupColor(group, groupsById)));
+    const summary = window.MeldexTagGroupSummary?.get?.(_state.tags, _state.groups, group.id)
+      || { assigned: 0, total: countTagsRecursive(group) };
+    head.appendChild(rowCount(summary.total, summary.assigned, group.id));
+    const actions = document.createElement('span');
+    actions.className = 'gb-tag-group-actions';
+    const displayPreferences = window.MeldexTagDisplayPreferences;
+    const explicitlyHidden = displayPreferences?.isGroupExplicitlyHidden?.(group.id, _state.sourceFolder) === true;
+    actions.append(
+      iconButton(
+        explicitlyHidden ? 'eye-off' : 'eye',
+        explicitlyHidden ? 'このタググループをメインパネルに表示' : 'このタググループをメインパネルで非表示',
+        () => {
+          displayPreferences?.toggleGroup?.(group.id, _state.sourceFolder);
+          refreshTreeContent();
+        },
+        '',
+        'tag-management-group-visibility-' + safeKeyPart(group.id),
+      ),
+      iconButton('plus', 'タグまたはサブグループを追加', event => openAddMenu(event.currentTarget, group.id), '', 'tag-management-group-add-' + safeKeyPart(group.id), { menu: true }),
+      iconButton('ellipsis', 'グループの操作', event => openGroupMenu(event.currentTarget, group), '', 'tag-management-group-menu-' + safeKeyPart(group.id), { menu: true }),
+    );
+    head.appendChild(actions);
     head.addEventListener('click', event => {
       if (event.target.closest('button')) return;
       setSelectionFromEvent(event, key);
-      render();
+      refreshTreeContent();
     });
     bindRowKeyboard(head, event => {
       setSelectionFromEvent(event, key);
-      render();
+      refreshTreeContent();
     }, event => openGroupMenu(event.currentTarget, group));
     bindRowMenu(head, event => openGroupMenu(event.currentTarget, group));
     bindDragSource(head, 'group', group.id);
@@ -634,8 +788,15 @@
     if (!group.collapsed) {
       const box = document.createElement('div');
       box.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
-      group.tags.forEach(tag => box.appendChild(renderTagRow(tag, groupsById, depth + 1)));
-      group.children.forEach(child => box.appendChild(renderGroupNode(child, groupsById, depth + 1)));
+      group.tags.forEach(tag => {
+        if (!window.MeldexTagTreeRuntime?.takeTag
+          || window.MeldexTagTreeRuntime.takeTag(budget)) {
+          box.appendChild(renderTagRow(tag, groupsById, depth + 1));
+        }
+      });
+      group.children.forEach(child => box.appendChild(
+        renderGroupNode(child, groupsById, depth + 1, budget),
+      ));
       if (!group.tags.length && !group.children.length) box.appendChild(emptyRow('空のグループ'));
       wrap.appendChild(box);
     }
@@ -645,13 +806,18 @@
   function renderTagRow(tag, groupsById) {
     const key = rowKey('tag', tag.id);
     const row = treeRowBase('tag', key, 0);
-    const swatch = document.createElement('span');
-    swatch.style.cssText = 'width:10px;height:10px;border-radius:50%;border:1px solid var(--border);background:' + effectiveTagColor(tag, groupsById) + ';';
-    const indent = document.createElement('span');
-    indent.style.cssText = 'display:inline-block;flex:0 0 24px;width:24px;';
-    row.appendChild(indent);
-    row.appendChild(swatch);
-    row.appendChild(rowLabel(tag.name || '', false));
+    const assignmentToggle = window.MeldexTagPanelTabs?.createTagToggle?.(tag);
+    if (assignmentToggle) row.appendChild(assignmentToggle);
+    else {
+      const indent = document.createElement('span');
+      indent.style.cssText = 'display:inline-block;flex:0 0 24px;width:24px;';
+      row.appendChild(indent);
+    }
+    row.appendChild(api()?.createTagChip?.(tag, {
+      groupsById,
+      compact: true,
+      className: 'gb-tag-tree-chip',
+    }) || rowLabel(tag.name || '', false, effectiveTagColor(tag, groupsById)));
     if (Array.isArray(tag.aliases) && tag.aliases.length) {
       const aliasBadge = document.createElement('span');
       aliasBadge.className = 'gb-tag-alias-badge';
@@ -672,18 +838,19 @@
     row.appendChild(rowCount(typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : ''));
     row.appendChild(iconButton('ellipsis', 'タグの操作', event => openTagMenu(event.currentTarget, tag), '', 'tag-management-tag-menu-' + safeKeyPart(tag.id), { menu: true }));
     row.addEventListener('click', event => {
-      if (event.target.closest('button')) return;
+      if (event.target.closest('button, input, label')) return;
       setSelectionFromEvent(event, key);
       if (!event.ctrlKey && !event.metaKey && !event.shiftKey) applyTagFilter(tag);
-      render();
+      refreshTreeContent();
     });
     bindRowKeyboard(row, event => {
       setSelectionFromEvent(event, key);
       if (!event.ctrlKey && !event.metaKey && !event.shiftKey) applyTagFilter(tag);
-      render();
+      refreshTreeContent();
     }, event => openTagMenu(event.currentTarget, tag));
     bindRowMenu(row, event => openTagMenu(event.currentTarget, tag));
     bindDragSource(row, 'tag', tag.id);
+    window.MeldexTagTreeDnD?.bindTagDropTarget?.(row, tag, tagDndOptions());
     return row;
   }
 
@@ -737,20 +904,61 @@
     }
   }
 
-  function rowLabel(text, strong) {
+  function rowLabel(text, strong, color) {
     const label = document.createElement('span');
+    label.className = 'gb-tag-tree-label';
     label.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg);' + (strong ? 'font-weight:600;' : '');
+    if (color) {
+      label.classList.add('gb-tag-tree-label--colored');
+      label.style.setProperty('--gb-tag-color', color);
+    }
     label.textContent = text || '';
     label.title = text || '';
     return label;
   }
 
-  function rowCount(value) {
-    const count = document.createElement('span');
-    count.className = 'gb-section-desc';
-    count.style.cssText = 'min-width:18px;text-align:right;';
-    count.textContent = value == null ? '' : String(value);
+  function updateRowCount(count, total, assigned) {
+    if (assigned == null) {
+      count.textContent = total == null ? '' : String(total);
+      return count;
+    }
+    count.replaceChildren();
+    const assignedEl = document.createElement('span');
+    assignedEl.className = 'gb-tag-group-count-assigned';
+    assignedEl.textContent = String(assigned);
+    const separator = document.createElement('span');
+    separator.textContent = '/';
+    const totalEl = document.createElement('span');
+    totalEl.textContent = String(total == null ? 0 : total);
+    count.append(assignedEl, separator, totalEl);
+    const selectedCount = typeof _folderSelectedItems !== 'undefined' && Array.isArray(_folderSelectedItems)
+      ? _folderSelectedItems.filter(item => item?.path && item.type !== 'folder').length
+      : 0;
+    const targetDescription = selectedCount
+      ? `選択中${selectedCount}件のいずれかに付いているタグ`
+      : '現在のフォルダに付いているタグ';
+    count.setAttribute('aria-label', `${targetDescription} ${assigned}件、グループ内 ${total == null ? 0 : total}件`);
+    count.title = `${targetDescription}: ${assigned}/${total == null ? 0 : total}`;
     return count;
+  }
+
+  function rowCount(total, assigned, groupId) {
+    const count = document.createElement('span');
+    count.className = 'gb-section-desc gb-tag-group-count';
+    if (groupId != null) count.dataset.tagGroupCountId = String(groupId);
+    count.style.cssText = 'min-width:18px;text-align:right;';
+    return updateRowCount(count, total, assigned);
+  }
+
+  function refreshGroupSummaryCounts() {
+    const summaryApi = window.MeldexTagGroupSummary;
+    if (!summaryApi?.get || !_container) return;
+    _container.querySelectorAll('[data-tag-group-count-id]').forEach(count => {
+      const storedId = String(count.dataset.tagGroupCountId || '');
+      const groupId = storedId === '__uncategorized__' ? '' : storedId;
+      const summary = summaryApi.get(_state.tags, _state.groups, groupId);
+      updateRowCount(count, summary.total, summary.assigned);
+    });
   }
 
   function emptyRow(text) {
@@ -784,8 +992,27 @@
     row.addEventListener('dragend', () => {
       _dragRows = [];
       row.classList.remove('dragging');
-      document.querySelectorAll('.gb-tag-tree-row.is-drop-target').forEach(el => el.classList.remove('is-drop-target'));
+      document.querySelectorAll('.gb-tag-tree-row.is-drop-target, .gb-tag-tree-row.is-drop-before, .gb-tag-tree-row.is-drop-after')
+        .forEach(clearDropTargetState);
     });
+  }
+
+  function clearDropTargetState(el) {
+    el.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
+    el.style.boxShadow = '';
+    delete el.dataset.tagDropPlacement;
+  }
+
+  function groupDropPlacement(el, event, items, targetGroupId, targetKind) {
+    if (targetKind !== 'group' || !targetGroupId) return 'inside';
+    const groups = (items || []).filter(item => item?.kind === 'group' && item?.id !== targetGroupId);
+    if (groups.length !== 1 || groups.length !== (items || []).length) return 'inside';
+    const rect = el.getBoundingClientRect();
+    if (!rect.height || !Number.isFinite(event?.clientY)) return 'inside';
+    const ratio = (event.clientY - rect.top) / rect.height;
+    if (ratio < 0.32) return 'before';
+    if (ratio > 0.68) return 'after';
+    return 'inside';
   }
 
   function bindDropTarget(el, targetGroupId, targetKind) {
@@ -795,21 +1022,27 @@
       event.preventDefault();
       event.stopPropagation();
       event.dataTransfer.dropEffect = 'move';
-      el.classList.add('is-drop-target');
-      el.style.boxShadow = 'inset 0 0 0 1px var(--accent)';
+      clearDropTargetState(el);
+      const placement = groupDropPlacement(el, event, items, targetGroupId, targetKind);
+      el.dataset.tagDropPlacement = placement;
+      el.classList.add(placement === 'before'
+        ? 'is-drop-before'
+        : (placement === 'after' ? 'is-drop-after' : 'is-drop-target'));
+      if (placement === 'inside') el.style.boxShadow = 'inset 0 0 0 1px var(--accent)';
     });
-    el.addEventListener('dragleave', () => {
-      el.classList.remove('is-drop-target');
-      el.style.boxShadow = '';
-    });
+    el.addEventListener('dragleave', () => clearDropTargetState(el));
     el.addEventListener('drop', async event => {
       const items = readDragItems(event);
       if (!items.length) return;
       event.preventDefault();
       event.stopPropagation();
-      el.classList.remove('is-drop-target');
-      el.style.boxShadow = '';
-      await moveItemsToGroup(items, targetGroupId || null, targetKind);
+      const placement = el.dataset.tagDropPlacement || groupDropPlacement(el, event, items, targetGroupId, targetKind);
+      clearDropTargetState(el);
+      if ((placement === 'before' || placement === 'after') && items.length === 1 && items[0]?.kind === 'group') {
+        await moveGroupRelative(items[0].id, targetGroupId, placement);
+      } else {
+        await moveItemsToGroup(items, targetGroupId || null, targetKind);
+      }
     });
   }
 
@@ -822,10 +1055,82 @@
     return _dragRows || [];
   }
 
+  function tagDndOptions() {
+    return {
+      getState: () => _state,
+      getApi: api,
+      readItems: readDragItems,
+      render,
+      reportError,
+    };
+  }
+
+  function groupUpdatesForParent(items, targetGroupId) {
+    const targetParentId = targetGroupId || null;
+    const movingIds = new Set(
+      (items || [])
+        .filter(item => item?.kind === 'group' && item?.id)
+        .map(item => String(item.id)),
+    );
+    if (!movingIds.size || (targetGroupId && movingIds.has(String(targetGroupId)))) return [];
+    const movingGroups = _state.groups
+      .filter(group => movingIds.has(String(group.id)))
+      .sort(compareByOrder);
+    if (movingGroups.length !== movingIds.size) return [];
+    if (movingGroups.some(group => wouldCreateGroupCycle(group.id, targetParentId))) return null;
+    const siblings = orderedSiblingGroups(targetParentId)
+      .filter(group => !movingIds.has(String(group.id)));
+    siblings.push(...movingGroups);
+    return siblings.map((group, index) => ({
+      id: group.id,
+      parent_id: targetParentId,
+      sort_index: (index + 1) * 10,
+    })).filter(update => {
+      const current = _state.groups.find(group => group.id === update.id);
+      return (current?.parent_id || null) !== targetParentId
+        || Number(current?.sort_index || 0) !== update.sort_index;
+    });
+  }
+
+  async function moveGroupsToParent(items, targetGroupId) {
+    if (!api() || _state.mutationBlocked || _groupOrderSaving) return false;
+    const updates = groupUpdatesForParent(items, targetGroupId);
+    if (updates === null) {
+      if (typeof showStatus === 'function') showStatus('子グループの階層へは移動できません', true);
+      return false;
+    }
+    if (!updates.length) return false;
+    const sourceFolder = _state.sourceFolder;
+    const previousGroups = _state.groups.map(group => ({ ...group }));
+    const updatesById = new Map(updates.map(update => [String(update.id), update]));
+    _state.groups = _state.groups.map(group => {
+      const update = updatesById.get(String(group.id));
+      return update ? { ...group, ...update } : group;
+    });
+    _groupOrderSaving = true;
+    render();
+    try {
+      const result = await api().updateGroupOrder(updates, sourceFolder);
+      if (sourceFolder !== _state.sourceFolder) return true;
+      if (Array.isArray(result?.tags)) _state.tags = result.tags;
+      if (Array.isArray(result?.groups)) _state.groups = result.groups;
+      render();
+      if (typeof showStatus === 'function') showStatus('タググループの所属階層と表示順を保存しました');
+      return true;
+    } catch (error) {
+      if (sourceFolder === _state.sourceFolder) {
+        _state.groups = previousGroups;
+        render();
+        reportError(error, 'タググループの所属階層と表示順を保存できませんでした');
+      }
+      return false;
+    } finally {
+      _groupOrderSaving = false;
+    }
+  }
+
   async function moveItemsToGroup(items, targetGroupId) {
     if (!api()) return;
-    let moved = 0;
-    let failed = 0;
     const unique = [];
     const seen = new Set();
     (items || []).forEach(item => {
@@ -834,40 +1139,182 @@
       seen.add(key);
       unique.push(item);
     });
-    for (const item of unique) {
-      try {
-        if (item.kind === 'tag') {
-          await api().updateTag(item.id, { group_id: targetGroupId || null }, _state.sourceFolder);
-          moved += 1;
-        } else if (item.kind === 'group' && item.id !== targetGroupId) {
-          await api().updateGroup(item.id, { parent_id: targetGroupId || null }, _state.sourceFolder);
-          moved += 1;
-        }
-      } catch (_) {
-        failed += 1;
+    if (
+      unique.length
+      && unique.every(item => item.kind === 'tag')
+      && window.MeldexTagTreeDnD?.moveTagsToGroup
+    ) {
+      await window.MeldexTagTreeDnD.moveTagsToGroup(unique, targetGroupId, tagDndOptions());
+      return;
+    }
+    if (unique.length && unique.every(item => item.kind === 'group')) {
+      await moveGroupsToParent(unique, targetGroupId);
+      return;
+    }
+    if (unique.length && typeof showStatus === 'function') {
+      showStatus('タグとタググループは同時に移動できません', true);
+    }
+  }
+
+  function wouldCreateGroupCycle(groupId, nextParentId) {
+    const byId = Object.fromEntries(_state.groups.map(group => [group.id, group]));
+    const seen = new Set();
+    let cursor = nextParentId || null;
+    while (cursor && !seen.has(cursor)) {
+      if (cursor === groupId) return true;
+      seen.add(cursor);
+      cursor = byId[cursor]?.parent_id || null;
+    }
+    return false;
+  }
+
+  async function moveGroupRelative(groupId, targetGroupId, placement) {
+    if (!api() || _state.mutationBlocked || _groupOrderSaving || groupId === targetGroupId) return;
+    const sourceFolder = _state.sourceFolder;
+    const group = _state.groups.find(item => item.id === groupId);
+    const target = _state.groups.find(item => item.id === targetGroupId);
+    if (!group || !target) return;
+    const nextParentId = target.parent_id || null;
+    if (wouldCreateGroupCycle(group.id, nextParentId)) {
+      if (typeof showStatus === 'function') showStatus('子グループの階層へは移動できません', true);
+      return;
+    }
+    const siblings = orderedSiblingGroups(nextParentId).filter(item => item.id !== group.id);
+    const targetIndex = siblings.findIndex(item => item.id === target.id);
+    if (targetIndex < 0) return;
+    siblings.splice(targetIndex + (placement === 'after' ? 1 : 0), 0, group);
+    const previousGroups = _state.groups.map(item => ({ ...item }));
+    const groupsById = new Map(_state.groups.map(item => [item.id, item]));
+    const updates = [];
+    for (let index = 0; index < siblings.length; index += 1) {
+      const sibling = siblings[index];
+      const sortIndex = (index + 1) * 10;
+      const patch = {};
+      if ((sibling.parent_id || null) !== nextParentId) patch.parent_id = nextParentId;
+      if (Number(sibling.sort_index || 0) !== sortIndex) patch.sort_index = sortIndex;
+      if (Object.keys(patch).length) {
+        updates.push({ id: sibling.id, ...patch });
+        Object.assign(groupsById.get(sibling.id), patch);
       }
     }
-    await refresh(false);
-    if (typeof showStatus === 'function') {
-      const suffix = failed ? '（' + failed + '件失敗）' : '';
-      showStatus(moved ? moved + '件の所属階層を移動しました' + suffix : '移動できるタグがありません', failed > 0 && moved === 0);
+    if (!updates.length) return;
+    _groupOrderSaving = true;
+    _state.error = '';
+    render();
+    try {
+      const result = await api().updateGroupOrder(updates, sourceFolder);
+      if (sourceFolder !== _state.sourceFolder) return;
+      if (Array.isArray(result?.tags)) _state.tags = result.tags;
+      if (Array.isArray(result?.groups)) _state.groups = result.groups;
+      render();
+      if (typeof showStatus === 'function') showStatus('タググループの表示順を保存しました');
+    } catch (err) {
+      if (sourceFolder !== _state.sourceFolder) return;
+      _state.groups = previousGroups;
+      render();
+      reportError(err, 'タググループの表示順を保存できませんでした');
+    } finally {
+      _groupOrderSaving = false;
     }
   }
 
   async function toggleGroupCollapsed(group) {
+    const current = _state.groups.find(item => String(item?.id) === String(group?.id));
+    const previous = !!(current || group)?.collapsed;
+    const next = !previous;
+    if (current) current.collapsed = next;
+    group.collapsed = next;
+    refreshTreeContent();
     try {
-      await api().updateGroup(group.id, { collapsed: !group.collapsed }, _state.sourceFolder);
-      await refresh(false);
+      const saved = await api().updateGroup(group.id, { collapsed: next }, _state.sourceFolder);
+      if (saved && current) Object.assign(current, saved);
     } catch (err) {
+      if (current) current.collapsed = previous;
+      group.collapsed = previous;
+      refreshTreeContent();
       reportError(err, 'グループを更新できませんでした');
+    }
+  }
+
+  function groupPath(groupId) {
+    const byId = new Map(_state.groups.map(group => [String(group.id), group]));
+    const names = [];
+    const seen = new Set();
+    let cursor = String(groupId || '');
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      const group = byId.get(cursor);
+      if (!group) break;
+      names.push(String(group.name || ''));
+      cursor = String(group.parent_id || '');
+    }
+    return names.reverse().filter(Boolean).join(' > ');
+  }
+
+  function currentCatalogCandidates(kind) {
+    if (kind === 'group') {
+      return _state.groups.map(group => ({
+        id: group.id,
+        kind: 'group',
+        name: group.name,
+        aliases: [],
+        group_path: groupPath(group.id),
+      }));
+    }
+    return _state.tags.map(tag => ({
+      id: tag.id,
+      kind: 'tag',
+      name: tag.name,
+      aliases: tag.aliases || [],
+      group_path: groupPath(tag.group_id),
+    }));
+  }
+
+  async function addChoice(kind, defaultValue) {
+    const suggestions = window.MeldexTagCatalogSuggestions;
+    if (typeof suggestions?.open === 'function') {
+      return suggestions.open({
+        kind,
+        defaultValue,
+        current: currentCatalogCandidates(kind),
+        sourceFolder: _state.sourceFolder,
+        restoreFocus: document.activeElement,
+      });
+    }
+    const label = kind === 'group' ? 'グループ名' : 'タグ名';
+    const value = await promptAsync(label, defaultValue);
+    return String(value || '').trim()
+      ? { action: 'custom', value: String(value).trim() }
+      : null;
+  }
+
+  function focusExistingChoice(choice) {
+    const item = choice?.item;
+    if (!item?.id) return;
+    _state.selectedKeys = [rowKey(item.kind, item.id)];
+    _state.anchorKey = _state.selectedKeys[0];
+    refreshTreeContent();
+    if (typeof showStatus === 'function') {
+      showStatus(`「${item.name}」は現在のタグ辞書にあります`);
     }
   }
 
   async function onAddGroup(parentId) {
     try {
-      const name = await promptAsync('グループ名', uniqueName('新しいグループ', _state.groups.filter(g => (g.parent_id || null) === (parentId || null)).map(g => g.name)));
-      if (!String(name || '').trim()) return;
-      await api().createGroup({ name: String(name).trim(), parent_id: parentId || null }, _state.sourceFolder);
+      const choice = await addChoice(
+        'group',
+        uniqueName('新しいグループ', _state.groups.filter(g => (g.parent_id || null) === (parentId || null)).map(g => g.name)),
+      );
+      if (!choice) return;
+      if (choice.action === 'existing') {
+        focusExistingChoice(choice);
+        return;
+      }
+      if (choice.action === 'external') {
+        await api().materializeExternalSuggestion(choice.item, _state.sourceFolder);
+      } else {
+        await api().createGroup({ name: choice.value, parent_id: parentId || null }, _state.sourceFolder);
+      }
       await refresh(false);
     } catch (err) {
       reportError(err, 'グループを追加できませんでした');
@@ -876,9 +1323,20 @@
 
   async function onAddTag(groupId) {
     try {
-      const name = await promptAsync('タグ名', uniqueName('新しいタグ', _state.tags.map(t => t.name)));
-      if (!String(name || '').trim()) return;
-      await api().createTag({ name: String(name).trim(), group_id: groupId || null }, _state.sourceFolder);
+      const choice = await addChoice(
+        'tag',
+        uniqueName('新しいタグ', _state.tags.map(t => t.name)),
+      );
+      if (!choice) return;
+      if (choice.action === 'existing') {
+        focusExistingChoice(choice);
+        return;
+      }
+      if (choice.action === 'external') {
+        await api().materializeExternalSuggestion(choice.item, _state.sourceFolder);
+      } else {
+        await api().createTag({ name: choice.value, group_id: groupId || null }, _state.sourceFolder);
+      }
       await refresh(false);
     } catch (err) {
       reportError(err, 'タグを追加できませんでした');
@@ -971,109 +1429,30 @@
     if (typeof showStatus === 'function') showStatus(rows.length - failed + '件を削除しました' + (failed ? '（' + failed + '件失敗）' : ''), failed > 0);
   }
 
+  function openAddMenu(anchor, groupId) {
+    window.MeldexTagManagementOverlays.openMenu(anchor, [
+      ['tag', 'タグを追加', () => onAddTag(groupId)],
+      ['folder-plus', groupId ? 'サブグループを追加' : '最上位グループを追加', () => onAddGroup(groupId)],
+    ], { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
+  }
+
   function openGroupMenu(anchor, group) {
-    openMenu(anchor, [
+    window.MeldexTagManagementOverlays.openMenu(anchor, [
       ['pencil', '名前を変更', () => promptRenameGroup(group)],
       ['palette', '色を変更', () => promptColorGroup(group)],
-      ['folder-plus', 'サブグループを追加', () => onAddGroup(group.id)],
-      ['plus', 'タグを追加', () => onAddTag(group.id)],
       ['trash-2', '削除', () => onDeleteGroup(group), true],
-    ]);
+    ], { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
   }
 
   function openTagMenu(anchor, tag) {
-    openMenu(anchor, [
+    window.MeldexTagManagementOverlays.openMenu(anchor, [
       ['filter', '現在のフォルダをこのタグで絞り込み', () => applyTagFilter(tag)],
       ['search', 'このタグの項目を全検索', () => showSearchForTag(tag)],
       ['pencil', '名前を変更', () => promptRenameTag(tag)],
       ['languages', '別名を編集', () => promptAliasesTag(tag)],
       ['sparkles', tag.auto_assign ? '自動付与の許可を外す' : '自動付与を許可', () => toggleAutoAssignTag(tag)],
       ['trash-2', '削除', () => onDeleteTag(tag), true],
-    ]);
-  }
-
-  function openMenu(anchor, rows) {
-    closeAnyMenu({ restoreFocus: false });
-    _activeMenuTrigger = anchor || null;
-    const menu = document.createElement('div');
-    const menuId = 'tag-management-menu-' + (++_activeMenuId);
-    menu.id = menuId;
-    menu.className = 'gb-context-menu gb-tag-management-menu';
-    menu.dataset.e2eId = 'tag-management-menu';
-    menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', 'タグ操作メニュー');
-    menu.setAttribute('tabindex', '-1');
-    menu.style.cssText = 'position:fixed;z-index:10000;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:4px;min-width:190px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
-    if (anchor?.setAttribute) {
-      anchor.setAttribute('aria-haspopup', 'menu');
-      anchor.setAttribute('aria-expanded', 'true');
-      anchor.setAttribute('aria-controls', menuId);
-    }
-    rows.forEach(([icon, label, action, danger]) => {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'gb-context-menu-item' + (danger ? ' danger' : '');
-      row.dataset.e2eId = 'tag-management-menu-item-' + safeKeyPart(label);
-      row.setAttribute('role', 'menuitem');
-      row.setAttribute('aria-label', label);
-      row.innerHTML = '<span class="menu-icon" aria-hidden="true">' + ic(icon, 13) + '</span><span class="gb-context-menu-item-label">' + esc(label) + '</span>';
-      row.addEventListener('click', () => { closeAnyMenu({ restoreFocus: false }); action(); });
-      menu.appendChild(row);
-    });
-    document.body.appendChild(menu);
-    if (typeof attachMeldexDropdownCloseButton === 'function') {
-      attachMeldexDropdownCloseButton(menu, {
-        trigger: anchor,
-        close: () => closeAnyMenu({ restoreFocus: true }),
-        attr: 'data-e2e-id="tag-management-menu-close" data-tag-management-role="menu-close"',
-      });
-    }
-    if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
-    else {
-      const rect = anchor.getBoundingClientRect();
-      const z = cssZoom();
-      menu.style.left = (rect.left / z) + 'px';
-      menu.style.top = (rect.bottom / z + 4) + 'px';
-      if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-    }
-    bindMenuOutsideClick(menu, anchor);
-    const firstItem = menu.querySelector('.gb-context-menu-item');
-    setTimeout(() => focusTrigger(firstItem || menu), 0);
-  }
-
-  function bindMenuOutsideClick(menu, trigger) {
-    if (typeof _activeMenuCleanup === 'function') _activeMenuCleanup();
-    const onOut = event => { if (!menu.contains(event.target)) closeAnyMenu({ restoreFocus: true }); };
-    const onKey = event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeAnyMenu({ restoreFocus: true });
-    };
-    document.addEventListener('mousedown', onOut, true);
-    document.addEventListener('keydown', onKey, true);
-    _activeMenuCleanup = () => {
-      document.removeEventListener('mousedown', onOut, true);
-      document.removeEventListener('keydown', onKey, true);
-      if (trigger?.setAttribute) trigger.setAttribute('aria-expanded', 'false');
-      trigger?.removeAttribute?.('aria-controls');
-    };
-  }
-
-  function closeAnyMenu(options = {}) {
-    const trigger = _activeMenuTrigger;
-    if (typeof _activeMenuCleanup === 'function') {
-      try { _activeMenuCleanup(); } catch (_) {}
-      _activeMenuCleanup = null;
-    }
-    document.querySelectorAll('.gb-tag-management-menu').forEach(el => el.remove());
-    if (options.restoreFocus && trigger?.isConnected) {
-      focusTrigger(trigger);
-      forceTriggerFocus(trigger);
-      setTimeout(() => forceTriggerFocus(trigger), 0);
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => forceTriggerFocus(trigger));
-    }
-    _activeMenuTrigger = null;
+    ], { icon: ic, escapeHtml: esc, safeKey: safeKeyPart });
   }
 
   async function showSearchForTag(tag) {
@@ -1083,63 +1462,18 @@
       _state.searchTag = tag;
       _state.searchResults = [];
       render();
-      scrollSearchResultsIntoView();
+      window.MeldexTagManagementOverlays.scrollSearchResultsIntoView(_container);
       const data = await api().searchByTag(tag, sourceFolder);
       if (sourceFolder !== _state.sourceFolder) return;
       _state.searchResults = Array.isArray(data?.results) ? data.results : [];
       render();
-      scrollSearchResultsIntoView();
+      window.MeldexTagManagementOverlays.scrollSearchResultsIntoView(_container);
     } catch (err) {
       if (sourceFolder !== _state.sourceFolder) return;
       _state.searchResults = [];
       reportError(err, 'タグ検索に失敗しました');
       render();
     }
-  }
-
-  function scrollSearchResultsIntoView() {
-    const scroll = () => {
-      const results = _container?.querySelector?.('[data-e2e-id="tag-management-search-results"]');
-      if (!results?.scrollIntoView) return;
-      try { results.scrollIntoView({ block: 'end', inline: 'nearest' }); }
-      catch (_) { results.scrollIntoView(); }
-    };
-    scroll();
-    setTimeout(scroll, 0);
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(scroll);
-  }
-
-  function renderSearchResults() {
-    const wrap = document.createElement('div');
-    wrap.className = 'gb-section gb-section--boxed';
-    wrap.dataset.e2eId = 'tag-management-search-results';
-    wrap.style.cssText = 'margin-top:12px;';
-    const results = Array.isArray(_state.searchResults) ? _state.searchResults : [];
-    const tagName = _state.searchTag?.name || _state.searchTag || '';
-    const title = document.createElement('div');
-    title.className = 'gb-section-title';
-    title.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    title.innerHTML = '<span style="flex:1;">' + ic('search', 14) + ' 「' + esc(tagName) + '」の項目（' + results.length + '件）</span>';
-    title.appendChild(iconButton('x', '結果を閉じる', () => { _state.searchTag = null; _state.searchResults = null; render(); }, '', 'tag-management-search-close'));
-    wrap.appendChild(title);
-    const list = document.createElement('div');
-    list.style.cssText = 'display:flex;flex-direction:column;gap:2px;margin-top:6px;';
-    if (!results.length) list.appendChild(emptyRow('該当する項目はありません'));
-    results.slice(0, 200).forEach((item, index) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'gb-btn gb-btn-sm gb-btn-quiet';
-      btn.dataset.e2eId = 'tag-management-search-result-' + String(index + 1);
-      btn.dataset.tagManagementRole = 'search-result';
-      btn.style.cssText = 'justify-content:flex-start;text-align:left;width:100%;min-width:0;';
-      btn.textContent = item.name || item.path || '';
-      btn.title = item.path || '';
-      btn.setAttribute('aria-label', (item.name || item.path || '項目') + 'を開く');
-      btn.addEventListener('click', () => api()?.openTaggedTarget?.(item));
-      list.appendChild(btn);
-    });
-    wrap.appendChild(list);
-    return wrap;
   }
 
   async function installBuiltinPreset(item) {
@@ -1187,6 +1521,34 @@
     });
   }
 
+  async function resetCurrentTargetTags() {
+    const target = currentAutoTagTarget();
+    if (!target.path || !target.targets.length) {
+      if (typeof showStatus === 'function') showStatus('ファイルまたはフォルダを選択してください', true);
+      return;
+    }
+    const label = target.targets.length > 1
+      ? `${target.targets.length.toLocaleString('ja-JP')}件の選択項目`
+      : (target.recursive ? 'フォルダ内すべてのファイル' : '選択ファイル');
+    const message = `${label}から、手動タグと自動タグを含むすべてのタグを外します。\nこの操作は元に戻せません。続行しますか？`;
+    const confirmed = typeof cfConfirm === 'function'
+      ? await cfConfirm(message, { danger: true, okLabel: 'すべて外す' })
+      : window.confirm(message);
+    if (!confirmed) return;
+    const targetPayload = target.targets.length > 1
+      ? { targets: target.targets, label }
+      : { path: target.path, recursive: target.recursive, label };
+    try {
+      await window.MeldexAutoTagJobs.startReset({
+        ...targetPayload,
+        source_folder: _state.sourceFolder || sourceFolderForPath(target.path),
+        reset_mode: 'all',
+      }, { label });
+    } catch (error) {
+      reportError(error, 'タグの一括リセットを開始できませんでした');
+    }
+  }
+
   async function refresh(showLoading) {
     if (showLoading !== false) {
       _state.loading = true;
@@ -1196,9 +1558,50 @@
     render();
   }
 
-  function renderTagManagementTab(container) {
-    _container = container || null;
+  function handleTagDictionaryChanged(event) {
+    const detail = event?.detail || {};
+    const changedSource = String(detail.source_folder || '').trim();
+    if (changedSource !== String(_state.sourceFolder || '').trim()) return;
+    if (Array.isArray(detail.result?.tags) && Array.isArray(detail.result?.groups)) {
+      _state.tags = detail.result.tags;
+      _state.groups = detail.result.groups;
+      pruneSelection();
+      render();
+      return;
+    }
+    clearTimeout(_catalogRefreshTimer);
+    _catalogRefreshTimer = setTimeout(() => {
+      _catalogRefreshTimer = 0;
+      void refresh(false);
+    }, 80);
+  }
+
+  function handleTagSummaryChanged() {
+    window.MeldexTagGroupSummary?.invalidate?.();
+    window.MeldexTagGroupSummary?.ensure?.(() => {
+      if (_container?.isConnected) refreshGroupSummaryCounts();
+    });
+    if (_container?.isConnected) refreshGroupSummaryCounts();
+  }
+
+  function renderTagManagementTab(container, options) {
+    const nextContainer = container || null;
+    const canReuse = !options?.force
+      && nextContainer === _container
+      && nextContainer?.dataset?.tagManagementMounted === '1'
+      && !!nextContainer.querySelector?.('.gb-tag-management-body');
+    _container = nextContainer;
     if (!_container) return;
+    if (canReuse) {
+      const existing = _container.querySelector('[data-tag-auto-run-section]');
+      if ((window.MeldexTagPanelTabs?.activeTab?.() || 'tag-tree') === 'auto-tag') {
+        mountAutoTagSection(existing);
+      } else {
+        existing?.remove();
+      }
+      return;
+    }
+    _container.dataset.tagManagementMounted = '1';
     if (!_state.tags.length && !_state.groups.length && !_state.error) {
       _state.loading = true;
       render();
@@ -1209,6 +1612,9 @@
     }
   }
 
+  window.addEventListener?.('meldex:tag-dictionary-changed', handleTagDictionaryChanged);
+  window.addEventListener?.('meldex:target-tags-changed', handleTagSummaryChanged);
+  document.addEventListener?.('meldex:auto-tag-job-finished', handleTagSummaryChanged);
   window.renderTagManagementTab = renderTagManagementTab;
   window.MeldexTagManagement = {
     render: () => render(),
@@ -1217,6 +1623,8 @@
     setAutoTagTarget,
     setAutoTagTargets,
     setContainer: container => { _container = container; },
+    sourceFolder: () => _state.sourceFolder,
+    targetContext: () => currentAutoTagTarget(),
     selectedRows,
   };
 })();

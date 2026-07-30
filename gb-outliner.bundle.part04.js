@@ -1,3 +1,59 @@
+          action: async () => {
+          closeTreeContextMenu();
+          const changed = locked !== val ? await toggleItemLock(nodeData.path) : true;
+          if (!changed) return;
+          const lbl = nodeEl.querySelector('.tree-label');
+          if (lbl) lbl.style.fontStyle = isItemLocked(nodeData.path) ? 'italic' : '';
+          showStatus(val ? '編集ロックしました' : '編集ロックを解除しました');
+          },
+        });
+      });
+    }
+  }
+
+  const _locked = nodeData.path ? isItemLocked(nodeData.path) : false;
+
+  // --- メインカレンダーに設定（calendarタイプのみ） ---
+  if (!isMulti && nodeData.type === 'calendar' && nodeData.path) {
+    const mainCalId = localStorage.getItem('main-calendar-id');
+    const mainCalPath = localStorage.getItem('main-calendar-path');
+    const nodeFid = _pathToFileId(nodeData.path);
+    const isMain = (mainCalId && nodeFid && mainCalId === nodeFid) || mainCalPath === nodeData.path;
+    const calPanel = _outlinerCreateSubmenu('メインカレンダー');
+    _outlinerAppendSubmenu(menu, 'メインカレンダー', 'calendar', calPanel);
+    [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
+      _outlinerAppendMenuItem(calPanel, {
+        html: radioMark(isMain === val) + '<span>' + _outlinerEscHtml(label) + '</span>',
+        checked: isMain === val,
+        action: () => {
+        closeTreeContextMenu();
+        const before = _captureMainCalendarSettingsHistory();
+        if (val) {
+          localStorage.setItem('main-calendar-path', nodeData.path);
+          const mcFid = _pathToFileId(nodeData.path);
+          if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
+          showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
+          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー設定', before, nodeData.path);
+        } else {
+          localStorage.removeItem('main-calendar-path');
+          localStorage.removeItem('main-calendar-id');
+          showStatus('メインカレンダー設定を解除しました');
+          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
+        }
+        },
+      });
+    });
+  }
+
+  // --- バージョン管理（フォルダのみ） ---
+  if (!isMulti && (isFolder || isDB) && nodeData.path) {
+    addSep();
+    addMenuItem('バージョンを保存', () => {
+      closeTreeContextMenu();
+      if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
+    }, null, 'save');
+    addMenuItem('バージョン管理', () => {
+      closeTreeContextMenu();
       if (typeof openFolderVersionTab === 'function') openFolderVersionTab(nodeData.path);
       else if (typeof openVersionTab === 'function') openVersionTab(nodeData.path, 'folder');
     }, null, 'gitBranch');
@@ -431,43 +487,7 @@
   if (!isEntity && !_locked && !nodeData._isRoot) {
     addSep();
     const delLabel = isMulti ? `削除（${selectedCount}件）` : '削除';
-    addMenuItem(delLabel, async () => {
-      closeTreeContextMenu();
-      const targets = treeSelection.getNodeData().filter(d => {
-        if (d.type === 'entity' || d._isRoot) return false;
-        if (!d.path || typeof isItemLocked !== 'function') return true;
-        return !isItemLocked(d.path);
-      });
-      if (!targets.length) {
-        showStatus('削除できる項目がありません', true);
-        return;
-      }
-      const names = targets.map(d => d.name).join('、');
-      if (!await cfConfirm(`「${names}」を削除しますか？`)) return;
-      treeSelection.clear();
-      const result = await deleteOutlinerItemsWithHistory(targets, {
-        label: targets.length + ' 件を削除',
-        detail: names,
-        onItemDeleted: (item) => {
-          _removeOutlinerNodesForPaths([item.path]);
-        },
-        refresh: async () => {
-          if (typeof loadOutliner === 'function') await loadOutliner();
-          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-        },
-      });
-      _removeOutlinerNodesForPaths(result.deletedPaths);
-      if (result.failedCount) {
-        showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました`, true);
-        loadOutliner();
-      } else if (result.succeeded.length) {
-        showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
-      } else if (result.skipped.length) {
-        showStatus('削除対象が見つからなかったため、表示を更新しました', true);
-        loadOutliner();
-      }
-    }, 'danger', 'trash2');
+    addMenuItem(delLabel, deleteContextItems, 'danger', 'trash2');
   }
 
   // --- スプリットビュー ---
@@ -878,23 +898,3 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   if (typeof renameAppPathReferences === 'function') {
     renameAppPathReferences(oldPath, newPath, { label: newName, fileId, type: nodeData.type || 'page' });
   }
-  showStatus(`「${oldName}」→「${newName}」にリネームしました`);
-}
-
-// リネームAPIタイムアウト時の事後確認: 親フォルダを再取得し、旧名消滅・新名出現を確認する
-async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newName, oldPath) {
-  const confirmKey = 'rename:' + oldPath;
-  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
-  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
-  try {
-    showStatus('リネームに時間がかかっています。結果を確認中…');
-    const parentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : '';
-    const contextNodeEl = labelEl.closest('.tree-node');
-    const delays = typeof _outlinerPostTimeoutConfirmDelays === 'function'
-      ? _outlinerPostTimeoutConfirmDelays() : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
-    for (const delay of delays) {
-      await new Promise(r => setTimeout(r, delay));
-      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
-      const found = _outlinerFindRenamedItem(items, oldName, newName);
-      if (found) {
-        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName);

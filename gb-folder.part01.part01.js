@@ -1007,6 +1007,28 @@ function showFolderItemContextMenu(e, item, options = {}) {
     };
   }
 
+  // ツールバーと同じ基本操作を、右クリック位置からもすぐ実行できるようにする。
+  if (typeof appendFolderOperationButtons === 'function') {
+    const operationItems = blankTarget
+      ? []
+      : (_folderSelectedItems.length > 1 ? _folderSelectedItems : [item]);
+    const pasteTarget = blankTarget || item.type !== 'folder' ? _folderPath : item.path;
+    const editableItems = operationItems.filter(target => !_folderMenuItemLocked(target));
+    appendFolderOperationButtons(menu, {
+      e2ePrefix: 'folder-item-context',
+      closeMenu,
+      onCopy: () => folderToolbarCopyItems(operationItems),
+      onCut: () => folderToolbarCutItems(operationItems),
+      onPaste: () => folderToolbarPasteToFolder(pasteTarget),
+      onDelete: () => folderToolbarDeleteSelection(),
+      copyDisabled: operationItems.length === 0,
+      cutDisabled: editableItems.length === 0,
+      pasteDisabled: !folderToolbarCanPasteTo(pasteTarget),
+      deleteDisabled: editableItems.length === 0,
+    });
+    addSep();
+  }
+
   // --- 新規作成 ---
   const createParent = _folderContextCreateParent(item);
   if (createParent && !(typeof isItemLocked === 'function' && isItemLocked(createParent))) {

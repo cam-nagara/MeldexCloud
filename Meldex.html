@@ -150,11 +150,12 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <script>
 (function() {
   var stamp = Date.now();
-  document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
+document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     if (link.href) link.href = link.href.split('?')[0] + '?v=' + stamp;
   });
 })();
 </script>
+<script src="meldex-cloud-runtime-01.js?v=aa03cb1e62028fe4"></script>
 <script>
 (function () {
   try {
@@ -166,9 +167,9 @@ html[data-desktop-launch="1"] #gb-layout-root{
     }
   } catch (e) {}
 })();
-</script><script src="gb-split-loader.js"></script><script src="gb-runtime-adapter.js"></script><script src="gb-resource-url.js"></script><script src="gb-cloud-runtime-config.js"></script><script src="gb-config.js"></script><script src="gb-i18n.js"></script><script src="gb-online-status.js"></script><script src="gb-dropbox-auth.js"></script><script src="gb-source-folder-registry.js"></script><script src="gb-workspace-shared-ledger.js"></script><script src="gb-workspace-ledger-io.js"></script><script src="gb-dropbox-folder-picker.js"></script><script src="gb-storage-adapter.js"></script><script src="gb-storage-adapter-localfs.js"></script><script src="gb-llm-keys-store.js"></script><script src="gb-llm-client-stream.js"></script><script src="gb-data-access.js"></script><script src="gb-profile-store-transport.js"></script><script src="gb-profile-identity.js"></script><script src="gb-dropbox-profile-sync.js"></script><script src="gb-owner-key-store.js"></script><script src="gb-owner-key-recovery.js"></script><script src="gb-knowledge-signature.js"></script><script src="gb-file-lock-store.js"></script><script src="gb-active-lock-store.js"></script><script src="gb-active-locks.js"></script><script src="gb-file-lock-badge.js"></script><script src="gb-knowledge-cloud-store.js"></script><script src="gb-knowledge-cloud-extractor.js"></script><script src="gb-knowledge-prompt-builder.js"></script><script src="gb-knowledge-integrity-monitor.js"></script><script src="gb-mutation-bus.js"></script><script src="gb-owner-key-ui.js"></script><script src="gb-data-access-dropbox-collab.js"></script><script src="gb-data-access-dropbox-chat.js"></script><script src="gb-workspace-cli-relay.js"></script><script src="gb-data-access-dropbox-expanded.js"></script><script src="gb-data-access-dropbox-fileops.js"></script><script src="gb-data-access-dropbox-tag-csv.js"></script><script src="gb-data-access-dropbox-tag-safety.js"></script><script src="gb-data-access-dropbox-tags.js"></script><script src="gb-cloud-fetch.js"></script><script src="gb-cloud-file-url.js"></script><script src="gb-cloud-sample-seed.js"></script><script src="gb-sample-installer.js"></script><script src="gb-cloud-bootstrap.js"></script><script src="gb-cloud-bootstrap-inherit.js"></script><script src="gb-cloud-mobile.js"></script><script src="gb-cloud-conflict-resolver.js"></script><script src="vendor/lucide-icons.js"></script><script src="meldex-core.js"></script><script src="gb-path-utils.js"></script><script src="gb-quick-memo-sync.js"></script><script src="noto-emoji-data.js"></script><script src="vendor/icon-annotations.js"></script><script src="gb-icon-assets.js"></script><script src="gb-dnd.js"></script><script src="gb-dnd-autoscroll.js"></script><script src="gb-path-relocate-client.js"></script><script src="gb-link-modal.js"></script><script src="gb-broadcast.js"></script><script src="gb-ui.js"></script><script src="gb-save-safety.js"></script><script src="gb-draft-recovery.js"></script><script src="gb-beta-release.js"></script><script src="gb-beta-feedback.js"></script><script src="gb-error-message-translator.js"></script><script src="gb-log-export.js"></script><script src="gb-update-checker.js"></script><script src="gb-tooltip.js"></script><script src="gb-accessibility.js"></script><script src="gb-dropdown-dismiss.js"></script><script src="gb-modal-shell.js"></script><script src="gb-color-palette.js"></script><script src="gb-theme-coloring-rule.js"></script><script src="gb-theme-migration.js"></script><script src="gb-theme-manager.js"></script><script src="gb-format-popup.js"></script><script src="gb-events.js"></script>
-<script src="gb-media-playback.js"></script>
-<script src="gb-font-catalog.js"></script>
+</script><script src="meldex-cloud-runtime-02.js?v=297ca3554b9e7b94"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-03.js?v=d772ef59dcbfadff"></script>
+
+
 <link rel="stylesheet" href="gb-fonts.css">
 <link rel="stylesheet" href="gb-icon-assets.css">
 <link rel="stylesheet" href="gb-theme.css">
@@ -176,13 +177,15 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <link rel="stylesheet" href="gb-activity-bar.css">
 <link rel="stylesheet" href="gb-layout.css">
 <link rel="stylesheet" href="gb-db-timeline.css">
+<link rel="stylesheet" href="gb-db-column-filter.css">
+<link rel="stylesheet" href="gb-db-tree-view.css">
 <link rel="stylesheet" href="gb-subpanel.css">
 <link rel="stylesheet" href="gb-entity-detail-surface.css">
 <link rel="stylesheet" href="gb-command-palette.css">
 <link rel="stylesheet" href="gb-cloud-mobile.css">
 <link rel="stylesheet" href="gb-cloud-mobile-explorer.css">
 <link rel="stylesheet" href="gb-cloud-conflict-resolver.css">
-<script src="gb-cloud-mobile-explorer.js"></script>
+<script src="meldex-cloud-runtime-04.js?v=a11b7af3d9fc1c52"></script>
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-view.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-create.css">
@@ -202,9 +205,11 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <link rel="stylesheet" href="gb-detail-tab-dnd.css">
 <link rel="stylesheet" href="gb-file-lock-badge.css">
 <link rel="stylesheet" href="gb-file-metadata.css">
+<link rel="stylesheet" href="gb-folder-multi-info.css">
+<link rel="stylesheet" href="gb-chat-cli-auth.css">
 <link rel="stylesheet" href="gb-auto-tag-settings.css">
 <link rel="stylesheet" href="gb-auto-tag-jobs.css">
-<script src="gb-scriptnote-ruby-presentation.js"></script>
+<script src="meldex-cloud-runtime-05.js?v=c1e14f4542352b8a"></script>
 </head>
 <body>
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:#1e1e1e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
@@ -414,6 +419,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
       <div id="pivot-view" style="flex:1;overflow:auto;padding:0;">
         <table id="pivot-table" role="table" aria-label="シート"><thead></thead><tbody></tbody><tfoot></tfoot></table>
       </div>
+      <div id="tree-view" class="tree-view"></div>
       <div id="gallery-view"></div>
       <div id="kanban-view"></div>
       <div id="timeline-view"></div>
@@ -778,20 +784,29 @@ html[data-desktop-launch="1"] #gb-layout-root{
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="gb-chat-storage-context.js"></script>
-<script src="gb-chat-provider-default.js"></script>
-<script src="gb-layout.js"></script><script src="gb-panelset.js"></script><script src="gb-tabs.js"></script><script src="gb-pane-default-layout.js"></script><script src="gb-docking.js"></script><script src="gb-dock-popup.js"></script><script src="gb-component.js"></script><script src="gb-tool-components.js"></script><script src="gb-tool-timer.js"></script><script src="gb-tool-timer-advanced.js"></script><script src="gb-tool-timer-custom-alarm.js"></script><script src="gb-tool-calendar.js"></script><script src="gb-tool-calendar-views.js"></script><script src="gb-tool-calendar-todo-view.js"></script><script src="gb-tool-calendar-clock-view.js"></script><script src="gb-tool-calendar-sync.js"></script><script src="gb-board-performance.js"></script><script src="gb-board-llm-context.js"></script><script src="gb-canvas-engine.js"></script><script src="gb-canvas-minimap.js"></script><script src="gb-board-image-drop-mode.js"></script><script src="gb-canvas-features.js"></script><script src="gb-board-find.js"></script><script src="gb-canvas-interact.js"></script><script src="gb-board-presets.js"></script><script src="gb-board-links.js"></script><script src="gb-board-bulk-import.js"></script><script src="gb-board-ui.js"></script><script src="gb-board-render-node.js"></script><script src="gb-board-dirty.js"></script><script src="gb-board-background.js"></script><script src="gb-board-style-manager.js"></script><script src="gb-tool-canvas.js"></script><script src="gb-export-save.js"></script><script src="gb-public-runtime.js"></script><script src="gb-cloud-form-relay.js"></script><script src="gb-scriptnote-rules.js"></script><script src="gb-scriptnote-format.js"></script><script src="gb-scriptnote-document.js"></script><script src="gb-scriptnote-editor.js"></script><script src="gb-scriptnote-history.js"></script><script src="gb-scriptnote-interactions.js"></script><script src="gb-scriptnote-selection.js"></script><script src="gb-scriptnote-navigation.js"></script><script src="gb-scriptnote-text-selection.js"></script><script src="gb-scriptnote-filter.js"></script><script src="gb-scriptnote-status.js"></script><script src="gb-scriptnote-search.js"></script><script src="gb-scriptnote-clipstudio.js"></script><script src="gb-scriptnote-bmanga.js"></script><script src="gb-scriptnote-detail.js"></script><script src="gb-scriptnote-menu.js"></script><script src="gb-scriptnote-ruby.js"></script><script src="gb-scriptnote-rowset.js"></script><script src="gb-scriptnote-columns.js"></script>
-<script src="gb-entity-detail-surface.js"></script><script src="gb-archive-browser.js"></script><script src="gb-viewer-sheet-context.js"></script>
-<script src="gb-scriptnote-ruby-settings-ui.js"></script>
+<script src="meldex-cloud-runtime-06.js?v=a60ca916568c3a8b"></script>
+
+
+
+
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="gb-import-job-progress.js"></script>
-<script src="gb-settings-x-account-posts.js"></script>
-<script src="gb-file-metadata.js"></script>
-<script src="gb-auto-tag-settings.js"></script>
-<script src="gb-auto-tag-jobs.js"></script>
-<script src="gb-tool-scriptnote.js"></script><script src="gb-pane-context.js"></script><script src="gb-history.js"></script><script src="gb-llm-operation-bridge.js"></script><script src="gb-status-policies-view.js"></script><script src="gb-taste-principles-view.js"></script><script src="gb-knowledge-view.js"></script><script src="gb-knowledge-automation-settings.js"></script><script src="gb-idea-inbox.js"></script><script src="gb-settings-cloud-link.js"></script><script src="gb-settings-account-link.js"></script><script src="gb-settings.js"></script><script src="gb-settings-mobile-access.js"></script><script src="gb-help-menu.js"></script><script src="gb-onboarding.js"></script><script src="gb-mode-indicator.js"></script><script src="gb-publish-settings.js"></script><script src="gb-app-layout.js"></script><script src="gb-current-reload.js"></script><script src="gb-current-reveal.js"></script><script src="gb-folder-picker.js"></script><script src="gb-scheduler.js"></script><script src="gb-notion-sync.js"></script><script src="gb-settings-x-bookmarks.js"></script><script src="gb-external-import.js"></script><script src="gb-global-tags.js"></script><script src="gb-tag-preset-management.js"></script><script src="gb-tag-management.js"></script><script src="gb-autolink.js"></script><script src="gb-editor.js"></script><script src="gb-detail-property-layout-editor.js"></script><script src="gb-entity-props-panel.js"></script><script src="gb-editor-preview.js"></script><script src="gb-note-enhance.js"></script><script src="gb-note-theme-style.js"></script><script src="gb-stamp.js"></script><script src="gb-view-lock.js"></script><script src="gb-annotation-tails.js"></script><script src="gb-annotations.js"></script><script src="gb-detail-tab-dnd.js"></script><script src="gb-detail-panel.js"></script><script src="gb-tool-calendar-save-queue.js"></script><script src="gb-tool-calendar-options.js"></script><script src="gb-tool-calendar-attendance.js"></script><script src="gb-tool-calendar-shift-templates.js"></script><script src="gb-cloud-frontmatter-lite.js"></script><script src="gb-production-management.js"></script><script src="gb-production-management-recalc.js"></script><script src="gb-tool-calendar-production.js"></script><script src="gb-format-style-ui.js"></script><script src="gb-text-selection-format.js"></script><script src="gb-cloud-mobile-editbar.js"></script><script src="gb-cloud-mobile-board-actions.js"></script><script src="gb-cloud-mobile-side-drawer.js"></script><script src="gb-tool-calendar-theme.js"></script><script src="gb-datetime-utils.js"></script><script src="gb-db-date.js"></script><script src="gb-db-calendar-mapping.js"></script><script src="gb-db-formula.js"></script><script src="gb-db-core.js"></script><script src="gb-db-props.js"></script><script src="gb-db-advanced-filter.js"></script><script src="gb-db-property-types.js"></script><script src="gb-db-pivot-sync.js"></script><script src="gb-db-conditional-color.js"></script><script src="gb-db-option-color.js"></script><script src="gb-db-link-prop.js"></script><script src="gb-db-inline-edit.js"></script><script src="gb-db-cell-ui.js"></script><script src="gb-db-value-editors.js"></script><script src="gb-db-image-gallery.js"></script><script src="gb-db-table.js"></script><script src="gb-database.js"></script><script src="gb-db-autofill.js"></script><script src="gb-db-bulk-edit.js"></script><script src="gb-db-relations.js"></script><script src="gb-db-timeline.js"></script><script src="gb-db-timeline-calendar-systems.js"></script><script src="gb-db-timeline-controls.js"></script><script src="gb-db-timeline-header-dnd.js"></script><script src="gb-db-timeline-auto-fit.js"></script><script src="gb-db-view-form.js"></script><script src="gb-db-views.js"></script><script src="gb-db-templates.js"></script><script src="gb-db-aggregate.js"></script><script src="gb-db-chart.js"></script><script src="gb-db-rollup.js"></script><script src="gb-db-graph.js"></script><script src="gb-db-validate.js"></script><script src="gb-db-actions.js"></script><script src="gb-db-smart-dashboard-view.js"></script><script src="gb-db-smart-virtual.js"></script><script src="gb-db-search.js"></script><script src="gb-sheet-archive.js"></script><script src="gb-chat-custom-instructions-sheet.js"></script><script src="gb-chat-skills-sheet.js"></script><script src="gb-compare.js"></script><script src="gb-split.js"></script><script src="gb-db-smart.js"></script><script src="gb-db-smart-global.js"></script><script src="gb-calendar.js"></script><script src="gb-db-calendar-sync.js"></script><script src="gb-backlinks.js"></script><script src="gb-right-panel.js"></script><script src="gb-chat-markdown.js"></script><script src="gb-chat-theme-context.js"></script><script src="gb-right-panel-chat.js"></script><script src="gb-chat-current-target.js"></script><script src="gb-chat-recommendations.js"></script><script src="gb-chat-formatting.js"></script><script src="gb-chat-generation-settings.js"></script><script src="gb-llm-cross-review.js"></script><script src="gb-chat-input-resize.js"></script><script src="gb-right-panel-chat-cli.js"></script><script src="gb-chat-citations.js"></script><script src="gb-chat-rules.js"></script><script src="gb-chat-restore.js"></script><script src="gb-comment-badges.js"></script><script src="gb-folder.js"></script><script src="gb-folder-toolbar.js"></script><script src="gb-csv-viewer.js"></script><script src="gb-shell-menu.js"></script><script src="gb-outliner.js"></script><script src="gb-outliner-search.js"></script><script src="gb-duplicate.js"></script><script src="gb-duplicate-monitor.js"></script><script src="gb-startup-tab-guard.js"></script><script src="gb-pane-bridge.js"></script><script src="gb-subpanel.js"></script><script src="gb-app.js"></script><script src="gb-export-html.js"></script><script src="vendor/html2canvas.min.js"></script><script src="gb-export-image.js"></script><script src="gb-tool-menu.js"></script><script src="gb-command-palette.js"></script><script src="gb-shortcuts.js"></script>
-<script src="gb-staff-registry-schema.js"></script><script src="gb-user-registry.js"></script><script src="gb-user-picker.js"></script><script src="gb-staff-registry-cloud-twin.js"></script>
+<script src="meldex-cloud-runtime-07.js?v=59f46bb95cfe10ee"></script>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
 <script>
 (async function () {
   window._meldexStartupRestoring = true;
@@ -827,18 +842,18 @@ html[data-desktop-launch="1"] #gb-layout-root{
   }
 })();
 </script>
-<script src="gb-workspace-registry.js"></script>
-<script src="gb-workspace-sidebar.js"></script>
-<script src="gb-settings-workspaces.js"></script>
-<script src="gb-tool-calendar-production-api.js"></script>
-<script src="gb-tool-calendar-production-task-create.js"></script>
-<script src="gb-tool-calendar-production-panel.js"></script>
-<script src="gb-tool-calendar-production-templates.js"></script>
-<script src="gb-tool-calendar-production-sidebar.js"></script>
-<script src="gb-tool-calendar-production-task-view.js"></script>
-<script src="gb-tool-calendar-production-sheet-embed.js"></script>
-<script src="gb-tool-calendar-production-list-tabs.js"></script>
-<script src="gb-tool-calendar-production-all-view.js"></script>
-<script src="gb-db-smart-chat-history.js"></script>
+<script src="meldex-cloud-runtime-08.js?v=f375182b948a14f7"></script>
+
+
+
+
+
+
+
+
+
+
+
+
 </body>
 </html>

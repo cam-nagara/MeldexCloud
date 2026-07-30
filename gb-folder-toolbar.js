@@ -67,6 +67,15 @@
     return Array.from(byPath.values());
   }
 
+  function _folderToolbarOperationItems(items) {
+    const byPath = new Map();
+    (Array.isArray(items) ? items : []).forEach(item => {
+      if (!item?.path || byPath.has(item.path)) return;
+      byPath.set(item.path, item);
+    });
+    return Array.from(byPath.values());
+  }
+
   function _folderToolbarTopLevelItems(items) {
     const sorted = (items || [])
       .filter(item => item?.path)
@@ -248,8 +257,8 @@
     requestAnimationFrame(() => menu.querySelector('button')?.focus?.());
   }
 
-  function folderToolbarCopySelection() {
-    const items = _folderToolbarSelectionItems().filter(item => item?.path);
+  function folderToolbarCopyItems(sourceItems) {
+    const items = _folderToolbarOperationItems(sourceItems);
     if (!items.length) return;
     _folderToolbarClipboard = {
       mode: 'copy',
@@ -263,8 +272,12 @@
     updateFolderToolbarActions();
   }
 
-  function folderToolbarCutSelection() {
-    const editable = _folderToolbarSelectionItems()
+  function folderToolbarCopySelection() {
+    folderToolbarCopyItems(_folderToolbarSelectionItems());
+  }
+
+  function folderToolbarCutItems(sourceItems) {
+    const editable = _folderToolbarOperationItems(sourceItems)
       .filter(item => item?.path && !_folderToolbarIsLockedItem(item));
     if (!editable.length) {
       showStatus('編集ロック中の項目は切り取りできません', true);
@@ -283,9 +296,20 @@
     updateFolderToolbarActions();
   }
 
-  async function folderToolbarPasteSelection() {
+  function folderToolbarCutSelection() {
+    folderToolbarCutItems(_folderToolbarSelectionItems());
+  }
+
+  function folderToolbarCanPasteTo(destFolder) {
+    return !!(
+      _folderToolbarClipboard?.items?.length
+      && destFolder
+      && !_folderToolbarIsLockedPath(destFolder)
+    );
+  }
+
+  async function folderToolbarPasteToFolder(destFolder, options = {}) {
     const clip = _folderToolbarClipboard;
-    const destFolder = _folderToolbarCurrentPath();
     if (!clip?.items?.length || !destFolder) return;
     if (_folderToolbarIsLockedPath(destFolder)) {
       showStatus('編集ロック中のフォルダには貼り付けできません', true);
@@ -327,7 +351,8 @@
     if (clip.mode === 'cut') {
       _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
     }
-    await _folderToolbarRefresh(pastedPaths.filter(Boolean));
+    const refresh = typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh;
+    await refresh(pastedPaths.filter(Boolean));
     if (failed.length) {
       showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);
     } else if (pastedPaths.length) {
@@ -336,6 +361,46 @@
       showStatus('同じフォルダへの移動のため、変更はありません');
     }
     updateFolderToolbarActions();
+  }
+
+  async function folderToolbarPasteSelection() {
+    await folderToolbarPasteToFolder(_folderToolbarCurrentPath());
+  }
+
+  function appendFolderOperationButtons(menu, options = {}) {
+    if (!menu) return null;
+    const row = document.createElement('div');
+    row.className = 'folder-context-file-actions';
+    row.setAttribute('role', 'toolbar');
+    row.setAttribute('aria-label', 'ファイル操作');
+    const actions = [
+      ['copy', 'コピー', 'copy', options.onCopy, options.copyDisabled],
+      ['cut', '切り取り', 'scissors', options.onCut, options.cutDisabled],
+      ['paste', '貼り付け', 'clipboardPaste', options.onPaste, options.pasteDisabled],
+      ['delete', '削除', 'trash2', options.onDelete, options.deleteDisabled],
+    ];
+    actions.forEach(([name, label, icon, handler, disabled]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'tb-icon-btn' + (name === 'delete' ? ' folder-toolbar-danger' : '');
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.dataset.contextFileAction = name;
+      button.dataset.e2eId = `${options.e2ePrefix || 'folder-context'}-${name}`;
+      button.innerHTML = _folderToolbarIcon(icon, 16);
+      button.disabled = !!disabled || typeof handler !== 'function';
+      if (!button.disabled) {
+        button.addEventListener('click', async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          options.closeMenu?.();
+          await handler();
+        });
+      }
+      row.appendChild(button);
+    });
+    menu.appendChild(row);
+    return row;
   }
 
   async function folderToolbarDeleteSelection() {
@@ -409,6 +474,11 @@
   global.folderToolbarCutSelection = folderToolbarCutSelection;
   global.folderToolbarPasteSelection = folderToolbarPasteSelection;
   global.folderToolbarDeleteSelection = folderToolbarDeleteSelection;
+  global.folderToolbarCopyItems = folderToolbarCopyItems;
+  global.folderToolbarCutItems = folderToolbarCutItems;
+  global.folderToolbarCanPasteTo = folderToolbarCanPasteTo;
+  global.folderToolbarPasteToFolder = folderToolbarPasteToFolder;
+  global.appendFolderOperationButtons = appendFolderOperationButtons;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initFolderToolbarActions, { once: true });

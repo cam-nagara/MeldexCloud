@@ -1,36 +1,106 @@
 // 共通タグ型セル表示: 値はタグID配列(カンマ区切り文字列)。タグの名前・色は
 // .meldex/global-tags.json 側のカタログを非同期取得して解決する（キャッシュ付き）。
 // 解除済み/削除済みのタグIDは表示をスキップする（積極的な掃除はしない）。
-function createCommonTagsValueElement(rawValue, entityPath, propName) {
+let _commonTagsRefreshTimer = null;
+
+async function hydrateCommonTagsValueElement(container) {
+  const api = (typeof window !== 'undefined') ? window.MeldexGlobalTags : null;
+  const tagIds = Array.isArray(container?._commonTagIds) ? container._commonTagIds : [];
+  if (!container || !tagIds.length || !api || typeof api.loadTagsCached !== 'function') return;
+  const sourceFolder = String(container.dataset.tagSourceFolder || '').trim();
+  const data = await api.loadTagsCached(sourceFolder);
+  if (!container.isConnected) return;
+  const allTags = Array.isArray(data?.tags) ? data.tags : [];
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
+  const tagsById = Object.fromEntries(allTags.map(t => [String(t.id), t]));
+  const resolvedTags = tagIds.map(id => tagsById[id]).filter(Boolean);
+  const visibleTags = window.MeldexTagDisplayPreferences?.filterVisibleTags?.(
+    resolvedTags,
+    groups,
+    sourceFolder,
+  ) || resolvedTags;
+  const orderedTags = typeof api.sortTagsByGroupOrder === 'function'
+    ? api.sortTagsByGroupOrder(visibleTags, groups)
+    : visibleTags;
+  const displayLimit = window.MeldexTagDisplayPreferences?.sheetTagDisplayLimit?.(
+    container.dataset.dbPath || '',
+  ) || api.getCompactTagDisplayLimit?.() || 10;
+  const names = orderedTags.map(tag => String(tag?.name || '')).filter(Boolean);
+  const allTagsTitle = `すべてのタグ（${names.length}件）\n${names.join('、')}`;
+  container.textContent = '';
+  container.title = allTagsTitle;
+  orderedTags.slice(0, displayLimit).forEach(tag => {
+    const chip = typeof api.createTagChip === 'function'
+      ? api.createTagChip(tag, {
+          compact: true,
+          groupsById,
+          className: 'multi-select-tag common-tags-tag',
+        })
+      : Object.assign(document.createElement('span'), {
+          className: 'gb-tag-chip gb-tag-chip--compact multi-select-tag common-tags-tag',
+          textContent: tag.name || '',
+        });
+    container.appendChild(chip);
+  });
+  if (orderedTags.length > displayLimit) {
+    const label = `+${orderedTags.length - displayLimit}`;
+    const more = typeof api.createTagChip === 'function'
+      ? api.createTagChip(null, {
+          compact: true,
+          summary: true,
+          label,
+          title: allTagsTitle,
+          className: 'multi-select-tag common-tags-tag common-tags-tag--more',
+        })
+      : Object.assign(document.createElement('span'), {
+          className: 'gb-tag-chip gb-tag-chip--compact gb-tag-chip--summary multi-select-tag common-tags-tag common-tags-tag--more',
+          textContent: label,
+          title: allTagsTitle,
+        });
+    container.appendChild(more);
+  }
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('meldex:tag-dictionary-changed', () => {
+    clearTimeout(_commonTagsRefreshTimer);
+    _commonTagsRefreshTimer = setTimeout(() => {
+      document.querySelectorAll('.common-tags-cell').forEach(container => {
+        hydrateCommonTagsValueElement(container).catch(() => {});
+      });
+    }, 80);
+  });
+  window.addEventListener('meldex:compact-tag-display-limit-changed', () => {
+    document.querySelectorAll('.common-tags-cell').forEach(container => {
+      hydrateCommonTagsValueElement(container).catch(() => {
+        // 個別セルの読込失敗表示はhydrateCommonTagsValueElement内で反映済み。
+      });
+    });
+  });
+  window.addEventListener('meldex:sheet-tag-display-limit-changed', () => {
+    document.querySelectorAll('.common-tags-cell').forEach(container => {
+      hydrateCommonTagsValueElement(container).catch(() => {});
+    });
+  });
+  window.addEventListener('meldex:tag-group-visibility-changed', () => {
+    document.querySelectorAll('.common-tags-cell').forEach(container => {
+      hydrateCommonTagsValueElement(container).catch(() => {});
+    });
+  });
+}
+
+function createCommonTagsValueElement(rawValue, entityPath, propName, dbPath) {
   const tagIds = String(rawValue || '').split(',').map(s => s.trim()).filter(Boolean);
   const container = document.createElement('div');
   container.className = 'multi-select-tags common-tags-cell';
   container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;cursor:pointer;min-height:16px;';
-  const api = (typeof window !== 'undefined') ? window.MeldexGlobalTags : null;
-  if (tagIds.length && api && typeof api.loadTagsCached === 'function') {
-    api.loadTagsCached().then(data => {
-      if (!container.isConnected) return;
-      const allTags = Array.isArray(data?.tags) ? data.tags : [];
-      const groups = Array.isArray(data?.groups) ? data.groups : [];
-      const groupsById = Object.fromEntries(groups.map(g => [g.id, g]));
-      const tagsById = Object.fromEntries(allTags.map(t => [String(t.id), t]));
-      container.textContent = '';
-      tagIds.forEach(id => {
-        const tag = tagsById[id];
-        if (!tag) return; // 削除済み等の無効IDは表示をスキップ
-        const chip = document.createElement('span');
-        chip.className = 'multi-select-tag common-tags-tag';
-        chip.textContent = tag.name || '';
-        const color = typeof api.effectiveTagColor === 'function' ? api.effectiveTagColor(tag, groupsById) : '';
-        if (color && /^var\(--[-\w]+\)$/.test(color)) {
-          chip.style.background = color;
-        } else if (color && typeof applyDbOptionChipColor === 'function') {
-          applyDbOptionChipColor(chip, color);
-        }
-        container.appendChild(chip);
-      });
-    }).catch(() => {});
-  }
+  container._commonTagIds = tagIds;
+  container.dataset.dbPath = String(dbPath || '');
+  container.dataset.tagSourceFolder = String(
+    dbPath && window.MeldexAutoTagSourceFolder?.(dbPath) || '',
+  ).trim();
+  hydrateCommonTagsValueElement(container).catch(() => {});
   container.addEventListener('click', (e) => {
     e.stopPropagation();
     const td = container.closest('td[data-prop-name]');
@@ -50,6 +120,11 @@ function createCommonTagsValueElement(rawValue, entityPath, propName) {
 
 function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options = {}) {
   const dbPath = options.dbPath || _valueEditorDbPath(entityPath);
+  const valueCtx = options.ctx || (
+    typeof _valueEditorContext === 'function'
+      ? _valueEditorContext(entityPath, null, dbPath)
+      : null
+  );
   const filterMode = options.filter ?? options.ctx?.filter ?? (dbPath === state.currentDbPath ? state.filter : 'disabled');
   if (!propTypeConfig || propTypeConfig.type === 'text') {
     return createValueElement(val, entityPath, propName, thumbSize, { ...options, dbPath, filter: filterMode });
@@ -68,9 +143,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const ctx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
+      const ctx = valueCtx || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
       const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
-      const livePtc = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null;
+      const livePtc = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null;
       const renderedActions = Array.isArray(btn._dbButtonActions) ? btn._dbButtonActions : [];
       const actions = Array.isArray(livePtc?.actions) && livePtc.actions.length > 0
         ? livePtc.actions
@@ -111,11 +186,15 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
 
   // 共通「...」ホバーボタン（全型に削除等のコンテキストメニュー）
   row.style.position = 'relative';
-  const moreBtn = document.createElement('span');
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
   moreBtn.className = 'cell-value-more';
-  moreBtn.style.cssText = 'position:absolute;right:28px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);background:var(--bg3);border-radius:3px;z-index:2;';
+  moreBtn.style.cssText = 'position:absolute;right:28px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);background:var(--bg3);border:0;border-radius:3px;z-index:2;';
   moreBtn.innerHTML = lucide('ellipsis', 12);
   moreBtn.title = propTypeConfig.type === 'image' ? '画像を管理' : 'メニュー';
+  moreBtn.setAttribute('aria-label', propTypeConfig.type === 'image' ? '画像を管理' : '候補値のメニュー');
+  moreBtn.dataset.e2eId = _typedCellControlE2eId('value-more', entityPath, propName)
+    + '-' + String(val?.candidate_index ?? 0);
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -143,7 +222,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     cb.textContent = (v === 'true' || v === 'はい' || v === '1' || v === 'yes') ? '\u2611' : '\u2610';
     cb.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       const isChecked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
       const nv = isChecked ? 'false' : 'true';
@@ -191,7 +270,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     applyColor(v);
     swatch.addEventListener('click', (e) => {
       e.stopPropagation();
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       if (typeof openColorPalette !== 'function') return;
       let saveTimer = null;
@@ -235,7 +314,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     span.className = 'cell-date value-text';
     span.textContent = _formatDateDisplay(v, propTypeConfig);
     span.addEventListener('click', () => {
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       if (span.querySelector('.cell-date-editor')) return;
       const editor = typeof _dbDateCreateEditor === 'function'
@@ -369,7 +448,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
         startCellInlineAdd(td, entityPath, rowEntityName, propName);
         return;
       }
-      const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null;
+      const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, valueCtx)?.[propName] : null;
       const latestOptions = Array.isArray(latestConfig?.options) ? latestConfig.options : (propTypeConfig.options || []);
       showSelectDropdown(span, val, entityPath, propName, latestOptions, dbPath);
     });
@@ -410,7 +489,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   if (type === 'common-tags') {
-    row.appendChild(createCommonTagsValueElement(v, entityPath, propName));
+    row.appendChild(createCommonTagsValueElement(v, entityPath, propName, dbPath));
     return row;
   }
 
@@ -426,9 +505,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     }
     span.addEventListener('click', (e) => {
       e.stopPropagation();
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      _showUserDropdown(span, val, entityPath, propName, v, false, { dbPath });
+      _showUserDropdown(span, val, entityPath, propName, v, false, { dbPath, ctx: valueCtx });
     });
     row.appendChild(span);
     return row;
@@ -454,9 +533,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     });
     container.addEventListener('click', (e) => {
       e.stopPropagation();
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      _showUserDropdown(container, val, entityPath, propName, v, true, { dbPath });
+      _showUserDropdown(container, val, entityPath, propName, v, true, { dbPath, ctx: valueCtx });
     });
     row.appendChild(container);
     return row;
@@ -496,7 +575,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     }
     span.addEventListener('click', (e) => {
       e.stopPropagation();
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       _showRelationDropdown(span, val, entityPath, propName, { ...propTypeConfig, __sourceDbPath: dbPath }, false);
     });
@@ -547,7 +626,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     });
     tagContainer.addEventListener('click', (e) => {
       e.stopPropagation();
-      const lockMsg = _valueEditorLockMessage(dbPath, propName);
+      const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
       _showRelationDropdown(tagContainer, val, entityPath, propName, { ...propTypeConfig, __sourceDbPath: dbPath }, true);
     });
@@ -608,7 +687,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       tagContainer.style.cursor = 'pointer';
       tagContainer.addEventListener('click', (e) => {
         e.stopPropagation();
-        const lockMsg = _valueEditorLockMessage(dbPath, propName);
+        const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
         if (lockMsg) { showStatus(lockMsg); return; }
         _showMsrDropdown(tagContainer, val, entityPath, propName, { ...propTypeConfig, __sourceDbPath: dbPath });
       });
@@ -635,7 +714,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       addBtn.style.cssText = 'display:inline-flex;align-items:center;gap:2px;padding:2px 8px;font-size:11px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
       addBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const lockMsg = _valueEditorLockMessage(dbPath, propName);
+        const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
         if (lockMsg) { showStatus(lockMsg); return; }
         _createEntityChat(entityPath, val, propName, dbPath);
       });
@@ -668,7 +747,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       addMore.setAttribute('aria-label', 'チャットを追加');
       addMore.addEventListener('click', (e) => {
         e.stopPropagation();
-        const lockMsg = _valueEditorLockMessage(dbPath, propName);
+        const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
         if (lockMsg) { showStatus(lockMsg); return; }
         _createEntityChat(entityPath, val, propName, dbPath);
       });
@@ -741,14 +820,15 @@ function _parseMsrValue(v) {
 async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
   const dbPath = ptc.__sourceDbPath || _valueEditorDbPath(entityPath, anchor);
   const ctx = typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, anchor, dbPath) : null;
-  const lockMsg = _valueEditorLockMessage(dbPath, propName);
+  const lockMsg = _valueEditorLockMessage(dbPath, propName, ctx);
   if (lockMsg) { showStatus(lockMsg); return; }
-  closeAllDropdowns();
+  closeAllDropdowns(ctx || anchor);
   const sources = ptc.sources || [];
   if (sources.length === 0) { showStatus('ソースシートが設定されていません', true); return; }
 
   const dd = document.createElement('div');
   dd.className = 'status-dropdown';
+  if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
   dd.style.cssText = 'max-height:350px;overflow-y:auto;min-width:250px;';
   dd.addEventListener('pointerdown', e => e.stopPropagation());
   dd.addEventListener('click', e => e.stopPropagation());
@@ -940,9 +1020,9 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
 }
 
 // マルチソースリレーション自動収集
-async function _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPath) {
+async function _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPath, ctx) {
   const results = [];
-  const pts = getPropertyTypes(dbPath);
+  const pts = getPropertyTypes(dbPath, ctx);
   const currentId = entityData?._id || entityName;
 
   const sources = ptc.sources || [];
@@ -1024,7 +1104,7 @@ let _msrPivotCache = {};
 // 全マルチソースリレーションプロパティの自動収集
 async function _autoCollectAllMsrProps(dbPath, ctx) {
   _msrPivotCache = {}; // 実行開始時にクリア
-  const pts = getPropertyTypes(dbPath);
+  const pts = getPropertyTypes(dbPath, ctx);
   const data = ctx.pivotData || state.pivotData;
   if (!pts || !data?.entities) return;
 
@@ -1039,7 +1119,7 @@ async function _autoCollectAllMsrProps(dbPath, ctx) {
     const entityData = data.entities[entityName];
     for (const [propName, ptc] of msrProps) {
       try {
-        const collected = await _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPath);
+        const collected = await _autoCollectMultiSourceRelation(entityName, entityData, ptc, dbPath, ctx);
         const newValue = _msrCanonicalValue(collected);
 
         const vals = entityData[propName] || [];
@@ -1080,7 +1160,7 @@ async function _autoCollectAllMsrProps(dbPath, ctx) {
 async function _createEntityChat(entityPath, val, propName, dbPath) {
   const sourceDbPath = dbPath || _valueEditorDbPath(entityPath);
   const sourceCtx = typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, null, sourceDbPath) : null;
-  const lockMsg = _valueEditorLockMessage(sourceDbPath, propName);
+  const lockMsg = _valueEditorLockMessage(sourceDbPath, propName, sourceCtx);
   if (lockMsg) { showStatus(lockMsg); return; }
   // セッションID生成
   const now = new Date();

@@ -81,7 +81,7 @@ function _renderDetailContent(item) {
     ['パス', item.path],
   ];
   if (item.external_reference && item.external_path) rows.push(['参照元', item.external_path]);
-  if (item.size != null) rows.push(['サイズ', formatFileSize(item.size)]);
+  if (item.size != null) rows.push(['ファイルサイズ', formatFileSize(item.size)]);
   if (item.modified) rows.push(['更新日時', item.modified.substring(0, 19).replace('T', ' ')]);
   if (item.type === 'image') rows.push(['解像度', '']); // onloadで更新
   rows.forEach(([k, v]) => {
@@ -200,7 +200,7 @@ function showFolderPreview(item) {
   const detailPane = document.getElementById('rp-detail');
   if (detailPane && detailPane.closest('.gb-pane-content')) {
     if (item.type !== 'folder' && item.path && typeof _showFileInfoInDetailPanel === 'function') {
-      _showFileInfoInDetailPanel(item.path);
+      _showFileInfoInDetailPanel(item.path, item, { autoTagTargets: selectedItems });
     } else {
       detailPane.innerHTML = '';
       const header = document.createElement('div');
@@ -770,7 +770,7 @@ function showFolderDisplaySettings(options) {
   const visibilityItems = [
     {key: 'showThumb', label: 'サムネイル'},
     {key: 'showName', label: 'ファイル名'},
-    {key: 'showSize', label: 'サイズ'},
+    {key: 'showSize', label: 'ファイルサイズ'},
     {key: 'showDate', label: '更新日時'},
     {key: 'showType', label: 'タイプ'},
     {key: 'showDimensions', label: '画像サイズ'},
@@ -788,6 +788,46 @@ function showFolderDisplaySettings(options) {
     }, { dataset: { folderDisplayItem: it.key } });
     menu.appendChild(el);
   });
+
+  const tagLimitRow = document.createElement('label');
+  tagLimitRow.className = 'fd-tag-display-limit';
+  tagLimitRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 14px;font-size:12px;color:var(--fg);';
+  const tagLimitLabel = document.createElement('span');
+  tagLimitLabel.textContent = 'タグ表示数';
+  const tagLimitInput = document.createElement('input');
+  tagLimitInput.type = 'number';
+  tagLimitInput.min = '1';
+  tagLimitInput.max = '999';
+  tagLimitInput.step = '1';
+  tagLimitInput.dataset.e2eId = 'folder-tag-display-limit';
+  tagLimitInput.setAttribute('aria-label', 'ファイルカードのタグ表示数');
+  const fallbackTagLimit = window.MeldexTagDisplayPreferences?.legacyLimit?.() || 10;
+  tagLimitInput.value = String(window.MeldexTagDisplayPreferences?.normalizeLimit?.(
+    cfg.tagDisplayLimit,
+    fallbackTagLimit,
+  ) || fallbackTagLimit);
+  tagLimitInput.style.cssText = 'width:64px;padding:3px 5px;background:var(--bg);color:var(--fg);border:1px solid var(--ui-border,var(--border));border-radius:4px;';
+  const saveTagLimit = () => {
+    const next = window.MeldexTagDisplayPreferences?.normalizeLimit?.(
+      tagLimitInput.value,
+      fallbackTagLimit,
+    ) || fallbackTagLimit;
+    tagLimitInput.value = String(next);
+    cfg.tagDisplayLimit = next;
+    saveFolderDisplayConfig(cfg);
+    window.dispatchEvent?.(new CustomEvent('meldex:folder-tag-display-limit-changed', {
+      detail: { value: next },
+    }));
+  };
+  tagLimitInput.addEventListener('change', saveTagLimit);
+  tagLimitInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveTagLimit();
+    }
+  });
+  tagLimitRow.append(tagLimitLabel, tagLimitInput);
+  menu.appendChild(tagLimitRow);
 
   const filterStartIndex = menu.childNodes.length;
   _fdSep(menu);
@@ -1107,7 +1147,9 @@ async function autoTagFolderTarget(item, options = {}) {
       showStatus('自動タグ付けを中断しました: ' + (result.warning || result.reason || ''), true);
       return;
     }
-    if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
+    if (typeof _folderRefreshTags === 'function') {
+      await _folderRefreshTags(_folderItems, { rerender: true, all: true });
+    }
     if (window.MeldexTagManagement?.refresh) window.MeldexTagManagement.refresh(false);
     showStatus((result?.total || 0) + '件に自動タグ付けしました');
   } catch (err) {
@@ -1132,8 +1174,16 @@ function fvBulkAutoTag() {
     label: `${items.length}件の選択項目`,
     ...(sourceFolder ? { source_folder: sourceFolder } : {}),
   }).then(result => {
-    if (result?.background) showStatus('選択項目の自動タグ付けをバックグラウンドで開始しました');
-    else showStatus((result?.total || 0) + '件に自動タグ付けしました');
+    if (result?.background) {
+      showStatus('選択項目の自動タグ付けをバックグラウンドで開始しました');
+      return;
+    }
+    if (typeof _folderRefreshTags === 'function') {
+      void _folderRefreshTags(_folderItems, { rerender: true, all: true }).catch(error => {
+        console.warn('[Meldex] 自動タグ付け後のフォルダタグ更新に失敗しました', error);
+      });
+    }
+    showStatus((result?.total || 0) + '件に自動タグ付けしました');
   }).catch(err => {
     showStatus('自動タグ付けに失敗しました: ' + (err?.userMessage || err?.message || err), true);
   });

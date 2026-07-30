@@ -120,6 +120,14 @@
     align-items: center;
     justify-content: center;
   }
+  #pivot-table td .cell-value,
+  .pivot-table td .cell-value {
+    padding-right: 96px;
+  }
+  #pivot-table td .cell-value > .cell-value-more,
+  .pivot-table td .cell-value > .cell-value-more {
+    right: 48px !important;
+  }
 
   .view-tabs,
   .db-view-tabs {

@@ -1,3 +1,32 @@
+} catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
+
+function _detectOptimalScale() {
+  const w = window.screen.width;
+  const dpr = window.devicePixelRatio || 1;
+  const isTouch = navigator.maxTouchPoints > 0;
+
+  // スマホ（幅768px以下）: 100%のまま（レスポンシブCSSに任せる）
+  if (w <= 768) return 100;
+  // タブレット + タッチデバイス（幅769〜1366px）: タッチ操作のためやや拡大
+  if (w <= 1366 && isTouch) return 110;
+  // 高解像度デスクトップ（4K等、OS側のスケーリングが低い場合）
+  if (w >= 2560 && dpr <= 1.5) return 125;
+  // 通常デスクトップ
+  return 100;
+}
+
+// Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
+document.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  // キャンバス・フォルダビュー等の独自ズームが処理する場合はスキップ
+  const canvas = document.getElementById('bd-canvas');
+  if (canvas && canvas.contains(e.target)) return;
+  const folderGrid = document.getElementById('folder-grid');
+  if (folderGrid && folderGrid.contains(e.target)) return;
+  e.preventDefault();
+  const steps = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+  const cur = parseInt(localStorage.getItem('ui-scale') || '100', 10);
+  const idx = steps.indexOf(cur);
   let newIdx;
   if (idx === -1) {
     // 現在値がステップ外の場合、最も近いステップを探す

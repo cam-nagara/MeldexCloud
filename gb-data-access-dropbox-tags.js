@@ -7,6 +7,20 @@
   if (!internals || !Array.isArray(handlers)) return;
   const tagCsv = window.MeldexDropboxTagCsv;
   const tagSafety = window.MeldexDropboxTagSafety;
+  const assetIdentity = window.MeldexDropboxAssetIdentity || {
+    async resolveAsset(_provider, store, path) {
+      return { store, asset: { asset_id: '', provider_id: '', path } };
+    },
+    assignmentFor(store, path) {
+      const ids = [...(store.assignments?.[path] || [])];
+      return {
+        ids,
+        autoIds: [...(store.auto_assignments?.[path] || [])].filter(id => ids.includes(id)),
+        source: ids.length ? 'legacy' : 'none',
+      };
+    },
+    projectAssignment(store) { return store; },
+  };
   const requiredCsvMethods = ['parseCsv', 'mergeCsv', 'ensureDictionary', 'importCsv'];
   if (!tagCsv || requiredCsvMethods.some(name => typeof tagCsv[name] !== 'function')) {
     throw new Error('gb-data-access-dropbox-tag-csv.js を先に読み込んでください');
@@ -36,6 +50,20 @@
   const DICTIONARY_FOLDER = '自動タグ辞書';
   const DICTIONARY_NOTE = `${DICTIONARY_FOLDER}/${DICTIONARY_FOLDER}.md`;
   const DEFAULT_PRESET = '標準';
+  const catalogNormalizer = window.MeldexDropboxTagCatalogNormalizer;
+  if (!catalogNormalizer) {
+    throw new Error('gb-dropbox-tag-catalog-normalizer.js を先に読み込んでください');
+  }
+  const {
+    asBool,
+    cleanName,
+    identity,
+    normalizeCatalog,
+    nowIso,
+    randomId,
+    sortIndex,
+    stringList,
+  } = catalogNormalizer;
 
   class AssignmentRollbackMarkerWriteError extends Error {
     constructor(message, recoveryPath, cause) {
@@ -44,149 +72,6 @@
       this.recoveryPath = String(recoveryPath || '');
       this.cause = cause;
     }
-  }
-
-  function nowIso() {
-    return new Date().toISOString();
-  }
-
-  function randomId() {
-    if (globalThis.crypto?.randomUUID) return crypto.randomUUID().replace(/-/g, '');
-    return `${Date.now().toString(36)}${Math.random().toString(16).slice(2)}`;
-  }
-
-  function identity(value) {
-    return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ja');
-  }
-
-  function cleanName(value, label) {
-    const name = String(value || '').trim().replace(/\s+/g, ' ');
-    if (!name) throw new Error(`${label || '名前'}を入力してください`);
-    if (name.length > 80) throw new Error(`${label || '名前'}が長すぎます`);
-    return name;
-  }
-
-  function stringList(value, separators) {
-    const values = Array.isArray(value) ? value : [value];
-    const seen = new Set();
-    const result = [];
-    values.forEach(raw => String(raw || '').split(separators || /[\r\n,]+/).forEach(part => {
-      const text = String(part || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-      const key = identity(text);
-      if (text && !seen.has(key)) {
-        seen.add(key);
-        result.push(text);
-      }
-    }));
-    return result;
-  }
-
-  function sortIndex(value) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
-  }
-
-  function asBool(value) {
-    if (typeof value === 'boolean') return value;
-    return ['1', 'true', 'yes', 'on', 'はい', '有効'].includes(String(value || '').trim().toLocaleLowerCase('ja'));
-  }
-
-  function normalizeCatalog(raw) {
-    const source = raw && typeof raw === 'object' ? raw : {};
-    const groups = (Array.isArray(source.groups) ? source.groups : []).map(item => ({
-      id: String(item?.id || randomId()),
-      name: cleanName(item?.name, 'グループ名'),
-      parent_id: String(item?.parent_id || '').trim() || null,
-      color: String(item?.color || '').trim(),
-      description: String(item?.description || '').trim(),
-      sort_index: sortIndex(item?.sort_index),
-      collapsed: asBool(item?.collapsed),
-    }));
-    const tags = (Array.isArray(source.tags) ? source.tags : []).map(item => ({
-      id: String(item?.id || randomId()),
-      name: cleanName(item?.name, 'タグ名'),
-      aliases: stringList(item?.aliases),
-      presets: stringList(item?.presets, /[\r\n,;]+/).length
-        ? stringList(item?.presets, /[\r\n,;]+/)
-        : [DEFAULT_PRESET],
-      auto_assign: asBool(item?.auto_assign),
-      color: String(item?.color || '').trim(),
-      description: String(item?.description || '').trim(),
-      group_id: String(item?.group_id || '').trim() || null,
-      sort_index: sortIndex(item?.sort_index),
-    }));
-
-    const allIds = new Set();
-    groups.concat(tags).forEach(item => {
-      if (allIds.has(item.id)) throw new Error(`内部ID「${item.id}」が重複しています`);
-      allIds.add(item.id);
-    });
-    const groupById = Object.fromEntries(groups.map(group => [group.id, group]));
-    const siblingNames = new Set();
-    groups.forEach(group => {
-      if (group.parent_id && !groupById[group.parent_id]) throw new Error(`「${group.name}」の親グループが見つかりません`);
-      if (group.parent_id === group.id) throw new Error('グループ自身を親にはできません');
-      const siblingKey = `${group.parent_id || ''}\n${identity(group.name)}`;
-      if (siblingNames.has(siblingKey)) throw new Error(`同じ階層にグループ「${group.name}」が重複しています`);
-      siblingNames.add(siblingKey);
-      const seen = new Set([group.id]);
-      let cursor = group.parent_id;
-      while (cursor) {
-        if (seen.has(cursor)) throw new Error(`グループ「${group.name}」の階層が循環しています`);
-        seen.add(cursor);
-        cursor = groupById[cursor]?.parent_id || null;
-      }
-    });
-
-    const tagNames = new Map();
-    tags.forEach(tag => {
-      if (tag.group_id && !groupById[tag.group_id]) throw new Error(`「${tag.name}」の親グループが見つかりません`);
-      const key = identity(tag.name);
-      if (tagNames.has(key)) throw new Error(`タグの正式名「${tag.name}」が重複しています`);
-      tagNames.set(key, tag.id);
-    });
-    const aliasNames = new Map();
-    tags.forEach(tag => {
-      const ownName = identity(tag.name);
-      tag.aliases = tag.aliases.filter(alias => {
-        const key = identity(alias);
-        if (!key || key === ownName) return false;
-        if (tagNames.has(key) && tagNames.get(key) !== tag.id) {
-          throw new Error(`別名「${alias}」が別のタグの正式名と重複しています`);
-        }
-        if (aliasNames.has(key) && aliasNames.get(key) !== tag.id) {
-          throw new Error(`別名「${alias}」が複数のタグで重複しています`);
-        }
-        aliasNames.set(key, tag.id);
-        return true;
-      });
-    });
-    const compare = (a, b) => a.sort_index - b.sort_index || String(a.name).localeCompare(String(b.name), 'ja');
-    groups.sort(compare);
-    tags.sort(compare);
-    const desktopBase = source.desktop_base && typeof source.desktop_base === 'object'
-      ? {
-          tags: Array.isArray(source.desktop_base.tags) ? structuredClone(source.desktop_base.tags) : [],
-          groups: Array.isArray(source.desktop_base.groups) ? structuredClone(source.desktop_base.groups) : [],
-        }
-      : null;
-    return {
-      version: 1,
-      updated_at: String(source.updated_at || nowIso()),
-      desktop_mirror_signature: String(source.desktop_mirror_signature || ''),
-      desktop_sheet_mtime_ns: Number.isFinite(Number(source.desktop_sheet_mtime_ns))
-        ? Number(source.desktop_sheet_mtime_ns)
-        : -1,
-      desktop_base: desktopBase,
-      sync_pending: !!source.sync_pending,
-      sync_conflict: !!source.sync_conflict,
-      mutation_blocked: !!source.mutation_blocked,
-      conflict_resolution_available: !!source.conflict_resolution_available,
-      warning: String(source.warning || ''),
-      recovery_path: String(source.recovery_path || ''),
-      tags,
-      groups,
-    };
   }
 
   function catalogResponse(catalog) {
@@ -566,11 +451,7 @@
 
   async function readAssignments(provider) {
     const current = await _readJsonSafe(provider, ASSIGNMENTS_FILE, {});
-    return {
-      version: 3,
-      assignments: current?.assignments && typeof current.assignments === 'object' ? current.assignments : {},
-      updated_at: String(current?.updated_at || ''),
-    };
+    return tagSafety.normalizeAssignmentStore(current);
   }
 
   async function writeAssignments(provider, updater) {
@@ -599,11 +480,7 @@
           || 'タグ辞書の同期競合をデスクトップ版のタグパネルで解消してからタグを編集してください',
         );
       }
-      const base = {
-        ...(current && typeof current === 'object' ? current : {}),
-        version: 3,
-        assignments: current?.assignments && typeof current.assignments === 'object' ? { ...current.assignments } : {},
-      };
+      const base = tagSafety.normalizeAssignmentStore(current);
       previous = structuredClone(base);
       latest = updater(base) || base;
       latest.updated_at = nowIso();
@@ -612,7 +489,7 @@
     };
     if (typeof provider.writeJsonMerged === 'function') {
       await provider.writeJsonMerged(ASSIGNMENTS_FILE, apply, {
-        fallbackValue: { version: 3, assignments: {} },
+        fallbackValue: { version: 5, assignments: {}, auto_assignments: {} },
         retries: 5,
       });
     } else {
@@ -627,25 +504,10 @@
       const rollback = current => {
         const source = current && typeof current === 'object' ? { ...current } : {};
         rollbackCurrent = structuredClone(source);
-        const currentAssignments = source.assignments && typeof source.assignments === 'object'
-          ? { ...source.assignments }
-          : {};
-        const beforeAssignments = previous?.assignments && typeof previous.assignments === 'object'
-          ? previous.assignments
-          : {};
-        const publishedAssignments = latest?.assignments && typeof latest.assignments === 'object'
-          ? latest.assignments
-          : {};
-        const reversed = tagSafety.reverseAssignments(
-          currentAssignments,
-          beforeAssignments,
-          publishedAssignments,
-        );
+        const reversed = tagSafety.reverseAssignmentStore(source, previous, latest);
         rollbackUnresolved = rollbackUnresolved || reversed.unresolved;
         return {
-          ...source,
-          version: 3,
-          assignments: reversed.assignments,
+          ...reversed.store,
           updated_at: nowIso(),
           assignment_revision: randomId(),
         };
@@ -653,7 +515,7 @@
       try {
         if (typeof provider.writeJsonMerged === 'function') {
           await provider.writeJsonMerged(ASSIGNMENTS_FILE, rollback, {
-            fallbackValue: { version: 3, assignments: {} },
+            fallbackValue: { version: 4, assignments: {}, auto_assignments: {} },
             retries: 5,
           });
         } else {
@@ -798,6 +660,30 @@
       created = saved.tags.find(tag => tag.id === created.id);
       return { ok: true, tag: created, tags: saved.tags, groups: saved.groups };
     }
+    if (pathname === '/global-tags/order' && method === 'PATCH') {
+      const updates = Array.isArray(body?.updates) ? body.updates : [];
+      if (!updates.length) throw new Error('並べ替えるタグを指定してください');
+      const saved = await writeCatalog(provider, catalog => {
+        const byId = new Map(catalog.tags.map(tag => [String(tag.id), tag]));
+        const groupIds = new Set(catalog.groups.map(group => String(group.id)));
+        const seen = new Set();
+        updates.forEach(update => {
+          const id = String(update?.id || '');
+          if (!id || seen.has(id)) throw new Error('タグの指定が重複または不足しています');
+          const target = byId.get(id);
+          if (!target) throw new Error('タグが見つかりません');
+          seen.add(id);
+          if (Object.hasOwn(update, 'group_id')) {
+            const groupId = String(update.group_id || '');
+            if (groupId && !groupIds.has(groupId)) throw new Error('移動先のグループが見つかりません');
+            target.group_id = groupId || null;
+          }
+          if (Object.hasOwn(update, 'sort_index')) target.sort_index = sortIndex(update.sort_index);
+        });
+        return catalog;
+      });
+      return { ok: true, tags: saved.tags, groups: saved.groups };
+    }
     const tagMatch = pathname.match(/^\/global-tags\/([^/]+)$/);
     const isTagItemRoute = tagMatch && !['target', 'search'].includes(decodeURIComponent(tagMatch[1]));
     if (isTagItemRoute && method === 'PATCH') {
@@ -822,12 +708,7 @@
         return { ...catalog, tags: catalog.tags.filter(tag => tag.id !== id) };
       });
       await writeAssignments(provider, store => {
-        Object.keys(store.assignments).forEach(path => {
-          const ids = (store.assignments[path] || []).filter(tagId => tagId !== id);
-          if (ids.length) store.assignments[path] = ids;
-          else delete store.assignments[path];
-        });
-        return store;
+        return tagSafety.removeTagEverywhere(store, id);
       });
       return { ok: true, tags: saved.tags, groups: saved.groups };
     }
@@ -849,6 +730,35 @@
       });
       created = saved.groups.find(group => group.id === created.id);
       return { ok: true, group: created, tags: saved.tags, groups: saved.groups };
+    }
+    if (pathname === '/global-tag-groups/order' && method === 'PATCH') {
+      const updates = Array.isArray(body?.updates) ? body.updates : [];
+      if (!updates.length) throw new Error('並べ替えるタググループを指定してください');
+      const saved = await writeCatalog(provider, catalog => {
+        const byId = new Map(catalog.groups.map(group => [String(group.id), group]));
+        const seen = new Set();
+        updates.forEach(update => {
+          const id = String(update?.id || '');
+          if (!id || seen.has(id)) throw new Error('タググループの指定が重複または不足しています');
+          const target = byId.get(id);
+          if (!target) throw new Error('グループが見つかりません');
+          seen.add(id);
+          if (Object.hasOwn(update, 'parent_id')) target.parent_id = update.parent_id || null;
+          if (Object.hasOwn(update, 'sort_index')) target.sort_index = sortIndex(update.sort_index);
+        });
+        for (const id of byId.keys()) {
+          const visited = new Set([id]);
+          let parentId = String(byId.get(id)?.parent_id || '');
+          while (parentId) {
+            if (!byId.has(parentId)) throw new Error('親グループが見つかりません');
+            if (visited.has(parentId)) throw new Error('グループの階層が循環しています');
+            visited.add(parentId);
+            parentId = String(byId.get(parentId)?.parent_id || '');
+          }
+        }
+        return catalog;
+      });
+      return { ok: true, tags: saved.tags, groups: saved.groups };
     }
     const groupMatch = pathname.match(/^\/global-tag-groups\/([^/]+)$/);
     if (groupMatch && method === 'PATCH') {
@@ -911,12 +821,17 @@
       if (method === 'GET') {
         const path = safeTargetPath(query.get('path') || '');
         const store = await readAssignments(provider);
-        const ids = Array.isArray(store.assignments[path]) ? store.assignments[path] : [];
+        const resolved = await assetIdentity.resolveAsset(provider, store, path, { create: true });
+        const assignment = assetIdentity.assignmentFor(store, path, resolved.asset.asset_id);
+        const ids = assignment.ids;
         return {
           ok: true,
           path,
+          asset_id: resolved.asset.asset_id,
+          assignment_source: assignment.source,
           source_folder: '',
           tags: ids.map(id => catalog.tags.find(tag => tag.id === id)).filter(Boolean),
+          auto_tag_ids: assignment.autoIds,
           sync_pending: catalog.sync_pending,
           sync_conflict: catalog.sync_conflict,
           mutation_blocked: catalog.mutation_blocked,
@@ -927,16 +842,26 @@
       if (method === 'POST') {
         requireCatalogMutable(catalog);
         const path = safeTargetPath(body?.path || '');
+        const resolved = await assetIdentity.resolveAsset(
+          provider,
+          await readAssignments(provider),
+          path,
+          { create: true },
+        );
         const ensured = await ensureTargetTags(provider, catalog, body?.tag || body?.name);
         const tag = ensured.tags[0];
         try {
           const store = await writeAssignments(provider, current => {
-            const ids = new Set(Array.isArray(current.assignments[path]) ? current.assignments[path] : []);
-            ids.add(tag.id);
-            current.assignments[path] = [...ids];
-            return current;
+            const updated = tagSafety.promoteManualTag(current, path, tag.id);
+            return assetIdentity.projectAssignment(
+              updated,
+              path,
+              resolved.asset,
+              updated.assignments[path] || [],
+              updated.auto_assignments[path] || [],
+            );
           });
-          return { ok: true, path, source_folder: '', tags: store.assignments[path].map(id => ensured.catalog.tags.find(item => item.id === id)).filter(Boolean) };
+          return { ok: true, path, asset_id: resolved.asset.asset_id, source_folder: '', tags: store.assignments[path].map(id => ensured.catalog.tags.find(item => item.id === id)).filter(Boolean) };
         } catch (error) {
           await compensateTargetTagCreation(provider, ensured, error);
           throw error;
@@ -945,15 +870,20 @@
       if (method === 'PUT') {
         requireCatalogMutable(catalog);
         const path = safeTargetPath(body?.path || '');
+        const resolved = await assetIdentity.resolveAsset(
+          provider,
+          await readAssignments(provider),
+          path,
+          { create: true },
+        );
         const ensured = await ensureTargetTags(provider, catalog, Array.isArray(body?.tags) ? body.tags : []);
         const ids = ensured.tags.map(tag => tag.id);
         try {
           await writeAssignments(provider, current => {
-            if (ids.length) current.assignments[path] = [...new Set(ids)];
-            else delete current.assignments[path];
-            return current;
+            const updated = tagSafety.setManualTags(current, path, ids);
+            return assetIdentity.projectAssignment(updated, path, resolved.asset, ids, []);
           });
-          return { ok: true, path, source_folder: '', tags: ids.map(id => ensured.catalog.tags.find(tag => tag.id === id)).filter(Boolean) };
+          return { ok: true, path, asset_id: resolved.asset.asset_id, source_folder: '', tags: ids.map(id => ensured.catalog.tags.find(tag => tag.id === id)).filter(Boolean) };
         } catch (error) {
           await compensateTargetTagCreation(provider, ensured, error);
           throw error;
@@ -962,14 +892,24 @@
       if (method === 'DELETE') {
         requireCatalogMutable(catalog);
         const path = safeTargetPath(query.get('path') || '');
+        const resolved = await assetIdentity.resolveAsset(
+          provider,
+          await readAssignments(provider),
+          path,
+          { create: true },
+        );
         const tag = tagForValue(catalog, query.get('tag') || '');
         const store = await writeAssignments(provider, current => {
-          const ids = (current.assignments[path] || []).filter(id => id !== tag?.id);
-          if (ids.length) current.assignments[path] = ids;
-          else delete current.assignments[path];
-          return current;
+          const updated = tagSafety.removeTargetTag(current, path, tag?.id);
+          return assetIdentity.projectAssignment(
+            updated,
+            path,
+            resolved.asset,
+            updated.assignments[path] || [],
+            updated.auto_assignments[path] || [],
+          );
         });
-        return { ok: true, path, source_folder: '', tags: (store.assignments[path] || []).map(id => catalog.tags.find(tag => tag.id === id)).filter(Boolean) };
+        return { ok: true, path, asset_id: resolved.asset.asset_id, source_folder: '', tags: (store.assignments[path] || []).map(id => catalog.tags.find(tag => tag.id === id)).filter(Boolean) };
       }
     }
     if (pathname === '/global-tags/search' && method === 'GET') {
@@ -994,5 +934,16 @@
     catalogFile: CATALOG_FILE,
     normalizeCatalog,
     parseCsv: tagCsv.parseCsv,
+    readCatalog,
+    writeCatalog,
+    requireCatalogMutable,
+    helpers: {
+      cleanName,
+      identity,
+      nowIso,
+      randomId,
+      sortIndex,
+      stringList,
+    },
   };
 })();

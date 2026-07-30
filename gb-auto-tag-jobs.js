@@ -5,7 +5,9 @@
 
   const STORAGE_KEY = 'meldex.autoTag.activeJobs.v1';
   const POLL_INTERVAL_MS = 1200;
+  const SUCCESS_DISMISS_MS = 1800;
   const jobs = new Map();
+  const successDismissTimers = new Map();
   let tray = null;
   let minimized = false;
 
@@ -105,7 +107,7 @@
           <ul>
             ${failureSamples.map(item => `
               <li>
-                <strong>${window.esc(item.stage || '自動タグ付け')}</strong>
+                <strong>${window.esc(item.stage || 'タグ処理')}</strong>
                 <span title="${window.esc(item.path || '')}">${window.esc(item.path || '対象不明')}</span>
                 <small>${window.esc(item.message || '詳細なし')}</small>
               </li>
@@ -117,7 +119,7 @@
     return `
       <article class="at-job at-job--${window.esc(job.status)}${Number(job.result?.failed || 0) > 0 ? ' at-job--partial' : ''}" data-at-job-id="${window.esc(job.id)}">
         <div class="at-job-head">
-          <strong>${window.esc(job.label || '自動タグ付け')}</strong>
+          <strong>${window.esc(job.label || 'タグ処理')}</strong>
           <span>${window.esc(phase)}</span>
         </div>
         <div class="at-job-progress" role="progressbar"
@@ -158,7 +160,7 @@
     host.classList.toggle('at-job-tray--minimized', minimized);
     host.innerHTML = `
       <header class="at-job-tray-head">
-        <strong>${icon('tags', 14)} 自動タグ付け</strong>
+        <strong>${icon('tags', 14)} タグ処理</strong>
         <span>${activeJobIds().length ? `${activeJobIds().length}件実行中` : (hasFailures ? '要確認' : '完了')}</span>
         <button type="button" class="gb-btn gb-btn-icon gb-btn-xs" data-at-job-minimize
           aria-label="${minimized ? '進捗を展開' : '進捗を折りたたむ'}">
@@ -176,6 +178,8 @@
     });
     host.querySelectorAll('[data-at-job-dismiss]').forEach(button => {
       button.addEventListener('click', () => {
+        clearTimeout(successDismissTimers.get(button.dataset.atJobDismiss));
+        successDismissTimers.delete(button.dataset.atJobDismiss);
         jobs.delete(button.dataset.atJobDismiss);
         persist();
         render();
@@ -183,26 +187,48 @@
     });
   }
 
+  function scheduleSuccessfulDismiss(job) {
+    if (job?.status !== 'done' || Number(job?.result?.failed || 0) > 0) return;
+    clearTimeout(successDismissTimers.get(job.id));
+    const timer = setTimeout(() => {
+      successDismissTimers.delete(job.id);
+      const current = jobs.get(job.id);
+      if (current?.status !== 'done' || Number(current?.result?.failed || 0) > 0) return;
+      jobs.delete(job.id);
+      persist();
+      render();
+    }, SUCCESS_DISMISS_MS);
+    successDismissTimers.set(job.id, timer);
+  }
+
   function notifyFinished(job) {
     window.MeldexGlobalTags?.invalidateTagsCatalogCache?.();
-    if (typeof _folderEnsureTags === 'function' && typeof _folderItems !== 'undefined') {
-      _folderEnsureTags(_folderItems, { rerender: true });
+    window.MeldexGlobalTags?.invalidateTargetTagsCache?.();
+    if (typeof _folderRefreshTags === 'function' && typeof _folderItems !== 'undefined') {
+      void _folderRefreshTags(_folderItems, { rerender: true, all: true }).catch(error => {
+        console.warn('[Meldex] タグ処理後のフォルダタグ更新に失敗しました', error);
+      });
     }
     window.MeldexTagManagement?.refresh?.(false);
     document.dispatchEvent(new CustomEvent('meldex:auto-tag-job-finished', { detail: job }));
+    document.dispatchEvent(new CustomEvent('meldex:tag-job-finished', { detail: job }));
+    const isReset = job.kind === 'global-tag-reset';
     if (job.status === 'done') {
       const result = job.result || {};
-      const message = `${Number(result.succeeded || 0).toLocaleString('ja-JP')}件の自動タグ付けが完了しました`;
+      const message = isReset
+        ? `${Number(result.succeeded || 0).toLocaleString('ja-JP')}件のタグをリセットしました`
+        : `${Number(result.succeeded || 0).toLocaleString('ja-JP')}件の自動タグ付けが完了しました`;
       if (typeof showStatus === 'function') showStatus(message, !!result.failed);
+      scheduleSuccessfulDismiss(job);
     } else if (job.status === 'cancelled' && typeof showStatus === 'function') {
       const result = job.result || {};
       const assigned = Number(result.assigned ?? result.changed ?? 0) || 0;
       const failed = Number(result.failed || 0) || 0;
-      const message = `自動タグ付けを中止しました: ${assigned.toLocaleString('ja-JP')}件保存済み`
+      const message = `${isReset ? 'タグのリセット' : '自動タグ付け'}を中止しました: ${assigned.toLocaleString('ja-JP')}件保存済み`
         + (failed ? `・${failed.toLocaleString('ja-JP')}件失敗` : '');
       showStatus(message, failed > 0);
     } else if (job.status === 'error' && typeof showStatus === 'function') {
-      showStatus('自動タグ付けに失敗しました: ' + progressText(job), true);
+      showStatus(`${isReset ? 'タグのリセット' : '自動タグ付け'}に失敗しました: ` + progressText(job), true);
     }
   }
 
@@ -236,22 +262,36 @@
     }
   }
 
-  async function start(payload, options) {
-    const started = await apiPost('/global-tags/auto-tag', payload || {}, { silentError: true });
+  async function startEndpoint(endpoint, payload, options) {
+    const started = await apiPost(endpoint, payload || {}, { silentError: true });
     if (!started?.job_id) return started;
     const job = {
       id: started.job_id,
       status: started.status || 'running',
+      kind: options?.kind || started.kind || 'auto-tag',
       label: options?.label || payload?.label || payload?.path
         || `${Array.isArray(payload?.targets) ? payload.targets.length : 0}件`,
-      progress: { processed: 0, total: null, phase: '準備中', message: '自動タグ付けを準備しています' },
+      progress: { processed: 0, total: null, phase: '準備中', message: options?.preparing || '自動タグ付けを準備しています' },
     };
     jobs.set(job.id, job);
     persist();
     render();
     poll(job.id);
-    if (typeof showStatus === 'function') showStatus('自動タグ付けをバックグラウンドで開始しました');
+    if (typeof showStatus === 'function') showStatus(options?.started || '自動タグ付けをバックグラウンドで開始しました');
     return { ...started, background: true };
+  }
+
+  function start(payload, options) {
+    return startEndpoint('/global-tags/auto-tag', payload, options);
+  }
+
+  function startReset(payload, options) {
+    return startEndpoint('/global-tags/reset', payload, {
+      ...options,
+      kind: 'global-tag-reset',
+      preparing: 'タグのリセットを準備しています',
+      started: 'タグの一括リセットをバックグラウンドで開始しました',
+    });
   }
 
   async function cancel(jobId) {
@@ -281,7 +321,7 @@
       jobs.set(id, {
         id,
         status: 'running',
-        label: '自動タグ付け',
+        label: 'タグ処理',
         progress: { processed: 0, total: null, phase: '状態を確認中', message: '' },
       });
       poll(id);
@@ -291,6 +331,7 @@
 
   window.MeldexAutoTagJobs = {
     start,
+    startReset,
     cancel,
     restore,
     snapshot: () => [...jobs.values()].map(job => ({ ...job })),

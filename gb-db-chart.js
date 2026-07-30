@@ -777,6 +777,19 @@ function _chartFilteredEntityNames(pivotData, dbPath, ctx) {
   if (Array.isArray(advFilters) && advFilters.length > 0 && typeof _dbEntityPassesAdvancedFilters === 'function') {
     names = names.filter(name => _dbEntityPassesAdvancedFilters(entities[name], advFilters, filterMode));
   }
+  const columnValueFilters = typeof getColumnValueFilters === 'function'
+    ? getColumnValueFilters(dbPath, { ctx })
+    : {};
+  if (typeof _dbEntityPassesColumnValueFilters === 'function' && Object.keys(columnValueFilters).length) {
+    names = names.filter(name => _dbEntityPassesColumnValueFilters(
+      name,
+      entities[name],
+      columnValueFilters,
+      dbPath,
+      ctx,
+      filterMode,
+    ));
+  }
   return names;
 }
 

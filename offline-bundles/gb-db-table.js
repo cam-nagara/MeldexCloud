@@ -62,6 +62,10 @@ function showUnifiedFilterModal() {
     advFilters.forEach(f => condDiv.insertAdjacentHTML('beforeend', _ufConditionRow(f, dbPath, ctx)));
     condDiv.querySelectorAll('.uf-cond').forEach(row => _ufPopulateCommonTagsDatalist(row));
   }
+  const initialProperty = String(options.initialProperty || '');
+  if (initialProperty && !advFilters.some(filter => filter?.property === initialProperty)) {
+    condDiv.insertAdjacentHTML('beforeend', _ufConditionRow({ property: initialProperty, field: 'value', operator: 'equals', value: '' }, dbPath, ctx));
+  }
   // 列を切り替えたときに共通タグ列向けの候補(datalist)を切り替える
   condDiv?.addEventListener('change', (e) => {
     const propSelect = e.target?.closest?.('[data-field="property"]');
@@ -188,6 +192,7 @@ function _ufClear() {
   const dbPath = overlay?.dataset.ufDbPath || ctx?.dbPath || state.currentDbPath;
   setFilter('disabled', { skipReload: true, dbPath, ctx });
   if (dbPath) setAdvancedFilters(dbPath, [], { ctx });
+  if (dbPath && typeof setColumnValueFilters === 'function') setColumnValueFilters(dbPath, {}, { ctx });
   document.querySelector('.modal-overlay').remove();
   _updateFilterBadge({ dbPath, filter: 'disabled', ctx });
   if (dbPath) _ufRefreshTarget(ctx, dbPath);
@@ -477,6 +482,14 @@ function _dbEntityCreateIsEditing(renderCtx) {
   const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
   if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor')) return true;
   // セレクト/ユーザー/リレーション等のドロップダウンは body 直下に出るため、テーブル内検索では拾えない
+  if (renderCtx?.paneId) {
+    const paneId = globalThis.CSS?.escape
+      ? CSS.escape(renderCtx.paneId)
+      : String(renderCtx.paneId).replace(/["\\]/g, '\\$&');
+    return !!document.querySelector(
+      `.cell-inline-dd[data-db-pane-id="${paneId}"],.status-dropdown[data-db-pane-id="${paneId}"],.user-dropdown[data-db-pane-id="${paneId}"]`
+    );
+  }
   return !!document.querySelector('.cell-inline-dd,.status-dropdown,.user-dropdown');
 }
 
@@ -487,8 +500,10 @@ function _dbPivotFetchUrl(dbPath) {
 
 function _dbFindEntityRow(ctx, entityName) {
   const tblId = (ctx && ctx.tableId) || 'pivot-table';
-  const root = typeof _paneEl === 'function' ? (_paneEl(ctx, '#' + tblId) || document) : document;
-  return root.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`);
+  const root = typeof _paneEl === 'function'
+    ? (_paneEl(ctx, '#' + tblId) || (!ctx ? document : null))
+    : (!ctx ? document : null);
+  return root?.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`) || null;
 }
 
 function _dbStartEntityInlineRenameWhenVisible(ctx, entityName, dbPath) {
@@ -778,7 +793,8 @@ function _syncRowSelectCheckboxState(cb, ctx) {
 
 function _handleCheckboxClick(e, cb, ctx) {
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
   const allCbs = [...paneRoot.querySelectorAll('.row-select-cb')];
   const sel = typeof _ensureSelectedEntities === 'function' ? _ensureSelectedEntities(ctx) : ctx._selectedEntities;
   // Shift+クリック範囲選択: anchor は pointerdown 時に保存した _pendingShiftAnchor を優先
@@ -1004,7 +1020,8 @@ function _handleTbodyPointerdown(e) {
   }
 
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
 
   // 行の HTML5 ドラッグを一時的に無効化 (cb 操作が行ドラッグを誤起動しないように)。
   // 通常行は専用ハンドルだけを draggable にしているため、解除時は true 固定ではなく元の値へ戻す。
@@ -1065,7 +1082,8 @@ function _handleTbodyPointerover(e) {
   const cb = e.target.closest('.row-select-cb');
   if (!cb) return;
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
   if (!paneRoot._dragSelectState) return;
   if (cb.checked === paneRoot._dragSelectState.checked) return;
   const newState = !!paneRoot._dragSelectState.checked;
@@ -1568,7 +1586,8 @@ function _handleTbodyChange(e) {
   const cb = e.target.closest('.row-select-cb');
   if (!cb) return;
   const tbl = ctx.tableId || 'pivot-table';
-  const paneRoot = _paneEl(ctx, '#' + tbl) || document;
+  const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
+  if (!paneRoot) return;
   cb.closest('tr')?.classList.toggle('row-selected', cb.checked);
   paneRoot._lastSelectedCb = cb;
   // D-5: Set 同期
@@ -2364,7 +2383,9 @@ function renderNewEntryRow(ctx, options) {
   return newTr;
 }
 function _applySelectedColumnClasses(ctx, dbPath) {
-  const table = typeof _currentPivotTable === 'function' ? _currentPivotTable(ctx) : document.getElementById('pivot-table');
+  const table = typeof _currentPivotTable === 'function'
+    ? _currentPivotTable(ctx)
+    : (!ctx ? document.getElementById('pivot-table') : null);
   if (!table) return;
   const selected = typeof _getSelectedColumns === 'function' ? _getSelectedColumns(dbPath) : [];
   table.querySelectorAll('th.col-selected, td.col-selected').forEach(el => el.classList.remove('col-selected'));
@@ -2669,7 +2690,7 @@ function _dbCellDisplayConfig(dbPath) {
 }
 
 // 列単位のセル折返し/切り詰め上書き。
-// cellDisplayByColMap（getDbViewConfig(dbPath).cellDisplayByCol）に該当キーが無ければ
+// cellDisplayByColMap（現在の保存済みビューの cellDisplayByCol）に該当キーが無ければ
 // シート全体設定を継承する状態を表す null を返す。
 function _dbColumnCellOverrideEntry(cellDisplayByColMap, propName) {
   const entry = cellDisplayByColMap && typeof cellDisplayByColMap === 'object' ? cellDisplayByColMap[propName] : null;
@@ -2678,21 +2699,30 @@ function _dbColumnCellOverrideEntry(cellDisplayByColMap, propName) {
   return { overflow: entry.overflow, lines: _dbClampInt(entry.lines, 1, 10, 10) };
 }
 
-// 列メニュー等の単発参照用（dbPath から都度 getDbViewConfig するため、renderPivot の描画ループ内では使わない。
-// ループ内は renderPivot が一度だけ取得した cellDisplayByCol マップを options 経由で渡す）
-function getDbColumnCellDisplay(dbPath, propName) {
-  if (!dbPath || !propName) return null;
-  const cfg = getDbViewConfig(dbPath);
-  return _dbColumnCellOverrideEntry(cfg.cellDisplayByCol, propName);
+function _dbColumnCellDisplayMap(dbPath, ctx = null) {
+  const root = getDbViewConfig(dbPath);
+  const view = typeof getCurrentDbViewConfigEntry === 'function'
+    ? getCurrentDbViewConfigEntry(dbPath, { ctx })
+    : null;
+  if (view && Object.prototype.hasOwnProperty.call(view, 'cellDisplayByCol')) {
+    return view.cellDisplayByCol;
+  }
+  return root?.cellDisplayByCol;
 }
 
-function _dbHasColumnCellDisplayOverrides(dbPath) {
-  const cfg = getDbViewConfig(dbPath);
-  const map = cfg.cellDisplayByCol;
+// 列メニュー等の単発参照用（dbPath から都度 getDbViewConfig するため、renderPivot の描画ループ内では使わない。
+// ループ内は renderPivot が一度だけ取得した cellDisplayByCol マップを options 経由で渡す）
+function getDbColumnCellDisplay(dbPath, propName, ctx = null) {
+  if (!dbPath || !propName) return null;
+  return _dbColumnCellOverrideEntry(_dbColumnCellDisplayMap(dbPath, ctx), propName);
+}
+
+function _dbHasColumnCellDisplayOverrides(dbPath, ctx = null) {
+  const map = _dbColumnCellDisplayMap(dbPath, ctx);
   return !!(map && typeof map === 'object' && Object.keys(map).length);
 }
 
-function syncDbCellDisplayToolbar(dbPath) {
+function syncDbCellDisplayToolbar(dbPath, ctx = null) {
   const btn = document.getElementById('btn-db-cell-wrap');
   if (!btn) return;
   const cfg = _dbCellDisplayConfig(dbPath);
@@ -2700,7 +2730,8 @@ function syncDbCellDisplayToolbar(dbPath) {
   const iconName = active ? 'wrapText' : 'scissors';
   btn.classList.toggle('active', active);
   btn.innerHTML = (typeof lucide === 'function') ? lucide(iconName, 16) : '';
-  const hasColumnOverrides = _dbHasColumnCellDisplayOverrides(dbPath);
+  const activeCtx = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const hasColumnOverrides = _dbHasColumnCellDisplayOverrides(dbPath, activeCtx);
   btn.title = (active ? `折返し (${cfg.lines}行まで)` : '切り詰め') + (hasColumnOverrides ? '（一部の列は個別設定）' : '');
   btn.setAttribute('aria-label', btn.title);
 }
@@ -2710,7 +2741,19 @@ function syncDbCellDisplayToolbar(dbPath) {
 function setDbColumnCellTextDisplay(dbPath, propName, overflow, lines, options = {}) {
   if (!dbPath || !propName) return;
   const cfg = getDbViewConfig(dbPath);
-  const byCol = (cfg.cellDisplayByCol && typeof cfg.cellDisplayByCol === 'object') ? { ...cfg.cellDisplayByCol } : {};
+  const target = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+    ? (_getCurrentDbViewConfigEntryFromConfig(cfg, { ctx: options.ctx }) || cfg)
+    : cfg;
+  const inherited = target !== cfg
+    && !Object.prototype.hasOwnProperty.call(target, 'cellDisplayByCol')
+    && cfg.cellDisplayByCol
+    && typeof cfg.cellDisplayByCol === 'object'
+    ? cfg.cellDisplayByCol
+    : null;
+  const source = target.cellDisplayByCol || inherited;
+  const byCol = (source && typeof source === 'object')
+    ? { ...source }
+    : {};
   const prevLines = byCol[propName]?.lines;
   let detail;
   if (overflow == null) {
@@ -2722,12 +2765,14 @@ function setDbColumnCellTextDisplay(dbPath, propName, overflow, lines, options =
     byCol[propName] = { overflow: nextOverflow, lines: nextLines };
     detail = `${propName}: ${nextOverflow === 'wrap' ? `折り返し(${nextLines}行)` : '切り詰め'}`;
   }
-  if (Object.keys(byCol).length) cfg.cellDisplayByCol = byCol;
-  else delete cfg.cellDisplayByCol;
+  if (Object.keys(byCol).length) target.cellDisplayByCol = byCol;
+  else if (target !== cfg && cfg.cellDisplayByCol) target.cellDisplayByCol = {};
+  else delete target.cellDisplayByCol;
   saveDbViewConfig(dbPath, cfg, {
     historyLabel: options.label || 'シート表示: 列の折返し',
     historyDetail: detail,
     skipHistory: options.skipHistory === true,
+    ctx: options.ctx,
   });
   const ctx = options.ctx
     || (typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(options.event, { dbPath }) : null)
@@ -2751,6 +2796,23 @@ function setDbCellTextDisplay(dbPath, overflow, lines, options = {}) {
     || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
   else if (typeof renderPivot === 'function') renderPivot(ctx);
+}
+
+function setDbCommonTagsDisplayLimit(dbPath, value, options = {}) {
+  if (!dbPath) return 10;
+  const cfg = getDbViewConfig(dbPath);
+  const fallback = window.MeldexTagDisplayPreferences?.legacyLimit?.() || 10;
+  const next = window.MeldexTagDisplayPreferences?.normalizeLimit?.(value, fallback) || fallback;
+  cfg.commonTagsDisplayLimit = next;
+  saveDbViewConfig(dbPath, cfg, {
+    historyLabel: 'シート表示: タグ表示数',
+    historyDetail: `${next}件`,
+    skipHistory: options.skipHistory === true,
+  });
+  window.dispatchEvent?.(new CustomEvent('meldex:sheet-tag-display-limit-changed', {
+    detail: { dbPath, value: next },
+  }));
+  return next;
 }
 
 function showDbCellWrapMenu(event) {
@@ -2814,6 +2876,36 @@ function showDbCellWrapMenu(event) {
   row.appendChild(input);
   menu.appendChild(row);
 
+  const tagLimitRow = document.createElement('label');
+  tagLimitRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;font-size:12px;color:var(--fg);border-top:1px solid var(--ui-border,var(--border));';
+  const tagLimitLabel = document.createElement('span');
+  tagLimitLabel.textContent = 'タグ表示数';
+  const tagLimitInput = document.createElement('input');
+  tagLimitInput.type = 'number';
+  tagLimitInput.min = '1';
+  tagLimitInput.max = '999';
+  tagLimitInput.step = '1';
+  tagLimitInput.dataset.e2eId = 'sheet-tag-display-limit';
+  tagLimitInput.setAttribute('aria-label', 'シートのタグ表示数');
+  tagLimitInput.value = String(
+    window.MeldexTagDisplayPreferences?.sheetTagDisplayLimit?.(dbPath)
+      || window.MeldexGlobalTags?.getCompactTagDisplayLimit?.()
+      || 10,
+  );
+  tagLimitInput.style.cssText = 'width:56px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--ui-border,var(--border));border-radius:3px;';
+  const applyTagLimit = () => {
+    tagLimitInput.value = String(setDbCommonTagsDisplayLimit(dbPath, tagLimitInput.value, { ctx, event }));
+  };
+  tagLimitInput.addEventListener('change', applyTagLimit);
+  tagLimitInput.addEventListener('keydown', keyEvent => {
+    if (keyEvent.key === 'Enter') {
+      keyEvent.preventDefault();
+      applyTagLimit();
+    }
+  });
+  tagLimitRow.append(tagLimitLabel, tagLimitInput);
+  menu.appendChild(tagLimitRow);
+
   const note = document.createElement('div');
   note.style.cssText = 'padding:4px 10px 6px;font-size:11px;color:var(--fg2);border-top:1px solid var(--border);margin-top:2px;';
   note.textContent = '列ごとの設定は列メニューから';
@@ -2848,7 +2940,7 @@ function showDbCellWrapMenu(event) {
 function _makeColumnWrapSubmenuItems(dbPath, propName, ctx) {
   if (!dbPath || !propName) return [];
   const sheetCfg = _dbCellDisplayConfig(dbPath);
-  const override = getDbColumnCellDisplay(dbPath, propName);
+  const override = getDbColumnCellDisplay(dbPath, propName, ctx);
   const effectiveLines = override ? override.lines : sheetCfg.lines;
   return [
     {
@@ -3043,6 +3135,8 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   const entitiesMap = data?.entities || {};
   const propTypes = options.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {});
   const advFilters = options.advFilters || (typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx }) : []);
+  const columnValueFilters = options.columnValueFilters
+    || (typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {});
   const filterMode = options.filterMode ?? ctx?.filter ?? (typeof state !== 'undefined' ? state.filter : undefined) ?? 'disabled';
   const sortCfg = (typeof getDbSortConfig === 'function' ? getDbSortConfig(dbPath, { ctx }) : getDbViewConfig(dbPath).sortConfig)
     || { key: 'name', dir: 'asc' };
@@ -3052,6 +3146,16 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   let entityNames = Object.keys(entitiesMap);
   if (options.applyAdvancedFilters && Array.isArray(advFilters) && advFilters.length && typeof _dbEntityPassesAdvancedFilters === 'function') {
     entityNames = entityNames.filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, filterMode));
+  }
+  if (typeof _dbEntityPassesColumnValueFilters === 'function' && Object.keys(columnValueFilters || {}).length) {
+    entityNames = entityNames.filter(name => _dbEntityPassesColumnValueFilters(
+      name,
+      entitiesMap[name],
+      columnValueFilters,
+      dbPath,
+      ctx,
+      filterMode,
+    ));
   }
   if (sortCfg.key === 'manual') {
     const order = Array.isArray(manualOrder)
@@ -3213,6 +3317,9 @@ function renderPivot(ctx) {
   const thumbSize = getThumbnailSize(dbPath, { ctx });
   const savedWidths = getColWidths(dbPath, { ctx });
   const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const columnValueFilters = typeof getColumnValueFilters === 'function'
+    ? getColumnValueFilters(dbPath, { ctx })
+    : {};
   const propTypes = getPropertyTypes(dbPath, ctx);
   const groupByProp = getGroupBy(dbPath);
 
@@ -3241,7 +3348,13 @@ function renderPivot(ctx) {
   // エントリ名列は配置位置に関係なく、固定設定時は他の固定列と同じ left 計算へ含める。
 
   const entitiesMap = data.entities;
-  const entityNames = _dbSortedEntityNames(data, dbPath, ctx, { propTypes, advFilters, filterMode });
+  const entityNames = _dbSortedEntityNames(data, dbPath, ctx, {
+    propTypes,
+    advFilters,
+    columnValueFilters,
+    filterMode,
+    applyAdvancedFilters: true,
+  });
   // Step 2: チャンク分割中の D&D で manualOrder 初期化に使う (DOM 未完成時のフォールバック)
   ctx._lastEntityNames = entityNames;
   const renderRowLimit = _dbEffectiveRenderRowLimit(ctx, entityNames, visibleProps);
@@ -3266,8 +3379,17 @@ function renderPivot(ctx) {
   const gridH = gridCfg.gridH || { width: '1px', color: '' };
   const gridV = gridCfg.gridV || { width: '1px', color: '' };
   // 列ごとのセル折返し/切り詰め上書き。未設定なら null にして renderEntityCell 側の per-td 処理を丸ごとスキップさせる。
-  const cellDisplayByCol = (gridCfg.cellDisplayByCol && typeof gridCfg.cellDisplayByCol === 'object' && Object.keys(gridCfg.cellDisplayByCol).length)
-    ? gridCfg.cellDisplayByCol
+  const currentViewDisplay = typeof getCurrentDbViewConfigEntry === 'function'
+    ? getCurrentDbViewConfigEntry(dbPath, { ctx })
+    : null;
+  const currentViewCellDisplay = currentViewDisplay
+    && Object.prototype.hasOwnProperty.call(currentViewDisplay, 'cellDisplayByCol')
+    ? currentViewDisplay.cellDisplayByCol
+    : gridCfg.cellDisplayByCol;
+  const cellDisplayByCol = (currentViewCellDisplay
+      && typeof currentViewCellDisplay === 'object'
+      && Object.keys(currentViewCellDisplay).length)
+    ? currentViewCellDisplay
     : null;
   const entityColumnPinned = typeof getEntityColumnPinned === 'function'
     ? getEntityColumnPinned(dbPath, { ctx })
@@ -3352,6 +3474,15 @@ function renderPivot(ctx) {
       th0Label.className = 'th-label';
       th0Label.textContent = entityColumnLabel;
       th0.appendChild(th0Label);
+      if (typeof isDbColumnFilterActive === 'function' && isDbColumnFilterActive(dbPath, '__entity__', ctx)) {
+        th0.classList.add('col-filtered');
+        const filterIcon = document.createElement('span');
+        filterIcon.className = 'th-filter-icon';
+        filterIcon.innerHTML = lucide('filter', 12);
+        filterIcon.title = 'この列にフィルターが適用されています';
+        filterIcon.setAttribute('aria-label', 'フィルター適用中');
+        th0.appendChild(filterIcon);
+      }
       const th0MoreBtn = document.createElement('span');
       th0MoreBtn.className = 'th-more-btn entity-th-more-btn';
       th0MoreBtn.innerHTML = lucide('moreHorizontal', 14);
@@ -3441,6 +3572,15 @@ function renderPivot(ctx) {
     labelSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     labelSpan.textContent = p;
     th.appendChild(labelSpan);
+    if (typeof isDbColumnFilterActive === 'function' && isDbColumnFilterActive(dbPath, p, ctx)) {
+      th.classList.add('col-filtered');
+      const filterIcon = document.createElement('span');
+      filterIcon.className = 'th-filter-icon';
+      filterIcon.innerHTML = lucide('filter', 12);
+      filterIcon.title = 'この列にフィルターが適用されています';
+      filterIcon.setAttribute('aria-label', 'フィルター適用中');
+      th.appendChild(filterIcon);
+    }
 
     // 列ロック / sourceインジケータ
     const _ptcHeader2 = propTypes[p];
@@ -3590,7 +3730,7 @@ function renderPivot(ctx) {
   thAdd.addEventListener('click', (e) => {
     e.stopPropagation();
     if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
-    if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns(ctx || thAdd);
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu';
     menu.dataset.e2eId = _dbE2eId(ctx, 'column-add-type-menu');
@@ -3685,7 +3825,8 @@ function renderPivot(ctx) {
     }
   });
 
-  const paneRoot = _paneEl(ctx, _tbl()) || document;
+  const paneRoot = _paneEl(ctx, _tbl()) || (!ctx ? document : null);
+  if (!paneRoot) return;
   if (ctx?._dragSelectPointerUp) {
     document.removeEventListener('pointerup', ctx._dragSelectPointerUp);
     document.removeEventListener('pointercancel', ctx._dragSelectPointerUp);
@@ -3735,7 +3876,7 @@ function renderPivot(ctx) {
     if (typeof _dbObservePinnedColumnWidths === 'function') _dbObservePinnedColumnWidths(tblEl);
   }
 
-  const countEl = _paneEl(ctx, '#sb-count') || document.getElementById('sb-count');
+  const countEl = _paneEl(ctx, '#sb-count') || (!ctx ? document.getElementById('sb-count') : null);
   if (countEl) countEl.textContent = isRenderLimited
     ? entityNames.length + ' 件 (' + shownEntityCount + '件表示)'
     : entityNames.length + ' 件';
@@ -3826,7 +3967,8 @@ function _refreshSheetBadges(ctx) {
   try {
     const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
     const tableId = (ctx && ctx.tableId) || 'pivot-table';
-    const tbl = _paneEl(ctx, '#' + tableId) || document.querySelector('#pivot-table') || document.querySelector('table.pivot-table');
+    const tbl = _paneEl(ctx, '#' + tableId)
+      || (!ctx ? document.querySelector('#pivot-table') || document.querySelector('table.pivot-table') : null);
     if (tbl && dbPath) {
       tbl.dataset.dbPath = dbPath;
       tbl.dataset.path = dbPath;

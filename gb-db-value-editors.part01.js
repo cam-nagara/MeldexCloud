@@ -59,8 +59,8 @@ function _typedCellControlE2eId(kind, entityPath, propName) {
   return `db-cell-${token(kind)}-${token(entityPath)}-${token(propName)}`;
 }
 
-function _valueEditorLockMessage(dbPath, propName) {
-  return typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : '';
+function _valueEditorLockMessage(dbPath, propName, ctx) {
+  return typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName, ctx) : '';
 }
 
 function _valueEditorReload(dbPath, ctx) {
@@ -70,7 +70,8 @@ function _valueEditorReload(dbPath, ctx) {
 }
 
 function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
-  const lockMsg = _valueEditorLockMessage(dbPath, propName);
+  const valueCtx = _valueEditorContext(entityPath, span, dbPath);
+  const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
   if (lockMsg) { showStatus(lockMsg); return; }
   if (span.querySelector('input')) return;
   const old = typeof _cellUiValueToString === 'function' ? _cellUiValueToString(val.value) : String(val.value || '');

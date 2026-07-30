@@ -167,6 +167,7 @@ function _folderNormalizeTags(rows) {
       name: String(row?.name || ''),
       color: String(row?.color || ''),
       group_id: row?.group_id || null,
+      sort_index: Number(row?.sort_index || 0),
     };
   }).filter(row => row.id || row.name);
 }
@@ -176,6 +177,7 @@ function _folderStoreTagsForPath(path, rows) {
   if (!key) return [];
   const normalized = _folderNormalizeTags(rows);
   _folderTagCache.set(key, normalized);
+  window.MeldexGlobalTags?.primeTargetTagsCache?.(path, normalized);
   (_folderItems || []).forEach(item => {
     if (_folderTagKey(item?.path) === key) item._folderTags = normalized;
   });
@@ -186,9 +188,30 @@ function _folderInvalidateTagsForPath(path) {
   const key = _folderTagKey(path);
   if (!key) return;
   _folderTagCache.delete(key);
+  window.MeldexGlobalTags?.invalidateTargetTagsCache?.(path);
   (_folderItems || []).forEach(item => {
     if (_folderTagKey(item?.path) === key) delete item._folderTags;
   });
+}
+
+function _folderInvalidateTagsForItems(items, options = {}) {
+  const rows = Array.isArray(items) ? items : [];
+  if (options.all === true) {
+    _folderTagCache.clear();
+    window.MeldexGlobalTags?.invalidateTargetTagsCache?.();
+    rows.forEach(item => {
+      if (item) delete item._folderTags;
+    });
+    return;
+  }
+  rows.forEach(item => _folderInvalidateTagsForPath(item?.path));
+}
+
+async function _folderRefreshTags(items, options = {}) {
+  const rows = Array.isArray(items) ? items : [];
+  if (_folderTagsAreLoading(rows)) await _folderWaitForTagLoads(rows);
+  _folderInvalidateTagsForItems(rows, { all: options.all === true });
+  return _folderEnsureTags(rows, { rerender: options.rerender === true });
 }
 
 function _folderItemTags(item) {

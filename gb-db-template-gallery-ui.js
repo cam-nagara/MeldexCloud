@@ -201,7 +201,7 @@ function _buildDbTemplatePropTable(tmpl) {
 
 /* --- ビュー一覧（プレビューペイン・重ねモーダルで共用） --- */
 
-const DB_TEMPLATE_VIEW_MODE_LABELS = { pivot: 'テーブル', gallery: 'ギャラリー', kanban: 'カンバン', timeline: 'タイムライン', chart: 'チャート' };
+const DB_TEMPLATE_VIEW_MODE_LABELS = { pivot: 'テーブル', tree: 'ツリー', gallery: 'ギャラリー', kanban: 'カンバン', timeline: 'タイムライン', chart: 'チャート' };
 
 function _dbTemplateViewIcon(mode) {
   const found = (typeof VIEW_TYPES !== 'undefined' ? VIEW_TYPES : []).find(vt => vt.mode === mode);

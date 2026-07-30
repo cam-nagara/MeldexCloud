@@ -37,11 +37,13 @@
           <button type="button" data-timer-file-action="open"><span class="ico ico-folderOpen"></span>開く...</button>
           <button type="button" data-timer-file-action="save"><span class="ico ico-save"></span>保存</button>
           <button type="button" data-timer-file-action="saveAs"><span class="ico ico-saveAll"></span>名前を付けて保存...</button>
+          <button type="button" data-timer-file-action="workspace" data-cloud-workspace><span class="ico ico-folderOpen"></span>Meldexファイル</button>
           <div class="sa-menu-sep"></div>
           <button type="button" data-standalone-default-apps-open><span class="ico ico-fileCog"></span>既定アプリに設定...</button>
         </div>
       </div>
-      <div id="timer-title-label" class="sa-title">タイマー</div>
+      <input id="timer-title-label" class="sa-title sa-title-input" type="text" value="タイマー" aria-label="タイマー名" spellcheck="false">
+      <div id="timer-sync-status" class="sa-sync-status" aria-live="polite"></div>
       <div id="timer-path-label" class="sa-path">未保存</div>
       <button id="timer-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="timer-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
@@ -81,8 +83,12 @@
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
+  <script src="gb-dropbox-asset-identity.js"></script>
   <script src="gb-data-access-dropbox-tag-safety.js"></script>
+  <script src="gb-dropbox-tag-catalog-normalizer.js"></script>
   <script src="gb-data-access-dropbox-tags.js"></script>
+  <script src="gb-dropbox-asset-recovery.js"></script>
+  <script src="gb-dropbox-asset-reconciliation.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
   <script src="gb-path-utils.js"></script>
@@ -104,6 +110,10 @@
   <script src="gb-auto-tag-settings.js"></script>
   <script src="gb-global-tags.js"></script>
   <script src="gb-tag-preset-management.js"></script>
+<script src="gb-tag-panel-tabs.js"></script><script src="gb-tag-tree-runtime.js"></script><script src="gb-tag-management-overlays.js"></script><script src="gb-tag-catalog-suggestions.js"></script>
+  <script src="gb-tag-display-preferences.js"></script>
+  <script src="gb-tag-group-summary.js"></script>
+  <script src="gb-tag-tree-dnd.js"></script>
   <script src="gb-tag-management.js"></script>
   <script src="standalone-tags.js"></script>
   <script src="standalone-workspace-tree.js"></script>
@@ -111,6 +121,8 @@
   <script src="gb-tool-timer.js"></script>
   <script src="gb-tool-timer-advanced.js"></script>
   <script src="gb-tool-timer-custom-alarm.js"></script>
+  <script src="standalone-local-drafts.js"></script>
+  <script src="standalone-offline-outbox.js"></script>
   <script src="timer-standalone-app.js"></script>
 </body>
 </html>

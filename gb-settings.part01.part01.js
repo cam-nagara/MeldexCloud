@@ -630,6 +630,7 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
+      <div id="settings-tag-maintenance"></div>
     </div>
     <!-- フィードバック -->
     <div class="settings-panel" data-panel="フィードバック" hidden>

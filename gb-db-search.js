@@ -79,8 +79,12 @@ function _dbFindValueRef(dbPath, entityName, propName, val, rawIndex, pivotData)
 }
 
 function _dbFindVisibleProps(dbPath, pivotData) {
-  const props = Array.isArray(pivotData?.properties) ? pivotData.properties : [];
-  return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
+  let props = Array.isArray(pivotData?.properties) ? pivotData.properties : [];
+  if (typeof filterDeletedDbProperties === 'function') props = filterDeletedDbProperties(dbPath, props);
+  const hidden = typeof getHiddenCols === 'function'
+    ? getHiddenCols(dbPath, { ctx: _dbFindState.ctx })
+    : [];
+  return props.filter(propName => !hidden.includes(propName));
 }
 
 function _dbFindCollectMatches(query, ctx, dbPath) {
@@ -90,7 +94,19 @@ function _dbFindCollectMatches(query, ctx, dbPath) {
   const needle = String(query || '').toLowerCase();
   if (!needle) return [];
   const matches = [];
-  Object.keys(entities).forEach(entityName => {
+  const propTypes = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {};
+  const advFilters = typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx }) : [];
+  const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
+  const entityNames = typeof _dbSortedEntityNames === 'function'
+    ? _dbSortedEntityNames(pivotData, dbPath, ctx, {
+        applyAdvancedFilters: true,
+        propTypes,
+        advFilters,
+        columnValueFilters,
+        filterMode: ctx?.filter,
+      })
+    : Object.keys(entities);
+  entityNames.forEach(entityName => {
     const entityText = String(entityName || '');
     let pos = 0;
     while ((pos = entityText.toLowerCase().indexOf(needle, pos)) >= 0) {
@@ -126,6 +142,11 @@ function _dbFindCollectMatches(query, ctx, dbPath) {
 
 function _dbFindClearCurrentMark() {
   document.querySelectorAll('.db-find-current-cell').forEach(el => el.classList.remove('db-find-current-cell'));
+  document.querySelectorAll('mark.db-find-current-text').forEach(mark => {
+    const parent = mark.parentNode;
+    mark.replaceWith(document.createTextNode(mark.textContent || ''));
+    parent?.normalize?.();
+  });
 }
 
 function _dbFindCellForMatch(match) {
@@ -144,11 +165,69 @@ function _dbFindEnsureMatchRendered(match) {
   return false;
 }
 
+function _dbFindOccurrenceInCell(match) {
+  const index = _dbFindState.index;
+  let occurrence = 0;
+  for (let i = 0; i < index; i++) {
+    const candidate = _dbFindState.matches[i];
+    if (candidate.kind !== match.kind || candidate.entityName !== match.entityName) continue;
+    if (match.kind === 'value' && candidate.propName !== match.propName) continue;
+    occurrence++;
+  }
+  return occurrence;
+}
+
+function _dbFindMarkText(cell, query, occurrence) {
+  const needle = String(query || '').toLocaleLowerCase('ja');
+  if (!cell || !needle) return null;
+  const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || !node.nodeValue) return NodeFilter.FILTER_REJECT;
+      if (parent.closest('mark.db-find-current-text,button,input,textarea,select,script,style')) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let remaining = Math.max(0, Number(occurrence) || 0);
+  let node;
+  while ((node = walker.nextNode())) {
+    const text = String(node.nodeValue || '');
+    const lower = text.toLocaleLowerCase('ja');
+    let offset = 0;
+    while (offset <= lower.length - needle.length) {
+      const found = lower.indexOf(needle, offset);
+      if (found < 0) break;
+      if (remaining > 0) {
+        remaining--;
+        offset = found + Math.max(1, needle.length);
+        continue;
+      }
+      const before = text.slice(0, found);
+      const matchText = text.slice(found, found + needle.length);
+      const after = text.slice(found + needle.length);
+      const mark = document.createElement('mark');
+      mark.className = 'db-find-current-text';
+      mark.textContent = matchText;
+      mark.setAttribute('aria-current', 'true');
+      const fragment = document.createDocumentFragment();
+      if (before) fragment.appendChild(document.createTextNode(before));
+      fragment.appendChild(mark);
+      if (after) fragment.appendChild(document.createTextNode(after));
+      node.replaceWith(fragment);
+      return mark;
+    }
+  }
+  return null;
+}
+
 function _dbFindRevealCell(match) {
   const cell = match ? _dbFindCellForMatch(match) : null;
   if (!cell) return false;
   cell.classList.add('db-find-current-cell');
-  cell.scrollIntoView({ block: 'center', inline: 'center' });
+  const mark = _dbFindMarkText(cell, _dbFindState.query, _dbFindOccurrenceInCell(match));
+  (mark || cell).scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
   if (typeof setActiveCell === 'function' && match.kind === 'value') setActiveCell(cell, { scroll: false });
   return true;
 }
@@ -308,7 +387,14 @@ async function _dbFindRenameEntity(match, nextName) {
   if (cleanName !== match.entityName && pivotData?.entities && Object.prototype.hasOwnProperty.call(pivotData.entities, cleanName)) {
     throw new Error('同じエントリ名が既にあります: ' + cleanName);
   }
-  await apiPost('/entity/rename', { path: _entityPath(dbPath, match.entityName, pivotData), new_name: cleanName });
+  await window.GbDbEntryIdentity.rename({
+    dbPath,
+    oldName: match.entityName,
+    newName: cleanName,
+    path: _entityPath(dbPath, match.entityName, pivotData),
+    ctx,
+    entryId: pivotData?.entities?.[match.entityName]?._id || '',
+  });
   if (typeof _dbUndoRename === 'function') _dbUndoRename(dbPath, match.entityName, cleanName, ctx);
 }
 

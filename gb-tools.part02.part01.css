@@ -512,7 +512,7 @@ input.gb-middle-ellipsis-input-active {
      9999 のままだとポップアップは DOM 上は開くがオーバーレイの裏に隠れ、
      「一覧から選択を押しても何も起きない」ように見える。 */
   position: fixed; z-index: 10080;
-  background: var(--ui-popup-bg, var(--ui-bg-panel)); border: 1px solid var(--ui-border);
+  background: var(--ui-popup-bg, var(--ui-bg-panel)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--ui-border)));
   border-radius: var(--ui-radius-md); box-shadow: var(--ui-shadow-lg);
   padding: var(--ui-space-3); min-width: 280px; max-width: 420px; max-height: 360px; overflow-y: auto;
 }
@@ -936,6 +936,18 @@ input.gb-middle-ellipsis-input-active {
   flex-shrink: 0; overflow: hidden;
 }
 #search-panel.open { display: flex; }
+#search-panel.search-panel-main-popup {
+  position: fixed;
+  z-index: 10040;
+  width: min(520px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: min(560px, calc(100vh - 16px));
+  box-sizing: border-box;
+  flex-shrink: 1;
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--search-border)));
+  border-radius: var(--ui-radius-md, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 4px 16px rgba(0, 0, 0, 0.4));
+}
 #search-panel .sp-header { padding: 8px; border-bottom: 1px solid var(--search-border); }
 #search-panel .sp-input-row { display: flex; gap: 4px; margin-bottom: 4px; }
 #search-panel .sp-input-row input[type="text"] {
@@ -1102,18 +1114,19 @@ input.gb-middle-ellipsis-input-active {
 #file-search-bar {
   display: none; position: absolute; top: 8px; right: 16px; z-index: 70;
   max-width: min(520px, calc(100vw - 32px));
-  background: var(--search-bg); color: var(--search-fg); border: 1px solid var(--search-border); border-radius: 4px;
+  background: var(--search-bg); color: var(--search-fg); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--search-border))); border-radius: 4px;
   padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
   gap: 4px; align-items: flex-start; font-size: 13px; flex-wrap: wrap;
 }
 #file-search-bar.open { display: flex; }
 #file-search-bar:not(.replace-open) #fsb-replace,
 #file-search-bar:not(.replace-open) [data-action^="doFileReplace"] { display: none; }
-#file-search-bar textarea { background: var(--search-panel-bg); color: var(--search-fg); border: 1px solid var(--search-border); border-radius: 3px; padding: 3px 6px; font-size: 13px; outline: none; font-family: inherit; line-height: 1.4; overflow: hidden; }
-#file-search-bar textarea:focus { border-color: var(--search-accent); }
+#file-search-bar textarea { min-height: var(--ui-h-sm, 28px); background: var(--ui-bg-field, var(--ui-bg-app, var(--search-panel-bg))); color: var(--search-fg); border: 1px solid var(--ui-border, var(--search-border)); border-radius: 3px; padding: 3px 6px; font-size: 13px; outline: none; font-family: inherit; line-height: 1.4; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,0.24); }
+#file-search-bar textarea:focus { border-color: var(--search-accent); box-shadow: inset 0 1px 2px rgba(0,0,0,0.24), 0 0 0 2px color-mix(in srgb, var(--search-accent) 28%, transparent); }
 #file-search-bar textarea.multiline { height: auto; min-height: 5.6em; overflow-y: auto; }
-#file-search-bar button { padding: 2px 6px; font-size: 12px; background: var(--search-panel-bg); color: var(--search-fg); border: 1px solid var(--search-border); border-radius: 3px; cursor: pointer; }
+#file-search-bar button { min-height: var(--ui-h-sm, 28px); padding: 2px 6px; font-size: 12px; background: var(--ui-bg-control, var(--search-hover-bg)); color: var(--search-fg); border: 1px solid var(--ui-border-strong, var(--search-border)); border-radius: 3px; cursor: pointer; box-shadow: 0 1px 1px rgba(0,0,0,0.22); }
 #file-search-bar button:hover { background: var(--search-hover-bg); }
+#file-search-bar button:active { background: var(--ui-bg-control-active, var(--search-hover-bg)); }
 #file-search-bar .fsb-count { font-size: 11px; color: var(--search-muted-fg); min-width: 50px; text-align: center; }
 @media (max-width: 640px), (pointer: coarse) {
   #file-search-bar {
@@ -1160,7 +1173,7 @@ input.gb-middle-ellipsis-input-active {
   padding: 6px 8px;
   background: var(--search-bg);
   color: var(--search-fg);
-  border: 1px solid var(--search-border);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--search-border)));
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.4);
   font-size: 13px;
@@ -1169,29 +1182,34 @@ input.gb-middle-ellipsis-input-active {
   width: 160px;
   resize: none;
   overflow: hidden;
-  background: var(--search-panel-bg);
+  min-height: var(--ui-h-sm, 28px);
+  background: var(--ui-bg-field, var(--ui-bg-app, var(--search-panel-bg)));
   color: var(--search-fg);
-  border: 1px solid var(--search-border);
+  border: 1px solid var(--ui-border, var(--search-border));
   border-radius: 3px;
   padding: 3px 6px;
   font-size: 13px;
   line-height: 1.4;
   outline: none;
   font-family: inherit;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.24);
 }
 .db-find-bar textarea[data-db-find-replace] { width: 120px; }
-.db-find-bar textarea:focus { border-color: var(--search-accent); }
+.db-find-bar textarea:focus { border-color: var(--search-accent); box-shadow: inset 0 1px 2px rgba(0,0,0,0.24), 0 0 0 2px color-mix(in srgb, var(--search-accent) 28%, transparent); }
 .db-find-bar textarea.multiline { height: auto; min-height: 5.6em; overflow-y: auto; }
 .db-find-bar button {
+  min-height: var(--ui-h-sm, 28px);
   padding: 2px 6px;
   font-size: 12px;
-  background: var(--search-panel-bg);
+  background: var(--ui-bg-control, var(--search-hover-bg));
   color: var(--search-fg);
-  border: 1px solid var(--search-border);
+  border: 1px solid var(--ui-border-strong, var(--search-border));
   border-radius: 3px;
   cursor: pointer;
+  box-shadow: 0 1px 1px rgba(0,0,0,0.22);
 }
 .db-find-bar button:hover { background: var(--search-hover-bg); }
+.db-find-bar button:active { background: var(--ui-bg-control-active, var(--search-hover-bg)); }
 .db-find-bar .db-find-count {
   font-size: 11px;
   color: var(--search-muted-fg);

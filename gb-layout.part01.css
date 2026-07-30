@@ -1148,7 +1148,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   max-width: min(420px, calc(100vw - 24px));
   margin: 0 auto;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
   border-radius: var(--ui-radius-md, 6px);
   background: var(--ui-popup-bg, var(--bg2));
   color: var(--fg);

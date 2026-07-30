@@ -4,8 +4,10 @@
 
   const settingsState = new WeakMap();
   const runPanelState = new WeakMap();
+  const pendingRunTargets = new WeakMap();
   const loadBundleCache = new Map();
   const LOAD_BUNDLE_CACHE_TTL_MS = 5000;
+  let settingsSaveQueue = Promise.resolve();
 
   function atEsc(value) {
     if (typeof esc === 'function') return esc(String(value ?? ''));
@@ -27,6 +29,11 @@
     return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase();
   }
 
+  function atIsAbsolutePath(value) {
+    const path = String(value || '').trim();
+    return /^[a-z]:[\\/]/i.test(path) || /^(?:\\\\|\/\/|\/)/.test(path);
+  }
+
   function atCurrentPath() {
     if (typeof _folderPath !== 'undefined' && _folderPath) return String(_folderPath);
     if (typeof _tabs !== 'undefined' && typeof _activeTabId !== 'undefined') {
@@ -45,9 +52,28 @@
     return '';
   }
 
+  function atSourceOptions() {
+    const options = [];
+    const append = rows => (Array.isArray(rows) ? rows : []).forEach(item => {
+      const path = String(item?.path || item || '').trim();
+      if (path) options.push({ ...(typeof item === 'object' ? item : {}), path });
+    });
+    if (typeof _chatSourceOptions === 'function') append(_chatSourceOptions());
+    append(window.MeldexRegisteredSourceRoots);
+    if (typeof _outlinerRoots !== 'undefined') append(_outlinerRoots);
+    const vault = typeof state !== 'undefined' ? String(state?.vaultPath || '').trim() : '';
+    if (vault) append([vault]);
+    const home = typeof _homeFolderPath !== 'undefined' ? String(_homeFolderPath || '').trim() : '';
+    if (home) append([home]);
+    return options;
+  }
+
   function atSourceFolderForPath(targetPath) {
-    const candidates = [targetPath, atCurrentPath()].map(atNormalizedPath).filter(Boolean);
-    const options = typeof _chatSourceOptions === 'function' ? _chatSourceOptions() : [];
+    const rawTarget = String(targetPath || '').trim();
+    const lookupPath = rawTarget || atCurrentPath();
+    const target = atNormalizedPath(lookupPath);
+    const candidates = target ? [target] : [];
+    const options = atSourceOptions();
     let match = null;
     options.forEach(option => {
       const rawRoot = String(option?.path || '').trim();
@@ -58,6 +84,9 @@
       }
     });
     if (match) return match.path;
+    // 絶対パスへ無関係な現在のVaultを付けると、API側では「ソースフォルダ外」になる。
+    // 未特定の絶対パスはsource_folderを省略し、サーバーの登録ルート照合へ任せる。
+    if (atIsAbsolutePath(lookupPath)) return '';
     const vault = typeof state !== 'undefined' ? String(state?.vaultPath || '').trim() : '';
     if (vault) return vault;
     const chatSource = typeof _chatSourceFolderValue === 'function'
@@ -150,6 +179,46 @@
 
   function invalidateAutoTagBundleCache() {
     loadBundleCache.clear();
+  }
+
+  function atPersistSettings(updates) {
+    const payload = { ...(updates || {}) };
+    if (Array.isArray(payload.preset_names)) payload.preset_names = [...payload.preset_names];
+    const task = settingsSaveQueue.catch(() => null).then(() => apiFetch('/auto-tag/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      silentError: true,
+    }));
+    settingsSaveQueue = task;
+    return task;
+  }
+
+  function atQueueSettingsSave(host, state, updates, options) {
+    state.settings = { ...state.settings, ...(updates || {}) };
+    const revision = Number(state.persistRevision || 0) + 1;
+    state.persistRevision = revision;
+    const saveState = host?.querySelector?.('[data-at-save-state]');
+    if (saveState) saveState.textContent = '保存中…';
+    const task = atPersistSettings(updates).then(result => {
+      if (state.persistRevision === revision) {
+        state.settings = { ...state.settings, ...(result?.settings || {}) };
+        const currentSaveState = host?.querySelector?.('[data-at-save-state]');
+        if (currentSaveState) currentSaveState.textContent = '保存しました';
+      }
+      invalidateAutoTagBundleCache();
+      if (!options?.silent) atStatus('自動タグ付け設定を保存しました');
+      return result?.settings || state.settings;
+    }).catch(error => {
+      if (state.persistRevision === revision) {
+        const currentSaveState = host?.querySelector?.('[data-at-save-state]');
+        if (currentSaveState) currentSaveState.textContent = '保存できませんでした';
+      }
+      atStatus('自動タグ付け設定を保存できませんでした: ' + (error?.userMessage || error?.message || error), true);
+      throw error;
+    });
+    state.persistPromise = task;
+    return task;
   }
 
   async function atLoadBundle(targetPath, options) {
@@ -288,6 +357,11 @@
     const settings = state.settings;
     const dictionary = state.dictionary;
     const selected = atModelForState(state);
+    const gpuAvailable = selected?.runtime?.gpu_available === true;
+    const gpuProvider = String(selected?.runtime?.gpu_provider || '');
+    const gpuHelp = gpuAvailable
+      ? `GPU実行環境: ${gpuProvider === 'DmlExecutionProvider' ? 'DirectML' : 'CUDA'}`
+      : 'GPU対応の画像AI実行環境がありません。「自動」または「CPU」を選んでください。';
     host.innerHTML = `
       <div class="at-settings-head">
         <div>
@@ -323,9 +397,10 @@
           <label class="at-field-label" for="at-device-select">処理デバイス</label>
           <select id="at-device-select" class="gb-input" data-at-setting="device">
             <option value="auto" ${settings.device === 'auto' ? 'selected' : ''}>自動</option>
-            <option value="gpu" ${settings.device === 'gpu' ? 'selected' : ''}>GPU</option>
+            <option value="gpu" ${settings.device === 'gpu' ? 'selected' : ''} ${gpuAvailable ? '' : 'disabled'}>GPU${gpuAvailable ? '' : '（実行環境なし）'}</option>
             <option value="cpu" ${settings.device === 'cpu' ? 'selected' : ''}>CPU</option>
           </select>
+          <p class="at-help${gpuAvailable ? '' : ' at-help--warn'}">${atEsc(gpuHelp)}</p>
           <details class="at-thresholds">
             <summary>判定の詳細設定</summary>
             <label>一般タグのしきい値
@@ -337,7 +412,7 @@
           </details>
           <label class="at-adult-option">
             <input type="checkbox" data-at-setting="allow_adult_local" ${settings.allow_adult_local ? 'checked' : ''}>
-            <span><strong>成人向け画像も端末内だけで解析する</strong><small>ローカル画像AIでのみ利用できます。CLI AIの安全制限は変更しません。</small></span>
+            <span><strong>成人向け画像も端末内だけで解析する</strong><small>ローカル画像AIが明確に成人向けと判定した画像では、「成人向け」グループの候補を専用の感度で補完します。水着などの境界的な画像は通常感度で解析し、CLI AIの安全制限は変更しません。</small></span>
           </label>
         </div>
         <div class="at-dictionary-card">
@@ -380,18 +455,9 @@
   }
 
   async function atSaveSettingsHost(host, state, options) {
-    state.settings = atReadSettings(host, state);
-    const result = await apiFetch('/auto-tag/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(state.settings),
-      silentError: true,
-    });
-    state.settings = result?.settings || state.settings;
-    invalidateAutoTagBundleCache();
-    const saveState = host.querySelector('[data-at-save-state]');
-    if (saveState) saveState.textContent = '保存しました';
-    if (!options?.silent) atStatus('自動タグ付け設定を保存しました');
+    const nextSettings = atReadSettings(host, state);
+    state.settings = nextSettings;
+    await atQueueSettingsSave(host, state, nextSettings, options);
     return true;
   }
 
@@ -473,6 +539,9 @@
         state.settings = atReadSettings(host, state);
         state.settings.ai_id = button.dataset.atAi;
         atRenderSettingsBody(host, state);
+        atQueueSettingsSave(host, state, { ai_id: state.settings.ai_id }, { silent: true }).catch(() => {
+          // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+        });
       });
     });
     host.querySelectorAll('[data-at-model]').forEach(button => {
@@ -482,6 +551,22 @@
         if (model?.ai_id === 'cli') state.settings.cli_model_id = model.id;
         else if (model) state.settings.model_id = model.id;
         atRenderSettingsBody(host, state);
+        const key = model?.ai_id === 'cli' ? 'cli_model_id' : 'model_id';
+        atQueueSettingsSave(host, state, { [key]: model?.id || '' }, { silent: true }).catch(() => {
+          // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+        });
+      });
+    });
+    host.querySelectorAll('[data-at-setting], [data-at-preset]').forEach(input => {
+      input.addEventListener('change', () => {
+        const nextSettings = atReadSettings(host, state);
+        state.settings = nextSettings;
+        const updates = input.hasAttribute('data-at-preset')
+          ? { preset_names: nextSettings.preset_names }
+          : { [input.dataset.atSetting]: nextSettings[input.dataset.atSetting] };
+        atQueueSettingsSave(host, state, updates, { silent: true }).catch(() => {
+          // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+        });
       });
     });
     host.querySelector('[data-at-save]')?.addEventListener('click', () => {
@@ -629,6 +714,16 @@
     const tagCount = atSelectedAutoTagCount(state.dictionary, presetNames);
     const usesCli = state.aiSelect.value === 'cli'
       || (state.aiSelect.value === 'auto' && (!model?.local || !model.ready));
+    const missingGpu = !usesCli
+      && state.settings.device === 'gpu'
+      && model?.runtime?.gpu_available !== true;
+    if (missingGpu) {
+      state.readiness.className = 'at-run-ready at-ready--error';
+      state.readiness.textContent = 'GPU実行環境がありません';
+      state.runButton.disabled = true;
+      state.runButton.title = '設定で処理デバイスを「自動」または「CPU」に変更してください';
+      return;
+    }
     if (usesCli && tagCount > AT_CLI_CATALOG_LIMIT) {
       state.readiness.className = 'at-run-ready at-ready--error';
       state.readiness.textContent = `CLI上限超過（${tagCount.toLocaleString('ja-JP')}件 / 2,000件）`;
@@ -643,19 +738,64 @@
     state.runButton.removeAttribute('title');
   }
 
+  function atNormalizeRunPath(value) {
+    return window.MeldexTagPresetUI?.normalizeAutoTagTargetPath?.(value)
+      || (typeof value === 'string' ? value.trim() : '');
+  }
+
   function atNormalizeRunTargets(path, options) {
     const seen = new Set();
     const rawTargets = Array.isArray(options?.targets) && options.targets.length
       ? options.targets
       : [{ path, recursive: options?.recursive }];
     return rawTargets.map(item => ({
-      path: String(item?.path || item || '').trim(),
+      path: atNormalizeRunPath(item),
       recursive: typeof item === 'object' ? !!item?.recursive : false,
     })).filter(item => {
       if (!item.path || seen.has(item.path)) return false;
       seen.add(item.path);
       return true;
     });
+  }
+
+  function atRunTargetState(path, options) {
+    const targets = atNormalizeRunTargets(path, options);
+    const firstTarget = targets[0] || { path: '', recursive: false };
+    return {
+      path: firstTarget.path,
+      recursive: firstTarget.recursive,
+      targets,
+      label: String(options?.label || ''),
+    };
+  }
+
+  function updateAutoTagRunPanelTargets(host, path, options) {
+    if (!host) return false;
+    const targetState = atRunTargetState(path, options);
+    pendingRunTargets.set(host, targetState);
+    const state = runPanelState.get(host);
+    if (!state) return false;
+    Object.assign(state, targetState);
+    return true;
+  }
+
+  function atRunPanelSettingUpdates(state) {
+    const presetNames = [...state.host.querySelectorAll('[data-at-run-preset]')]
+      .filter(input => input.checked)
+      .map(input => input.dataset.atRunPreset);
+    const updates = {
+      ai_id: state.aiSelect.value,
+      assignment_mode: state.assignmentModeSelect.value,
+      preset_names: presetNames.length ? presetNames : [...(state.settings.preset_names || [])],
+    };
+    const model = state.models.find(item => item.id === state.modelSelect.value);
+    if (model?.ai_id === 'cli') updates.cli_model_id = model.id;
+    else if (model) updates.model_id = model.id;
+    return updates;
+  }
+
+  function atPersistRunPanelSettings(state) {
+    return atQueueSettingsSave(state.host, state, atRunPanelSettingUpdates(state), { silent: true });
   }
 
   async function atRunFromPanel(state) {
@@ -673,11 +813,16 @@
       const model = state.models.find(item => item.id === state.modelSelect.value);
       const usesCli = state.aiSelect.value === 'cli'
         || (state.aiSelect.value === 'auto' && (!model?.local || !model.ready));
+      if (!usesCli && state.settings.device === 'gpu' && model?.runtime?.gpu_available !== true) {
+        atStatus('GPU対応の画像AI実行環境がありません。設定で処理デバイスを「自動」または「CPU」に変更してください。', true);
+        return;
+      }
       const tagCount = atSelectedAutoTagCount(state.dictionary, presetNames);
       if (usesCli && tagCount > AT_CLI_CATALOG_LIMIT) {
         atStatus(`CLI AIで使える有効タグは2,000件までです（現在${tagCount.toLocaleString('ja-JP')}件）。プリセットを減らすか、ローカル画像AIを選んでください。`, true);
         return;
       }
+      if (state.persistPromise) await state.persistPromise.catch(() => null);
       const targetPayload = state.targets.length > 1
         ? { targets: state.targets, label: state.label || `${state.targets.length}件の選択項目` }
         : { path: state.path, recursive: state.recursive };
@@ -686,6 +831,7 @@
         source_folder: atSourceFolderForPath(state.path),
         ai_id: state.aiSelect.value,
         model_id: state.modelSelect.value,
+        assignment_mode: state.assignmentModeSelect.value,
         preset_names: presetNames,
       });
       if (result?.background) {
@@ -705,9 +851,10 @@
   }
 
   async function renderAutoTagRunPanel(host, path, options) {
-    const targets = atNormalizeRunTargets(path, options);
-    const firstTarget = targets[0] || { path: '', recursive: false };
-    if (!host || !firstTarget.path || host.dataset.atRunLoading === '1') return;
+    if (!host) return;
+    const requestedTarget = atRunTargetState(path, options);
+    pendingRunTargets.set(host, requestedTarget);
+    if (!requestedTarget.path || host.dataset.atRunLoading === '1') return;
     if (!isAutoTagRuntimeAvailable()) {
       host.hidden = true;
       host.replaceChildren();
@@ -718,7 +865,8 @@
     host.classList.add('at-run-panel');
     host.innerHTML = '<div class="at-loading">自動タグ付けを準備しています…</div>';
     try {
-      const bundle = await atLoadBundle(firstTarget.path);
+      const bundle = await atLoadBundle(requestedTarget.path);
+      const latestTarget = pendingRunTargets.get(host) || requestedTarget;
       host.innerHTML = `
         <div class="at-run-head">
           <div><strong>${atIcon('sparkles', 14)} 自動タグ付け</strong><small>この実行だけのAI・モデルを選べます</small></div>
@@ -728,6 +876,9 @@
           <option value="auto">自動選択</option><option value="local-wd">ローカル画像AI</option><option value="cli">CLI AI</option>
         </select></label>
         <label><span>モデル</span><select class="gb-input" data-e2e-id="tag-auto-run-model" data-at-run-model></select></label>
+        <label><span>既存タグの扱い ${atFieldHelp('「自動タグのみ置換」は手動で付けたタグを残し、前回の自動タグだけを今回の判定結果へ置き換えます。')}</span><select class="gb-input" data-e2e-id="tag-auto-run-assignment-mode" data-at-run-assignment-mode>
+          <option value="append">既存タグへ追加</option><option value="replace_auto">自動タグのみ置換</option>
+        </select></label>
         <details class="at-run-presets" open>
           <summary>自動タグプリセット（複数選択可）</summary>
           <div class="at-preset-options" role="group" aria-label="今回使う自動タグプリセット">
@@ -739,24 +890,43 @@
       `;
       const state = {
         host,
-        path: firstTarget.path,
-        recursive: firstTarget.recursive,
-        targets,
-        label: String(options?.label || ''),
-        settings: bundle.settings,
+        ...latestTarget,
+        settings: { ...bundle.settings },
         dictionary: bundle.dictionary,
         models: bundle.models,
         aiSelect: host.querySelector('[data-at-run-ai]'),
         modelSelect: host.querySelector('[data-at-run-model]'),
+        assignmentModeSelect: host.querySelector('[data-at-run-assignment-mode]'),
         readiness: host.querySelector('.at-run-ready'),
         runButton: host.querySelector('[data-at-run]'),
       };
       state.aiSelect.value = bundle.settings.ai_id || 'auto';
+      state.assignmentModeSelect.value = bundle.settings.assignment_mode || 'append';
       atRunModelOptions(state);
-      state.aiSelect.addEventListener('change', () => atRunModelOptions(state));
-      state.modelSelect.addEventListener('change', () => atUpdateRunReadiness(state));
+      state.aiSelect.addEventListener('change', () => {
+        atRunModelOptions(state);
+        atPersistRunPanelSettings(state).catch(() => {
+          // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+        });
+      });
+      state.modelSelect.addEventListener('change', () => {
+        atUpdateRunReadiness(state);
+        atPersistRunPanelSettings(state).catch(() => {
+          // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+        });
+      });
+      state.assignmentModeSelect.addEventListener('change', () => {
+        atPersistRunPanelSettings(state).catch(() => {
+          // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+        });
+      });
       host.querySelectorAll('[data-at-run-preset]').forEach(input => {
-        input.addEventListener('change', () => atUpdateRunReadiness(state));
+        input.addEventListener('change', () => {
+          atUpdateRunReadiness(state);
+          atPersistRunPanelSettings(state).catch(() => {
+            // atQueueSettingsSaveが画面へ失敗理由を表示済み。
+          });
+        });
       });
       state.runButton.addEventListener('click', () => atRunFromPanel(state));
       host.querySelector('[data-at-run-dictionary]')?.addEventListener('click', () => (
@@ -789,6 +959,7 @@
   window.exportAutoTagDictionaryCsv = exportAutoTagDictionaryCsv;
   window.invalidateAutoTagBundleCache = invalidateAutoTagBundleCache;
   window.renderAutoTagRunPanel = renderAutoTagRunPanel;
+  window.updateAutoTagRunPanelTargets = updateAutoTagRunPanelTargets;
   window.hydrateAutoTagRunPanels = hydrateAutoTagRunPanels;
   window.MeldexAutoTagSourceFolder = atSourceFolderForPath;
 })();

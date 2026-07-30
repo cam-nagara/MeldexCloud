@@ -1,3 +1,21 @@
+    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return null;
+    return {
+      endpoint,
+      label: 'api' + endpoint,
+      targetLabel: _perfTargetLabelFromPath(path),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const _apiFetchInFlightGets = new Map();
+const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
+const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
+// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
+// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
 // ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
 const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
@@ -735,6 +753,9 @@ async function init() {
       });
     }
     state.vaultPath = vault.path;
+    window.MeldexRegisteredSourceRoots = Array.isArray(roots)
+      ? roots.filter(root => root?.path).map(root => ({ ...root }))
+      : [];
     try {
       if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
     } catch (e) {}
@@ -877,24 +898,3 @@ async function init() {
     } // if (!restored) from URL params
 
     // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
-    // マニュアルのクイックスタートをノートとして開く（ファイルが存在する場合のみ）
-    if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
-      const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
-      try {
-        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
-        if (_check && typeof _check.content === 'string') {
-          const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
-          openPage('クイックスタート', _qsPath, _qsOpts);
-          localStorage.setItem('meldex-quickstart-shown', '1');
-          restored = true;
-        }
-      } catch (e) {}
-    }
-
-    if (!restored && !_isDesktopStartupLaunch()) {
-      const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
-      if (startupFolder?.path) {
-        const _startupOpts = { fromExplorer: true, skipAutoAppLayout: true };
-        await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
-        restored = true;
-      }

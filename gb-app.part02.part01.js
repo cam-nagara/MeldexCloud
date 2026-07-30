@@ -340,7 +340,7 @@ function _hasDbViewObjectState(value) {
 }
 function _normalizeDbViewModeValue(mode) {
   const value = String(mode || '').trim();
-  return ['pivot', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
+  return ['pivot', 'tree', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
     ? value
     : 'pivot';
 }
@@ -379,6 +379,7 @@ function _makeLegacyDbSavedView(cfg) {
     pinnedCols: _cloneDbViewArray(cfg.pinnedCols),
     colOrder: cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null),
     advancedFilters: _cloneDbViewArray(cfg.advancedFilters),
+    columnValueFilters: _cloneDbViewObject(cfg.columnValueFilters),
     conditionalFormat: !!cfg.conditionalFormat,
     conditionalColors: _cloneDbViewObject(cfg.conditionalColors),
     filter: 'disabled',
@@ -406,6 +407,7 @@ function _ensureDbViewTypeSpecific(view, cfg) {
   view.typeSpecific = current;
   if (!_isDbViewPlainObject(current.pivot)) current.pivot = {};
   if (current.pivot.groupBy == null) current.pivot.groupBy = view.groupBy || cfg.groupBy || null;
+  if (!_isDbViewPlainObject(current.tree)) current.tree = {};
   if (!_isDbViewPlainObject(current.gallery)) current.gallery = {};
   if (!_isDbViewPlainObject(current.kanban)) current.kanban = {};
   if (current.kanban.groupBy == null) current.kanban.groupBy = view.kanbanGroupBy || cfg.kanbanGroupBy || '_status';
@@ -437,6 +439,8 @@ function _normalizeSavedDbViewForV2(view, cfg, index) {
   else v.colOrder = _cloneDbViewValue(v.colOrder, null);
   if (v.advancedFilters == null) v.advancedFilters = _cloneDbViewArray(cfg.advancedFilters);
   else v.advancedFilters = _cloneDbViewArray(v.advancedFilters);
+  if (v.columnValueFilters == null) v.columnValueFilters = _cloneDbViewObject(cfg.columnValueFilters);
+  else v.columnValueFilters = _cloneDbViewObject(v.columnValueFilters);
   if (v.conditionalFormat == null) v.conditionalFormat = !!cfg.conditionalFormat;
   else v.conditionalFormat = !!v.conditionalFormat;
   if (v.conditionalColors == null) v.conditionalColors = _cloneDbViewObject(cfg.conditionalColors);
@@ -463,6 +467,7 @@ function _hasLegacyDbViewState(cfg) {
     || _hasDbViewArrayState(cfg.pinnedCols)
     || _hasDbViewArrayState(cfg.colOrder)
     || _hasDbViewArrayState(cfg.advancedFilters)
+    || _hasDbViewObjectState(cfg.columnValueFilters)
     || _hasDbViewObjectState(cfg.conditionalColors)
     || _hasDbViewObjectState(cfg.countTypes)
     || _hasDbViewObjectState(cfg.colWidths)
@@ -522,6 +527,7 @@ function _hasMeaningfulDbSavedViewState(view, index) {
   if (_hasDbViewArrayState(view.hiddenCols) || _hasDbViewArrayState(view.pinnedCols)) return true;
   if (_hasDbViewArrayState(view.colOrder) || _hasDbViewObjectState(view.colOrder)) return true;
   if (_hasDbViewArrayState(view.advancedFilters)) return true;
+  if (_hasDbViewObjectState(view.columnValueFilters)) return true;
   if (view.conditionalFormat === true || _hasDbViewObjectState(view.conditionalColors)) return true;
   if (view.filter && view.filter !== 'disabled') return true;
   if (_hasDbViewMeaningfulValue(view.sortConfig) || _hasDbViewMeaningfulValue(view.manualOrder)) return true;
@@ -530,6 +536,7 @@ function _hasMeaningfulDbSavedViewState(view, index) {
   if (view.thumbnailSize && view.thumbnailSize !== 'small') return true;
   const typeSpecific = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
   if (typeSpecific.pivot?.groupBy) return true;
+  if (_hasDbViewObjectState(typeSpecific.tree)) return true;
   if (typeSpecific.kanban?.groupBy && typeSpecific.kanban.groupBy !== '_status') return true;
   if (_hasDbViewObjectState(typeSpecific.calendar?.mapping)) return true;
   if (_hasMeaningfulDbTimelineState(typeSpecific.timeline)) return true;
@@ -925,6 +932,16 @@ function setDbManualOrder(dbPath, order, sortConfig, options = {}) {
 function getAdvancedFilters(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.advancedFilters || []; }
 function setAdvancedFilters(dbPath, filters, options = {}) {
   _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 複数条件フィルタ', options.detail || '', options, (v) => { v.advancedFilters = filters; });
+}
+// 列ヘッダーメニューの値チェックフィルター（列ごとの選択値を保存）
+function getColumnValueFilters(dbPath, options = {}) {
+  const filters = getCurrentDbViewConfigEntry(dbPath, options)?.columnValueFilters;
+  return filters && typeof filters === 'object' && !Array.isArray(filters) ? filters : {};
+}
+function setColumnValueFilters(dbPath, filters, options = {}) {
+  return _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 列の値フィルター', options.detail || '', options, (v) => {
+    v.columnValueFilters = _cloneDbViewObject(filters);
+  });
 }
 
 const _DEFAULT_STATUS_LIST = [

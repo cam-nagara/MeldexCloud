@@ -4,7 +4,15 @@ async function _autoRenameEntity(dbPath, entityName) {
   const newName = _generateEntryName(dbPath, entityName);
   if (!newName || newName === entityName) return;
   try {
-    await apiPost('/entity/rename', { path: _entityPath(dbPath, entityName), new_name: newName });
+    const ctx = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
+    await window.GbDbEntryIdentity.rename({
+      dbPath,
+      oldName: entityName,
+      newName,
+      path: _entityPath(dbPath, entityName, ctx?.pivotData),
+      ctx,
+      entryId: ctx?.pivotData?.entities?.[entityName]?._id || '',
+    });
   } catch { /* rename failed silently */ }
 }
 

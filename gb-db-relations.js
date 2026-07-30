@@ -37,9 +37,20 @@ async function _getDbMetadataCached(dbPath, force) {
 async function _saveDbPropertyTypesForPath(dbPath, propertyTypes) {
   if (!dbPath) return;
   const nextTypes = _cloneJsonSafe(propertyTypes || {});
-  await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), {
-    property_types: nextTypes,
-  });
+  const ctx = typeof _dbFindPaneContextForPath === 'function'
+    ? _dbFindPaneContextForPath(dbPath)
+    : null;
+  if (window.GbDbSchemaMutation) {
+    await window.GbDbSchemaMutation.saveMetadata(
+      dbPath,
+      { property_types: nextTypes },
+      ctx
+    );
+  } else {
+    await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), {
+      property_types: nextTypes,
+    });
+  }
   const cachedEntry = _dbMetadataCache[dbPath] || {};
   const cached = cachedEntry.data || cachedEntry;
   const nextCached = { ...cached, property_types: nextTypes };
@@ -48,7 +59,14 @@ async function _saveDbPropertyTypesForPath(dbPath, propertyTypes) {
     : { data: _cloneJsonSafe(nextCached), timestamp: Date.now() };
   const cfg = getDbViewConfig(dbPath);
   cfg.propertyTypes = nextTypes;
-  saveDbViewConfig(dbPath, cfg);
+  saveDbViewConfig(dbPath, cfg, { skipBackend: true, skipHistory: true, ctx });
+  const contexts = typeof _dbPaneContextsForPath === 'function'
+    ? _dbPaneContextsForPath(dbPath)
+    : [];
+  contexts.forEach(paneCtx => {
+    if (!paneCtx.dbMetadata) paneCtx.dbMetadata = {};
+    paneCtx.dbMetadata.property_types = _cloneJsonSafe(nextTypes);
+  });
   if (dbPath === state.currentDbPath && state.dbMetadata) {
     state.dbMetadata.property_types = _cloneJsonSafe(nextTypes);
   }
@@ -85,28 +103,32 @@ function _warnBidirectionalDisableSkipped(message) {
 async function _disableBidirectionalRelationConfig(sourceDbPath, propName, prevConfig, nextConfig) {
   const prev = _getBidirectionalRelationConfig(sourceDbPath, propName, prevConfig);
   const next = _getBidirectionalRelationConfig(sourceDbPath, propName, nextConfig);
-  if (!prev || _sameBidirectionalConfig(prev, next)) return;
+  if (!prev || _sameBidirectionalConfig(prev, next)) return null;
   const meta = await _getDbMetadataCached(prev.remoteDbPath, true);
-  const nextTypes = { ...(meta.property_types || {}) };
+  const previousTypes = { ...(meta.property_types || {}) };
+  const nextTypes = { ...previousTypes };
   const remoteCfg = nextTypes[prev.remotePropName];
   const expectedRelationDb = prev.remoteDbPath === sourceDbPath ? '' : sourceDbPath;
   if (!remoteCfg) {
     _warnBidirectionalDisableSkipped('参照先の列が見つかりません: ' + prev.remotePropName);
-    return;
+    return null;
   }
   if ((remoteCfg.bidirectionalProp || '') !== propName) {
     _warnBidirectionalDisableSkipped('参照先の列の対応元が一致しません: ' + prev.remotePropName);
-    return;
+    return null;
   }
   if ((remoteCfg.relationDb || '') !== expectedRelationDb) {
     _warnBidirectionalDisableSkipped('参照先の列の参照先シートが一致しません: ' + prev.remotePropName);
-    return;
+    return null;
   }
   const updated = { ...remoteCfg };
   delete updated.bidirectional;
   delete updated.bidirectionalProp;
   nextTypes[prev.remotePropName] = updated;
   await _saveDbPropertyTypesForPath(prev.remoteDbPath, nextTypes);
+  return {
+    undo: () => _saveDbPropertyTypesForPath(prev.remoteDbPath, previousTypes),
+  };
 }
 
 async function _ensureBidirectionalRelationConfig(sourceDbPath, propName, config) {
@@ -114,12 +136,13 @@ async function _ensureBidirectionalRelationConfig(sourceDbPath, propName, config
     ...config,
     bidirectionalProp: (config.bidirectionalProp || propName || '').trim(),
   });
-  if (!resolved) return config;
+  if (!resolved) return { config, undo: null };
   if (resolved.remoteDbPath === sourceDbPath && resolved.remotePropName === propName) {
     throw new Error('同一シートで双方向リレーションを使う場合は、参照先側に別名の対応列を指定してください');
   }
   const meta = await _getDbMetadataCached(resolved.remoteDbPath, true);
-  const nextTypes = { ...(meta.property_types || {}) };
+  const previousTypes = { ...(meta.property_types || {}) };
+  const nextTypes = { ...previousTypes };
   const existing = nextTypes[resolved.remotePropName];
   const expectedRelationDb = resolved.remoteDbPath === sourceDbPath ? '' : sourceDbPath;
   if (existing && existing.type && existing.type !== 'relation' && existing.type !== 'multi-relation') {
@@ -138,14 +161,19 @@ async function _ensureBidirectionalRelationConfig(sourceDbPath, propName, config
     bidirectional: true,
     bidirectionalProp: propName,
   };
+  let undo = null;
   if (JSON.stringify(existing || {}) !== JSON.stringify(remoteConfig)) {
     nextTypes[resolved.remotePropName] = remoteConfig;
     await _saveDbPropertyTypesForPath(resolved.remoteDbPath, nextTypes);
+    undo = () => _saveDbPropertyTypesForPath(resolved.remoteDbPath, previousTypes);
   }
   return {
-    ...config,
-    bidirectional: true,
-    bidirectionalProp: resolved.remotePropName,
+    config: {
+      ...config,
+      bidirectional: true,
+      bidirectionalProp: resolved.remotePropName,
+    },
+    undo,
   };
 }
 

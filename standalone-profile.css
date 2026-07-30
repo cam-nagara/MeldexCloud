@@ -28,7 +28,7 @@
   gap: 10px;
   width: min(300px, calc(100vw - 24px));
   padding: 12px;
-  border: 1px solid var(--border, var(--sa-border));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
   border-radius: 8px;
   background: var(--bg2, var(--sa-bg2));
   color: var(--fg, var(--sa-fg));

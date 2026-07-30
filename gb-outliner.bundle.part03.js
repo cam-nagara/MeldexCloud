@@ -803,8 +803,64 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     _outlinerAppendMenuSeparator(menu);
   }
 
-  // --- 新規作成サブメニュー ---
   const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
+  const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
+    .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
+  const editableContextItems = contextOperationItems.filter(item => !isItemLocked(item.path));
+  const deleteContextItems = async () => {
+    closeTreeContextMenu();
+    const targets = treeSelection.getNodeData().filter(item => {
+      if (item.type === 'entity' || item._isRoot) return false;
+      return item.path && !isItemLocked(item.path);
+    });
+    if (!targets.length) {
+      showStatus('削除できる項目がありません', true);
+      return;
+    }
+    const names = targets.map(item => item.name).join('、');
+    if (!await cfConfirm(`「${names}」を削除しますか？`)) return;
+    treeSelection.clear();
+    const result = await deleteOutlinerItemsWithHistory(targets, {
+      label: targets.length + ' 件を削除',
+      detail: names,
+      onItemDeleted: (item) => {
+        _removeOutlinerNodesForPaths([item.path]);
+      },
+      refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    _removeOutlinerNodesForPaths(result.deletedPaths);
+    if (result.failedCount) {
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました`, true);
+      loadOutliner();
+    } else if (result.succeeded.length) {
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
+    } else if (result.skipped.length) {
+      showStatus('削除対象が見つからなかったため、表示を更新しました', true);
+      loadOutliner();
+    }
+  };
+
+  if (typeof appendFolderOperationButtons === 'function') {
+    appendFolderOperationButtons(menu, {
+      e2ePrefix: 'folder-tree-context',
+      closeMenu: closeTreeContextMenu,
+      onCopy: () => folderToolbarCopyItems(contextOperationItems),
+      onCut: () => folderToolbarCutItems(contextOperationItems),
+      onPaste: () => folderToolbarPasteToFolder(addParent),
+      onDelete: deleteContextItems,
+      copyDisabled: contextOperationItems.length === 0,
+      cutDisabled: editableContextItems.length === 0,
+      pasteDisabled: !folderToolbarCanPasteTo(addParent),
+      deleteDisabled: editableContextItems.length === 0,
+    });
+    addSep();
+  }
+
+  // --- 新規作成サブメニュー ---
   if (!(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
@@ -842,59 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         _outlinerAppendMenuItem(lockPanel, {
           html: radioMark(locked === val) + _outlinerMenuIconHtml(icon, 12) + '<span>' + _outlinerEscHtml(label) + '</span>',
           checked: locked === val,
-          action: async () => {
-          closeTreeContextMenu();
-          const changed = locked !== val ? await toggleItemLock(nodeData.path) : true;
-          if (!changed) return;
-          const lbl = nodeEl.querySelector('.tree-label');
-          if (lbl) lbl.style.fontStyle = isItemLocked(nodeData.path) ? 'italic' : '';
-          showStatus(val ? '編集ロックしました' : '編集ロックを解除しました');
-          },
-        });
-      });
-    }
-  }
-
-  const _locked = nodeData.path ? isItemLocked(nodeData.path) : false;
-
-  // --- メインカレンダーに設定（calendarタイプのみ） ---
-  if (!isMulti && nodeData.type === 'calendar' && nodeData.path) {
-    const mainCalId = localStorage.getItem('main-calendar-id');
-    const mainCalPath = localStorage.getItem('main-calendar-path');
-    const nodeFid = _pathToFileId(nodeData.path);
-    const isMain = (mainCalId && nodeFid && mainCalId === nodeFid) || mainCalPath === nodeData.path;
-    const calPanel = _outlinerCreateSubmenu('メインカレンダー');
-    _outlinerAppendSubmenu(menu, 'メインカレンダー', 'calendar', calPanel);
-    [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
-      _outlinerAppendMenuItem(calPanel, {
-        html: radioMark(isMain === val) + '<span>' + _outlinerEscHtml(label) + '</span>',
-        checked: isMain === val,
-        action: () => {
-        closeTreeContextMenu();
-        const before = _captureMainCalendarSettingsHistory();
-        if (val) {
-          localStorage.setItem('main-calendar-path', nodeData.path);
-          const mcFid = _pathToFileId(nodeData.path);
-          if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
-          showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
-          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー設定', before, nodeData.path);
-        } else {
-          localStorage.removeItem('main-calendar-path');
-          localStorage.removeItem('main-calendar-id');
-          showStatus('メインカレンダー設定を解除しました');
-          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
-        }
-        },
-      });
-    });
-  }
-
-  // --- バージョン管理（フォルダのみ） ---
-  if (!isMulti && (isFolder || isDB) && nodeData.path) {
-    addSep();
-    addMenuItem('バージョンを保存', () => {
-      closeTreeContextMenu();
-      if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
-    }, null, 'save');
-    addMenuItem('バージョン管理', () => {
-      closeTreeContextMenu();

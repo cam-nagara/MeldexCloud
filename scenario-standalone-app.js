@@ -7,6 +7,7 @@
     component: null,
     dirty: false,
   };
+  let localDrafts = null;
 
   function qs(id) { return document.getElementById(id); }
 
@@ -24,8 +25,9 @@
     app.path = String(path || '').replace(/\\/g, '/');
     MeldexStandaloneFS.setCurrentPath?.(app.path);
     state.currentPagePath = app.path;
-    qs('scenario-title-label').textContent = app.path ? titleFromPath(app.path) : '新規シナリオ';
+    qs('scenario-title-label').value = app.path ? titleFromPath(app.path) : '新規シナリオ';
     qs('scenario-path-label').textContent = app.path ? MeldexStandaloneFS.pathLabel(app.path) : '未保存';
+    window.MeldexStandaloneTags?.setTargetPath?.(app.path);
     if (app.component) {
       app.component.state.scenarioPath = app.path;
       app.component.state.label = titleFromPath(app.path);
@@ -60,11 +62,13 @@
     if (layoutSel) layoutSel.value = parsed.layoutMode || 'manga';
     app.component.activate();
     setPath(path || '');
+    qs('scenario-title-label').value = parsed.title || titleFromPath(path);
     setDirty(false);
   }
 
   async function newScenario() {
     if ((app.dirty || editor()?._dirty) && !(await cfConfirm('未保存の変更を破棄しますか？'))) return;
+    await localDrafts?.discardCurrent?.();
     const content = await MeldexStandaloneFS.newContent('無題');
     loadParsed(JSON.parse(content), '');
   }
@@ -94,7 +98,10 @@
       return;
     }
     const selected = await MeldexStandaloneFS.openFile();
-    if (selected?.path) await openPath(selected.path);
+    if (selected?.path) {
+      await localDrafts?.discardCurrent?.();
+      await openPath(selected.path);
+    }
   }
 
   async function saveScenario() {
@@ -114,6 +121,7 @@
       }
       editor()._dirty = false;
       setDirty(false);
+      await localDrafts?.markSynced?.(res?.etag || '');
       showStatus('保存しました');
     } finally {
       hideLoading();
@@ -125,6 +133,7 @@
     const suggested = MeldexStandaloneFS.suggestedName(app.path, '無題.mel-scenario');
     const saved = await MeldexStandaloneFS.saveAs(collectJson(), suggested);
     if (!saved?.path) return;
+    await localDrafts?.markSynced?.('');
     setPath(saved.path);
     editor()._dirty = false;
     setDirty(false);
@@ -154,6 +163,7 @@
       if (action === 'open') await window.runStandaloneFileAction('シナリオを開くことが', openScenario);
       if (action === 'save') await window.runStandaloneFileAction('保存', saveScenario);
       if (action === 'saveAs') await window.runStandaloneFileAction('名前を付けて保存', saveScenarioAs);
+      if (action === 'workspace') window.MeldexStandaloneWorkspaceTree?.open?.();
       if (action === 'exportPng') await window.runStandaloneFileAction('PNG出力', exportPng);
       if (action === 'exportHtml') await window.runStandaloneFileAction('HTML出力', exportHtml);
       if (action === 'exportMarkdown') await window.runStandaloneFileAction('Markdown出力', exportMarkdown);
@@ -161,6 +171,23 @@
       if (action === 'sendBmanga') await window.MeldexBManga?.sendActiveScenario?.();
       if (action === 'undo') editor()?.undo?.();
       if (action === 'redo') editor()?.redo?.();
+    });
+  }
+
+  function bindTitleEditing() {
+    const headerTitle = qs('scenario-title-label');
+    headerTitle?.addEventListener('input', () => {
+      const value = headerTitle.value;
+      const documentTitle = app.component?.el?.querySelector('#title-input');
+      if (documentTitle && documentTitle.value !== value) {
+        documentTitle.value = value;
+        documentTitle.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      setDirty(true);
+    });
+    app.component?.el?.addEventListener('input', event => {
+      if (event.target?.id !== 'title-input') return;
+      if (headerTitle && headerTitle.value !== event.target.value) headerTitle.value = event.target.value;
     });
   }
 
@@ -280,6 +307,44 @@
     }, true);
   }
 
+  async function initLocalDrafts() {
+    if (!window.MeldexStandaloneLocalDrafts) return;
+    localDrafts = window.MeldexStandaloneLocalDrafts.create({
+      appId: 'scenario',
+      getPath: () => app.path,
+      capture: () => ({
+        title: qs('scenario-title-label')?.value || '新規シナリオ',
+        content: collectJson(),
+      }),
+      restore: snapshot => {
+        const parsed = JSON.parse(snapshot?.content || '{}');
+        loadParsed(parsed, app.path);
+        qs('scenario-title-label').value = snapshot?.title || parsed.title || titleFromPath(app.path);
+        setDirty(true);
+      },
+      sync: async (snapshot, record) => {
+        const result = await MeldexStandaloneFS.writeText(record.remotePath, snapshot.content || '', {
+          skip_if_missing: true,
+        });
+        if (result?.missing || result?.skipped || result?.queued) {
+          throw new Error(result?.queued ? '接続後に再試行します' : '保存先が見つかりません');
+        }
+        editor()._dirty = false;
+        setDirty(false);
+      },
+      onStatus: (status, message) => {
+        const label = qs('scenario-sync-status');
+        if (label && ['saving', 'local-saved', 'pending', 'syncing', 'conflict', 'error'].includes(status)) {
+          label.textContent = message;
+          label.dataset.status = status;
+        }
+      },
+    });
+    localDrafts.start();
+    await localDrafts.restoreLatest();
+    localDrafts.flush();
+  }
+
   function mountComponent() {
     app.component = new ScriptNoteComponent('scenario-standalone-pane', 'scenario-standalone-tab');
     qs('scenario-root').appendChild(app.component.create());
@@ -291,9 +356,42 @@
   // #se-toolbar は本体共用の gb-tool-scriptnote.js が生成するため、生成側は無改変のまま
   // ここから後付けで設定する（mountComponent() 完了後＝ #se-toolbar 生成後に呼ぶ）。
   function initMobileToolbar() {
+    const toolbar = qs('se-toolbar');
+    if (toolbar && !qs('scenario-count-columns-toggle')) {
+      const button = document.createElement('button');
+      button.id = 'scenario-count-columns-toggle';
+      button.type = 'button';
+      button.className = 'tb-icon-btn scenario-mobile-count-toggle';
+      button.dataset.e2eId = 'scenario-count-columns-toggle';
+      button.innerHTML = '<span class="ico ico-columns3" aria-hidden="true"></span>';
+      const update = () => {
+        const visible = editor()?.doc?.editor?.visibleStandardColumns?._gutter !== false
+          || editor()?.doc?.editor?.visibleStandardColumns?._gutter2 !== false;
+        button.setAttribute('aria-pressed', visible ? 'true' : 'false');
+        button.title = visible ? 'ページとコマを隠す' : 'ページとコマを表示';
+        button.setAttribute('aria-label', button.title);
+      };
+      button.addEventListener('click', () => {
+        const ed = editor();
+        if (!ed?.doc) return;
+        ed.doc.editor ||= {};
+        ed.doc.editor.visibleStandardColumns ||= {};
+        const next = ed.doc.editor.visibleStandardColumns._gutter === false
+          && ed.doc.editor.visibleStandardColumns._gutter2 === false;
+        ed._pushUndo?.('ページ・コマ列の表示変更');
+        ed.doc.editor.visibleStandardColumns._gutter = next;
+        ed.doc.editor.visibleStandardColumns._gutter2 = next;
+        ed._markDirty?.();
+        ed._render?.();
+        setDirty(true);
+        update();
+      });
+      toolbar.insertBefore(button, toolbar.firstChild);
+      update();
+    }
     window.MeldexStandaloneMobileToolbar?.setup({
       toolbar: '#se-toolbar',
-      priority: ['[data-sn-action="undo"]', '[data-sn-action="redo"]', '#btn-horizontal', '#btn-vertical', '#btn-filter', '[data-sn-action="search"]'],
+      priority: ['#scenario-count-columns-toggle', '[data-sn-action="undo"]', '[data-sn-action="redo"]', '#btn-horizontal', '#btn-vertical', '#btn-filter', '[data-sn-action="search"]'],
       keep: ['#title-input'],
       sheetTitle: 'その他',
     });
@@ -313,6 +411,7 @@
     initMobileToolbar();
     initOptionPanel();
     bindMenus();
+    bindTitleEditing();
     bindShortcuts();
     bindDirtyObserver();
     bindPathChanges();
@@ -330,6 +429,7 @@
         showStatus('前回のシナリオを開けなかったため、新規シナリオで起動しました', true);
       }
     }
+    await initLocalDrafts();
   }
 
   window.getActiveScriptNoteComponent = function () {

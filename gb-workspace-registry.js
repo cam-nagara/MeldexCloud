@@ -60,7 +60,10 @@
 
   async function load(options = {}) {
     if (_loaded && !options.force) return _cache.slice();
-    const payload = await _request('/workspaces');
+    const payload = await _request(
+      '/workspaces',
+      options.silentError === true ? { silentError: true } : {},
+    );
     _cache = _listFromPayload(payload);
     _loaded = true;
     const activeId = _readActiveId();

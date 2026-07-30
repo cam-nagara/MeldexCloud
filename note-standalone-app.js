@@ -15,6 +15,7 @@
     path: '',
     dirty: false,
   };
+  let localDrafts = null;
 
   function qs(id) { return document.getElementById(id); }
   function editor() { return qs('page-content'); }
@@ -127,6 +128,7 @@
     state.view = 'page';
     qs('note-title-input').value = titleFromPath(app.path);
     qs('note-path-label').textContent = app.path ? MeldexStandaloneFS.pathLabel(app.path) : '未保存';
+    window.MeldexStandaloneTags?.setTargetPath?.(app.path);
     syncOptionPanel().catch(error => console.error('option panel sync failed', error));
   }
 
@@ -194,6 +196,7 @@
 
   async function newNote() {
     if (app.dirty && !(await cfConfirm('未保存の変更を破棄しますか？'))) return;
+    await localDrafts?.discardCurrent?.();
     clearToast();
     await renderMarkdown('');
     setPath('', '');
@@ -229,7 +232,10 @@
     }
     clearToast();
     const selected = await MeldexStandaloneFS.openFile();
-    if (selected?.path) await openPath(selected.path);
+    if (selected?.path) {
+      await localDrafts?.discardCurrent?.();
+      await openPath(selected.path);
+    }
   }
 
   async function saveNote() {
@@ -249,6 +255,7 @@
       }
       editor().dataset.lastSavedEtag = res?.etag || '';
       setDirty(false);
+      await localDrafts?.markSynced?.(res?.etag || '');
       showStatus('保存しました');
     } finally {
       hideLoading();
@@ -261,6 +268,7 @@
     const suggested = MeldexStandaloneFS.suggestedName(app.path, title + MeldexStandaloneFS.defaultExtension());
     const saved = await MeldexStandaloneFS.saveAs(md, suggested);
     if (!saved?.path) return;
+    await localDrafts?.markSynced?.('');
     setPath(saved.path, '');
     setDirty(false);
     showStatus('保存しました');
@@ -511,6 +519,7 @@
       if (action === 'open') await window.runStandaloneFileAction('ノートを開くことが', openNote);
       if (action === 'save') await window.runStandaloneFileAction('保存', saveNote);
       if (action === 'saveAs') await window.runStandaloneFileAction('名前を付けて保存', saveNoteAs);
+      if (action === 'workspace') window.MeldexStandaloneWorkspaceTree?.open?.();
       if (action === 'insertLink') insertLink();
       if (action === 'toggleVertical') toggleVertical();
       if (action === 'exportMarkdown') await window.runStandaloneFileAction('Markdown出力', exportMarkdownFile);
@@ -552,6 +561,45 @@
         await window.runStandaloneFileAction('新規作成', newNote);
       }
     });
+  }
+
+  async function initLocalDrafts() {
+    if (!window.MeldexStandaloneLocalDrafts) return;
+    localDrafts = window.MeldexStandaloneLocalDrafts.create({
+      appId: 'note',
+      getPath: () => app.path,
+      getRevision: () => editor().dataset.lastSavedEtag || '',
+      capture: () => ({
+        title: qs('note-title-input')?.value || '無題',
+        content: collectMarkdown(),
+      }),
+      restore: async snapshot => {
+        await renderMarkdown(snapshot?.content || '');
+        qs('note-title-input').value = snapshot?.title || titleFromPath(app.path);
+        setDirty(true);
+      },
+      sync: async (snapshot, record) => {
+        const result = await MeldexStandaloneFS.writeText(record.remotePath, snapshot.content || '', {
+          if_match_etag: record.baseRevision || '',
+          skip_if_missing: true,
+        });
+        if (result?.missing || result?.skipped || result?.queued) {
+          throw new Error(result?.queued ? '接続後に再試行します' : '保存先が見つかりません');
+        }
+        editor().dataset.lastSavedEtag = result?.etag || '';
+        setDirty(false);
+      },
+      onStatus: (status, message) => {
+        const label = qs('note-sync-status');
+        if (label && ['saving', 'local-saved', 'pending', 'syncing', 'conflict', 'error'].includes(status)) {
+          label.textContent = message;
+          label.dataset.status = status;
+        }
+      },
+    });
+    localDrafts.start();
+    await localDrafts.restoreLatest();
+    localDrafts.flush();
   }
 
   // gb-shortcuts.js の note.link ハンドラ（Ctrl+K）は、単独版では未同梱の
@@ -615,6 +663,7 @@
         showStatus('前回のノートを開けなかったため、新規ノートで起動しました', true);
       }
     }
+    await initLocalDrafts();
   }
 
   document.addEventListener('DOMContentLoaded', () => {

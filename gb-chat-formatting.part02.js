@@ -349,6 +349,7 @@
       return input && editor && input.id === 'chat-input' ? editor : input;
     },
     insertText: (text) => _insertSourceTextAtRichSelection(text),
+    copyHistoryText: (range) => _chatCopyHistoryText(range),
     close: _closePopup,
   };
 })();

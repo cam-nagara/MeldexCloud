@@ -1,3 +1,23 @@
+  showStatus(`「${oldName}」→「${newName}」にリネームしました`);
+}
+
+// リネームAPIタイムアウト時の事後確認: 親フォルダを再取得し、旧名消滅・新名出現を確認する
+async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newName, oldPath) {
+  const confirmKey = 'rename:' + oldPath;
+  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
+  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  try {
+    showStatus('リネームに時間がかかっています。結果を確認中…');
+    const parentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : '';
+    const contextNodeEl = labelEl.closest('.tree-node');
+    const delays = typeof _outlinerPostTimeoutConfirmDelays === 'function'
+      ? _outlinerPostTimeoutConfirmDelays() : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
+    for (const delay of delays) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+      const found = _outlinerFindRenamedItem(items, oldName, newName);
+      if (found) {
+        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName);
         return;
       }
     }

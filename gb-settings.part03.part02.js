@@ -446,6 +446,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     }
     if (canonical === 'データベース') {
       if (typeof renderDatabaseMaintenanceSettings === 'function') renderDatabaseMaintenanceSettings(modal);
+      window.MeldexTagMaintenanceSettings?.render?.(modal);
       return;
     }
   };
@@ -600,7 +601,7 @@ async function _loadExtensionStatus() {
       <div style="flex:1;">
         <div style="font-weight:bold;font-size:13px;color:var(--fg);">${ext.name}</div>
         <div style="font-size:11px;color:var(--fg2);">${ext.desc}</div>
-        <div style="font-size:11px;color:var(--fg2);">サイズ: ${ext.size}</div>
+              <div style="font-size:11px;color:var(--fg2);">ファイルサイズ: ${ext.size}</div>
       </div>
       ${ext.installed
         ? `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`

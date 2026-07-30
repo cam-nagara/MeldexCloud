@@ -300,7 +300,10 @@ function applyConditionalColors(propName, dbPathOverride = '', ctx = null) {
     ? _dbPaneContextsForPath(dbPath)
     : [_conditionalColorContext(dbPath, ctx)].filter(Boolean);
   if (ctx && !renderTargets.includes(ctx)) renderTargets.unshift(ctx);
-  (renderTargets.length ? renderTargets : [null]).forEach(renderCtx => renderPivot(renderCtx));
+  (renderTargets.length ? renderTargets : [null]).forEach(renderCtx => {
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
+    else if (typeof renderPivot === 'function') renderPivot(renderCtx);
+  });
 }
 
 function _conditionalColorText(value) {

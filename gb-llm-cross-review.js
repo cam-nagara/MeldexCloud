@@ -98,7 +98,7 @@
     const raw = String(type || '').trim().toLowerCase();
     const lowerPath = String(path || '').trim().toLowerCase();
     if (['note', 'page', 'editor', 'markdown'].includes(raw)) return 'note';
-    if (['sheet', 'database', 'db', 'pivot', 'gallery', 'kanban', 'timeline', 'table', 'form'].includes(raw)) return 'sheet';
+    if (['sheet', 'database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'table', 'form'].includes(raw)) return 'sheet';
     if (['smart-sheet', 'smart-db', 'smartdb'].includes(raw)) return 'smart-sheet';
     if (['board', 'canvas'].includes(raw)) return 'board';
     if (['scriptnote', 'scenario'].includes(raw)) return 'scriptnote';

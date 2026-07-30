@@ -14,6 +14,7 @@
   --ui-bg-surface: var(--bg2);
   --ui-bg-control: var(--bg3);
   --ui-bg-control-hover: var(--bg4);
+  --ui-bg-field: var(--ui-bg-app);
   /* ポップアップ共通背景（ドロップダウン・コンテキストメニュー・書式ポップアップ） */
   --ui-popup-bg: var(--bg2);
   --ui-bg-control-active: color-mix(in srgb, var(--accent) 18%, var(--bg3));
@@ -36,6 +37,8 @@
   --ui-range-track-bg: color-mix(in srgb, var(--ui-border) 65%, var(--ui-toolbar-bg));
   --ui-border: color-mix(in srgb, var(--border) 55%, var(--fg2) 28%);
   --ui-border-strong: color-mix(in srgb, var(--border) 40%, var(--fg2) 45%);
+  /* ポップアップの外周は種類にかかわらず同じ明るさへ揃える。 */
+  --ui-popup-border: var(--ui-border-strong);
   --ui-accent: var(--accent);
   --ui-inner-tabbar-bg: var(--ui-bg-panel);
   --ui-inner-tabbar-border: var(--ui-border);

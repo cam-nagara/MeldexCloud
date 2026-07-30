@@ -13,7 +13,7 @@
 
   // 対象候補として扱うタブ型。ここに含まれる型のタブがあれば「開いているシート/スマートシート」として列挙する。
   const SUPPORTED_TAB_TYPES = new Set([
-    'smart-db', 'database', 'pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
+    'smart-db', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
   ]);
 
   async function bdOpenBulkLinkImport() {

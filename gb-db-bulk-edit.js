@@ -182,7 +182,8 @@ function _updateBulkEditBar(ctx) {
   addRowsBtn.addEventListener('click', async () => {
     const c2 = ctx || _currentPaneState();
     const tblSel = '#' + ((c2 && c2.tableId) || 'pivot-table');
-    const paneRoot = _paneEl(c2, tblSel) || document;
+    const paneRoot = _paneEl(c2, tblSel) || (!c2 ? document : null);
+    if (!paneRoot) return;
     const rows = [...paneRoot.querySelectorAll('tbody tr[data-entity-name]')];
     let lastSelected = null;
     for (const row of rows) {
@@ -569,6 +570,8 @@ function _showBulkEditModal(entityNames, ctx) {
       let ep = '';
       let beforeSnapshot = null;
       let createdRef = null;
+      let cascadeClears = [];
+      let bidirectionalOp = null;
       try {
         ep = _entityPath(dbPath, name);
         const entData = pivotData.entities?.[name];
@@ -576,7 +579,6 @@ function _showBulkEditModal(entityNames, ctx) {
         beforeSnapshot = canBatchUndo ? _bulkValueSnapshotFromValues(name, ep, existingVals) : null;
         const primaryForOld = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(existingVals) : null) || existingVals[0];
         const oldValue = primaryForOld?.value ?? '';
-        let cascadeClears = [];
         if (replace) {
           const primary = primaryForOld;
           if (primary) {
@@ -599,11 +601,11 @@ function _showBulkEditModal(entityNames, ctx) {
         }
         if (replace && (ptc.type === 'relation' || ptc.type === 'multi-relation')
             && typeof _clearCascadeDependentValues === 'function') {
-          cascadeClears = await _clearCascadeDependentValues(ep, prop, oldValue, value);
+          cascadeClears = await _clearCascadeDependentValues(ep, prop, oldValue, value, { dbPath, ctx });
         }
         if (replace && ptc.bidirectional && (ptc.type === 'relation' || ptc.type === 'multi-relation')
             && typeof _applyBidirectionalRelationSync === 'function') {
-          await _applyBidirectionalRelationSync({
+          bidirectionalOp = await _applyBidirectionalRelationSync({
             sourceDbPath: dbPath,
             entityPath: ep,
             propName: prop,
@@ -624,12 +626,26 @@ function _showBulkEditModal(entityNames, ctx) {
           afterSnapshots.push(_bulkValueSnapshotFromValues(name, ep, nextValues));
         }
         ok++;
-      } catch {
+      } catch (mutationError) {
         failNames.push(name);
+        try {
+          if (bidirectionalOp?.undo) await bidirectionalOp.undo();
+        } catch (rollbackError) {
+          console.error('一括編集の双方向リレーション復旧に失敗:', rollbackError, mutationError);
+        }
+        try {
+          if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
+            await _restoreCascadeDependentValues(ep || _entityPath(dbPath, name), cascadeClears, { dbPath, ctx });
+          }
+        } catch (rollbackError) {
+          console.error('一括編集のカスケード値復旧に失敗:', rollbackError, mutationError);
+        }
         try {
           if (beforeSnapshot) await _bulkReplaceEntityPropValues(ep || _entityPath(dbPath, name), prop, beforeSnapshot.values);
           else if (createdRef?.file) await _apiPutValue(createdRef, { _delete: true });
-        } catch {}
+        } catch (rollbackError) {
+          console.error('一括編集のセル値復旧に失敗:', rollbackError, mutationError);
+        }
         fail++;
       }
     }
@@ -645,7 +661,8 @@ function _restoreSelectionByEntityNames(ctx, entityNames) {
   if (!entityNames || entityNames.length === 0) return;
   const c = ctx || _currentPaneState();
   const tblSel = '#' + ((c && c.tableId) || 'pivot-table');
-  const paneRoot = _paneEl(c, tblSel) || document;
+  const paneRoot = _paneEl(c, tblSel) || (!c ? document : null);
+  if (!paneRoot) return;
   const nameSet = new Set(entityNames);
   let restored = 0;
   if (c && c._selectedEntities) nameSet.forEach(n => c._selectedEntities.add(n));
@@ -671,12 +688,12 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     _dbRemoveCreatedEntitiesLocally(ctx, dbPath, names);
   } else {
     const tblSel = '#' + ((ctx && ctx.tableId) || 'pivot-table');
-    const paneRoot = _paneEl(ctx, tblSel) || document;
+    const paneRoot = _paneEl(ctx, tblSel) || (!ctx ? document : null);
     names.forEach(name => {
       const safeName = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
         ? CSS.escape(name)
         : String(name).replace(/(["\\])/g, '\\$1');
-      paneRoot.querySelector(`tr[data-entity-name="${safeName}"]`)?.remove();
+      paneRoot?.querySelector(`tr[data-entity-name="${safeName}"]`)?.remove();
     });
   }
   _updateBulkEditBar(ctx);

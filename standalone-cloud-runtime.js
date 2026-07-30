@@ -1,5 +1,4 @@
-/* Shared Dropbox runtime for Meldex standalone Cloud apps. */
-(function () {
+/* Shared Dropbox runtime for Meldex standalone Cloud apps. */ (function () {
   'use strict';
   const CLOUD_ATTR = 'data-standalone-cloud';
   const ACTIVE_ROOT_KEY = 'meldex-standalone-cloud-active-root';
@@ -370,7 +369,8 @@
     const lower = String(name || '').toLowerCase();
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
     if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json')) return 'scriptnote';
-    if (lower.endsWith('.mel-sheet') || lower.endsWith('.smart-db.json')) return 'smart-db';
+    if (lower.endsWith('.mel-sheet')) return 'sheet';
+    if (lower.endsWith('.smart-db.json')) return 'smart-db';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'timer';
     if (lower.endsWith('.md') || lower.endsWith('.txt')) return 'page';
     return 'unknown';

@@ -33,8 +33,9 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   // typeConfig.initialName は列名決定のみに使うヒントであり、列タイプ設定として保存しない。
   const typeConfigToSave = _hasTypeConfig ? { ...typeConfig } : { type: 'text' };
   delete typeConfigToSave.initialName;
-  setPropertyType(dbPath, name, typeConfigToSave);
-  renderPivot(ctx);
+  setPropertyType(dbPath, name, typeConfigToSave, ctx);
+  if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+  else renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
   setTimeout(() => {
     const _ctx = ctx || _currentPaneState();
@@ -43,6 +44,23 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     // 埋め込みシート（グローバル _panes レジストリ未登録）の場合はメイン画面側の別ペインへ
     // 誤って解決され得る（showColHeaderMenu 系と同根。2026-07-15 徹底チェックで発見）。
     if (th) startHeaderInlineRename(th, name, dbPath, _ctx);
+    else {
+      const treeHeader = _ctx?.containerEl?.querySelector?.(`.db-tree-header-cell[data-db-col-token="${CSS.escape(name)}"]`)
+        || document.querySelector(`.tree-view .db-tree-header-cell[data-db-col-token="${CSS.escape(name)}"]`);
+      if (treeHeader && typeof showColHeaderMenu === 'function') {
+        const rect = treeHeader.getBoundingClientRect();
+        showColHeaderMenu({
+          target: treeHeader,
+          currentTarget: treeHeader,
+          clientX: rect.right,
+          clientY: rect.bottom,
+        }, name, 0, _ctx, dbPath, {
+          omitGroupBy: true,
+          includeManualSort: true,
+        });
+        setTimeout(() => document.querySelector('.gb-context-menu input')?.focus(), 0);
+      }
+    }
   }, 30);
 }
 
@@ -81,23 +99,34 @@ function applyAdvancedFilters(values, propName, filters) {
 }
 
 // フッター集計行
-function _closePivotAggregationDropdowns() {
-  document.querySelectorAll('.count-type-select[aria-expanded="true"]').forEach(el => {
+function _closePivotAggregationDropdowns(scope) {
+  const paneId = scope?.paneId
+    || scope?.dataset?.dbPaneId
+    || scope?.closest?.('[data-pane-id]')?.dataset?.paneId
+    || '';
+  const paneRoot = scope?.containerEl
+    || scope?.closest?.('[data-pane-id]')
+    || document;
+  paneRoot.querySelectorAll('.count-type-select[aria-expanded="true"]').forEach(el => {
     el.setAttribute('aria-expanded', 'false');
   });
-  document.querySelectorAll('.count-type-dropdown').forEach(el => el.remove());
+  document.querySelectorAll('.count-type-dropdown').forEach(el => {
+    if (paneId && el.dataset.dbPaneId !== paneId) return;
+    el.remove();
+  });
 }
 
 function _pivotAggregationLabel(aggTypes, key) {
   return (aggTypes || []).find(opt => opt.key === key)?.label || '-';
 }
 
-function _openPivotAggregationDropdown(anchor, aggTypes, currentKey, onSelect) {
+function _openPivotAggregationDropdown(anchor, aggTypes, currentKey, onSelect, ctx) {
   if (!anchor || !Array.isArray(aggTypes)) return;
-  closeAllDropdowns();
-  _closePivotAggregationDropdowns();
+  closeAllDropdowns(ctx || anchor);
+  _closePivotAggregationDropdowns(ctx || anchor);
   const dd = document.createElement('div');
   dd.className = 'status-dropdown count-type-dropdown';
+  if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
   dd.setAttribute('role', 'listbox');
   dd.setAttribute('aria-label', '集計タイプ');
 
@@ -110,7 +139,7 @@ function _openPivotAggregationDropdown(anchor, aggTypes, currentKey, onSelect) {
     item.textContent = opt.label;
     if (opt.key === currentKey) item.classList.add('selected');
     item.addEventListener('click', () => {
-      _closePivotAggregationDropdowns();
+      _closePivotAggregationDropdowns(ctx || anchor);
       if (typeof onSelect === 'function') onSelect(opt.key);
       anchor.focus?.();
     });
@@ -133,7 +162,7 @@ function _openPivotAggregationDropdown(anchor, aggTypes, currentKey, onSelect) {
   setTimeout(() => {
     const closer = (e) => {
       if (dd.contains(e.target) || anchor.contains?.(e.target)) return;
-      _closePivotAggregationDropdowns();
+      _closePivotAggregationDropdowns(ctx || anchor);
       document.removeEventListener('pointerdown', closer);
     };
     document.addEventListener('pointerdown', closer);
@@ -237,7 +266,7 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
         sel.setAttribute('aria-expanded', 'false');
         setCountType(dbPath, propName, nextType, { ctx });
         renderPivot(ctx);
-      });
+      }, ctx);
     });
     wrapper.appendChild(sel);
 
@@ -583,9 +612,10 @@ function _dbShowBulkCellStatusMenu(anchorEl, table) {
     return;
   }
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
-  if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+  if (typeof closeAllDropdowns === 'function') closeAllDropdowns(ctx || anchorEl);
   const dd = document.createElement('div');
   dd.className = 'status-dropdown';
+  if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
   const statuses = typeof getStatusList === 'function' ? getStatusList(dbPath) : [];
   statuses.forEach(stObj => {
     const st = stObj.name;
@@ -597,7 +627,7 @@ function _dbShowBulkCellStatusMenu(anchorEl, table) {
     item.appendChild(dot);
     item.appendChild(document.createTextNode(' ' + st));
     item.addEventListener('click', () => {
-      if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+      if (typeof closeAllDropdowns === 'function') closeAllDropdowns(ctx || anchorEl);
       _dbApplyBulkCellStatus(table, ctx, targets, st).catch(() => {
         if (typeof showStatus === 'function') showStatus('ステータスの一括変更に失敗しました', true);
       });
@@ -1107,6 +1137,15 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
     e.preventDefault();
     _dbStartCellInlineEditor(cell, { preferExistingValue: true });
     return true;
+  }
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const ctx = typeof _dbContextForCell === 'function' ? _dbContextForCell(cell) : null;
+    const type = String(_dbCellPropertyType(cell, ctx)?.type || '').replace(/_/g, '-');
+    if (type === 'select' || type === 'multi-select') {
+      e.preventDefault();
+      _dbStartCellInlineEditor(cell, { preferExistingValue: true });
+      return true;
+    }
   }
   return false;
 }

@@ -66,6 +66,21 @@
   const SHEET_CLOUD_STORE_FILE = '_meldex_sheet.cloud.json';
   const SHEET_CLOUD_STORE_KIND = 'meldex-cloud-sheet-store-v1';
 
+  async function _assetMutationWarnings(provider, event) {
+    const tracker = window.MeldexDropboxAssetRecovery;
+    if (typeof tracker?.handleMutation !== 'function') return [];
+    try {
+      await tracker.handleMutation(event, provider);
+      return [];
+    } catch (error) {
+      return [{
+        stage: 'asset-recovery',
+        code: error?.code || '',
+        message: error?.message || String(error),
+      }];
+    }
+  }
+
   function _nowIso() {
     return new Date().toISOString();
   }
@@ -786,16 +801,34 @@
     };
     if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
     else await _writeFrontmatterFile(provider, path, frontmatter, '');
-    return { ok: true, path };
+    return {
+      ok: true,
+      path,
+      entry_id: frontmatter.id,
+      revision: Number(frontmatter.meldex_revision || 0),
+    };
   }
 
   async function _renameEntity(provider, body) {
     const path = _normalizeFolderPath(body?.path || '');
     const newName = _safeFileStem(body?.new_name || '', '');
+    const expectedEntryId = String(body?.expected_entry_id || '');
+    const operationId = String(body?.operation_id || '');
     if (!path || !newName) throw new Error('path, new_name は必須です');
     _rejectProductionStructureMutation(path, '名前変更');
+    const requestedDest = _joinPath(
+      _dirname(path),
+      newName + (_basename(path).toLowerCase().endsWith('.md') ? '.md' : '')
+    );
     const stored = await _readSheetStoreEntry(provider, path).catch(() => null);
     if (stored) {
+      const entryId = String(stored.frontmatter?.id || '');
+      if (expectedEntryId && entryId && entryId !== expectedEntryId) {
+        const error = new Error('別のエントリへ変更されています');
+        error.status = 409;
+        error.code = 'ENTRY_ID_CONFLICT';
+        throw error;
+      }
       const destName = _sheetStoreFileName(newName);
       const dest = _joinPath(stored.dbPath, destName);
       if (dest !== stored.path && await _pathExists(provider, dest)) throw new Error(`既に存在: ${newName}`);
@@ -813,12 +846,85 @@
       const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
       if (physical?.kind === 'file') {
         await _requireUnlocked(provider, stored.path, { action: 'rename-entity-source' });
-        await _moveEntry(provider, stored.path, dest);
+        const warnings = [];
+        try {
+          await _moveEntry(provider, stored.path, dest);
+        } catch (error) {
+          warnings.push({
+            stage: 'sheet-entry-mirror',
+            code: error?.code || '',
+            message: 'シート本体の名前変更は完了しましたが、旧Markdownミラーの移動に失敗しました: '
+              + (error?.message || error),
+          });
+        }
+        warnings.push(...await _assetMutationWarnings(provider, {
+          action: 'rename', oldPath: stored.path, newPath: dest, isFolder: false,
+        }));
+        return {
+          ok: true, new_path: dest, file_id: _fnvFileId(dest),
+          entry_id: entryId || expectedEntryId,
+          revision: Number(stored.frontmatter?.meldex_revision || 0),
+          operation_id: operationId,
+          ...(warnings.length ? { warnings } : {}),
+        };
       }
-      return { ok: true, new_path: dest, file_id: _fnvFileId(dest) };
+      return {
+        ok: true, new_path: dest, file_id: _fnvFileId(dest),
+        entry_id: entryId || expectedEntryId,
+        revision: Number(stored.frontmatter?.meldex_revision || 0),
+        operation_id: operationId,
+      };
+    }
+    const destinationStored = expectedEntryId
+      ? await _readSheetStoreEntry(provider, requestedDest).catch(() => null)
+      : null;
+    const destinationStoredId = String(destinationStored?.frontmatter?.id || '');
+    if (destinationStored && destinationStoredId === expectedEntryId) {
+      return {
+        ok: true,
+        reconciled: true,
+        new_path: requestedDest,
+        file_id: _fnvFileId(requestedDest),
+        entry_id: destinationStoredId,
+        revision: Number(destinationStored.frontmatter?.meldex_revision || 0),
+        operation_id: operationId,
+      };
     }
     const entry = await _resolveEntryHandle(provider, path);
-    if (!entry) throw new Error(`エントリが見つかりません: ${path}`);
+    if (!entry) {
+      const reconciledStored = await _readSheetStoreEntry(provider, requestedDest).catch(() => null);
+      const reconciledHandle = reconciledStored
+        ? null
+        : await _resolveEntryHandle(provider, requestedDest).catch(() => null);
+      const reconciledFm = reconciledStored?.frontmatter
+        || (reconciledHandle?.kind === 'file'
+          ? (await _readFrontmatterFile(provider, requestedDest)).frontmatter
+          : {});
+      const reconciledId = String(reconciledFm?.id || '');
+      if ((reconciledStored || reconciledHandle)
+        && expectedEntryId && reconciledId === expectedEntryId) {
+        return {
+          ok: true,
+          reconciled: true,
+          new_path: requestedDest,
+          file_id: _fnvFileId(requestedDest),
+          entry_id: reconciledId,
+          revision: Number(reconciledFm?.meldex_revision || 0),
+          operation_id: operationId,
+        };
+      }
+      throw new Error(`エントリが見つかりません: ${path}`);
+    }
+    const sourceFm = entry.kind === 'file'
+      ? (await _readFrontmatterFile(provider, path)).frontmatter
+      : {};
+    const sourceEntryId = String(sourceFm?.id || '');
+    if (expectedEntryId && sourceEntryId && sourceEntryId !== expectedEntryId) {
+      const error = new Error('別のエントリへ変更されています');
+      error.status = 409;
+      error.code = 'ENTRY_ID_CONFLICT';
+      throw error;
+    }
     await _requireUnlocked(provider, path, { action: 'rename-entity-source', includeDescendants: entry.kind === 'directory' });
     const dest = entry.kind === 'file'
       ? _joinPath(_dirname(path), newName + _splitNameAndExt(_basename(path)).ext)
@@ -826,8 +932,31 @@
     if (dest !== path && await _pathExists(provider, dest)) throw new Error(`既に存在: ${newName}`);
     if (dest !== path) await _requireUnlocked(provider, dest, { action: 'rename-entity-destination', includeDescendants: entry.kind === 'directory' });
     if (dest !== path) await _moveEntry(provider, path, dest);
-    const result = { ok: true, new_path: dest, file_id: _fnvFileId(dest) };
-    if (dest !== path) result.relocate = await _relocateWorkspaceReferences(provider, path, dest);
+    const result = {
+      ok: true,
+      new_path: dest,
+      file_id: _fnvFileId(dest),
+      entry_id: sourceEntryId || expectedEntryId,
+      revision: Number(sourceFm?.meldex_revision || 0),
+      operation_id: operationId,
+    };
+    if (dest !== path) {
+      try {
+        result.relocate = await _relocateWorkspaceReferences(provider, path, dest);
+      } catch (error) {
+        result.relocate = {
+          rewritten_count: 0,
+          failed_count: 0,
+          rewritten_paths: [],
+          error: error?.message || String(error),
+        };
+      }
+      const warnings = await _assetMutationWarnings(provider, {
+        action: 'rename', oldPath: path, newPath: dest,
+        isFolder: entry.kind === 'directory',
+      });
+      if (warnings.length) result.warnings = warnings;
+    }
     return result;
   }
 
@@ -843,14 +972,40 @@
       style: fm.style || null,
       theme: fm.theme || null,
       property_types: fm.property_types && typeof fm.property_types === 'object' ? fm.property_types : {},
+      property_ids: fm.property_ids && typeof fm.property_ids === 'object' ? fm.property_ids : {},
+      schema_revision: Number(fm.schema_revision || 0),
+      schema_operations: fm.schema_operations && typeof fm.schema_operations === 'object' ? fm.schema_operations : {},
       property_layout: fm.property_layout || null,
       property_layout_templates: Array.isArray(fm.property_layout_templates) ? fm.property_layout_templates : [],
       publish: fm.publish || null,
       calendar_mapping: fm.calendar_mapping || null,
       view_config: fm.view_config && typeof fm.view_config === 'object' && !Array.isArray(fm.view_config) ? fm.view_config : null,
+      validation: fm.validation || null,
+      validation_rules: Array.isArray(fm.validation_rules) ? fm.validation_rules : [],
       storage: fm.storage || '',
       cloud_storage: fm.cloud_storage || '',
     };
+  }
+
+  async function _renameDbProperty(provider, body) {
+    const service = window.MeldexDropboxSchemaMutation;
+    if (typeof service?.renameProperty !== 'function') {
+      throw new Error('Dropboxシートの列変更機能を読み込めませんでした');
+    }
+    return service.renameProperty({
+      normalize: _normalizeFolderPath,
+      joinPath: _joinPath,
+      basename: _basename,
+      makePropertyId: () => _randomId('prop_'),
+      folderFrontmatter: path => _folderFrontmatter(provider, path),
+      readFrontmatter: path => _readFrontmatterFile(provider, path),
+      writeFrontmatter: (path, frontmatter, text) => _writeFrontmatterFile(provider, path, frontmatter, text),
+      listDirectoryEntries: path => _listDirectoryEntries(provider, path),
+      listDatabases: () => _listDatabases(provider),
+      sheetStoreMode: path => _sheetStoreMode(provider, path),
+      ensureSheetStore: path => _ensureSheetStore(provider, path),
+      writeSheetStore: (path, store) => _writeSheetStore(provider, path, store),
+    }, body);
   }
 
   function _isProductionManagementSheetMetadataPath(path) {
@@ -979,13 +1134,28 @@
     const notePath = await _folderNotePath(provider, target);
     const parsed = await _readFrontmatterFile(provider, notePath);
     const fm = { ...(parsed.frontmatter || {}) };
+    const expectedSchemaRevision = body?.expected_schema_revision;
+    const currentSchemaRevision = Number(fm.schema_revision || 0);
+    const operationId = String(body?.operation_id || '');
+    const schemaOperations = fm.schema_operations && typeof fm.schema_operations === 'object'
+      ? { ...fm.schema_operations }
+      : {};
+    if (operationId && schemaOperations[operationId]) return { ...schemaOperations[operationId] };
+    if (expectedSchemaRevision != null && Number(expectedSchemaRevision) !== currentSchemaRevision) {
+      const error = new Error('列設定が別の画面または端末で更新されています');
+      error.status = 409;
+      error.code = 'SCHEMA_REVISION_CONFLICT';
+      error.current_schema_revision = currentSchemaRevision;
+      throw error;
+    }
     _rejectNewProductionDeletedProps(target, fm, body);
     _rejectProductionPropertyTypeChanges(target, fm, body);
     _rejectProductionStructuralMetadataChanges(target, fm, body);
     [
-      'type', 'category', 'roles', 'property_types', 'property_layout',
+      'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
-      'style', 'theme', 'calendar_mapping', 'view_config', 'storage', 'cloud_storage',
+      'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
+      'validation_rules', 'storage', 'cloud_storage',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });
@@ -995,8 +1165,20 @@
       if (!fm.cloud_storage) fm.cloud_storage = 'sheet-store-v1';
       await _ensureSheetStore(provider, target);
     }
+    const result = { ok: true };
+    if (expectedSchemaRevision != null || Object.prototype.hasOwnProperty.call(body || {}, 'property_ids')) {
+      fm.schema_revision = currentSchemaRevision + 1;
+      result.schema_revision = fm.schema_revision;
+      result.property_ids = fm.property_ids || {};
+      result.operation_id = operationId;
+      if (operationId) {
+        schemaOperations[operationId] = { ...result };
+        while (Object.keys(schemaOperations).length > 50) delete schemaOperations[Object.keys(schemaOperations)[0]];
+        fm.schema_operations = schemaOperations;
+      }
+    }
     await _writeFrontmatterFile(provider, notePath, fm, parsed.body || '');
-    return { ok: true };
+    return result;
   }
 
   function _candidateMatches(candidate, field, operator, filterValue) {
@@ -1275,9 +1457,18 @@
       await _requireUnlocked(provider, nextPath, { action: 'calendar-db-rename-destination' });
     }
     await _writeFrontmatterFile(provider, path, parsed.frontmatter, parsed.body || '');
-    if (nextPath !== path) await _moveEntry(provider, path, nextPath);
+    let warnings = [];
+    if (nextPath !== path) {
+      await _moveEntry(provider, path, nextPath);
+      warnings = await _assetMutationWarnings(provider, {
+        action: 'rename', oldPath: path, newPath: nextPath, isFolder: false,
+      });
+    }
     const nextStem = _basename(nextPath).replace(/\.md$/i, '');
-    return { ok: true, id: nextStem, name: nextStem, path: nextPath };
+    return {
+      ok: true, id: nextStem, name: nextStem, path: nextPath,
+      ...(warnings.length ? { warnings } : {}),
+    };
   }
 
   async function _calendarDbDelete(provider, eventName, dbPath) {
@@ -1288,7 +1479,10 @@
     await _directoryHandle(provider, PWA_TRASH_DIR, true);
     const dest = await _moveConflictName(provider, PWA_TRASH_DIR, _basename(path), true);
     await _moveEntry(provider, path, dest.path);
-    return { ok: true, trash_path: dest.path };
+    const warnings = await _assetMutationWarnings(provider, {
+      action: 'delete', path, trashPath: dest.path, isFolder: false,
+    });
+    return { ok: true, trash_path: dest.path, ...(warnings.length ? { warnings } : {}) };
   }
 
   function _icalDate(value, dateOnly) {

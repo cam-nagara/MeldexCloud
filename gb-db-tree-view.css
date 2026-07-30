@@ -1,0 +1,614 @@
+.tree-view {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.db-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.db-tree-toolbar input,
+.db-tree-toolbar select {
+  flex: 1 1 240px;
+  min-width: 120px;
+  max-width: 420px;
+  min-height: 32px;
+  padding: 4px 8px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.db-tree-toolbar select {
+  flex: 0 1 220px;
+}
+
+.db-tree-toolbar button,
+.db-tree-details button,
+.db-tree-setup-empty button,
+.db-tree-option-section button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 9px;
+  color: var(--fg);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.db-tree-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.db-tree-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  padding: 0 0 48px;
+}
+
+.db-tree-header,
+.db-tree-row {
+  box-sizing: border-box;
+}
+
+.db-tree-header {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  display: grid;
+  align-items: center;
+  min-height: 32px;
+  color: var(--fg2);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.db-tree-header-cell,
+.db-tree-header-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 8px 10px;
+  border-right: 1px solid var(--border);
+}
+
+.db-tree-header-cell {
+  cursor: pointer;
+  user-select: none;
+}
+
+.db-tree-header-cell:hover,
+.db-tree-header-cell:focus-visible,
+.db-tree-header-cell.is-selected {
+  color: var(--fg);
+  background: var(--bg3);
+  outline: none;
+}
+
+.db-tree-header-cell.is-pinned {
+  position: sticky;
+  z-index: 6;
+  background: var(--bg2);
+  box-shadow: 1px 0 color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.db-tree-header-cell.is-pinned:hover,
+.db-tree-header-cell.is-pinned:focus-visible,
+.db-tree-header-cell.is-pinned.is-selected {
+  background: var(--bg3);
+}
+
+.db-tree-header-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-tree-header-type,
+.db-tree-header-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.72;
+}
+
+.db-tree-header-indicator.is-filter {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.db-tree-header-more {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--fg2);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.db-tree-header-cell:hover .db-tree-header-more,
+.db-tree-header-cell:focus-within .db-tree-header-more,
+.db-tree-header-more:focus-visible {
+  opacity: 1;
+}
+
+.db-tree-header-more:hover {
+  color: var(--fg);
+  background: var(--bg4);
+}
+
+.db-tree-column-resize-handle {
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.db-tree-column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  bottom: 4px;
+  width: 2px;
+  background: transparent;
+  border-radius: 2px;
+}
+
+.db-tree-column-resize-handle:hover::after,
+.db-tree-column-resize-handle:focus-visible::after,
+.db-tree-column-resize-handle.active::after {
+  background: var(--accent);
+}
+
+.db-tree-column-resize-handle:focus-visible {
+  outline: none;
+}
+
+.db-tree-header-cell.is-dragging {
+  opacity: 0.45;
+}
+
+.db-tree-header-cell.is-drop-before::before,
+.db-tree-header-cell.is-drop-after::after {
+  content: "";
+  position: absolute;
+  z-index: 9;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.db-tree-header-cell.is-drop-before::before {
+  left: -2px;
+}
+
+.db-tree-header-cell.is-drop-after::after {
+  right: -2px;
+}
+
+.db-tree-rows {
+  min-width: 100%;
+}
+
+.db-tree-rows.is-virtualized {
+  position: relative;
+}
+
+.db-tree-row-window {
+  min-width: 100%;
+}
+
+.db-tree-rows.is-virtualized .db-tree-row-window {
+  position: absolute;
+  inset: 0 auto auto 0;
+}
+
+.db-tree-row {
+  --db-tree-node-color: var(--accent);
+  --db-tree-row-height: 34px;
+  position: relative;
+  display: grid;
+  align-items: center;
+  height: var(--db-tree-row-height);
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  cursor: default;
+  user-select: none;
+}
+
+.db-tree-row:hover {
+  background: var(--bg2);
+}
+
+.db-tree-row.selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.db-tree-row > .is-pinned {
+  position: sticky;
+  z-index: 2;
+  background: var(--bg);
+  box-shadow: 1px 0 color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.db-tree-row:hover > .is-pinned {
+  background: var(--bg2);
+}
+
+.db-tree-row.selected > .is-pinned {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
+.db-tree-row.orphaned .db-tree-label {
+  text-decoration: underline wavy var(--red);
+}
+
+.db-tree-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: var(--db-tree-row-height);
+  padding: 2px 8px 2px calc(8px + var(--db-tree-depth) * 22px);
+  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.db-tree-value-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: var(--db-tree-row-height);
+  padding: 7px 10px;
+  overflow: hidden;
+  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  color: var(--fg2);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-tree-cell-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-tree-name-cell[data-cell-overflow="wrap"] .db-tree-label,
+.db-tree-value-cell[data-cell-overflow="wrap"] .db-tree-cell-text {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--db-tree-cell-lines, 2);
+  line-clamp: var(--db-tree-cell-lines, 2);
+}
+
+.db-tree-name-cell[data-cell-overflow="clip"] .db-tree-label,
+.db-tree-value-cell[data-cell-overflow="clip"] .db-tree-cell-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-tree-value-cell[tabindex]:hover,
+.db-tree-value-cell[tabindex]:focus {
+  color: var(--fg);
+  background: var(--bg3);
+  outline: none;
+}
+
+.db-tree-value-cell.is-type {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.db-tree-caret,
+.db-tree-move-buttons button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 26px;
+  padding: 0;
+  color: var(--fg2);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.db-tree-caret:disabled {
+  cursor: default;
+}
+
+.db-tree-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+  opacity: 0;
+  cursor: grab;
+}
+
+.db-tree-row:hover .db-tree-grip {
+  opacity: 0.75;
+}
+
+.db-tree-marker {
+  width: 8px;
+  height: 8px;
+  background: var(--db-tree-node-color);
+  border-radius: 2px;
+}
+
+.db-tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.db-tree-count {
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.db-tree-move-buttons {
+  display: inline-flex;
+  justify-content: flex-end;
+  padding-right: 4px;
+  opacity: 0;
+}
+
+.db-tree-row:hover .db-tree-move-buttons,
+.db-tree-row:focus-within .db-tree-move-buttons {
+  opacity: 1;
+}
+
+.db-tree-row.dragging {
+  opacity: 0.45;
+}
+
+.db-tree-row.drop-before::before,
+.db-tree-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: calc(8px + var(--db-tree-depth) * 22px);
+  right: 8px;
+  height: 2px;
+  background: var(--accent);
+}
+
+.db-tree-row.drop-before::before {
+  top: -1px;
+}
+
+.db-tree-row.drop-after::after {
+  bottom: -1px;
+}
+
+.db-tree-row.drop-child {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.db-tree-details {
+  min-width: 0;
+}
+
+.db-tree-details.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+  min-height: 72px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.db-tree-details h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.db-tree-detail-path {
+  margin-bottom: 16px;
+  color: var(--fg2);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.db-tree-details dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 10px;
+  margin: 0 0 16px;
+  font-size: 12px;
+}
+
+.db-tree-details dt {
+  color: var(--fg2);
+}
+
+.db-tree-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.db-tree-setup-empty,
+.db-tree-no-results {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 240px;
+  padding: 24px;
+  color: var(--fg2);
+  text-align: center;
+}
+
+.db-tree-option-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-tree-option-section h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.db-tree-option-section > p {
+  margin: -3px 0 4px;
+  color: var(--fg2);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.db-tree-option-section label {
+  display: grid;
+  grid-template-columns: minmax(92px, 120px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.db-tree-option-section select {
+  min-width: 0;
+  min-height: 30px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.db-tree-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.db-tree-option-section button.primary,
+.db-tree-setup-empty button.primary {
+  color: var(--btn-primary-fg, #fff);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .db-tree-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .db-tree-toolbar input {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .db-tree-toolbar select {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .db-tree-toolbar button {
+    min-height: 40px;
+  }
+
+  .db-tree-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .db-tree-list {
+    border-right: 0;
+  }
+
+  .db-tree-row {
+    min-height: 42px;
+  }
+
+  .db-tree-name-cell {
+    min-height: var(--db-tree-row-height);
+    padding-left: calc(6px + var(--db-tree-depth) * 18px);
+  }
+
+  .db-tree-value-cell {
+    min-height: var(--db-tree-row-height);
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+
+  .db-tree-grip,
+  .db-tree-move-buttons,
+  .db-tree-header-more {
+    opacity: 0.75;
+  }
+
+  .db-tree-option-section label {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (pointer: coarse) {
+  .db-tree-header {
+    min-height: 44px;
+  }
+
+  .db-tree-header-more {
+    width: 44px;
+    height: 44px;
+    opacity: 0.75;
+  }
+
+  .db-tree-column-resize-handle {
+    right: -10px;
+    width: 20px;
+  }
+}

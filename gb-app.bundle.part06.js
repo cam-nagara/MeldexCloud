@@ -1,3 +1,32 @@
+    }
+  });
+  if (mv) mv.addEventListener('drop', (e) => {
+    // Ctrl+ドロップ: ファイルをパネルで開く
+    if (!e.ctrlKey) return; // 通常ドロップは各ビュー固有ハンドラに委ねる
+    if (state.view === 'board') return;
+    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    if (!cfData) return;
+    e.preventDefault();
+    try {
+      const { name, path, type } = JSON.parse(cfData);
+      const navType = typeof _normalizeOpenTypeForNav === 'function'
+        ? _normalizeOpenTypeForNav(type)
+        : (type === 'database' ? 'pivot' : type === 'board' ? 'board' : (type || 'page'));
+      navOpen({ type: navType, label: name, path });
+    } catch {}
+  });
+}
+
+// Phase D: HTMLビューワー(viewer.html)のiframe通信のみ残存
+// canvas/calendarのpostMessageはPhase Cで直接関数呼び出しに変換済み
+function _getTrustedEmbeddedMessageIframe(e) {
+  if (!e) return null;
+  const candidates = [];
+  const addCandidate = iframe => {
+    if (iframe && !candidates.includes(iframe)) candidates.push(iframe);
+  };
+  addCandidate((typeof _getActiveIframe === 'function') ? _getActiveIframe() : null);
+  addCandidate(document.getElementById('html-iframe'));
   document.querySelectorAll('iframe').forEach(addCandidate);
   for (const iframe of candidates) {
     if (!iframe?.contentWindow || e.source !== iframe.contentWindow) continue;
@@ -869,32 +898,3 @@ try {
   if (typeof applyStatusbarHidden === 'function') {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
   }
-} catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
-
-function _detectOptimalScale() {
-  const w = window.screen.width;
-  const dpr = window.devicePixelRatio || 1;
-  const isTouch = navigator.maxTouchPoints > 0;
-
-  // スマホ（幅768px以下）: 100%のまま（レスポンシブCSSに任せる）
-  if (w <= 768) return 100;
-  // タブレット + タッチデバイス（幅769〜1366px）: タッチ操作のためやや拡大
-  if (w <= 1366 && isTouch) return 110;
-  // 高解像度デスクトップ（4K等、OS側のスケーリングが低い場合）
-  if (w >= 2560 && dpr <= 1.5) return 125;
-  // 通常デスクトップ
-  return 100;
-}
-
-// Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
-document.addEventListener('wheel', (e) => {
-  if (!e.ctrlKey) return;
-  // キャンバス・フォルダビュー等の独自ズームが処理する場合はスキップ
-  const canvas = document.getElementById('bd-canvas');
-  if (canvas && canvas.contains(e.target)) return;
-  const folderGrid = document.getElementById('folder-grid');
-  if (folderGrid && folderGrid.contains(e.target)) return;
-  e.preventDefault();
-  const steps = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
-  const cur = parseInt(localStorage.getItem('ui-scale') || '100', 10);
-  const idx = steps.indexOf(cur);

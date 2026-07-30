@@ -754,7 +754,7 @@
     ));
   }
 
-  async function renameManagedEntry(context, path, newName) {
+  async function renameManagedEntry(context, path, newName, options = {}) {
     return _withProviderQueue(NAME_OPERATION_TAILS, context?.provider, async () => {
       const info = _managedPathInfo(path);
       if (!info) throw new Error('制作管理の名称変更対象ではありません');
@@ -764,11 +764,46 @@
         newName: String(newName || '').trim(),
       };
       if (!explicit.newName) throw new Error('path, new_name は必須です');
+      const expectedEntryId = String(options.expectedEntryId || '');
+      const targetPath = _entryPath(context, info.sheet, _safeName(context, explicit.newName));
+      let sourceEntry = null;
+      try {
+        if (await context.entryExists(info.path)) sourceEntry = await context.readFrontmatter(info.path);
+      } catch (error) {
+        console.error('制作管理エントリの改名前確認に失敗:', error);
+        throw error;
+      }
+      const sourceEntryId = String(sourceEntry?.frontmatter?.id || '');
+      if (!sourceEntry) {
+        const targetEntry = await context.entryExists(targetPath)
+          ? await context.readFrontmatter(targetPath).catch(() => null)
+          : null;
+        const targetEntryId = String(targetEntry?.frontmatter?.id || '');
+        if (targetEntry && expectedEntryId && targetEntryId === expectedEntryId) {
+          return {
+            ok: true,
+            reconciled: true,
+            new_path: targetPath,
+            entry_id: targetEntryId,
+            revision: Number(targetEntry?.frontmatter?.meldex_revision || 0),
+            operation_id: options.operationId || '',
+          };
+        }
+      }
+      if (expectedEntryId && sourceEntryId && sourceEntryId !== expectedEntryId) {
+        const error = new Error('別のエントリへ変更されています');
+        error.status = 409;
+        error.code = 'ENTRY_ID_CONFLICT';
+        throw error;
+      }
       const plan = await _buildPlan(context, explicit);
       const result = await _executePlan(context, plan);
       return {
         ok: true,
-        new_path: _entryPath(context, info.sheet, _safeName(context, explicit.newName)),
+        new_path: targetPath,
+        entry_id: sourceEntryId || expectedEntryId,
+        revision: Number(sourceEntry?.frontmatter?.meldex_revision || 0),
+        operation_id: options.operationId || '',
         production_references_updated: result.references_updated,
         production_views_updated: result.views_updated,
         ...result,

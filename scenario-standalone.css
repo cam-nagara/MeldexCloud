@@ -54,3 +54,8 @@
     min-height: 44px;
   }
 }
+@media (min-width: 821px) {
+  .scenario-mobile-count-toggle {
+    display: none !important;
+  }
+}

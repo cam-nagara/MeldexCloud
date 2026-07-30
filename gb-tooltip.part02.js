@@ -470,8 +470,6 @@
   regId('sp-show-replace',  { label: '置換を表示',     desc: '置換ワード入力欄を表示します' });
 
   // ファイル内検索バー
-  regId('fsb-query',        { label: '検索ワード', desc: '現在のファイル内から検索するキーワードを入力します', shortcutId: 'global.search' });
-  regId('fsb-replace',      { label: '置換ワード', desc: '見つかった文字列を置き換える文字列を入力します' });
 
   // CSV ツールバー
   regId('csv-add-row',      { label: '行追加', desc: 'CSV最終行の下に新しい行を追加します' });

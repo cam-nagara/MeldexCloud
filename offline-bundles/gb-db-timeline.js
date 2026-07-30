@@ -660,7 +660,9 @@ function renderTimeline(ctx) {
     : cfg.scale;
   if (timelineScale && timelineScale !== cfg.scale) cfg = { ...cfg, scale: timelineScale };
   const entitiesMap = data.entities;
-  const entityNames = Object.keys(entitiesMap).sort();
+  const entityNames = typeof _dbSortedEntityNames === 'function'
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true })
+    : Object.keys(entitiesMap).sort();
   const props = Array.isArray(data.properties) ? data.properties : [];
   const propTypes = getPropertyTypes(dbPath);
   const schemaProps = Object.keys(propTypes || {});

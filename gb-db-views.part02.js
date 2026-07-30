@@ -476,13 +476,16 @@ function renderGallery(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const hiddenCols = getHiddenCols(dbPath, { ctx });
   const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
   const propTypes = getPropertyTypes(dbPath);
   const colOrder = getColOrder(dbPath, { ctx });
   const entitiesMap = data.entities;
   const entityNames = typeof _dbSortedEntityNames === 'function'
-    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, propTypes })
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, columnValueFilters, propTypes })
     : Object.keys(entitiesMap)
-      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
+      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter)
+        && (typeof _dbEntityPassesColumnValueFilters !== 'function'
+          || _dbEntityPassesColumnValueFilters(name, entitiesMap[name], columnValueFilters, dbPath, ctx, ctx?.filter)))
       .sort();
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
@@ -857,11 +860,14 @@ function renderKanban(ctx) {
   const dbPath = ctx.dbPath || state.currentDbPath;
   const entitiesMap = data.entities;
   const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const columnValueFilters = typeof getColumnValueFilters === 'function' ? getColumnValueFilters(dbPath, { ctx }) : {};
   const propTypes = getPropertyTypes(dbPath);
   const entityNames = typeof _dbSortedEntityNames === 'function'
-    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, propTypes })
+    ? _dbSortedEntityNames(data, dbPath, ctx, { applyAdvancedFilters: true, advFilters, columnValueFilters, propTypes })
     : Object.keys(entitiesMap)
-      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter))
+      .filter(name => _dbEntityPassesAdvancedFilters(entitiesMap[name], advFilters, ctx?.filter)
+        && (typeof _dbEntityPassesColumnValueFilters !== 'function'
+          || _dbEntityPassesColumnValueFilters(name, entitiesMap[name], columnValueFilters, dbPath, ctx, ctx?.filter)))
       .sort();
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {

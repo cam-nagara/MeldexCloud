@@ -848,7 +848,7 @@ function _meldexScheduleActiveComponent() {
 // ため直接参照できない）。シート（データベース）が実際に画面表示されている時に
 // state.view が取り得る値の全集合。showView() を経由しない他ツールへの切替では
 // state.view はこの集合外の値（'csv'/'page'/'entity'/'board'/'folder' 等）になる。
-const _MELDEX_DB_VIEW_MODES = ['pivot', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'];
+const _MELDEX_DB_VIEW_MODES = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'];
 
 // isCalendarDb()（系統(B)判定）は `state.pivotData.calendar_db` の残留値だけを見るため、
 // カレンダー表示モードのシートを閉じて別ツールへ切り替えた後も真のままになり得る

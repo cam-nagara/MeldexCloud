@@ -104,7 +104,7 @@ function normalizeGlobalIndexAsDbLike(result) {
     type: 'タイプ',
     source: 'ソース',
     path: 'パス',
-    size: 'サイズ',
+    size: 'ファイルサイズ',
     modified: '更新日',
     backlinks: '被リンク',
   };
