@@ -23,7 +23,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-        var fallbackVersion = 'v0.7.081 BETA';
+      var fallbackVersion = 'v0.7.155 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -143,6 +143,8 @@
         setText('[data-runtime-text="desktop-version"]', item.version);
         setText('[data-runtime-text="desktop-asset"]', item.assetName || '配布ページ');
         setText('[data-runtime-text="desktop-published"]', formatDate(item.publishedAt) || '公開日未取得');
+        var changelogAnchor = (window.MeldexChangelogAnchorFor && window.MeldexChangelogAnchorFor(item.version)) || 'changelog';
+        setRuntimeHref('desktop-changelog', '#' + changelogAnchor);
       }
       function bindVersionSelect() {
         var select = document.getElementById('desktop-version-select');
@@ -184,6 +186,9 @@
         bindVersionSelect();
         applySelectedVersion();
       }
+      document.addEventListener('meldex-changelog-ready', function () {
+        if (releaseOptions.length) applySelectedVersion();
+      });
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', applyRuntimeLinks);
       } else {
@@ -438,6 +443,48 @@
       margin: 0;
       color: var(--muted);
     }
+    .group-title {
+      margin: 30px 0 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    .changelog-box {
+      margin-top: 18px;
+      padding: 4px 16px 12px;
+      max-height: 520px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .cl-version {
+      margin: 18px 0 6px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+    #changelog-list h4 {
+      margin: 10px 0 4px;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    #changelog-list p,
+    #changelog-list li {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #changelog-list ul {
+      margin: 4px 0;
+      padding-left: 20px;
+    }
+    .feature-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .feature-title svg {
+      flex: 0 0 auto;
+      color: var(--accent);
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -631,10 +678,12 @@
       <span>Meldex BETA</span>
     </a>
     <nav class="nav" aria-label="ページ内ナビゲーション">
-      <a href="#download">ダウンロード</a>
+      <a href="#download">デスクトップ版</a>
+      <a href="#cloud">クラウド版</a>
       <a href="#standalone-apps">単独アプリ</a>
       <a href="#samples">サンプル</a>
-      <a href="#cloud">クラウド版</a>
+      <a href="#features">機能紹介</a>
+      <a href="#changelog">更新履歴</a>
       <a href="#compare">版の比較</a>
       <a href="#speed">速度比較</a>
       <a href="#scope">対応範囲</a>
@@ -666,7 +715,7 @@
           </div>
         </header>
         <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.081 BETA</span></li>
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.155 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
@@ -682,16 +731,17 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.7.081 BETA / 最新</option>
+              <option value="0">v0.7.155 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.081 BETA</strong></span>
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.155 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
           <div class="mode-actions">
             <a class="button primary" href="#download" data-runtime-href="desktop-download">選択した版をダウンロード</a>
+            <a class="button subtle" href="#changelog" data-runtime-href="desktop-changelog">この版の変更内容を見る</a>
             <a class="button subtle" href="#download" data-runtime-href="desktop-release-page">リリース詳細を見る</a>
             <a class="button subtle" href="#download" data-runtime-href="desktop-releases">すべての過去版を見る</a>
           </div>
@@ -710,41 +760,6 @@
             <p>インストール前、または古い版へ戻す前には、作品フォルダをバックアップしてください。</p>
           </article>
         </div>
-      </div>
-    </section>
-    <section class="section" id="standalone-apps">
-      <div class="section-inner">
-        <h2>各ツールを単独アプリとして使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。クラウド版はMeldex Cloudと同じDropbox上の保存先を使います。</p>
-        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
-        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
-        <ul class="notes">
-          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
-          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
-          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
-        </ul>
-      </div>
-    </section>
-    <section class="section" id="samples">
-      <div class="section-inner">
-        <h2>サンプルデータ</h2>
-        <p>サンプル作品は、デスクトップ版でもクラウド版でもMeldex内の確認ダイアログからホームフォルダへ追加できます。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
-        <div class="version-picker" aria-label="サンプルデータを追加">
-          <div class="version-meta">
-            <span>デスクトップ版: <strong>ホームフォルダ準備後に確認</strong></span>
-            <span>クラウド版: <strong>Dropbox接続後に確認</strong></span>
-          </div>
-          <div class="mode-actions">
-            <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
-            <a class="button subtle" href="#download">デスクトップ版で追加</a>
-          </div>
-        </div>
-        <ul class="notes">
-          <li>デスクトップ版では、ホームフォルダの準備後に「サンプルファイルを追加しますか？」と表示されます。</li>
-          <li>クラウド版では、Dropbox接続後に同じ確認が表示されます。</li>
-          <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
-          <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
-        </ul>
       </div>
     </section>
     <section class="section" id="cloud">
@@ -787,6 +802,208 @@
           <article class="item important">
             <h3>クラウド版のバージョン</h3>
             <p>クラウド版は最新版のみ提供しています。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="standalone-apps">
+      <div class="section-inner">
+        <h2>各ツールを単独アプリとして使う</h2>
+        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。クラウド版はMeldex Cloudと同じDropbox上の保存先を使います。</p>
+        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
+        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
+        <ul class="notes">
+          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
+          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
+          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="samples">
+      <div class="section-inner">
+        <h2>サンプルデータ</h2>
+        <p>サンプル作品は、デスクトップ版でもクラウド版でもMeldex内の確認ダイアログからホームフォルダへ追加できます。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
+        <div class="version-picker" aria-label="サンプルデータを追加">
+          <div class="version-meta">
+            <span>デスクトップ版: <strong>ホームフォルダ準備後に確認</strong></span>
+            <span>クラウド版: <strong>Dropbox接続後に確認</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
+            <a class="button subtle" href="#download">デスクトップ版で追加</a>
+          </div>
+        </div>
+        <ul class="notes">
+          <li>デスクトップ版では、ホームフォルダの準備後に「サンプルファイルを追加しますか？」と表示されます。</li>
+          <li>クラウド版では、Dropbox接続後に同じ確認が表示されます。</li>
+          <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
+          <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="features">
+      <div class="section-inner">
+        <h2>機能紹介</h2>
+        <p>Meldexのメイン機能・補助機能・取り込み機能について、それぞれの特徴を3つずつ紹介します。デスクトップ版とクラウド版のどちらでも、同じ作品データを扱えます。</p>
+        <h3 class="group-title">メイン機能</h3>
+        <div class="grid">
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/></svg>フォルダツリー</h3>
+            <ul>
+            <li>ファイルとフォルダを階層表示し、作成・移動・複製をドラッグ操作で行えます。</li>
+            <li>全文検索とフィルタに加え、テキストで画像を検索して絵の内容からも探せます。</li>
+            <li>サムネイル付き表示に対応し、画像資料も見分けやすくなっています。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>フォルダパネル</h3>
+            <ul>
+            <li>フォルダ内のファイルをサムネイル付きで一覧表示します。</li>
+            <li>重複画像の検出で、ダブって保存された画像を自動で見つけて整理できます。</li>
+            <li>スライドショーで、フォルダ内の画像資料を順に自動再生できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>ノートエディタ</h3>
+            <ul>
+            <li>自動リンク: ファイル名を書くだけで関連資料へのリンクが自動で張られ、バックリンクからつながりを辿れます。</li>
+            <li>Markdown形式のリッチテキスト編集。見出し・リスト・画像・コールアウト・目次を扱えます。</li>
+            <li>編集履歴とバージョン管理で、過去の状態へ戻せます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/></svg>シナリオ</h3>
+            <ul>
+            <li>ページ・コマ・キャラクター・セリフを表形式で構造化して執筆できます。</li>
+            <li>プロットモードで、構成の検討と本文の執筆を行き来できます。</li>
+            <li>条件付きカラー、印刷レイアウト、CLIP STUDIO PAINT連携などの出力に対応します。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>シート</h3>
+            <ul>
+            <li>リレーション・ロールアップ・数式を含む列タイプで、キャラ・設定・伏線・タスクを構造化できます。</li>
+            <li>ピボットテーブル・ギャラリー・カンバン・タイムライン・チャートなどの表示を切り替えられます。</li>
+            <li>スケジュールとの双方向同期で、日付の列をカレンダーに表示できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></svg>ボード</h3>
+            <ul>
+            <li>カードとラインを自由に配置して、関係図・構成図・伏線マップを作れます。</li>
+            <li>ノートやシートへのリンクカードを置いて、資料へすぐ移動できます。</li>
+            <li>シートやスマートシートからカードを一括取込できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>スケジュール</h3>
+            <ul>
+            <li>イベント・ToDoリスト・勤怠をカレンダー形式で管理します。</li>
+            <li>制作管理の「自動割り当て」で、タスクを締切までの期間へ自動で割り振れます。</li>
+            <li>Google ToDo / CalDAV など外部サービスとの同期に対応します。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="9" ry="3.5"/><path d="M3 12a9 3.5 0 0 0 5.16 3.18"/><path d="M3 5.5v13c0 1.93 4.03 3.5 9 3.5"/><path d="M21 5.5v4"/><circle cx="17.5" cy="16.5" r="3.5"/><path d="m21 20-1.5-1.5"/></svg>スマートシート</h3>
+            <ul>
+            <li>複数のシートやフォルダを横断して、条件に合うエントリだけを自動で集めます。</li>
+            <li>数式・集計に対応し、ダッシュボードビューで一覧化できます。</li>
+            <li>絞り込み条件を保存して、いつでも最新の結果を表示できます。</li>
+            </ul>
+          </article>
+        </div>
+        <h3 class="group-title">補助機能</h3>
+        <div class="grid">
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>オプションパネル</h3>
+            <ul>
+            <li>選択中の対象に応じて内容が自動で切り替わる編集パネルです。</li>
+            <li>エントリのプロパティ編集やファイルテーマの設定ができます。</li>
+            <li>バックリンクで、そのファイルを参照している場所を一覧できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="14" x="3" y="3" rx="2"/><path d="M4 21h1"/><path d="M9 21h1"/><path d="M14 21h1"/><path d="M19 21h1"/></svg>ビューワー</h3>
+            <ul>
+            <li>画像・動画・音声・PDF・HTMLを表示できます。</li>
+            <li>表示中のファイルに注釈を書き込めます。</li>
+            <li>メディア一覧で、フォルダ内の画像・動画を続けて確認できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>バージョン管理</h3>
+            <ul>
+            <li>ファイル・フォルダ・全体の過去の状態を、統合タイムラインで一覧します。</li>
+            <li>過去の状態の閲覧・復元と、名前付きバージョンの保存ができます。</li>
+            <li>自動保存された古いバージョンは段階的に間引きされ、容量を抑えます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4c0-1.1.9-2 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg>チャット</h3>
+            <ul>
+            <li>参照中のファイルや作品の設定を文脈にして、AIへ相談できます。</li>
+            <li>AIがノートやシートを読み書きするツール実行に対応しています。</li>
+            <li>チーム利用時は、メンバーとのメッセージ交換にも使えます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></svg>タイマー</h3>
+            <ul>
+            <li>ストップウォッチ・カウントダウン・ポモドーロの3モードを備えます。</li>
+            <li>通知と繰り返し設定に対応します。</li>
+            <li>スケジュールと連動でき、独立ウィンドウでも開けます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>ヒストリー</h3>
+            <ul>
+            <li>直近の操作を一覧から取り消し・やり直しできます。</li>
+            <li>ファイル単位の履歴も確認できます。</li>
+            <li>編集中の操作の取り消しに特化し、過去の版へ戻る場合はバージョン管理と使い分けます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/></svg>注釈</h3>
+            <ul>
+            <li>どの画面にも手描きの線・マーカー・付箋を重ねられます。</li>
+            <li>スタンプ・絵文字や、色・不透明度・線幅の調整に対応します。</li>
+            <li>注釈パネルで、全体の注釈を一覧して移動できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg>タグ</h3>
+            <ul>
+            <li>画像の内容を解析して自動でタグを付ける「自動タグ付け」に対応します。</li>
+            <li>ファイルにタグを付けて、作品を横断して整理できます。</li>
+            <li>タグでファイルを絞り込んで探せます。</li>
+            </ul>
+          </article>
+        </div>
+        <h3 class="group-title">取り込み・Web連携</h3>
+        <div class="grid">
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>インポート</h3>
+            <ul>
+            <li>Notion・Obsidian・Evernote のノートをMeldexへ取り込めます（外部サービス側は変更しません）。</li>
+            <li>CSV / Excel の取り込みや、画像・ファイルの貼り付けに対応します。</li>
+            <li>取り込みは定期実行にも登録でき、自動で最新の状態を保てます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>X（旧Twitter）連携</h3>
+            <ul>
+            <li>Xのブックマークを取り込んで、資料として整理できます。</li>
+            <li>アカウントを指定して、ポストをまとめてダウンロードできます。</li>
+            <li>定期実行に対応し、新しいポストを自動で取り込み続けられます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>Meldex Web Clipper</h3>
+            <ul>
+            <li>ブラウザで見ているWebページ・選択範囲・画像・ブックマークをMeldexへ保存できます。</li>
+            <li>「ページ内の画像を一括保存」で、ページ上の画像をまとめてダウンロードできます。</li>
+            <li>Chrome / Edge / Brave / Vivaldi / Opera に対応し、デスクトップ版の設定画面から準備できます。</li>
+            </ul>
           </article>
         </div>
       </div>
@@ -957,6 +1174,126 @@
         </div>
       </div>
     </section>
+    <section class="section" id="changelog">
+      <div class="section-inner">
+        <h2>更新履歴</h2>
+        <p>各バージョンの変更内容の一覧です。ダウンロード欄で版を選んで「この版の変更内容を見る」を押すと、該当バージョンの位置へ移動します。</p>
+        <div class="changelog-box" aria-label="バージョンごとの変更内容">
+          <p id="changelog-loading">更新履歴を読み込んでいます…</p>
+          <p id="changelog-fallback" hidden>更新履歴を読み込めませんでした。<a href="CHANGELOG.md">更新履歴ファイルを直接開く</a></p>
+          <div id="changelog-list"></div>
+          <div class="mode-actions">
+            <button type="button" class="button subtle" id="changelog-more" hidden>以前の更新履歴も表示</button>
+          </div>
+        </div>
+      </div>
+      <script>
+        (function () {
+          'use strict';
+          var INITIAL_COUNT = 30;
+          var sections = [];
+          var renderedCount = 0;
+          var list = null;
+          function anchorIdFor(version) {
+            var m = String(version || '').match(/v?(\d+\.\d+\.\d+)/);
+            if (!m) return '';
+            var id = 'cl-v' + m[1];
+            return document.getElementById(id) ? id : '';
+          }
+          window.MeldexChangelogAnchorFor = anchorIdFor;
+          function sectionNode(section) {
+            var wrap = document.createElement('article');
+            var heading = document.createElement('h3');
+            heading.className = 'cl-version';
+            var m = section.title.match(/v?(\d+\.\d+\.\d+)/);
+            if (m) heading.id = 'cl-v' + m[1];
+            heading.textContent = section.title;
+            wrap.appendChild(heading);
+            var ul = null;
+            section.lines.forEach(function (line) {
+              var sub = line.match(/^###\s+(.*)$/);
+              var item = line.match(/^\s*[-*]\s+(.*)$/);
+              if (sub) {
+                ul = null;
+                var h4 = document.createElement('h4');
+                h4.textContent = sub[1];
+                wrap.appendChild(h4);
+              } else if (item) {
+                if (!ul) {
+                  ul = document.createElement('ul');
+                  wrap.appendChild(ul);
+                }
+                var li = document.createElement('li');
+                li.textContent = item[1];
+                ul.appendChild(li);
+              } else {
+                ul = null;
+                var p = document.createElement('p');
+                p.textContent = line;
+                wrap.appendChild(p);
+              }
+            });
+            return wrap;
+          }
+          function renderMore(count) {
+            if (!list) return;
+            var next = Math.min(renderedCount + count, sections.length);
+            for (var i = renderedCount; i < next; i += 1) list.appendChild(sectionNode(sections[i]));
+            renderedCount = next;
+            var more = document.getElementById('changelog-more');
+            if (more) {
+              if (renderedCount < sections.length) {
+                more.hidden = false;
+                more.textContent = '以前の更新履歴も表示（残り' + (sections.length - renderedCount) + '件）';
+              } else {
+                more.hidden = true;
+              }
+            }
+            document.dispatchEvent(new CustomEvent('meldex-changelog-ready'));
+          }
+          function init() {
+            list = document.getElementById('changelog-list');
+            if (!list) return;
+            var more = document.getElementById('changelog-more');
+            if (more && more.dataset.bound !== '1') {
+              more.dataset.bound = '1';
+              more.addEventListener('click', function () {
+                renderMore(sections.length);
+              });
+            }
+            fetch('CHANGELOG.md', { cache: 'no-cache' }).then(function (response) {
+              if (!response.ok) throw new Error('HTTP ' + response.status);
+              return response.text();
+            }).then(function (text) {
+              var current = null;
+              text.split(/\r?\n/).forEach(function (line) {
+                var head = line.match(/^##\s+(.*)$/);
+                if (head) {
+                  current = { title: head[1], lines: [] };
+                  sections.push(current);
+                  return;
+                }
+                if (current && line.trim()) current.lines.push(line);
+              });
+              var loading = document.getElementById('changelog-loading');
+              if (loading) loading.hidden = true;
+              if (!sections.length) throw new Error('empty changelog');
+              renderMore(INITIAL_COUNT);
+            }).catch(function () {
+              var loading = document.getElementById('changelog-loading');
+              if (loading) loading.hidden = true;
+              var fallback = document.getElementById('changelog-fallback');
+              if (fallback) fallback.hidden = false;
+            });
+          }
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+          } else {
+            init();
+          }
+        })();
+      </script>
+    </section>
     <section class="section" id="support">
       <div class="section-inner">
         <h2>サポートと確認資料</h2>
@@ -967,7 +1304,7 @@
           </article>
           <article class="item">
             <h3>更新情報</h3>
-            <p>ダウンロード欄に表示されるバージョンと公開日を確認してください。クラウド版は起動時の画面タイトルにもバージョンが表示されます。</p>
+            <p><a href="#changelog">更新履歴</a>で各バージョンの変更内容を確認できます。クラウド版は起動時の画面タイトルにもバージョンが表示されます。</p>
           </article>
           <article class="item">
             <h3>フィードバック</h3>
